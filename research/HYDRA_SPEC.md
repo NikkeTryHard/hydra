@@ -8,13 +8,13 @@ A Riichi Mahjong AI designed to surpass current SOTA (Mortal, Suphx, NAGA) throu
 
 | Metric | Target | Justification |
 |--------|--------|---------------|
-| **Parameters** | ~40M | Detailed breakdown: 70K stem + 32M backbone + 8M heads (see Parameter Budget) |
+| **Parameters** | ~16.5M | Detailed breakdown: 67K stem + 16.1M backbone + 372K heads (see Parameter Budget) |
 | **Inference VRAM** | <1.5GB | Fits 8GB consumer GPUs easily |
 | **Inference Latency** | <15ms | Well under 50ms limit |
 | **Training VRAM** | <20GB active | Fits 98GB with batch 4096+ |
 | **Target Strength** | Beat Mortal | Tenhou 10-dan+ |
 
-> **Note on parameter count:** The original unified spec targeted 22–24M parameters based on a rough per-block estimate of ~402K. The detailed architectural breakdown in the architecture sub-documents shows the actual count is closer to ~40M, primarily because the 40-block SE-ResNet backbone alone accounts for ~32M parameters. The ~40M figure is authoritative.
+> **Note on parameter count:** Each SE-ResBlock contains ~402K parameters (2× Conv1d(256,256,k=3) + 2× GroupNorm + SE module). 40 blocks × 402K ≈ 16.1M backbone. Heads add ~372K. This makes Hydra (~16.5M) roughly 50% larger than Mortal (~10.9M at 192ch/40 blocks), providing additional capacity for the five output heads and safety encoding.
 
 ---
 
@@ -31,14 +31,14 @@ A Riichi Mahjong AI designed to surpass current SOTA (Mortal, Suphx, NAGA) throu
 
 Hydra uses a **Unified Multi-Head SE-ResNet** architecture. A single deep convolutional backbone extracts features from the game state, and five specialized heads branch from the shared latent representation to produce all outputs simultaneously.
 
-The input observation tensor has shape `[Batch × 87 × 34 × 1]`, encoding 87 feature channels across the 34 tile types. A convolutional stem projects this into 256 channels using a 3×1 kernel. The representation then flows through 40 pre-activation SE-ResNet blocks — each applying GroupNorm, Mish activation, two 3×1 convolutions, and a squeeze-and-excitation attention gate — producing a shared latent tensor of shape `[B × 256 × 34]`. No pooling is applied anywhere in the backbone, preserving the full 34-tile spatial geometry.
+The input observation tensor has shape `[Batch × 87 × 34]`, encoding 87 feature channels across the 34 tile types. A convolutional stem projects this into 256 channels using a 3×1 kernel. The representation then flows through 40 pre-activation SE-ResNet blocks — each applying GroupNorm, Mish activation, two 3×1 convolutions, and a squeeze-and-excitation attention gate — producing a shared latent tensor of shape `[B × 256 × 34]`. No pooling is applied anywhere in the backbone, preserving the full 34-tile spatial geometry.
 
 From this shared representation, five output heads operate in parallel: the Policy Head selects the next action, the Value Head estimates expected round outcome, the GRP Head predicts final game placement distribution, the Tenpai Head estimates opponent tenpai probabilities, and the Danger Head estimates per-tile deal-in risk per opponent.
 
 ```mermaid
 graph TB
     subgraph "Input Layer"
-        INPUT["Observation Tensor<br/>[Batch × 87 × 34 × 1]<br/>64 base + 23 safety channels"]
+        INPUT["Observation Tensor<br/>[Batch × 87 × 34]<br/>64 base + 23 safety channels"]
     end
 
     subgraph "Stem"
@@ -77,12 +77,12 @@ graph TB
 
 ### Why SE-ResNet?
 
-SE-ResNet captures global board state (e.g., "expensive field," dora density) via channel-wise squeeze-and-excitation attention while maintaining the spatial tile geometry that matters for shape recognition. Both Suphx and Mortal use deep residual networks; SE attention adds global context awareness at modest parameter cost.
+SE-ResNet captures global board state (e.g., "expensive field," dora density) via channel-wise squeeze-and-excitation attention while maintaining the spatial tile geometry that matters for shape recognition. Mortal already uses dual-pool SE-style channel attention (`model.py:L10-28`); Hydra retains this proven design but replaces BatchNorm with GroupNorm for batch-size independence during RL training. Suphx uses a plain deep residual CNN without channel attention.
 
 | Architecture | Pros | Cons | Used By |
 |--------------|------|------|---------|
-| ResNet | Fast, proven for spatial | Limited global context | Mortal v1–v3 |
-| SE-ResNet | Global context via squeeze-excite | Slightly more params | Suphx (channel attention) |
+| ResNet | Fast, proven for spatial | Limited global context | Suphx |
+| ResNet + Channel Attention | Global context via squeeze-excite | Slightly more params | Mortal v1–v4 (dual-pool SE) |
 | Transformer | Long-range dependencies | Quadratic attention, slow | Kanachan, Tjong |
 | Hybrid | Best of both | Complexity, unproven | — |
 
@@ -137,7 +137,7 @@ graph LR
 
 ### Dropout Policy
 
-> **Resolved conflict:** The architecture document states "None — Neither Mortal nor Suphx use dropout. Hurts tile counting precision." The training document specifies "Dropout 0.1 throughout backbone for RL stability."
+> **Resolved conflict:** The architecture document states "None — Neither Mortal nor Suphx use standard neural network dropout. Hurts tile counting precision." (Note: Suphx does use "perfect feature dropout" for oracle guiding — a different technique that masks oracle input features during training, not standard layer dropout.) The training document specifies "Dropout 0.1 throughout backbone for RL stability."
 >
 > **Resolution:** The backbone design itself contains no dropout to preserve tile-counting precision during inference. During training (particularly Phase 1 supervised and Phase 2 distillation), dropout of 0.1 is applied as a regularization technique for RL stability. Dropout is disabled at inference time. This is consistent with standard practice where dropout is a training-time regularizer that is deactivated during evaluation.
 
@@ -154,14 +154,16 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 | Component | Parameters | Percentage |
 |-----------|------------|------------|
-| Stem Conv (87→256, k=3) | ~70K | 0.2% |
-| ResNet Backbone (40 blocks) | ~32M | 76% |
-| Policy Head | ~1M | 2.4% |
-| Value Head | ~500K | 1.2% |
-| GRP Head | ~1M | 2.4% |
-| Tenpai Head | ~500K | 1.2% |
-| Danger Head | ~1.5M | 3.6% |
-| **Total** | **~40M** | **100%** |
+| Stem Conv (87→256, k=3) | ~67K | 0.4% |
+| ResNet Backbone (40 blocks × ~402K) | ~16.1M | 97.3% |
+| Policy Head | ~117K | 0.7% |
+| Value Head | ~132K | 0.8% |
+| GRP Head | ~106K | 0.6% |
+| Tenpai Head | ~17K | 0.1% |
+| Danger Head | ~771 | <0.1% |
+| **Total** | **~16.5M** | **100%** |
+
+> The backbone completely dominates the parameter budget. Head overhead is negligible (~2.3% total), meaning the five-head design adds opponent modeling capability at virtually zero parameter cost.
 
 ---
 
@@ -205,7 +207,9 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 **Output shape:** 24-dimensional softmax (4! = 24 rank permutations).
 
-**Design rationale:** Suphx introduced the 24-way joint distribution to capture inter-player placement correlations. Four independent marginal probabilities (P(1st), P(2nd), P(3rd), P(4th) for each player) lose the correlation information — e.g., "if I get 1st, Player B gets 2nd" vs. "if I get 1st, Player C gets 2nd." This is critical for Orasu (final-round) decisions where displacement matters. Mortal's simplified approach contributes to "Orras cowardice" — excessive passivity in placement-critical situations.
+**Design rationale:** Mortal introduced the 24-way joint rank distribution to capture inter-player placement correlations (confirmed from `model.py:L233-249`). Four independent marginal probabilities (P(1st), P(2nd), P(3rd), P(4th) for each player) lose the correlation information — e.g., "if I get 1st, Player B gets 2nd" vs. "if I get 1st, Player C gets 2nd." Suphx took a different approach, using a scalar GRP that predicts expected final game reward via MSE regression with a GRU encoder — effective for rank-awareness but unable to capture inter-player correlations.
+
+Hydra adopts Mortal's 24-way formulation but extends it with a richer score context vector and uncapped score encoding. Mortal's documented Orasu weakness ("Orras cowardice") likely stems from its dual-scale score capping (100K/30K channels) losing fine-grained placement information in high-scoring games, and from reward shaping that insufficiently penalizes 4th place — not from the GRP formulation itself.
 
 **Architecture:** Global average pooling collapses the backbone output (256 × 34 → 256), which is concatenated with a 16-dimensional score context vector, then passed through a three-layer MLP (272 → 256 → 128 → 24) with ReLU activations.
 
@@ -245,7 +249,7 @@ The observation tensor encodes the complete game state visible to the current pl
 
 **Total channels: 87** (64 base + 23 safety)
 
-**Tensor shape:** `[Batch × 87 × 34 × 1]`
+**Tensor shape:** `[Batch × 87 × 34]`
 
 The 34-dimension represents tile types: 9 manzu (萬) + 9 pinzu (筒) + 9 souzu (索) + 7 jihai (字牌).
 
@@ -333,7 +337,7 @@ Three channels per player (12 total):
 
 ### Score Encoding (Critical Difference from Mortal)
 
-Mortal v4 caps scores at 30,000 points. This causes errors in high-scoring late-game situations — a player with 60,000 points looks identical to one with 30,000, destroying information needed for placement decisions.
+Mortal v4 uses dual-scale score encoding: one channel normalized by 100,000 (preserving coarse information up to 100K) and a second channel normalized by 30,000 (providing higher resolution for the strategically common range). This means information above 30K is degraded but not completely lost — a player with 60,000 points registers 0.6 in the 100K channel vs. 0.3 for 30K, but both saturate at 1.0 in the 30K channel. (Source: `obs_repr.rs:L149-164`)
 
 Hydra uses uncapped scores with three complementary representations:
 
@@ -511,7 +515,7 @@ To bridge the gap between oracle and blind play, the Teacher's hidden inputs are
 | Late (Days 8–9) | 50% masked | 0.5 |
 | Final (Day 10) | 75% masked | 0.3 |
 
-**Why this works:** The Teacher learns patterns like "Opponent has 4–7p tanki wait" or "Wall has no more 3m." The Student cannot see these facts directly but learns to recognize the behavioral and statistical signals that correlate with them — developing "intuition" by mimicking psychic decisions. Suphx ablation studies showed Oracle-guided agents gained approximately 1.5 dan strength over pure RL training.
+**Why this works:** The Teacher learns patterns like "Opponent has 4–7p tanki wait" or "Wall has no more 3m." The Student cannot see these facts directly but learns to recognize the behavioral and statistical signals that correlate with them — developing "intuition" by mimicking psychic decisions. Suphx ablation studies showed the full training pipeline (SL → GRP → Oracle Guiding → Policy Adaptation) gained ~1.1 dan over the supervised baseline, with oracle guiding contributing incremental improvement over GRP alone (arXiv:2003.13590, Figure 8).
 
 ```mermaid
 graph TB
@@ -570,7 +574,7 @@ graph TB
 | γ (discount) | 0.995 | Long-horizon (full game) |
 | LR | 1e-5 → 3e-6 | Linear decay |
 | Batch size | 4096–8192 | Variance reduction |
-| Rollout length | 256–512 | Steps before update |
+| Rollout length | 256–512 | Decision points before update (episode boundaries masked for GAE) |
 | Gradient clip | 0.5 | Stability |
 
 **Fresh samples only:** Unlike DQN (which Mortal uses), PPO is on-policy — no replay buffer. This avoids the catastrophic forgetting that Mortal experiences, where old transitions in the replay buffer become stale and misleading.
@@ -583,7 +587,7 @@ Mahjong has massive luck variance. A perfect decision can lead to a bad outcome 
 
 $$R_{\text{adjusted}} = \frac{R_{\text{actual}} - \text{baseline}(h_0)}{\sigma_{\text{baseline}}}$$
 
-The baseline estimates the expected outcome given initial hand quality (shanten, dora count, etc.). This isolates the contribution of decision-making from luck, enabling training on limited hardware. IEEE CoG 2022 showed RVR enables effective training with significantly reduced gradient variance.
+The baseline estimates the expected outcome given initial hand quality (shanten, dora count, etc.). This isolates the contribution of decision-making from luck, enabling more sample-efficient training. Li et al. (IEEE CoG 2022, DOI:10.1109/CoG51982.2022.9893584) demonstrated that reward variance reduction enabled competitive Mahjong AI training on 8 GPUs instead of Suphx's 44, achieving effective play after 3 days of training.
 
 ### Stability Techniques Summary
 
@@ -595,7 +599,7 @@ The baseline estimates the expected outcome given initial hand quality (shanten,
 | KL penalty | Constrain policy updates | PPO-clip |
 | Gradient clipping (0.5) | Prevent exploding gradients | Standard practice |
 | League pool | Diverse opponents | AlphaStar |
-| RVR | Reduce luck variance | IEEE CoG 2022 |
+| RVR | Reduce reward variance | Li et al., IEEE CoG 2022 |
 
 ---
 
@@ -626,13 +630,7 @@ Where:
 
 The tenpai loss uses ground-truth labels from Oracle data during training (the teacher network sees opponent hands). The danger loss uses actual deal-in events as labels — for each tile that was discarded, whether it resulted in a deal-in.
 
-### CQL Regularization (Offline Phases)
-
-Conservative Q-Learning regularization is applied during offline training phases (Phase 1) to prevent overestimation of Q-values for out-of-distribution actions:
-
-$$\mathcal{L}_{\text{CQL}} = \log \sum_{a} \exp(Q(s, a)) - Q(s, a_{\text{data}})$$
-
-This penalizes high Q-values for actions not seen in the training data while maintaining Q-values for demonstrated actions. The logsumexp term acts as a soft maximum over all action Q-values, pushing down the values of unchosen actions relative to the expert-demonstrated action.
+> **Note on offline regularization:** The original spec included CQL (Conservative Q-Learning) for Phase 1, but CQL requires per-action Q-values and is incompatible with Hydra's PPO actor-critic architecture (no Q-head). Phase 1 behavioral cloning with cross-entropy loss naturally stays close to the expert distribution without needing CQL-style regularization. If offline regularization proves necessary, PPO-compatible alternatives include filtered behavioral cloning (training only on high-rated games) or advantage-weighted regression.
 
 ---
 
@@ -646,10 +644,10 @@ Inference runs in FP16 (half precision) with `torch.compile` in "reduce-overhead
 
 | Component | Size |
 |-----------|------|
-| Weights (FP16) | ~48MB |
+| Weights (FP16) | ~33MB |
 | Activations | ~200MB |
 | CUDA context | ~800MB |
-| **Total** | **~1.0–1.1GB** |
+| **Total** | **~1.0GB** |
 
 Well within the <1.5GB target, fitting easily on 8GB consumer GPUs.
 
@@ -700,13 +698,13 @@ Both configurations are well under the 50ms decision limit imposed by online pla
 | Opponent modeling | None (SinglePlayerTables) | Oracle distillation + tenpai/danger heads |
 | Safety logic | Implicit (learned from data) | Explicit 23-plane input encoding |
 | Damaten detection | Poor (documented weakness) | Dedicated tenpai predictor head |
-| Score encoding | Capped at 30,000 | Uncapped + relative gaps + overtake thresholds |
+| Score encoding | Dual-scale (100K/30K channels, degraded above 30K) | Uncapped + relative gaps + overtake thresholds |
 | Training algorithm | DQN + CQL (offline RL) | PPO + League (online RL) |
 | Normalization | BatchNorm | GroupNorm (batch-size independent) |
 | Deal-in avoidance | Implicit Q-value differences | Explicit danger head (per-opponent, per-tile) |
-| Backbone | ResNet | SE-ResNet (squeeze-and-excitation attention) |
-| GRP formulation | Simplified | Full 24-way joint distribution (uncapped scores) |
-| Parameters | ~50M | ~40M |
+| Backbone | ResNet + dual-pool SE (Channel Attention) | SE-ResNet (same dual-pool SE, GroupNorm instead of BatchNorm) |
+| GRP formulation | 24-way joint distribution (dual-scale scores) | 24-way joint distribution (uncapped scores + score context vector) |
+| Parameters | ~10.9M (192ch) | ~16.5M (256ch) |
 | Activation | Mish | Mish (same) |
 
 ---
