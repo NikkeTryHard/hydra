@@ -45,9 +45,9 @@ Single source of truth for all citations in the Hydra project.
 
 | Project | URL | Language | Stars | License | Notes |
 |---------|-----|----------|-------|---------|-------|
-| Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1,334 | AGPL + additional restrictions | Reference only — cannot derive code or use weights. ResNet + Channel Attention, DQN + CQL |
+| Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1,334 | AGPL-3.0-or-later | Reference only — cannot derive code; weights have separate distribution restrictions. ResNet + Channel Attention, DQN + CQL |
 | Kanachan | https://github.com/Cryolite/kanachan | C++/Python | 326 | MIT | Transformer-based (BERT-style), trained on 100M+ Mahjong Soul rounds, no hand-crafted features |
-| Akochan | https://github.com/critter-mj/akochan | C++ | 281 | GPL | C++ EV-based heuristic engine with suji/kabe/genbutsu analysis |
+| Akochan | https://github.com/critter-mj/akochan | C++ | 281 | Custom (restrictive, Japanese) | C++ EV-based heuristic engine with suji/kabe/genbutsu analysis |
 | Mjx | — | Python/JAX | — | Apache-2.0 | GPU-accelerated mahjong simulator |
 | riichi-rs | — | Rust | — | MIT | Basic Rust riichi implementation |
 | MahjongAI | https://github.com/erreurt/MahjongAI | Python | 446 | — | Extensible general-purpose mahjong agent |
@@ -261,7 +261,7 @@ Mortal repository discussions relevant to Hydra design decisions:
 |-------------|-------|
 | #27 | Batch size recommendations for training |
 | #64 | Online training forgetting problem (catastrophic forgetting) |
-| #70 | torch.compile usage and DeepCFR exploration |
+| #70 | DeepCFR feasibility for replacing GRP |
 | #91 | Mortal-Policy (PPO fork) open sourcing |
 | #102 | Oracle guiding removal rationale (Equim-chan: "didn't bring improvements in practice") |
 | #108 | Score encoding / capping discussion |
@@ -275,8 +275,7 @@ Mortal repository issues relevant to Hydra improvements:
 | Issue # | Description |
 |---------|-------------|
 | #111 | Overtake score miscalculation — Mortal miscalculates hand-building near placement thresholds; motivates Hydra's uncapped score encoding |
-| #113 | UI fix (not rating controversy as sometimes cited) |
-| #156 | Damaten detection failures — motivates Hydra's explicit tenpai predictor head |
+| #113 | Rating system closure discussion — community debate on whether to shut down Mortal's rating feature |
 
 ---
 

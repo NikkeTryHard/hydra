@@ -33,8 +33,7 @@ graph LR
 Specific documented issues:
 
 - **GitHub Issue #111** — Overtake score miscalculation; Mortal plays too safe when trailing, missing opportunities to overtake, partly because it cannot read opponent hand danger accurately.
-- **GitHub Issue #156** — Damaten detection failures noted by users.
-- **GitHub Discussion #102** — Equim-chan (Mortal's creator) confirmed that oracle guiding "didn't bring improvements in practice" and was removed in v3, replaced with the NextRankPredictor auxiliary task. This suggests Mortal's architecture may not be structured to benefit from opponent-aware signals.
+- **GitHub Discussion #102** — Equim-chan (Mortal's creator) confirmed that oracle guiding "didn't bring improvements in practice" and was removed in v3, replaced with the next-rank prediction auxiliary task (implemented as `AuxNet` in code, commonly called "NextRankPredictor" in community discussions). This suggests Mortal's architecture may not be structured to benefit from opponent-aware signals.
 
 **Community-identified weaknesses related to opponent reading:**
 
@@ -405,7 +404,7 @@ These multiply on top of the base wait type multiplier:
 | **Opponent modeling** | None (`SinglePlayerTables`) | Oracle-guided + run-time adaptation | Oracle distillation + explicit safety planes + auxiliary heads |
 | **Safety logic** | Must be learned implicitly | Must be learned implicitly | 23-plane explicit encoding |
 | **Training approach** | DQN + CQL (offline RL) | Oracle guiding → RL | PPO + oracle distillation + league training |
-| **Score awareness** | Capped at 30k | Not documented | Uncapped + relative gaps + overtake thresholds |
+| **Score awareness** | Dual-scale (100K/30K, degraded above 30K) | Not documented | Uncapped + relative gaps + overtake thresholds |
 
 ### Key Differentiator
 

@@ -114,7 +114,7 @@ Source: `libriichi/src/state/obs_repr.rs` (v4 uses SinglePlayerTables at lines 5
 
 ### Score Encoding Issues
 
-The v4 observation encoding **caps scores at 30,000 points**, which loses information about large point spreads that occur in real games. There is no explicit overtake threshold encoding — the network has no direct representation of how many points are needed to change placement. This leads to miscalculated hand-building near placement thresholds (Source: Issue #111). The score capping also makes the model unreliable in high-score late-game situations.
+The v4 observation encoding uses **dual-scale score channels**: one normalized by 100,000 (preserving coarse information for high scores) and another normalized by 30,000 (providing higher resolution for the strategically common range). Scores above 30K are degraded in the fine-grained channel but still captured by the coarse channel. There is no explicit overtake threshold encoding — the network has no direct representation of how many points are needed to change placement. This leads to miscalculated hand-building near placement thresholds (Source: Issue #111). The dual-scale encoding may contribute to unreliable decisions in high-score late-game situations where precise placement awareness matters most.
 
 Source: GitHub Discussion #108, Issue #111
 
@@ -126,7 +126,7 @@ Source: `mortal/train.py:382-386`
 
 ### Oracle Guiding Removal
 
-Oracle guiding (training with perfect information, then distilling to imperfect) existed in Mortal v1 and v2 but was **removed in v3**. According to Equim-chan, the reason was: "It didn't bring improvements in practice" — the removal was not motivated by throughput concerns. Oracle guiding was replaced with a **NextRankPredictor** auxiliary task.
+Oracle guiding (training with perfect information, then distilling to imperfect) existed in Mortal v1 and v2 but was **removed in v3**. According to Equim-chan, the reason was: "It didn't bring improvements in practice" — the removal was not motivated by throughput concerns. Oracle guiding was replaced with a **next-rank prediction** auxiliary task (implemented as `AuxNet` in code, commonly called "NextRankPredictor" in community Discussion #52 and #102).
 
 Source: GitHub Discussion #102 (Equim-chan)
 
@@ -156,7 +156,7 @@ Source: `docs/src/perf/strength.md`
 
 **4. Efficiency Over Yaku** — Mortal prioritizes shanten reduction speed (tile efficiency) over hand value construction. It discards dora or yaku-building tiles in favor of raw efficiency improvements. This is particularly problematic in comeback situations where a high-value hand is needed — the model builds fast, cheap hands when it should be pursuing expensive ones. (Source: Reddit r/Mahjong)
 
-**5. Coarse Placement Sensitivity** — Mortal maintains essentially the same playstyle regardless of the point spread. It does not adjust aggression levels based on specific overtake thresholds (e.g., how many points separate 2nd from 1st). The score encoding caps at 30k (see Score Encoding Issues above), further limiting its ability to make placement-aware decisions. (Source: GitHub Issue #111, Reddit r/Mahjong)
+**5. Coarse Placement Sensitivity** — Mortal maintains essentially the same playstyle regardless of the point spread. It does not adjust aggression levels based on specific overtake thresholds (e.g., how many points separate 2nd from 1st). The dual-scale score encoding (100K/30K channels) degrades fine-grained score information above 30K (see Score Encoding Issues above), further limiting its ability to make placement-aware decisions. (Source: GitHub Issue #111, Reddit r/Mahjong)
 
 ### General Japanese Community Feedback
 
@@ -177,7 +177,7 @@ The overall rating is then: **Rating = 100 × mean(P(human_action))** across all
 - **Near-equal penalty**: When multiple actions have similar Q-values (i.e., are nearly equivalent), the softmax distributes probability mass among them, harshly penalizing the human for picking any single one — even if all options are essentially equal in expected value.
 - **Hindsight bias**: Moves are labeled as wrong based on outcome-influenced evaluation rather than decision quality given the information available at the time.
 - **EV vs placement**: The rating optimizes for expected value rather than placement security, potentially marking defensive plays as suboptimal when they secure a safe finish.
-- **Score capping**: The v4 model caps at 30k, making ratings unreliable in high-score late-game scenarios where placement decisions matter most.
+- **Score capping**: The v4 model's dual-scale encoding degrades score resolution above 30K, making ratings less reliable in high-score late-game scenarios where placement decisions matter most.
 
 Source: `mjai-reviewer` codebase, community discussions
 
@@ -210,7 +210,7 @@ Compiled from GitHub Discussions #64, #27, #70.
 
 - Adding **dropout** to ResBlocks improves stability during the online training phase.
 - **Full network fine-tuning** is required — freezing layers does not work well for this task.
-- Using `torch.compile(mode="reduce-overhead")` provides meaningful inference speed improvements.
+- Using `torch.compile()` provides meaningful inference speed improvements (Discussion #43). Mortal uses default compilation mode.
 
 ### Training Phases
 

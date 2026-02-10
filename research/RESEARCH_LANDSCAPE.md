@@ -21,7 +21,7 @@ Comprehensive survey of academic papers, AI systems, repositories, and methodolo
 
 **Performance**: First AI to reach Tenhou 10-dan (only ~180 humans ever achieved this).
 
-**Architecture**: 50+ layer deep CNN processing 16×34 plane state representation.
+**Architecture**: ~31-layer CNN (15 residual blocks) processing 838×34 plane state representation (discard/riichi models; chow/pong/kong models use 958 channels).
 
 ---
 
@@ -55,14 +55,14 @@ Comprehensive survey of academic papers, AI systems, repositories, and methodolo
 
 ### 1.4 NAGA (Neural Architectural Game Agent)
 
-- **Developer**: Dwango Media Village (Yuri Odagiri)
+- **Developer**: Dwango Media Village
 - **Year**: 2018 (initial), ongoing
 - **URL**: https://dmv.nico/en/articles/mahjong_ai_naga/
 
 **Key Features:**
 
 - Deep CNN trained on hundreds of millions of Tenhou Houou-room games
-- Achieved Tenhou 10-dan
+- Later versions (NAGA25) achieved Tenhou 10-dan; initial version reached 8-dan
 - Famous "Confidence Bar" showing agreement with human moves
 - Commercial service (not open-source)
 
@@ -120,7 +120,7 @@ Comprehensive survey of academic papers, AI systems, repositories, and methodolo
 - `src/xiangting/`: LOUDS-based TRIE shanten calculator
 - `kanachan/training/`: PyTorch Transformer training
 
-**Data**: Trained on 100M+ Mahjong Soul rounds (10x larger than Tenhou datasets)
+**Data**: 65M+ Mahjong Soul rounds as of Aug 2021 (~4x larger than Tenhou Phoenix dataset), projected to exceed 100M
 
 **Key Difference from Mortal**: Learns shanten, suji, defense purely from data rather than encoded features.
 
@@ -204,7 +204,7 @@ Comprehensive survey of academic papers, AI systems, repositories, and methodolo
 
 ### 4.1 Reinforcement Learning Approaches
 
-**Dueling DQN** (used by Mortal, Suphx)
+**Dueling DQN** (used by Mortal)
 
 Decomposes the Q-function into a state-value component V(s) and an action-advantage component A(s,a), combining them as Q(s,a) = V(s) + A(s,a) − mean(A). This separation allows the network to learn which states are inherently valuable independently of the action taken, which is especially useful when many actions have similar value. Preferred for discrete action spaces like tile discard selection.
 
