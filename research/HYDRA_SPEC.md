@@ -11,7 +11,7 @@ A Riichi Mahjong AI designed to surpass current SOTA (Mortal, Suphx, NAGA) throu
 | **Parameters** | ~16.5M | Detailed breakdown: 67K stem + 16.1M backbone + 372K heads (see Parameter Budget) |
 | **Inference VRAM** | <1.5GB | Fits 8GB consumer GPUs easily |
 | **Inference Latency** | <15ms | Well under 50ms limit |
-| **Training VRAM** | <20GB active | Fits 98GB with batch 4096+ |
+| **Training VRAM** | <20GB active | Fits RTX PRO 6000 Blackwell (96GB) with batch 4096+ |
 | **Target Strength** | Beat Mortal | Tenhou 10-dan+ |
 
 > **Note on parameter count:** Each SE-ResBlock contains ~402K parameters (2× Conv1d(256,256,k=3) + 2× GroupNorm + SE module). 40 blocks × 402K ≈ 16.1M backbone. Heads add ~372K. This makes Hydra (~16.5M) roughly 50% larger than Mortal (~10.9M at 192ch/40 blocks), providing additional capacity for the five output heads and safety encoding.

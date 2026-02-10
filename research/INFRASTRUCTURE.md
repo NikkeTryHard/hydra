@@ -52,14 +52,14 @@ graph TB
 ### Crate Dependencies
 
 | Crate | Version | Purpose | License |
-|-------|---------|---------|---------|
-| xiangting | 0.5+ | Shanten calculation | MIT |
-| pyo3 | 0.22+ | Python bindings | Apache-2.0 |
-| rayon | 1.10+ | Parallel simulation | Apache-2.0 |
-| serde | 1.0+ | JSON serialization | Apache-2.0 |
-| serde_json | 1.0+ | MJAI parsing | Apache-2.0 |
-| ndarray | 0.16+ | Tensor operations | Apache-2.0 |
-| rand | 0.8+ | RNG for shuffle | Apache-2.0 |
+|-------|---------|---------|---------| 
+| xiangting | 5.0+ | Shanten calculation | MIT |
+| pyo3 | 0.22+ | Python bindings | MIT OR Apache-2.0 |
+| rayon | 1.10+ | Parallel simulation | MIT OR Apache-2.0 |
+| serde | 1.0+ | JSON serialization | MIT OR Apache-2.0 |
+| serde_json | 1.0+ | MJAI parsing | MIT OR Apache-2.0 |
+| ndarray | 0.16+ | Tensor operations | MIT OR Apache-2.0 |
+| rand | 0.9+ | RNG for shuffle | MIT OR Apache-2.0 |
 
 ### Module Structure
 
@@ -94,26 +94,62 @@ The standard 34-tile index used by the `xiangting` crate:
 
 ### Game State Machine
 
-The game engine drives a finite state machine that governs the flow of each round. States transition through dealing, drawing, discarding, call checks, riichi declarations, and win checks until the round ends by tsumo, ron, or exhaustive draw.
+The game engine drives a finite state machine that governs the flow of each round. States transition through dealing, drawing, discarding, call checks, kan processing, riichi declarations, and win checks until the round ends by tsumo, ron, or draw.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Dealing
     Dealing --> Drawing : Deal complete
     Drawing --> Discarding : Draw tile
-    Discarding --> CallCheck : Discard
-    CallCheck --> Drawing : No call (next player)
-    CallCheck --> Calling : Call made
-    Calling --> Discarding : After call
-    Discarding --> RiichiCheck : Riichi declared
-    RiichiCheck --> Drawing : Continue
     Drawing --> WinCheck : Can tsumo?
-    WinCheck --> GameEnd : Tsumo
-    CallCheck --> WinCheck : Can ron?
-    WinCheck --> GameEnd : Ron
-    WinCheck --> Drawing : No win
     Drawing --> GameEnd : Exhaustive draw
+    Discarding --> CallCheck : Discard
+    Discarding --> RiichiCheck : Riichi declared
+    RiichiCheck --> CallCheck : Continue
+    CallCheck --> Drawing : No call (next player)
+    CallCheck --> Calling : Chi/Pon
+    CallCheck --> KanProcess : Daiminkan (open kan)
+    CallCheck --> WinCheck : Can ron?
+    Calling --> Discarding : After call
+    KanProcess --> Drawing : Rinshan draw (from dead wall)
+    WinCheck --> GameEnd : Tsumo / Ron
+    WinCheck --> Drawing : No win
+
+    state WinCheck {
+        [*] --> SingleWin : One winner
+        [*] --> MultiRon : Multiple ron
+        SingleWin --> [*]
+        MultiRon --> [*]
+    }
+
+    state KanProcess {
+        [*] --> FlipDora : New dora indicator
+        FlipDora --> ChankanCheck : Can chankan?
+        ChankanCheck --> DeadWallDraw : No chankan
+        ChankanCheck --> GameEnd : Chankan ron
+        DeadWallDraw --> RinshanCheck : Rinshan tsumo?
+        RinshanCheck --> [*]
+    }
+
+    state GameEnd {
+        [*] --> Tsumo
+        [*] --> Ron
+        [*] --> ExhaustiveDraw
+        [*] --> AbortiveDraw
+    }
 ```
+
+**Abortive draws handled:**
+
+| Condition | Japanese | Description |
+|-----------|----------|-------------|
+| Kyuushu Kyuuhai | 九種九牌 | 9+ unique terminals/honors in opening hand (player choice, action 44) |
+| Suufon Renda | 四風連打 | All 4 players discard the same wind on their first turn |
+| Suucha Riichi | 四家立直 | All 4 players declare riichi |
+| Suukaikan | 四開槓 | 4 kans declared by different players (not all by one player) |
+| Sanchahou | 三家和 | Triple ron (3 players win on same discard — abortive in most rulesets) |
+
+> **Nagashi Mangan** is checked at exhaustive draw: if a player's entire discard pile consists of terminals and honors, and none were called by opponents, they receive mangan payment.
 
 ### Observation Encoder
 
@@ -121,9 +157,9 @@ The observation encoder produces the 87×34 tensor defined in the input encoding
 
 Key performance considerations:
 
-- **Incremental updates** — the encoder does not recompute the full tensor each turn; it applies deltas from the previous state
-- **SIMD-friendly array operations** — data layouts are chosen to enable vectorized computation
-- **Pre-allocated buffers** — tensor memory is allocated once and reused across turns to avoid allocation overhead
+- **Pre-allocated buffers** — tensor memory is allocated once per environment instance and reused across turns to avoid allocation overhead
+- **Contiguous memory layout** — the 87×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
+- **Incremental updates (planned optimization)** — most planes change minimally between turns (hand ±1 tile, discards +1). Delta-based encoding could reduce per-turn work, pending benchmarking to confirm the bookkeeping overhead is worthwhile. Mortal's encoder recomputes the full tensor from scratch each turn.
 
 ### Batch Simulator
 
@@ -150,7 +186,7 @@ graph LR
     GN --> TM
 ```
 
-Target throughput: 10,000+ games/hour on a modern CPU.
+Target throughput for pure Rust simulation (no NN inference): 100,000+ games/hour per core. End-to-end training throughput (with GPU inference in the loop) targets 10,000+ games/hour, bottlenecked by neural network forward passes rather than game simulation.
 
 ## Python Bindings (hydra-py)
 
@@ -188,7 +224,7 @@ The Python environment wraps the Rust game engine in a Gymnasium-compatible inte
 | `reset()` | → `observations` | Resets all environments and returns a batch of initial observations |
 | `step(actions)` | → `(obs, rewards, dones, infos)` | Steps all environments simultaneously with a batch of actions |
 
-`VectorEnv` extends `MahjongEnv`, inheriting its interface while adding batched operation.
+`VectorEnv` wraps multiple `MahjongEnv` instances and manages them in parallel, providing a batched API for efficient PPO rollout collection.
 
 ### Installation
 
@@ -241,9 +277,9 @@ graph TB
 
 The PyTorch model implements the neural network architecture defined in the architecture specification. Key considerations for the implementation:
 
-- **`torch.compile()`** is used for optimized inference and training throughput
+- **`torch.compile()`** is used for optimized inference throughput and is available for training (Mortal uses it via `config['control']['enable_compile']`). For PPO training, dynamic action masks may trigger occasional recompilation, so this should be benchmarked per-workload.
 - **Mixed precision (fp16) training** reduces memory usage and increases GPU throughput
-- **Gradient checkpointing** trades compute for memory, enabling larger batch sizes
+- **Gradient checkpointing** is available as an option to trade compute for memory if larger batch sizes are needed (not used in Mortal's training loop but supported by the architecture)
 
 ## Deployment
 
@@ -277,7 +313,7 @@ The core advantage of Rust-side inference is the complete elimination of Python 
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| GPU | RTX 3080 (10GB) | RTX 6000 (98GB) |
+| GPU | RTX 3080 (10GB) | RTX PRO 6000 Blackwell (96GB) |
 | CPU | 8 cores | 32+ cores |
 | RAM | 32GB | 128GB+ |
 | Storage | 100GB SSD | 1TB NVMe |
@@ -294,10 +330,11 @@ The core advantage of Rust-side inference is the complete elimination of Python 
 
 | Metric | Target |
 |--------|--------|
-| Training throughput | 10k+ games/hour |
+| Simulation throughput (CPU only) | 100k+ games/hour/core |
+| Training throughput (with GPU inference) | 10k+ games/hour |
 | Inference latency | <15ms |
 | Inference VRAM | <1.5GB |
-| Model size (fp16) | ~80MB |
+| Model size (fp16) | ~33MB |
 
 ## Development Workflow
 
