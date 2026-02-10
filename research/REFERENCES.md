@@ -89,13 +89,13 @@ Single source of truth for all citations in the Hydra project.
 | rayon | https://docs.rs/rayon/ | Rust | Apache-2.0 | Data parallelism for batch simulation |
 | serde / serde_json | https://serde.rs/ | Rust | Apache-2.0 | JSON serialization / MJAI parsing |
 | ndarray | https://docs.rs/ndarray/ | Rust | Apache-2.0 | Tensor operations |
-| ort | https://docs.rs/ort/ | Rust | — | ONNX Runtime bindings for Rust inference |
-| tract | https://docs.rs/tract/ | Rust | — | Pure Rust ML inference |
-| candle | https://github.com/huggingface/candle | Rust | — | HuggingFace Rust ML framework |
-| Burn | https://github.com/tracel-ai/burn | Rust | — | Native Rust ML training framework (WGPU, LibTorch, CUDA backends) |
-| tch-rs | — | Rust | — | Rust bindings for LibTorch |
-| mahjong (Python) | https://github.com/MahjongRepository/mahjong | Python | — | Python shanten/yaku/scoring library (448 stars) |
-| rlcard | https://github.com/datamllab/rlcard | Python | — | RL toolkit with mahjong environment |
+| ort | https://docs.rs/ort/ | Rust | Apache-2.0 | ONNX Runtime bindings for Rust inference |
+| tract | https://docs.rs/tract/ | Rust | MIT OR Apache-2.0 | Pure Rust ML inference |
+| candle | https://github.com/huggingface/candle | Rust | Apache-2.0 | HuggingFace Rust ML framework |
+| Burn | https://github.com/tracel-ai/burn | Rust | MIT OR Apache-2.0 | Native Rust ML training framework (WGPU, LibTorch, CUDA backends) |
+| tch-rs | — | Rust | MIT OR Apache-2.0 | Rust bindings for LibTorch |
+| mahjong (Python) | https://github.com/MahjongRepository/mahjong | Python | MIT | Hand scoring oracle — yaku detection, han/fu/score calculation, validated against 11M+ Tenhou hands. Pin to v1.4.0. Dev dependency for Rust engine verification and test case extraction. |
+| rlcard | https://github.com/datamllab/rlcard | Python | MIT | RL toolkit with mahjong environment |
 | mjai.app | https://github.com/smly/mjai.app | — | — | Web-based mahjong simulator |
 
 ### Protocol & Infrastructure

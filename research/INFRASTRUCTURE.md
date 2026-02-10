@@ -239,13 +239,14 @@ maturin develop --release
 ### Dependencies
 
 | Package | Purpose |
-|---------|---------|
+|---------|---------| 
 | torch | Neural network definition and training |
 | numpy | Array operations and data manipulation |
 | wandb | Experiment tracking and visualization |
 | hydra-py | Game environment (Rust-backed) |
 | einops | Tensor reshaping utilities |
 | rich | Progress bars and terminal output |
+| mahjong (dev) | Hand scoring oracle for Rust engine verification — yaku/han/fu/score validation against 11M+ Tenhou hands (pin to v1.4.0) |
 
 ### Training Loop Architecture
 
