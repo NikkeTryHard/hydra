@@ -16,7 +16,6 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 | [m4tx/riichi-hand-rs](https://github.com/m4tx/riichi-hand-rs) | 12 | MIT | Hand representation, string parser, tile image renderer, scoring table calculator | **Tile rendering** for visualization/debugging tools |
 | [penta2019/mahjong_server](https://github.com/penta2019/mahjong_server) | 17 | MIT | Full game server with Bevy GUI, MJAI protocol, bot framework, Tenhou replay export | **Evaluation server** — MJAI endpoint for bot testing |
 | [rysb-dev/agari](https://github.com/rysb-dev/agari) | 3 | MIT | Complete scoring engine: yaku (35), fu, payment, hand decomposition, WASM. ~100 unit tests | **Primary scoring reference** — most architecturally clean Rust implementation |
-| [y-fujii/teff](https://github.com/y-fujii/teff) | 0 | MIT | Tile efficiency with UCT (Monte Carlo tree search) | **MCTS tile efficiency** reference |
 
 ### Reference Only (Copyleft — study architecture, don't copy code)
 
@@ -66,50 +65,15 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ## 3. Data Sources & Datasets
 
-### Tenhou Logs
+> **Training data is ready**: 3M+ Tenhou Phoenix MJAI games (pre-converted). See [archive/DATA_SOURCES.md](archive/DATA_SOURCES.md) for full details on sources, converters, and alternative datasets.
 
-| Source | Games | Format | Access | Notes |
-|--------|-------|--------|--------|-------|
-| [NikkeTryHard/tenhou-to-mjai](https://github.com/NikkeTryHard/tenhou-to-mjai) (Kaggle) | **3M+** Phoenix games | MJAI `.mjson` (gzip) | Public (GitHub Releases + Kaggle) | **Ready to train** — our own pre-converted dataset |
-| [Apricot-S/houou-logs](https://github.com/Apricot-S/houou-logs) | All Phoenix room | mjlog XML → SQLite | Public | **Raw log downloader** — replaces archived MahjongRepository/phoenix-logs |
-| [tenhou.net/sc/raw/](https://tenhou.net/sc/raw/) | All Tenhou games | ZIP archives with game IDs | Public (usage restrictions) | **Official source** — IDs only, download each game individually |
-| [mthrok/tenhou-log-utils](https://github.com/mthrok/tenhou-log-utils) | N/A | mjlog XML parser + downloader | MIT | **Reference parser** for mjlog format |
-
-### Academic Datasets
-
-| Source | Size | Format | Access | Notes |
-|--------|------|--------|--------|-------|
-| [pjura/mahjong_board_states](https://huggingface.co/datasets/pjura/mahjong_board_states) | 28GB, 650M records | Parquet (510 features + label) | HuggingFace (CC-BY-4.0) | **Tabular dataset** — predict discarded tile from board state |
-| [matas234/riichi-mahjong-ml-dataset](https://github.com/matas234/riichi-mahjong-ml-dataset) | Phoenix room | State/label pairs | Public | **Elite player data** — top 0.1% Tenhou players |
-| Agony5757/mahjong offline dataset | ~40K games/batch | .mat format | In repo | **Offline RL dataset** — used in ICLR 2022 paper |
-
-### Mahjong Soul Data
-
-| Tool | What It Does | License |
-|------|-------------|---------|
-| [MahjongRepository/mahjong_soul_api](https://github.com/MahjongRepository/mahjong_soul_api) | Python API wrapper for Majsoul protobuf API, replay fetching | Unlicensed |
-| [Cryolite/mahjongsoul_sniffer](https://github.com/Cryolite/mahjongsoul_sniffer) | Sniff, decode, archive Majsoul API requests (Gold+ rooms) | — |
-| [Equim-chan/tensoul](https://github.com/Equim-chan/tensoul) | Convert Majsoul logs → Tenhou format | MIT |
-| [ssttkkl/tensoul-py](https://github.com/ssttkkl/tensoul-py) | Python port of tensoul | — |
-| [jeff39389327/MajsoulPaipuConvert](https://github.com/jeff39389327/majsoulpaipuconvert) | Download from MajSoul Stats → MJAI | — |
-
-### Log Format Converters
-
-| Converter | From → To | Language | License |
-|-----------|-----------|----------|---------|
-| NikkeTryHard/tenhou-to-mjai | Tenhou mjlog → MJAI | Rust | — |
-| fstqwq/mjlog2mjai | Tenhou mjlog → MJAI JSON | Python | MIT |
-| EpicOrange/standard-mjlog-converter | Tenhou/Majsoul/Riichi City → Standard | Python | — |
-| Equim-chan/tensoul | Majsoul → Tenhou JSON | JavaScript | MIT |
-| cht33/RiichiCity-to-Tenhou-Log-Parser | Riichi City → Tenhou | Python | — |
-
-### Synthetic Data
+### Synthetic Data (for self-play)
 
 | Tool | Stars | License | Speed | Notes |
 |------|-------|---------|-------|-------|
 | [mjx-project/mjx](https://github.com/mjx-project/mjx) | 202 | — | 100x faster than Mjai | Gym API, Tenhou-compatible rules, gRPC distributed, IEEE CoG 2022 |
 | [nissymori/mahjax](https://github.com/nissymori/mahjax) | 22 | Apache-2.0 | ~1.6M steps/sec (8×A100) | JAX-vectorized, JIT-compilable |
-| smly/mjai.app | 109 | AGPL-3.0 | — | MJAI-compatible game simulator |
+| [smly/mjai.app](https://github.com/smly/mjai.app) | 109 | AGPL-3.0 | — | MJAI-compatible game simulator |
 
 ---
 
@@ -144,38 +108,7 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ---
 
-## 5. Mahjong Soul Integration
-
-### Safe to Use (MIT Licensed)
-
-| Repo | Stars | License | What It Does | Hydra Use |
-|------|-------|---------|-------------|-----------|
-| [747929791/majsoul_wrapper](https://github.com/747929791/majsoul_wrapper) | 447 | MIT | Complete SDK for Majsoul automated play: WebSocket interception, game state callbacks, action execution | **Majsoul bot SDK** — subclass `MajsoulHandler`, implement AI logic |
-| [Equim-chan/tensoul](https://github.com/Equim-chan/tensoul) | 37 | MIT | Convert Majsoul logs → Tenhou format | **Replay conversion** for training data |
-| [SAPikachu/amae-koromo](https://github.com/SAPikachu/amae-koromo) | 365 | MIT | Mahjong Soul stats site (牌谱屋), Jade/Throne room tracking | **Benchmark data** — top player performance calibration |
-| [zyr17/MajsoulPaipuAnalyzer](https://github.com/zyr17/MajsoulPaipuAnalyzer) | 345 | MIT | Replay crawler + statistical analysis (agari rate, deal-in, riichi stats) | **Performance metrics reference** — what stats matter |
-
-### Reference Only (Copyleft — study, don't copy)
-
-| Repo | Stars | License | What It Does | Study For |
-|------|-------|---------|-------------|-----------|
-| [shinkuan/Akagi](https://github.com/shinkuan/Akagi) | 718 | AGPL-3.0 + Commons Clause | MITM AI assistant, Majsoul→MJAI bridge, AutoPlay | Protocol bridge architecture |
-| [latorc/MahjongCopilot](https://github.com/latorc/MahjongCopilot) | 905 | GPL-3.0 | Mortal-based copilot, Playwright-embedded Chromium, in-game HUD | Playwright integration pattern |
-| [Xe-Persistent/Akagi-NG](https://github.com/Xe-Persistent/Akagi-NG) | 16 | AGPL-3.0 | Next-gen Akagi rewrite, Electron UI, Desktop Mode (zero-config embedded browser) | Desktop Mode pattern |
-
-### ToS Risk Assessment
-
-| Activity | Risk | Notes |
-|----------|------|-------|
-| MITM traffic interception | 🔴 HIGH | Active bans reported (Oct 2024) |
-| Automated play (AutoPlay) | 🔴 VERY HIGH | Pattern detection via play speed/timing |
-| Replay data fetching via API | 🟡 MEDIUM | Official APIs but scale may trigger flags |
-| Stats tracking (amae-koromo style) | 🟢 LOW | Widely used, no reported bans |
-| Offline replay analysis | 🟢 LOW | No interaction with live game |
-
----
-
-## 6. Recommended Integration Priority
+## 5. Recommended Integration Priority
 
 ### P0 — Core Dependencies (Use Directly)
 
@@ -205,8 +138,6 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 |------|----------|---------|--------|
 | mahjong_ev | Defense/EV | Unlicensed | Port defense analyzer + EV engine concepts to Rust |
 | torchdistill | Distillation | MIT | Oracle → blind model distillation |
-| houou-logs | Data download | — | Download raw Tenhou logs if needed |
-| majsoul_wrapper | Majsoul SDK | MIT | Foundation for Majsoul bot integration |
 | tempai-core | Rules engine | MIT | Cross-language reference for configurable rules |
 
 ### P3 — Watch / Future Use
@@ -220,21 +151,13 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ---
 
-## 7. Data Pipeline Architecture
+## 6. Data Pipeline Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    DATA SOURCES                          │
 │                                                          │
-│  Tenhou Phoenix ──────────────┐                          │
-│  (houou-logs downloader)      │                          │
-│                               ▼                          │
-│  tenhou-to-mjai (Rust) ──→ MJAI .mjson (3M+ games)      │
-│                                                          │
-│  Mahjong Soul ────────────────┐                          │
-│  (mahjong_soul_api)           │                          │
-│                               ▼                          │
-│  tensoul-py ──→ Tenhou fmt ──→ tenhou-to-mjai ──→ MJAI   │
+│  3M+ Phoenix MJAI games (pre-converted, ready)           │
 │                                                          │
 │  Self-play (mahjax/RiichiEnv) ──→ MJAI                   │
 └──────────────────────┬──────────────────────────────────┘
@@ -260,6 +183,5 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 │  Target: <5ms per inference                               │
 │                                                           │
 │  Evaluation: mjai-reviewer, mjai.app competition          │
-│  Live play: majsoul_wrapper (MIT) for Majsoul             │
 └──────────────────────────────────────────────────────────┘
 ```
