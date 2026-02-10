@@ -564,42 +564,114 @@ graph TB
     AGGRO --> GAME
 ```
 
-**PPO hyperparameters:**
+ **PPO hyperparameters:**
 
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Clip ε | 0.1 | Standard PPO clip |
-| Entropy coef | 0.01 → 0.005 | Decay over training |
-| GAE λ | 0.95 | Advantage estimation |
-| γ (discount) | 0.995 | Long-horizon (full game) |
-| LR | 1e-5 → 3e-6 | Linear decay |
-| Batch size | 4096–8192 | Variance reduction |
-| Rollout length | 256–512 | Decision points before update (episode boundaries masked for GAE) |
-| Gradient clip | 0.5 | Stability |
+ | Parameter | Value | Notes |
+ |-----------|-------|-------|
+ | Clip ε | 0.1 | Conservative for high-variance game (Atari default) |
+ | Entropy coef | 0.01 → 0.005 | Decay over training |
+ | GAE λ | 0.95 | Advantage estimation (per-kyoku, not per-game) |
+ | γ (discount) | 1.0 | No discounting within kyoku (~15-20 decisions is short enough) |
+ | Value clip | Disabled | Hurts performance per Engstrom et al. (2020) and Andrychowicz et al. (2021) |
+ | LR | 2.5e-4 → 0 | Linear annealing. Adam ε=1e-5 (not PyTorch default 1e-8) |
+ | Batch size | 4096–8192 | Variance reduction |
+ | Update epochs | 4 | Reuse each batch 4 times |
+ | Gradient clip | 0.5 | Max grad norm, essential for stability |
+ | Init | Orthogonal | std=√2 hidden, std=0.01 policy head, std=1.0 value head |
 
-**Fresh samples only:** Unlike DQN (which Mortal uses), PPO is on-policy — no replay buffer. This avoids the catastrophic forgetting that Mortal experiences, where old transitions in the replay buffer become stale and misleading.
+ **Fresh samples only:** Unlike DQN (which Mortal uses), PPO is on-policy — no replay buffer. This avoids the catastrophic forgetting that Mortal experiences, where old transitions in the replay buffer become stale and misleading.
 
-### Reward Variance Reduction (RVR)
+ ### Reward Function
 
-Mahjong has massive luck variance. A perfect decision can lead to a bad outcome (opponent draws the winning tile). This creates noisy gradients that slow convergence.
+ Hydra's reward is fully defined as a three-component system: a GRP-based per-kyoku reward, an oracle critic baseline, and an Expected Reward Network for last-tile variance reduction. The reward function is **identical across all three training phases** — only the training algorithm changes between phases.
 
-**Solution:** Subtract a "luck baseline" from rewards:
+ #### Episode Structure
 
-$$R_{\text{adjusted}} = \frac{R_{\text{actual}} - \text{baseline}(h_0)}{\sigma_{\text{baseline}}}$$
+ Each **kyoku (round)** is one episode, not a full hanchan (game). A hanchan contains 4-12 kyoku, each with ~15-20 decision points. This follows Mortal and Suphx's design and provides ~100× lower credit assignment variance compared to per-game episodes (variance scales as O(T²) with episode length T).
 
-The baseline estimates the expected outcome given initial hand quality (shanten, dora count, etc.). This isolates the contribution of decision-making from luck, enabling more sample-efficient training. Li et al. (IEEE CoG 2022, DOI:10.1109/CoG51982.2022.9893584) demonstrated that reward variance reduction enabled competitive Mahjong AI training on 8 GPUs instead of Suphx's 44, achieving effective play after 3 days of training.
+ #### Component 1: GRP-Based ΔE[pts] (Per-Kyoku Reward)
 
-### Stability Techniques Summary
+ The GRP (Game Result Prediction) head predicts the final game placement distribution at each kyoku boundary. The reward for kyoku k is the change in expected placement points:
 
-| Technique | Purpose | Source |
-|-----------|---------|--------|
-| GroupNorm | Batch-independent normalization | Wu & He 2018 |
-| Dropout 0.1 (training only) | Regularization, RL stability | Mortal experiments |
-| PPO (not DQN) | On-policy avoids forgetting | Schulman et al. 2017 |
-| KL penalty | Constrain policy updates | PPO-clip |
-| Gradient clipping (0.5) | Prevent exploding gradients | Standard practice |
-| League pool | Diverse opponents | AlphaStar |
-| RVR | Reduce reward variance | Li et al., IEEE CoG 2022 |
+ $$r_k = E[\text{pts}]_{\text{after kyoku } k} - E[\text{pts}]_{\text{before kyoku } k}$$
+
+ Where:
+ - $E[\text{pts}] = \text{rank\_prob} \cdot \text{pts\_vector}$
+ - $\text{rank\_prob}$ is marginalized from the GRP's 24-class permutation softmax
+ - $\text{pts\_vector} = [3, 1, -1, -3]$ (symmetric, zero-sum, configurable)
+
+ **Placement points:** Training uses symmetric `[3, 1, -1, -3]` for balanced learning. Each placement step is worth exactly 2 points — no bias toward "avoid 4th" or "push for 1st." Platform-specific fine-tuning uses different vectors (e.g., Tenhou Houou: `[90, 45, 0, -135]` for evaluation, or normalized `[3, 1.5, 0, -4.5]` for training). The GRP head does not need retraining when pts changes — only the downstream reward computation changes.
+
+ **Per-action assignment:** All actions within a kyoku share the same reward value (the kyoku's ΔE[pts]). Credit assignment within the kyoku is handled by the value function and GAE, not by the reward itself.
+
+ **Telescoping property:** The sum of per-kyoku rewards telescopes to the game-level placement reward: $\sum_k r_k = \text{pts}[\text{final\_rank}] - E[\text{pts}]_{\text{initial}}$. This means no separate game-end bonus is needed — per-kyoku rewards already exactly decompose the game-level objective. This is equivalent to potential-based reward shaping (Ng et al. 1999) where $\Phi = E[\text{pts}]$, which provably preserves the optimal policy.
+
+ **GRP architecture (separate, pretrained, frozen):**
+ - 2-layer GRU (hidden=128) over per-kyoku features: `[grand_kyoku, honba, kyotaku, s0/10000, s1/10000, s2/10000, s3/10000]`
+ - Output: 24-class softmax over rank permutations → marginalized to per-player rank probabilities
+ - Loss: cross-entropy on actual final ranking permutation
+ - Trained once on game logs, then **frozen during RL** — provides stable reward signal
+ - GRP accuracy is limited (~23% top-1 on 24 classes per Mortal community), but the marginalized rank probabilities and expected values are much more useful than top-1 accuracy suggests
+
+ #### Component 2: Oracle Critic (Training Only)
+
+ The value head (critic) receives **full information** during training — all 4 players' hands and the wall composition — while the policy head sees only public observation. This asymmetric actor-critic design dramatically reduces variance because the oracle sees 4× more information than the acting agent.
+
+ $$A(o_t, a_t) = r_k - V_{\text{oracle}}(s_{\text{full}, t})$$
+
+ **Zero-sum constraint:** The oracle critic is trained with an auxiliary zero-sum loss:
+
+ $$\mathcal{L}_{\text{critic}} = \sum_i (V_i(s) - r_i)^2 + \lambda_{\text{zs}} \cdot \left(\sum_i V_i(s)\right)^2$$
+
+ This enforces $V_1 + V_2 + V_3 + V_4 = 0$, which is correct by construction for zero-sum placement rewards. The RVR paper (Li et al., IEEE CoG 2022) showed this component provides the majority of their 3.7× training speedup.
+
+ At inference, only the policy head is used — the oracle critic is discarded.
+
+ #### Component 3: Expected Reward Network (Phase 3+)
+
+ The single largest source of reward variance in Mahjong is the last tile draw. The same game state at time T-1 can result in 0 or 12,000+ points depending on the final draw. The Expected Reward Network replaces this stochastic outcome with its expectation:
+
+ $$f_\theta(g^{T-1}) \approx E[r \mid \text{state at } T{-}1]$$
+
+ This is a small MLP trained with MSE loss on completed kyoku outcomes. During training, the raw terminal reward is **replaced** (not subtracted) by $f_\theta(g^{T-1})$. This converts a "lottery ticket" gradient signal into a "fair estimate" signal with near-zero variance from last-tile luck.
+
+ **Implementation priority:** Implement after Components 1-2 are working. This is the highest-impact addition from the RVR paper but adds architectural complexity.
+
+ #### Combined Advantage Formula
+
+ $$A(o_t, a_t) = f_\theta(g^{T-1}) - V_{\text{oracle}}(s_{\text{full}, t})$$
+
+ This attacks both major variance sources simultaneously: hidden information (oracle critic) and terminal stochasticity (Expected Reward Network).
+
+ #### Reward Normalization
+
+ 1. **Running reward normalization:** Divide rewards by running standard deviation of discounted returns (do NOT subtract mean — this would shift the reward signal). Use Welford's online algorithm across dataloader workers.
+ 2. **Per-minibatch advantage normalization:** `(A - mean(A)) / (std(A) + 1e-8)` within each PPO minibatch. This is non-negotiable for PPO in high-variance environments.
+ 3. **Reward clipping:** Clip normalized rewards to `[-5, 5]` to prevent extreme gradient updates from outlier games.
+
+ #### What NOT to Do (Confirmed Failures)
+
+ - **No reward shaping beyond GRP:** Mortal's GRP delta IS already potential-based reward shaping. Adding shanten-based or hand-value shaping on top creates double-shaping with no upside and risk of offensive bias.
+ - **No intrinsic motivation (RND, ICM):** SL warm-start already solves the exploration problem. Mahjong's challenge is decision quality, not state exploration.
+ - **No TD bootstrapping:** Mortal tried TD → no improvement, adds instability. MC returns via GAE with γ=1 are sufficient.
+ - **No game-end bonus:** The telescoping property means per-kyoku rewards already decompose the game objective exactly.
+ - **No Elo-based reward:** Elo is for evaluation, not training. Non-stationary and noisy.
+
+ ### Stability Techniques Summary
+
+ | Technique | Purpose | Source |
+ |-----------|---------|--------|
+ | GroupNorm | Batch-independent normalization | Wu & He 2018 |
+ | Dropout 0.1 (training only) | Regularization, RL stability | Mortal experiments |
+ | PPO (not DQN) | On-policy avoids forgetting | Schulman et al. 2017 |
+ | KL penalty (Phase 2) | Constrain policy updates near SL init | PPO-KL variant |
+ | Gradient clipping (0.5) | Prevent exploding gradients | Standard practice |
+ | League pool | Diverse opponents | AlphaStar |
+ | GRP ΔE[pts] reward | Per-kyoku reward with game-level context | Mortal, Suphx |
+ | Oracle critic + zero-sum | Reduce hidden-info variance | RVR (Li et al., IEEE CoG 2022) |
+ | Expected Reward Network | Reduce last-tile luck variance | RVR (Li et al., IEEE CoG 2022) |
+ | Running reward normalization | Stable gradient magnitudes | CleanRL, SB3 |
+ | Per-minibatch advantage norm | Centered advantages for PPO | Standard PPO practice |
 
 ---
 
@@ -668,9 +740,9 @@ Both configurations are well under the 50ms decision limit imposed by online pla
 
 | Failure | Symptom | Mitigation |
 |---------|---------|------------|
-| Passive collapse | Win rate drops, fold rate >70% | Boost 1st place reward weight |
-| Q-value collapse | All actions receive same value | Increase entropy coefficient, lower learning rate |
-| Orasu cowardice | Never pushes in South 4 (final round) | Rank-based reward shaping [15, 5, −5, −15] |
+ | Passive collapse | Win rate drops, fold rate >70% | Increase entropy coef, verify GRP signals reward for aggressive play |
+ | Value collapse | Explained variance drops below 0 | Reduce LR, increase batch size, check oracle critic inputs |
+ | Orasu cowardice | Never pushes in South 4 (final round) | Verify GRP receives uncapped scores + score context; the ΔE[pts] reward naturally incentivizes pushing when behind |
 | Damaten blindness | High deal-in rate vs. non-riichi opponents | Monitor tenpai head accuracy, increase tenpai loss weight |
 | Catastrophic forgetting | Performance drops after reaching peak | Freeze best checkpoint, add to league opponent pool |
 | Human bias | Copies suboptimal human patterns | Filter training data more aggressively (higher rating threshold) |
@@ -679,15 +751,16 @@ Both configurations are well under the 50ms decision limit imposed by online pla
 
 ## Monitoring Metrics
 
-| Metric | Healthy Range | Action if Outside |
-|--------|---------------|-------------------|
-| Policy entropy | 0.5–2.0 | Adjust entropy coefficient |
-| KL divergence | <0.02 | Reduce learning rate |
-| Value loss | Decreasing trend | Inspect value head, check reward normalization |
-| Win rate | 23–27% | Check for collapsed policy |
-| Deal-in rate | 10–15% | Check defensive heads and safety encoding |
-| 1st place rate | 26–30% | Check aggression balance |
-| 4th place rate | <22% | Check placement awareness (GRP head) |
+ | Metric | Healthy Range | Action if Outside |
+ |--------|---------------|-------------------|
+ | Policy entropy | 0.5–2.0 | Adjust entropy coefficient |
+ | Approx KL divergence | <0.02 | Reduce learning rate or early-stop epoch |
+ | Explained variance | >0.1 (expect 0.1–0.3 for Mahjong) | Inspect critic, check oracle inputs |
+ | Clip fraction | 0.1–0.3 | If 0: LR too low. If >0.5: LR too high |
+ | Win rate | 23–27% | Check for collapsed policy |
+ | Deal-in rate | 10–15% | Check defensive heads and safety encoding |
+ | 1st place rate | 26–30% | Check aggression balance |
+ | 4th place rate | <22% | Check placement awareness (GRP head) |
 
 ---
 
