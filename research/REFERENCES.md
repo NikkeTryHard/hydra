@@ -76,6 +76,10 @@ Single source of truth for all citations in the Hydra project.
 | Project | URL | Description |
 |---------|-----|-------------|
 | Akagi | https://github.com/shinkuan/Akagi | Real-time MITM assistant for Majsoul/Tenhou/RiichiCity (714 stars) |
+| MahjongCopilot | https://github.com/latorc/MahjongCopilot | Mortal-based AI copilot for Majsoul with Playwright integration (905 stars) |
+| Akagi-NG | https://github.com/Xe-Persistent/Akagi-NG | Next-gen Akagi rewrite, Electron UI, Desktop Mode (actively developed) |
+| majsoul_wrapper | https://github.com/747929791/majsoul_wrapper | MIT-licensed SDK for Majsoul automated play (447 stars) |
+| amae-koromo | https://github.com/SAPikachu/amae-koromo | Mahjong Soul stats site (牌谱屋), MIT licensed (365 stars) |
 | Riki | — | Riichi City integration client helper |
 
 ### Components
@@ -95,6 +99,15 @@ Single source of truth for all citations in the Hydra project.
 | Burn | https://github.com/tracel-ai/burn | Rust | MIT OR Apache-2.0 | Native Rust ML training framework (WGPU, LibTorch, CUDA backends) |
 | tch-rs | — | Rust | MIT OR Apache-2.0 | Rust bindings for LibTorch |
 | mahjong (Python) | https://github.com/MahjongRepository/mahjong | Python | MIT | Hand scoring oracle — yaku detection, han/fu/score calculation, validated against 11M+ Tenhou hands. Pin to v1.4.0. Dev dependency for Rust engine verification and test case extraction. |
+| agari | https://github.com/rysb-dev/agari | Rust | MIT | Complete Rust scoring engine: 35 yaku, fu, payment, hand decomposition, ~100 unit tests. Primary scoring reference. |
+| mahc | https://github.com/DrCheeseFace/mahc | Rust | BSD-3 | Rust scoring library with explicit Fu enum, 38 yaku, 30K crates.io downloads |
+| mahjax | https://github.com/nissymori/mahjax | Python/JAX | Apache-2.0 | JAX-vectorized riichi RL environment, ~1.6M steps/sec on 8×A100 |
+| RiichiEnv | https://github.com/smly/RiichiEnv | Rust/Python | Apache-2.0 | Gym-style RL environment with Rust core, Mortal-compatible MJAI |
+| Meowjong | https://github.com/VictorZXY/Meowjong | Python | MIT | First open-source Sanma (3-player) AI, IEEE CoG 2022 |
+| CleanRL | https://github.com/vwxyzjn/cleanrl | Python | MIT | Single-file PPO implementation, gold standard for RL reference |
+| OpenSpiel | https://github.com/google-deepmind/open_spiel | C++/Python | Apache-2.0 | DeepMind's game RL framework: AlphaZero, MCTS, CFR, self-play |
+| Microsoft Olive | https://github.com/microsoft/Olive | Python | MIT | End-to-end PyTorch → optimized ONNX pipeline |
+| houou-logs | https://github.com/Apricot-S/houou-logs | Python | — | Tenhou Phoenix room log downloader (replaces archived phoenix-logs) |
 | rlcard | https://github.com/datamllab/rlcard | Python | MIT | RL toolkit with mahjong environment |
 | mjai.app | https://github.com/smly/mjai.app | — | — | Web-based mahjong simulator |
 
