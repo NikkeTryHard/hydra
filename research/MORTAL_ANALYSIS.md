@@ -20,6 +20,17 @@ Training uses **DQN + Conservative Q-Learning (CQL)** for offline training. The 
 
 Source: `mortal/train.py:237`, `mortal/reward_calculator.py:10` (pts), `:36-37` (delta)
 
+### Training Pipeline Details
+
+Key architectural decisions discovered from source analysis:
+
+- **Q-targets use Monte Carlo returns, not TD bootstrapping.** `q_target = gamma^steps_to_done * kyoku_reward` — no bootstrap from next-state Q-values. This explains why GRP predicts game-level reward.
+- **GRP is pretrained separately** (`train_grp.py`) with cross-entropy on 24-class placement permutations, then frozen during DQN training. It's not jointly trained.
+- **No target network.** Vanilla DQN without double-DQN or EMA target. Known to cause training instability — Hydra's PPO approach avoids this entirely.
+- **v4 DQN head is a single linear layer** (`nn.Linear(1024, 1 + ACTION_SPACE)`) — the earlier dueling architecture (separate V and A streams) was simplified away, losing the decomposition benefit.
+- **SP calculator assumes tsumo-only agari** (`is_ron: false` hardcoded in `calc.rs`). All expected values ignore ron possibilities, undervaluing hands with good ron waits.
+- **Training data uses suit augmentation** — tile suits (manzu/pinzu/souzu) are permuted during training for 6× data multiplier. Hydra should do the same.
+
 ### Shanten Tables
 
 Mortal uses the **tomohxx** table-based shanten lookup algorithm. Two precomputed tables provide instant shanten calculation:
