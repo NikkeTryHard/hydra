@@ -84,7 +84,7 @@ Single source of truth for all citations in the Hydra project.
 |---------|-----|----------|---------|---------|
 | xiangting | https://github.com/Apricot-S/xiangting | Rust | MIT | Shanten calculation (3-player support) |
 | xiangting-py | — | Python | MIT | Python bindings for xiangting |
-| tomohxx/shanten-number | — | C++ | MIT | Reference shanten algorithm (table-based lookup) |
+| tomohxx/shanten-number | — | C++ | LGPL-3.0 | Reference shanten algorithm (table-based lookup) — algorithm reference only, Hydra uses xiangting (MIT) instead |
 | PyO3 | https://pyo3.rs/ | Rust | Apache-2.0 | Rust-Python FFI bindings |
 | rayon | https://docs.rs/rayon/ | Rust | Apache-2.0 | Data parallelism for batch simulation |
 | serde / serde_json | https://serde.rs/ | Rust | Apache-2.0 | JSON serialization / MJAI parsing |
@@ -249,6 +249,7 @@ Single source of truth for all citations in the Hydra project.
 |---------|-------|
 | AGPL | Copyleft, requires source disclosure for network use |
 | GPL | Copyleft, restricts derivative works |
+| LGPL | Weak copyleft, requires relinking capability for static linking |
 | Mortal's Custom Restrictions | Additional restrictions on model weights beyond AGPL |
 
 ---
