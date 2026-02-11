@@ -63,7 +63,7 @@ Mortal exposes its Rust mahjong engine to Python via PyO3 bindings as the `libri
 
 - **ACTION_SPACE** = 46 (37 discard/kan + riichi + 3 chi + pon + kan + agari + ryuukyoku + pass)
 - **obs_shape(version=4)** = (1012, 34)
-- **oracle_obs_shape(version=4)** = (217, 34)
+- **oracle_obs_shape(version=4)** = (217, 34) — 51ch opponent state (3×17: hand/aka/shanten/waits/furiten) + 166ch wall (138 yama draw order + 8 rinshan + 10 dora + 10 ura). Each tile uses 2ch (one-hot identity + aka flag). The oracle observation is concatenated with the public observation along the channel dimension before the stem Conv1d, making the oracle model's input (1229, 34). Source: `invisible.rs:152-245`, `model.py:109-155`. Note: Mortal's published training pipeline never activates oracle mode — the infrastructure exists but `is_oracle=True` is never set in `train.py`.
 
 ### Usage Pattern
 

@@ -55,40 +55,47 @@ Hydra addresses the opponent modeling gap through four complementary systems:
 
 ## 2. Safety Planes: Explicit Defensive Encoding
 
-Hydra dedicates 23 input channels (channels 64–86) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
+Hydra dedicates 23 input channels (channels 61–83) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
 
 ```mermaid
 graph TB
-    subgraph "Safety Channels [64-86]"
-        GEN["Genbutsu<br/>Ch 64-72"]
-        SUJI["Suji<br/>Ch 73-81"]
-        KABE["Kabe/OneChance<br/>Ch 82-83"]
-        HINT["Tenpai Hints<br/>Ch 84-86"]
+    subgraph "Safety Channels [61-83]"
+        GEN["Genbutsu<br/>Ch 61-69"]
+        SUJI["Suji<br/>Ch 70-78"]
+        KABE["Kabe/OneChance<br/>Ch 79-80"]
+        HINT["Tenpai Hints<br/>Ch 81-83"]
     end
 ```
 
-### 2.1 Genbutsu (絶対安全牌) — Channels 64–72
+### 2.1 Genbutsu (絶対安全牌) — Channels 61–69
 
 **Definition:** Tiles that are 100% safe against a specific riichi player. Any tile discarded by the riichi player after their riichi declaration is genbutsu — they cannot win on a tile they themselves threw after declaring riichi.
 
-**Encoding:** 9 binary channels, 3 per opponent. Each channel is a binary mask over the 34 tile types: value 1 if that tile is genbutsu for the corresponding opponent, 0 otherwise.
+**Encoding:** 9 binary channels, 3 per opponent. The 3 channels per opponent encode three semantically distinct safety signals:
+
+| Sub-channel | Content | Encoding |
+|-------------|---------|----------|
+| +0 | All genbutsu | Binary mask: 1 if tile is 100% safe against this opponent. Union of discard-furiten genbutsu (tile in their river) and riichi-furiten genbutsu (tile discarded by anyone after their riichi, not ron'd). |
+| +1 | Tedashi genbutsu | Binary mask: subset of +0 where tile was specifically hand-discarded (tedashi) by this opponent, not tsumogiri. Carries hand-shape information — tedashi implies the opponent evaluated and rejected this tile. |
+| +2 | Riichi-era genbutsu | Binary mask: subset of +0 where tile became safe AFTER this opponent declared riichi (any player's post-riichi discard). Only non-zero when opponent is in riichi. Separates pre-riichi safety (mutable hand) from post-riichi safety (locked hand). |
 
 **Calculation:**
 
 ```mermaid
 graph TB
-    subgraph "Genbutsu Calculation"
-        RIICHI[Player declares riichi] --> TRACK[Track subsequent discards]
-        TRACK --> MARK[Mark as genbutsu]
-        MARK --> SAFE["100% safe for this player"]
+    subgraph "Genbutsu Sub-Channel Calculation"
+        DISCARD[Opponent discards tile] --> ALL["+0: All genbutsu<br/>Mark tile safe"]
+        DISCARD --> CHECK_TEDASHI{Tedashi?}
+        CHECK_TEDASHI -->|Yes| TEDASHI["+1: Tedashi genbutsu<br/>Hand-discarded → hand-shape info"]
+        CHECK_TEDASHI -->|No| SKIP_T["Skip +1<br/>(tsumogiri — no hand info)"]
+        RIICHI[Opponent declares riichi] --> POST[Track all post-riichi discards]
+        POST --> ERA["+2: Riichi-era genbutsu<br/>Post-riichi safety (locked hand)"]
     end
 ```
 
-When an opponent declares riichi, every tile they discard from that point forward is marked as genbutsu. Since a riichi player's hand is locked, they cannot alter their wait — any tile they discard is provably safe against them.
+**Why 3 channels per opponent, not 1:** While genbutsu is binary (safe or not), the sub-channel decomposition provides the network with pre-computed hand-reading signals. Tedashi genbutsu reveals which tiles the opponent actively rejected from their hand (matagi-suji and sotogawa inferences follow). Riichi-era genbutsu separates the temporal regime where the opponent's hand is locked. This mirrors Mortal v4's 3-channel kawa summary (all discards / tedashi-only / riichi-tile) but pre-computes the safety derivation. No existing mahjong AI pre-computes genbutsu channels — Mortal, Suphx, and Mjx all rely on the network to derive safety from raw discard data. Hydra's explicit encoding is a deliberate advantage.
 
-**Why 3 channels per opponent:** Each opponent gets three channels to represent genbutsu status across different game phases or redundancy for multi-tile coverage. The binary mask spans all 34 tile types per channel.
-
-### 2.2 Suji (筋) — Channels 73–81
+### 2.2 Suji (筋) — Channels 70–78
 
 **Definition:** Probabilistic safety based on ryanmen (two-sided) wait patterns. When an opponent discards a tile, certain numerically related tiles become safer because common wait patterns involving the discarded tile become less likely.
 
@@ -119,7 +126,7 @@ Suji only protects against ryanmen (two-sided) waits. Opponents can still win wi
 
 Suji reduces probability but does not eliminate danger. The network must learn to weigh suji evidence appropriately against other signals.
 
-### 2.3 Kabe (壁) — Channel 82
+### 2.3 Kabe (壁) — Channel 79
 
 **Definition:** When all 4 copies of a tile are visible (in discards, melds, or own hand), certain sequence waits through that tile become impossible. This is called kabe (wall) because the tile forms a "wall" blocking wait patterns.
 
@@ -132,23 +139,23 @@ Suji reduces probability but does not eliminate danger. The network must learn t
 
 **Example:** If all 4 copies of 5p are visible, no opponent can have a 3-6p or 4-5p or 5-6p sequence wait. Tiles adjacent to the walled tile become significantly safer.
 
-**Encoding:** Channel 82 is a float mask over 34 tile types, indicating kabe (no-chance) status.
+**Encoding:** Channel 79 is a float mask over 34 tile types, indicating kabe (no-chance) status.
 
-### 2.4 One-Chance (ワンチャンス) — Channel 83
+### 2.4 One-Chance (ワンチャンス) — Channel 80
 
 When 3 out of 4 copies of a tile are visible, the remaining single copy makes waits through that tile probabilistically unlikely. This is weaker than full kabe but still provides meaningful safety information.
 
-**Encoding:** Channel 83 is a float mask over 34 tile types, indicating one-chance status.
+**Encoding:** Channel 80 is a float mask over 34 tile types, indicating one-chance status.
 
-### 2.5 Tenpai Hints — Channels 84–86
+### 2.5 Tenpai Hints — Channels 81–83
 
 Three binary channels, one per opponent, indicating whether each opponent is likely in tenpai.
 
 | Channel | Content |
 |---------|---------|
-| 84 | Opponent 1 riichi / high-probability tenpai |
-| 85 | Opponent 2 riichi / high-probability tenpai |
-| 86 | Opponent 3 riichi / high-probability tenpai |
+| 81 | Opponent 1 riichi / high-probability tenpai |
+| 82 | Opponent 2 riichi / high-probability tenpai |
+| 83 | Opponent 3 riichi / high-probability tenpai |
 
 **Two-phase encoding:**
 
@@ -207,7 +214,7 @@ sequenceDiagram
 
 **The critical pattern:** Three or more consecutive tsumogiri (hand unchanged, player is waiting or stuck) followed by a sudden tedashi (active hand change) strongly suggests the player just completed their hand — they drew a tile that improved their hand and swapped out a different tile to reach tenpai.
 
-This pattern is encoded in the discard channels with an explicit tedashi flag (sub-channel offset +1 per opponent in channels 14–25) and temporal weighting using exponential decay:
+This pattern is encoded in the discard channels with an explicit tedashi flag (sub-channel offset +1 per opponent in channels 11–22) and temporal weighting using exponential decay:
 
 `weight = exp(-0.2 × (max_turn - discard_turn))`
 
@@ -229,7 +236,7 @@ where `y_i` is the ground-truth tenpai status and `p_i` is the predicted probabi
 
 The Tenpai Head output feeds into three downstream systems:
 
-1. **Safety plane channels 84–86** — High tenpai probability activates the tenpai hint channels, giving the backbone richer input on subsequent forward passes during multi-step reasoning.
+1. **Safety plane channels 81–83** — High tenpai probability activates the tenpai hint channels, giving the backbone richer input on subsequent forward passes during multi-step reasoning.
 2. **Danger Head** — Higher tenpai probability for an opponent increases the baseline danger level for all tiles. The danger head uses tenpai predictions as contextual input.
 3. **Policy Head** — When tenpai is detected, the policy shifts toward risk-adjusted actions, favoring safer discards and defensive play.
 
@@ -243,38 +250,75 @@ Estimate the deal-in probability for each possible discard tile. Given the curre
 
 ### 4.2 Architecture
 
-The Danger Head operates per-tile, maintaining the 34-tile geometry:
+The Danger Head operates per-tile and per-opponent, maintaining the 34-tile geometry with opponent-level granularity:
 
 1. **Input:** The backbone's shared latent representation at shape `[B × 256 × 34]`.
-2. **Convolution:** A 1×1 Conv1D maps 256 channels to 1 channel, preserving the 34-tile dimension.
+2. **Convolution:** A 1×1 Conv1D maps 256 channels to 3 channels (one per opponent), preserving the 34-tile dimension.
 3. **Activation:** Sigmoid squashes each output to [0, 1].
-4. **Output:** A vector of 34 probabilities, each representing `P(deal-in)` if that tile type is discarded now.
+4. **Output:** A `[B × 3 × 34]` tensor — per-opponent, per-tile deal-in probabilities.
+
+Per-opponent granularity (3×34) is essential for mawashi-uchi (回し打ち) — the strategy of dodging one specific dangerous opponent while continuing to push against others. An aggregate 1×34 output would discard the per-opponent information that the backbone already encodes (genbutsu channels 61–69, suji channels 70–78, tenpai hints 81–83 are all per-opponent), creating an information bottleneck.
+
+**Why 3×34 over 1×34:**
+- A tile can be safe against Player A (genbutsu) but deadly against Player B — the aggregate signal is ambiguous
+- Score-aware defense: dealing into 4th-place player is strategically different from dealing into 1st-place
+- Parameter cost is negligible: Conv1d(256→3) = 771 params vs Conv1d(256→1) = 257 params (+0.003% of total model)
+- Training labels are naturally per-opponent: each deal-in event identifies which opponent won
+- Mortal encodes all opponent info per-player (kawa, riichi, scores) — the output should match
 
 Unlike the Tenpai Head (which global-pools), the Danger Head preserves per-tile spatial information — danger is inherently tile-specific. The 1×1 convolution acts as a learned per-tile classifier using the full 256-dimensional feature vector at each tile position.
 
 ### 4.3 Output Interpretation
 
+The output `[B × 3 × 34]` gives per-opponent, per-tile deal-in probabilities:
+
 | Output Range | Interpretation |
 |--------------|----------------|
-| p < 0.05 | Safe tile — low risk of deal-in |
+| p < 0.05 | Safe tile against this opponent — low risk of deal-in |
 | 0.05 < p < 0.15 | Moderate risk — consider hand value and game state |
-| p > 0.15 | Dangerous — strong chance of dealing in |
+| p > 0.15 | Dangerous — strong chance of dealing into this opponent |
+
+**Aggregation options at inference:**
+- `max(dim=opponent)` → worst-case danger per tile (conservative)
+- `weighted_sum(danger × tenpai_prob)` → expected danger weighted by tenpai probability (balanced)
+- Per-opponent inspection → enables mawashi-uchi: dodge opponent A, push against opponent C
 
 ### 4.4 Training Signal
 
-**Labels:** Binary — did discarding this specific tile at this specific game state result in a deal-in (ron by an opponent)?
+**Labels:** Per-opponent binary — for each discard at each game state, a `[3]` vector indicates which opponent(s) won off that tile. Example: `[0, 1, 0]` means dealt into opponent 2. Most labels are `[0, 0, 0]` (no deal-in). This per-opponent labeling comes for free from game logs.
 
-**Class imbalance handling:** Deal-ins are rare events, occurring in roughly 10–15% of hands. Unweighted training would bias the head toward always predicting "safe." The solution is weighted Binary Cross-Entropy:
+**Class imbalance handling:** Deal-ins are rare events, occurring in roughly 10–15% of hands. Unweighted training would bias the head toward always predicting "safe."
 
-`L_danger = -Σ [w × y × log(p) + (1 - y) × log(1 - p)]`
+**Loss function:** Focal Binary Cross-Entropy (Lin et al., 2017), which subsumes class weighting and hard-example mining:
 
-where `w` is the class weight for positive (deal-in) samples, set higher than 1.0 to compensate for the natural imbalance.
+```
+L_danger = -Σ [α_t × (1 - p_t)^γ × log(p_t)]
+```
+
+Where `p_t = p` if y=1, `p_t = 1-p` if y=0, and `α_t = α` if y=1, `α_t = 1-α` if y=0.
+
+**Hyperparameters:**
+
+| Parameter | Value | Tuning Range | Notes |
+|-----------|-------|-------------|-------|
+| α (positive class weight) | 0.25 | [0.15, 0.5] | From Lin et al. best result on extreme imbalance |
+| γ (focusing parameter) | 2.0 | [1.0, 3.0] | Crushes loss on easy negatives; γ=0 recovers standard BCE |
+
+**Why focal loss over weighted BCE:**
+- Deal-in events are ~1-3% of all discard decisions. Weighted BCE with w=10 (sqrt-inverse-frequency) upweights ALL positives equally, including easy ones the model already gets right.
+- Focal loss with γ=2.0 naturally focuses gradient on hard examples (tiles the model is uncertain about), while easy negatives contribute near-zero gradient.
+- Critical for auxiliary heads: an overly aggressive pos_weight (w>20) distorts the shared backbone's representations, hurting the primary policy head. Focal loss avoids this by construction.
+- Fallback if focal loss is too complex to implement initially: use `BCEWithLogitsLoss(pos_weight=10.0)`, tune range [5, 20].
 
 **Loss weight in total training loss:** 0.05.
 
 ### 4.5 Risk-Adjusted Action Selection
 
-During inference, the policy head and danger head outputs are combined to produce risk-adjusted decisions:
+During inference, the policy head and danger head outputs are combined to produce risk-adjusted decisions. The per-opponent danger probabilities are first aggregated (weighted by tenpai probability):
+
+`p_danger(a) = Σ_i [p_danger_i(a) × p_tenpai(i)]`
+
+Then combined with the policy:
 
 `score(a) = log π(a) - λ × log(p_danger(a))`
 
@@ -285,19 +329,64 @@ where:
 - `p_danger(a)` is the danger head's deal-in probability for action `a`
 - `λ` is the defense/offense balance parameter
 
-**λ behavior:**
+**Dynamic λ via PID-Lagrangian (auto-tuned):**
 
-| λ Value | Behavior |
-|---------|----------|
-| λ = 0 | Pure offense — ignore danger entirely |
-| λ = 1 | Balanced play — weigh policy and danger equally |
-| λ > 1 | Defensive — prioritize safety over hand progress |
+Rather than a hand-crafted formula, λ is treated as a Lagrange multiplier for a constrained MDP and auto-tuned during training using PID control (Stooke, Achiam, Abbeel, ICML 2020).
 
-**Dynamic λ adjustment:** The λ parameter should vary based on game context:
+The constraint: keep mean deal-in rate below a target threshold.
 
-- **Score position:** When ahead, increase λ (more defensive to protect lead). When behind, decrease λ (more aggressive to catch up).
-- **Opponent tenpai probability:** Higher tenpai detection from the Tenpai Head → increase λ.
-- **Own hand value:** High-value hands justify lower λ (worth the risk to push). Low-value hands with high opponent danger justify higher λ (fold and wait).
+**PID update rule:**
+
+```
+δ = mean_dealin_rate - target_dealin_rate
+λ_P = Kp × EMA(δ)                    # Proportional (smoothed)
+λ_I = max(0, λ_I + Ki × δ)           # Integral (accumulated error)
+λ_D = Kd × max(0, EMA(cost) - cost_delayed)  # Derivative (rate of change)
+λ = max(0, λ_P + λ_I + λ_D)
+```
+
+**PID hyperparameters:**
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Kp | 0.1 | Proportional gain |
+| Ki | 0.003 | Integral gain (slow accumulation) |
+| Kd | 0.01 | Derivative gain (dampening) |
+| target_dealin_rate | 0.12 | Initial target; tune per phase |
+| EMA α | 0.1 | Smoothing for proportional term |
+| λ upper bound | 10.0 | Prevent runaway defense |
+
+**Combined advantage (RCPO-style normalization):**
+
+The danger head's output feeds into a cost advantage A^C(s,a). The policy is optimized with a composite advantage that prevents objective collapse as λ grows:
+
+```
+A_combined = (A^R(s,a) - λ × A^C(s,a)) / (1 + λ)
+```
+
+Where:
+- A^R is the standard reward advantage (from GAE on game reward)
+- A^C is the cost advantage (from GAE on deal-in events: cost=1 if dealt in, 0 otherwise)
+- The `(1 + λ)` denominator normalizes the objective, preventing λ from dominating
+
+**Why PID over hand-crafted λ:**
+- Mortal and Suphx use NO explicit λ — risk is implicit in Q-values/reward. This works but produces documented defensive weaknesses.
+- A hand-crafted λ(s) function requires tuning dozens of thresholds (score gaps, hand values, tenpai counts, round number) with fragile interactions.
+- PID-Lagrangian auto-tunes λ to satisfy the deal-in constraint, while the cost advantage A^C(s,a) is already state-dependent — capturing all the game context that a hand-crafted formula would need.
+- The RCPO normalization (dividing by 1+λ) is critical — without it, the policy objective collapses to pure safety minimization when λ is large.
+
+**Oshi-hiki calibration reference:** Human expert push/fold crossover occurs at W:D ≈ 0.88 for 2-han bad wait vs non-dealer riichi (from SMS / Shin Kagaku suru Mahjong). The PID-tuned λ should produce behavior consistent with these thresholds when evaluated on expert game logs.
+
+**At inference:** λ is fixed to its final training value. The danger head output is used via soft logit masking: `safe_logits = policy_logits - λ × danger_logits`. This is mathematically equivalent to the Lagrangian formulation in log-probability space.
+
+**λ range behavior:**
+
+| λ Range | Behavior | When PID produces this |
+|---------|----------|----------------------|
+| λ < 0.5 | Aggressive — push most hands | Deal-in rate well below target |
+| λ ≈ 1.0 | Balanced play | Deal-in rate near target |
+| λ > 2.0 | Defensive — fold weak hands | Deal-in rate above target |
+| λ > 5.0 | Ultra-defensive | Severe deal-in spike (early training) |
 
 ---
 
@@ -334,7 +423,7 @@ graph TB
 
 The teacher trains with PPO on self-play using reward normalized with a hand-luck baseline. Because it sees everything, the teacher converges roughly 10× faster than a blind agent and makes near-optimal defensive decisions.
 
-**Student network:** The standard blind architecture (87 input channels, no hidden information). The student trains with a combined objective:
+**Student network:** The standard blind architecture (84 input channels, no hidden information). The student trains with a combined objective:
 
 `Loss = PPO_loss + λ_KL × KL(Student || Teacher)`
 
@@ -395,11 +484,11 @@ These multiply on top of the base wait type multiplier:
 
 | Feature | Mortal | Suphx | Hydra |
 |---------|--------|-------|-------|
-| **Genbutsu encoding** | Implicit (must learn from raw discards) | Implicit | Explicit binary planes (Ch 64–72) |
-| **Suji encoding** | Implicit | Implicit | Explicit float planes (Ch 73–81) |
-| **Kabe encoding** | Implicit | Implicit | Explicit float planes (Ch 82–83) |
+| **Genbutsu encoding** | Implicit (must learn from raw discards) | Implicit | Explicit binary planes (Ch 61–69) |
+| **Suji encoding** | Implicit | Implicit | Explicit float planes (Ch 70–78) |
+| **Kabe encoding** | Implicit | Implicit | Explicit float planes (Ch 79–80) |
 | **Tenpai detection** | None — no mechanism for damaten | Oracle-guided (removed in practice) | Explicit auxiliary head + oracle distillation |
-| **Danger prediction** | Implicit via Q-values | Implicit via Q-values | Explicit per-tile danger head |
+| **Danger prediction** | Implicit via Q-values | Implicit via Q-values | Explicit per-tile, per-opponent danger head (3×34) |
 | **Damaten detection** | Poor — community-documented failure mode | Better via oracle training | Explicit tedashi pattern detection + tenpai head |
 | **Opponent modeling** | None (`SinglePlayerTables`) | Oracle-guided + run-time adaptation | Oracle distillation + explicit safety planes + auxiliary heads |
 | **Safety logic** | Must be learned implicitly | Must be learned implicitly | 23-plane explicit encoding |
@@ -413,6 +502,37 @@ Mortal and Suphx both rely on the network to implicitly learn defensive concepts
 ---
 
 ## 8. Expected Improvements
+
+### 8.1 Per-Phase Milestone Targets
+
+| Metric | Phase 1 (SL) | Gate | Phase 2 (Oracle RL) | Gate | Phase 3 (League) | Final Target |
+|--------|-------------|------|-------------------|------|-----------------|-------------|
+| Deal-in rate | ≤15% | ✓ | ≤13% | ✓ | ≤11% | **<10%** |
+| Win rate | ~19% | — | ≥21% | ✓ | ≥22% | **≥23%** |
+| Avg placement | ≤2.55 | ✓ | ≤2.45 | ✓ | ≤2.42 | **≤2.40** |
+| Tenpai head AUC | ≥0.70 | ✓ | ≥0.80 | ✓ | ≥75% accuracy | **≥75%** |
+| Danger head AUC | — | — | ≥0.75 | ✓ | — | — |
+| Win/deal-in ratio | ~1.3:1 | — | ≥1.5:1 | ✓ | ≥1.8:1 | **≥2.0:1** |
+| 4th place rate | — | — | ≤25% | — | ≤23% | **≤22%** |
+| Tenhou equiv. | ~2-dan | — | ~5-dan | — | ~7-dan | **≥8-dan** |
+
+**Phase transition gates (ALL must pass):**
+
+**Phase 1 → Phase 2:**
+1. Discard top-1 accuracy ≥ 65%
+2. SL loss plateaued (no improvement in 3 epochs)
+3. Test play avg placement ≤ 2.55
+4. Deal-in rate ≤ 15% in test play
+
+**Phase 2 → Phase 3:**
+1. Student avg placement ≤ 2.45 (1v3 vs SL baseline)
+2. Deal-in rate ≤ 13%
+3. Win rate ≥ 21%
+4. Win/deal-in ratio ≥ 1.5:1
+5. Win rate plateau for 20M+ steps
+6. Tenpai head AUC ≥ 0.80
+
+### 8.2 Final Performance Targets
 
 | Metric | Mortal Baseline | Hydra Target | Basis for Target |
 |--------|-----------------|--------------|------------------|
