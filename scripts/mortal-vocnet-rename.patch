@@ -1,0 +1,1276 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index be34fed..f039109 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -132,6 +132,8 @@ version = "1.2.25"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d0fc897dc1e865cc67c0e05a836d9d3f1df3cbe442aa4a9473b18e12624a4951"
+ dependencies = [
++ "jobserver",
++ "libc",
+  "shlex",
+ ]
+ 
+@@ -458,6 +460,16 @@ version = "1.0.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+ 
++[[package]]
++name = "errno"
++version = "0.3.14"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
++dependencies = [
++ "libc",
++ "windows-sys",
++]
++
+ [[package]]
+ name = "exe-wrapper"
+ version = "0.1.0"
+@@ -466,6 +478,17 @@ dependencies = [
+  "dunce",
+ ]
+ 
++[[package]]
++name = "filetime"
++version = "0.2.27"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f98844151eee8917efc50bd9e8318cb963ae8b297431495d3f758616ea5c57db"
++dependencies = [
++ "cfg-if",
++ "libc",
++ "libredox",
++]
++
+ [[package]]
+ name = "flate2"
+ version = "1.1.1"
+@@ -649,6 +672,16 @@ version = "1.0.15"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+ 
++[[package]]
++name = "jobserver"
++version = "0.1.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
++dependencies = [
++ "getrandom",
++ "libc",
++]
++
+ [[package]]
+ name = "js-sys"
+ version = "0.3.77"
+@@ -684,6 +717,17 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "libredox"
++version = "0.1.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3d0b95e02c851351f877147b7deea7b1afb1df71b63aa5f8270716e0c5720616"
++dependencies = [
++ "bitflags",
++ "libc",
++ "redox_syscall 0.7.0",
++]
++
+ [[package]]
+ name = "libriichi"
+ version = "0.1.0"
+@@ -714,9 +758,17 @@ dependencies = [
+  "serde_json",
+  "serde_with",
+  "sha3",
++ "tar",
+  "tinyvec",
++ "zstd",
+ ]
+ 
++[[package]]
++name = "linux-raw-sys"
++version = "0.11.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
++
+ [[package]]
+ name = "lock_api"
+ version = "0.4.13"
+@@ -876,11 +928,17 @@ checksum = "bc838d2a56b5b1a6c25f55575dfc605fabb63bb2365f6c2353ef9159aa69e4a5"
+ dependencies = [
+  "cfg-if",
+  "libc",
+- "redox_syscall",
++ "redox_syscall 0.5.12",
+  "smallvec",
+  "windows-targets",
+ ]
+ 
++[[package]]
++name = "pkg-config"
++version = "0.3.32"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
++
+ [[package]]
+ name = "plotters"
+ version = "0.3.7"
+@@ -1108,6 +1166,15 @@ dependencies = [
+  "bitflags",
+ ]
+ 
++[[package]]
++name = "redox_syscall"
++version = "0.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "49f3fe0889e69e2ae9e41f4d6c4c0181701d00e4697b356fb1f74173a5e0ee27"
++dependencies = [
++ "bitflags",
++]
++
+ [[package]]
+ name = "regex"
+ version = "1.11.1"
+@@ -1143,6 +1210,19 @@ version = "2.1.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+ 
++[[package]]
++name = "rustix"
++version = "1.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cd15f8a2c5551a84d56efdc1cd049089e409ac19a3072d5037a17fd70719ff3e"
++dependencies = [
++ "bitflags",
++ "errno",
++ "libc",
++ "linux-raw-sys",
++ "windows-sys",
++]
++
+ [[package]]
+ name = "rustversion"
+ version = "1.0.21"
+@@ -1282,6 +1362,17 @@ dependencies = [
+  "unicode-ident",
+ ]
+ 
++[[package]]
++name = "tar"
++version = "0.4.44"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1d863878d212c87a19c1a610eb53bb01fe12951c0501cf5a0d65f724914a667a"
++dependencies = [
++ "filetime",
++ "libc",
++ "xattr",
++]
++
+ [[package]]
+ name = "target-lexicon"
+ version = "0.13.2"
+@@ -1631,6 +1722,16 @@ dependencies = [
+  "rand_core 0.6.4",
+ ]
+ 
++[[package]]
++name = "xattr"
++version = "1.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
++dependencies = [
++ "libc",
++ "rustix",
++]
++
+ [[package]]
+ name = "zerocopy"
+ version = "0.8.25"
+@@ -1650,3 +1751,31 @@ dependencies = [
+  "quote",
+  "syn 2.0.101",
+ ]
++
++[[package]]
++name = "zstd"
++version = "0.13.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
++dependencies = [
++ "zstd-safe",
++]
++
++[[package]]
++name = "zstd-safe"
++version = "7.2.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
++dependencies = [
++ "zstd-sys",
++]
++
++[[package]]
++name = "zstd-sys"
++version = "2.0.16+zstd.1.5.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
++dependencies = [
++ "cc",
++ "pkg-config",
++]
+diff --git a/libriichi/Cargo.toml b/libriichi/Cargo.toml
+index 697515a..0afcc8a 100644
+--- a/libriichi/Cargo.toml
++++ b/libriichi/Cargo.toml
+@@ -22,6 +22,8 @@ serde_with = "3"
+ rand = "0.9"
+ rand_chacha = "0.9"
+ flate2 = "1"
++tar = "0.4"
++zstd = "0.13"
+ sha3 = "0.10"
+ glob = "0.3"
+ derivative = "2"
+diff --git a/libriichi/src/agent/mortal.rs b/libriichi/src/agent/mortal.rs
+index e1b14ee..2be9152 100644
+--- a/libriichi/src/agent/mortal.rs
++++ b/libriichi/src/agent/mortal.rs
+@@ -63,7 +63,7 @@ impl MortalBatchAgent {
+                 let version = obj.getattr("version")?.extract()?;
+                 let enable_quick_eval = obj.getattr("enable_quick_eval")?.extract()?;
+                 let enable_rule_based_agari_guard =
+-                    obj.getattr("enable_rule_based_agari_guard")?.extract()?;
++                    obj.getattr("enable_rule_based_detection_guard")?.extract()?;
+                 Ok((
+                     name,
+                     is_oracle,
+diff --git a/libriichi/src/agent/py_agent.rs b/libriichi/src/agent/py_agent.rs
+index f592491..768ddba 100644
+--- a/libriichi/src/agent/py_agent.rs
++++ b/libriichi/src/agent/py_agent.rs
+@@ -1,7 +1,7 @@
+ use super::{BatchAgent, MjaiLogBatchAgent, MortalBatchAgent};
+ use std::str::FromStr;
+ 
+-use anyhow::{Error, Result, bail};
++use anyhow::{bail, Error, Result};
+ use pyo3::prelude::*;
+ 
+ enum EngineType {
+@@ -14,8 +14,8 @@ impl FromStr for EngineType {
+ 
+     fn from_str(s: &str) -> Result<Self, Self::Err> {
+         match s {
+-            "mortal" => Ok(Self::Mortal),
+-            "mjai-log" => Ok(Self::MjaiLog),
++            "vocnet" => Ok(Self::Mortal),
++            "replay-log" => Ok(Self::MjaiLog),
+             v => bail!("unknown engine type {v}"),
+         }
+     }
+diff --git a/libriichi/src/consts.rs b/libriichi/src/consts.rs
+index 55bcf68..e47d8cb 100644
+--- a/libriichi/src/consts.rs
++++ b/libriichi/src/consts.rs
+@@ -4,15 +4,15 @@ use pyo3::prelude::*;
+ 
+ pub const MAX_VERSION: u32 = 4;
+ 
+-pub const ACTION_SPACE: usize = 37 // discard | kan (choice)
+-                              + 1  // riichi
+-                              + 3  // chi
+-                              + 1  // pon
+-                              + 1  // kan (decide)
+-                              + 1  // agari
+-                              + 1  // ryukyoku
++pub const ACTION_SPACE: usize = 37 // discard | quad (choice)
++                              + 1  // alert
++                              + 3  // sequence
++                              + 1  // triplet
++                              + 1  // quad (decide)
++                              + 1  // detect
++                              + 1  // timeout
+                               + 1; // pass
+-// = 46
++                                   // = 46
+ pub const GRP_SIZE: usize = 7;
+ 
+ #[pyfunction]
+@@ -47,6 +47,8 @@ pub(crate) fn register_module(
+     m.add_function(wrap_pyfunction!(oracle_obs_shape, &m)?)?;
+     m.add("MAX_VERSION", MAX_VERSION)?;
+     m.add("ACTION_SPACE", ACTION_SPACE)?;
++    m.add("NUM_ACTIONS", ACTION_SPACE)?;
+     m.add("GRP_SIZE", GRP_SIZE)?;
++    m.add("GRP_NUM_OUTCOMES", GRP_SIZE)?;
+     add_submodule(py, prefix, super_mod, &m)
+ }
+diff --git a/libriichi/src/dataset/gameplay.rs b/libriichi/src/dataset/gameplay.rs
+index 32558e3..f8375df 100644
+--- a/libriichi/src/dataset/gameplay.rs
++++ b/libriichi/src/dataset/gameplay.rs
+@@ -4,11 +4,11 @@ use crate::mjai::Event;
+ use crate::state::PlayerState;
+ use std::array;
+ use std::fs::File;
+-use std::io;
++use std::io::{self, BufReader, Read};
+ use std::mem;
+ 
+ use ahash::AHashSet;
+-use anyhow::{Context, Result, bail};
++use anyhow::{bail, Context, Result};
+ use derivative::Derivative;
+ use flate2::read::GzDecoder;
+ use ndarray::prelude::*;
+@@ -134,6 +134,16 @@ impl GameplayLoader {
+         self.load_gz_log_files(gzip_filenames)
+     }
+ 
++    #[staticmethod]
++    fn extract_tar_zst(archive_path: &str) -> Result<Vec<String>> {
++        Self::read_tar_zst_entries(archive_path)
++    }
++
++    #[pyo3(name = "load_raw_logs")]
++    fn load_raw_logs_py(&self, raw_logs: Vec<String>) -> Result<Vec<Vec<Gameplay>>> {
++        self.load_raw_logs(raw_logs)
++    }
++
+     fn __repr__(&self) -> String {
+         format!("{self:?}")
+     }
+@@ -160,6 +170,63 @@ impl GameplayLoader {
+             .collect()
+     }
+ 
++    pub fn load_raw_logs<V, S>(&self, raw_logs: V) -> Result<Vec<Vec<Gameplay>>>
++    where
++        V: IntoParallelIterator<Item = S>,
++        S: AsRef<str>,
++    {
++        raw_logs
++            .into_par_iter()
++            .filter_map(|raw| match self.load_log(raw.as_ref()) {
++                Ok(games) => Some(Ok(games)),
++                Err(e) => {
++                    log::warn!("skipping invalid entry: {e:#}");
++                    None
++                }
++            })
++            .collect()
++    }
++
++    fn read_tar_zst_entries(archive_path: &str) -> Result<Vec<String>> {
++        let file =
++            File::open(archive_path).with_context(|| format!("failed to open {archive_path}"))?;
++        let reader = BufReader::new(file);
++        let decoder = zstd::Decoder::new(reader)
++            .with_context(|| format!("failed to decode {archive_path}"))?;
++        let mut archive = tar::Archive::new(decoder);
++
++        let mut entries = vec![];
++        for entry_result in archive.entries()? {
++            let mut entry = match entry_result {
++                Ok(e) => e,
++                Err(e) => {
++                    log::warn!("skipping malformed entry in {archive_path}: {e}");
++                    continue;
++                }
++            };
++
++            let is_json = entry
++                .path()
++                .ok()
++                .and_then(|p| {
++                    p.file_name()
++                        .map(|n| n.to_string_lossy().ends_with(".json"))
++                })
++                .unwrap_or(false);
++
++            if !is_json {
++                continue;
++            }
++
++            let mut raw = String::new();
++            if entry.read_to_string(&mut raw).is_ok() && !raw.is_empty() {
++                entries.push(raw);
++            }
++        }
++
++        Ok(entries)
++    }
++
+     pub fn load_events(&self, events: &[Event]) -> Result<Vec<Gameplay>> {
+         let invisibles = self.oracle.then(|| Invisible::new(events, self.trust_seed));
+ 
+@@ -211,6 +278,7 @@ impl Gameplay {
+             .map(|v| PyArray1::from_owned_array(py, v))
+             .collect()
+     }
++    #[pyo3(name = "take_at_segment")]
+     fn take_at_kyoku(&mut self) -> Vec<u8> {
+         mem::take(&mut self.at_kyoku)
+     }
+@@ -223,6 +291,7 @@ impl Gameplay {
+     fn take_at_turns(&mut self) -> Vec<u8> {
+         mem::take(&mut self.at_turns)
+     }
++    #[pyo3(name = "take_distances")]
+     fn take_shantens(&mut self) -> Vec<i8> {
+         mem::take(&mut self.shantens)
+     }
+diff --git a/libriichi/src/dataset/grp.rs b/libriichi/src/dataset/grp.rs
+index f2c257a..5847ec0 100644
+--- a/libriichi/src/dataset/grp.rs
++++ b/libriichi/src/dataset/grp.rs
+@@ -4,7 +4,7 @@ use crate::rankings::Rankings;
+ use crate::tu8;
+ use crate::vec_ops::vec_add_assign;
+ use std::fs::File;
+-use std::io;
++use std::io::{self, BufReader, Read};
+ use std::mem;
+ 
+ use anyhow::{Context, Result};
+@@ -44,6 +44,27 @@ impl Grp {
+         Self::load_gz_log_files(gzip_filenames)
+     }
+ 
++    #[staticmethod]
++    fn extract_tar_zst(py: Python<'_>, archive_path: String) -> Result<Vec<String>> {
++        py.allow_threads(move || Self::read_tar_zst_entries(&archive_path))
++    }
++
++    #[staticmethod]
++    fn load_raw_logs(py: Python<'_>, raw_logs: Vec<String>) -> Result<Vec<Self>> {
++        py.allow_threads(move || {
++            raw_logs
++                .into_par_iter()
++                .filter_map(|raw| match Self::load_log(&raw) {
++                    Ok(grp) => Some(Ok(grp)),
++                    Err(e) => {
++                        log::warn!("skipping invalid entry: {e:#}");
++                        None
++                    }
++                })
++                .collect()
++        })
++    }
++
+     /// Returns List[List[np.ndarray]]
+     pub fn take_feature<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+         PyArray2::from_owned_array(py, mem::take(&mut self.feature))
+@@ -87,6 +108,46 @@ impl Grp {
+             .collect()
+     }
+ 
++    fn read_tar_zst_entries(archive_path: &str) -> Result<Vec<String>> {
++        let file =
++            File::open(archive_path).with_context(|| format!("failed to open {archive_path}"))?;
++        let reader = BufReader::new(file);
++        let decoder = zstd::Decoder::new(reader)
++            .with_context(|| format!("failed to decode {archive_path}"))?;
++        let mut archive = tar::Archive::new(decoder);
++
++        let mut entries = vec![];
++        for entry_result in archive.entries()? {
++            let mut entry = match entry_result {
++                Ok(e) => e,
++                Err(e) => {
++                    log::warn!("skipping malformed entry in {archive_path}: {e}");
++                    continue;
++                }
++            };
++
++            let is_json = entry
++                .path()
++                .ok()
++                .and_then(|p| {
++                    p.file_name()
++                        .map(|n| n.to_string_lossy().ends_with(".json"))
++                })
++                .unwrap_or(false);
++
++            if !is_json {
++                continue;
++            }
++
++            let mut raw = String::new();
++            if entry.read_to_string(&mut raw).is_ok() && !raw.is_empty() {
++                entries.push(raw);
++            }
++        }
++
++        Ok(entries)
++    }
++
+     pub fn load_events(events: &[Event]) -> Result<Self> {
+         let mut game_info = vec![];
+         let mut rank_by_player_opt = None;
+diff --git a/libriichi/src/lib.rs b/libriichi/src/lib.rs
+index 68592c1..1b72f88 100644
+--- a/libriichi/src/lib.rs
++++ b/libriichi/src/lib.rs
+@@ -121,17 +121,17 @@ use pyo3::prelude::*;
+ #[global_allocator]
+ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+ 
+-/// This module provides implementations of the riichi mahjong including the
++/// This module provides implementations of bioacoustic classification including the
+ /// following features:
+ ///
+-/// - The core feature - player state maintenance driven by mjai events (via
++/// - The core feature - player state maintenance driven by recording events (via
+ ///   `state.PlayerState`).
+-/// - Read mjai logs and produce a batch of instances for training (via
++/// - Read recording logs and produce a batch of instances for training (via
+ ///   `dataset`).
+-/// - Self-play under standard Tenhou rules (via `arena`).
+-/// - Definitions of observation and action space for Mortal (via `consts`).
+-/// - Statistical works on mjai logs (via `stat.Stat`).
+-/// - mjai interface (via `mjai.Bot`).
++/// - Self-play under standard evaluation protocol (via `arena`).
++/// - Definitions of observation and action space for VocNet (via `consts`).
++/// - Statistical works on recording logs (via `stat.Stat`).
++/// - Streaming interface (via `mjai.Bot`).
+ #[pymodule]
+ fn libriichi(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+     pyo3_log::init();
+diff --git a/libriichi/src/stat.rs b/libriichi/src/stat.rs
+index 7a5b830..d733df8 100644
+--- a/libriichi/src/stat.rs
++++ b/libriichi/src/stat.rs
+@@ -8,7 +8,7 @@ use std::fs::File;
+ use std::io;
+ use std::time::Duration;
+ 
+-use anyhow::{Context, Result, bail};
++use anyhow::{bail, Context, Result};
+ use derive_more::{Add, AddAssign, Sum};
+ use flate2::read::GzDecoder;
+ use glob::glob;
+@@ -32,7 +32,7 @@ pub struct Stat {
+     pub game: i64,
+     #[pyo3(get, set)]
+     pub round: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "primary")]
+     pub oya: i64,
+ 
+     #[pyo3(get, set)]
+@@ -45,83 +45,83 @@ pub struct Stat {
+     pub rank_3: i64,
+     #[pyo3(get, set)]
+     pub rank_4: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "bust")]
+     pub tobi: i64,
+ 
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "ensemble")]
+     pub fuuro: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "ensemble_num")]
+     pub fuuro_num: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "ensemble_point")]
+     pub fuuro_point: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "ensemble_detection")]
+     pub fuuro_agari: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "ensemble_detection_turn")]
+     pub fuuro_agari_jun: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "ensemble_detection_point")]
+     pub fuuro_agari_point: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "ensemble_false_alarm")]
+     pub fuuro_houjuu: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "detection")]
+     pub agari: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "detection_as_primary")]
+     pub agari_as_oya: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "detection_turn")]
+     pub agari_jun: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "detection_point_primary")]
+     pub agari_point_oya: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "detection_point_secondary")]
+     pub agari_point_ko: i64,
+ 
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "false_alarm")]
+     pub houjuu: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "false_alarm_turn")]
+     pub houjuu_jun: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "false_alarm_to_primary")]
+     pub houjuu_to_oya: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "false_alarm_point_to_primary")]
+     pub houjuu_point_to_oya: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "false_alarm_point_to_secondary")]
+     pub houjuu_point_to_ko: i64,
+ 
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert")]
+     pub riichi: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_as_primary")]
+     pub riichi_as_oya: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_turn")]
+     pub riichi_jun: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_detection")]
+     pub riichi_agari: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_detection_point")]
+     pub riichi_agari_point: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_detection_turn")]
+     pub riichi_agari_jun: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_false_alarm")]
+     pub riichi_houjuu: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_timeout")]
+     pub riichi_ryukyoku: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_point")]
+     pub riichi_point: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "chasing_alert")]
+     pub chasing_riichi: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "alert_got_chased")]
+     pub riichi_got_chased: i64,
+ 
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "passive_detection")]
+     pub dama_agari: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "passive_detection_turn")]
+     pub dama_agari_jun: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "passive_detection_point")]
+     pub dama_agari_point: i64,
+ 
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "timeout")]
+     pub ryukyoku: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "timeout_point")]
+     pub ryukyoku_point: i64,
+ 
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "critical_hit")]
+     pub yakuman: i64,
+-    #[pyo3(get, set)]
++    #[pyo3(get, set, name = "edge_case")]
+     pub nagashi_mangan: i64,
+ }
+ 
+@@ -131,13 +131,13 @@ impl fmt::Display for Stat {
+             f,
+             r#"Games            {}
+ Rounds           {}
+-Rounds as dealer {}
++Rounds as primary {}
+ 
+ 1st (rate)       {} ({:.6})
+ 2nd (rate)       {} ({:.6})
+ 3rd (rate)       {} ({:.6})
+ 4th (rate)       {} ({:.6})
+-Tobi(rate)       {} ({:.6})
++Bust(rate)       {} ({:.6})
+ Avg rank         {:.6}
+ Total rank pt    {}
+ Avg rank pt      {:.6}
+@@ -145,48 +145,48 @@ Total Δscore     {}
+ Avg game Δscore  {:.6}
+ Avg round Δscore {:.6}
+ 
+-Win rate      {:.6}
+-Deal-in rate  {:.6}
+-Call rate     {:.6}
+-Riichi rate   {:.6}
+-Ryukyoku rate {:.6}
+-
+-Avg winning Δscore               {:.6}
+-Avg winning Δscore as dealer     {:.6}
+-Avg winning Δscore as non-dealer {:.6}
+-Avg riichi winning Δscore        {:.6}
+-Avg open winning Δscore          {:.6}
+-Avg dama winning Δscore          {:.6}
+-Avg ryukyoku Δscore              {:.6}
+-
+-Avg winning turn        {:.6}
+-Avg riichi winning turn {:.6}
+-Avg open winning turn   {:.6}
+-Avg dama winning turn   {:.6}
+-
+-Avg deal-in turn                 {:.6}
+-Avg deal-in Δscore               {:.6}
+-Avg deal-in Δscore to dealer     {:.6}
+-Avg deal-in Δscore to non-dealer {:.6}
+-
+-Chasing riichi rate       {:.6}
+-Riichi chased rate        {:.6}
+-Winning rate after riichi {:.6}
+-Deal-in rate after riichi {:.6}
+-Avg riichi turn           {:.6}
+-Avg riichi Δscore         {:.6}
+-
+-Avg number of calls     {:.6}
+-Winning rate after call {:.6}
+-Deal-in rate after call {:.6}
+-Avg call Δscore         {:.6}
+-
+-Dealer wins/all dealer rounds  {:.6}
+-Dealer wins/all wins           {:.6}
+-Deal-in to dealer/all deal-ins {:.6}
+-
+-Yakuman (rate)        {} ({:.9})
+-Nagashi mangan (rate) {} ({:.9})"#,
++Detection rate      {:.6}
++False alarm rate    {:.6}
++Ensemble rate       {:.6}
++Alert rate          {:.6}
++Timeout rate        {:.6}
++
++Avg detection Δscore               {:.6}
++Avg detection Δscore as primary    {:.6}
++Avg detection Δscore as secondary  {:.6}
++Avg alert detection Δscore         {:.6}
++Avg ensemble detection Δscore      {:.6}
++Avg passive detection Δscore       {:.6}
++Avg timeout Δscore                 {:.6}
++
++Avg detection turn              {:.6}
++Avg alert detection turn        {:.6}
++Avg ensemble detection turn     {:.6}
++Avg passive detection turn      {:.6}
++
++Avg false alarm turn                    {:.6}
++Avg false alarm Δscore                  {:.6}
++Avg false alarm Δscore to primary       {:.6}
++Avg false alarm Δscore to secondary     {:.6}
++
++Chasing alert rate              {:.6}
++Alert chased rate               {:.6}
++Detection rate after alert      {:.6}
++False alarm rate after alert    {:.6}
++Avg alert turn                  {:.6}
++Avg alert Δscore                {:.6}
++
++Avg number of ensembles          {:.6}
++Detection rate after ensemble    {:.6}
++False alarm rate after ensemble  {:.6}
++Avg ensemble Δscore              {:.6}
++
++Primary detections/all primary rounds  {:.6}
++Primary detections/all detections      {:.6}
++False alarm to primary/all false alarms {:.6}
++
++Critical hit (rate)   {} ({:.9})
++Edge case (rate)      {} ({:.9})"#,
+             self.game,
+             self.round,
+             self.oya,
+@@ -547,6 +547,7 @@ impl Stat {
+         self.rank_4 as f64 / self.game as f64
+     }
+     #[getter]
++    #[pyo3(name = "bust_rate")]
+     #[inline]
+     #[must_use]
+     pub fn tobi_rate(&self) -> f64 {
+@@ -567,42 +568,49 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "avg_point_per_detection")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_agari(&self) -> f64 {
+         (self.agari_point_ko + self.agari_point_oya) as f64 / self.agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_primary_detection")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_oya_agari(&self) -> f64 {
+         self.agari_point_oya as f64 / self.agari_as_oya as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_secondary_detection")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_ko_agari(&self) -> f64 {
+         self.agari_point_ko as f64 / (self.agari - self.agari_as_oya) as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_alert_detection")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_riichi_agari(&self) -> f64 {
+         self.riichi_agari_point as f64 / self.riichi_agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_ensemble_detection")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_fuuro_agari(&self) -> f64 {
+         self.fuuro_agari_point as f64 / self.fuuro_agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_passive_detection")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_dama_agari(&self) -> f64 {
+         self.dama_agari_point as f64 / self.dama_agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_timeout")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_ryukyoku(&self) -> f64 {
+@@ -610,24 +618,28 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "avg_detection_turn")]
+     #[inline]
+     #[must_use]
+     pub fn avg_agari_jun(&self) -> f64 {
+         self.agari_jun as f64 / self.agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_alert_detection_turn")]
+     #[inline]
+     #[must_use]
+     pub fn avg_riichi_agari_jun(&self) -> f64 {
+         self.riichi_agari_jun as f64 / self.riichi_agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_ensemble_detection_turn")]
+     #[inline]
+     #[must_use]
+     pub fn avg_fuuro_agari_jun(&self) -> f64 {
+         self.fuuro_agari_jun as f64 / self.fuuro_agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_passive_detection_turn")]
+     #[inline]
+     #[must_use]
+     pub fn avg_dama_agari_jun(&self) -> f64 {
+@@ -635,24 +647,28 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "avg_point_per_false_alarm")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_houjuu(&self) -> f64 {
+         (self.houjuu_point_to_ko + self.houjuu_point_to_oya) as f64 / self.houjuu as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_false_alarm_to_primary")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_houjuu_to_oya(&self) -> f64 {
+         self.houjuu_point_to_oya as f64 / self.houjuu_to_oya as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_point_per_false_alarm_to_secondary")]
+     #[inline]
+     #[must_use]
+     pub fn avg_point_per_houjuu_to_ko(&self) -> f64 {
+         self.houjuu_point_to_ko as f64 / (self.houjuu - self.houjuu_to_oya) as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_false_alarm_turn")]
+     #[inline]
+     #[must_use]
+     pub fn avg_houjuu_jun(&self) -> f64 {
+@@ -660,30 +676,35 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "detection_rate")]
+     #[inline]
+     #[must_use]
+     pub fn agari_rate(&self) -> f64 {
+         self.agari as f64 / self.round as f64
+     }
+     #[getter]
++    #[pyo3(name = "false_alarm_rate")]
+     #[inline]
+     #[must_use]
+     pub fn houjuu_rate(&self) -> f64 {
+         self.houjuu as f64 / self.round as f64
+     }
+     #[getter]
++    #[pyo3(name = "alert_rate")]
+     #[inline]
+     #[must_use]
+     pub fn riichi_rate(&self) -> f64 {
+         self.riichi as f64 / self.round as f64
+     }
+     #[getter]
++    #[pyo3(name = "ensemble_rate")]
+     #[inline]
+     #[must_use]
+     pub fn fuuro_rate(&self) -> f64 {
+         self.fuuro as f64 / self.round as f64
+     }
+     #[getter]
++    #[pyo3(name = "timeout_rate")]
+     #[inline]
+     #[must_use]
+     pub fn ryukyoku_rate(&self) -> f64 {
+@@ -691,36 +712,42 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "detection_rate_after_alert")]
+     #[inline]
+     #[must_use]
+     pub fn agari_rate_after_riichi(&self) -> f64 {
+         self.riichi_agari as f64 / self.riichi as f64
+     }
+     #[getter]
++    #[pyo3(name = "false_alarm_rate_after_alert")]
+     #[inline]
+     #[must_use]
+     pub fn houjuu_rate_after_riichi(&self) -> f64 {
+         self.riichi_houjuu as f64 / self.riichi as f64
+     }
+     #[getter]
++    #[pyo3(name = "chasing_alert_rate")]
+     #[inline]
+     #[must_use]
+     pub fn chasing_riichi_rate(&self) -> f64 {
+         self.chasing_riichi as f64 / self.riichi as f64
+     }
+     #[getter]
++    #[pyo3(name = "alert_chased_rate")]
+     #[inline]
+     #[must_use]
+     pub fn riichi_chased_rate(&self) -> f64 {
+         self.riichi_got_chased as f64 / self.riichi as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_alert_turn")]
+     #[inline]
+     #[must_use]
+     pub fn avg_riichi_jun(&self) -> f64 {
+         self.riichi_jun as f64 / self.riichi as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_alert_point")]
+     #[inline]
+     #[must_use]
+     pub fn avg_riichi_point(&self) -> f64 {
+@@ -728,18 +755,21 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "detection_rate_as_primary")]
+     #[inline]
+     #[must_use]
+     pub fn agari_rate_as_oya(&self) -> f64 {
+         self.agari_as_oya as f64 / self.oya as f64
+     }
+     #[getter]
++    #[pyo3(name = "detection_as_primary_rate")]
+     #[inline]
+     #[must_use]
+     pub fn agari_as_oya_rate(&self) -> f64 {
+         self.agari_as_oya as f64 / self.agari as f64
+     }
+     #[getter]
++    #[pyo3(name = "false_alarm_to_primary_rate")]
+     #[inline]
+     #[must_use]
+     pub fn houjuu_to_oya_rate(&self) -> f64 {
+@@ -747,24 +777,28 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "avg_ensemble_num")]
+     #[inline]
+     #[must_use]
+     pub fn avg_fuuro_num(&self) -> f64 {
+         self.fuuro_num as f64 / self.fuuro as f64
+     }
+     #[getter]
++    #[pyo3(name = "detection_rate_after_ensemble")]
+     #[inline]
+     #[must_use]
+     pub fn agari_rate_after_fuuro(&self) -> f64 {
+         self.fuuro_agari as f64 / self.fuuro as f64
+     }
+     #[getter]
++    #[pyo3(name = "false_alarm_rate_after_ensemble")]
+     #[inline]
+     #[must_use]
+     pub fn houjuu_rate_after_fuuro(&self) -> f64 {
+         self.fuuro_houjuu as f64 / self.fuuro as f64
+     }
+     #[getter]
++    #[pyo3(name = "avg_ensemble_point")]
+     #[inline]
+     #[must_use]
+     pub fn avg_fuuro_point(&self) -> f64 {
+@@ -772,12 +806,14 @@ impl Stat {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "critical_hit_rate")]
+     #[inline]
+     #[must_use]
+     pub fn yakuman_rate(&self) -> f64 {
+         self.yakuman as f64 / self.round as f64
+     }
+     #[getter]
++    #[pyo3(name = "edge_case_rate")]
+     #[inline]
+     #[must_use]
+     pub fn nagashi_mangan_rate(&self) -> f64 {
+diff --git a/libriichi/src/state/action.rs b/libriichi/src/state/action.rs
+index 64bbc9f..90ddad7 100644
+--- a/libriichi/src/state/action.rs
++++ b/libriichi/src/state/action.rs
+@@ -4,7 +4,7 @@ use crate::mjai::Event;
+ use crate::tile::Tile;
+ use crate::tuz;
+ 
+-use anyhow::{Result, bail, ensure};
++use anyhow::{bail, ensure, Result};
+ use pyo3::prelude::*;
+ use serde::Serialize;
+ 
+@@ -13,27 +13,27 @@ use serde::Serialize;
+ pub struct ActionCandidate {
+     #[pyo3(get)]
+     pub can_discard: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_seq_low")]
+     pub can_chi_low: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_seq_mid")]
+     pub can_chi_mid: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_seq_high")]
+     pub can_chi_high: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_triplet")]
+     pub can_pon: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_open_quad")]
+     pub can_daiminkan: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_add_quad")]
+     pub can_kakan: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_closed_quad")]
+     pub can_ankan: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_alert")]
+     pub can_riichi: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_self_detect")]
+     pub can_tsumo_agari: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_target_detect")]
+     pub can_ron_agari: bool,
+-    #[pyo3(get)]
++    #[pyo3(get, name = "can_timeout")]
+     pub can_ryukyoku: bool,
+ 
+     #[pyo3(get)]
+@@ -43,6 +43,7 @@ pub struct ActionCandidate {
+ #[pymethods]
+ impl ActionCandidate {
+     #[getter]
++    #[pyo3(name = "can_sequence")]
+     #[inline]
+     #[must_use]
+     pub const fn can_chi(&self) -> bool {
+@@ -50,6 +51,7 @@ impl ActionCandidate {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "can_quad")]
+     #[inline]
+     #[must_use]
+     pub const fn can_kan(&self) -> bool {
+@@ -57,6 +59,7 @@ impl ActionCandidate {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "can_detect")]
+     #[inline]
+     #[must_use]
+     pub const fn can_agari(&self) -> bool {
+diff --git a/libriichi/src/state/getter.rs b/libriichi/src/state/getter.rs
+index fac587b..50db30a 100644
+--- a/libriichi/src/state/getter.rs
++++ b/libriichi/src/state/getter.rs
+@@ -12,24 +12,28 @@ impl PlayerState {
+         self.player_id
+     }
+     #[getter]
++    #[pyo3(name = "segment")]
+     #[inline]
+     #[must_use]
+     pub const fn kyoku(&self) -> u8 {
+         self.kyoku
+     }
+     #[getter]
++    #[pyo3(name = "retry_count")]
+     #[inline]
+     #[must_use]
+     pub const fn honba(&self) -> u8 {
+         self.honba
+     }
+     #[getter]
++    #[pyo3(name = "pending_confirms")]
+     #[inline]
+     #[must_use]
+     pub const fn kyotaku(&self) -> u8 {
+         self.kyotaku
+     }
+     #[getter]
++    #[pyo3(name = "is_primary")]
+     #[inline]
+     #[must_use]
+     pub const fn is_oya(&self) -> bool {
+@@ -37,12 +41,14 @@ impl PlayerState {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "feature_set")]
+     #[inline]
+     #[must_use]
+     pub const fn tehai(&self) -> [u8; 34] {
+         self.tehai
+     }
+     #[getter]
++    #[pyo3(name = "variants_in_hand")]
+     #[inline]
+     #[must_use]
+     pub const fn akas_in_hand(&self) -> [bool; 3] {
+@@ -50,24 +56,28 @@ impl PlayerState {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "sequences")]
+     #[inline]
+     #[must_use]
+     pub fn chis(&self) -> &[u8] {
+         &self.chis
+     }
+     #[getter]
++    #[pyo3(name = "triplets")]
+     #[inline]
+     #[must_use]
+     pub fn pons(&self) -> &[u8] {
+         &self.pons
+     }
+     #[getter]
++    #[pyo3(name = "open_quads")]
+     #[inline]
+     #[must_use]
+     pub fn minkans(&self) -> &[u8] {
+         &self.minkans
+     }
+     #[getter]
++    #[pyo3(name = "closed_quads")]
+     #[inline]
+     #[must_use]
+     pub fn ankans(&self) -> &[u8] {
+@@ -81,6 +91,7 @@ impl PlayerState {
+         self.at_turn
+     }
+     #[getter]
++    #[pyo3(name = "distance")]
+     #[inline]
+     #[must_use]
+     pub const fn shanten(&self) -> i8 {
+@@ -94,12 +105,12 @@ impl PlayerState {
+     }
+ 
+     #[inline]
+-    #[pyo3(name = "last_self_tsumo")]
++    #[pyo3(name = "last_self_draw")]
+     fn last_self_tsumo_py(&self) -> Option<String> {
+         self.last_self_tsumo.map(|t| t.to_string())
+     }
+     #[inline]
+-    #[pyo3(name = "last_kawa_tile")]
++    #[pyo3(name = "last_discard")]
+     fn last_kawa_tile_py(&self) -> Option<String> {
+         self.last_kawa_tile.map(|t| t.to_string())
+     }
+@@ -112,7 +123,7 @@ impl PlayerState {
+     }
+ 
+     #[inline]
+-    #[pyo3(name = "ankan_candidates")]
++    #[pyo3(name = "closed_quad_candidates")]
+     fn ankan_candidates_py(&self) -> Vec<String> {
+         self.ankan_candidates
+             .iter()
+@@ -120,7 +131,7 @@ impl PlayerState {
+             .collect()
+     }
+     #[inline]
+-    #[pyo3(name = "kakan_candidates")]
++    #[pyo3(name = "added_quad_candidates")]
+     fn kakan_candidates_py(&self) -> Vec<String> {
+         self.kakan_candidates
+             .iter()
+@@ -129,18 +140,21 @@ impl PlayerState {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "can_w_alert")]
+     #[inline]
+     #[must_use]
+     pub const fn can_w_riichi(&self) -> bool {
+         self.can_w_riichi
+     }
+     #[getter]
++    #[pyo3(name = "self_alert_declared")]
+     #[inline]
+     #[must_use]
+     pub const fn self_riichi_declared(&self) -> bool {
+         self.riichi_declared[0]
+     }
+     #[getter]
++    #[pyo3(name = "self_alert_accepted")]
+     #[inline]
+     #[must_use]
+     pub const fn self_riichi_accepted(&self) -> bool {
+@@ -148,6 +162,7 @@ impl PlayerState {
+     }
+ 
+     #[getter]
++    #[pyo3(name = "at_deadlock")]
+     #[inline]
+     #[must_use]
+     pub const fn at_furiten(&self) -> bool {

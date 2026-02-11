@@ -4,11 +4,13 @@
 
 ### Evaluation Protocol
 
-All ablation experiments use the 1v3 duplicate format from INFRASTRUCTURE.md § Rating and Evaluation. The challenger (treatment model) plays against 3 copies of the champion (control model). Each game seed is played 4 times with the challenger rotating through East/South/West/North seats, controlling for positional advantage and tile draw variance.
+All ablation experiments use the 1v3 duplicate format defined in [INFRASTRUCTURE.md § Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation). The challenger (treatment model) plays against 3 copies of the champion (control model). Each game seed is played 4 times with the challenger rotating through East/South/West/North seats, controlling for positional advantage and tile draw variance.
 
 Rank point distribution: [90, 45, 0, -135] (Tenhou Houou-style uma).
 
 ### Sample Sizes
+
+> Sample size tiers and statistical significance requirements are defined in [INFRASTRUCTURE.md § Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation). The tiers used for ablations:
 
 | Tier | Sets | Games (x4 rotations) | Purpose |
 |------|------|----------------------|---------|

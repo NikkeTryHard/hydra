@@ -58,7 +58,7 @@ graph LR
 | Batch size | 2048 | Large for stable gradients |
 | Epochs | 3 | Avoid overfitting human quirks |
 | LR schedule | 5e-4 → 1e-5 | Cosine annealing |
-| Optimizer | AdamW | Weight decay 1e-4 |
+| Optimizer | AdamW | Weight decay 0.01 |
 | Dropout | 0.1 | Regularization during training |
 | Normalization | GroupNorm(32) | Batch-independent |
 | Augmentation | 6× suit permutation | — |
@@ -69,7 +69,9 @@ $$\mathcal{L}_{\text{IL}} = \text{CE}(\pi, a_{\text{human}}) + 0.5 \times \text{
 
 Where $\mathcal{L}_{\text{aux}}$ includes GRP, tenpai, and danger auxiliary losses (see Loss Functions section).
 
-**Target metrics:**
+**Target metrics (aspirational — these are NOT the Phase 1 readiness gate):**
+
+> The readiness gate to enter Phase 2 has lower thresholds (discard ≥65%, placement ≤2.55, deal-in ≤15%). The targets below represent ideal Phase 1 performance. If the gate passes but targets are missed, Phase 2 proceeds — the targets guide hyperparameter tuning, not gating.
 
 | Metric | Target | Mortal Baseline |
 |--------|--------|-----------------|
@@ -215,6 +217,8 @@ graph TB
 
 **Opponent pool:**
 
+> See [INFRASTRUCTURE.md § Phase 3: League Self-Play](INFRASTRUCTURE.md#phase-3-league-self-play-ppo) for the full opponent pool specification (composition weights, GPU cache, selection protocol, FIFO eviction).
+
 | Opponent | Weight | Purpose |
 |----------|--------|---------|
 | Current self (all 4 seats) | 50% | Core self-play signal |
@@ -236,16 +240,18 @@ graph TB
 
  **PPO hyperparameters:**
 
+ > See [INFRASTRUCTURE.md § Phase 3: League Self-Play](INFRASTRUCTURE.md#phase-3-league-self-play-ppo) for the authoritative hyperparameter table. Key values:
+
  | Parameter | Value | Notes |
  |-----------|-------|-------|
- | Clip ε | 0.1 | Conservative for high-variance game (Atari default) |
- | Entropy coef | 0.01 → 0.005 | Decay over training |
- | GAE λ | 0.95 | Advantage estimation (per-kyoku, not per-game) |
- | γ (discount) | 1.0 | No discounting within kyoku (~15-20 decisions is short enough) |
+ | Clip ε | 0.1 | Conservative for high-variance game |
+ | Entropy coef | 0.01 → 0.005 | Linear decay |
+ | GAE λ | 0.95 | Per-kyoku advantage estimation |
+ | γ (discount) | 1.0 | Undiscounted episodic (matches Mortal) |
  | Value clip | Disabled | Hurts performance per Engstrom et al. (2020) and Andrychowicz et al. (2021) |
- | LR | 2.5e-4 → 0 | Linear annealing. Adam ε=1e-5 (not PyTorch default 1e-8) |
- | Batch size | 4096–8192 | Variance reduction |
- | Update epochs | 4 | Reuse each batch 4 times |
+ | LR | 1e-4, cosine annealing | Adam ε=1e-5 (not PyTorch default 1e-8) |
+ | Minibatch size | 4096 | Transitions per PPO minibatch |
+ | Update epochs | 3 | Conservative for self-play (reduce to 2 if approx_kl > 0.03) |
  | Gradient clip | 0.5 | Max grad norm, essential for stability |
  | Init | Orthogonal | std=√2 hidden, std=0.01 policy head, std=1.0 value head |
 
@@ -372,7 +378,7 @@ Where:
 
  The tenpai loss uses ground-truth labels from Oracle data during training (the teacher network sees opponent hands). The danger loss uses actual deal-in events as labels — for each tile that was discarded, whether it resulted in a deal-in.
 
-> **Note on offline regularization:** The original spec included CQL (Conservative Q-Learning) for Phase 1, but CQL requires per-action Q-values and is incompatible with Hydra's PPO actor-critic architecture (no Q-head). Phase 1 behavioral cloning with cross-entropy loss naturally stays close to the expert distribution without needing CQL-style regularization. If offline regularization proves necessary, PPO-compatible alternatives include filtered behavioral cloning (training only on high-rated games) or advantage-weighted regression.
+> **Design note (CQL):** CQL was considered for Phase 1 offline regularization but requires per-action Q-values, incompatible with Hydra's PPO actor-critic architecture. Cross-entropy behavioral cloning naturally stays close to the expert distribution. If offline regularization proves necessary, PPO-compatible alternatives include filtered behavioral cloning or advantage-weighted regression.
 
 ---
 
@@ -488,7 +494,7 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 - Behavioral cloning training loop
 - Validate accuracy targets (72% discard, 85% call, 80% riichi)
 
-**Phase 1 → Phase 2 gate:** Discard accuracy ≥65%, SL loss plateaued, test play placement ≤2.55, deal-in ≤15%.
+**Phase 1 → Phase 2 gate:** See [INFRASTRUCTURE.md § Phase 1](INFRASTRUCTURE.md#phase-1-behavioral-cloning-supervised) for the full readiness gate (discard accuracy ≥65%, SL loss plateaued, test play placement ≤2.55, deal-in ≤15%).
 
 ### Weeks 5–6: Phase 2 Training
 
@@ -496,7 +502,7 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 - Distillation training loop with KL divergence
 - Feature dropout schedule implementation
 
-**Phase 2 → Phase 3 gate:** Student placement ≤2.45, deal-in ≤13%, win rate ≥21%, win/deal-in ≥1.5:1, tenpai AUC ≥0.80.
+**Phase 2 → Phase 3 gate:** See [INFRASTRUCTURE.md § Phase 2](INFRASTRUCTURE.md#phase-2-oracle-distillation-rl) for the full readiness gate (student placement ≤2.45, deal-in ≤13%, win rate ≥21%, win/deal-in ≥1.5:1, tenpai AUC ≥0.80).
 
 ### Week 7+: Phase 3 Training
 

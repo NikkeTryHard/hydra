@@ -59,15 +59,7 @@ Hydra addresses the opponent modeling gap through four complementary systems:
 
 Hydra dedicates 23 input channels (channels 61–83) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
 
-```mermaid
-graph TB
-    subgraph "Safety Channels [61-83]"
-        GEN["Genbutsu<br/>Ch 61-69"]
-        SUJI["Suji<br/>Ch 70-78"]
-        KABE["Kabe/OneChance<br/>Ch 79-80"]
-        HINT["Tenpai Hints<br/>Ch 81-83"]
-    end
-```
+> See [HYDRA_SPEC.md § Safety Channels](HYDRA_SPEC.md#safety-channels-6183) for the channel-level summary diagram. This section provides the detailed design rationale and encoding logic.
 
 ### 2.1 Genbutsu (絶対安全牌) — Channels 61–69
 

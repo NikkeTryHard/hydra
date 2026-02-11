@@ -181,4 +181,4 @@ Normalization:
 | [14] | Engstrom et al., "Implementation Matters in Deep Policy Gradients" | 2020 | ICLR |
 | [15] | Huang, "The 37 Implementation Details of Proximal Policy Optimization" | 2022 | Blog/ICLR |
 
-> For references [1]-[5], [7]-[8], [13], [16] (Pluribus, ReBeL, AlphaStar, OpenAI Five, and related works), see [archive/REWARD_SURVEY.md](archive/REWARD_SURVEY.md#references).
+> For references [1]-[5], [7]-[8] (Pluribus, ReBeL, AlphaStar, OpenAI Five, and related works), see [archive/REWARD_SURVEY.md](archive/REWARD_SURVEY.md#references).

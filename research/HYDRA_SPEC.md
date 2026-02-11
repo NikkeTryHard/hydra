@@ -116,7 +116,7 @@ graph LR
 
 ### SE Attention Module
 
-The squeeze-and-excitation module uses CBAM-style dual-pool channel attention (Woo et al. 2018), matching Mortal's implementation exactly. The feature tensor is independently average-pooled and max-pooled to single values per channel, each passed through a **shared MLP** (same weights for both paths), then **element-wise added** (not concatenated) before sigmoid. This means the FC input dimension remains C (not 2C), and the bottleneck is C/r = 256/16 = **16**.
+The squeeze-and-excitation module uses dual-pool channel attention (inspired by the channel attention component of CBAM, Woo et al. 2018), matching Mortal's implementation exactly. The feature tensor is independently average-pooled and max-pooled to single values per channel, each passed through a **shared MLP** (same weights for both paths), then **element-wise added** (not concatenated) before sigmoid. This means the FC input dimension remains C (not 2C), and the bottleneck is C/r = 256/16 = **16**.
 
 ```mermaid
 graph LR
@@ -167,7 +167,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 | Value Head | ~132K | 0.8% |
 | GRP Head | ~106K | 0.6% |
 | Tenpai Head | ~17K | 0.1% |
-| Danger Head | ~771 | <0.1% |
+| Danger Head | 771 | <0.1% |
 | **Total (Student)** | **~16.5M** | **100%** |
 
 > The backbone completely dominates the parameter budget. Head overhead is negligible (~2.3% total), meaning the five-head design adds opponent modeling capability at virtually zero parameter cost.
@@ -532,7 +532,7 @@ Hydra can reference Mortal's published *techniques* (observable from papers and 
 
 **Dependency licenses:**
 - xiangting (MIT) — Shanten calculation
-- PyO3 (Apache-2.0) — Rust-Python bindings
+- PyO3 (MIT OR Apache-2.0) — Rust-Python bindings
 - PyTorch (BSD) — Neural network training
 
 ---

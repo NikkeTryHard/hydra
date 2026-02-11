@@ -180,7 +180,7 @@ Each training phase has its own checkpoint directory with independent retention 
 
 During Phase 3 league self-play, the training agent plays against a pool of past versions of itself (see the [opponent pool table in Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo)). This subsection specifies how pool models are created, versioned, rated, cached, and pruned.
 
-**Pool composition** (cross-reference: the [opponent selection table in Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo)):
+**Pool composition** (canonical definition in [INFRASTRUCTURE.md § Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo)):
 
 | Category | Weight | Source |
 |----------|--------|--------|
@@ -206,7 +206,7 @@ During Phase 3 league self-play, the training agent plays against a pool of past
 
 ### Phase Transition Loading
 
-Phase transitions are the most delicate moments in the training pipeline. The student network architecture is identical across all three phases, but the surrounding infrastructure — optimizer, scheduler, teacher model, KL anchor, opponent pool — changes at each boundary. This subsection specifies the exact loading procedure at each transition, complementing the carry/reset table in the [Phase Transitions](INFRASTRUCTURE.md#phase-transitions) section.
+Phase transitions are the most delicate moments in the training pipeline. The student network architecture is identical across all three phases, but the surrounding infrastructure — optimizer, scheduler, teacher model, KL anchor, opponent pool — changes at each boundary. This subsection specifies the exact loading procedure at each transition, extending the carry/reset table in [INFRASTRUCTURE.md § Phase Transitions](INFRASTRUCTURE.md#phase-transitions) with checkpoint-specific details.
 
 **Phase 1 to 2 transition** (cross-reference: the [Phase 1 → 2 procedure in Phase Transitions](INFRASTRUCTURE.md#phase-transitions)):
 

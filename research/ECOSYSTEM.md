@@ -65,7 +65,7 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ## 3. Data Sources & Datasets
 
-> **Training data is ready**: 3M+ Tenhou Phoenix MJAI games (pre-converted). See [archive/DATA_SOURCES.md](archive/DATA_SOURCES.md) for full details on sources, converters, and alternative datasets.
+> **Training data is ready**: ~6.6M high-rank 4p hanchan across three sources (2M Tenhou Houou + 1M Majsoul Throne + 3M Majsoul Jade). Tenhou logs pre-converted to MJAI. See [archive/DATA_SOURCES.md](archive/DATA_SOURCES.md) for full details on sources, converters, and alternative datasets.
 
 ### Synthetic Data (for self-play)
 
@@ -153,35 +153,4 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ## 6. Data Pipeline Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    DATA SOURCES                          │
-│                                                          │
-│  3M+ Phoenix MJAI games (pre-converted, ready)           │
-│                                                          │
-│  Self-play (mahjax/RiichiEnv) ──→ MJAI                   │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────┐
-│                    TRAINING                               │
-│                                                           │
-│  MJAI data ──→ PPO (CleanRL-style) + AMP (bf16)           │
-│            ──→ Oracle distillation (torchdistill)          │
-│            ──→ Self-play loop (OpenSpiel architecture)     │
-│            ──→ wandb tracking                              │
-│                                                           │
-│  Export: torch.onnx.export(fixed shapes, opset 17)        │
-│  Optimize: Microsoft Olive → INT8/FP16 quantization       │
-└──────────────────────┬───────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────┐
-│                    INFERENCE                              │
-│                                                           │
-│  ort (Rust) + CUDA EP + CUDA graphs + I/O binding         │
-│  Target: <5ms per inference                               │
-│                                                           │
-│  Evaluation: mjai-reviewer, mjai.app competition          │
-└──────────────────────────────────────────────────────────┘
-```
+> See [INFRASTRUCTURE.md § Data Pipeline](INFRASTRUCTURE.md#data-pipeline) and [INFRASTRUCTURE.md § System Architecture](INFRASTRUCTURE.md#system-architecture) for detailed pipeline diagrams.

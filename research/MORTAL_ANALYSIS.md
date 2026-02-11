@@ -82,47 +82,9 @@ Source: `libriichi/src/lib.rs`, `libriichi/src/consts.rs`
 
 ## MJAI Protocol
 
-MJAI is a line-delimited JSON protocol for mahjong AI communication.
-
-### Message Types
-
-| Type | Key Fields | Description |
-|------|-----------|-------------|
-| `start_game` | `names: [String; 4]` | Match start, player names |
-| `start_kyoku` | `bakaze, dora_marker, kyoku, honba, kyotaku, oya, scores, tehais` | Round start with full state |
-| `tsumo` | `actor, pai` | Tile draw |
-| `dahai` | `actor, pai, tsumogiri` | Tile discard (tsumogiri = drew and immediately discarded) |
-| `chi` / `pon` | `actor, target, pai, consumed` | Sequence or triplet call |
-| `daiminkan` / `kakan` / `ankan` | `actor, [target], pai, consumed` | Open kan, added kan, concealed kan |
-| `reach` | `actor` | Riichi declaration |
-| `hora` | `actor, target, [deltas, ura_markers]` | Win declaration |
-| `ryukyoku` | `[deltas]` | Exhaustive draw |
-
-### Tile Encoding
-
-- **Suited tiles**: `1m`–`9m` (manzu), `1p`–`9p` (pinzu), `1s`–`9s` (souzu)
-- **Red fives**: `5mr`, `5pr`, `5sr`
-- **Wind honors**: `E` (East), `S` (South), `W` (West), `N` (North)
-- **Dragon honors**: `P` (Haku/White), `F` (Hatsu/Green), `C` (Chun/Red)
-- **Actor IDs**: 0–3 via `BoundedU8`
+> See [INFRASTRUCTURE.md § MJAI Protocol](INFRASTRUCTURE.md#mjai-protocol) for the full protocol specification (message types, tile encoding, Mortal meta extensions). Hydra's canonical MJAI definition lives there.
 
 Source: `libriichi/src/mjai/event.rs`
-
-### Mortal Meta Extensions
-
-Mortal extends the MJAI protocol with a metadata structure attached to bot responses, containing the following fields:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `q_values` | `Vec<f32>` (optional) | Q-value estimate for each of the 46 possible actions |
-| `mask_bits` | `u64` (optional) | Bitmask indicating which actions are legal in the current state |
-| `shanten` | `i8` (optional) | Current shanten number (distance to tenpai; 0 = tenpai, −1 = complete) |
-| `is_greedy` | `bool` (optional) | Whether the bot chose the action with the maximum Q-value |
-| `eval_time_ns` | `u64` (optional) | Wall-clock inference time in nanoseconds |
-| `at_furiten` | `bool` (optional) | Whether the player is currently in furiten (cannot ron) |
-| `kan_select` | `Box<Metadata>` (optional) | Nested metadata for kan-specific decisions when a kan action triggers further choices |
-
-Source: `libriichi/src/mjai/event.rs:141-150`
 
 ## Confirmed Limitations
 
@@ -247,15 +209,7 @@ Source: GitHub Discussions #64, #27, #70
 
 ## 3-Player (Sanma) Adaptations
 
-Adapting Mortal for 3-player mahjong (sanma) requires several structural changes:
-
-1. **Tile removal**: Manzu tiles 2m through 8m are removed, reducing the live tile count to 108 total tiles.
-2. **Nukidora**: The North wind tile (N) is extracted as a bonus tile rather than played normally. This maps to action label 40 in the action space.
-3. **Chii disabled**: Sequence calls (chi) are not permitted in sanma — only pon and kan calls are legal.
-4. **Array sizes**: All player-indexed arrays shrink from 4 elements to 3 elements (3 seats instead of 4).
-5. **Library**: Sanma requires the `libriichi3p` fork rather than the standard `libriichi`.
-
-Source: `hidacow/mjai-reviewer3p`
+> Sanma is a stretch goal for Hydra. See [ECOSYSTEM.md](ECOSYSTEM.md) for the Meowjong reference implementation and [REFERENCES.md](REFERENCES.md) for the `mjai-reviewer3p` fork. Key differences from 4-player: remove 2-8m tiles (108 total), disable chi, add nukidora (N wind as bonus tile, action 40), shrink player arrays to 3. Requires `libriichi3p` fork.
 
 ## Ecosystem
 
@@ -289,26 +243,4 @@ Source: `shinkuan/Akagi`, `Cryolite/kanachan`
 
 ## Rust ML Ecosystem
 
-### Burn Framework
-
-Burn is the most promising native Rust option for ML training. Community DQN implementations already exist and serve as reference points:
-
-| Repository | Author |
-|-----------|--------|
-| `Reinforcement_Learning_DQN_in_Rust_using_Burn` | rootware |
-| `burn-rl-examples` | yunjhongwu |
-| `sb3-burn` | will-maclean |
-
-Burn supports multiple backends: **WGPU** (cross-platform GPU compute), **LibTorch** (PyTorch interop), and **CUDA** (direct NVIDIA GPU). There is no official `burn-rl` crate yet — reinforcement learning pipelines must be implemented manually using the framework primitives.
-
-### tch-rs
-
-tch-rs provides Rust bindings for LibTorch (the C++ backend of PyTorch). It is more mature and feature-complete than Burn for ML workloads but carries a heavy C++ dependency chain, making builds and deployment more complex.
-
-### Distributed Training Patterns
-
-- **IMPALA pattern**: Decoupled actors generate experience while a central learner consumes batches and updates weights. This avoids Mortal's subprocess-with-watchdog hack.
-- **crossbeam-channel**: High-throughput, lock-free channels for same-machine actor-to-learner communication.
-- **tokio**: Async runtime for coordinating distributed actors across machines.
-- **rayon**: Data-parallel library for running game simulations across CPU cores.
-- **Zero-copy transfer**: The `shared_memory` crate and Apache Arrow enable zero-copy data sharing between actor and learner processes.
+> See [ECOSYSTEM.md § Rust Inference Engines](ECOSYSTEM.md#4-inference--deployment) and [REFERENCES.md § Components](REFERENCES.md#components) for the full Rust ML tooling survey (Burn, tch-rs, ort, tract, candle) and distributed training patterns.

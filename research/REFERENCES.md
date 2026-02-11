@@ -16,7 +16,7 @@ Single source of truth for all citations in the Hydra project.
 | Real-time Mahjong AI based on Monte Carlo Tree Search (Bakuuchi) | Mizukami et al. | 2014 | IEEE | Pre-deep-learning SOTA using ISMCTS + rule-based heuristics | Historical baseline for MCTS approaches |
 | Phoenix: Open-Source Reproducible Mahjong Agent | — | 2023 | [Paper](https://csci527-phoenix.github.io/documents/Paper.pdf) | Transparent baseline with interpretable decision-making | Open-source baseline reference |
 | Building a Computer Mahjong Player via Deep Convolutional Neural Networks | — | 2018 | IEEE | CNN for Mahjong, baseline methods | Early CNN approach for mahjong |
-| Reward Variance Reduction for Limited-Compute RL | — | 2022 | IEEE CoG | RVR technique for reducing gradient noise from luck variance, single-GPU feasibility | Enables training on limited hardware; hand-luck baseline subtraction |
+| Reward Variance Reduction for Limited-Compute RL | Li, Wu, Fu, Fu, Zhao, Xing | 2022 | IEEE CoG | RVR technique for reducing gradient noise from luck variance, single-GPU feasibility | Enables training on limited hardware; hand-luck baseline subtraction |
 
 ### General Game AI
 
@@ -33,6 +33,7 @@ Single source of truth for all citations in the Hydra project.
 | Paper | Authors | Year | Venue / URL | Key Contribution | Relevance to Hydra |
 |-------|---------|------|-------------|------------------|---------------------|
 | Squeeze-and-Excitation Networks | Hu et al. | 2018 | CVPR | SE attention blocks for channel recalibration | Backbone design: dual-pool SE attention in every ResBlock |
+| CBAM: Convolutional Block Attention Module | Woo et al. | 2018 | ECCV | Channel + spatial attention via dual-pool (avg+max) shared MLP | Hydra's SE module uses CBAM's channel attention component (dual-pool shared MLP) |
 | Group Normalization | Wu & He | 2018 | ECCV | Batch-independent normalization | Training stability: GroupNorm(32) replaces BatchNorm |
 | Proximal Policy Optimization Algorithms | Schulman et al. | 2017 | [arXiv](https://arxiv.org/abs/1707.06347) | PPO clipped surrogate objective | Core RL algorithm for Phases 2-3 |
 | Attention Is All You Need | Vaswani et al. | 2017 | NeurIPS | Transformer architecture | Considered for backbone; used by Kanachan and Tjong |
@@ -45,7 +46,7 @@ Single source of truth for all citations in the Hydra project.
 
 | Project | URL | Language | Stars | License | Notes |
 |---------|-----|----------|-------|---------|-------|
-| Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1,334 | AGPL-3.0-or-later | Primary competitor. ResNet(12 blocks, 256ch) + Channel Attention → DQN(Dueling) + CQL. Reference only — AGPL, cannot derive code. Study: obs encoding (1012×34), action masking (46 actions), GRP head, 1v3 duplicate evaluation. Weights have additional distribution restrictions beyond AGPL. |
+| Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1,334 | AGPL-3.0-or-later | Primary competitor. ResNet(40 blocks, 192ch) + Channel Attention → DQN(Dueling) + CQL. Reference only — AGPL, cannot derive code. Study: obs encoding (1012×34), action masking (46 actions), GRP head, 1v3 duplicate evaluation. Weights have additional distribution restrictions beyond AGPL. |
 | Kanachan | https://github.com/Cryolite/kanachan | C++/Python | 326 | MIT | Transformer-based (BERT-style encoder), trained on 100M+ Mahjong Soul rounds with zero hand-crafted features. Matters: proves transformers work for mahjong, and uses LOUDS-based TRIE for shanten (alternative to table lookup). Same author as tsumonya. If Hydra ever experiments with transformer backbone, this is the reference. |
 | Akochan | https://github.com/critter-mj/akochan | C++ | 281 | Custom (restrictive, Japanese) | EV-based heuristic engine with explicit suji/kabe/genbutsu analysis. Not ML-based. Matters: its hand-crafted defense logic is a useful sanity check — if Hydra's neural network disagrees with Akochan's defense in obvious spots, something is wrong. Also used as the backend for the original mjai-reviewer. |
 | MahjongAI | https://github.com/erreurt/MahjongAI | Python | 446 | — | Extensible agent framework with pluggable strategies. Matters less for architecture, more for its Tenhou client implementation — shows how to connect an AI to Tenhou's protocol if we ever need that. |
@@ -78,7 +79,7 @@ Single source of truth for all citations in the Hydra project.
 | tomohxx/shanten-number | — | C++ | LGPL-3.0 | Original table-based shanten algorithm that xiangting is derived from. Algorithm reference only — LGPL prevents static linking. Tables: suhai (1.9M entries, ~19.4MB), jihai (78K entries, ~0.78MB). Base-5 encoding for tile state indexing. |
 | PyO3 | https://pyo3.rs/ | Rust | Apache-2.0 | Rust↔Python FFI. Hydra's Rust game engine exposes Python bindings via PyO3 for the training loop (PyTorch calls Rust for game simulation, obs generation, action execution). Critical path — every training step crosses this boundary. |
 | rayon | https://docs.rs/rayon/ | Rust | Apache-2.0 | Data parallelism for Rust. Used for batch game simulation — rayon's work-stealing scheduler distributes N parallel games across CPU cores during self-play data generation. |
-| serde / serde_json | https://serde.rs/ | Rust | Apache-2.0 | JSON serialization for MJAI protocol parsing. Every game log line is a JSON object that serde deserializes into typed Rust structs. Performance matters — parsing 3M+ games at startup. |
+| serde / serde_json | https://serde.rs/ | Rust | Apache-2.0 | JSON serialization for MJAI protocol parsing. Every game log line is a JSON object that serde deserializes into typed Rust structs. Performance matters — parsing ~6.6M games at startup. |
 | ndarray | https://docs.rs/ndarray/ | Rust | Apache-2.0 | N-dimensional array operations in Rust. Used for constructing observation tensors (1012×34) on the Rust side before passing to Python/PyTorch. |
 | ort | https://docs.rs/ort/ | Rust | Apache-2.0 | ONNX Runtime Rust bindings. Primary inference engine for self-play: loads exported PyTorch model as ONNX, runs forward passes with CUDA EP, CUDA graphs, and I/O binding for <5ms latency. This is the hot path during self-play — inference speed directly limits training throughput. |
 | tract | https://docs.rs/tract/ | Rust | MIT OR Apache-2.0 | Pure Rust ML inference engine (no C++ deps). CPU-only fallback for environments without CUDA. Useful for CI testing and CPU-only deployment. |
@@ -138,9 +139,9 @@ Single source of truth for all citations in the Hydra project.
 
 | Source | Volume | Quality | Access |
 |--------|--------|---------|--------|
-| Tenhou Phoenix Logs | 2M+ games (~17M rounds) | Very high — R>2000 / Dan players | Archive/scraping, log download tools |
-| Majsoul Throne Logs | 1M+ games | Very high — Saint3+ players | API extraction (WebSocket capture) |
-| Majsoul Jade Logs | 2M+ games | High — Master+ players | API extraction (lower training weight) |
+| Tenhou Phoenix Logs | 2M games (~17M rounds) | Very high — R>2000 / Dan players | Archive/scraping, log download tools |
+| Majsoul Throne Logs | 1M games | Very high — Saint3+ players | API extraction (WebSocket capture) |
+| Majsoul Jade Logs | 3M games | High — Master+ players | API extraction (lower training weight) |
 | Mahjong Soul (all ranks) | 100M+ rounds | Mixed (all ranks) | WebSocket capture |
 | Self-play | Unlimited | Depends on policy quality | Generated during RL training |
 

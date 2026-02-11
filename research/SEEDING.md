@@ -164,7 +164,7 @@ A standardized set of 50,000 game seeds ensures cross-run and cross-version comp
 
 - **Generation:** Derived from a published constant (`EVAL_MASTER = 0x2000`) using `SeedSequence(0x2000).generate_state(50000)`. The constant follows Mortal's convention for evaluation key derivation.
 - **Storage:** Checked into the repository as `data/eval_seeds.json` — never generated at runtime. This eliminates any risk of evaluation seed drift across code versions or platforms.
-- **Usage tiers:**
+- **Usage tiers** (matching [INFRASTRUCTURE.md § Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation)):
 
 | Tier | Seeds Used | Games (x4 rotations) | Purpose |
 |------|-----------|----------------------|---------|

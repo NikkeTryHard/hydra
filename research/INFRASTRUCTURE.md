@@ -138,14 +138,7 @@ Mortal extends the MJAI protocol with a metadata structure attached to bot respo
 
 ### Tile Representation
 
-The standard 34-tile index used by the `xiangting` crate:
-
-| Index | Tiles |
-|-------|-------|
-| 0–8 | 1–9m (Manzu) |
-| 9–17 | 1–9p (Pinzu) |
-| 18–26 | 1–9s (Souzu) |
-| 27–33 | E S W N 白 發 中 |
+> See [HYDRA_SPEC.md § Input Encoding](HYDRA_SPEC.md#input-encoding) for the canonical tile index mapping (0–33 across manzu, pinzu, souzu, jihai). The `xiangting` crate uses this same standard 34-tile index.
 
 ### Game State Machine
 
@@ -590,14 +583,9 @@ Where:
 - λ_anchor = 0.1, decaying to 0 over Phase 2 (prevents catastrophic forgetting of BC knowledge)
 - D_KL uses temperature τ = 3.0 (fixed, not annealed — annealing changes the meaning of "dark knowledge" mid-training)
 
-**Feature dropout schedule** (group-level scalar multiplication, from [TRAINING.md](TRAINING.md#feature-dropout-schedule)):
+**Feature dropout schedule** (group-level scalar multiplication, canonical definition in [TRAINING.md § Feature Dropout Schedule](TRAINING.md#feature-dropout-schedule)):
 
-| Stage | mask_opp (39ch) | mask_wall (166ch) | λ_KL | Rationale |
-|-------|-----------------|-------------------|------|-----------|
-| Early | 1.0 | 1.0 | 1.0 | Full oracle info; teacher policy is strong target |
-| Mid | 0.7 | 0.5 | 0.8 | Wall drops faster — future draws are pure stochasticity, hardest to infer from public info |
-| Late | 0.3 | 0.2 | 0.5 | Forcing student toward public-only representations |
-| Final | 0.0 | 0.0 | 0.3 | Student fully blind; minimal KL tether remains for stability |
+Two feature groups are masked independently: Group A (opponent hands, 39ch) scaled by `mask_opp`, and Group B (wall/dead wall, 166ch) scaled by `mask_wall`. Masks decay from 1.0 to 0.0 over training while λ_KL decays from 1.0 to 0.3. See TRAINING.md for the full schedule table.
 
 Post-dropout continuation: LR decayed to 1/10 of current value, importance weight rejection applied to prevent large policy updates on the now-fully-blind student.
 
