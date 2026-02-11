@@ -170,6 +170,14 @@ def train():
     optimizer = optim.AdamW(grp.parameters())
 
     state_file = cfg["state_file"]
+    max_steps = cfg["control"].get("max_steps", 500_000)
+    patience = cfg["control"].get("patience", 20)
+    best_val_loss = float("inf")
+    no_improve_count = 0
+    best_state_file = cfg["control"].get(
+        "best_state_file", state_file.replace(".pth", "_best.pth")
+    )
+
     if os.path.exists(state_file):
         state = torch.load(state_file, weights_only=True, map_location=device)
         timestamp = datetime.fromtimestamp(state["timestamp"]).strftime(
@@ -179,6 +187,9 @@ def train():
         grp.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
         steps = state["steps"]
+        if "best_val_loss" in state:
+            best_val_loss = state["best_val_loss"]
+            logging.info(f"restored best val_loss: {best_val_loss:.6f}")
     else:
         steps = 0
 
@@ -323,17 +334,52 @@ def train():
             writer.add_scalar("lr", lr, steps)
             writer.flush()
 
+            avg_val_loss = float(stats["val_loss"] / val_steps)
+
             for k in stats:
                 stats[k] = 0
-            logging.info(f"total steps: {steps:,}")
+
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                no_improve_count = 0
+                state = {
+                    "model": grp.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "steps": steps,
+                    "timestamp": datetime.now().timestamp(),
+                    "best_val_loss": best_val_loss,
+                }
+                torch.save(state, best_state_file)
+                logging.info(
+                    f"total steps: {steps:,} | new best val_loss: {best_val_loss:.6f}"
+                )
+            else:
+                no_improve_count += 1
+                logging.info(
+                    f"total steps: {steps:,} | val_loss: {avg_val_loss:.6f} (no improve {no_improve_count}/{patience})"
+                )
 
             state = {
                 "model": grp.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "steps": steps,
                 "timestamp": datetime.now().timestamp(),
+                "best_val_loss": best_val_loss,
             }
             torch.save(state, state_file)
+
+            if no_improve_count >= patience:
+                logging.info(
+                    f"early stopping at step {steps:,} — no val_loss improvement for {patience} evals"
+                )
+                pb.close()
+                break
+
+            if steps >= max_steps:
+                logging.info(f"reached max_steps ({max_steps:,}), stopping")
+                pb.close()
+                break
+
             pb = tqdm(total=save_every, desc="TRAIN")
     pb.close()
 
