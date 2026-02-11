@@ -55,6 +55,8 @@ Hydra addresses the opponent modeling gap through four complementary systems:
 
 ## 2. Safety Planes: Explicit Defensive Encoding
 
+> For the channel-level summary, see [HYDRA_SPEC § Safety Channels](HYDRA_SPEC.md#safety-channels-6183). This section provides the detailed design rationale and encoding logic.
+
 Hydra dedicates 23 input channels (channels 61–83) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
 
 ```mermaid
@@ -174,14 +176,7 @@ Estimate the probability each opponent is in tenpai, with emphasis on detecting 
 
 ### 3.2 Architecture
 
-The Tenpai Predictor Head is a lightweight fully-connected network attached to the shared backbone features:
-
-1. **Input:** The backbone's shared latent representation is global-average-pooled from shape `[B × 256 × 34]` to `[B × 256]`, collapsing the tile dimension.
-2. **Hidden layer:** A fully-connected layer maps 256 dimensions to 64, with ReLU activation.
-3. **Output layer:** A fully-connected layer maps 64 dimensions to 3 outputs (one per opponent), followed by sigmoid activation.
-4. **Output:** Three independent probabilities in [0, 1], each representing `P(tenpai)` for one opponent.
-
-The head is deliberately small — it relies on the backbone to extract relevant features and simply maps them to tenpai probabilities. The global average pooling aggregates information across all 34 tile positions, since tenpai detection requires holistic game-state reasoning rather than per-tile analysis.
+> See [HYDRA_SPEC § Tenpai Head](HYDRA_SPEC.md#tenpai-head) for the canonical architecture specification (GAP → FC(256→64) → FC(64→3) → Sigmoid).
 
 ### 3.3 Key Input Features and Signals
 
@@ -248,14 +243,9 @@ The Tenpai Head output feeds into three downstream systems:
 
 Estimate the deal-in probability for each possible discard tile. Given the current game state, the Danger Head answers: "If I discard this tile right now, what is the probability that an opponent wins off it?"
 
-### 4.2 Architecture
+### 4.2 Architecture and Design Rationale
 
-The Danger Head operates per-tile and per-opponent, maintaining the 34-tile geometry with opponent-level granularity:
-
-1. **Input:** The backbone's shared latent representation at shape `[B × 256 × 34]`.
-2. **Convolution:** A 1×1 Conv1D maps 256 channels to 3 channels (one per opponent), preserving the 34-tile dimension.
-3. **Activation:** Sigmoid squashes each output to [0, 1].
-4. **Output:** A `[B × 3 × 34]` tensor — per-opponent, per-tile deal-in probabilities.
+> See [HYDRA_SPEC § Danger Head](HYDRA_SPEC.md#danger-head) for the canonical architecture specification (1×1 Conv1D(256→3) → Sigmoid, output [B × 3 × 34]).
 
 Per-opponent granularity (3×34) is essential for mawashi-uchi (回し打ち) — the strategy of dodging one specific dangerous opponent while continuing to push against others. An aggregate 1×34 output would discard the per-opponent information that the backbone already encodes (genbutsu channels 61–69, suji channels 70–78, tenpai hints 81–83 are all per-opponent), creating an information bottleneck.
 
@@ -265,8 +255,6 @@ Per-opponent granularity (3×34) is essential for mawashi-uchi (回し打ち) �
 - Parameter cost is negligible: Conv1d(256→3) = 771 params vs Conv1d(256→1) = 257 params (+0.003% of total model)
 - Training labels are naturally per-opponent: each deal-in event identifies which opponent won
 - Mortal encodes all opponent info per-player (kawa, riichi, scores) — the output should match
-
-Unlike the Tenpai Head (which global-pools), the Danger Head preserves per-tile spatial information — danger is inherently tile-specific. The 1×1 convolution acts as a learned per-tile classifier using the full 256-dimensional feature vector at each tile position.
 
 ### 4.3 Output Interpretation
 
@@ -310,8 +298,6 @@ Where `p_t = p` if y=1, `p_t = 1-p` if y=0, and `α_t = α` if y=1, `α_t = 1-α
 - Critical for auxiliary heads: an overly aggressive pos_weight (w>20) distorts the shared backbone's representations, hurting the primary policy head. Focal loss avoids this by construction.
 - Fallback if focal loss is too complex to implement initially: use `BCEWithLogitsLoss(pos_weight=10.0)`, tune range [5, 20].
 
-**Loss weight in total training loss:** 0.05.
-
 ### 4.5 Risk-Adjusted Action Selection
 
 During inference, the policy head and danger head outputs are combined to produce risk-adjusted decisions. The per-opponent danger probabilities are first aggregated (weighted by tenpai probability):
@@ -331,43 +317,7 @@ where:
 
 **Dynamic λ via PID-Lagrangian (auto-tuned):**
 
-Rather than a hand-crafted formula, λ is treated as a Lagrange multiplier for a constrained MDP and auto-tuned during training using PID control (Stooke, Achiam, Abbeel, ICML 2020).
-
-The constraint: keep mean deal-in rate below a target threshold.
-
-**PID update rule:**
-
-```
-δ = mean_dealin_rate - target_dealin_rate
-λ_P = Kp × EMA(δ)                    # Proportional (smoothed)
-λ_I = max(0, λ_I + Ki × δ)           # Integral (accumulated error)
-λ_D = Kd × max(0, EMA(cost) - cost_delayed)  # Derivative (rate of change)
-λ = max(0, λ_P + λ_I + λ_D)
-```
-
-**PID hyperparameters:**
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Kp | 0.1 | Proportional gain |
-| Ki | 0.003 | Integral gain (slow accumulation) |
-| Kd | 0.01 | Derivative gain (dampening) |
-| target_dealin_rate | 0.12 | Initial target; tune per phase |
-| EMA α | 0.1 | Smoothing for proportional term |
-| λ upper bound | 10.0 | Prevent runaway defense |
-
-**Combined advantage (RCPO-style normalization):**
-
-The danger head's output feeds into a cost advantage A^C(s,a). The policy is optimized with a composite advantage that prevents objective collapse as λ grows:
-
-```
-A_combined = (A^R(s,a) - λ × A^C(s,a)) / (1 + λ)
-```
-
-Where:
-- A^R is the standard reward advantage (from GAE on game reward)
-- A^C is the cost advantage (from GAE on deal-in events: cost=1 if dealt in, 0 otherwise)
-- The `(1 + λ)` denominator normalizes the objective, preventing λ from dominating
+> The PID-Lagrangian controller specification (update rule, gains, λ range, combined advantage formula) is defined in [TRAINING § PID-Lagrangian λ Auto-Tuning](TRAINING.md#pid-lagrangian-λ-auto-tuning).
 
 **Why PID over hand-crafted λ:**
 - Mortal and Suphx use NO explicit λ — risk is implicit in Q-values/reward. This works but produces documented defensive weaknesses.
@@ -376,17 +326,6 @@ Where:
 - The RCPO normalization (dividing by 1+λ) is critical — without it, the policy objective collapses to pure safety minimization when λ is large.
 
 **Oshi-hiki calibration reference:** Human expert push/fold crossover occurs at W:D ≈ 0.88 for 2-han bad wait vs non-dealer riichi (from SMS / Shin Kagaku suru Mahjong). The PID-tuned λ should produce behavior consistent with these thresholds when evaluated on expert game logs.
-
-**At inference:** λ is fixed to its final training value. The danger head output is used via soft logit masking: `safe_logits = policy_logits - λ × danger_logits`. This is mathematically equivalent to the Lagrangian formulation in log-probability space.
-
-**λ range behavior:**
-
-| λ Range | Behavior | When PID produces this |
-|---------|----------|----------------------|
-| λ < 0.5 | Aggressive — push most hands | Deal-in rate well below target |
-| λ ≈ 1.0 | Balanced play | Deal-in rate near target |
-| λ > 2.0 | Defensive — fold weak hands | Deal-in rate above target |
-| λ > 5.0 | Ultra-defensive | Severe deal-in spike (early training) |
 
 ---
 
@@ -415,28 +354,13 @@ graph TB
 
 ### 5.2 How It Works
 
-**Teacher network:** An identical architecture to the student, but with expanded input that includes hidden information:
+> See [TRAINING § Phase 2: Oracle Distillation RL](TRAINING.md#phase-2-oracle-distillation-rl) for the full teacher-student architecture, oracle encoding specification, and distillation loss formulation.
 
-- Opponent hands (all tiles visible)
-- Wall composition (remaining tile distribution)
-- Ura-dora indicators
+The teacher sees everything (opponent hands, wall composition, ura-dora) and converges roughly 10× faster than a blind agent. The student trains with a combined PPO + KL divergence objective, developing "intuition" by associating observable patterns with the teacher's privileged decisions.
 
-The teacher trains with PPO on self-play using reward normalized with a hand-luck baseline. Because it sees everything, the teacher converges roughly 10× faster than a blind agent and makes near-optimal defensive decisions.
+**Feature dropout schedule:** To prevent the student from becoming dependent on the KL signal and to encourage genuine pattern learning, the teacher's access to hidden information is gradually reduced via group-level scalar multiplication on the two oracle feature groups (opponent hands and wall/dead wall).
 
-**Student network:** The standard blind architecture (84 input channels, no hidden information). The student trains with a combined objective:
-
-`Loss = PPO_loss + λ_KL × KL(Student || Teacher)`
-
-The KL divergence term forces the student's policy distribution to approximate the teacher's, even though the student cannot see the hidden information. Over time, the student develops "intuition" — it learns to associate observable patterns (discard sequences, call patterns, tedashi timing) with the teacher's privileged decisions.
-
-**Feature dropout schedule:** To prevent the student from becoming dependent on the KL signal and to encourage genuine pattern learning, the teacher's access to hidden information is gradually reduced:
-
-| Training Day | Teacher Hidden Mask | KL Weight |
-|--------------|---------------------|-----------|
-| Days 4–5 | 0% (full oracle access) | 1.0 |
-| Days 6–7 | 25% masked | 0.8 |
-| Days 8–9 | 50% masked | 0.5 |
-| Day 10 | 75% masked | 0.3 |
+> See [TRAINING § Feature Dropout Schedule](TRAINING.md#feature-dropout-schedule) for the canonical mask values and KL weight decay per training stage.
 
 As the teacher's advantage shrinks, the student must rely more on its own learned patterns rather than imitating a privileged teacher.
 
@@ -482,18 +406,7 @@ These multiply on top of the base wait type multiplier:
 
 ## 7. Comparison to Existing Approaches
 
-| Feature | Mortal | Suphx | Hydra |
-|---------|--------|-------|-------|
-| **Genbutsu encoding** | Implicit (must learn from raw discards) | Implicit | Explicit binary planes (Ch 61–69) |
-| **Suji encoding** | Implicit | Implicit | Explicit float planes (Ch 70–78) |
-| **Kabe encoding** | Implicit | Implicit | Explicit float planes (Ch 79–80) |
-| **Tenpai detection** | None — no mechanism for damaten | Oracle-guided (removed in practice) | Explicit auxiliary head + oracle distillation |
-| **Danger prediction** | Implicit via Q-values | Implicit via Q-values | Explicit per-tile, per-opponent danger head (3×34) |
-| **Damaten detection** | Poor — community-documented failure mode | Better via oracle training | Explicit tedashi pattern detection + tenpai head |
-| **Opponent modeling** | None (`SinglePlayerTables`) | Oracle-guided + run-time adaptation | Oracle distillation + explicit safety planes + auxiliary heads |
-| **Safety logic** | Must be learned implicitly | Must be learned implicitly | 23-plane explicit encoding |
-| **Training approach** | DQN + CQL (offline RL) | Oracle guiding → RL | PPO + oracle distillation + league training |
-| **Score awareness** | Dual-scale (100K/30K, degraded above 30K) | Not documented | Uncapped + relative gaps + overtake thresholds |
+> See [HYDRA_SPEC § Key Differentiators from Mortal](HYDRA_SPEC.md#key-differentiators-from-mortal) for the full feature comparison table.
 
 ### Key Differentiator
 
@@ -505,32 +418,7 @@ Mortal and Suphx both rely on the network to implicitly learn defensive concepts
 
 ### 8.1 Per-Phase Milestone Targets
 
-| Metric | Phase 1 (SL) | Gate | Phase 2 (Oracle RL) | Gate | Phase 3 (League) | Final Target |
-|--------|-------------|------|-------------------|------|-----------------|-------------|
-| Deal-in rate | ≤15% | ✓ | ≤13% | ✓ | ≤11% | **<10%** |
-| Win rate | ~19% | — | ≥21% | ✓ | ≥22% | **≥23%** |
-| Avg placement | ≤2.55 | ✓ | ≤2.45 | ✓ | ≤2.42 | **≤2.40** |
-| Tenpai head AUC | ≥0.70 | ✓ | ≥0.80 | ✓ | ≥75% accuracy | **≥75%** |
-| Danger head AUC | — | — | ≥0.75 | ✓ | — | — |
-| Win/deal-in ratio | ~1.3:1 | — | ≥1.5:1 | ✓ | ≥1.8:1 | **≥2.0:1** |
-| 4th place rate | — | — | ≤25% | — | ≤23% | **≤22%** |
-| Tenhou equiv. | ~2-dan | — | ~5-dan | — | ~7-dan | **≥8-dan** |
-
-**Phase transition gates (ALL must pass):**
-
-**Phase 1 → Phase 2:**
-1. Discard top-1 accuracy ≥ 65%
-2. SL loss plateaued (no improvement in 3 epochs)
-3. Test play avg placement ≤ 2.55
-4. Deal-in rate ≤ 15% in test play
-
-**Phase 2 → Phase 3:**
-1. Student avg placement ≤ 2.45 (1v3 vs SL baseline)
-2. Deal-in rate ≤ 13%
-3. Win rate ≥ 21%
-4. Win/deal-in ratio ≥ 1.5:1
-5. Win rate plateau for 20M+ steps
-6. Tenpai head AUC ≥ 0.80
+> See [TRAINING § Implementation Roadmap](TRAINING.md#implementation-roadmap) for the full per-phase milestone targets and transition gate criteria.
 
 ### 8.2 Final Performance Targets
 

@@ -4,6 +4,13 @@
 
 Hydra uses a hybrid Rust + Python architecture. Rust handles the game engine, observation encoding, and simulation — everything that benefits from low-level performance. Python handles neural network training and experiment tracking — everything that benefits from the ML ecosystem. This mirrors Mortal's design but with all original code (no AGPL-derived components).
 
+## Related Documents
+
+- [HYDRA_SPEC.md](HYDRA_SPEC.md) — Architecture, input encoding, output heads, inference
+- [TRAINING.md](TRAINING.md) — Training pipeline, loss functions, hyperparameters, roadmap
+- [SEEDING.md](SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
+- [CHECKPOINTING.md](CHECKPOINTING.md) — Checkpoint format, save protocol, retention policy
+
 ## System Architecture
 
 The system is composed of four major subsystems: the Rust core game engine, Python bindings via PyO3, the Python training stack, and the deployment pipeline. Data flows from the game engine through PyO3 into the training loop, and trained models are exported back through ONNX for pure-Rust inference.
@@ -88,6 +95,46 @@ The `hydra-core` crate is organized as a flat module layout under `src/`:
 | `mjai.rs` | MJAI protocol parser for log compatibility |
 | `simulator.rs` | Batch game simulation with rayon parallelism |
 | `python.rs` | PyO3 binding definitions exposed to Python |
+
+### MJAI Protocol
+
+MJAI is a line-delimited JSON protocol for mahjong AI communication. Hydra uses MJAI for game log compatibility (parsing Tenhou and Majsoul records) and bot interface (real-time play via `mjai.rs`).
+
+#### Message Types
+
+| Type | Key Fields | Description |
+|------|-----------|-------------|
+| `start_game` | `names: [String; 4]` | Match start, player names |
+| `start_kyoku` | `bakaze, dora_marker, kyoku, honba, kyotaku, oya, scores, tehais` | Round start with full state |
+| `tsumo` | `actor, pai` | Tile draw |
+| `dahai` | `actor, pai, tsumogiri` | Tile discard (tsumogiri = drew and immediately discarded) |
+| `chi` / `pon` | `actor, target, pai, consumed` | Sequence or triplet call |
+| `daiminkan` / `kakan` / `ankan` | `actor, [target], pai, consumed` | Open kan, added kan, concealed kan |
+| `reach` | `actor` | Riichi declaration |
+| `hora` | `actor, target, [deltas, ura_markers]` | Win declaration |
+| `ryukyoku` | `[deltas]` | Exhaustive draw |
+
+#### Tile Encoding
+
+- **Suited tiles**: `1m`–`9m` (manzu), `1p`–`9p` (pinzu), `1s`–`9s` (souzu)
+- **Red fives**: `5mr`, `5pr`, `5sr`
+- **Wind honors**: `E` (East), `S` (South), `W` (West), `N` (North)
+- **Dragon honors**: `P` (Haku/White), `F` (Hatsu/Green), `C` (Chun/Red)
+- **Actor IDs**: 0–3
+
+#### Mortal Meta Extensions
+
+Mortal extends the MJAI protocol with a metadata structure attached to bot responses. Hydra may partially support these fields for compatibility with Mortal-based evaluation tools.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `q_values` | `Vec<f32>` (optional) | Q-value estimate for each of the 46 possible actions |
+| `mask_bits` | `u64` (optional) | Bitmask indicating which actions are legal in the current state |
+| `shanten` | `i8` (optional) | Current shanten number (distance to tenpai; 0 = tenpai, −1 = complete) |
+| `is_greedy` | `bool` (optional) | Whether the bot chose the action with the maximum Q-value |
+| `eval_time_ns` | `u64` (optional) | Wall-clock inference time in nanoseconds |
+| `at_furiten` | `bool` (optional) | Whether the player is currently in furiten (cannot ron) |
+| `kan_select` | `Box<Metadata>` (optional) | Nested metadata for kan-specific decisions |
 
 ### Tile Representation
 
@@ -237,9 +284,9 @@ graph LR
 
 **Decision: On-the-fly Rust parsing (default) with optional pre-encoded shards for production.**
 
-The default path stores raw MJAI logs as `.json.gz` files (~70 GB for 7M games). A Rust `GameplayLoader` parses and encodes observations on-the-fly using rayon parallelism. This is Mortal's proven architecture — Mortal processes even larger tensors (1012×34 vs Hydra's 84×34) with the same approach, demonstrating that on-the-fly parsing is not a bottleneck at this scale.
+The default path stores raw MJAI logs as `.json.gz` files (~70 GB for ~6.6M games). A Rust `GameplayLoader` parses and encodes observations on-the-fly using rayon parallelism. This is Mortal's proven architecture — Mortal processes even larger tensors (1012×34 vs Hydra's 84×34) with the same approach, demonstrating that on-the-fly parsing is not a bottleneck at this scale.
 
-For production runs where maximum GPU utilization is critical, an optional pre-encoding step writes sharded binary files with Blosc+LZ4 compression (~500–800 GB for 7M games compressed at ~7:1 ratio). This path eliminates all CPU parsing overhead but requires re-encoding whenever features change. Pre-encoding is only justified if GPU utilization drops below 80% with on-the-fly parsing.
+For production runs where maximum GPU utilization is critical, an optional pre-encoding step writes sharded binary files with Blosc+LZ4 compression (~500–800 GB for ~6.6M games compressed at ~7:1 ratio). This path eliminates all CPU parsing overhead but requires re-encoding whenever features change. Pre-encoding is only justified if GPU utilization drops below 80% with on-the-fly parsing.
 
 **Rejected alternatives:**
 - **HDF5:** Thread-safety issues with h5py; single-writer bottleneck prevents parallel encoding.
@@ -275,7 +322,7 @@ Each DataLoader worker owns a disjoint slice of the file list (Mortal's partitio
 
 This 3-level strategy achieves temporal decorrelation comparable to a full-dataset shuffle without requiring the entire dataset to fit in memory. It mirrors KataGo's sliding-window shuffler design.
 
-**Sharding:** Raw MJAI logs (7M individual game files) are pre-packed into ~700 mega-shards of 10K games each. Each shard is a concatenated gzip archive with a small JSON index mapping game offsets. This avoids filesystem metadata overhead from millions of small files and enables efficient sequential reads.
+**Sharding:** Raw MJAI logs (~6.6M individual game files) are pre-packed into ~660 mega-shards of 10K games each. Each shard is a concatenated gzip archive with a small JSON index mapping game offsets. This avoids filesystem metadata overhead from millions of small files and enables efficient sequential reads.
 
 ### Gap 3: Filtering Strategy
 
@@ -285,7 +332,7 @@ Rather than filtering at training time (wasting CPU cycles re-evaluating criteri
 
 **Three-step process:**
 
-1. **Scan:** Parse all 7M game files and extract metadata (player names, room/lobby, source, basic stats). Store as a JSON manifest or SQLite database.
+1. **Scan:** Parse all ~6.6M game files and extract metadata (player names, room/lobby, source, basic stats). Store as a JSON manifest or SQLite database.
 2. **Filter:** Apply quality criteria per data tier (see below). Output a filtered file list.
 3. **Train:** The DataLoader reads only files in the filtered list. Zero runtime filtering overhead.
 
@@ -314,7 +361,7 @@ Only qualifying players' decision perspectives are used for training, even in ga
 - Games with >3 timeouts per player (AFK/bot behavior)
 - Games with <4 actions per player (aborted or bugged games)
 
-**Estimated dataset after filtering:** ~5–6M high-quality game perspectives from the 7M raw corpus.
+**Estimated dataset after filtering:** ~5–6M high-quality game perspectives from the ~6.6M raw corpus.
 
 ### Gap 4: Suit Permutation Augmentation
 
@@ -334,7 +381,7 @@ Mahjong strategy is invariant to suit identity — manzu, pinzu, and souzu are f
 
 ### Gap 5: Volume and Throughput Estimates
 
-All estimates scaled to 7M games × ~60 decisions per game = ~420M total decisions.
+All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total decisions.
 
 **Storage volumes:**
 
@@ -433,11 +480,11 @@ maturin develop --release
 
 ### Per-Phase Training Infrastructure
 
-Hydra's training proceeds through three distinct phases with different data sources, loss functions, and infrastructure requirements. Each phase builds on the previous, with explicit transition gates ensuring readiness. HYDRA_SPEC.md defines the algorithms and loss functions; this section specifies the infrastructure that runs them.
+Hydra's training proceeds through three distinct phases with different data sources, loss functions, and infrastructure requirements. Each phase builds on the previous, with explicit transition gates ensuring readiness. TRAINING.md defines the algorithms and loss functions; this section specifies the infrastructure that runs them.
 
 #### Phase 1: Behavioral Cloning (Supervised)
 
-**Data source:** Phase 1 Data Pipeline (see § Data Pipeline above) — 7M MJAI game logs, on-the-fly Rust parsing, 3-level shuffle.
+**Data source:** Phase 1 Data Pipeline (see § Data Pipeline above) — ~6.6M MJAI game logs, on-the-fly Rust parsing, 3-level shuffle.
 
 **Optimizer configuration:**
 
@@ -464,10 +511,10 @@ Hydra's training proceeds through three distinct phases with different data sour
 **Loss function:**
 L_IL = CE(π, a_human) + 0.5 × MSE(V, outcome) + 0.1 × L_aux
 
-Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and danger estimation (focal BCE). See HYDRA_SPEC.md § Phase 1 for component definitions and weights.
+Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and danger estimation (focal BCE). See [TRAINING.md § Phase 1](TRAINING.md#phase-1-supervised-warm-start) for component definitions and weights.
 
 **Training schedule:**
-- 3 epochs over the filtered dataset (~5-6M games, ~360-420M decisions)
+- 3 epochs over the filtered dataset (~5-6M games, ~300-360M decisions)
 - Random 1-of-6 suit permutation per game per epoch (see § Suit Permutation Augmentation)
 - Over 3 epochs, each game is seen under ~3 of the 6 possible permutations
 
@@ -478,10 +525,10 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 - Checkpoint every 10K steps; retain best + last 3; discard older (~330 MB per checkpoint)
 
 **Resource estimates:**
-- Steps per epoch: ~200K (420M decisions / 2048 per batch)
-- Total training steps: ~600K (3 epochs)
-- Wall time per epoch: ~2.8 hours on RTX PRO 6000 (Blackwell)
-- Total wall time: ~8.5 hours for 3 epochs
+- Steps per epoch: ~160K (330M decisions / 2048 per batch)
+- Total training steps: ~480K (3 epochs)
+- Wall time per epoch: ~2.2 hours on RTX PRO 6000 (Blackwell)
+- Total wall time: ~6.6 hours for 3 epochs
 - GPU memory: ~400 MB total (model + optimizer + batch — massive headroom on 96 GB)
 
 **Monitoring (via Weights & Biases):**
@@ -538,12 +585,12 @@ The teacher and student share identical ResBlock weights (all 40 blocks are arch
 L_distill = L_PPO(π_S) + λ_KL × D_KL(π_S ‖ π_T) + λ_anchor × D_KL(π_S ‖ π_BC)
 
 Where:
-- L_PPO includes policy, value, and entropy components (see HYDRA_SPEC.md § Phase 2)
+- L_PPO includes policy, value, and entropy components (see [TRAINING.md § Phase 2](TRAINING.md#phase-2-oracle-distillation-rl))
 - λ_KL follows the feature dropout schedule (decays from 1.0 to 0.3)
 - λ_anchor = 0.1, decaying to 0 over Phase 2 (prevents catastrophic forgetting of BC knowledge)
 - D_KL uses temperature τ = 3.0 (fixed, not annealed — annealing changes the meaning of "dark knowledge" mid-training)
 
-**Feature dropout schedule** (group-level scalar multiplication, from HYDRA_SPEC.md):
+**Feature dropout schedule** (group-level scalar multiplication, from [TRAINING.md](TRAINING.md#feature-dropout-schedule)):
 
 | Stage | mask_opp (39ch) | mask_wall (166ch) | λ_KL | Rationale |
 |-------|-----------------|-------------------|------|-----------|
@@ -621,7 +668,7 @@ graph TB
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Clip ε | 0.1 | Conservative; matches HYDRA_SPEC |
+| Clip ε | 0.1 | Conservative; matches [TRAINING.md](TRAINING.md) |
 | Entropy coef | 0.01 → 0.005 | Linear decay; prevents policy collapse in discrete action space |
 | Value loss coef | 0.5 | Standard |
 | γ (discount) | 1.0 | Undiscounted episodic (matches Mortal) |
@@ -738,437 +785,13 @@ The PyTorch model implements the SE-ResNet architecture defined in HYDRA_SPEC.md
 - **GroupNorm(32)** is used throughout instead of BatchNorm. GroupNorm has no running statistics, so it is immune to distribution shift between BC data and self-play data — unlike Mortal's BatchNorm which must be frozen during online RL.
 - **Orthogonal initialization:** std=√2 for hidden layers, 0.01 for policy head, 1.0 for value head (PPO standard from Andrychowicz et al. 2021).
 
-### Reproducibility and Seeding Strategy
+## Reproducibility and Seeding
 
-Training a mahjong AI involves randomness at every layer: tile shuffles, suit augmentation, DataLoader ordering, model initialization, GPU kernel scheduling, and opponent selection. This section specifies how Hydra governs all sources of randomness to enable deterministic replay, meaningful ablations, and post-hoc debugging — without sacrificing training performance.
-
-**Design philosophy:** Seed logging is more valuable than seed fixing. Full bitwise reproducibility is achievable for Phase 1 and useful for debugging, but Phases 2–3 are inherently stochastic due to RL exploration and system-level non-determinism. The strategy therefore prioritizes game-level determinism (always achievable) and component-level isolation (always auditable) over global training determinism (sometimes achievable, never required).
-
-#### Master Seed Contract
-
-A single integer master seed governs all randomness in a training run. This seed is the sole input needed to reconstruct the full random state of any component at any point in training.
-
-- **Source:** Passed as a CLI argument (`--seed`). Logged to W&B as a top-level run config parameter at run start.
-- **Contract:** Same `master_seed` + same code version + same hardware = bitwise-identical Phase 1 training; approximately identical Phases 2–3 (see Known Limitations below).
-- **Default behavior:** If no seed is provided, one is generated from `os.urandom`, converted to a 64-bit integer, and logged. This ensures every run is reproducible after the fact — the seed is never lost.
-- **Rust side:** The master seed feeds into the `rand 0.9+` ecosystem listed in the Crate Dependencies table. All Rust-side RNG is derived from this seed, never from system entropy during training.
-
-#### Seed Hierarchy
-
-**Decision: NumPy SeedSequence as the root of all randomness.**
-
-NumPy's `SeedSequence` implements a hash-based seed derivation scheme (based on ThreeFry) that guarantees statistically independent child streams from a single parent seed. This eliminates the classic anti-pattern of using `seed + i` for component seeds, which produces correlated low bits across components.
-
-**Component allocation via `spawn()`:**
-
-| Spawn Index | Component | Description |
-|-------------|-----------|-------------|
-| 0 | PyTorch model init | Seeds `torch.manual_seed()` before model construction |
-| 1 | DataLoader workers | Seeds the `torch.Generator` passed to DataLoader |
-| 2 | Suit augmentation | Seeds per-worker permutation selection |
-| 3 | Rust game engine | Session seed for self-play game generation |
-| 4 | Opponent pool selection | Seeds opponent category sampling (Phase 3) |
-| 5 | Evaluation seed bank | Seeds generation of the fixed evaluation game set |
-
-**Phase-level derivation:** Each training phase derives its own `SeedSequence` via `SeedSequence(master_seed, spawn_key=(phase_number,))`. This ensures Phase 2 explores different random trajectories than Phase 1 even though both originate from the same master seed.
-
-```mermaid
-graph TD
-    MASTER["master_seed (CLI or os.urandom)"]
-    MASTER --> P1["SeedSequence(master, spawn_key=(1,))"]
-    MASTER --> P2["SeedSequence(master, spawn_key=(2,))"]
-    MASTER --> P3["SeedSequence(master, spawn_key=(3,))"]
-
-    P1 --> S0_1["spawn(0): PyTorch Init"]
-    P1 --> S1_1["spawn(1): DataLoader"]
-    P1 --> S2_1["spawn(2): Suit Augment"]
-
-    P2 --> S0_2["spawn(0): PyTorch Init"]
-    P2 --> S1_2["spawn(1): DataLoader"]
-    P2 --> S2_2["spawn(2): Suit Augment"]
-    P2 --> S3_2["spawn(3): Rust Self-Play"]
-
-    P3 --> S0_3["spawn(0): PyTorch Init"]
-    P3 --> S3_3["spawn(3): Rust Self-Play"]
-    P3 --> S4_3["spawn(4): Opponent Pool"]
-
-    S3_3 --> GAME["Per-Game: set_stream(game_index)"]
-    GAME --> KYOKU["Per-Kyoku: SHA-256 KDF → wall shuffle"]
-```
-
-**Anti-patterns (never do):**
-- `seed + i` for sequential component seeds — correlated low bits across components
-- Reusing the same seed for multiple components — introduces hidden statistical dependencies
-- Calling `random.seed()` at module import time — pollutes the global RNG state before the hierarchy is established
-
-#### Per-Component Seeding
-
-**3a. PyTorch (model init and training)**
-
-`torch.manual_seed(component_seed)` seeds CPU and all CUDA device RNG streams simultaneously. This is called once before model construction at the start of each phase, ensuring that orthogonal initialization (specified in the Model Definition section) produces identical weights given the same seed. During training, PyTorch's RNG governs dropout (if any) and any stochastic layers — though Hydra's architecture uses no dropout, so the primary effect is on initialization.
-
-**3b. DataLoader Workers**
-
-Each DataLoader worker receives a deterministic seed derived from the hierarchy's DataLoader child via PyTorch's `Generator` parameter. The `worker_init_fn` callback uses this seed to initialize each worker's local NumPy and Python `random` state, ensuring that the 8 workers specified in the Data Loading Pipeline section produce deterministic file ordering and buffer shuffling across runs. Workers must never share RNG state or seed from `time()`.
-
-**3c. Suit Augmentation**
-
-Each DataLoader worker maintains a local RNG for selecting 1-of-6 suit permutations per game, as specified in the Suit Permutation Augmentation section. The local RNG is derived from the worker's own seed (not global state), avoiding GIL contention between workers. Over 6 epochs, this produces approximately uniform coverage of all 6 permutations for each game, without requiring coordination between workers.
-
-**3d. Rust Game Engine (Self-Play Seeds)**
-
-The Rust game engine receives a session seed derived from the hierarchy's game engine child. The derivation path:
-
-- **Session level:** `SeedSequence.generate_state(8)` produces a `[u8; 32]` array, used to seed a `ChaCha8Rng` via `from_seed()`.
-- **Per-game:** The session `ChaCha8Rng` uses `set_stream(game_index)` to create 2^64 independent game streams from a single session seed. Each game index maps to a unique, non-overlapping keystream.
-- **Per-kyoku:** Within each game, wall shuffles use a KDF pattern proven by Mortal: `SHA-256(session_seed || nonce || kyoku || honba)` produces a 32-byte seed for a fresh `ChaCha8Rng` that drives the Fisher-Yates shuffle for that specific kyoku's wall, dead wall, and dora indicators.
-- **Version pinning:** Pin `chacha20 = "=0.10.0"` in `Cargo.toml` to ensure cross-version replay stability. A minor version bump in the cipher crate could silently change the keystream, breaking deterministic replay.
-- **Shuffle implementation:** Vendor the Fisher-Yates shuffle implementation rather than depending on `rand::seq::SliceRandom`. The `SliceRandom` API has changed distribution behavior across `rand` versions; a vendored shuffle with a fixed algorithm guarantees identical wall orderings across Hydra versions.
-- **Cross-reference:** Deterministic replay of `(seed, kyoku, honba) → wall` is the foundation of the evaluation protocol described in the Rating and Evaluation section.
-
-**3e. Rayon Thread RNG**
-
-Game seeds are determined before dispatch to rayon workers — rayon distributes work, not randomness. Each game instance receives its pre-computed seed as a value parameter; no per-thread RNG is needed for game simulation. The rayon thread pool is a pure compute resource. If per-thread RNG is ever needed for future extensions (e.g., exploration noise during inference), the pattern is a `thread_local` `ChaCha8Rng` seeded from `game_seed XOR thread_index`, ensuring reproducibility regardless of work-stealing order.
-
-**3f. Opponent Pool Selection (Phase 3)**
-
-Opponent category selection (50% self / 30% random pool / 20% frozen baseline, as specified in the Phase 3 opponent pool table) uses its own `SeedSequence` child. Given the same seed and the same pool contents (same checkpoints at the same FIFO positions), the same opponent matchups are produced. This enables controlled ablations where only the training policy changes while the opponent schedule remains fixed.
-
-#### CUDA Determinism
-
-**Decision: Full determinism available for Phase 1 debugging; relaxed for Phases 2–3 performance.**
-
-| Flag | Phase 1 (BC) | Phases 2–3 (RL) | Effect |
-|------|-------------|-----------------|--------|
-| `torch.manual_seed()` | Always | Always | Seeds all CPU + CUDA RNG streams |
-| `cudnn.benchmark = False` | Always | Always | Disables auto-tuning; fixed-size inputs (84x34) make perf cost negligible |
-| `torch.use_deterministic_algorithms(True)` | Optional (debug) | No | Forces deterministic CUDA kernels; ~5–15% overhead |
-
-**Implementation notes:**
-- `torch.use_deterministic_algorithms(True)` subsumes the older `torch.backends.cudnn.deterministic = True` — use the modern API exclusively.
-- `CUBLAS_WORKSPACE_CONFIG` environment variable is no longer needed in PyTorch 2.x — deterministic cuBLAS workspace selection is handled internally when `use_deterministic_algorithms` is enabled.
-- bf16 matrix multiplications are deterministic given identical inputs; non-determinism in mixed-precision training comes from reduction ordering in multi-stream operations (e.g., gradient all-reduce), not from the matmul itself.
-- GroupNorm (used throughout the model, as specified in the Model Definition section) is fully deterministic — it has no running statistics and no non-deterministic CUDA kernels.
-- Conv1d switches to a deterministic cuDNN kernel when deterministic mode is enabled, with ~5–8% overhead compared to the auto-tuned non-deterministic kernel.
-- **Recommendation:** Enable full determinism for Phase 1 ablation studies and seed-specific debugging. Do not enable for Phases 2–3 — RL exploration, rayon work-stealing, and GIL contention already make these phases non-bitwise-reproducible, so the 5–15% overhead buys no additional reproducibility guarantee.
-
-#### Checkpoint RNG State
-
-Every checkpoint saves the following RNG state alongside model weights and optimizer state:
-
-| Component | What is Saved | Purpose |
-|-----------|---------------|---------|
-| PyTorch CPU RNG | `torch.random.get_rng_state()` | Reproducible forward pass on resume |
-| CUDA RNG (all devices) | `torch.cuda.get_rng_state_all()` | Reproducible GPU operations on resume |
-| Python `random` module | `random.getstate()` | Any Python-level randomness (logging, sampling) |
-| NumPy RNG | `SeedSequence` spawn counter + bit generator state | DataLoader and augmentation state |
-| Training progress | Epoch number, global step, file cursor position | Reconstruct DataLoader file ordering on resume |
-
-**Resume protocol:** On checkpoint load, all RNG states are restored before the first forward pass. The DataLoader reconstructs its file ordering from the saved epoch number and file cursor, ensuring that resumed training sees exactly the same data sequence as uninterrupted training.
-
-- **Phase 1:** Enables bitwise-identical training continuation — the resumed run produces the same gradients as if it had never been interrupted.
-- **Phases 2–3:** Enables approximate resumption. Game trajectories will differ due to thread scheduling non-determinism in rayon, but the statistical properties of the training distribution are preserved.
-
-#### Phase Transition Seeding
-
-At each phase boundary, all RNG components are re-seeded from the new phase's `SeedSequence` child. This extends the carry/reset table in the Phase Transitions section:
-
-| Component | Phase 1 → 2 | Phase 2 → 3 |
-|-----------|-------------|-------------|
-| SeedSequence | New child: `spawn_key=(2,)` | New child: `spawn_key=(3,)` |
-| PyTorch RNG | Re-seeded from new phase child | Re-seeded from new phase child |
-| Rust game engine | New session seed | New session seed |
-| NumPy RNG | Re-seeded | Re-seeded |
-| DataLoader Generator | Re-seeded | Re-seeded |
-| Opponent pool RNG | N/A | Initialized from new phase child |
-
-**Rationale:** Re-seeding ensures each phase explores different random trajectories even with the same master seed. Without re-seeding, Phase 2's game engine would replay the same wall shuffles as Phase 1's evaluation games, creating an artificial correlation between training and evaluation data.
-
-#### Evaluation Seed Bank
-
-**Decision: Fixed, published seed bank for all evaluation runs.**
-
-A standardized set of 50,000 game seeds ensures cross-run and cross-version comparability of evaluation results. The seed bank is a first-class artifact, not a runtime computation.
-
-- **Generation:** Derived from a published constant (`EVAL_MASTER = 0x2000`) using `SeedSequence(0x2000).generate_state(50000)`. The constant follows Mortal's convention for evaluation key derivation.
-- **Storage:** Checked into the repository as `data/eval_seeds.json` — never generated at runtime. This eliminates any risk of evaluation seed drift across code versions or platforms.
-- **Usage tiers:**
-
-| Tier | Seeds Used | Games (x4 rotations) | Purpose |
-|------|-----------|----------------------|---------|
-| Quick eval | First 1,000 | 4,000 | Trend detection during training |
-| Full eval | All 50,000 | 200,000 | Publication-quality checkpoint comparison |
-
-- **Cross-reference:** These tiers match the evaluation scale table in the Rating and Evaluation section. The ablation tier (250,000 sets / 1M games) uses a separate, larger seed bank generated from `EVAL_MASTER_ABLATION = 0x2001`.
-- **Invariant:** The seed bank file is append-only. New seeds may be added for larger evaluations, but existing seeds are never reordered or removed.
-
-#### Known Limitations
-
-What cannot be made deterministic and why:
-
-- **Phases 2–3 are NOT bitwise reproducible.** Four independent sources of non-determinism interact: GPU reduction ordering in multi-stream operations, rayon work-stealing thread scheduling, Python GIL contention timing, and `torch.compile()` JIT trace differences across runs.
-- **Phase 1 CAN be bitwise reproducible** with `torch.use_deterministic_algorithms(True)` enabled and a fixed seed. This is the recommended configuration for ablation studies and hyperparameter sweeps.
-- **Game-level replay IS always deterministic** regardless of training-level non-determinism. Given the same `(seed, kyoku, honba)` tuple, the wall shuffle, dora indicators, and draw order are identical across any platform, any Rust version, any number of threads.
-- **Consistent with industry practice:** KataGo, Mortal, and AlphaStar all achieve game-level determinism without full training reproducibility. No production RL system claims bitwise-reproducible multi-phase training.
-- **Reporting standard:** Following Henderson et al. 2018, report results over 5+ seeds with confidence intervals. Following Agarwal et al. 2021, use interquartile mean (IQM) with bootstrap confidence intervals for RL evaluation rather than mean +/- standard deviation, which is sensitive to outliers in heavy-tailed reward distributions.
-
-#### Seed Logging
-
-Every training run logs the complete seed provenance chain, enabling post-hoc reproduction of any specific game or training state:
-
-- **Run level:** Master seed, phase seed, all component seeds, config file hash, `Cargo.lock` hash.
-- **Game level:** Every self-play game logs its game seed in trajectory metadata. This enables replaying any specific game from a training run for debugging or analysis.
-- **Evaluation level:** Seed bank file hash and any per-run overrides are logged.
-- **Debugging workflow:** Failed reproduction? Check the logged seed, code version, and `Cargo.lock` hash. If all three match, the discrepancy is due to system-level non-determinism (thread scheduling, GPU reduction order) — not a code bug.
+> This section has been moved to [SEEDING.md](SEEDING.md).
 
 ## Checkpoint Management
 
-This section specifies the full checkpoint lifecycle: what is saved, where it lives on disk, how saves are made atomic and verifiable, how checkpoints are retained and pruned across training phases, and how they are loaded at phase transitions. The design prioritizes crash safety (no half-written files), auditability (every checkpoint is hash-verified), and operational simplicity (shell-friendly naming, standard tooling).
-
-### Checkpoint Format
-
-Every checkpoint is a single dictionary serialized via torch.save. The dictionary is self-describing: it contains the full training configuration, the current phase, and a schema version integer so that future format changes can be handled by explicit migration logic rather than silent breakage.
-
-**Core keys present in every checkpoint (all phases):**
-
-| Key | Content | Notes |
-|-----|---------|-------|
-| model_state_dict | Student network weights (bf16) | SE-ResNet backbone + all heads |
-| optimizer_state_dict | AdamW state (fp32 momentum buffers) | See dtype note below |
-| scheduler_state_dict | LR scheduler internal state | Cosine annealing position |
-| rng_state | PyTorch, CUDA, NumPy, Python RNG states | See the Checkpoint RNG State section |
-| global_step | Monotonic training step counter | Continuous across the entire run |
-| phase | Current phase (1, 2, or 3) | Integer |
-| config | Full training configuration | Makes checkpoint self-describing |
-| metrics | Phase-specific best metric snapshot | Used for best-checkpoint tracking |
-| timestamp | UTC Unix timestamp at save time | Seconds since epoch |
-| checkpoint_version | Schema version integer | Incremented on format changes |
-
-**Phase-specific additional keys:**
-
-| Key | Phases | Content |
-|-----|--------|---------|
-| teacher_state_dict | 2 only | Oracle teacher weights including oracle stem |
-| opponent_pool_metadata | 3 only | Current pool roster and version counter |
-
-**Separate files (not inside the training checkpoint):**
-
-- **KL anchor policy:** Saved as a standalone frozen copy alongside each training checkpoint. This is the snapshot of the previous phase's policy used for the KL divergence penalty that prevents catastrophic forgetting.
-- **GRP network:** A separate checkpoint file containing the pretrained, frozen game result prediction network. This file never changes during training and is shared across all phases.
-
-**Dtype discipline:** The student model is saved in its native bf16 dtype, halving checkpoint size relative to fp32. AdamW's internal momentum buffers (exp_avg and exp_avg_sq) are always fp32 — this is correct and intentional. Casting optimizer state to bf16 would silently destroy the precision that adaptive learning rates depend on. The save protocol preserves whatever dtype each tensor already has; no casting occurs at save time.
-
-**Size estimates:**
-
-| Component | Size | Notes |
-|-----------|------|-------|
-| Model weights (bf16) | ~33 MB | SE-ResNet 40-block, 256-channel |
-| AdamW momentum buffers (fp32) | ~134 MB | Two fp32 copies of all parameters |
-| Metadata, config, metrics | ~1 MB | Negligible |
-| **Training checkpoint total** | **~170 MB** | Typical Phase 2/3 checkpoint |
-| Phase 1 checkpoint | ~330 MB | Includes held-out file cursor and epoch state (see the Early stopping and checkpointing section) |
-| Inference-only pool model | ~33 MB | Weights only, no optimizer state |
-
-### Directory Structure
-
-All artifacts for a single training run live under a single run directory. The run ID encodes the start timestamp and master seed, making runs sortable by time and traceable to their seed provenance without opening any files.
-
-```mermaid
-graph TD
-    ROOT["runs/{run_id}/"] --> P1["phase1/checkpoints/"]
-    ROOT --> P2["phase2/checkpoints/"]
-    ROOT --> P3["phase3/checkpoints/"]
-    ROOT --> POOL["phase3/opponent_pool/"]
-    ROOT --> GATES["gates/"]
-    ROOT --> GRP["grp/"]
-    ROOT --> EVAL["eval/"]
-
-    P1 -.- P1N["Phase 1 training checkpoints"]
-    P2 -.- P2N["Phase 2 training checkpoints"]
-    P3 -.- P3N["Phase 3 training checkpoints"]
-    POOL -.- POOLN["Inference-only pool models + metadata"]
-    GATES -.- GATESN["bc_best.pt, distill_best.pt"]
-    GRP -.- GRPN["GRP network checkpoint"]
-    EVAL -.- EVALN["Evaluation results and seed banks"]
-```
-
-**Run ID format:** YYYYMMDD_HHmmss_{master_seed_hex8} — for example, 20260115_143022_a1b2c3d4. The timestamp makes runs sortable by start time; the hex seed suffix makes each run traceable to its master seed at a glance.
-
-**Key directories:**
-
-| Directory | Contents | Lifetime |
-|-----------|----------|----------|
-| phase{N}/checkpoints/ | Training checkpoints with optimizer state | FIFO-pruned to 20 per phase |
-| phase3/opponent_pool/ | Stripped inference-only model copies | FIFO-pruned to 20, anchors exempt |
-| gates/ | Phase-gate checkpoints (bc_best.pt, distill_best.pt) | Permanent — never pruned |
-| grp/ | Pretrained GRP network | Permanent — never modified |
-| eval/ | Evaluation results, seed banks | Permanent — append-only |
-
-The gates/ directory holds the irreplaceable phase-gate checkpoints that anchor the entire training pipeline. These are full copies of the best checkpoint from each phase, not symlinks, so they survive FIFO pruning of the per-phase checkpoint directories.
-
-### Naming Convention
-
-Checkpoint filenames are designed for three audiences: automated tooling (predictable parsing), shell one-liners (lexicographic sort equals chronological order), and humans scanning a directory listing (phase and step visible at a glance).
-
-**Training checkpoints:**
-
-| Pattern | Example | Notes |
-|---------|---------|-------|
-| ckpt_phase{N}_step{global_step:08d}.pt | ckpt_phase2_step00045000.pt | Zero-padded 8 digits; supports up to 99,999,999 steps |
-
-**Symlinks (per-phase convenience pointers):**
-
-| Symlink | Target | Purpose |
-|---------|--------|---------|
-| latest.pt | Most recently saved checkpoint | Resume after crash |
-| best.pt | Best-metric checkpoint for current phase | Quick access to peak performance |
-
-These are true filesystem symlinks, updated atomically after each successful save. They are never FIFO-evicted.
-
-**Gate checkpoints:**
-
-| File | Location | Notes |
-|------|----------|-------|
-| bc_best.pt | gates/ | Full copy of Phase 1 best checkpoint |
-| distill_best.pt | gates/ | Full copy of Phase 2 best checkpoint |
-
-Gate checkpoints are full independent copies, not symlinks. This is deliberate: symlinks into FIFO-pruned directories would eventually dangle.
-
-**Pool models:**
-
-| Pattern | Example | Notes |
-|---------|---------|-------|
-| pool_v{version:04d}_step{step:08d}.pt | pool_v0042_step00120000.pt | Monotonic version counter; inference-only weights |
-
-**Sidecar files:**
-
-| Suffix | Content | Purpose |
-|--------|---------|---------|
-| .sha256 | Hex digest + filename (GNU coreutils format) | Integrity verification via sha256sum -c |
-| .meta.json | Pool model metadata (version, ratings, etc.) | Pool management without deserializing the model |
-
-**Shell convenience:** All naming patterns are designed so that simple shell commands produce useful output. Listing checkpoints in chronological order requires nothing more than lexicographic sort, since zero-padded step numbers and the ckpt_ prefix guarantee correct ordering.
-
-### Save Protocol
-
-Every checkpoint write follows an 8-step atomic save sequence. The goal is to guarantee that the on-disk state is always either a complete, valid checkpoint or nothing at all — never a half-written file that could silently corrupt a resumed training run.
-
-**The 8-step atomic save sequence:**
-
-| Step | Action | Why |
-|------|--------|-----|
-| 1 | Serialize checkpoint dict to in-memory byte buffer | Catches serialization errors before touching disk |
-| 2 | Compute SHA-256 digest of the byte buffer | Integrity baseline computed once, used for sidecar |
-| 3 | Write byte buffer to {target_path}.tmp on same filesystem | Temporary file; invisible to checkpoint discovery |
-| 4 | Flush Python buffers to OS | Ensures Python write buffers are handed to the kernel |
-| 5 | fsync file descriptor to push OS buffers to disk | Ensures data is durable on physical storage |
-| 6 | Atomic rename .tmp to final path | POSIX guarantee: rename on same filesystem is atomic |
-| 7 | Write .sha256 sidecar with hex digest | GNU coreutils format for offline verification |
-| 8 | fsync parent directory | Ensures the rename (directory entry update) survives power failure |
-
-**Why all 8 steps matter:** PyTorch's Distributed Checkpoint Protocol covers steps 3 through 6. PyTorch Lightning uses an in-memory BytesIO buffer (step 1). No major training framework computes SHA-256 digests on training checkpoints (step 2) or performs a directory fsync after rename (step 8). Hydra combines all eight steps because the cost is negligible (a few milliseconds of CPU time and one extra syscall) and the protection is comprehensive.
-
-**Failure mode analysis:** A crash between steps 6 and 7 leaves a valid, complete checkpoint on disk with a missing or stale SHA-256 sidecar. This is the only expected partial-failure window. The checkpoint loader treats a missing sidecar as a warning (log and proceed), not a hard error, so this scenario does not block training resumption. A crash before step 6 leaves only the .tmp file, which checkpoint discovery ignores.
-
-### Per-Phase Retention Policy
-
-Each training phase has its own checkpoint directory with independent retention settings. The policy balances disk budget against the need to roll back to earlier states if training diverges.
-
-| Parameter | Phase 1 (BC) | Phases 2-3 (RL) |
-|-----------|-------------|-----------------|
-| Save interval | Every 10,000 training steps | Every 500 PPO update steps |
-| Max checkpoints (FIFO) | 20 | 20 |
-| Protected from FIFO | best.pt target, gate checkpoint | best.pt target, gate checkpoints |
-| "Best" metric | Lowest held-out cross-entropy loss | Highest conservative rating (mu - 3*sigma) |
-| Gate checkpoint | bc_best.pt (copied to gates/) | distill_best.pt (copied to gates/) |
-| Disk budget (worst case) | 20 x 330 MB = ~6.6 GB | 20 x 170 MB = ~3.4 GB |
-
-**FIFO eviction:** When the checkpoint count in a phase directory exceeds 20, the oldest non-protected checkpoint is deleted. "Protected" means either: the checkpoint is the current target of the best.pt symlink, or the checkpoint has been copied to gates/ as a phase-gate artifact. Everything else is fair game for eviction.
-
-**best.pt tracking:** After every save, the new checkpoint's metric is compared against the current best. If improved, the best.pt symlink is updated to point to the new checkpoint. The metric used depends on the phase: Phase 1 uses held-out cross-entropy loss (lower is better); Phases 2 and 3 use the conservative OpenSkill rating (mu minus three sigma), as defined in the Rating and Evaluation section.
-
-### Opponent Pool Versioning
-
-During Phase 3 league self-play, the training agent plays against a pool of past versions of itself (see the opponent pool table in Phase 3). This subsection specifies how pool models are created, versioned, rated, cached, and pruned.
-
-**Pool composition** (cross-reference: the opponent selection table in Phase 3):
-
-| Category | Weight | Source |
-|----------|--------|--------|
-| Current self (all 4 seats) | 50% | Live training weights |
-| Random pool checkpoint | 30% | Uniformly sampled from pool roster |
-| Phase 2 baseline (frozen) | 20% | distill_best.pt — never updated |
-
-**Version assignment:** A monotonic integer counter is incremented each time a new model is promoted into the pool. Version numbers never reset or recycle, even across training restarts. This provides a total ordering of pool models that is independent of step numbers or wall-clock time.
-
-**Promotion protocol:** Every save_interval (500 PPO update steps), the current training model's weights are stripped to inference-only form (no optimizer state, no scheduler state) and added to the opponent pool as a new versioned entry. The stripped copy is approximately 33 MB — one-fifth the size of a full training checkpoint.
-
-**Rating integration:** New pool entries are rated using the OpenSkill PlackettLuce system described in the Rating and Evaluation section. A newly promoted model inherits its mu (skill estimate) from the current training model's rating but has its sigma (uncertainty) inflated to the larger of the current sigma or one-third of the default sigma. This sigma inflation ensures the new entry is sampled frequently for evaluation games until its rating stabilizes.
-
-**GPU cache:** The 5 most recently used pool models are kept resident in GPU memory as bf16 inference copies (LRU eviction). This avoids repeated CPU-to-GPU transfers for frequently matched opponents. The cache capacity matches the value documented in the opponent pool table in Phase 3.
-
-**Sidecar metadata:** Each pool model has a companion .meta.json file containing: version number, source global step, source phase, current rating mu and sigma, total games played, win rate, and promotion timestamp (UTC). This metadata enables pool management decisions (eviction, sampling) without deserializing the full model weights.
-
-**Frozen anchors:** bc_best.pt and distill_best.pt are permanent members of the opponent pool. They are never evicted by FIFO pruning, never re-rated (their ratings are fixed at promotion time), and never updated. They serve as fixed reference points that anchor the rating scale and prevent catastrophic forgetting.
-
-**FIFO eviction:** When the pool directory exceeds 20 model files, the oldest non-anchor entry is deleted. Before deletion, the model's full rating history (mu, sigma, games played, win rate) is appended to a pool eviction log for post-hoc analysis. The .meta.json sidecar is also deleted.
-
-**Deterministic selection:** Pool opponent selection uses its own SeedSequence child, as described in the Phase Transition Seeding section. Given the same seed and the same pool contents (same models at the same FIFO positions), the same opponent matchup sequence is produced. This enables controlled ablations where only the training policy changes while the opponent schedule remains fixed.
-
-### Phase Transition Loading
-
-Phase transitions are the most delicate moments in the training pipeline. The student network architecture is identical across all three phases, but the surrounding infrastructure — optimizer, scheduler, teacher model, KL anchor, opponent pool — changes at each boundary. This subsection specifies the exact loading procedure at each transition, complementing the carry/reset table in the Phase Transitions section.
-
-**Phase 1 to 2 transition** (cross-reference: the Phase 1 → 2 procedure in Phase Transitions):
-
-| Step | Action | Rationale |
-|------|--------|-----------|
-| 1 | Load bc_best.pt with strict model loading | Architecture is identical; strict mode catches any key mismatch |
-| 2 | Copy student weights into teacher; initialize random oracle stem on teacher | Teacher starts as a student clone plus new oracle capacity |
-| 3 | Freeze teacher: eval mode, no gradients, bf16 cast | Teacher provides signal only — must not receive gradient updates |
-| 4 | Freeze copy of Phase 1 policy head as KL anchor | Prevents catastrophic forgetting of BC knowledge during RL |
-| 5 | Discard optimizer and scheduler state from checkpoint | Stale BC momentum is counterproductive for RL; create fresh AdamW with warmup |
-| 6 | Re-seed all RNG from Phase 2 SeedSequence child | See the Phase Transition Seeding section |
-| 7 | Reset best-metric tracker; begin Phase 2 training loop | Phase 2 uses a different "best" metric than Phase 1 |
-
-**Phase 2 to 3 transition** (cross-reference: the Phase 2 → 3 procedure in Phase Transitions):
-
-| Step | Action | Rationale |
-|------|--------|-----------|
-| 1 | Load distill_best.pt with strict model loading | Architecture is identical; strict mode catches any key mismatch |
-| 2 | Verify feature dropout masks have reached 0.0 | Safety check: oracle features must be fully ablated before self-play |
-| 3 | Discard teacher model and oracle critic | No longer needed — Phase 3 is pure self-play |
-| 4 | Initialize opponent pool with distill_best.pt and bc_best.pt as frozen anchors | Pool starts with two fixed reference opponents |
-| 5 | Freeze Phase 2 policy as new KL anchor | Prevents catastrophic forgetting of distillation knowledge |
-| 6 | Discard optimizer and scheduler; create fresh AdamW with warmup | Same rationale as Phase 1 → 2: stale momentum harms new objective |
-| 7 | Re-seed all RNG from Phase 3 SeedSequence child | See the Phase Transition Seeding section |
-| 8 | Initialize OpenSkill ratings for all pool members; reset best-metric tracker | Rating system starts fresh for the league |
-
-**Strict loading:** Both transitions use strict model loading, meaning every key in the checkpoint must match exactly one key in the model, and vice versa. This is safe because the student architecture is identical across all three phases — same ResBlock count, same channel width, same head structure. A key mismatch at transition time indicates a code bug, not an expected architecture change, and should fail loudly.
-
-**Teacher isolation:** The teacher model in Phase 2 is a separate instantiation with its own state_dict. It is never mixed into the student's state_dict and has no entry in the student's optimizer. When the teacher is discarded at the Phase 2 → 3 transition, no cleanup of the student checkpoint is needed.
-
-### Checkpoint Integrity
-
-Every checkpoint is protected by a SHA-256 digest computed at save time and verified at load time. The integrity system is designed to catch silent corruption (bit-rot, incomplete writes, storage errors) while remaining compatible with standard Unix tooling.
-
-**SHA-256 sidecar format:** Each checkpoint file has a companion .sha256 file containing the hex digest and filename in GNU coreutils format. This means the sidecar is directly verifiable using the standard sha256sum -c command — no custom tooling required for offline auditing or batch verification of an entire checkpoint directory.
-
-**Verification on load:**
-
-| Sidecar state | Digest match | Loader behavior |
-|---------------|-------------|-----------------|
-| Present | Matches | Load proceeds normally |
-| Present | Mismatch | Abort with clear error; do not deserialize |
-| Missing | N/A | Log warning; load proceeds (graceful degradation) |
-
-The missing-sidecar case enables backward compatibility with checkpoints created before the integrity system was added, or recovery from the narrow failure window described in the Save Protocol section (crash between steps 6 and 7).
-
-**Corruption recovery for training checkpoints:** If the latest checkpoint fails integrity verification, the loader automatically falls back to the previous FIFO-retained checkpoint. This fallback chain extends through all retained checkpoints (up to 20). If every retained checkpoint is corrupt — an extremely unlikely scenario requiring sustained storage failure — the training run aborts with a diagnostic message listing every checkpoint attempted and the nature of each failure.
-
-**Gate checkpoint verification:** bc_best.pt and distill_best.pt receive stricter treatment. These gate checkpoints are verified at every phase transition load, and there is no fallback: a corrupt gate checkpoint causes a hard failure. This is correct because gate checkpoints are irreplaceable — they represent the single best model from a completed training phase. A corrupt gate checkpoint means the upstream phase must be re-run, and silently loading a damaged model would produce subtly wrong downstream training that is far more expensive to diagnose than an immediate failure.
-
-**Manual verification:** Because the .sha256 sidecars use standard GNU coreutils format, any checkpoint directory can be audited offline with a single shell command. This is useful for verifying checkpoint integrity after copying runs between machines, restoring from backup, or archiving completed experiments.
+> This section has been moved to [CHECKPOINTING.md](CHECKPOINTING.md).
 
 ## Deployment
 
@@ -1247,3 +870,20 @@ graph LR
         EXPORT --> DEPLOY[Deploy]
     end
 ```
+
+### CI Pipeline
+
+Every pull request and merge to main runs automated checks to catch regressions before they corrupt training data. The pipeline is ordered from fastest to slowest — a lint failure aborts before spending minutes on test suites.
+
+| Stage | Command | Trigger | Expected Time |
+|-------|---------|---------|---------------|
+| Rust lint | `cargo clippy --all-targets -- -D warnings` | Every PR | ~30s |
+| Rust test | `cargo test --release` | Every PR | ~2min |
+| Python lint | `ruff check hydra-train/` | Every PR | ~5s |
+| Python type check | `pyright hydra-train/` | Every PR | ~30s |
+| Python test | `pytest hydra-train/tests/ -x` | Every PR | ~1min |
+| ONNX export smoke | `python scripts/export_onnx.py --smoke` | Every PR | ~30s |
+| Encoding regression | `cargo test --release encoder_golden_tests` | Every PR | ~1min |
+| Full eval (200K games) | `python scripts/evaluate.py --tier full` | Merge to main | ~4h |
+
+**Design rationale:** The encoding regression stage runs the golden tests from TESTING.md § Known-State Golden Tests. Any encoder change that alters output tensors must explicitly regenerate golden files — accidental encoding drift is the single most dangerous silent failure mode in the pipeline. The full eval runs only on merge to main because it takes hours and is not needed for incremental development.
