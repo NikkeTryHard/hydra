@@ -1,8 +1,59 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index be34fed..f039109 100644
+index be34fed..ae84c87 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -132,6 +132,8 @@ version = "1.2.25"
+@@ -8,6 +8,41 @@ version = "2.0.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
+ 
++[[package]]
++name = "aead"
++version = "0.5.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"
++dependencies = [
++ "crypto-common",
++ "generic-array",
++]
++
++[[package]]
++name = "aes"
++version = "0.8.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
++dependencies = [
++ "cfg-if",
++ "cipher",
++ "cpufeatures",
++]
++
++[[package]]
++name = "aes-gcm"
++version = "0.10.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
++dependencies = [
++ "aead",
++ "aes",
++ "cipher",
++ "ctr",
++ "ghash",
++ "subtle",
++]
++
+ [[package]]
+ name = "ahash"
+ version = "0.8.12"
+@@ -15,7 +50,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+ dependencies = [
+  "cfg-if",
+- "getrandom",
++ "getrandom 0.3.3",
+  "once_cell",
+  "version_check",
+  "zerocopy",
+@@ -132,6 +167,8 @@ version = "1.2.25"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "d0fc897dc1e865cc67c0e05a836d9d3f1df3cbe442aa4a9473b18e12624a4951"
  dependencies = [
@@ -11,7 +62,44 @@ index be34fed..f039109 100644
   "shlex",
  ]
  
-@@ -458,6 +460,16 @@ version = "1.0.2"
+@@ -181,6 +218,16 @@ dependencies = [
+  "half",
+ ]
+ 
++[[package]]
++name = "cipher"
++version = "0.4.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
++dependencies = [
++ "crypto-common",
++ "inout",
++]
++
+ [[package]]
+ name = "clap"
+ version = "4.5.39"
+@@ -345,9 +392,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
+ dependencies = [
+  "generic-array",
++ "rand_core 0.6.4",
+  "typenum",
+ ]
+ 
++[[package]]
++name = "ctr"
++version = "0.9.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
++dependencies = [
++ "cipher",
++]
++
+ [[package]]
+ name = "darling"
+ version = "0.20.11"
+@@ -458,6 +515,16 @@ version = "1.0.2"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
  
@@ -28,7 +116,7 @@ index be34fed..f039109 100644
  [[package]]
  name = "exe-wrapper"
  version = "0.1.0"
-@@ -466,6 +478,17 @@ dependencies = [
+@@ -466,6 +533,17 @@ dependencies = [
   "dunce",
  ]
  
@@ -46,7 +134,60 @@ index be34fed..f039109 100644
  [[package]]
  name = "flate2"
  version = "1.1.1"
-@@ -649,6 +672,16 @@ version = "1.0.15"
+@@ -492,6 +570,17 @@ dependencies = [
+  "version_check",
+ ]
+ 
++[[package]]
++name = "getrandom"
++version = "0.2.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
++dependencies = [
++ "cfg-if",
++ "libc",
++ "wasi 0.11.1+wasi-snapshot-preview1",
++]
++
+ [[package]]
+ name = "getrandom"
+ version = "0.3.3"
+@@ -501,7 +590,17 @@ dependencies = [
+  "cfg-if",
+  "libc",
+  "r-efi",
+- "wasi",
++ "wasi 0.14.2+wasi-0.2.4",
++]
++
++[[package]]
++name = "ghash"
++version = "0.5.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
++dependencies = [
++ "opaque-debug",
++ "polyval",
+ ]
+ 
+ [[package]]
+@@ -616,6 +715,15 @@ version = "2.0.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f4c7245a08504955605670dbf141fceab975f15ca21570696aebe9d2e71576bd"
+ 
++[[package]]
++name = "inout"
++version = "0.1.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
++dependencies = [
++ "generic-array",
++]
++
+ [[package]]
+ name = "inventory"
+ version = "0.3.20"
+@@ -649,6 +757,16 @@ version = "1.0.15"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
  
@@ -56,14 +197,14 @@ index be34fed..f039109 100644
 +source = "registry+https://github.com/rust-lang/crates.io-index"
 +checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
 +dependencies = [
-+ "getrandom",
++ "getrandom 0.3.3",
 + "libc",
 +]
 +
  [[package]]
  name = "js-sys"
  version = "0.3.77"
-@@ -684,6 +717,17 @@ dependencies = [
+@@ -684,10 +802,22 @@ dependencies = [
   "libc",
  ]
  
@@ -81,7 +222,20 @@ index be34fed..f039109 100644
  [[package]]
  name = "libriichi"
  version = "0.1.0"
-@@ -714,9 +758,17 @@ dependencies = [
+ dependencies = [
++ "aes-gcm",
+  "ahash",
+  "anyhow",
+  "boomphf",
+@@ -698,6 +828,7 @@ dependencies = [
+  "derive_more",
+  "flate2",
+  "glob",
++ "hex",
+  "indicatif",
+  "log",
+  "mimalloc",
+@@ -714,9 +845,17 @@ dependencies = [
   "serde_json",
   "serde_with",
   "sha3",
@@ -99,7 +253,20 @@ index be34fed..f039109 100644
  [[package]]
  name = "lock_api"
  version = "0.4.13"
-@@ -876,11 +928,17 @@ checksum = "bc838d2a56b5b1a6c25f55575dfc605fabb63bb2365f6c2353ef9159aa69e4a5"
+@@ -858,6 +997,12 @@ version = "11.1.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+ 
++[[package]]
++name = "opaque-debug"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
++
+ [[package]]
+ name = "parking_lot"
+ version = "0.12.4"
+@@ -876,11 +1021,17 @@ checksum = "bc838d2a56b5b1a6c25f55575dfc605fabb63bb2365f6c2353ef9159aa69e4a5"
  dependencies = [
   "cfg-if",
   "libc",
@@ -118,7 +285,45 @@ index be34fed..f039109 100644
  [[package]]
  name = "plotters"
  version = "0.3.7"
-@@ -1108,6 +1166,15 @@ dependencies = [
+@@ -909,6 +1060,18 @@ dependencies = [
+  "plotters-backend",
+ ]
+ 
++[[package]]
++name = "polyval"
++version = "0.6.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
++dependencies = [
++ "cfg-if",
++ "cpufeatures",
++ "opaque-debug",
++ "universal-hash",
++]
++
+ [[package]]
+ name = "portable-atomic"
+ version = "1.11.0"
+@@ -1063,6 +1226,9 @@ name = "rand_core"
+ version = "0.6.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
++dependencies = [
++ "getrandom 0.2.17",
++]
+ 
+ [[package]]
+ name = "rand_core"
+@@ -1070,7 +1236,7 @@ version = "0.9.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
+ dependencies = [
+- "getrandom",
++ "getrandom 0.3.3",
+ ]
+ 
+ [[package]]
+@@ -1108,6 +1274,15 @@ dependencies = [
   "bitflags",
  ]
  
@@ -134,7 +339,7 @@ index be34fed..f039109 100644
  [[package]]
  name = "regex"
  version = "1.11.1"
-@@ -1143,6 +1210,19 @@ version = "2.1.1"
+@@ -1143,6 +1318,19 @@ version = "2.1.1"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
  
@@ -154,7 +359,20 @@ index be34fed..f039109 100644
  [[package]]
  name = "rustversion"
  version = "1.0.21"
-@@ -1282,6 +1362,17 @@ dependencies = [
+@@ -1260,6 +1448,12 @@ version = "0.11.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+ 
++[[package]]
++name = "subtle"
++version = "2.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
++
+ [[package]]
+ name = "syn"
+ version = "1.0.109"
+@@ -1282,6 +1476,17 @@ dependencies = [
   "unicode-ident",
  ]
  
@@ -172,7 +390,37 @@ index be34fed..f039109 100644
  [[package]]
  name = "target-lexicon"
  version = "0.13.2"
-@@ -1631,6 +1722,16 @@ dependencies = [
+@@ -1369,6 +1574,16 @@ version = "0.2.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
+ 
++[[package]]
++name = "universal-hash"
++version = "0.5.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea"
++dependencies = [
++ "crypto-common",
++ "subtle",
++]
++
+ [[package]]
+ name = "version_check"
+ version = "0.9.5"
+@@ -1385,6 +1600,12 @@ dependencies = [
+  "winapi-util",
+ ]
+ 
++[[package]]
++name = "wasi"
++version = "0.11.1+wasi-snapshot-preview1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
++
+ [[package]]
+ name = "wasi"
+ version = "0.14.2+wasi-0.2.4"
+@@ -1631,6 +1852,16 @@ dependencies = [
   "rand_core 0.6.4",
  ]
  
@@ -189,7 +437,7 @@ index be34fed..f039109 100644
  [[package]]
  name = "zerocopy"
  version = "0.8.25"
-@@ -1650,3 +1751,31 @@ dependencies = [
+@@ -1650,3 +1881,31 @@ dependencies = [
   "quote",
   "syn 2.0.101",
  ]
@@ -222,15 +470,17 @@ index be34fed..f039109 100644
 + "pkg-config",
 +]
 diff --git a/libriichi/Cargo.toml b/libriichi/Cargo.toml
-index 697515a..0afcc8a 100644
+index 697515a..d333459 100644
 --- a/libriichi/Cargo.toml
 +++ b/libriichi/Cargo.toml
-@@ -22,6 +22,8 @@ serde_with = "3"
+@@ -22,6 +22,10 @@ serde_with = "3"
  rand = "0.9"
  rand_chacha = "0.9"
  flate2 = "1"
 +tar = "0.4"
 +zstd = "0.13"
++aes-gcm = { version = "0.10", features = ["alloc"] }
++hex = "0.4"
  sha3 = "0.10"
  glob = "0.3"
  derivative = "2"
@@ -424,19 +674,28 @@ index 32558e3..f8375df 100644
          mem::take(&mut self.shantens)
      }
 diff --git a/libriichi/src/dataset/grp.rs b/libriichi/src/dataset/grp.rs
-index f2c257a..5847ec0 100644
+index f2c257a..295e9e7 100644
 --- a/libriichi/src/dataset/grp.rs
 +++ b/libriichi/src/dataset/grp.rs
-@@ -4,7 +4,7 @@ use crate::rankings::Rankings;
+@@ -3,11 +3,15 @@ use crate::mjai::Event;
+ use crate::rankings::Rankings;
  use crate::tu8;
  use crate::vec_ops::vec_add_assign;
++use std::fs;
  use std::fs::File;
 -use std::io;
-+use std::io::{self, BufReader, Read};
++use std::io::{self, BufReader, Cursor, Read};
  use std::mem;
++use std::sync::OnceLock;
  
- use anyhow::{Context, Result};
-@@ -44,6 +44,27 @@ impl Grp {
+-use anyhow::{Context, Result};
++use aes_gcm::aead::{Aead, KeyInit};
++use aes_gcm::{Aes256Gcm, Nonce};
++use anyhow::{bail, Context, Result};
+ use flate2::read::GzDecoder;
+ use ndarray::prelude::*;
+ use numpy::PyArray2;
+@@ -44,6 +48,27 @@ impl Grp {
          Self::load_gz_log_files(gzip_filenames)
      }
  
@@ -464,18 +723,29 @@ index f2c257a..5847ec0 100644
      /// Returns List[List[np.ndarray]]
      pub fn take_feature<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
          PyArray2::from_owned_array(py, mem::take(&mut self.feature))
-@@ -87,6 +108,46 @@ impl Grp {
+@@ -87,6 +112,126 @@ impl Grp {
              .collect()
      }
  
 +    fn read_tar_zst_entries(archive_path: &str) -> Result<Vec<String>> {
-+        let file =
-+            File::open(archive_path).with_context(|| format!("failed to open {archive_path}"))?;
-+        let reader = BufReader::new(file);
-+        let decoder = zstd::Decoder::new(reader)
-+            .with_context(|| format!("failed to decode {archive_path}"))?;
-+        let mut archive = tar::Archive::new(decoder);
++        if archive_path.ends_with(".enc") {
++            let decrypted = Self::decrypt_file(archive_path)?;
++            let decoder = zstd::Decoder::new(Cursor::new(decrypted))
++                .with_context(|| format!("failed to decode {archive_path}"))?;
++            Self::extract_json_entries(tar::Archive::new(decoder), archive_path)
++        } else {
++            let file = File::open(archive_path)
++                .with_context(|| format!("failed to open {archive_path}"))?;
++            let decoder = zstd::Decoder::new(BufReader::new(file))
++                .with_context(|| format!("failed to decode {archive_path}"))?;
++            Self::extract_json_entries(tar::Archive::new(decoder), archive_path)
++        }
++    }
 +
++    fn extract_json_entries<R: Read>(
++        mut archive: tar::Archive<R>,
++        archive_path: &str,
++    ) -> Result<Vec<String>> {
 +        let mut entries = vec![];
 +        for entry_result in archive.entries()? {
 +            let mut entry = match entry_result {
@@ -504,8 +774,77 @@ index f2c257a..5847ec0 100644
 +                entries.push(raw);
 +            }
 +        }
-+
 +        Ok(entries)
++    }
++
++    fn get_cipher() -> Result<&'static Aes256Gcm> {
++        static CIPHER: OnceLock<Aes256Gcm> = OnceLock::new();
++        if let Some(c) = CIPHER.get() {
++            return Ok(c);
++        }
++        let key_hex = std::env::var("VOCNET_KEY").context("VOCNET_KEY env var not set")?;
++        let key_bytes =
++            hex::decode(key_hex.trim()).context("VOCNET_KEY must be 64 hex chars (32 bytes)")?;
++        if key_bytes.len() != 32 {
++            bail!(
++                "VOCNET_KEY must be exactly 32 bytes (64 hex chars), got {}",
++                key_bytes.len()
++            );
++        }
++        let cipher = Aes256Gcm::new_from_slice(&key_bytes).expect("valid key length");
++        drop(CIPHER.set(cipher));
++        Ok(CIPHER.get().unwrap())
++    }
++
++    fn decrypt_file(path: &str) -> Result<Vec<u8>> {
++        let data = fs::read(path).with_context(|| format!("failed to read {path}"))?;
++        if data.len() < 28 {
++            bail!("encrypted file too small: {path}");
++        }
++        let cipher = Self::get_cipher()?;
++
++        // Check for chunked format: magic bytes "CHNK" at offset 0
++        if data.len() >= 8 && &data[..4] == b"CHNK" {
++            let chunk_count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
++            // Read chunk length table: chunk_count * 8 bytes starting at offset 8
++            let table_end = 8 + chunk_count * 8;
++            if data.len() < table_end {
++                bail!("chunked file truncated (header): {path}");
++            }
++            let mut chunk_lens = Vec::with_capacity(chunk_count);
++            for i in 0..chunk_count {
++                let off = 8 + i * 8;
++                let len = u64::from_le_bytes(data[off..off + 8].try_into().unwrap()) as usize;
++                chunk_lens.push(len);
++            }
++
++            let mut plaintext = Vec::new();
++            let mut offset = table_end;
++            for (i, &clen) in chunk_lens.iter().enumerate() {
++                if offset + clen > data.len() {
++                    bail!("chunked file truncated (chunk {i}): {path}");
++                }
++                let chunk_data = &data[offset..offset + clen];
++                if chunk_data.len() < 12 {
++                    bail!("chunk {i} too small: {path}");
++                }
++                let (nonce_bytes, ct) = chunk_data.split_at(12);
++                let nonce = Nonce::from_slice(nonce_bytes);
++                let pt = cipher
++                    .decrypt(nonce, ct)
++                    .map_err(|_| anyhow::anyhow!("decryption failed for chunk {i} in {path}"))?;
++                plaintext.extend_from_slice(&pt);
++                offset += clen;
++            }
++            Ok(plaintext)
++        } else {
++            // Single-block format: [12-byte nonce][ciphertext + tag]
++            let (nonce_bytes, ciphertext) = data.split_at(12);
++            let nonce = Nonce::from_slice(nonce_bytes);
++            cipher.decrypt(nonce, ciphertext).map_err(|_| {
++                anyhow::anyhow!("decryption failed for {path} — wrong key or corrupted")
++            })
++        }
 +    }
 +
      pub fn load_events(events: &[Event]) -> Result<Self> {
@@ -540,6 +879,67 @@ index 68592c1..1b72f88 100644
  #[pymodule]
  fn libriichi(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
      pyo3_log::init();
+diff --git a/libriichi/src/mjai/event.rs b/libriichi/src/mjai/event.rs
+index 3b92f06..a5e106f 100644
+--- a/libriichi/src/mjai/event.rs
++++ b/libriichi/src/mjai/event.rs
+@@ -3,8 +3,8 @@ use std::error::Error;
+ use std::fmt;
+ 
+ use derivative::Derivative;
+-use serde::{Deserialize, Serialize};
+-use serde_with::{TryFromInto, serde_as, skip_serializing_none};
++use serde::{Deserialize, Deserializer, Serialize};
++use serde_with::{serde_as, skip_serializing_none, TryFromInto};
+ 
+ /// Describes an event in mjai format.
+ ///
+@@ -39,6 +39,7 @@ pub enum Event {
+         #[serde_as(deserialize_as = "TryFromInto<Actor>")]
+         oya: u8,
+         scores: [i32; 4],
++        #[serde(deserialize_with = "deserialize_tehais")]
+         tehais: [[Tile; 13]; 4],
+     },
+ 
+@@ -119,6 +120,28 @@ pub enum Event {
+     EndGame,
+ }
+ 
++/// Deserialize tehais that may contain 13 or 14 tiles per player.
++/// Some data sources include 14 tiles for the dealer (13 dealt + 1 drawn).
++/// We keep only the first 13 tiles for each player.
++fn deserialize_tehais<'de, D>(deserializer: D) -> Result<[[Tile; 13]; 4], D::Error>
++where
++    D: Deserializer<'de>,
++{
++    let raw: [Vec<Tile>; 4] = Deserialize::deserialize(deserializer)?;
++    let mut result = [[Tile::default(); 13]; 4];
++    for (i, hand) in raw.iter().enumerate() {
++        if hand.len() < 13 {
++            return Err(serde::de::Error::custom(format!(
++                "player {} has only {} tiles, expected at least 13",
++                i,
++                hand.len()
++            )));
++        }
++        result[i].copy_from_slice(&hand[..13]);
++    }
++    Ok(result)
++}
++
+ #[derive(Deserialize)]
+ struct BoundedU8<const MIN: u8, const MAX: u8>(u8);
+ 
+@@ -255,7 +278,7 @@ impl From<Event> for EventExt {
+ mod test {
+     use super::*;
+ 
+-    use serde_json::{self as json, Map, Number, Value, json};
++    use serde_json::{self as json, json, Map, Number, Value};
+ 
+     #[test]
+     fn json_consistency() {
 diff --git a/libriichi/src/stat.rs b/libriichi/src/stat.rs
 index 7a5b830..d733df8 100644
 --- a/libriichi/src/stat.rs
