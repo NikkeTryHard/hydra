@@ -639,27 +639,21 @@ graph TB
 
 | Opponent | Weight | Purpose |
 |----------|--------|---------|
-| Current Self | 40% | Primary improvement signal |
-| Frozen Checkpoints | 20% | Prevent catastrophic forgetting |
-| Teacher (Oracle) | 10% | Maintain performance ceiling |
-| Mortal Clone | 20% | Benchmark target |
-| Aggressive Specialist | 10% | Counter passive bias |
+| Current self (all 4 seats) | 50% | Core self-play signal |
+| Random pool checkpoint | 30% | Diversity; prevents strategy collapse |
+| Phase 2 baseline (frozen) | 20% | Anchor; prevents catastrophic forgetting |
 
 ```mermaid
 graph TB
     subgraph "Opponent Pool"
-        SELF["Current Self<br/>40%"]
-        FROZEN["Frozen Checkpoints<br/>20%"]
-        TEACHER["Teacher Oracle<br/>10%"]
-        MORTAL["Mortal Clone<br/>20%"]
-        AGGRO["Aggressive Specialist<br/>10%"]
+        SELF["Current Self<br/>50%"]
+        POOL["Random Pool Checkpoint<br/>30%"]
+        ANCHOR["Phase 2 Baseline<br/>20%"]
     end
 
     SELF --> GAME[Self-Play Game]
-    FROZEN --> GAME
-    TEACHER --> GAME
-    MORTAL --> GAME
-    AGGRO --> GAME
+    POOL --> GAME
+    ANCHOR --> GAME
 ```
 
  **PPO hyperparameters:**
