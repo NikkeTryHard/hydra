@@ -15,7 +15,7 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 | [harphield/riichi-tools-rs](https://github.com/harphield/riichi-tools-rs) | 13 | MIT | Shanten (fast LUT + no-LUT modes), shape finding, yaku, scoring, Tenhou replay parsing, WASM | **WASM deployment reference** — fast hand classifier architecture |
 | [m4tx/riichi-hand-rs](https://github.com/m4tx/riichi-hand-rs) | 12 | MIT | Hand representation, string parser, tile image renderer, scoring table calculator | **Tile rendering** for visualization/debugging tools |
 | [penta2019/mahjong_server](https://github.com/penta2019/mahjong_server) | 17 | MIT | Full game server with Bevy GUI, MJAI protocol, bot framework, Tenhou replay export | **Evaluation server** — MJAI endpoint for bot testing |
-| [rysb-dev/agari](https://github.com/rysb-dev/agari) | 3 | MIT | Complete scoring engine: yaku (35), fu, payment, hand decomposition, WASM. ~100 unit tests | **Primary scoring reference** — most architecturally clean Rust implementation |
+| [rysb-dev/agari](https://github.com/rysb-dev/agari) | 3 | Unlicensed (no LICENSE file) | Complete scoring engine: yaku (35), fu, payment, hand decomposition, WASM. ~100 unit tests | **Primary scoring reference** — most architecturally clean Rust implementation. ⚠️ Verify license before depending. |
 
 ### Reference Only (Copyleft — study architecture, don't copy code)
 

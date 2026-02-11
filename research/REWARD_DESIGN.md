@@ -74,7 +74,7 @@ Not explicitly described. The zero-sum constraint naturally bounds the rewards.
 
 ### Results
 
-- **3.7× speedup** in training convergence compared to vanilla PPO
+- Reported faster training convergence compared to vanilla PPO (the paper describes "speedup" qualitatively but does not state a specific speedup multiplier)
 - Achieves the same final policy quality with significantly less compute
 
 ### Key Takeaway for Hydra
@@ -83,7 +83,7 @@ This is **the most directly relevant work.** For Hydra:
 1. **Oracle value baseline** (Relative Value Network) = already planned via oracle distillation
 2. **Expected Reward Network** at T−1 is novel and high-value: it directly addresses Mahjong's biggest variance source (last-tile luck)
 3. **Zero-sum constraint** on value estimates is cheap to implement and provably correct
-4. The 3.7× speedup matters enormously for Hydra's single-GPU training constraint
+4. The convergence speedup matters enormously for Hydra's single-GPU training constraint
 
 ---
 
@@ -131,7 +131,7 @@ Normalization:
 | **Placement points** | [3, 1, -1, -3] | Mortal's training default. Symmetric, zero-sum. Each rank step = 2 pts. Platform-specific via config swap. |
 | **GRP design** | 24-class permutation softmax | Captures inter-player rank correlations. 4-class loses this. Mortal proved it works. |
 | **Discount γ** | 1.0 | Mortal uses γ=1. Kyoku is short enough (~15 steps). No need for temporal discounting. |
-| **Variance reduction** | Oracle critic + ERN | RVR paper: 3.7× speedup. Attacks both variance sources (hidden info + last-tile luck). |
+| **Variance reduction** | Oracle critic + ERN | RVR paper: significant speedup. Attacks both variance sources (hidden info + last-tile luck). |
 | **GRP lifecycle** | Pretrained, frozen during RL | Stable reward signal. Mortal does this. Avoids moving-target problem. |
 | **Reward normalization** | Running std (Welford) | Mortal-Policy's exact approach. Essential for PPO in high-variance games. |
 | **No reward shaping** | Skip (GRP delta IS PBRS already) | Double-shaping adds risk. Shanten-based shaping creates offensive bias — worst possible for Mahjong. |
@@ -149,7 +149,7 @@ Normalization:
 
 | What | Why Not |
 |------|---------|
-| TD bootstrapping | Mortal tried it → no improvement, adds instability (Discussion #81) |
+| TD bootstrapping | Mortal tried it → no improvement, adds instability (confirmed by Equim-chan across multiple discussions) |
 | PPO without reward normalization | Mortal creator spent months on PPO, failed — likely due to unnormalized reward variance (Discussion #102) |
 | Oracle guiding of policy | "Optimal play with full info doesn't transfer to blind play" (Discussion #102, zl0v7hzr) |
 | Deeper networks | Mortal tried b75c256 → no improvement |

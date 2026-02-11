@@ -320,13 +320,13 @@ graph TB
 
  The oracle critic's MLP is: GAP(256×34 → 256) → FC(256→512) → ReLU → FC(512→4).
 
- $$A(o_t, a_t) = r_k - V_{\\text{oracle}}(s_{\\text{full}, t})$$
+  $$A(o_t, a_t) = r_k - V_{\text{oracle}}(s_{\text{full}, t})$$
 
- **Zero-sum constraint:** The oracle critic is trained with an auxiliary zero-sum loss:
+  **Zero-sum constraint:** The oracle critic is trained with an auxiliary zero-sum loss:
 
- $$\\mathcal{L}_{\\text{critic}} = \\sum_i (V_i(s) - r_i)^2 + \\lambda_{\\text{zs}} \\cdot \\left(\\sum_i V_i(s)\\right)^2$$
+  $$\mathcal{L}_{\text{critic}} = \sum_i (V_i(s) - r_i)^2 + \lambda_{\text{zs}} \cdot \left(\sum_i V_i(s)\right)^2$$
 
- This enforces $V_1 + V_2 + V_3 + V_4 = 0$, which is correct by construction for zero-sum placement rewards. The RVR paper (Li et al., IEEE CoG 2022) showed this component provides the majority of their 3.7× training speedup.
+ This enforces $V_1 + V_2 + V_3 + V_4 = 0$, which is correct by construction for zero-sum placement rewards. The RVR paper (Li et al., IEEE CoG 2022) showed this component provides significant training speedup (the paper reports faster convergence but does not state a specific multiplier).
 
  At inference, only the student's 1-scalar value head and policy head are used — the oracle critic is discarded entirely.
 
