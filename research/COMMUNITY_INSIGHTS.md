@@ -109,7 +109,7 @@ Source: [r/Mahjong Push/Fold thread](https://www.reddit.com/r/Mahjong/comments/1
 
 ### Identity
 
-LuckyJ (ⓝLuckyJ on Tenhou, 绝艺/JueYi brand) is developed by **Tencent AI Lab**, led by **Haobo Fu** (Principal Research Scientist). The 绝艺 brand is shared with Tencent's Go AI that competed in international Go competitions. LuckyJ achieved **10-dan on Tenhou on May 30, 2023** in only **1,321 games** — the most efficient path to 10-dan by any AI (vs Suphx's 5,373 and NAGA's 26,598).
+LuckyJ (ⓝLuckyJ on Tenhou, 绝艺/JueYi brand) is developed by **Tencent AI Lab**. Key researcher: **Haobo Fu** (Principal Research Scientist, Tencent AI Lab). The 绝艺 brand is shared with Tencent's Go AI that competed in international Go competitions. LuckyJ achieved **10-dan on Tenhou on May 30, 2023** in only **1,321 games** — the most efficient path to 10-dan by any AI (vs Suphx's 5,373 and NAGA's 26,598).
 
 ### Performance
 

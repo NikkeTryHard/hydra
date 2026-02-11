@@ -1,6 +1,6 @@
 # Hydra Ecosystem Survey
 
-Comprehensive survey of every repo, tool, dataset, and framework that Hydra can benefit from. Organized by category with license status and concrete use cases.
+Curated integration priority guide for every repo, tool, dataset, and framework that Hydra can benefit from. Organized by category with license status and concrete use cases.
 
 ---
 
@@ -8,25 +8,29 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ### Direct Dependencies (MIT/Apache — safe to use)
 
-| Repo | Stars | License | What It Provides | Hydra Use |
-|------|-------|---------|-----------------|-----------|
-| [Apricot-S/xiangting](https://github.com/Apricot-S/xiangting) | 9.7K dl | MIT | Shanten calculation, necessary/unnecessary tiles, 3p support, `no_std`, compile-time tables | **Primary shanten library** — already selected |
-| [DrCheeseFace/mahc](https://github.com/DrCheeseFace/mahc) | 4 | BSD-3 | Scoring, fu enum, yaku detection (38 yaku), payment, CLI. 30K crates.io downloads | **Scoring reference** — explicit `Fu` enum pattern worth adopting |
-| [harphield/riichi-tools-rs](https://github.com/harphield/riichi-tools-rs) | 13 | MIT | Shanten (fast LUT + no-LUT modes), shape finding, yaku, scoring, Tenhou replay parsing, WASM | **WASM deployment reference** — fast hand classifier architecture |
-| [m4tx/riichi-hand-rs](https://github.com/m4tx/riichi-hand-rs) | 12 | MIT | Hand representation, string parser, tile image renderer, scoring table calculator | **Tile rendering** for visualization/debugging tools |
-| [penta2019/mahjong_server](https://github.com/penta2019/mahjong_server) | 17 | MIT | Full game server with Bevy GUI, MJAI protocol, bot framework, Tenhou replay export | **Evaluation server** — MJAI endpoint for bot testing |
-| [rysb-dev/agari](https://github.com/rysb-dev/agari) | 3 | Unlicensed (no LICENSE file) | Complete scoring engine: yaku (35), fu, payment, hand decomposition, WASM. ~100 unit tests | **Primary scoring reference** — most architecturally clean Rust implementation. ⚠️ Verify license before depending. |
+> Full descriptions for xiangting, mahc, and agari in [REFERENCES.md § Components](REFERENCES.md#components).
+
+| Repo | License | Hydra Use |
+|------|---------|-----------| 
+| [Apricot-S/xiangting](https://github.com/Apricot-S/xiangting) | MIT | **Primary shanten library** — already selected |
+| [DrCheeseFace/mahc](https://github.com/DrCheeseFace/mahc) | BSD-3 | **Scoring reference** — explicit `Fu` enum pattern worth adopting |
+| [harphield/riichi-tools-rs](https://github.com/harphield/riichi-tools-rs) | MIT | **WASM deployment reference** — fast hand classifier architecture |
+| [m4tx/riichi-hand-rs](https://github.com/m4tx/riichi-hand-rs) | MIT | **Tile rendering** for visualization/debugging tools |
+| [penta2019/mahjong_server](https://github.com/penta2019/mahjong_server) | MIT | **Evaluation server** — MJAI endpoint for bot testing |
+| [rysb-dev/agari](https://github.com/rysb-dev/agari) | Unlicensed | **Primary scoring reference** — most architecturally clean Rust implementation. ⚠️ Verify license before depending. |
 
 ### Reference Only (Copyleft — study architecture, don't copy code)
 
-| Repo | Stars | License | What It Provides | Hydra Use |
-|------|-------|---------|-----------------|-----------|
-| [Equim-chan/Mortal](https://github.com/Equim-chan/Mortal) | 1,334 | AGPL-3.0 | Complete mahjong AI: ResNet+SE backbone, DQN+CQL, GRP, MJAI protocol, self-play | **Primary competitor/benchmark** — architecture study only |
-| [Equim-chan/mjai-reviewer](https://github.com/Equim-chan/mjai-reviewer) | 1,170 | Apache-2.0 | Game log review with MJAI-compatible AI engines, HTML reports, Tenhou/Majsoul log support | **Evaluation tool** — run Hydra through mjai-reviewer for move analysis |
-| [summivox/riichi-rs](https://github.com/summivox/riichi-rs) | 4 | LGPL-2.1 | Full engine monorepo: `riichi`, `riichi-elements`, `riichi-decomp`, `tenhou-shuffle`, `tenhou-db` | **Reference only** — LGPL. `tenhou-shuffle` subcrate is interesting |
-| [Nitasurin/Mortal-Policy](https://github.com/Nitasurin/Mortal-Policy) | 37 | AGPL-3.0 | Policy-based Mortal fork (V4): AWR → PPO transition, offline-to-online pipeline | **PPO transition reference** — exactly what Hydra does |
-| [smly/mjai.app](https://github.com/smly/mjai.app) | 109 | AGPL-3.0 | RiichiLab mahjong AI competition platform, Docker-based evaluation, MJAI protocol | **Competition target** — Hydra must be MJAI-compatible |
-| [Apricot-S/lizhisim](https://github.com/Apricot-S/lizhisim) | 2 | MIT | Game simulator (WIP) by xiangting author, inspired by Kanachan | **Watch** — same author as our shanten lib |
+> Full descriptions for Mortal, Mortal-Policy, and mjai.app in [REFERENCES.md § Open Source Projects](REFERENCES.md#open-source-projects).
+
+| Repo | License | Hydra Use |
+|------|---------|-----------|
+| [Equim-chan/Mortal](https://github.com/Equim-chan/Mortal) | AGPL-3.0 | **Primary competitor/benchmark** — architecture study only |
+| [Equim-chan/mjai-reviewer](https://github.com/Equim-chan/mjai-reviewer) | Apache-2.0 | **Evaluation tool** — run Hydra through mjai-reviewer for move analysis |
+| [summivox/riichi-rs](https://github.com/summivox/riichi-rs) | LGPL-2.1 | **Reference only** — LGPL. `tenhou-shuffle` subcrate is interesting |
+| [Nitasurin/Mortal-Policy](https://github.com/Nitasurin/Mortal-Policy) | AGPL-3.0 | **PPO transition reference** — exactly what Hydra does |
+| [smly/mjai.app](https://github.com/smly/mjai.app) | AGPL-3.0 | **Competition target** — Hydra must be MJAI-compatible |
+| [Apricot-S/lizhisim](https://github.com/Apricot-S/lizhisim) | MIT | **Watch** — same author as our shanten lib |
 
 ---
 
@@ -34,32 +38,36 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ### High Value
 
-| Repo | Stars | License | What It Provides | Hydra Use |
-|------|-------|---------|-----------------|-----------|
-| [nissymori/mahjax](https://github.com/nissymori/mahjax) | 22 | Apache-2.0 | JAX-vectorized riichi environment, ~1.6M steps/sec on 8×A100, behavior cloning + RL examples | **Fast RL training environment** — JAX vectorization for self-play |
-| [Agony5757/mahjong](https://github.com/Agony5757/mahjong) | 123 | Unlicensed | C++ simulator with Python bindings, 93×34 obs encoding, offline RL dataset (~40K games/batch), ICLR 2022 paper | **Observation encoding reference** — 93×34/111×34 design is well-researched |
-| [smly/RiichiEnv](https://github.com/smly/RiichiEnv) | 9 | Apache-2.0 | Gym-style RL environment, Rust core + Python bindings, Mortal-compatible MJAI, verified 1M+ games | **Gym environment** for training loop development |
-| [VictorZXY/Meowjong](https://github.com/VictorZXY/Meowjong) | 42 | MIT | First open-source Sanma (3-player) AI, IEEE CoG 2022, 5 CNN models, Tenhou Sanma log downloader | **Critical for Sanma support** — only open-source 3-player mahjong AI |
-| [MahjongRepository/mahjong](https://github.com/MahjongRepository/mahjong) | 449 | MIT | Hand scoring oracle: yaku, han, fu, score. Validated against 11M+ Tenhou hands. Pin to v1.4.0 | **Scoring oracle** — already added as dev dependency |
-| [CharlesC63/mahjong_ev](https://github.com/CharlesC63/mahjong_ev) | 0 | Unlicensed | EV engine, ukeire analysis, defense (suji/kabe/genbutsu), push/fold advisor | **Port defense + EV logic to Rust** — the only repo with all three in one package |
+> Full descriptions for mahjax, RiichiEnv, Meowjong, and mahjong (Python) in [REFERENCES.md § Components](REFERENCES.md#components).
+
+| Repo | License | Hydra Use |
+|------|---------|-----------| 
+| [nissymori/mahjax](https://github.com/nissymori/mahjax) | Apache-2.0 | **Fast RL training environment** — JAX vectorization for self-play |
+| [Agony5757/mahjong](https://github.com/Agony5757/mahjong) | Unlicensed | **Observation encoding reference** — 93×34/111×34 design is well-researched (C++ sim with Python bindings, ICLR 2022) |
+| [smly/RiichiEnv](https://github.com/smly/RiichiEnv) | Apache-2.0 | **Gym environment** for training loop development |
+| [VictorZXY/Meowjong](https://github.com/VictorZXY/Meowjong) | MIT | **Critical for Sanma support** — only open-source 3-player mahjong AI |
+| [MahjongRepository/mahjong](https://github.com/MahjongRepository/mahjong) | MIT | **Scoring oracle** — already added as dev dependency |
+| [CharlesC63/mahjong_ev](https://github.com/CharlesC63/mahjong_ev) | Unlicensed | **Port defense + EV logic to Rust** — the only repo with all three in one package |
 
 ### Training Infrastructure
 
-| Repo | Stars | License | What It Provides | Hydra Use |
-|------|-------|---------|-----------------|-----------|
-| [vwxyzjn/cleanrl](https://github.com/vwxyzjn/cleanrl) | 9,079 | MIT | Single-file PPO implementation (~250 lines), wandb integration, 37 implementation details blog | **PPO reference** — gold standard for clean RL implementations |
-| [DLR-RM/stable-baselines3](https://github.com/DLR-RM/stable-baselines3) | 12,715 | MIT | Battle-tested PPO/A2C/SAC/TD3/DQN, vectorized environments | **Backup PPO** — if custom PPO has issues |
-| [pytorch/rl](https://github.com/pytorch/rl) | 3,294 | MIT | Official PyTorch RL library, TensorDict, distributed collectors | **Self-play infrastructure** — built-in distributed game collection |
-| [google-deepmind/open_spiel](https://github.com/google-deepmind/open_spiel) | 5,019 | Apache-2.0 | 70+ game implementations, AlphaZero, MCTS, CFR, self-play training loops | **Self-play architecture blueprint** — ELO tracking, opponent sampling |
-| [yoshitomo-matsubara/torchdistill](https://github.com/yoshitomo-matsubara/torchdistill) | 1,591 | MIT | Config-driven knowledge distillation, 26+ methods from CVPR/NeurIPS/ICLR | **Teacher → student distillation** — oracle model → blind model |
+> Full descriptions for CleanRL and OpenSpiel in [REFERENCES.md § Components](REFERENCES.md#components).
+
+| Repo | License | Hydra Use |
+|------|---------|-----------| 
+| [vwxyzjn/cleanrl](https://github.com/vwxyzjn/cleanrl) | MIT | **PPO reference** — gold standard for clean RL implementations |
+| [DLR-RM/stable-baselines3](https://github.com/DLR-RM/stable-baselines3) | MIT | **Backup PPO** — if custom PPO has issues |
+| [pytorch/rl](https://github.com/pytorch/rl) | MIT | **Self-play infrastructure** — built-in distributed game collection |
+| [google-deepmind/open_spiel](https://github.com/google-deepmind/open_spiel) | Apache-2.0 | **Self-play architecture blueprint** — ELO tracking, opponent sampling |
+| [yoshitomo-matsubara/torchdistill](https://github.com/yoshitomo-matsubara/torchdistill) | MIT | **Teacher → student distillation** — oracle model → blind model |
 
 ### Scoring/Rules References (Other Languages)
 
-| Repo | Stars | License | Lang | What It Provides | Hydra Use |
-|------|-------|---------|------|-----------------|-----------|
-| [dnovikoff/tempai-core](https://github.com/dnovikoff/tempai-core) | 24 | MIT | Go | Full yaku, fu, rules engine with tag-based meld classification, configurable rule variants | **Rules engine architecture** — best cross-language reference |
-| [Cryolite/tsumonya](https://github.com/Cryolite/tsumonya) | 20 | MIT | C++ | Pre-computed lookup table for all winning hands | **O(1) win detection** via lookup tables |
-| [pwmarcz/minefield](https://github.com/pwmarcz/minefield) | 35 | Custom | Rust | Most compact fu implementation (43 lines), game server, bot AI | **Fu verification** — cross-check against agari and mahc |
+| Repo | License | Lang | Hydra Use |
+|------|---------|------|-----------|
+| [dnovikoff/tempai-core](https://github.com/dnovikoff/tempai-core) | MIT | Go | **Rules engine architecture** — best cross-language reference |
+| [Cryolite/tsumonya](https://github.com/Cryolite/tsumonya) | MIT | C++ | **O(1) win detection** via lookup tables |
+| [pwmarcz/minefield](https://github.com/pwmarcz/minefield) | Custom | Rust | **Fu verification** — cross-check against agari and mahc |
 
 ---
 
@@ -81,21 +89,25 @@ Comprehensive survey of every repo, tool, dataset, and framework that Hydra can 
 
 ### ONNX Optimization Pipeline
 
-| Tool | Stars | License | What It Does | Hydra Use |
-|------|-------|---------|-------------|-----------|
-| [microsoft/Olive](https://github.com/microsoft/Olive) | 2,249 | MIT | End-to-end PyTorch → optimized ONNX: quantization, pruning, fusion, shape inference | **Primary optimization tool** — YAML config → optimized model |
-| [onnx/neural-compressor](https://github.com/onnx/neural-compressor) | 98 | Apache-2.0 | Model compression directly on `.onnx` files | **Post-export optimization** |
-| [NVIDIA/TensorRT-Model-Optimizer](https://github.com/NVIDIA/TensorRT-Model-Optimizer) | 1,963 | Apache-2.0 | Quantization, pruning, distillation for TensorRT/ONNX Runtime | **NVIDIA-specific optimization** — INT8/FP16 QAT |
-| ONNX Runtime quantization (built-in) | — | MIT | `quantize_dynamic()` / `quantize_static()` — INT8/UINT8/INT4 | **Zero-dependency quantization** |
+> Full descriptions for ort, tract, candle, burn, and Olive in [REFERENCES.md](REFERENCES.md#components)
+
+| Tool | License | Hydra Use |
+|------|---------|-----------|
+| [microsoft/Olive](https://github.com/microsoft/Olive) | MIT | **Primary optimization tool** — YAML config → optimized model |
+| [onnx/neural-compressor](https://github.com/onnx/neural-compressor) | Apache-2.0 | **Post-export optimization** — model compression directly on `.onnx` files |
+| [NVIDIA/TensorRT-Model-Optimizer](https://github.com/NVIDIA/TensorRT-Model-Optimizer) | Apache-2.0 | **NVIDIA-specific optimization** — INT8/FP16 QAT |
+| ONNX Runtime quantization (built-in) | MIT | **Zero-dependency quantization** — `quantize_dynamic()` / `quantize_static()` |
 
 ### Rust Inference Engines
 
-| Engine | Stars | License | GPU Support | Hydra Role |
-|--------|-------|---------|-------------|------------|
-| [pykeio/ort](https://github.com/pykeio/ort) | 1,969 | Apache-2.0 | CUDA, TensorRT, CoreML, DirectML, WebGPU | **Primary inference engine** — CUDA graphs, I/O binding, Level3 optimization |
-| [sonos/tract](https://github.com/sonos/tract) | 2,767 | MIT OR Apache-2.0 | CPU only | **CPU fallback** — pure Rust, no C++ deps |
-| [huggingface/candle](https://github.com/huggingface/candle) | 19,333 | Apache-2.0 | CUDA, Metal | **Native Rust models** — skip ONNX entirely, write inference in Rust |
-| [tracel-ai/burn](https://github.com/tracel-ai/burn) | 14,280 | Apache-2.0 | WGPU, CUDA, LibTorch | **Long-term option** — growing ONNX import, Rust-native training |
+> Full descriptions in [REFERENCES.md](REFERENCES.md#components)
+
+| Engine | License | GPU Support | Hydra Role |
+|--------|---------|-------------|------------|
+| [pykeio/ort](https://github.com/pykeio/ort) | Apache-2.0 | CUDA, TensorRT, CoreML, DirectML, WebGPU | **Primary inference engine** |
+| [sonos/tract](https://github.com/sonos/tract) | MIT OR Apache-2.0 | CPU only | **CPU fallback** — pure Rust, no C++ deps |
+| [huggingface/candle](https://github.com/huggingface/candle) | Apache-2.0 | CUDA, Metal | **Native Rust models** — skip ONNX entirely |
+| [tracel-ai/burn](https://github.com/tracel-ai/burn) | Apache-2.0 | WGPU, CUDA, LibTorch | **Long-term option** — growing ONNX import |
 
 ### Inference Optimization Checklist
 

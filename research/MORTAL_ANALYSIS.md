@@ -6,7 +6,7 @@ Consolidated reference for the Mortal Mahjong AI — architecture, limitations, 
 
 ### Neural Network
 
-Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types (source: `libriichi/src/consts.rs:15` — `obs_shape(4)` returns `[1012, 34]`; the 1012 channels are constructed in `libriichi/src/state/obs_repr.rs`). The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan for each tile, 37 is riichi declaration, 38–40 are the three chi variants, 41 is pon, 42 is open kan, 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
+Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types (source: `libriichi/src/consts.rs:15` (at commit `0cff2b5`) — `obs_shape(4)` returns `[1012, 34]`; the 1012 channels are constructed in `libriichi/src/state/obs_repr.rs`). The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan for each tile, 37 is riichi declaration, 38–40 are the three chi variants, 41 is pon, 42 is open kan, 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
 
 All versions use the **Dueling DQN** decomposition `Q = V + A − mean(A)`, but the head architecture differs by version:
 
@@ -27,7 +27,7 @@ Training uses **DQN + Conservative Q-Learning (CQL)** for offline training. The 
 
 **Reward shaping** relies on the GRP head, which predicts rank probabilities. The reward signal is **delta expected value**: `E[pts]_t − E[pts]_{t−1}`, where the pts vector is **[3, 1, −1, −3]** corresponding to 1st through 4th place finishes.
 
-Source: `mortal/train.py:237`, `mortal/reward_calculator.py:10` (pts), `:36-37` (delta)
+Source: `mortal/train.py:237` (at commit `0cff2b5`), `mortal/reward_calculator.py:10` (pts), `:36-37` (delta) (at commit `0cff2b5`)
 
 ### Training Pipeline Details
 
@@ -51,7 +51,7 @@ Mortal uses the **tomohxx** table-based shanten lookup algorithm. Two precompute
 
 Indexing uses **base-5 encoding**: each tile count (0–4) is folded into a single integer via `acc * 5 + tile_count` across all tiles in the suit or honor group. This produces a unique index into the corresponding table.
 
-Source: `libriichi/src/algo/shanten.rs:82-84`
+Source: `libriichi/src/algo/shanten.rs:82-84` (at commit `0cff2b5`)
 
 ## libriichi Python API
 
@@ -72,7 +72,7 @@ Mortal exposes its Rust mahjong engine to Python via PyO3 bindings as the `libri
 
 - **ACTION_SPACE** = 46 (37 discard/kan + riichi + 3 chi + pon + kan + agari + ryuukyoku + pass)
 - **obs_shape(version=4)** = (1012, 34)
-- **oracle_obs_shape(version=4)** = (217, 34) — 51ch opponent state (3×17: hand/aka/shanten/waits/furiten) + 166ch wall (138 yama draw order + 8 rinshan + 10 dora + 10 ura). Each tile uses 2ch (one-hot identity + aka flag). The oracle observation is concatenated with the public observation along the channel dimension before the stem Conv1d, making the oracle model's input (1229, 34). Source: `invisible.rs:152-245`, `model.py:109-155`. Note: Mortal's published training pipeline never activates oracle mode — the infrastructure exists but `is_oracle=True` is never set in `train.py`.
+- **oracle_obs_shape(version=4)** = (217, 34) — 51ch opponent state (3×17: hand/aka/shanten/waits/furiten) + 166ch wall (138 yama draw order + 8 rinshan + 10 dora + 10 ura). Each tile uses 2ch (one-hot identity + aka flag). The oracle observation is concatenated with the public observation along the channel dimension before the stem Conv1d, making the oracle model's input (1229, 34). Source: `invisible.rs:152-245` (at commit `0cff2b5`), `model.py:109-155` (at commit `0cff2b5`). Note: Mortal's published training pipeline never activates oracle mode — the infrastructure exists but `is_oracle=True` is never set in `train.py`.
 
 ### Usage Pattern
 
@@ -90,9 +90,9 @@ Source: `libriichi/src/mjai/event.rs`
 
 ### No Opponent Modeling
 
-Mortal uses `SinglePlayerTables` for expected value calculation, assuming no opponent interaction. The v4 observation encoder (lines 564–624 of `obs_repr.rs`) provides no pre-computed safety features such as suji, kabe, or genbutsu analysis. There is no opponent tenpai estimation, no aggression or tendency profiling, and no tracking of opponent discard patterns for intent reading.
+Mortal uses `SinglePlayerTables` for expected value calculation, assuming no opponent interaction. The v4 observation encoder (lines 564–624 of `obs_repr.rs`, at commit `0cff2b5`) provides no pre-computed safety features such as suji, kabe, or genbutsu analysis. There is no opponent tenpai estimation, no aggression or tendency profiling, and no tracking of opponent discard patterns for intent reading.
 
-Source: `libriichi/src/state/obs_repr.rs` (v4 uses SinglePlayerTables at lines 564–624)
+Source: `libriichi/src/state/obs_repr.rs` (v4 uses SinglePlayerTables at lines 564–624, at commit `0cff2b5`)
 
 ### Score Encoding Issues
 
@@ -104,7 +104,7 @@ Source: GitHub Discussion #108 (about max player score in observations), Issue #
 
 Online training hangs for unknown reasons — there is an explicit bug comment in the training code acknowledging this. The workaround is subprocess spawning with a watchdog that restarts the training process when it stalls. Additionally, there are Windows compatibility issues with GRP initialization.
 
-Source: `mortal/train.py:382-386`
+Source: `mortal/train.py:382-386` (at commit `0cff2b5`)
 
 ### Oracle Guiding Removal
 
@@ -213,23 +213,7 @@ Source: GitHub Discussions #64, #27, #70
 
 ## Ecosystem
 
-### mjai-reviewer Tools
-
-| Tool | Author | Purpose |
-|------|--------|---------|
-| mjai-reviewer | Equim-chan | CLI tool generating HTML review reports from game logs |
-| mjai.ekyu.moe | Equim-chan | Web interface for instant game reviews without local setup |
-| mjai-reviewer3p | hidacow | Fork adding 3-player (sanma) review support |
-| killer_mortal_gui | killerducky | Enhanced statistics display with deal-in heuristics |
-| crx-mortal | announce | Chrome extension for in-browser analysis on Majsoul/Tenhou |
-
-### Mortal Forks
-
-| Fork | Author | Key Difference |
-|------|--------|---------------|
-| Mortal-Policy | Nitasurin | Replaces DQN with PPO, uses GroupNorm instead of BatchNorm, adds entropy weight for exploration |
-
-Source: `Nitasurin/Mortal-Policy`, GitHub Discussion #91
+> See [REFERENCES.md § Analysis & Review Tools](REFERENCES.md#analysis--review-tools) for the full mjai-reviewer tool family, [REFERENCES.md § Mortal Forks](REFERENCES.md#mortal-forks) for Mortal-Policy and other forks, and [ECOSYSTEM.md](ECOSYSTEM.md) for the curated integration guide.
 
 ### Integration Projects
 
