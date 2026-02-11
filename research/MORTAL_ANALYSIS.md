@@ -98,7 +98,7 @@ Source: `libriichi/src/state/obs_repr.rs` (v4 uses SinglePlayerTables at lines 5
 
 The v4 observation encoding uses **dual-scale score channels**: one normalized by 100,000 (preserving coarse information for high scores) and another normalized by 30,000 (providing higher resolution for the strategically common range). Scores above 30K are degraded in the fine-grained channel but still captured by the coarse channel. There is no explicit overtake threshold encoding — the network has no direct representation of how many points are needed to change placement. This leads to miscalculated hand-building near placement thresholds (Source: Issue #111). The dual-scale encoding may contribute to unreliable decisions in high-score late-game situations where precise placement awareness matters most.
 
-Source: GitHub Discussion #108, Issue #111
+Source: GitHub Discussion #108 (about max player score in observations), Issue #111
 
 ### Training Infrastructure Bugs
 
