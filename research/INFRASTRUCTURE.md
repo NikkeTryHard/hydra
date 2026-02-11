@@ -25,7 +25,9 @@ graph TB
 
     subgraph "Python Training (hydra-train)"
         MODEL[PyTorch Model]
-        TRAINER[PPO Trainer]
+        P1[Phase 1: Behavioral Cloning]
+        P2[Phase 2: Oracle Distillation]
+        P3[Phase 3: League Self-Play]
         WANDB[Weights & Biases]
     end
 
@@ -40,9 +42,15 @@ graph TB
     ENGINE --> SIM
     SIM --> PYO3
     PYO3 --> ENV
-    ENV --> TRAINER
-    MODEL --> TRAINER
-    TRAINER --> WANDB
+    P1 --> P2
+    P2 --> P3
+    ENV --> P3
+    MODEL --> P1
+    MODEL --> P2
+    MODEL --> P3
+    P1 --> WANDB
+    P2 --> WANDB
+    P3 --> WANDB
     MODEL --> ONNX
     ONNX --> INFER
 ```
@@ -153,12 +161,12 @@ stateDiagram-v2
 
 ### Observation Encoder
 
-The observation encoder produces the 87×34 tensor defined in the input encoding specification. It translates the current game state — hand tiles, discards, melds, dora indicators, and safety information — into a fixed-size numerical representation suitable for neural network input.
+The observation encoder produces the 84×34 tensor defined in the input encoding specification. It translates the current game state — hand tiles, discards, melds, dora indicators, and safety information — into a fixed-size numerical representation suitable for neural network input.
 
 Key performance considerations:
 
 - **Pre-allocated buffers** — tensor memory is allocated once per environment instance and reused across turns to avoid allocation overhead
-- **Contiguous memory layout** — the 87×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
+- **Contiguous memory layout** — the 84×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
 - **Incremental updates (planned optimization)** — most planes change minimally between turns (hand ±1 tile, discards +1). Delta-based encoding could reduce per-turn work, pending benchmarking to confirm the bookkeeping overhead is worthwhile. Mortal's encoder recomputes the full tensor from scratch each turn.
 
 ### Batch Simulator
@@ -423,39 +431,312 @@ maturin develop --release
 | rich | Progress bars and terminal output |
 | mahjong (dev) | Hand scoring oracle for Rust engine verification — yaku/han/fu/score validation against 11M+ Tenhou hands (pin to v1.4.0) |
 
-### Training Loop Architecture
+### Per-Phase Training Infrastructure
 
-The training loop follows the standard PPO (Proximal Policy Optimization) cycle: collect rollout data from the vectorized environment, sample mini-batches, compute forward and backward passes, update the policy, and repeat. All metrics flow to Weights & Biases for monitoring.
+Hydra's training proceeds through three distinct phases with different data sources, loss functions, and infrastructure requirements. Each phase builds on the previous, with explicit transition gates ensuring readiness. HYDRA_SPEC.md defines the algorithms and loss functions; this section specifies the infrastructure that runs them.
+
+#### Phase 1: Behavioral Cloning (Supervised)
+
+**Data source:** Phase 1 Data Pipeline (see § Data Pipeline above) — 7M MJAI game logs, on-the-fly Rust parsing, 3-level shuffle.
+
+**Optimizer configuration:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Optimizer | AdamW | Decoupled weight decay; faster convergence than SGD for short runs |
+| Peak LR | 5e-4 | 4× Mortal's 1e-4 due to 4× batch size (linear scaling rule) |
+| Final LR | 1e-5 | Cosine annealing floor |
+| Warmup | 5% of total steps (~30K steps) | Prevents early gradient explosions with large batch |
+| Weight decay | 0.01 | Applied only to Conv1d and Linear weights; biases and GroupNorm params excluded |
+| Betas | (0.9, 0.999) | AdamW defaults |
+| Epsilon | 1e-8 | AdamW default |
+| Gradient clip | 1.0 (max grad norm) | Prevents training spikes; Mortal disables this but BC has different dynamics |
+
+**Batch and precision:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Batch size | 2048 | 4× Mortal's 512; linear scaling with LR |
+| Gradient accumulation | 1 | Effective batch = 2048 (sufficient on 96GB) |
+| Precision | bf16 (autocast) | Blackwell-native; same dynamic range as fp32, no GradScaler needed |
+| torch.compile | Enabled | ~10-30% throughput gain via operator fusion; GroupNorm safe in bf16 |
+
+**Loss function:**
+L_IL = CE(π, a_human) + 0.5 × MSE(V, outcome) + 0.1 × L_aux
+
+Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and danger estimation (focal BCE). See HYDRA_SPEC.md § Phase 1 for component definitions and weights.
+
+**Training schedule:**
+- 3 epochs over the filtered dataset (~5-6M games, ~360-420M decisions)
+- Random 1-of-6 suit permutation per game per epoch (see § Suit Permutation Augmentation)
+- Over 3 epochs, each game is seen under ~3 of the 6 possible permutations
+
+**Early stopping and checkpointing:**
+- Validate every 5K training steps on a 5% held-out game set (chronological split — last month's games)
+- Primary metric: validation policy cross-entropy loss (not accuracy — loss captures calibration)
+- Early stopping patience: 3 consecutive validation intervals without improvement
+- Checkpoint every 10K steps; retain best + last 3; discard older (~330 MB per checkpoint)
+
+**Resource estimates:**
+- Steps per epoch: ~200K (420M decisions / 2048 per batch)
+- Total training steps: ~600K (3 epochs)
+- Wall time per epoch: ~2.8 hours on RTX PRO 6000 (Blackwell)
+- Total wall time: ~8.5 hours for 3 epochs
+- GPU memory: ~400 MB total (model + optimizer + batch — massive headroom on 96 GB)
+
+**Monitoring (via Weights & Biases):**
+
+| Frequency | Metrics |
+|-----------|---------|
+| Every step | Total loss, policy CE, value MSE, GRP CE, tenpai BCE, danger focal, learning rate, gradient norm |
+| Every 5K steps | Top-1/top-3 action accuracy, discard/call/riichi accuracy, policy entropy, throughput (samples/sec), GPU memory |
+| Every validation | Val loss, val accuracy breakdown, train-val gap, per-action-type accuracy |
+
+**Phase 1 readiness gate** (all must pass to enter Phase 2):
+- Discard accuracy ≥ 65%
+- SL loss plateaued (no improvement in 3 validation intervals)
+- Test play average placement ≤ 2.55 (1v3 vs random baseline)
+- Deal-in rate ≤ 15% in test play
+
+#### Phase 2: Oracle Distillation (RL)
+
+**Data source:** Self-play trajectories generated by the teacher model (initially) and student model (progressively). No static game logs.
+
+**Model configuration:**
+
+| Component | Configuration | VRAM |
+|-----------|--------------|------|
+| Teacher | Frozen, bf16, eval mode; Conv1d(289, 256, 3) stem; ~16.7M params | ~33 MB |
+| Student | fp32 master weights, bf16 autocast for compute; Conv1d(84, 256, 3) stem; ~16.5M params | ~67 MB |
+| Teacher gradients | None (frozen) | 0 MB |
+| Student optimizer (AdamW m+v) | fp32 | ~134 MB |
+| Student gradients | fp32 | ~67 MB |
+| **Total Phase 2 VRAM** | | **~465 MB** |
+
+The teacher and student share identical ResBlock weights (all 40 blocks are architecturally equivalent and weight-transferable). Only the stem Conv1d differs: the teacher's 289-channel input concatenates 84 public + 205 oracle channels before encoding.
+
+**Initialization from Phase 1:**
+- Load Phase 1 best checkpoint into all student ResBlocks, policy head, value head, and aux heads
+- Copy student ResBlocks into teacher (identical weights)
+- Initialize teacher stem Conv1d(289, 256, 3) with random weights (Kaiming/He init)
+- Freeze teacher: set to eval mode, disable gradients, cast to bf16
+- Save Phase 1 policy as a frozen "KL anchor" for catastrophic forgetting prevention
+- Create fresh AdamW optimizer (do NOT carry Phase 1 optimizer state — stale momentum from BC loss is counterproductive for RL)
+
+**Optimizer configuration:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Optimizer | AdamW (fresh) | Reset from Phase 1; stale Adam momentum harms RL |
+| Warmup LR | 1e-6 → 2.5e-4 | 10K step warmup from ~1/250th of peak (KataGo-style gradual warmup) |
+| Peak LR | 2.5e-4 | Standard for PPO fine-tuning |
+| Final LR | 5e-5 | Cosine annealing floor |
+| Weight decay | 0.01 | Same grouping as Phase 1 |
+| Gradient clip | 0.5 (max grad norm) | Tighter than Phase 1 — RL gradients are noisier |
+
+**Loss function:**
+L_distill = L_PPO(π_S) + λ_KL × D_KL(π_S ‖ π_T) + λ_anchor × D_KL(π_S ‖ π_BC)
+
+Where:
+- L_PPO includes policy, value, and entropy components (see HYDRA_SPEC.md § Phase 2)
+- λ_KL follows the feature dropout schedule (decays from 1.0 to 0.3)
+- λ_anchor = 0.1, decaying to 0 over Phase 2 (prevents catastrophic forgetting of BC knowledge)
+- D_KL uses temperature τ = 3.0 (fixed, not annealed — annealing changes the meaning of "dark knowledge" mid-training)
+
+**Feature dropout schedule** (group-level scalar multiplication, from HYDRA_SPEC.md):
+
+| Stage | mask_opp (39ch) | mask_wall (166ch) | λ_KL | Rationale |
+|-------|-----------------|-------------------|------|-----------|
+| Early | 1.0 | 1.0 | 1.0 | Full oracle info; teacher policy is strong target |
+| Mid | 0.7 | 0.5 | 0.8 | Wall drops faster — future draws are pure stochasticity, hardest to infer from public info |
+| Late | 0.3 | 0.2 | 0.5 | Forcing student toward public-only representations |
+| Final | 0.0 | 0.0 | 0.3 | Student fully blind; minimal KL tether remains for stability |
+
+Post-dropout continuation: LR decayed to 1/10 of current value, importance weight rejection applied to prevent large policy updates on the now-fully-blind student.
+
+**GroupNorm:** Hydra uses GroupNorm(32) which has no running statistics (unlike BatchNorm). GroupNorm parameters learned during Phase 1 carry forward without corruption concerns. Mortal freezes BatchNorm during RL to prevent self-play distribution shift from corrupting BN statistics — this issue does not apply to Hydra.
+
+**Phase 2 readiness gate** (all must pass to enter Phase 3):
+- Student average placement ≤ 2.45 (1v3 vs Phase 1 baseline)
+- Deal-in rate ≤ 13%
+- Win rate ≥ 21%
+- Win/deal-in ratio ≥ 1.5:1
+- Tenpai head AUC ≥ 0.80
+- Win rate plateau for 20M+ steps (no improvement)
+
+#### Phase 3: League Self-Play (PPO)
+
+**Data source:** Live self-play trajectories from concurrent game workers.
+
+**Self-play architecture:**
+
+Hydra uses a single-process, multi-threaded architecture for Phase 3. Python threading (not multiprocessing) is used because the Rust game engine releases the GIL during CPU-bound work. No IPC overhead. No Ray. No distributed framework.
 
 ```mermaid
 graph TB
-    subgraph "Data Collection"
-        ENV[VectorEnv] --> ROLLOUT[Rollout Buffer]
+    subgraph "GPU (RTX PRO 6000)"
+        INF[Inference Model<br/>bf16, torch.compiled<br/>CUDA Stream 0]
+        TRAIN[Training Model<br/>bf16 autocast<br/>CUDA Stream 1]
+        POOL[Opponent Cache<br/>5 models × ~33MB]
     end
 
-    subgraph "Policy Update"
-        ROLLOUT --> BATCH[Batch Sampler]
-        BATCH --> FORWARD[Forward Pass]
-        FORWARD --> LOSS[Loss Calculation]
-        LOSS --> BACKWARD[Backward Pass]
-        BACKWARD --> OPTIM[Optimizer Step]
+    subgraph "CPU (Game Workers)"
+        GW[512 Concurrent Games<br/>Rust via PyO3 + rayon]
     end
 
-    subgraph "Logging"
-        LOSS --> WANDB[W&B Logger]
-        METRICS[Metrics] --> WANDB
+    subgraph "Memory (Pinned)"
+        RB[Double-Buffered<br/>Rollout Buffer]
     end
 
-    OPTIM --> ENV
+    GW -->|obs batch| INF
+    INF -->|actions| GW
+    GW -->|transitions| RB
+    RB -->|swap on full| TRAIN
+    TRAIN -->|weight sync| INF
 ```
+
+**Key architecture decisions:**
+- **Dual CUDA streams:** Stream 0 handles inference (action selection during self-play). Stream 1 handles PPO gradient computation. These overlap on the GPU, maximizing utilization.
+- **InferenceServer thread:** A dedicated Python thread drains an observation queue, batches observations from all active games (~512 per step), runs a single GPU forward pass, and distributes actions back via futures. Batch inference latency: ~0.5-1ms for batch 512.
+- **Game workers:** The Rust game engine runs 512 concurrent hanchans. Feature encoding is parallelized via rayon within the game batch (Mortal's proven pattern). Game logic releases the GIL.
+- **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Both buffers use pre-allocated pinned memory for fast async CPU→GPU transfer via non_blocking=True. Observations stored as uint8 where possible, cast to float32 per-minibatch.
+
+**Opponent pool:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Max checkpoints on disk | 20 | FIFO eviction; ~1.3 GB total disk |
+| GPU-cached models | 5 (LRU) | ~165 MB VRAM for 5 × 33MB bf16 models |
+| Save interval | Every 500 PPO update steps | ~2-6 new checkpoints per day |
+
+| Opponent Selection | Weight | Purpose |
+|--------------------|--------|---------|
+| Current self (all 4 seats) | 50% | Core self-play signal |
+| Random pool checkpoint | 30% | Diversity; prevents strategy collapse |
+| Phase 2 baseline (frozen) | 20% | Anchor; prevents catastrophic forgetting |
+
+**Seat rotation:** Every game seed is played in 4 rotations (challenger at East/South/West/North), following Mortal's 1v3 duplicate protocol. This controls for positional advantage (East player has slight edge in Mahjong).
+
+**PPO hyperparameters:**
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Clip ε | 0.1 | Conservative; matches HYDRA_SPEC |
+| Entropy coef | 0.01 → 0.005 | Linear decay; prevents policy collapse in discrete action space |
+| Value loss coef | 0.5 | Standard |
+| γ (discount) | 1.0 | Undiscounted episodic (matches Mortal) |
+| GAE λ | 0.95 | Standard bias-variance tradeoff for non-terminal rewards |
+| LR | 1e-4, cosine annealing | Lower than Atari PPO default — fine-tuning a pre-trained model |
+| Adam ε | 1e-5 | NOT PyTorch default 1e-8 (PPO-specific) |
+| Update epochs | 3 | Conservative for self-play (monitor approx_kl; reduce to 2 if >0.03) |
+| Minibatch size | 4096 | Transitions per PPO minibatch |
+| Gradient clip | 0.5 (max grad norm) | PPO standard |
+| Advantage norm | Per-minibatch (mean/std, eps=1e-8) | PPO standard, confirmed by CleanRL |
+
+**Anti-forgetting mechanisms:**
+- KL penalty against Phase 2 policy: λ_KL = 0.05, annealed to 0 over the first 30% of Phase 3 training
+- GroupNorm parameters frozen from Phase 2 (no running stats to drift)
+- Opponent pool includes Phase 2 baseline at 20% weight
+
+**Resource estimates:**
+
+| Metric | Value |
+|--------|-------|
+| Concurrent games | 512 |
+| Inference batch | ~512 obs (~0.5-1ms per GPU forward pass) |
+| Game throughput | 400-800 hanchans/sec |
+| Transitions per second | 200K-400K |
+| PPO updates per day | 40-120 |
+| GPU memory (total) | ~3.7 GB (model + optimizer + rollout + opponent cache) |
+| Wall time to meaningful improvement | 3-7 days |
+| Total Phase 3 training | 2-4 weeks |
+
+#### Phase Transitions
+
+**General principle:** Always reset optimizer and LR scheduler at phase boundaries. Always warmup LR from ~1/20th of the target peak. Evidence: Mortal explicitly discards optimizer state when switching from offline to online training. KataGo warms up from 1/20th of target LR over 8 stages.
+
+**What carries over vs. resets at each phase boundary:**
+
+| Component | Phase 1 → 2 | Phase 2 → 3 |
+|-----------|-------------|-------------|
+| ResBlock weights (40 blocks) | ✅ Carry | ✅ Carry |
+| Policy head | ✅ Carry (also freeze copy as KL anchor) | ✅ Carry |
+| Value head | ❌ Reset (new oracle critic architecture) | ✅ Carry |
+| Aux heads (GRP, tenpai, danger) | ✅ Carry | ✅ Carry |
+| Stem Conv1d | ⚠️ Student: carry; Teacher: new random stem | ✅ Carry (student stem) |
+| Optimizer state (Adam m, v) | ❌ Fresh AdamW | ❌ Fresh AdamW |
+| LR scheduler | ❌ New schedule with warmup | ❌ New schedule with warmup |
+| GroupNorm parameters | ✅ Carry (no running stats) | ✅ Carry (freeze during RL) |
+| Global step counter | ✅ Keep (logging continuity) | ✅ Keep |
+| Teacher model | N/A → Create | ❌ Discard |
+| Opponent pool | N/A | N/A → Initialize |
+
+**Phase 1 → 2 procedure:**
+1. Save Phase 1 best checkpoint as bc_best.pt
+2. Verify all Phase 1 readiness gate metrics pass
+3. Initialize teacher from student weights + new random oracle stem
+4. Freeze teacher (eval mode, no gradients, bf16)
+5. Freeze copy of Phase 1 policy as KL anchor
+6. Create fresh AdamW with warmup schedule
+7. Begin Phase 2 training loop
+
+**Phase 2 → 3 procedure:**
+1. Save Phase 2 best checkpoint as distill_best.pt
+2. Verify all Phase 2 readiness gate metrics pass
+3. Verify feature dropout masks have reached 0.0 (student is fully blind)
+4. Discard teacher model and oracle critic
+5. Initialize opponent pool with distill_best.pt and bc_best.pt as frozen anchors
+6. Freeze copy of Phase 2 policy as new KL anchor
+7. Create fresh AdamW with warmup schedule
+8. Begin Phase 3 league training
+
+#### Rating and Evaluation
+
+**Rating system:** OpenSkill PlackettLuce — a patent-free Bayesian ranking system with native 4-player support (Weng & Lin 2011, JMLR). Each checkpoint maintains a skill belief (μ, σ). Conservative rating = μ − 3σ.
+
+**Evaluation protocol:** 1v3 duplicate format following Mortal's established methodology:
+- Challenger (1 copy) vs Champion (3 copies)
+- Each game seed played 4× with the challenger rotating through East/South/West/North
+- Deterministic replay: given (seed, kyoku, honba), walls/draws/dora are fixed
+- This controls for both positional advantage and tile draw variance
+
+**Rank point distribution:** [90, 45, 0, −135] (Tenhou Houou-style uma)
+
+**Evaluation scale:**
+
+| Purpose | Games | Sets (×4 rotations) | Sufficient For |
+|---------|-------|---------------------|----------------|
+| Quick eval (during training) | 4,000 | 1,000 | Trend detection |
+| Full eval (checkpoint release) | 200,000 | 50,000 | Publication-quality claims |
+| Ablation study | 1,000,000 | 250,000 | Detecting <1 rank pt/game differences |
+
+**Statistical significance:** Welch's t-test on per-game rank points (p < 0.05). Mahjong has high per-game variance (~σ = 80 rank pts); detecting a 1 rank-pt-per-game improvement at 95% confidence requires ~100K games in 1v3 duplicate format.
+
+#### Distributed Strategy
+
+**Single GPU is sufficient for all three phases.** The model is ~16.7M parameters (~33 MB in fp16/bf16). Total VRAM usage never exceeds 4 GB, even in Phase 3 with 5 cached opponent models and a large rollout buffer. The RTX PRO 6000's 96 GB VRAM is massively overprovisioned — the bottleneck is game generation throughput (CPU-bound), not GPU memory or compute.
+
+**No DDP or FSDP is needed.** Distributed data parallelism is designed for models that don't fit on one GPU or for scaling batch size across devices. Neither applies: the model fits 2,900× over in 96 GB, and batch_size=2048-4096 is already sufficient for stable gradients.
+
+**Parallelism strategy by phase:**
+
+| Phase | GPU | CPU | Parallelism |
+|-------|-----|-----|-------------|
+| Phase 1 (BC) | Forward/backward on single device | 8 DataLoader workers with rayon | Data parallelism via workers |
+| Phase 2 (Oracle) | Teacher (bf16 inference) + Student (training) | Self-play game workers | Dual model, single device |
+| Phase 3 (League) | Dual CUDA streams (inference + training) | 512 concurrent games via Rust/rayon threading | Overlapped inference and gradient computation |
+
+**Future scalability (if needed):** If Phase 3 game throughput becomes the bottleneck, the architecture supports adding CPU-only game worker machines that communicate game trajectories to the GPU trainer via shared filesystem or ZMQ (Mortal's proven pattern). The model architecture does not need to change.
 
 ### Model Definition
 
-The PyTorch model implements the neural network architecture defined in the architecture specification. Key considerations for the implementation:
+The PyTorch model implements the SE-ResNet architecture defined in HYDRA_SPEC.md. Key infrastructure considerations:
 
-- **`torch.compile()`** is used for optimized inference throughput and is available for training (Mortal uses it via `config['control']['enable_compile']`). For PPO training, dynamic action masks may trigger occasional recompilation, so this should be benchmarked per-workload.
-- **Mixed precision (fp16) training** reduces memory usage and increases GPU throughput
-- **Gradient checkpointing** is available as an option to trade compute for memory if larger batch sizes are needed (not used in Mortal's training loop but supported by the architecture)
+- **torch.compile()** is enabled for all phases. For Phase 3 self-play inference, use mode="reduce-overhead" which activates CUDAGraphs for fixed-shape inputs — particularly beneficial for the InferenceServer where batch size is stable. For training, use mode="default" to allow dynamic shapes from action masking.
+- **Precision: bf16** (not fp16). Blackwell GPUs have native bf16 tensor core support at full throughput. bf16 has the same dynamic range as fp32 (8 exponent bits), eliminating the need for GradScaler and the risk of gradient overflow/underflow. fp16 (5 exponent bits, max 65504) requires GradScaler and can cause training instabilities early in learning when gradients are large.
+- **Gradient checkpointing** is available but unnecessary at this model scale. The ~16.7M param model's activations occupy ~100-200 MB during forward/backward — negligible on 96 GB. Gradient checkpointing would add ~30% compute overhead for <0.2% memory savings.
+- **GroupNorm(32)** is used throughout instead of BatchNorm. GroupNorm has no running statistics, so it is immune to distribution shift between BC data and self-play data — unlike Mortal's BatchNorm which must be frozen during online RL.
+- **Orthogonal initialization:** std=√2 for hidden layers, 0.01 for policy head, 1.0 for value head (PPO standard from Andrychowicz et al. 2021).
 
 ## Deployment
 
