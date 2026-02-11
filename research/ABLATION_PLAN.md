@@ -104,7 +104,7 @@ Each experiment follows this protocol:
 
 **Control model:** Remove the tenpai head entirely. Remove tenpai BCE from the composite loss.
 
-**Treatment model:** Full tenpai head (sigmoid(3)) with BCE loss, coefficient 0.1.
+**Treatment model:** Full tenpai head (sigmoid(3)) with BCE loss, coefficient 0.1 (2× the training default of 0.05 — testing whether a stronger tenpai signal improves damaten detection).
 
 **Measurement focus:** Deal-in rate specifically against non-riichi opponents (riichi is trivially detectable). Use the evaluation log to partition deal-ins by whether the winning opponent had declared riichi.
 
@@ -114,7 +114,7 @@ Each experiment follows this protocol:
 
 **Control model:** Remove the danger head. Remove danger focal loss from the composite loss.
 
-**Treatment model:** Full danger head (sigmoid(3x34)) with focal BCE (alpha=0.25, gamma=2.0), coefficient 0.2.
+**Treatment model:** Full danger head (sigmoid(3x34)) with focal BCE (alpha=0.25, gamma=2.0), coefficient 0.2 (4× the training default of 0.05 — testing whether a louder initial danger signal helps PID-Lagrangian λ converge faster).
 
 **Measurement focus:** Win/deal-in ratio (should increase), deal-in rate (should decrease), and qualitative analysis of whether the model avoids dangerous tiles when danger head probability is high.
 

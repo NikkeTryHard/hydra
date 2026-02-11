@@ -489,7 +489,7 @@ Hydra's training proceeds through three distinct phases with different data sour
 | Warmup | 5% of total steps (~30K steps) | Prevents early gradient explosions with large batch |
 | Weight decay | 0.01 | Applied only to Conv1d and Linear weights; biases and GroupNorm params excluded |
 | Betas | (0.9, 0.999) | AdamW defaults |
-| Epsilon | 1e-8 | AdamW default |
+| Epsilon | 1e-5 | Consistent across all phases (Huang 2022, CleanRL, SB3 all use 1e-5 for PPO; using the same value for SL maintains consistency and doesn't hurt convergence) |
 | Gradient clip | 1.0 (max grad norm) | Prevents training spikes; Mortal disables this but BC has different dynamics |
 
 **Batch and precision:**
@@ -662,7 +662,7 @@ graph TB
 | γ (discount) | 1.0 | Undiscounted episodic (matches Mortal) |
 | GAE λ | 0.95 | Standard bias-variance tradeoff for non-terminal rewards |
 | LR | 1e-4, cosine annealing | Lower than Atari PPO default — fine-tuning a pre-trained model |
-| Adam ε | 1e-5 | NOT PyTorch default 1e-8 (PPO-specific) |
+| Adam ε | 1e-5 | Same as Phase 1/2; standard for PPO (Huang 2022, CleanRL, SB3) |
 | Update epochs | 3 | Conservative for self-play (monitor approx_kl; reduce to 2 if >0.03) |
 | Minibatch size | 4096 | Transitions per PPO minibatch |
 | Gradient clip | 0.5 (max grad norm) | PPO standard |

@@ -158,6 +158,23 @@ Three binary channels, one per opponent, indicating whether each opponent is lik
 
 This feedback loop from the auxiliary head back into the input encoding is a key architectural feature — the network's own predictions about opponent state feed back to influence future decisions.
 
+**Feedback loop implementation detail:**
+
+The feedback operates **across sequential decisions within a game**, not within a single forward pass (no double pass required):
+
+1. At decision time *t*, tenpai hint channels (81–83) are set to `max(riichi_status[i], cached_tenpai_pred[i] > 0.5)` for each opponent *i*.
+2. The model runs a single forward pass, producing all head outputs including tenpai predictions `[p₁, p₂, p₃]`.
+3. The tenpai predictions are cached: `cached_tenpai_pred = [p₁, p₂, p₃]`.
+4. At decision time *t+1*, step 1 uses the cached predictions from *t*.
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Activation threshold | 0.5 | Binary decision boundary for tenpai hint channels |
+| Forward passes per decision | 1 | No double-pass — feedback is across time steps |
+| Latency impact | Zero | Tenpai head output is already computed in the main forward pass |
+
+**Training behavior:** During training with oracle/ground-truth tenpai labels, channels 81–83 use the ground-truth tenpai status (not the head's predictions). The feedback loop with cached predictions activates only at inference time. This prevents error accumulation during training while teaching the model to use tenpai hints correctly.
+
 ---
 
 ## 3. Tenpai Predictor Head
@@ -209,7 +226,12 @@ Recent discards are weighted higher, making the timing of the tsumogiri-to-tedas
 
 ### 3.5 Training Signal
 
-**Oracle labels:** During training with perfect information (teacher mode), exact tenpai status is known for all players. The label is binary: 1 if the opponent is in tenpai, 0 otherwise.
+**Ground-truth labels (phase-specific):**
+
+- **Phase 1 (Supervised):** Tenpai labels are reconstructed from game logs. MJAI records contain all 4 players' starting hands in the `start_kyoku` event. By replaying each draw, discard, and call, every opponent's hand is reconstructible at every decision point. Computing shanten=0 gives exact tenpai status. These are ground-truth labels available **without oracle mode**.
+- **Phase 2–3 (RL):** The oracle teacher network sees opponent hands directly (205 oracle channels include opponent shanten and waits). Tenpai labels are trivially available from the teacher's observation.
+
+In both cases, the label is binary per opponent: 1 if tenpai, 0 otherwise.
 
 **Loss function:** Binary Cross-Entropy per opponent:
 
@@ -306,6 +328,16 @@ where:
 - `π(a)` is the policy probability for action `a`
 - `p_danger(a)` is the danger head's deal-in probability for action `a`
 - `λ` is the defense/offense balance parameter
+
+> **Formula reconciliation:** Three risk-adjusted formulations exist across the docs. They serve different purposes:
+>
+> | Name | Formula | Context | Where |
+> |------|---------|---------|-------|
+> | **Formula A** (RCPO training) | `A_combined = (A^R(s,a) - λ × A^C(s,a)) / (1 + λ)` | PPO advantage during training | [TRAINING § PID-Lagrangian](TRAINING.md#pid-lagrangian-λ-auto-tuning) |
+> | **Formula B** (logit masking) | `safe_logits = policy_logits - λ × danger_logits` | Canonical inference formula | [TRAINING § Inference Behavior](TRAINING.md#inference-behavior) |
+> | **Formula C** (log-probability) | `score(a) = log π(a) - λ × log(p_danger(a))` | Equivalent to B for action selection | This section |
+>
+> Formulas B and C are equivalent for action selection: `log π(a)` differs from `policy_logits[a]` only by the log-sum-exp constant (which cancels in argmax), and `log(p_danger(a)) = log(sigmoid(danger_logits[a]))` is a monotonic transform of `danger_logits[a]`. **Formula B is the canonical inference implementation** — it operates directly on raw logits, avoiding numerically unnecessary softmax/sigmoid computations.
 
 **Dynamic λ via PID-Lagrangian (auto-tuned):**
 

@@ -210,6 +210,8 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 **Architecture:** Global average pooling collapses the spatial dimension (256 × 34 → 256), followed by a two-layer MLP (256 → 512 → 1) with ReLU activation. The scalar output predicts the expected point gain or loss from the current game state.
 
+> **Oracle Critic (Phase 2–3 training only):** During RL training, an asymmetric oracle critic replaces this value head. The oracle critic runs on the **teacher** backbone (Conv1d(289, 256, 3) stem, receiving 84 public + 205 oracle channels) and outputs **4 scalars** (one per player) with a zero-sum auxiliary loss enforcing V₁+V₂+V₃+V₄=0. The student's 1-scalar value head described above is used only at inference. See [TRAINING § Oracle Critic](TRAINING.md#component-2-oracle-critic-training-only) for the full specification.
+
 ### GRP Head (Global Rank Prediction)
 
 **Purpose:** Predict the final game placement distribution across all four players. This enables placement-aware tactics: All-Last pushing, feeding plays (intentionally letting a specific opponent win), and blocking plays (preventing a specific opponent from rising in rank).
@@ -362,9 +364,17 @@ These are novel additions for explicit opponent modeling. Standard Mahjong defen
 
 #### Genbutsu (Channels 61–69)
 
-100% safe tiles — tiles discarded after an opponent declared riichi, which cannot be the winning tile by rule.
+100% safe tiles guaranteed by the furiten rule — any tile an opponent has discarded (discard furiten), plus any tile discarded by any player after that opponent declared riichi (riichi furiten).
 
-Three channels per opponent (9 total). Binary mask: 1 if the tile is genbutsu for that opponent, 0 otherwise.
+Three channels per opponent (9 total), encoding three semantically distinct safety signals:
+
+| Sub-channel | Content | Encoding |
+|-------------|---------|----------|
+| +0 | All genbutsu | Binary mask: 1 if tile is 100% safe against this opponent (union of discard-furiten and riichi-furiten genbutsu) |
+| +1 | Tedashi genbutsu | Binary mask: subset of +0 where tile was hand-discarded (tedashi) by this opponent. Carries hand-shape information — tedashi implies the opponent evaluated and rejected this tile. |
+| +2 | Riichi-era genbutsu | Binary mask: subset of +0 where tile became safe AFTER this opponent declared riichi. Only non-zero when opponent is in riichi. Separates pre-riichi safety (mutable hand) from post-riichi safety (locked hand). |
+
+> See [OPPONENT_MODELING § 2.1 Genbutsu](OPPONENT_MODELING.md#21-genbutsu-絶対安全牌--channels-6169) for calculation flow, Mermaid diagram, and design rationale. No existing mahjong AI (Mortal, Suphx, Kanachan) pre-computes genbutsu channels — Hydra's explicit encoding is a deliberate advantage.
 
 #### Suji (Channels 70–78)
 

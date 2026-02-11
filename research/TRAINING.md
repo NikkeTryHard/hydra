@@ -289,19 +289,46 @@ graph TB
  - Trained once on game logs, then **frozen during RL** — provides stable reward signal
  - GRP accuracy is limited (~23% top-1 on 24 classes per Mortal community), but the marginalized rank probabilities and expected values are much more useful than top-1 accuracy suggests
 
+ **GRP pretraining specification:**
+
+ | Parameter | Value | Notes |
+ |-----------|-------|-------|
+ | Data source | Same game logs as Phase 1 (Tenhou Houou + Majsoul) | Raw `.json.gz` game records |
+ | Training samples | Every kyoku boundary prefix within each game | 4–12 samples per game (one per prefix of the score-state sequence) |
+ | Input per timestep | `[grand_kyoku, honba, kyotaku, s0/10000, s1/10000, s2/10000, s3/10000]` | 7 features |
+ | Label | Index (0–23) of the permutation matching actual final ranking | From `itertools.permutations(range(4))` |
+ | Precision | float64 | Matches Mortal — GRP runs in double precision for numerical stability |
+ | Optimizer | AdamW(lr=1e-3, weight_decay=1e-4) | — |
+ | Convergence | val_loss plateau (3–5K steps), val_acc ~23% top-1 | 24-class random baseline is 4.2%; ~23% is 5.5× random |
+ | Schedule | Pretrained **before** Phase 1 begins | GRP is independent of the main network |
+ | Checkpoint | `checkpoints/grp/` | Single file, frozen after convergence |
+
+ > **Evidence note (GRP pretraining):** Mortal's `train_grp.py` uses identical data pipeline: for each game, every prefix of the score-state sequence is a training sample paired with the game's final ranking. Optimizer is AdamW with default parameters. Hydra's GRP differs from Mortal's only in the downstream consumption: Hydra adds a 16-dim score context vector at the GRP head within the main network (see [HYDRA_SPEC § GRP Head](HYDRA_SPEC.md#grp-head-global-rank-prediction)), while the pretrained GRP module here serves solely for reward computation.
+
  #### Component 2: Oracle Critic (Training Only)
 
- The value head (critic) receives **full information** during training — all 4 players' hands and the wall composition — while the policy head sees only public observation. This asymmetric actor-critic design dramatically reduces variance because the oracle sees 4× more information than the acting agent.
+ The oracle critic is an asymmetric actor-critic where the critic receives **full information** during training — all 4 players' hands and the wall composition — while the policy head sees only public observation. This dramatically reduces variance because the oracle sees 4× more information than the acting agent.
 
- $$A(o_t, a_t) = r_k - V_{\text{oracle}}(s_{\text{full}, t})$$
+ **Architecture:** The oracle critic is the **teacher network's value head**, running on the oracle-augmented backbone (Conv1d(289, 256, 3) stem with 84 public + 205 oracle channels). It is architecturally identical to the student's value head (GAP → MLP with ReLU) but with two key differences:
+
+ | Property | Student Value Head | Oracle Critic |
+ |----------|-------------------|---------------|
+ | Backbone input | 84 public channels | 289 channels (84 public + 205 oracle) |
+ | Output dimension | 1 scalar | **4 scalars** (one per player) |
+ | Zero-sum constraint | No | Yes: V₁+V₂+V₃+V₄=0 |
+ | Used at inference | Yes | No (discarded) |
+
+ The oracle critic's MLP is: GAP(256×34 → 256) → FC(256→512) → ReLU → FC(512→4).
+
+ $$A(o_t, a_t) = r_k - V_{\\text{oracle}}(s_{\\text{full}, t})$$
 
  **Zero-sum constraint:** The oracle critic is trained with an auxiliary zero-sum loss:
 
- $$\mathcal{L}_{\text{critic}} = \sum_i (V_i(s) - r_i)^2 + \lambda_{\text{zs}} \cdot \left(\sum_i V_i(s)\right)^2$$
+ $$\\mathcal{L}_{\\text{critic}} = \\sum_i (V_i(s) - r_i)^2 + \\lambda_{\\text{zs}} \\cdot \\left(\\sum_i V_i(s)\\right)^2$$
 
  This enforces $V_1 + V_2 + V_3 + V_4 = 0$, which is correct by construction for zero-sum placement rewards. The RVR paper (Li et al., IEEE CoG 2022) showed this component provides the majority of their 3.7× training speedup.
 
- At inference, only the policy head is used — the oracle critic is discarded.
+ At inference, only the student's 1-scalar value head and policy head are used — the oracle critic is discarded entirely.
 
  #### Component 3: Expected Reward Network (Phase 3+)
 
@@ -373,10 +400,23 @@ Where:
 | Loss | Formula | Weight | Purpose |
 |------|---------|--------|---------|
 | GRP | $\text{CE}(\hat{y}_{\text{GRP}}, y_{\text{rank}})$ | 0.1 | Placement awareness |
-| Tenpai | $\text{BCE}(\hat{y}_{\text{tenpai}}, y_{\text{oracle}})$ | 0.05 | Opponent reading |
+| Tenpai | $\text{BCE}(\hat{y}_{\text{tenpai}}, y_{\text{tenpai}})$ | 0.05 | Opponent reading |
 | Danger | Focal BCE (α=0.25, γ=2.0) on deal-in events | 0.05 | Defensive play |
 
- The tenpai loss uses ground-truth labels from Oracle data during training (the teacher network sees opponent hands). The danger loss uses actual deal-in events as labels — for each tile that was discarded, whether it resulted in a deal-in.
+ **Tenpai label source (phase-specific):**
+ - **Phase 1 (SL):** Ground-truth tenpai labels reconstructed from game logs — MJAI records contain all 4 players' starting hands in `start_kyoku`, and hand state is reconstructible at every decision point. Shanten=0 ↔ tenpai. No oracle mode required.
+ - **Phase 2–3 (RL):** Oracle teacher sees opponent hands directly — tenpai status is trivially available from the teacher's observation (oracle channels include opponent shanten and waits).
+
+ **Danger label construction:**
+ - Labels are generated **per-action** (per discard decision), not per-tile. At each decision point where the player discards tile *t*, a `[3]` label vector is generated for tile position *t* only: `label[i] = 1` if opponent *i* wins off this discard (ron), `0` otherwise.
+ - **Masked loss:** The model predicts danger for all `[3×34]` positions, but the loss backpropagates through only the actually-discarded tile position. All other tile positions are **masked from the loss** — they receive no gradient signal from this sample.
+ - **Sparsity:** Deal-ins occur in ~10–15% of kyoku, and each kyoku has ~15–20 discard decisions. This makes positive labels extremely sparse (~1–3% of all discard-level labels). Focal loss (α=0.25, γ=2.0) is essential to prevent the head from collapsing to always-predict-safe.
+ - **Phase 2 enhancement:** The oracle teacher can generate **soft danger labels for all 34 tile positions** at every decision point (it sees opponent hands and can compute exact deal-in probability for each tile type). This dramatically densifies the signal and enables the danger head to learn counterfactual danger: "what WOULD have happened if I discarded tile X?"
+ - See [OPPONENT_MODELING § 4.4 Training Signal](OPPONENT_MODELING.md#44-training-signal) for per-opponent label format and class imbalance analysis.
+
+> **Evidence note (auxiliary loss weights):** The tenpai and danger heads are **novel to Hydra** — neither Mortal nor Mortal-Policy has these auxiliary tasks (verified from source: Mortal's only aux is `next_rank_weight=0.2` in `config.example.toml`; Mortal-Policy removed all auxiliaries). The 0.05 default weights are conservative since these are untested in any mahjong AI. Mortal's GRP aux weight (0.2) and standard PPO value coefficients (0.5) suggest 0.05 is at the low end of reasonable, which is intentional — novel heads should not dominate gradients until validated. [ABLATION_PLAN.md](ABLATION_PLAN.md) tests tenpai at 0.1 (2×) and danger at 0.2 (4×) as treatment variants.
+
+> **Evidence note (Adam ε):** All phases use ε=1e-5 (not PyTorch default 1e-8). This matches CleanRL, Stable-Baselines3, and Huang 2022 ("37 Implementation Details of PPO"). Mortal uses 1e-8 (DQN, not PPO). Mortal-Policy also uses 1e-8 but this appears to be an inherited default rather than a deliberate choice — ε=1e-5 is the established PPO standard.
 
 > **Design note (CQL):** CQL was considered for Phase 1 offline regularization but requires per-action Q-values, incompatible with Hydra's PPO actor-critic architecture. Cross-entropy behavioral cloning naturally stays close to the expert distribution. If offline regularization proves necessary, PPO-compatible alternatives include filtered behavioral cloning or advantage-weighted regression.
 
