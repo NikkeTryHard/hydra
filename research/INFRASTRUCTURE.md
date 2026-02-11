@@ -76,6 +76,25 @@ graph TB
 | ndarray | 0.16+ | Tensor operations | MIT OR Apache-2.0 |
 | rand | 0.9+ | RNG for shuffle | MIT OR Apache-2.0 |
 
+### License Compatibility
+
+#### Safe to Use
+
+| License | Commercial | Derivatives | Notes |
+|---------|------------|-------------|-------|
+| MIT | ✓ | ✓ | Preferred for Hydra components |
+| Apache-2.0 | ✓ | ✓ | Patent grant included |
+| BSD | ✓ | ✓ | Various versions acceptable |
+
+#### Cannot Use for Hydra
+
+| License | Issue |
+|---------|-------|
+| AGPL | Copyleft, requires source disclosure for network use |
+| GPL | Copyleft, restricts derivative works |
+| LGPL | Weak copyleft, requires relinking capability for static linking |
+| Mortal's Custom Restrictions | Additional restrictions on model weights beyond AGPL |
+
 ### Module Structure
 
 The `hydra-core` crate is organized as a flat module layout under `src/`:

@@ -49,20 +49,20 @@ Single source of truth for all citations in the Hydra project.
 
 | Project | URL | Language | Stars | License | Notes |
 |---------|-----|----------|-------|---------|-------|
-| Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1,334 | AGPL-3.0-or-later | Primary competitor. ResNet(40 blocks, 192ch) + Channel Attention → DQN(Dueling) + CQL. Reference only — AGPL, cannot derive code. Study: obs encoding (1012×34), action masking (46 actions), GRP head, 1v3 duplicate evaluation. Weights have additional distribution restrictions beyond AGPL. |
-| Kanachan | https://github.com/Cryolite/kanachan | C++/Python | 326 | MIT | **Transformer encoder (BERT-style)** with two configs: base (~90M params, 12 layers, 768-dim) and large (~310M params, 24 layers, 1024-dim). Trained on 65M+ Mahjong Soul rounds (Gold room+) with zero hand-crafted features — pure token indices, no built-in tile relationships. Self-attention operates over 184 tokens: 33 sparse (game context) + 6 numeric (scores) + 113 progression (temporal discard/meld sequence) + 32 action candidates. Training pipeline: behavioral cloning → curriculum fine-tuning (encoder reuse, decoder swap) → offline RL (IQL/ILQL/CQL). **No published performance benchmarks exist** despite 5+ years of development — community reports offline RL instability (Q-value collapse). The ~90-310M parameter count makes online self-play RL infeasible (~50-150× more expensive per inference than Mortal's 2M-param ResNet), which is likely why no RL results have materialized. Uses LOUDS-based TRIE (MARISA-TRIE library) for O(1) shanten lookup via succinct data structure. Hydra's decision to use SE-ResNet over transformers is quantitatively justified: proven results (Mortal 10-dan) vs. no published results, ~100× fewer parameters enabling feasible online RL. |
-| Akochan | https://github.com/critter-mj/akochan | C++ | 281 | Custom (restrictive, Japanese) | EV-based heuristic engine with explicit suji/kabe/genbutsu analysis. Not ML-based. Matters: its hand-crafted defense logic is a useful sanity check — if Hydra's neural network disagrees with Akochan's defense in obvious spots, something is wrong. Also used as the backend for the original mjai-reviewer. |
-| MahjongAI | https://github.com/erreurt/MahjongAI | Python | 446 | — | Extensible agent framework with pluggable strategies. Matters less for architecture, more for its Tenhou client implementation — shows how to connect an AI to Tenhou's protocol if we ever need that. |
+| Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1.3K+ | AGPL-3.0-or-later | Primary competitor. ResNet(40 blocks, 192ch) + Channel Attention → DQN(Dueling) + CQL. Reference only — AGPL, cannot derive code. Study: obs encoding (1012×34), action masking (46 actions), GRP head, 1v3 duplicate evaluation. Weights have additional distribution restrictions beyond AGPL. |
+| Kanachan | https://github.com/Cryolite/kanachan | C++/Python | ~325 | MIT | **Transformer encoder (BERT-style)** with two configs: base (~90M params, 12 layers, 768-dim) and large (~310M params, 24 layers, 1024-dim). Trained on 65M+ Mahjong Soul rounds (Gold room+) with zero hand-crafted features — pure token indices, no built-in tile relationships. Self-attention operates over 184 tokens: 33 sparse (game context) + 6 numeric (scores) + 113 progression (temporal discard/meld sequence) + 32 action candidates. Training pipeline: behavioral cloning → curriculum fine-tuning (encoder reuse, decoder swap) → offline RL (IQL/ILQL/CQL). **No published performance benchmarks exist** despite 5+ years of development — community reports offline RL instability (Q-value collapse). The ~90-310M parameter count makes online self-play RL infeasible (~50-150× more expensive per inference than Mortal's 2M-param ResNet), which is likely why no RL results have materialized. Uses LOUDS-based TRIE (MARISA-TRIE library) for O(1) shanten lookup via succinct data structure. Hydra's decision to use SE-ResNet over transformers is quantitatively justified: proven results (Mortal 10-dan) vs. no published results, ~100× fewer parameters enabling feasible online RL. |
+| Akochan | https://github.com/critter-mj/akochan | C++ | ~280 | Custom (restrictive, Japanese) | EV-based heuristic engine with explicit suji/kabe/genbutsu analysis. Not ML-based. Matters: its hand-crafted defense logic is a useful sanity check — if Hydra's neural network disagrees with Akochan's defense in obvious spots, something is wrong. Also used as the backend for the original mjai-reviewer. |
+| MahjongAI | https://github.com/erreurt/MahjongAI | Python | ~450 | — | Extensible agent framework with pluggable strategies. Matters less for architecture, more for its Tenhou client implementation — shows how to connect an AI to Tenhou's protocol if we ever need that. |
 | AlphaJong | https://github.com/Jimboom7/AlphaJong | JavaScript | — | — | Browser-based heuristic engine (NOT AlphaZero despite the name). Tunable offense/defense balance via sliders. Matters only as a weak baseline — useful for sanity-checking that Hydra beats simple heuristics by a wide margin. |
 | mjai-manue | https://github.com/gimite/mjai-manue | Ruby | 37 | — | Original MJAI protocol client. Matters as protocol reference — defines the canonical MJAI message format that Hydra must be compatible with. |
 | NAGA | https://dmv.nico/en/articles/mahjong_ai_naga/ | — | — | Commercial | **Pure supervised learning** — 4 independent CNNs (discard, call, riichi, kan) trained on Tenhou Houou game logs via imitation learning. No self-play, no RL. Uses confidence estimation (DeVries & Taylor 2018) as training regularization and Guided Backpropagation (Springenberg et al. 2014) for interpretability. 5 playstyle variants (Omega, Gamma, Nishiki, Hibakari, Kagashi) differentiated by training on different players' game records, not architecture changes. CNN architecture details (layers, filters, input shape) never publicly disclosed — the [DMV article](https://dmv.nico/en/articles/mahjong_ai_naga/) is the sole official technical document. Achieved 10-dan on Tenhou (26,598 games), current models estimated ~9-dan stable. Not open-source. NAGA's "match%" metric is a common (but imperfect) benchmark. |
-| LuckyJ | https://haobofu.github.io/ | — | — | Commercial | **Tencent AI Lab's mahjong AI** (绝艺/JueYi brand). Achieved 10-dan on Tenhou in only 1,321 games (vs Suphx's 5,373 and NAGA's 26,598) with 10.68 stable dan — the strongest known mahjong AI by Tenhou rating. Architecture combines ACH (Actor-Critic Hedge, ICLR 2022) for game-theoretic offline training with OLSS (Opponent-Limited Online Search, ICML 2023) for real-time imperfect-info subgame solving. Pure self-play, zero human data. Search results are fed as features into the policy network (not direct policy override), enabling learned integration. Lead developer: Haobo Fu. Not open-source, no single system paper — architecture reconstructed from 3+ published papers. See [COMMUNITY_INSIGHTS § LuckyJ](COMMUNITY_INSIGHTS.md#luckyj-tencent-ai-lab) for detailed analysis. |
+| LuckyJ | https://haobofu.github.io/ | — | — | Commercial | Tencent AI Lab's mahjong AI (绝艺/JueYi brand). 10-dan on Tenhou in 1,321 games, 10.68 stable dan — strongest known AI. ACH + OLSS architecture, pure self-play. See [COMMUNITY_INSIGHTS § LuckyJ](COMMUNITY_INSIGHTS.md#luckyj-tencent-ai-lab) for detailed architecture analysis. |
 
 ### Analysis & Review Tools
 
 | Project | URL | Stars | Description |
 |---------|-----|-------|-------------|
-| mjai-reviewer | https://github.com/Equim-chan/mjai-reviewer | 1,168 | CLI that generates HTML review reports showing Q-value differences per discard. Matters: primary tool for evaluating Hydra's play quality — feed game logs in, get per-move analysis out. Apache-2.0 so we can use it directly. |
+| mjai-reviewer | https://github.com/Equim-chan/mjai-reviewer | 1.1K+ | CLI that generates HTML review reports showing Q-value differences per discard. Matters: primary tool for evaluating Hydra's play quality — feed game logs in, get per-move analysis out. Apache-2.0 so we can use it directly. |
 | mjai-reviewer3p | https://github.com/hidacow/mjai-reviewer3p | — | 3-player (sanma) fork of mjai-reviewer. Matters only if Hydra targets sanma. |
 | killer_mortal_gui | https://github.com/killerducky/killer_mortal_gui | — | Enhanced Mortal review with deal-in heuristic multipliers (ryanmen 3.5×, kanchan suji-trap 2.6×, honor tanki/shanpon 1.7×, etc). Matters: these empirically-tuned danger multipliers are the best public reference for tile danger calibration — useful for validating Hydra's learned defense signals. |
 | crx-mortal | https://github.com/announce/crx-mortal | — | Chrome extension for in-browser Mortal analysis. Low relevance for training. |
@@ -81,10 +81,10 @@ Single source of truth for all citations in the Hydra project.
 | xiangting | https://github.com/Apricot-S/xiangting | Rust | MIT | Primary shanten library. Compile-time embedded tables (~200KB), `no_std` compatible, 3-player support, returns both shanten number and necessary/unnecessary tile sets. 34× faster than brute-force for replacement tile calculation. Hydra uses this for obs encoding channels (shanten features) and action masking. |
 | xiangting-py | — | Python | MIT | Python bindings for xiangting via PyO3. Useful for training-side shanten calculation if needed. |
 | tomohxx/shanten-number | — | C++ | LGPL-3.0 | Original table-based shanten algorithm that xiangting is derived from. Algorithm reference only — LGPL prevents static linking. Tables: suhai (1.9M entries, ~19.4MB), jihai (78K entries, ~0.78MB). Base-5 encoding for tile state indexing. |
-| PyO3 | https://pyo3.rs/ | Rust | Apache-2.0 | Rust↔Python FFI. Hydra's Rust game engine exposes Python bindings via PyO3 for the training loop (PyTorch calls Rust for game simulation, obs generation, action execution). Critical path — every training step crosses this boundary. |
-| rayon | https://docs.rs/rayon/ | Rust | Apache-2.0 | Data parallelism for Rust. Used for batch game simulation — rayon's work-stealing scheduler distributes N parallel games across CPU cores during self-play data generation. |
-| serde / serde_json | https://serde.rs/ | Rust | Apache-2.0 | JSON serialization for MJAI protocol parsing. Every game log line is a JSON object that serde deserializes into typed Rust structs. Performance matters — parsing ~6.6M games at startup. |
-| ndarray | https://docs.rs/ndarray/ | Rust | Apache-2.0 | N-dimensional array operations in Rust. Used for constructing observation tensors (1012×34) on the Rust side before passing to Python/PyTorch. |
+| PyO3 | https://pyo3.rs/ | Rust | Apache-2.0 | Rust↔Python FFI for exposing game engine bindings to the training loop. |
+| rayon | https://docs.rs/rayon/ | Rust | Apache-2.0 | Work-stealing data parallelism for batch game simulation. |
+| serde / serde_json | https://serde.rs/ | Rust | Apache-2.0 | JSON serialization/deserialization for MJAI protocol parsing. |
+| ndarray | https://docs.rs/ndarray/ | Rust | Apache-2.0 | N-dimensional array operations for constructing observation tensors. |
 | ort | https://docs.rs/ort/ | Rust | Apache-2.0 | ONNX Runtime Rust bindings. Primary inference engine for self-play: loads exported PyTorch model as ONNX, runs forward passes with CUDA EP, CUDA graphs, and I/O binding for <5ms latency. This is the hot path during self-play — inference speed directly limits training throughput. |
 | tract | https://docs.rs/tract/ | Rust | MIT OR Apache-2.0 | Pure Rust ML inference engine (no C++ deps). CPU-only fallback for environments without CUDA. Useful for CI testing and CPU-only deployment. |
 | candle | https://github.com/huggingface/candle | Rust | Apache-2.0 | HuggingFace's Rust ML framework with CUDA and Metal support. Alternative to ONNX path — write inference directly in Rust, avoiding the PyTorch→ONNX export step. Worth evaluating if ONNX export causes accuracy loss or operator compatibility issues. |
@@ -240,22 +240,7 @@ Single source of truth for all citations in the Hydra project.
 
 ## License Compatibility
 
-### Safe to Use
-
-| License | Commercial | Derivatives | Notes |
-|---------|------------|-------------|-------|
-| MIT | ✓ | ✓ | Preferred for Hydra components |
-| Apache-2.0 | ✓ | ✓ | Patent grant included |
-| BSD | ✓ | ✓ | Various versions acceptable |
-
-### Cannot Use for Hydra
-
-| License | Issue |
-|---------|-------|
-| AGPL | Copyleft, requires source disclosure for network use |
-| GPL | Copyleft, restricts derivative works |
-| LGPL | Weak copyleft, requires relinking capability for static linking |
-| Mortal's Custom Restrictions | Additional restrictions on model weights beyond AGPL |
+> License policy: See [INFRASTRUCTURE.md § License Compatibility](INFRASTRUCTURE.md#license-compatibility)
 
 ---
 

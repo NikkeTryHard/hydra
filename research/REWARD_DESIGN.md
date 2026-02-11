@@ -93,34 +93,7 @@ Based on cross-domain survey ([archived](archive/REWARD_SURVEY.md)), Mortal sour
 
 ### The Formula
 
-```
-Episode = one kyoku (round), NOT one hanchan (game)
-
-Per-kyoku reward:
-  r_k = E[pts]_after_kyoku_k - E[pts]_before_kyoku_k
-
-Where:
-  E[pts] = rank_prob · pts_vector
-  rank_prob = marginalized from GRP's 24-class permutation softmax
-  pts_vector = [3, 1, -1, -3]  (symmetric, zero-sum, configurable)
-
-Per-action Q-target (within kyoku k):
-  All actions in kyoku k share reward r_k
-  Credit assignment handled by GAE + value function, not reward
-
-Advantage computation:
-  A(o_t, a_t) = f_θ(g^{T-1}) - V_oracle(s_full_t)
-
-Where:
-  f_θ(g^{T-1}) = Expected Reward Network output (replaces raw r for last kyoku)
-  V_oracle(s_full_t) = Oracle critic seeing all 136 tiles (training only)
-  Zero-sum constraint: Σ_i V_i(s) = 0
-
-Normalization:
-  1. Running std normalization on rewards (Welford algorithm, do NOT subtract mean)
-  2. Per-minibatch advantage normalization: (A - mean) / (std + 1e-8)
-  3. Clip normalized rewards to [-5, 5]
-```
+> See [TRAINING.md § Reward Function](TRAINING.md#reward-function) for the authoritative formula, normalization, and implementation priority.
 
 ### Why This Design
 
@@ -138,24 +111,9 @@ Normalization:
 | **No intrinsic motivation** | Skip | SL warm-start solves exploration. RND/ICM would add noise from tile draw stochasticity. |
 | **Same reward all phases** | Mandatory | Changing reward invalidates value function. Cal-QL (NeurIPS 2023) showed this causes "unlearning." |
 
-### Implementation Priority
-
-1. **Phase 1 (SL warm-start):** No reward needed — cross-entropy on expert actions
-2. **Phase 2 (Oracle RL):** GRP ΔE[pts] reward + oracle critic with zero-sum constraint
-3. **Phase 3 (League):** Same reward + Expected Reward Network for last-kyoku variance
-4. **Phase 3+ (Optional):** HCA (Hindsight Credit Assignment) to reweigh returns — research-grade
-
 ### Confirmed Anti-Patterns (From Mortal Community)
 
-| What | Why Not |
-|------|---------|
-| TD bootstrapping | Mortal tried it → no improvement, adds instability (confirmed by Equim-chan across multiple discussions) |
-| PPO without reward normalization | Mortal creator spent months on PPO, failed — likely due to unnormalized reward variance (Discussion #102) |
-| Oracle guiding of policy | "Optimal play with full info doesn't transfer to blind play" (Discussion #102, zl0v7hzr) |
-| Deeper networks | Mortal tried b75c256 → no improvement |
-| Sample reuse in online training | Made things worse (Discussion #64) |
-| Dense per-step shaping | Mahjong has ~15 decisions/kyoku — not 45,000 like Dota. Dense shaping adds complexity for no benefit. |
-| Elo as reward signal | Non-stationary, noisy, redundant with placement points |
+> See [TRAINING.md § What NOT to Do](TRAINING.md#what-not-to-do-confirmed-failures) for the full list.
 
 ### Platform-Specific Fine-Tuning (Via pts_vector Swap)
 
