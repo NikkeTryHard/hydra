@@ -8,9 +8,18 @@ Consolidated reference for the Mortal Mahjong AI — architecture, limitations, 
 
 Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types. The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan for each tile, 37 is riichi declaration, 38–40 are the three chi variants, 41 is pon, 42 is open kan, 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
 
-The network uses a **Dueling DQN** structure with separate value (V) and advantage (A) streams, combined with a **GRP** (GRU-based Rank Predictor) head that predicts final placement probabilities.
+All versions use the **Dueling DQN** decomposition `Q = V + A − mean(A)`, but the head architecture differs by version:
 
-Source: `mortal/model.py`, `libriichi/src/consts.rs`
+| Version | V/A Head Implementation | Feature dim |
+|---------|------------------------|-------------|
+| v1 | Separate `nn.Linear(512, 1)` / `nn.Linear(512, ACTION_SPACE)` from VAE latent (μ, log σ) | 512 |
+| v2 | Separate 2-layer MLPs (1024 → 512 → 1 and 1024 → 512 → 46), Mish activation | 1024 |
+| v3 | Separate 2-layer MLPs (1024 → 256 → 1 and 1024 → 256 → 46), Mish activation | 1024 |
+| v4 | Single `nn.Linear(1024, 1 + ACTION_SPACE)`, split into V(1) and A(46) post-hoc | 1024 |
+
+In v4, V and A share parameters in a single linear layer — the decomposition formula is still applied, but there are no separate streams. A **GRP** (GRU-based Rank Predictor) head predicts final placement probabilities.
+
+Source: `mortal/model.py` (DQN class, Brain class), `libriichi/src/consts.rs`
 
 ### Training Algorithm
 
@@ -27,7 +36,7 @@ Key architectural decisions discovered from source analysis:
 - **Q-targets use Monte Carlo returns, not TD bootstrapping.** `q_target = gamma^steps_to_done * kyoku_reward` — no bootstrap from next-state Q-values. This explains why GRP predicts game-level reward.
 - **GRP is pretrained separately** (`train_grp.py`) with cross-entropy on 24-class placement permutations, then frozen during DQN training. It's not jointly trained.
 - **No target network.** Vanilla DQN without double-DQN or EMA target. Known to cause training instability — Hydra's PPO approach avoids this entirely.
-- **v4 DQN head is a single linear layer** (`nn.Linear(1024, 1 + ACTION_SPACE)`) — the earlier dueling architecture (separate V and A streams) was simplified away, losing the decomposition benefit.
+- **v4 DQN head uses a single shared linear layer** (`nn.Linear(1024, 1 + ACTION_SPACE)`) — V and A are split post-hoc from the same output, unlike v1–v3 which had separate V/A head networks. The dueling decomposition formula `Q = V + A − mean(A)` is still applied.
 - **SP calculator assumes tsumo-only agari** (`is_ron: false` hardcoded in `calc.rs`). All expected values ignore ron possibilities, undervaluing hands with good ron waits.
 - **Training data uses suit augmentation** — tile suits (manzu/pinzu/souzu) are permuted during training for 6× data multiplier. Hydra should do the same.
 

@@ -5,13 +5,13 @@ Open-source Riichi Mahjong AI. The goal is to build an AI stronger than [Mortal]
 ## Goal
 
 Train a mahjong AI that:
-- Beats Mortal (currently Tenhou 10-dan) in head-to-head evaluation
+- Beats Mortal (Tenhou 10-dan rating, ~7-dan estimated play strength) in head-to-head evaluation
 - Releases weights under a permissive license (MIT)
 - Adds opponent modeling — something no existing mahjong AI does
 
 ## Architecture
 
-SE-ResNet backbone (40 blocks, 256 channels) with PPO training. Three-phase pipeline: supervised warm start on 3M+ Tenhou Phoenix games → oracle distillation → league self-play. Hybrid Rust (game engine) + Python (training) stack.
+SE-ResNet backbone (40 blocks, 256 channels) with PPO training. Three-phase pipeline: supervised warm start on ~6.6M games (2M Tenhou Houou + 1M Majsoul Throne + 3M Majsoul Jade) → oracle distillation → league self-play. Hybrid Rust (game engine) + Python (training) stack.
 
 See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the full specification.
 
@@ -24,8 +24,11 @@ See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the full specification.
 | [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Safety planes, tenpai/danger heads, oracle distillation |
 | [INFRASTRUCTURE.md](research/INFRASTRUCTURE.md) | Rust/Python stack, module layout, hardware requirements |
 | [ECOSYSTEM.md](research/ECOSYSTEM.md) | Every useful repo, tool, and framework in the mahjong AI space |
+| [REWARD_DESIGN.md](research/REWARD_DESIGN.md) | Hydra's reward function design and RVR variance reduction |
 | [COMMUNITY_INSIGHTS.md](research/COMMUNITY_INSIGHTS.md) | Reddit, blogs, Mortal GitHub discussions — community knowledge |
 | [REFERENCES.md](research/REFERENCES.md) | All citations with why each matters for Hydra |
+| [TESTING.md](research/TESTING.md) | Testing strategy, correctness verification, property-based tests |
+| [ABLATION_PLAN.md](research/ABLATION_PLAN.md) | Structured experiment queue with hypotheses and protocols |
 
 ## Status
 

@@ -231,21 +231,11 @@ Japanese community consensus:
 
 ### System Architecture Summary
 
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Game State     │────▶│  Brain (ResNet)   │────▶│  DQN (Dueling)  │
-│  Observation     │     │  12 blocks, 256ch │     │  V + A → Q      │
-│  (1012, 34)      │     │  + Channel Attn   │     │  46 actions      │
-│                  │     │  → 1024-dim φ     │     │  + Action Mask   │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                                         │
-                                                         ▼
-                                                  ┌─────────────┐
-                                                  │  Sampling    │
-                                                  │  Boltzmann / │
-                                                  │  Top-p /     │
-                                                  │  Argmax      │
-                                                  └─────────────┘
+```mermaid
+graph LR
+    OBS["Game State<br/>Observation<br/>(1012, 34)"] --> BRAIN["Brain (ResNet)<br/>40 blocks, 192ch<br/>+ Channel Attn<br/>→ 1024-dim φ"]
+    BRAIN --> DQN["DQN (Dueling)<br/>V + A → Q<br/>46 actions<br/>+ Action Mask"]
+    DQN --> SAMPLE["Sampling<br/>Boltzmann /<br/>Top-p /<br/>Argmax"]
 ```
 
 ### Training Loss Components
@@ -305,7 +295,7 @@ If 2 of 3 → push. Otherwise → fold. Additional factors: round number, curren
 
 | AI | Level | Architecture | Open Source | Analysis | Key Trait |
 |----|-------|-------------|-------------|----------|-----------|
-| **Mortal** | ~7 dan | ResNet + DQN | ✅ Yes | Free log review | Best open-source option |
+| **Mortal** | ~7 dan | SE-ResNet + Dueling DQN | ✅ Yes | Free log review | Best open-source option |
 | **NAGA** | 10 dan | Unknown | ❌ No | Paid, detailed | Multiple playstyle versions |
 | **Suphx** | 10 dan | ResNet+Oracle | ❌ No | Replay viewing only | First to reach 10 dan |
 | **Akochan** | ~8 dan | Unknown | ✅ Yes | Reviewer tool | Older, somewhat outdated |
