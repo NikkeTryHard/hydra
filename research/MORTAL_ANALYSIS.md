@@ -6,7 +6,7 @@ Consolidated reference for the Mortal Mahjong AI — architecture, limitations, 
 
 ### Neural Network
 
-Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types. The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan for each tile, 37 is riichi declaration, 38–40 are the three chi variants, 41 is pon, 42 is open kan, 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
+Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types (source: `libriichi/src/consts.rs:15` — `obs_shape(4)` returns `[1012, 34]`; the 1012 channels are constructed in `libriichi/src/state/obs_repr.rs`). The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan for each tile, 37 is riichi declaration, 38–40 are the three chi variants, 41 is pon, 42 is open kan, 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
 
 All versions use the **Dueling DQN** decomposition `Q = V + A − mean(A)`, but the head architecture differs by version:
 
@@ -108,7 +108,7 @@ Source: `mortal/train.py:382-386`
 
 ### Oracle Guiding Removal
 
-Oracle guiding (training with perfect information, then distilling to imperfect) existed in Mortal v1 and v2 but was **removed in v3**. According to Equim-chan, the reason was: "It didn't bring improvements in practice" — the removal was not motivated by throughput concerns. Oracle guiding was replaced with a **next-rank prediction** auxiliary task (implemented as `AuxNet` in code, commonly called "NextRankPredictor" in community Discussion #52 and #102).
+Oracle guiding (training with perfect information, then distilling to imperfect) existed in Mortal v1 and v2 but was **removed in v3**. According to Equim-chan, the reason was: "It didn't bring improvements in practice" — the removal was not motivated by throughput concerns. Oracle guiding was replaced with a **next-rank prediction** auxiliary task (implemented as `AuxNet` in `mortal/model.py`, referred to as "NextRankPredictor" in GitHub Discussion #52 where Equim-chan explains its rationale; removal of oracle guiding discussed in #102).
 
 Source: GitHub Discussion #102 (Equim-chan)
 

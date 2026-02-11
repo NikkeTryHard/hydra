@@ -5,7 +5,7 @@ Open-source Riichi Mahjong AI. The goal is to build an AI stronger than [Mortal]
 ## Goal
 
 Train a mahjong AI that:
-- Beats Mortal (Tenhou 10-dan rating, ~7-dan estimated play strength) in head-to-head evaluation
+- Beats Mortal (community-estimated ~7-dan play strength despite 10-dan Tenhou rating) in head-to-head evaluation
 - Releases weights under a permissive license (MIT)
 - Adds opponent modeling — something no existing mahjong AI does
 
