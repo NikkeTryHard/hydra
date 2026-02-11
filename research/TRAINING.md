@@ -158,7 +158,7 @@ For comparison, Mortal's oracle is 217 channels (51 opponent + 166 wall). Hydra'
 
 #### Teacher Training
 
-The Teacher is trained with PPO on self-play using the same reward function as all phases (per-kyoku ΔE[pts] via GRP). With perfect information, optimal play is much easier to learn — the Teacher converges approximately 10× faster than a blind agent.
+The Teacher is trained with PPO on self-play using the same reward function as all phases (per-kyoku ΔE[pts] via GRP). With perfect information, optimal play is much easier to learn — the Teacher is expected to converge significantly faster than a blind agent (Suphx describes oracle training as speeding up RL but provides no quantitative speedup ratio; arXiv:2003.13590, Section 3.3).
 
 #### Student Distillation
 
@@ -185,7 +185,7 @@ Two feature groups are masked independently:
 
 **Wall masks decay faster than opponent masks** because wall ordering is extremely powerful information (perfect lookahead) that creates a larger gap between teacher and student. Removing it earlier forces the teacher to rely more on opponent hand reading, which transfers better to the blind student.
 
-**Why this works:** The Teacher learns patterns like "Opponent has 4–7p tanki wait" or "Wall has no more 3m." The Student cannot see these facts directly but learns to recognize the behavioral and statistical signals that correlate with them — developing "intuition" by mimicking psychic decisions. Suphx ablation showed the full pipeline (SL → GRP → Oracle Guiding) gained ~1.1 dan over supervised baseline, with oracle guiding contributing incremental improvement over GRP alone (arXiv:2003.13590, Figure 8).
+**Why this works:** The Teacher learns patterns like "Opponent has 4–7p tanki wait" or "Wall has no more 3m." The Student cannot see these facts directly but learns to recognize the behavioral and statistical signals that correlate with them — developing "intuition" by mimicking psychic decisions. Suphx ablation (Figure 8, offline evaluation over 1M games) showed the full RL pipeline (SL → RL+GRP → RL+GRP+Oracle) gained ~0.71 dan over the supervised baseline (~7.65 → ~8.36 stable dan, visual estimates from box plot). Oracle guiding specifically contributed ~0.12 dan over GRP alone (RL-2 vs RL-1). The final online Suphx system (including run-time policy adaptation) reached 8.74 dan (Table 4), a ~1.09 dan improvement over SL — but this includes techniques beyond the oracle ablation. (arXiv:2003.13590, Figure 8 and Table 4)
 
 **Why NOT simple knowledge distillation:** Suphx explicitly tested and rejected standard KD (training a normal agent to mimic the oracle). The oracle is "super strong and far beyond the capacity of a normal agent" — the gap is too large for direct imitation. Progressive feature dropout creates a smooth transition instead. (arXiv:2003.13590, Section 3.3)
 
@@ -511,15 +511,18 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 
 ## Implementation Roadmap
 
-### Week 1: Infrastructure (From Scratch)
+> **Timeline caveat:** The week estimates below are aspirational targets for a focused full-time effort, not commitments. Building a correct riichi engine from scratch (abortive draws, nagashi mangan, chankan, rinshan, furiten variants, etc.) is a multi-week effort alone. Actual timelines will depend on implementation complexity, debugging, and iteration. The sequencing (infrastructure → architecture → Phase 1 → Phase 2 → Phase 3) is more meaningful than the week labels.
 
-- Build Rust mahjong engine (tile, hand, game state)
+### Milestone 1: Infrastructure
+
+- Build Rust mahjong engine (tile, hand, game state, all edge cases)
 - Implement MJAI protocol parser
 - Create PyO3 bindings for Python training
 - Implement shanten calculator (tomohxx algorithm via xiangting crate, MIT)
 - Add observation encoder with safety planes
+- Comprehensive correctness testing (property-based, cross-validation against MahjongRepository/mahjong)
 
-### Week 2: Architecture
+### Milestone 2: Architecture
 
 - Implement 40-block SE-ResNet backbone
 - Add GRP head with score context vector
@@ -527,7 +530,7 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 - Add danger head
 - Implement Oracle (Teacher) network variant with hidden-information input
 
-### Weeks 3–4: Phase 1 Training
+### Milestone 3: Phase 1 Training
 
 - Data preprocessing (filter by rating, suit permutation augmentation)
   - **Data pipeline specification:** See [INFRASTRUCTURE.md § Data Pipeline](INFRASTRUCTURE.md#data-pipeline) for storage format, loading architecture, filtering criteria, augmentation strategy, and volume estimates.
@@ -536,7 +539,7 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 
 **Phase 1 → Phase 2 gate:** See [INFRASTRUCTURE.md § Phase 1](INFRASTRUCTURE.md#phase-1-behavioral-cloning-supervised) for the full readiness gate (discard accuracy ≥65%, SL loss plateaued, test play placement ≤2.55, deal-in ≤15%).
 
-### Weeks 5–6: Phase 2 Training
+### Milestone 4: Phase 2 Training
 
 - Teacher (Oracle) network training with PPO
 - Distillation training loop with KL divergence
@@ -544,7 +547,7 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 
 **Phase 2 → Phase 3 gate:** See [INFRASTRUCTURE.md § Phase 2](INFRASTRUCTURE.md#phase-2-oracle-distillation-rl) for the full readiness gate (student placement ≤2.45, deal-in ≤13%, win rate ≥21%, win/deal-in ≥1.5:1, tenpai AUC ≥0.80).
 
-### Week 7+: Phase 3 Training
+### Milestone 5: Phase 3 Training
 
 - League opponent pool implementation
 - Reward normalization (hand-luck baseline)

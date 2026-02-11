@@ -35,11 +35,30 @@ Research compilation from Reddit, Japanese blogs, RL communities, and public AI 
 
 ## 2. NAGA vs Mortal Comparison
 
-### NAGA Overview
-- **Level**: 10 dan on Tenhou (highest rank achieved by AI)
-- **Cost**: Paid service (550–2200 yen/month)
-- **Versions**: 5+ distinct versions with different playstyles (Menzen-focused, Furo-heavy, Defensive, Hybrid)
-- **Key advantage**: Provides detailed, human-readable analysis for each discard
+### NAGA Architecture (Confirmed)
+
+NAGA is a **pure supervised learning system** — no self-play, no reinforcement learning. It uses **4 independent CNNs** (discard, call, riichi, kan), each trained on Tenhou Houou table game logs via imitation learning. The CNN architecture details (layers, filters, input shape) have never been publicly disclosed. The [DMV article](https://dmv.nico/en/articles/mahjong_ai_naga/) is the sole official technical document; there are no academic papers, patents, or conference presentations.
+
+**Key technical features:**
+- **Confidence estimation** (DeVries & Taylor 2018) — during training, low-confidence predictions incur a penalty and are corrected toward ground truth, improving calibration
+- **Guided Backpropagation** (Springenberg 2014) — used for interpretability, visualizing which input features drove each decision
+- **Heuristics** — only for final-round winning judgment (avoiding wins that result in last place); everything else is purely CNN output
+
+**5 playstyle variants**, each trained on different players' game records:
+
+| Model | Style | Training Source |
+|-------|-------|----------------|
+| **Omega (オメガ)** | Aggressive calling | Watanabe Futoshi (M-League pro) — 100% |
+| **Gamma (ガンマ)** | Defensive | One undisclosed private player |
+| **Nishiki (ニシキ)** | Balanced | Multiple players (~1/3 Watanabe Futoshi) |
+| **Hibakari (ヒバカリ)** | Closed-hand focused | One undisclosed private player |
+| **Kagashi (カガシ)** | Extremely aggressive calling | One undisclosed private player (furo rate >40%) |
+
+**Performance:** Current models estimated ~9-dan stable on Tenhou. The original NAGA25 reached 10-dan in 26,598 games. All 5 current models reportedly outperform the original NAGA25. An action with NAGA recommendation rate <5% is flagged as a "bad move" (悪手) — this is a stylistic judgment, not a mathematical optimality claim.
+
+**Critical implication for Hydra:** Because NAGA is pure imitation learning, it **cannot exceed its training data**. Its output is a probability distribution reflecting what top humans would likely choose, not an optimized strategy. Long-term strategy (folding, round-aware play) is learned implicitly from behavioral patterns. This fundamental ceiling is why RL-based approaches (Suphx, LuckyJ, and Hydra) have higher potential despite NAGA's commercial polish.
+
+**Sources:** [DMV official article](https://dmv.nico/en/articles/mahjong_ai_naga/), [note.com analysis](https://note.com/bold_myrtle4902/n/n8015e4508fe3), [witchverse.hatenablog.com](https://witchverse.hatenablog.com/entry/2025/06/02/124431), [KADOKAWA book](https://www.kadokawa.co.jp/product/322311000197) (co-authored by developer Odagiri Yuuri and pro player Watanabe Futoshi)
 
 ### Head-to-Head Differences
 
@@ -83,6 +102,85 @@ NAGA accounts for 4th-avoidance but base math starts with Round EV. Human except
 **Hydra Relevance**: Score-aware and placement-aware adjustments on top of base tile EV is exactly what makes an AI jump from "good" to "great." This is a confirmed gap in Mortal.
 
 Source: [r/Mahjong Push/Fold thread](https://www.reddit.com/r/Mahjong/comments/17rgvq3/)
+
+---
+
+## LuckyJ (Tencent AI Lab)
+
+### Identity
+
+LuckyJ (ⓝLuckyJ on Tenhou, 绝艺/JueYi brand) is developed by **Tencent AI Lab**, led by **Haobo Fu** (Principal Research Scientist). The 绝艺 brand is shared with Tencent's Go AI that competed in international Go competitions. LuckyJ achieved **10-dan on Tenhou on May 30, 2023** in only **1,321 games** — the most efficient path to 10-dan by any AI (vs Suphx's 5,373 and NAGA's 26,598).
+
+### Performance
+
+| Metric | Value | Source |
+|--------|-------|--------|
+| Peak Tenhou rank | 10-dan | All sources |
+| Stable dan | **10.68** | [Tencent official](https://sports.sina.com.cn/go/2023-07-12/doc-imzamafw0364307.shtml) |
+| Games to 10-dan | **1,321** | [haobofu.github.io](https://haobofu.github.io/) |
+| vs Suphx | Statistically significantly stronger (p=0.029) | [modern-jan.com](https://modern-jan.com/2023/09/06/luckyj_article_ja/) |
+| vs NAGA | Statistically significantly stronger (p=0.00003) | [modern-jan.com](https://modern-jan.com/2023/09/06/luckyj_article_ja/) |
+
+Early stats (370 games, from pro player Kihara): Average rank 2.259, stable dan 11.25, 1st place 31.3%, last place 15.9%. Source: [ch.nicovideo.jp/kihara/blomaga/ar2149306](https://ch.nicovideo.jp/kihara/blomaga/ar2149306)
+
+### Architecture (Reconstructed from Published Papers)
+
+There is **no single "LuckyJ" paper**, but the architecture is reconstructable from Haobo Fu's publication trail:
+
+**Component 1 — Offline Training: ACH (Actor-Critic Hedge)**
+- Paper: [ICLR 2022](https://openreview.net/forum?id=DTXZqTNV5nW) — "Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game"
+- Merges deep RL with Weighted CFR for Nash Equilibrium convergence
+- **Pure self-play, zero human data** — trains entirely from scratch
+- Lower variance than previous sampled regret methods
+
+**Component 2 — Online Search: OLSS (Opponent-Limited Subgame Solving)**
+- Paper: [ICML 2023](https://proceedings.mlr.press/v202/liu23k.html) — "Opponent-Limited Online Search for Imperfect Information Games"
+- Imperfect-info subgame solving with opponent-limited tree pruning
+- Orders of magnitude faster than common-knowledge subgame solving
+- Explicitly tested on 2-player mahjong
+
+**Component 3 — Search-as-Feature Integration (Unpublished)**
+- Search results are input as **features** into the policy neural network — they don't directly override the policy (unlike AlphaGo-style MCTS)
+- Enables learned integration of search information with trained policy for real-time strategy adjustment
+- Source: [Tencent official article](https://modern-jan.com/2023/09/06/luckyj_article_ja/)
+
+**Component 4 — Training Acceleration: RVR**
+- Paper: [IEEE CoG 2022](https://ieee-cog.org/2022/assets/papers/paper_103.pdf) — "Speedup Training Artificial Intelligence for Mahjong via Reward Variance Reduction"
+- Same team (Li, Wu, Fu, Fu, Zhao, Xing)
+
+### Observed Playstyle
+
+From [note.com analysis](https://note.com/comtefurapote/n/ne7c3668b6e09) and [doramahjong.org](https://doramahjong.org/?p=11393):
+- **High meld rate (~35.9%)** — aggressive calling for yakuhai, honitsu, toitoi
+- **Defensive priority** — keeps 2 safe tiles at 2-shanten, 1 at 1-shanten; practices early folding on poor hands
+- **Shanten backtracking** — reduces efficiency to pursue expensive hands (honitsu, sanshoku, ittsuu)
+- **Dama over riichi** on double-mushuji 4-5-6 waits
+- **Situational play** shifts dramatically based on rank/score from South 2 onwards
+
+### What Remains Unknown
+
+1. Exact neural network architecture (layers, embedding dims, input encoding)
+2. How ACH and OLSS were adapted from 2-player to 4-player mahjong (the papers demonstrate on 2-player)
+3. Search-as-feature integration details
+4. Compute requirements and inference latency
+5. Whether it uses separate models (like NAGA's 4 CNNs) or a unified architecture
+
+### Comparison Table
+
+| Aspect | NAGA | Suphx | LuckyJ |
+|--------|------|-------|--------|
+| **Training data** | Human expert logs | Human logs + self-play RL | **Pure self-play, zero human data** |
+| **Method** | Imitation learning | Imitation → RL | Game-theoretic RL (ACH) |
+| **Search** | None | Monte Carlo Policy Adaptation | **OLSS (subgame solving)** |
+| **Theory** | None (pattern matching) | Partial (oracle guiding) | **Nash Equilibrium convergence** |
+| **Games to 10-dan** | 26,598 | 5,373 | **1,321** |
+| **Stable dan** | ~9.0 (current v2) | 8.74 | **10.68** |
+
+Source: [modern-jan.com](https://modern-jan.com/2023/09/06/luckyj_vs_naga_and_suphx/)
+
+### Hydra Relevance
+
+LuckyJ proves that combining game-theoretic RL with imperfect-information online search yields dramatically better sample efficiency and higher stable performance than pure RL (Suphx) or pure imitation (NAGA). The search-as-feature integration — where search outputs become neural network inputs rather than direct policy overrides — is the most novel and least documented piece. If Hydra ever adds search, OLSS is the starting point.
 
 ---
 
@@ -296,12 +394,12 @@ If 2 of 3 → push. Otherwise → fold. Additional factors: round number, curren
 | AI | Level | Architecture | Open Source | Analysis | Key Trait |
 |----|-------|-------------|-------------|----------|-----------|
 | **Mortal** | ~7 dan | SE-ResNet + Dueling DQN | ✅ Yes | Free log review | Best open-source option |
-| **NAGA** | 10 dan | Unknown | ❌ No | Paid, detailed | Multiple playstyle versions |
-| **Suphx** | 10 dan | ResNet+Oracle | ❌ No | Replay viewing only | First to reach 10 dan |
-| **Akochan** | ~8 dan | Unknown | ✅ Yes | Reviewer tool | Older, somewhat outdated |
-| **Bakuuchi** | 9 dan | Unknown | ❌ No | None | Legacy, outperformed |
-| **LuckyJ** | 10 dan | PPO + Search | ❌ No | None | Uses search (unpublished) |
-| **Goku** | 7 dan | Unknown | Partial | Replay viewing | - |
+| **NAGA** | ~9 dan (stable) | 4 CNNs, pure imitation learning | ❌ No | Paid, detailed | 5 playstyle variants trained on different players |
+| **Suphx** | 8.74 dan (stable) | ResNet + Oracle guiding | ❌ No | Replay viewing only | First to reach 10 dan; GRP + oracle pioneering |
+| **LuckyJ** | **10.68 dan (stable)** | ACH (RL+CFR) + OLSS (search) | ❌ No | None | Strongest known; game-theoretic RL + online search |
+| **Kanachan** | Unknown (no benchmarks) | Transformer (BERT, ~90-310M params) | ✅ Yes (MIT) | None | Zero hand-crafted features; impractical for online RL |
+| **Akochan** | ~8 dan | EV-based heuristic (not ML) | ✅ Yes | Reviewer tool | Explicit suji/kabe/genbutsu defense logic |
+| **Bakuuchi** | 9 dan | ISMCTS | ❌ No | None | Legacy, outperformed |
 
 ---
 
@@ -311,7 +409,7 @@ If 2 of 3 → push. Otherwise → fold. Additional factors: round number, curren
 
 1. **Opponent Modeling**: No existing AI models opponent tendencies or detects damaten
 2. **Score/Placement Awareness**: Mortal uses fixed uma; dynamic adjustment is an open problem  
-3. **Multi-Turn Planning**: No AI uses lookahead search for mahjong decisions (LuckyJ may, unpublished)
+3. **Multi-Turn Planning**: LuckyJ uses online search (OLSS, ICML 2023) and is the strongest AI — but the 4-player adaptation and search-as-feature integration are unpublished. No open-source AI uses search.
 4. **Explainability**: All AIs are black boxes; interpretable decision factors would be novel
 5. **Multi-Player Defense**: Simultaneous defense against 2+ threats is poorly handled
 6. **Adaptive Playstyle**: NAGA offers multiple styles but doesn't adapt dynamically per-game

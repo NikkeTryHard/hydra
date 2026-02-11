@@ -33,7 +33,7 @@ graph LR
 Specific documented issues:
 
 - **GitHub Issue #111** — Overtake score miscalculation; Mortal plays too safe when trailing, missing opportunities to overtake, partly because it cannot read opponent hand danger accurately.
-- **GitHub Discussion #102** — Equim-chan (Mortal's creator) confirmed that oracle guiding "didn't bring improvements in practice" and was removed in v3, replaced with the next-rank prediction auxiliary task (implemented as `AuxNet` in code, commonly called "NextRankPredictor" in community discussions). This suggests Mortal's architecture may not be structured to benefit from opponent-aware signals.
+- **GitHub Discussion #102** — Equim-chan (Mortal's creator) confirmed that oracle guiding "didn't bring improvements in practice" and was removed in v3, replaced with a next-rank prediction auxiliary task (implemented as `AuxNet` in `mortal/model.py`; rationale in Discussion #52). This suggests Mortal's architecture may not be structured to benefit from opponent-aware signals.
 
 **Community-identified weaknesses related to opponent reading:**
 
@@ -58,6 +58,8 @@ Hydra addresses the opponent modeling gap through four complementary systems:
 > For the channel-level summary, see [HYDRA_SPEC § Safety Channels](HYDRA_SPEC.md#safety-channels-6183). This section provides the detailed design rationale and encoding logic.
 
 Hydra dedicates 23 input channels (channels 61–83) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
+
+> **Quantitative basis:** The 23-channel safety encoding is grounded in mahjong theory (genbutsu, suji, kabe are the foundation of all human defensive play) but the specific channel design (9 genbutsu, 9 suji, 2 kabe, 3 tenpai hints) and encoding choices (suji float values, 3 sub-channels per genbutsu opponent) are based on domain analysis, not empirical ablation. Mortal achieves ~11% deal-in rate without any explicit safety planes, relying on implicit learning from 1012 raw channels. Whether pre-computed safety planes improve over implicit learning is an open empirical question — this is precisely what **Ablation A1** tests (see [ABLATION_PLAN.md § A1](ABLATION_PLAN.md#a1-safety-planes)). The safety plane design will be validated or revised based on A1 results. The conservative channel counts (9+9+2+3=23) were chosen to minimize parameter overhead (~0% increase to backbone) while covering the complete human defensive vocabulary.
 
 > See [HYDRA_SPEC.md § Safety Channels](HYDRA_SPEC.md#safety-channels-6183) for the channel-level summary diagram. This section provides the detailed design rationale and encoding logic.
 
@@ -380,7 +382,7 @@ graph TB
 
 > See [TRAINING § Phase 2: Oracle Distillation RL](TRAINING.md#phase-2-oracle-distillation-rl) for the full teacher-student architecture, oracle encoding specification, and distillation loss formulation.
 
-The teacher sees everything (opponent hands, wall composition, ura-dora) and converges roughly 10× faster than a blind agent. The student trains with a combined PPO + KL divergence objective, developing "intuition" by associating observable patterns with the teacher's privileged decisions.
+The teacher sees everything (opponent hands, wall composition, ura-dora) and is expected to converge significantly faster than a blind agent (Suphx reports "much faster" convergence qualitatively but provides no quantitative ratio; arXiv:2003.13590, Section 3.3). The student trains with a combined PPO + KL divergence objective, developing "intuition" by associating observable patterns with the teacher's privileged decisions.
 
 **Feature dropout schedule:** To prevent the student from becoming dependent on the KL signal and to encourage genuine pattern learning, the teacher's access to hidden information is gradually reduced via group-level scalar multiplication on the two oracle feature groups (opponent hands and wall/dead wall).
 

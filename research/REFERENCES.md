@@ -17,6 +17,8 @@ Single source of truth for all citations in the Hydra project.
 | Phoenix: Open-Source Reproducible Mahjong Agent | — | 2023 | [Paper](https://csci527-phoenix.github.io/documents/Paper.pdf) | Transparent baseline with interpretable decision-making | Open-source baseline reference |
 | Building a Computer Mahjong Player via Deep Convolutional Neural Networks | — | 2018 | IEEE | CNN for Mahjong, baseline methods | Early CNN approach for mahjong |
 | Reward Variance Reduction for Limited-Compute RL | Li, Wu, Fu, Fu, Zhao, Xing | 2022 | IEEE CoG | RVR technique for reducing gradient noise from luck variance, single-GPU feasibility | Enables training on limited hardware; hand-luck baseline subtraction |
+| Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game | Fu, Liu, Wu, Wang, Yang, Li, Xing, Li, Ma, Fu, Yang | 2022 | [ICLR 2022](https://openreview.net/forum?id=DTXZqTNV5nW) | ACH (Actor-Critic Hedge): merges deep RL with Weighted CFR for Nash Equilibrium convergence in imperfect-info games. Core offline training algorithm for Tencent's LuckyJ. | Game-theoretic RL alternative to PPO/DQN; LuckyJ's ACH + OLSS reached 10.68 stable dan on Tenhou |
+| Opponent-Limited Online Search for Imperfect Information Games | Liu, Fu, Fu, Yang | 2023 | [ICML 2023](https://proceedings.mlr.press/v202/liu23k.html) | OLSS: imperfect-info subgame solving with opponent-limited tree pruning, orders of magnitude faster than common-knowledge methods. Tested on 2-player mahjong. | Core search component for LuckyJ; search-as-feature integration enables real-time strategy adjustment |
 
 ### General Game AI
 
@@ -37,6 +39,7 @@ Single source of truth for all citations in the Hydra project.
 | Group Normalization | Wu & He | 2018 | ECCV | Batch-independent normalization | Training stability: GroupNorm(32) replaces BatchNorm |
 | Proximal Policy Optimization Algorithms | Schulman et al. | 2017 | [arXiv](https://arxiv.org/abs/1707.06347) | PPO clipped surrogate objective | Core RL algorithm for Phases 2-3 |
 | Attention Is All You Need | Vaswani et al. | 2017 | NeurIPS | Transformer architecture | Considered for backbone; used by Kanachan and Tjong |
+| Learning Confidence for Out-of-Distribution Detection | DeVries, Taylor | 2018 | [arXiv:1802.04865](https://arxiv.org/abs/1802.04865) | Confidence estimation as training regularization | Used by NAGA for calibrated action distributions |
 
 ---
 
@@ -47,12 +50,13 @@ Single source of truth for all citations in the Hydra project.
 | Project | URL | Language | Stars | License | Notes |
 |---------|-----|----------|-------|---------|-------|
 | Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1,334 | AGPL-3.0-or-later | Primary competitor. ResNet(40 blocks, 192ch) + Channel Attention → DQN(Dueling) + CQL. Reference only — AGPL, cannot derive code. Study: obs encoding (1012×34), action masking (46 actions), GRP head, 1v3 duplicate evaluation. Weights have additional distribution restrictions beyond AGPL. |
-| Kanachan | https://github.com/Cryolite/kanachan | C++/Python | 326 | MIT | Transformer-based (BERT-style encoder), trained on 100M+ Mahjong Soul rounds with zero hand-crafted features. Matters: proves transformers work for mahjong, and uses LOUDS-based TRIE for shanten (alternative to table lookup). Same author as tsumonya. If Hydra ever experiments with transformer backbone, this is the reference. |
+| Kanachan | https://github.com/Cryolite/kanachan | C++/Python | 326 | MIT | **Transformer encoder (BERT-style)** with two configs: base (~90M params, 12 layers, 768-dim) and large (~310M params, 24 layers, 1024-dim). Trained on 65M+ Mahjong Soul rounds (Gold room+) with zero hand-crafted features — pure token indices, no built-in tile relationships. Self-attention operates over 184 tokens: 33 sparse (game context) + 6 numeric (scores) + 113 progression (temporal discard/meld sequence) + 32 action candidates. Training pipeline: behavioral cloning → curriculum fine-tuning (encoder reuse, decoder swap) → offline RL (IQL/ILQL/CQL). **No published performance benchmarks exist** despite 5+ years of development — community reports offline RL instability (Q-value collapse). The ~90-310M parameter count makes online self-play RL infeasible (~50-150× more expensive per inference than Mortal's 2M-param ResNet), which is likely why no RL results have materialized. Uses LOUDS-based TRIE (MARISA-TRIE library) for O(1) shanten lookup via succinct data structure. Hydra's decision to use SE-ResNet over transformers is quantitatively justified: proven results (Mortal 10-dan) vs. no published results, ~100× fewer parameters enabling feasible online RL. |
 | Akochan | https://github.com/critter-mj/akochan | C++ | 281 | Custom (restrictive, Japanese) | EV-based heuristic engine with explicit suji/kabe/genbutsu analysis. Not ML-based. Matters: its hand-crafted defense logic is a useful sanity check — if Hydra's neural network disagrees with Akochan's defense in obvious spots, something is wrong. Also used as the backend for the original mjai-reviewer. |
 | MahjongAI | https://github.com/erreurt/MahjongAI | Python | 446 | — | Extensible agent framework with pluggable strategies. Matters less for architecture, more for its Tenhou client implementation — shows how to connect an AI to Tenhou's protocol if we ever need that. |
 | AlphaJong | https://github.com/Jimboom7/AlphaJong | JavaScript | — | — | Browser-based heuristic engine (NOT AlphaZero despite the name). Tunable offense/defense balance via sliders. Matters only as a weak baseline — useful for sanity-checking that Hydra beats simple heuristics by a wide margin. |
 | mjai-manue | https://github.com/gimite/mjai-manue | Ruby | 37 | — | Original MJAI protocol client. Matters as protocol reference — defines the canonical MJAI message format that Hydra must be compatible with. |
-| NAGA | https://dmv.nico/en/articles/mahjong_ai_naga/ | — | — | Commercial | Deep CNN, Tenhou 10-dan, 5+ playstyle versions. Not open-source. Matters as the strongest known mahjong AI — Hydra's target is to match or exceed NAGA's play level. NAGA's "match%" metric is a common (but imperfect) benchmark. |
+| NAGA | https://dmv.nico/en/articles/mahjong_ai_naga/ | — | — | Commercial | **Pure supervised learning** — 4 independent CNNs (discard, call, riichi, kan) trained on Tenhou Houou game logs via imitation learning. No self-play, no RL. Uses confidence estimation (DeVries & Taylor 2018) as training regularization and Guided Backpropagation (Springenberg et al. 2014) for interpretability. 5 playstyle variants (Omega, Gamma, Nishiki, Hibakari, Kagashi) differentiated by training on different players' game records, not architecture changes. CNN architecture details (layers, filters, input shape) never publicly disclosed — the [DMV article](https://dmv.nico/en/articles/mahjong_ai_naga/) is the sole official technical document. Achieved 10-dan on Tenhou (26,598 games), current models estimated ~9-dan stable. Not open-source. NAGA's "match%" metric is a common (but imperfect) benchmark. |
+| LuckyJ | https://haobofu.github.io/ | — | — | Commercial | **Tencent AI Lab's mahjong AI** (绝艺/JueYi brand). Achieved 10-dan on Tenhou in only 1,321 games (vs Suphx's 5,373 and NAGA's 26,598) with 10.68 stable dan — the strongest known mahjong AI by Tenhou rating. Architecture combines ACH (Actor-Critic Hedge, ICLR 2022) for game-theoretic offline training with OLSS (Opponent-Limited Online Search, ICML 2023) for real-time imperfect-info subgame solving. Pure self-play, zero human data. Search results are fed as features into the policy network (not direct policy override), enabling learned integration. Lead developer: Haobo Fu. Not open-source, no single system paper — architecture reconstructed from 3+ published papers. See [COMMUNITY_INSIGHTS § LuckyJ](COMMUNITY_INSIGHTS.md#luckyj-tencent-ai-lab) for detailed analysis. |
 
 ### Analysis & Review Tools
 
@@ -224,12 +228,13 @@ Single source of truth for all citations in the Hydra project.
 
 ### AI Achievements
 
-| AI | Platform | Achievement | Year |
-|----|----------|-------------|------|
-| Suphx | Tenhou | 10-dan (~180 humans ever achieved this) | 2020 |
-| Mortal | Tenhou | 10-dan | 2023 |
-| NAGA | Tenhou | 10-dan | 2018+ |
-| NAGA | Majsoul | Celestial | 2022 |
+| AI | Platform | Achievement | Year | Notes |
+|----|----------|-------------|------|-------|
+| NAGA | Tenhou | 10-dan (26,598 games) | 2018+ | Pure imitation learning; current models ~9-dan stable |
+| Suphx | Tenhou | 10-dan (5,373 games), 8.74 stable | 2020 | SL + RL + oracle guiding; ~180 humans ever achieved 10-dan |
+| LuckyJ | Tenhou | **10-dan (1,321 games), 10.68 stable** | 2023 | ACH + OLSS; statistically stronger than both NAGA and Suphx |
+| Mortal | Tenhou | 10-dan | 2023 | Community-estimated ~7-dan play strength |
+| NAGA | Majsoul | Celestial | 2022 | — |
 
 ---
 
