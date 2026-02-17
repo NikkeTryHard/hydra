@@ -2,6 +2,8 @@
 
 Research compilation from Reddit, Japanese blogs, RL communities, and public AI analysis discussions. Focused on insights directly relevant to Hydra's development.
 
+> **Source volatility note:** Several references link to personal blogs (note.com, hatenablog, Ghost, nicovideo blomaga, modern-jan.com) that may go offline. All critical data points (statistics, architecture details, p-values) are reproduced inline so this document remains self-contained even if external links rot. Last verified: 2026-02-11.
+
 ---
 
 ## 1. Mortal Strengths & Weaknesses (r/Mahjong, r/mahjongsoul)
@@ -54,7 +56,7 @@ NAGA is a **pure supervised learning system** — no self-play, no reinforcement
 | **Hibakari (ヒバカリ)** | Closed-hand focused | One undisclosed private player |
 | **Kagashi (カガシ)** | Extremely aggressive calling | One undisclosed private player (furo rate >40%) |
 
-**Performance:** Current models estimated ~9-dan stable on Tenhou. The original NAGA25 reached 10-dan in 26,598 games. All 5 current models reportedly outperform the original NAGA25. An action with NAGA recommendation rate <5% is flagged as a "bad move" (悪手) — this is a stylistic judgment, not a mathematical optimality claim.
+**Performance:** Current models estimated ~9-dan stable on Tenhou. The original NAGA25 reached 10-dan in 26,598 games (source unverified — this number does not appear in the DMV article or any locatable public source). All 5 current models reportedly outperform the original NAGA25. An action with NAGA recommendation rate <5% is flagged as a "bad move" (悪手) — this is a stylistic judgment, not a mathematical optimality claim.
 
 **Critical implication for Hydra:** Because NAGA is pure imitation learning, it **cannot exceed its training data**. Its output is a probability distribution reflecting what top humans would likely choose, not an optimized strategy. Long-term strategy (folding, round-aware play) is learned implicitly from behavioral patterns. This fundamental ceiling is why RL-based approaches (Suphx, LuckyJ, and Hydra) have higher potential despite NAGA's commercial polish.
 
@@ -105,11 +107,11 @@ Source: [r/Mahjong Push/Fold thread](https://www.reddit.com/r/Mahjong/comments/1
 
 ---
 
-## LuckyJ (Tencent AI Lab)
+## 4. LuckyJ (Tencent AI Lab)
 
 ### Identity
 
-LuckyJ (ⓝLuckyJ on Tenhou, 绝艺/JueYi brand) is developed by **Tencent AI Lab**. Key researcher: **Haobo Fu** (Principal Research Scientist, Tencent AI Lab). The 绝艺 brand is shared with Tencent's Go AI that competed in international Go competitions. LuckyJ achieved **10-dan on Tenhou on May 30, 2023** in only **1,321 games** — the most efficient path to 10-dan by any AI (vs Suphx's 5,373 and NAGA's 26,598).
+LuckyJ (ⓝLuckyJ on Tenhou, 绝艺/JueYi brand) is developed by **Tencent AI Lab**. Key researcher: **Haobo Fu** (Principal Research Scientist, Tencent AI Lab). The 绝艺 brand is shared with Tencent's Go AI that competed in international Go competitions. LuckyJ achieved **10-dan on Tenhou on May 30, 2023** in only **1,321 games** — the most efficient path to 10-dan by any AI.
 
 ### Performance
 
@@ -118,8 +120,8 @@ LuckyJ (ⓝLuckyJ on Tenhou, 绝艺/JueYi brand) is developed by **Tencent AI La
 | Peak Tenhou rank | 10-dan | All sources |
 | Stable dan | **10.68** | [Tencent official](https://sports.sina.com.cn/go/2023-07-12/doc-imzamafw0364307.shtml) |
 | Games to 10-dan | **1,321** | [haobofu.github.io](https://haobofu.github.io/) |
-| vs Suphx | Statistically significantly stronger (p=0.029) | [modern-jan.com](https://modern-jan.com/2023/09/06/luckyj_article_ja/) |
-| vs NAGA | Statistically significantly stronger (p=0.00003) | [modern-jan.com](https://modern-jan.com/2023/09/06/luckyj_article_ja/) |
+| vs Suphx | Statistically significantly stronger (p=0.02883) | [modern-jan.com](https://modern-jan.com/blog/luckyj_article_ja/) |
+| vs NAGA | Statistically significantly stronger (p=0.00003) | [modern-jan.com](https://modern-jan.com/blog/luckyj_article_ja/) |
 
 Early stats (370 games, from pro player Kihara): Average rank 2.259, stable dan 11.25, 1st place 31.3%, last place 15.9%. Source: [ch.nicovideo.jp/kihara/blomaga/ar2149306](https://ch.nicovideo.jp/kihara/blomaga/ar2149306)
 
@@ -142,7 +144,7 @@ There is **no single "LuckyJ" paper**, but the architecture is reconstructable f
 **Component 3 — Search-as-Feature Integration (Unpublished)**
 - Search results are input as **features** into the policy neural network — they don't directly override the policy (unlike AlphaGo-style MCTS)
 - Enables learned integration of search information with trained policy for real-time strategy adjustment
-- Source: [Tencent official article](https://modern-jan.com/2023/09/06/luckyj_article_ja/)
+- Source: [Tencent official article](https://modern-jan.com/blog/luckyj_article_ja/)
 
 **Component 4 — Training Acceleration: RVR**
 - Paper: [IEEE CoG 2022](https://ieee-cog.org/2022/assets/papers/paper_103.pdf) — "Speedup Training Artificial Intelligence for Mahjong via Reward Variance Reduction"
@@ -184,7 +186,7 @@ LuckyJ proves that combining game-theoretic RL with imperfect-information online
 
 ---
 
-## 4. AI Analysis Best Practices (Community Guide)
+## 5. AI Analysis Best Practices (Community Guide)
 
 ### How to Properly Use AI Review
 Key insights from the [Riichi City analysis guide](https://gamesoftrobo.ghost.io/untitled-6/):
@@ -202,7 +204,7 @@ Key insights from the [Riichi City analysis guide](https://gamesoftrobo.ghost.io
 
 ---
 
-## 5. Imperfect Information Game RL (r/reinforcementlearning)
+## 6. Imperfect Information Game RL (r/reinforcementlearning)
 
 ### Approaches Discussed
 
@@ -222,7 +224,7 @@ Key insights from the [Riichi City analysis guide](https://gamesoftrobo.ghost.io
 
 ---
 
-## 6. PPO Self-Play Challenges (r/reinforcementlearning)
+## 7. PPO Self-Play Challenges (r/reinforcementlearning)
 
 ### The "Fearful Agent" Problem
 When using PPO with self-play, a critical failure mode occurs:
@@ -254,7 +256,7 @@ Source: [r/reinforcementlearning](https://www.reddit.com/r/reinforcementlearning
 
 ---
 
-## 7. Self-Play Training Best Practices (HuggingFace Deep RL Course)
+## 8. Self-Play Training Best Practices (HuggingFace Deep RL Course)
 
 ### Key Hyperparameters for Opponent Pool
 
@@ -279,7 +281,7 @@ Source: [HuggingFace Deep RL Course Unit 7](https://huggingface.co/learn/deep-rl
 
 ---
 
-## 8. Japanese Community Sources
+## 9. Japanese Community Sources
 
 ### Shanten Algorithm (Qiita — tomohxx)
 
@@ -325,45 +327,13 @@ Japanese community consensus:
 
 ---
 
-## 9. Mortal Architecture Deep Dive (DeepWiki)
+## 10. Mortal Architecture Deep Dive
 
-### System Architecture Summary
-
-```mermaid
-graph LR
-    OBS["Game State<br/>Observation<br/>(1012, 34)"] --> BRAIN["Brain (ResNet)<br/>40 blocks, 192ch<br/>+ Channel Attn<br/>→ 1024-dim φ"]
-    BRAIN --> DQN["DQN (Dueling)<br/>V + A → Q<br/>46 actions<br/>+ Action Mask"]
-    DQN --> SAMPLE["Sampling<br/>Boltzmann /<br/>Top-p /<br/>Argmax"]
-```
-
-### Training Loss Components
-1. **DQN Loss**: MSE(predicted Q, Monte Carlo Q-targets)
-2. **CQL Loss**: logsumexp(Q) − mean(Q) — prevents overestimation in offline mode
-3. **Auxiliary**: Next rank prediction — stabilizes feature learning
-
-### Version Evolution
-
-| Version | Feature Dim | Activation | Key Change |
-|---------|-------------|------------|------------|
-| v1 | VAE (μ, logσ) | ReLU | Variational sampling |
-| v2 | 512 direct | Mish | Removed VAE, added BatchNorm |
-| v3 | 256 direct | Mish | Reduced dimensions |
-| v4 | Combined | Mish | Unified output layer |
-
-### Distributed Training
-- **Client-server architecture**: Clients run self-play, submit replays; server trains
-- **Protocol**: get_param → self_play → submit_replay → drain → submit_param
-- **Throughput**: Up to 40K hanchans/hour with Rust emulator + Python inference
-
-### 1v3 Duplicate Evaluation
-- Challenger plays vs 3 copies of champion AI
-- 4 games per set: challenger rotates through every seat with same random seed
-- Eliminates luck variance; isolates skill difference
-- Selection criterion: model must improve **both** avg_pt and avg_rank simultaneously
+> See [MORTAL_ANALYSIS.md](MORTAL_ANALYSIS.md) for the full architecture analysis including DQN head evolution (v1–v4), training loss components, distributed training, and 1v3 duplicate evaluation protocol.
 
 ---
 
-## 10. Defense & Betaori Analysis
+## 11. Defense & Betaori Analysis
 
 ### Standard Defense Framework (riichi.wiki, community)
 
@@ -389,7 +359,7 @@ If 2 of 3 → push. Otherwise → fold. Additional factors: round number, curren
 
 ---
 
-## 11. Mahjong AI Landscape Summary
+## 12. Mahjong AI Landscape Summary
 
 | AI | Level | Architecture | Open Source | Analysis | Key Trait |
 |----|-------|-------------|-------------|----------|-----------|
@@ -397,13 +367,13 @@ If 2 of 3 → push. Otherwise → fold. Additional factors: round number, curren
 | **NAGA** | ~9 dan (stable) | 4 CNNs, pure imitation learning | ❌ No | Paid, detailed | 5 playstyle variants trained on different players |
 | **Suphx** | 8.74 dan (stable) | ResNet + Oracle guiding | ❌ No | Replay viewing only | First to reach 10 dan; GRP + oracle pioneering |
 | **LuckyJ** | **10.68 dan (stable)** | ACH (RL+CFR) + OLSS (search) | ❌ No | None | Strongest known; game-theoretic RL + online search |
-| **Kanachan** | Unknown (no benchmarks) | Transformer (BERT, ~90-310M params) | ✅ Yes (MIT) | None | Zero hand-crafted features; impractical for online RL |
+| **Kanachan** | Unknown (no benchmarks) | Transformer (BERT, ~90-310M params) | ✅ Yes (⚠️ no LICENSE file) | None | Zero hand-crafted features; impractical for online RL |
 | **Akochan** | ~8 dan | EV-based heuristic (not ML) | ✅ Yes | Reviewer tool | Explicit suji/kabe/genbutsu defense logic |
 | **Bakuuchi** | 9 dan | ISMCTS | ❌ No | None | Legacy, outperformed |
 
 ---
 
-## 12. Key Takeaways for Hydra
+## 13. Key Takeaways for Hydra
 
 ### Confirmed Gaps in Existing AIs (Opportunities for Hydra)
 

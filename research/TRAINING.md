@@ -20,7 +20,7 @@ Hydra training combines three proven techniques:
 ```mermaid
 graph LR
     subgraph "Phase 1: Imitation"
-        DATA["Human Games<br/>~5M filtered from 6.6M"] --> BC[Behavioral Cloning]
+        DATA["Human Games<br/>~5-6M filtered from 6.6M"] --> BC[Behavioral Cloning]
         BC --> INIT[Initialized Weights]
     end
 
@@ -168,7 +168,9 @@ $$\mathcal{L}_{\text{distill}} = \mathcal{L}_{\text{PPO}}(\pi_S) + \lambda_{\tex
 
 #### Feature Dropout Schedule
 
-To bridge the gap between oracle and blind play, the Teacher's hidden inputs are gradually masked during distillation using **group-level scalar multiplication** (following Suphx, arXiv:2003.13590 Section 3.3). The mask is applied at the encoding level before the data enters the network.
+To bridge the gap between oracle and blind play, the Teacher's hidden inputs are gradually masked during distillation using **group-level deterministic scaling**. The mask is applied at the encoding level before the data enters the network.
+
+> **Design note:** Suphx (arXiv:2003.13590 Section 3.3, Equation 5) uses **element-wise Bernoulli dropout** — each oracle feature is independently kept (=1) or zeroed (=0) with probability γₜ decaying from 1→0. Hydra instead uses deterministic scalar multiplication per feature group, which provides smoother gradient flow and separates opponent-hand vs wall information at different decay rates. This is an intentional design choice, not a reproduction of Suphx's method.
 
 Two feature groups are masked independently:
 - **Group A (opponent hands):** 39 channels — scaled by `mask_opp`
@@ -185,7 +187,7 @@ Two feature groups are masked independently:
 
 **Wall masks decay faster than opponent masks** because wall ordering is extremely powerful information (perfect lookahead) that creates a larger gap between teacher and student. Removing it earlier forces the teacher to rely more on opponent hand reading, which transfers better to the blind student.
 
-**Why this works:** The Teacher learns patterns like "Opponent has 4–7p tanki wait" or "Wall has no more 3m." The Student cannot see these facts directly but learns to recognize the behavioral and statistical signals that correlate with them — developing "intuition" by mimicking psychic decisions. Suphx ablation (Figure 8, offline evaluation over 1M games) showed the full RL pipeline (SL → RL+GRP → RL+GRP+Oracle) gained ~0.71 dan over the supervised baseline (~7.65 → ~8.36 stable dan, visual estimates from box plot). Oracle guiding specifically contributed ~0.12 dan over GRP alone (RL-2 vs RL-1). The final online Suphx system (including run-time policy adaptation) reached 8.74 dan (Table 4), a ~1.09 dan improvement over SL — but this includes techniques beyond the oracle ablation. (arXiv:2003.13590, Figure 8 and Table 4)
+**Why this works:** The Teacher learns patterns like "Opponent has 4–7p tanki wait" or "Wall has no more 3m." The Student cannot see these facts directly but learns to recognize the behavioral and statistical signals that correlate with them — developing "intuition" by mimicking psychic decisions. Suphx ablation (Figure 8, offline evaluation over 1M games) showed the full RL pipeline (SL → RL+GRP → RL+GRP+Oracle) gained ~0.63 dan over the supervised baseline (~7.66 → ~8.29 stable dan, visual estimates from box plot). Oracle guiding specifically contributed ~0.06 dan over GRP alone (RL-2 vs RL-1 median gap). The final online Suphx system (including run-time policy adaptation) reached 8.74 stable dan (Table 4), a ~1.08 dan improvement over SL — but this includes techniques beyond the oracle ablation. Note: Figure 8 numbers are from offline evaluation against weaker opponents, not online Tenhou play. (arXiv:2003.13590, Figure 8 and Table 4)
 
 **Why NOT simple knowledge distillation:** Suphx explicitly tested and rejected standard KD (training a normal agent to mimic the oracle). The oracle is "super strong and far beyond the capacity of a normal agent" — the gap is too large for direct imitation. Progressive feature dropout creates a smooth transition instead. (arXiv:2003.13590, Section 3.3)
 
@@ -240,7 +242,7 @@ graph TB
 
  **PPO hyperparameters:**
 
- > See [INFRASTRUCTURE.md § Phase 3: League Self-Play](INFRASTRUCTURE.md#phase-3-league-self-play-ppo) for the authoritative hyperparameter table. Key values:
+ > See [INFRASTRUCTURE.md § Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo) for implementation details (self-play architecture, opponent pool GPU cache, FIFO eviction). Hyperparameters below are authoritative:
 
  | Parameter | Value | Notes |
  |-----------|-------|-------|
@@ -255,7 +257,7 @@ graph TB
  | Gradient clip | 0.5 | Max grad norm, essential for stability |
  | Init | Orthogonal | std=√2 hidden, std=0.01 policy head, std=1.0 value head |
 
- **Fresh samples only:** Unlike DQN (which Mortal uses), PPO is on-policy — no replay buffer. This avoids the catastrophic forgetting that Mortal experiences, where old transitions in the replay buffer become stale and misleading.
+ **Fresh samples only:** Unlike DQN (which Mortal uses), PPO is on-policy — no replay buffer. This eliminates one source of instability: stale off-policy transitions. However, PPO self-play can still suffer catastrophic forgetting from distributional shift; Hydra mitigates this via the league opponent pool and KL anchoring.
 
  ### Reward Function
 
@@ -545,7 +547,7 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 - Distillation training loop with KL divergence
 - Feature dropout schedule implementation
 
-**Phase 2 → Phase 3 gate:** See [INFRASTRUCTURE.md § Phase 2](INFRASTRUCTURE.md#phase-2-oracle-distillation-rl) for the full readiness gate (student placement ≤2.45, deal-in ≤13%, win rate ≥21%, win/deal-in ≥1.5:1, tenpai AUC ≥0.80).
+**Phase 2 → Phase 3 gate:** See [INFRASTRUCTURE.md § Phase 2](INFRASTRUCTURE.md#phase-2-oracle-distillation-rl) for the full readiness gate (student placement ≤2.45, deal-in ≤13%, win rate ≥21%, win/deal-in ≥1.5:1, tenpai AUC ≥0.80, win rate plateau for 20M+ steps).
 
 ### Milestone 5: Phase 3 Training
 

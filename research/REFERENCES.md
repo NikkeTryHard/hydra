@@ -10,7 +10,7 @@ Single source of truth for all citations in the Hydra project.
 
 | Paper | Authors | Year | Venue / URL | Key Contribution | Relevance to Hydra |
 |-------|---------|------|-------------|------------------|---------------------|
-| Suphx: Mastering Mahjong with Deep Reinforcement Learning | Junjie Li, Sotetsu Koyamada, Qiwei Ye, Guoqing Liu, Chao Wang, Ruihan Yang, Li Zhao, Tao Qin, Tie-Yan Liu, Hsiao-Wuen Hon | 2020 | [arXiv:2003.13590](https://arxiv.org/abs/2003.13590) | Oracle guiding, Global Reward Prediction (GRP), run-time policy adaptation, 10-dan achievement on Tenhou. Architecture: ~31-layer CNN (15 residual blocks), 134 channels for discard/riichi models, 138-140 channels for call models (Table 2). | Core inspiration for oracle distillation and GRP head design |
+| Suphx: Mastering Mahjong with Deep Reinforcement Learning | Junjie Li, Sotetsu Koyamada, Qiwei Ye, Guoqing Liu, Chao Wang, Ruihan Yang, Li Zhao, Tao Qin, Tie-Yan Liu, Hsiao-Wuen Hon | 2020 | [arXiv:2003.13590](https://arxiv.org/abs/2003.13590) | Oracle guiding, Global Reward Prediction (GRP), run-time policy adaptation, 10-dan achievement on Tenhou. Architecture: 50 residual blocks, 256 filters, separate models per action type with 838 input channels (discard/riichi) and 958 input channels (chow/pong/kong) (Table 2, Figures 4-5). | Core inspiration for oracle distillation and GRP head design |
 | Tjong: A Transformer-based Mahjong AI via Hierarchical Decision-Making and Fan Backward | Xiali Li, Bo Liu, Zhi Wei, Zhaoqi Wang, Licheng Wu | 2024 | [CAAI Trans. Intel. Tech.](https://ietresearch.onlinelibrary.wiley.com/doi/full/10.1049/cit2.12298) DOI: 10.1049/cit2.12298 | Hierarchical decision-making (action type → tile selection), transformer architecture for game sequences, fan backward reward shaping | Alternative architecture reference; fan backward considered for yaku awareness |
 | Information Set Monte Carlo Tree Search | P. I. Cowling, E. J. Powley, D. Whitehouse | 2012 | [IEEE TCIAIG](https://ieeexplore.ieee.org/document/6203567) | Foundation for handling imperfect information via determinization and information-set sampling | Theoretical basis for imperfect-info game approaches |
 | Real-time Mahjong AI based on Monte Carlo Tree Search (Bakuuchi) | Mizukami et al. | 2014 | IEEE | Pre-deep-learning SOTA using ISMCTS + rule-based heuristics | Historical baseline for MCTS approaches |
@@ -50,19 +50,19 @@ Single source of truth for all citations in the Hydra project.
 | Project | URL | Language | Stars | License | Notes |
 |---------|-----|----------|-------|---------|-------|
 | Mortal | https://github.com/Equim-chan/Mortal | Rust/Python | 1.3K+ | AGPL-3.0-or-later | Primary competitor. ResNet(40 blocks, 192ch) + Channel Attention → DQN(Dueling) + CQL. Reference only — AGPL, cannot derive code. Study: obs encoding (1012×34), action masking (46 actions), GRP head, 1v3 duplicate evaluation. Weights have additional distribution restrictions beyond AGPL. |
-| Kanachan | https://github.com/Cryolite/kanachan | C++/Python | ~325 | MIT | **Transformer encoder (BERT-style)** with two configs: base (~90M params, 12 layers, 768-dim) and large (~310M params, 24 layers, 1024-dim). Trained on 65M+ Mahjong Soul rounds (Gold room+) with zero hand-crafted features — pure token indices, no built-in tile relationships. Self-attention operates over 184 tokens: 33 sparse (game context) + 6 numeric (scores) + 113 progression (temporal discard/meld sequence) + 32 action candidates. Training pipeline: behavioral cloning → curriculum fine-tuning (encoder reuse, decoder swap) → offline RL (IQL/ILQL/CQL). **No published performance benchmarks exist** despite 5+ years of development — community reports offline RL instability (Q-value collapse). The ~90-310M parameter count makes online self-play RL infeasible (~50-150× more expensive per inference than Mortal's 2M-param ResNet), which is likely why no RL results have materialized. Uses LOUDS-based TRIE (MARISA-TRIE library) for O(1) shanten lookup via succinct data structure. Hydra's decision to use SE-ResNet over transformers is quantitatively justified: proven results (Mortal 10-dan) vs. no published results, ~100× fewer parameters enabling feasible online RL. |
+| Kanachan | https://github.com/Cryolite/kanachan | C++/Python | 300+ | Unlicensed | **Transformer encoder (BERT-style)** — two configs: base (~90M params, 12L/768d) and large (~310M params, 24L/1024d). Trained on 65M+ Majsoul rounds (Gold+), zero hand-crafted features. 184 tokens: 33 sparse + 6 numeric + 113 progression + 32 candidates. Pipeline: BC → curriculum fine-tuning → offline RL (IQL/ILQL/CQL). **No published benchmarks** despite 5+ years. Parameter count makes online RL infeasible. ⚠️ No LICENSE file in repo — do not depend on code. |
 | Akochan | https://github.com/critter-mj/akochan | C++ | ~280 | Custom (restrictive, Japanese) | EV-based heuristic engine with explicit suji/kabe/genbutsu analysis. Not ML-based. Matters: its hand-crafted defense logic is a useful sanity check — if Hydra's neural network disagrees with Akochan's defense in obvious spots, something is wrong. Also used as the backend for the original mjai-reviewer. |
 | MahjongAI | https://github.com/erreurt/MahjongAI | Python | ~450 | — | Extensible agent framework with pluggable strategies. Matters less for architecture, more for its Tenhou client implementation — shows how to connect an AI to Tenhou's protocol if we ever need that. |
 | AlphaJong | https://github.com/Jimboom7/AlphaJong | JavaScript | — | — | Browser-based heuristic engine (NOT AlphaZero despite the name). Tunable offense/defense balance via sliders. Matters only as a weak baseline — useful for sanity-checking that Hydra beats simple heuristics by a wide margin. |
 | mjai-manue | https://github.com/gimite/mjai-manue | Ruby | 37 | — | Original MJAI protocol client. Matters as protocol reference — defines the canonical MJAI message format that Hydra must be compatible with. |
-| NAGA | https://dmv.nico/en/articles/mahjong_ai_naga/ | — | — | Commercial | **Pure supervised learning** — 4 independent CNNs (discard, call, riichi, kan) trained on Tenhou Houou game logs via imitation learning. No self-play, no RL. Uses confidence estimation (DeVries & Taylor 2018) as training regularization and Guided Backpropagation (Springenberg et al. 2014) for interpretability. 5 playstyle variants (Omega, Gamma, Nishiki, Hibakari, Kagashi) differentiated by training on different players' game records, not architecture changes. CNN architecture details (layers, filters, input shape) never publicly disclosed — the [DMV article](https://dmv.nico/en/articles/mahjong_ai_naga/) is the sole official technical document. Achieved 10-dan on Tenhou (26,598 games), current models estimated ~9-dan stable. Not open-source. NAGA's "match%" metric is a common (but imperfect) benchmark. |
-| LuckyJ | https://haobofu.github.io/ | — | — | Commercial | Tencent AI Lab's mahjong AI (绝艺/JueYi brand). 10-dan on Tenhou in 1,321 games, 10.68 stable dan — strongest known AI. ACH + OLSS architecture, pure self-play. See [COMMUNITY_INSIGHTS § LuckyJ](COMMUNITY_INSIGHTS.md#luckyj-tencent-ai-lab) for detailed architecture analysis. |
+| NAGA | https://dmv.nico/en/articles/mahjong_ai_naga/ | — | — | Commercial | **Pure supervised learning** — 4 independent CNNs (discard, call, riichi, kan) trained on Tenhou Houou game logs via imitation learning. No self-play, no RL. Uses confidence estimation (DeVries & Taylor 2018) as training regularization and Guided Backpropagation (Springenberg et al. 2014) for interpretability. 5 playstyle variants (Omega, Gamma, Nishiki, Hibakari, Kagashi) differentiated by training on different players' game records, not architecture changes. CNN architecture details (layers, filters, input shape) never publicly disclosed — the [DMV article](https://dmv.nico/en/articles/mahjong_ai_naga/) is the sole official technical document. Achieved 10-dan on Tenhou (26,598 games — source unverified; number does not appear in the DMV article or any locatable public source), current models estimated ~9-dan stable. Not open-source. NAGA's "match%" metric is a common (but imperfect) benchmark. |
+| LuckyJ | https://haobofu.github.io/ | — | — | Commercial | Tencent AI Lab's mahjong AI (绝艺/JueYi brand). 10-dan on Tenhou in 1,321 games, 10.68 stable dan — strongest known AI. ACH + OLSS architecture, pure self-play. See [COMMUNITY_INSIGHTS § LuckyJ](COMMUNITY_INSIGHTS.md#4-luckyj-tencent-ai-lab) for detailed architecture analysis. |
 
 ### Analysis & Review Tools
 
 | Project | URL | Stars | Description |
 |---------|-----|-------|-------------|
-| mjai-reviewer | https://github.com/Equim-chan/mjai-reviewer | 1.1K+ | CLI that generates HTML review reports showing Q-value differences per discard. Matters: primary tool for evaluating Hydra's play quality — feed game logs in, get per-move analysis out. Apache-2.0 so we can use it directly. |
+| mjai-reviewer | https://github.com/Equim-chan/mjai-reviewer | 1.1K+ | CLI that generates HTML review reports showing Q-value differences per discard. Primary tool for evaluating Hydra's play quality. Apache-2.0 — can use directly. |
 | mjai-reviewer3p | https://github.com/hidacow/mjai-reviewer3p | — | 3-player (sanma) fork of mjai-reviewer. Matters only if Hydra targets sanma. |
 | killer_mortal_gui | https://github.com/killerducky/killer_mortal_gui | — | Enhanced Mortal review with deal-in heuristic multipliers (ryanmen 3.5×, kanchan suji-trap 2.6×, honor tanki/shanpon 1.7×, etc). Matters: these empirically-tuned danger multipliers are the best public reference for tile danger calibration — useful for validating Hydra's learned defense signals. |
 | crx-mortal | https://github.com/announce/crx-mortal | — | Chrome extension for in-browser Mortal analysis. Low relevance for training. |
@@ -91,7 +91,7 @@ Single source of truth for all citations in the Hydra project.
 | Burn | https://github.com/tracel-ai/burn | Rust | MIT OR Apache-2.0 | Native Rust training + inference framework with WGPU, CUDA, and LibTorch backends. Long-term option for moving the entire training loop to Rust (eliminating Python entirely). Growing ONNX import support. |
 | tch-rs | — | Rust | MIT OR Apache-2.0 | Rust bindings for LibTorch. Alternative to PyO3 approach — call LibTorch directly from Rust instead of going through Python. Trades Python flexibility for lower FFI overhead. |
 | mahjong (Python) | https://github.com/MahjongRepository/mahjong | Python | MIT | Hand scoring oracle — yaku detection, han/fu/score calculation, validated against 11M+ Tenhou hands. Pin to v1.4.0. Dev dependency for Rust engine verification and test case extraction. |
-| agari | https://github.com/rysb-dev/agari | Rust | Unlicensed (no LICENSE file) | Complete scoring engine (35 yaku, fu, payment, hand decomposition, ~100 unit tests). Most architecturally clean Rust mahjong scorer — study its `HandDecomposition` trait and `Fu` calculation for Hydra's own scoring module. ⚠️ No license file in repo — verify before depending on it. |
+| agari | https://github.com/rysb-dev/agari | Rust | MIT (no LICENSE file) | Complete scoring engine (35 yaku, fu, payment, hand decomposition, ~100 unit tests). Most architecturally clean Rust mahjong scorer — study its `HandDecomposition` trait and `Fu` calculation for Hydra's own scoring module. `Cargo.toml` declares MIT but repo lacks a LICENSE file — safe to use as reference. |
 | mahc | https://github.com/DrCheeseFace/mahc | Rust | BSD-3 | Scoring library with explicit `Fu` enum (each fu source is a named variant, not magic numbers). 38 yaku, 30K crates.io downloads. Study the `Fu` enum pattern — makes fu calculation self-documenting and testable vs Mortal's opaque approach. |
 | mahjax | https://github.com/nissymori/mahjax | Python/JAX | Apache-2.0 | JAX-vectorized riichi environment reaching ~1.6M steps/sec on 8×A100 via JIT compilation. Matters for self-play: JAX vectorization can run thousands of games simultaneously on GPU, potentially 10-100x faster than sequential Rust simulator for generating training data. Study their state representation and vectorized game logic. |
 | RiichiEnv | https://github.com/smly/RiichiEnv | Rust/Python | Apache-2.0 | Gym-style RL environment with Rust core + Python bindings, Mortal-compatible MJAI output. Verified correct over 1M+ games. Matters because it provides a ready-made OpenAI Gym interface — if Hydra's training loop uses standard Gym APIs (reset/step/reward), this slots in directly. Also useful as correctness oracle for our own Rust game engine. |
@@ -141,13 +141,7 @@ Single source of truth for all citations in the Hydra project.
 
 ## Training Data Sources
 
-| Source | Volume | Quality | Access |
-|--------|--------|---------|--------|
-| Tenhou Phoenix Logs | 2M games (~17M rounds) | Very high — R>2000 / Dan players | Archive/scraping, log download tools |
-| Majsoul Throne Logs | 1M games | Very high — Saint3+ players | API extraction (WebSocket capture) |
-| Majsoul Jade Logs | 3M games | High — Master+ players | API extraction (lower training weight) |
-| Mahjong Soul (all ranks) | 100M+ rounds | Mixed (all ranks) | WebSocket capture |
-| Self-play | Unlimited | Depends on policy quality | Generated during RL training |
+> See [ECOSYSTEM.md § Data Sources & Datasets](ECOSYSTEM.md#3-data-sources--datasets) for the training data summary and [archive/DATA_SOURCES.md](archive/DATA_SOURCES.md) for full details on sources, converters, and alternative datasets.
 
 ---
 
@@ -189,33 +183,6 @@ Single source of truth for all citations in the Hydra project.
 
 ---
 
-## Technical References
-
-### PyTorch
-
-| Resource | URL |
-|----------|-----|
-| PyTorch Documentation | https://pytorch.org/docs/ |
-| torch.compile Guide | https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html |
-| Mixed Precision Training | https://pytorch.org/docs/stable/amp.html |
-
-### Rust
-
-| Resource | URL |
-|----------|-----|
-| Rust Book | https://doc.rust-lang.org/book/ |
-| PyO3 User Guide | https://pyo3.rs/ |
-| Rayon Parallelism | https://docs.rs/rayon/ |
-
-### Experiment Tracking
-
-| Resource | URL |
-|----------|-----|
-| Weights & Biases | https://wandb.ai/site |
-| MLflow | https://mlflow.org/ |
-
----
-
 ## Benchmark References
 
 ### Tenhou Ranking
@@ -230,10 +197,10 @@ Single source of truth for all citations in the Hydra project.
 
 | AI | Platform | Achievement | Year | Notes |
 |----|----------|-------------|------|-------|
-| NAGA | Tenhou | 10-dan (26,598 games) | 2018+ | Pure imitation learning; current models ~9-dan stable |
+| NAGA | Tenhou | 10-dan (26,598 games — unverified) | 2018+ | Pure imitation learning; current models ~9-dan stable |
 | Suphx | Tenhou | 10-dan (5,373 games), 8.74 stable | 2020 | SL + RL + oracle guiding; paper states 100+ humans have achieved 10-dan |
 | LuckyJ | Tenhou | **10-dan (1,321 games), 10.68 stable** | 2023 | ACH + OLSS; statistically stronger than both NAGA and Suphx |
-| Mortal | Tenhou | 10-dan | 2023 | Community-estimated ~7-dan play strength |
+| Mortal | — | **No ranked play** | — | Tenhou rejected Mortal's AI account request ([FAQ](https://github.com/Equim-chan/mjai-reviewer/blob/master/faq.md): "Tenhou rejected my AI account request for Mortal because Mortal was developed by an individual rather than a company"). Community-estimated ~7-dan play strength from mjai-reviewer analysis. |
 | NAGA | Majsoul | Celestial | 2022 | — |
 
 ---
@@ -250,7 +217,7 @@ Mortal repository discussions relevant to Hydra design decisions:
 
 | Discussion # | Topic | Key Insight |
 |-------------|-------|-------------|
-| #3 | ⚠️ **PR, not Discussion** — PR #3 is "Keyword argument in torch.autocast()" (a code fix). The MC-returns-vs-TD insight is confirmed from source code (`train.py` Q-target computation), not from any specific discussion. | Mortal uses MC returns (not TD) for Q-targets — explains why GRP predicts game-level reward, not step-level. Hydra follows same approach. |
+| (source code) | MC returns vs TD | Mortal uses MC returns (not TD) for Q-targets — confirmed from source code (`train.py` Q-target computation). `q_target = gamma^steps_to_done * kyoku_reward` with no bootstrap from next-state Q-values. Hydra follows the same approach. |
 | #27 | Batch size recommendations | Practical guidance on training batch sizes for mahjong RL. |
 | #43 | torch.compile speedup | torch.compile gives 15-20% training speedup on Mortal. Hydra should enable this from day one. |
 | #52 | NextRankPredictor rationale | Auxiliary task that predicts next placement — stabilizes feature learning by giving the backbone a secondary objective beyond Q-values. |

@@ -18,8 +18,8 @@ A Riichi Mahjong AI designed to surpass current SOTA (Mortal, Suphx, NAGA) throu
 | **Parameters** | ~16.5M | Detailed breakdown: 67K stem + 16.1M backbone + 372K heads (see Parameter Budget) |
 | **Inference VRAM** | <1.5GB | Fits 8GB consumer GPUs easily |
 | **Inference Latency** | <15ms | Well under 50ms limit |
-| **Training VRAM** | <20GB active | Fits RTX PRO 6000 Blackwell (96GB) with batch 4096+ |
-| **Target Strength** | Beat Mortal | Tenhou 10-dan+ |
+| **Training VRAM** | <4GB active | Fits RTX PRO 6000 Blackwell (96GB) with massive headroom |
+| **Target Strength** | Beat Mortal | Surpass community-estimated ~7-dan play strength |
 
 > **Note on parameter count:** Each SE-ResBlock contains ~402K parameters (2× Conv1d(256,256,k=3) + 2× GroupNorm + SE module). 40 blocks × 402K ≈ 16.1M backbone. Heads add ~372K. This makes Hydra (~16.5M) roughly 50% larger than Mortal (~10.9M at 192ch/40 blocks), providing additional capacity for the five output heads and safety encoding.
 
@@ -90,7 +90,7 @@ SE-ResNet captures global board state (e.g., "expensive field," dora density) vi
 
 | Architecture | Pros | Cons | Used By |
 |--------------|------|------|---------|
-| ResNet | Fast, proven for spatial | Limited global context | Suphx |
+| ResNet | Fast, proven for spatial | Limited global context | Suphx (50 blocks, 256 filters) |
 | ResNet + Channel Attention | Global context via squeeze-excite | Slightly more params | Mortal v1–v4 (dual-pool SE) |
 | Transformer | Long-range dependencies | ~90-310M params (45-155× larger than ResNet); no published mahjong performance benchmarks despite 5+ years of Kanachan development; impractical for online RL self-play | Kanachan (no results), Tjong |
 | Hybrid | Best of both | Complexity, unproven | — |
@@ -137,7 +137,7 @@ graph LR
 
 | Choice | Value | Rationale |
 |--------|-------|-----------|
-| Blocks | 40 | Matches Suphx depth, proven sufficient for Mahjong complexity |
+| Blocks | 40 | Suphx uses 50 blocks; 40 balances depth with parameter budget for Hydra's 256ch width |
 | Channels | 256 | Balance of model capacity and inference speed |
 | Normalization | GroupNorm(32) | No batch-size dependency, stable for small batches and RL training |
 | Activation | Mish | Used in Mortal v2–v4. Smooth gradients beneficial for deep RL networks. |
@@ -447,24 +447,6 @@ graph LR
 
 ---
 
-## Training Pipeline
-
-> This section has been moved to [TRAINING.md](TRAINING.md#training-pipeline).
-
----
-
-## Loss Functions
-
-> This section has been moved to [TRAINING.md](TRAINING.md#loss-functions).
-
----
-
-## PID-Lagrangian λ Auto-Tuning
-
-> This section has been moved to [TRAINING.md](TRAINING.md#pid-lagrangian-λ-auto-tuning).
-
----
-
 ## Inference Optimization
 
 ### Deployment Configuration
@@ -482,9 +464,11 @@ Inference runs in FP16 (half precision) with `torch.compile` in "reduce-overhead
 
 Well within the <1.5GB target, fitting easily on 8GB consumer GPUs.
 
-### Latency Breakdown
+### Latency Breakdown (Estimated Targets)
 
-| Component | RTX 3070 | RTX 4090 |
+> **Note:** These are design targets based on comparable architectures (Mortal, Suphx), not measured values. Actual benchmarks will be established during Milestone 2.
+
+| Component | RTX 3070 (est.) | RTX 4090 (est.) |
 |-----------|----------|----------|
 | Feature extraction (Rust encoder) | 2–3ms | 2–3ms |
 | ResNet forward pass | 5–8ms | 1–2ms |
@@ -495,17 +479,7 @@ Both configurations are well under the 50ms decision limit imposed by online pla
 
 ---
 
-## Failure Modes & Mitigations
-
-> This section has been moved to [TRAINING.md](TRAINING.md#failure-modes--mitigations).
-
-## Monitoring Metrics
-
-> This section has been moved to [TRAINING.md](TRAINING.md#monitoring-metrics).
-
----
-
-## Key Differentiators from Mortal
+## System Overview
 
 | Feature | Mortal | Hydra |
 |---------|--------|-------|
@@ -546,14 +520,6 @@ Hydra can reference Mortal's published *techniques* (observable from papers and 
 - PyTorch (BSD) — Neural network training
 
 ---
-
-## Implementation Roadmap
-
-> This section has been moved to [TRAINING.md](TRAINING.md#implementation-roadmap).
-
-## Open Questions
-
-> This section has been moved to [TRAINING.md](TRAINING.md#open-questions).
 
 ---
 

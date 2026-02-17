@@ -29,7 +29,7 @@ All ablation experiments default to the **full** tier (200K games) unless the ex
 
 ### Baseline
 
-All experiments use the Phase 1 BC model (`bc_best.pt`) as the control baseline unless otherwise specified. This is the first checkpoint that passes the Phase 1 readiness gate (discard accuracy >= 65%, placement <= 2.55, deal-in <= 15%).
+All experiments use the Phase 1 BC model (`bc_best.pt`) as the control baseline unless otherwise specified. This is the first checkpoint that passes the Phase 1 readiness gate (discard accuracy >= 65%, SL loss plateaued, placement <= 2.55, deal-in <= 15% — see [INFRASTRUCTURE.md § Phase 1](INFRASTRUCTURE.md#phase-1-behavioral-cloning-supervised) for full criteria).
 
 ---
 
