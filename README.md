@@ -5,7 +5,7 @@ Open-source Riichi Mahjong AI. The goal is to build an AI stronger than [Mortal]
 ## Goal
 
 Train a mahjong AI that:
-- Beats Mortal (community-estimated ~7-dan play strength despite 10-dan Tenhou rating) in head-to-head evaluation
+- Beats Mortal (community-estimated ~7-dan play strength) in head-to-head evaluation
 - Releases weights under a permissive license (MIT)
 - Adds opponent modeling — something no existing mahjong AI does
 
@@ -35,7 +35,7 @@ See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specif
 
 ## Status
 
-Research phase. Open design issues: [#7](../../issues/7)–[#14](../../issues/14).
+Research phase — documentation and architecture specification complete. Implementation not yet started.
 
 ## License
 

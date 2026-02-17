@@ -6,7 +6,9 @@ Consolidated reference for the Mortal Mahjong AI — architecture, limitations, 
 
 ### Neural Network
 
-Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types (source: `libriichi/src/consts.rs:15` (at commit `0cff2b5`) — `obs_shape(4)` returns `[1012, 34]`; the 1012 channels are constructed in `libriichi/src/state/obs_repr.rs`). The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan for each tile, 37 is riichi declaration, 38–40 are the three chi variants, 41 is pon, 42 is open kan, 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
+Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types (source: `libriichi/src/consts.rs:25` (at commit `0cff2b5`) — `obs_shape(4)` returns `[1012, 34]`; the 1012 channels are constructed in `libriichi/src/state/obs_repr.rs`). The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan-tile-selection for each of 37 tiles (34 base + 3 aka), 37 is riichi declaration, 38–40 are the three chi variants (low/mid/high), 41 is pon, 42 is kan (covers all types: daiminkan, ankan, kakan — uses a two-phase system where a second forward pass with `at_kan_select=true` reuses indices 0–36 to pick *which* tile to kan), 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
+
+> **Note:** Mortal's action index allocation differs from Hydra's (see [HYDRA_SPEC.md § Policy Head](HYDRA_SPEC.md#policy-head-actor)). Both use 46 total actions but assign different indices — e.g., Mortal uses 0–36 for discards (including aka variants) while Hydra uses 0–33. Do not mix the two mappings.
 
 All versions use the **Dueling DQN** decomposition `Q = V + A − mean(A)`, but the head architecture differs by version:
 
@@ -27,7 +29,7 @@ Training uses **DQN + Conservative Q-Learning (CQL)** for offline training. The 
 
 **Reward shaping** relies on the GRP head, which predicts rank probabilities. The reward signal is **delta expected value**: `E[pts]_t − E[pts]_{t−1}`, where the pts vector is **[3, 1, −1, −3]** corresponding to 1st through 4th place finishes.
 
-Source: `mortal/train.py:237` (at commit `0cff2b5`), `mortal/reward_calculator.py:10` (pts), `:36-37` (delta) (at commit `0cff2b5`)
+Source: `mortal/train.py:236-238` (at commit `0cff2b5`), `mortal/reward_calculator.py:10` (pts), `:36-37` (delta) (at commit `0cff2b5`)
 
 ### Training Pipeline Details
 
@@ -207,24 +209,6 @@ Compiled from GitHub Discussions #64, #27, #70.
 
 Source: GitHub Discussions #64, #27, #70
 
-## 3-Player (Sanma) Adaptations
-
-> Sanma is a stretch goal for Hydra. See [ECOSYSTEM.md](ECOSYSTEM.md) for the Meowjong reference implementation and [REFERENCES.md](REFERENCES.md) for the `mjai-reviewer3p` fork. Key differences from 4-player: remove 2-8m tiles (108 total), disable chi, add nukidora (N wind as bonus tile, action 40), shrink player arrays to 3. Requires `libriichi3p` fork.
-
-## Ecosystem
-
-> See [REFERENCES.md § Analysis & Review Tools](REFERENCES.md#analysis--review-tools) for the full mjai-reviewer tool family, [REFERENCES.md § Mortal Forks](REFERENCES.md#mortal-forks) for Mortal-Policy and other forks, and [ECOSYSTEM.md](ECOSYSTEM.md) for the curated integration guide.
-
-### Integration Projects
-
-| Project | Architecture | Notes |
-|---------|-------------|-------|
-| Akagi | MITM bridge | Real-time assistant for Majsoul and Tenhou, intercepts game traffic and queries Mortal for recommendations |
-| Riki | Client helper | Integration with Riichi City client |
-| kanachan | Transformer-based | Independent mahjong AI (not a Mortal fork), trained on 65M+ rounds, uses a C++ simulator |
-
-Source: `shinkuan/Akagi`, `Cryolite/kanachan`
-
 ## Rust ML Ecosystem
 
-> See [ECOSYSTEM.md § Rust Inference Engines](ECOSYSTEM.md#4-inference--deployment) and [REFERENCES.md § Components](REFERENCES.md#components) for the full Rust ML tooling survey (Burn, tch-rs, ort, tract, candle) and distributed training patterns.
+> See [ECOSYSTEM.md](ECOSYSTEM.md) and [REFERENCES.md](REFERENCES.md) for Rust ML tooling.

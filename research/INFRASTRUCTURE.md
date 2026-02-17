@@ -67,9 +67,9 @@ graph TB
 ### Crate Dependencies
 
 | Crate | Version | Purpose | License |
-|-------|---------|---------|---------| 
+|-------|---------|---------|---------|
 | xiangting | 5.0+ | Shanten calculation | MIT |
-| pyo3 | 0.22+ | Python bindings | MIT OR Apache-2.0 |
+| pyo3 | 0.28+ | Python bindings | MIT OR Apache-2.0 |
 | rayon | 1.10+ | Parallel simulation | MIT OR Apache-2.0 |
 | serde | 1.0+ | JSON serialization | MIT OR Apache-2.0 |
 | serde_json | 1.0+ | MJAI parsing | MIT OR Apache-2.0 |
@@ -410,13 +410,15 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 
 | Component | Memory | Phase |
 |-----------|--------|-------|
-| Model (16.7M params, bf16) | ~34 MB | All phases |
+| Model (~16.5M student / ~16.7M teacher, bf16) | ~33–34 MB | All phases |
 | Batch (2048 × 84×34 × 4B) | ~22 MB | Phase 1 (BC) |
 | DataLoader workers (8 × prefetch 2) | ~180 MB | Phase 1 (BC) |
-| PPO rollout buffer (4096 steps × 512 envs, +oracle) | ~77 GB | Phase 2–3 (RL) |
-| **Total training footprint** | **< 1 GB** (BC) / **~78 GB** (PPO+oracle) | — |
+| Optimizer state (AdamW, bf16) | ~130 MB | All phases |
+| Opponent cache (5 × 33 MB bf16) | ~165 MB | Phase 3 |
+| PPO minibatch (on-GPU) | ~200–400 MB | Phase 2–3 (RL) |
+| **Total VRAM footprint** | **< 1 GB** (BC) / **~3.7 GB** (PPO+opponents) | — |
 
-The PPO rollout buffer in Phases 2–3 is the dominant memory consumer, using ~77 GB of the 96 GB available VRAM. Phase 1 behavioral cloning is memory-trivial.
+The PPO rollout buffer is stored in **CPU pinned memory** (~6–12 GB per double buffer, uint8), not VRAM. Only individual minibatches are transferred to GPU via async `non_blocking=True` copies. Phase 1 behavioral cloning is memory-trivial.
 
 **Throughput estimates:**
 
@@ -428,7 +430,7 @@ The PPO rollout buffer in Phases 2–3 is the dominant memory consumer, using ~7
 | Rust parser capacity (8 workers) | ~160K samples/sec | 28× headroom over requirement |
 | GPU compute (forward + backward) | Bottleneck | Only true constraint |
 
-**Bottom line:** On-the-fly Rust parsing is the clear winner. Both NVMe I/O and CPU parsing capacity are massively overprovisioned relative to the training throughput target. The GPU is the sole bottleneck — specifically the forward/backward pass during training and the PPO rollout buffer size during Phases 2–3.
+**Bottom line:** On-the-fly Rust parsing is the clear winner. Both NVMe I/O and CPU parsing capacity are massively overprovisioned relative to the training throughput target. The GPU is the sole bottleneck — specifically the forward/backward pass during training. The PPO rollout buffer lives in CPU pinned memory and does not consume VRAM.
 
 ## Python Bindings (hydra-py)
 
@@ -602,7 +604,7 @@ Where:
 - λ_anchor = 0.1, decaying to 0 over Phase 2 (prevents catastrophic forgetting of BC knowledge)
 - D_KL uses temperature τ = 3.0 (fixed, not annealed — annealing changes the meaning of "dark knowledge" mid-training)
 
-**Feature dropout schedule** (group-level scalar multiplication, canonical definition in [TRAINING.md § Feature Dropout Schedule](TRAINING.md#feature-dropout-schedule)):
+**Feature dropout schedule** (group-level deterministic scaling, canonical definition in [TRAINING.md § Feature Dropout Schedule](TRAINING.md#feature-dropout-schedule)):
 
 Two feature groups are masked independently: Group A (opponent hands, 39ch) scaled by `mask_opp`, and Group B (wall/dead wall, 166ch) scaled by `mask_wall`. Masks decay from 1.0 to 0.0 over training while λ_KL decays from 1.0 to 0.3. See TRAINING.md for the full schedule table.
 
@@ -655,7 +657,7 @@ graph TB
 - **Game workers:** The Rust game engine runs 512 concurrent hanchans. Feature encoding is parallelized via rayon within the game batch (Mortal's proven pattern). Game logic releases the GIL.
 - **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Both buffers use pre-allocated pinned memory for fast async CPU→GPU transfer via non_blocking=True. Observations stored as uint8 where possible, cast to float32 per-minibatch.
 
-**Opponent pool:**
+ **Opponent pool** (composition weights defined in [TRAINING.md § Phase 3](TRAINING.md#phase-3-league-training)):
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
@@ -671,21 +673,9 @@ graph TB
 
 **Seat rotation:** Every game seed is played in 4 rotations (challenger at East/South/West/North), following Mortal's 1v3 duplicate protocol. This controls for positional advantage (East player has slight edge in Mahjong).
 
-**PPO hyperparameters:**
+ **PPO hyperparameters:**
 
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Clip ε | 0.1 | Conservative; matches [TRAINING.md](TRAINING.md) |
-| Entropy coef | 0.01 → 0.005 | Linear decay; prevents policy collapse in discrete action space |
-| Value loss coef | 0.5 | Standard |
-| γ (discount) | 1.0 | Undiscounted episodic (matches Mortal) |
-| GAE λ | 0.95 | Standard bias-variance tradeoff for non-terminal rewards |
-| LR | 1e-4, cosine annealing | Lower than Atari PPO default — fine-tuning a pre-trained model |
-| Adam ε | 1e-5 | Same as Phase 1/2; standard for PPO (Huang 2022, CleanRL, SB3) |
-| Update epochs | 3 | Conservative for self-play (monitor approx_kl; reduce to 2 if >0.03) |
-| Minibatch size | 4096 | Transitions per PPO minibatch |
-| Gradient clip | 0.5 (max grad norm) | PPO standard |
-| Advantage norm | Per-minibatch (mean/std, eps=1e-8) | PPO standard, confirmed by CleanRL |
+ > See [TRAINING.md § Phase 3](TRAINING.md#phase-3-league-training) for the authoritative PPO hyperparameter table. Implementation-specific additions:
 
 **Anti-forgetting mechanisms:**
 - KL penalty against Phase 2 policy: λ_KL = 0.05, annealed to 0 over the first 30% of Phase 3 training

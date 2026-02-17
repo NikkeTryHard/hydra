@@ -17,7 +17,7 @@ Curated integration priority guide for every repo, tool, dataset, and framework 
 | [harphield/riichi-tools-rs](https://github.com/harphield/riichi-tools-rs) | MIT | **WASM deployment reference** — fast hand classifier architecture |
 | [m4tx/riichi-hand-rs](https://github.com/m4tx/riichi-hand-rs) | MIT | **Tile rendering** for visualization/debugging tools |
 | [penta2019/mahjong_server](https://github.com/penta2019/mahjong_server) | MIT | **Evaluation server** — MJAI endpoint for bot testing |
-| [rysb-dev/agari](https://github.com/rysb-dev/agari) | Unlicensed | **Primary scoring reference** — most architecturally clean Rust implementation. ⚠️ Verify license before depending. |
+| [rysb-dev/agari](https://github.com/rysb-dev/agari) | MIT (no LICENSE file) | **Primary scoring reference** — most architecturally clean Rust implementation. `Cargo.toml` declares MIT. |
 
 ### Reference Only (Copyleft — study architecture, don't copy code)
 
@@ -77,11 +77,11 @@ Curated integration priority guide for every repo, tool, dataset, and framework 
 
 ### Synthetic Data (for self-play)
 
-| Tool | Stars | License | Speed | Notes |
-|------|-------|---------|-------|-------|
-| [mjx-project/mjx](https://github.com/mjx-project/mjx) | 202 | — | 100x faster than Mjai | Gym API, Tenhou-compatible rules, gRPC distributed, IEEE CoG 2022 |
-| [nissymori/mahjax](https://github.com/nissymori/mahjax) | 22 | Apache-2.0 | ~1.6M steps/sec (8×A100) | JAX-vectorized, JIT-compilable |
-| [smly/mjai.app](https://github.com/smly/mjai.app) | 109 | AGPL-3.0 | — | MJAI-compatible game simulator |
+| Tool | License | Speed | Notes |
+|------|---------|-------|-------|
+| [mjx-project/mjx](https://github.com/mjx-project/mjx) | — | 100x faster than Mjai | Gym API, Tenhou-compatible rules, gRPC distributed, IEEE CoG 2022 |
+| [nissymori/mahjax](https://github.com/nissymori/mahjax) | Apache-2.0 | ~1.6M steps/sec (8×A100) | JAX-vectorized, JIT-compilable |
+| [smly/mjai.app](https://github.com/smly/mjai.app) | AGPL-3.0 | — | MJAI-compatible game simulator |
 
 ---
 
@@ -135,7 +135,7 @@ Curated integration priority guide for every repo, tool, dataset, and framework 
 
 | Tool | Category | License | Action |
 |------|----------|---------|--------|
-| rysb-dev/agari | Rust scoring | MIT | Primary reference for hand evaluation implementation |
+| rysb-dev/agari | Rust scoring | MIT (no LICENSE file) | Primary reference for hand evaluation implementation — `Cargo.toml` declares MIT but repo has no LICENSE file; safe to use as reference |
 | mahc | Rust scoring | BSD-3 | Secondary reference, especially fu enum pattern |
 | mahjax | RL environment | Apache-2.0 | Evaluate for JAX-based self-play training |
 | RiichiEnv | Gym environment | Apache-2.0 | Evaluate for Python training loop |
@@ -161,8 +161,3 @@ Curated integration priority guide for every repo, tool, dataset, and framework 
 | Burn | Rust ML | Apache-2.0 | Long-term: native Rust training + inference |
 | candle | Rust ML | Apache-2.0 | Alternative: skip ONNX, write inference in Rust |
 
----
-
-## 6. Data Pipeline Architecture
-
-> See [INFRASTRUCTURE.md § Data Pipeline](INFRASTRUCTURE.md#data-pipeline) and [INFRASTRUCTURE.md § System Architecture](INFRASTRUCTURE.md#system-architecture) for detailed pipeline diagrams.
