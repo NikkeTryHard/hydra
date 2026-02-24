@@ -1,2 +1,5 @@
 mortal-github-repo/
 .worktrees/
+.claude/
+Mortal-Policy/
+.mcp.json
