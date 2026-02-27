@@ -23,6 +23,8 @@ graph LR
         MISS2["Danger level per tile"]
         MISS3["Opponent wait prediction"]
         MISS4["Damaten detection"]
+        MISS5["Threat severity (hand value)"]
+        MISS6["Yaku-plan / call-intent reading"]
     end
 ```
 
@@ -44,12 +46,15 @@ Specific documented issues:
 
 ### What Hydra Adds
 
-Hydra addresses the opponent modeling gap through four complementary systems:
+Hydra addresses the opponent modeling gap through seven complementary systems:
 
 1. **Explicit Safety Planes** — Encode suji, kabe, and genbutsu directly into the input tensor
 2. **Tenpai Predictor Head** — Detect silent tenpai (damaten) from discard patterns
-3. **Danger Head** — Predict deal-in probability per tile
-4. **Oracle Distillation** — Learn implicit opponent reading through teacher-student training
+3. **Danger Head** — Predict deal-in probability per tile (with dense counterfactual labels)
+4. **Wait-Set Belief Head** — Predict which tiles complete each opponent's hand (§ 4.6)
+5. **Value-Conditioned Tenpai** — Estimate opponent hand value when tenpai (§ 3.7)
+6. **Call-Intent Head** — Infer opponent yaku plan from call patterns (§ 4.7)
+7. **Oracle Distillation** — Learn implicit opponent reading through teacher-student training
 
 ---
 
@@ -249,6 +254,36 @@ The Tenpai Head output feeds into three downstream systems:
 2. **Danger Head** — Higher tenpai probability for an opponent increases the baseline danger level for all tiles. The danger head uses tenpai predictions as contextual input.
 3. **Policy Head** — When tenpai is detected, the policy shifts toward risk-adjusted actions, favoring safer discards and defensive play.
 
+### 3.7 Value-Conditioned Tenpai (Threat Severity)
+
+Binary tenpai detection answers "is the opponent ready?" but not "how expensive is their hand?" A 1-han tenpai and a hidden mangan tenpai should produce radically different push/fold thresholds. Humans fold earlier when they smell honitsu/toitoi/dragon dora; a binary tenpai head cannot distinguish these cases.
+
+**Extension:** Add a per-opponent hand value classification head that predicts the expected point value of the opponent's hand, conditioned on tenpai.
+
+**Output:** `[B × 3 × V]` softmax, where V is the number of value bins. Recommended bins:
+
+| Bin | Point Range | Typical Hands |
+|-----|-------------|---------------|
+| 0 | <2000 | 1-han 30fu (1000/2000) |
+| 1 | 2000–3900 | 2-han (2600/5200) |
+| 2 | 3900–5200 | 3-han (3900/7700) |
+| 3 | 5200–7700 | Mangan threshold (8000/12000) |
+| 4 | 8000+ | Mangan and above (haneman, baiman, etc.) |
+
+**Architecture:** GAP(256×34 → 256) → FC(256→64) → ReLU → FC(64→5×3) → Reshape to [B×3×5] → Softmax per opponent. Parameter cost: ~17K (+0.1% of total model).
+
+**Training signal:**
+- **Phase 1:** At each timestep where an opponent is in tenpai, label with the *eventual* winning hand value if the opponent wins this kyoku (from the game outcome in the MJAI log). Mask the loss when the opponent is not in tenpai or does not win. This introduces survivorship bias (only winning hands get labels), but the distribution of winning hand values is well-characterized in mahjong statistics.
+- **Phase 2–3:** Oracle teacher sees the opponent's actual hand and can compute the exact hand value at every timestep (scoring from visible tiles + known hand), eliminating survivorship bias.
+- **Loss:** Cross-entropy per opponent, masked to tenpai states only. Weight: 0.02 (low, novel head).
+
+**Integration:** The value head output feeds into the push/fold calculus alongside tenpai probability. Expected danger cost becomes:
+
+`E[cost(a)] = Σ_i [p_tenpai(i) × p_danger_i(a) × E[value_i]]`
+
+Where `E[value_i]` is the expected hand value from the value bins. This replaces the current uniform danger weighting with threat-severity-aware defense.
+
+> **Novelty note:** No published mahjong AI predicts opponent hand value as an explicit output. Community statistics (e.g., [houou-statistics](https://github.com/chienshyong/houou-statistics) analyses of open tenpai value distributions and riichi winrate by han) confirm that hand value varies dramatically with observable signals (call patterns, dora visibility, discard shape). The value head makes this implicit knowledge explicit.
 ---
 
 ## 4. Danger Head
@@ -351,6 +386,65 @@ where:
 
 **Oshi-hiki calibration reference:** Human expert push/fold crossover occurs at W:D ≈ 0.88 for 2-han bad wait vs non-dealer riichi (from SMS / Shin Kagaku suru Mahjong). The PID-tuned λ should produce behavior consistent with these thresholds when evaluated on expert game logs.
 
+### 4.6 Wait-Set Belief Head (Extended Opponent Modeling)
+
+The Danger Head predicts *how risky* each tile is; the Tenpai Head predicts *whether* an opponent is ready. Neither models the **structure** of an opponent's waiting hand — specifically, which tiles could complete it right now. A Wait-Set Belief Head fills this gap.
+
+**Output:** `[B × 3 × 34]` sigmoid — per-opponent, per-tile probability that the tile is in the opponent's current ron-eligible wait set.
+
+**Architecture:** Shares the same backbone output as the Danger Head. Implementation: `Conv1d(256, 3, kernel_size=1)` → Sigmoid. Parameter cost: 771 params (+0.005% of total model), identical structure to the Danger Head.
+
+**Relationship to Danger Head:** Wait-Set and Danger are complementary, not redundant:
+
+| Head | Question | Signal | Label Source |
+|------|----------|--------|-------------|
+| Tenpai | Is opponent *i* in tenpai? | Binary per opponent | Shanten=0 from reconstructed hand |
+| Wait-Set | Which tiles complete opponent *i*'s hand? | Binary per tile per opponent | Ukeire computation from reconstructed hand, furiten-filtered |
+| Danger | If I discard tile *t*, will opponent *i* ron? | Probability per tile per opponent | Actual deal-in events (sparse) or dense ron-eligibility (see § 4.4) |
+
+Wait-Set predicts the opponent's waiting tiles regardless of whether the player discards them — it models the opponent's hand structure. Danger predicts the consequence of a specific discard action. With dense danger labels (see [TRAINING § Danger label construction](TRAINING.md#auxiliary-losses)), the Wait-Set and Danger heads share label infrastructure but serve distinct roles: Wait-Set labels are always binary (tile is or isn't in the wait set), while dense Danger labels can carry soft probabilities when generated by the oracle teacher in Phase 2.
+
+**Training signal:**
+- **Phase 1:** Ground-truth wait sets computed from reconstructed opponent hands using the same `isTenpai()` + `calculateUkeire()` pipeline as tenpai labels. Furiten exclusion applied (same 3 cases as dense danger labels). Labels are `[3×34]` binary: 1 if tile type is in opponent *i*'s ron-eligible wait, 0 otherwise. Masked to zero when opponent is not in tenpai.
+- **Phase 2–3:** Oracle teacher computes exact wait sets from visible opponent hands.
+- **Loss:** Focal BCE (α=0.25, γ=2.0) with low weight (0.02). Wait sets are sparse — a typical tenpai hand waits on 1–4 tile types out of 34.
+
+**Integration with policy:** The Wait-Set output enables sharper multi-threat defense. When two opponents are in tenpai with *different* wait shapes, the agent can identify safe tiles that dodge both waits simultaneously — something the scalar danger head struggles with when wait structures overlap in non-obvious ways.
+
+> **Novelty note:** No published mahjong AI predicts opponent wait sets as an explicit output head. Mortal has no danger or tenpai head at all (verified: `mortal/model.py` AuxNet outputs only 4-class rank prediction). [houou-statistics](https://github.com/chienshyong/houou-statistics) computes waiting tiles from reconstructed hands for statistical analysis (`shanten.py:calculateUkeire()`), confirming the computation is feasible, but does not use them as ML training labels. The Wait-Set head is a novel auxiliary task for Hydra.
+
+> **Evidence note (label density):** Wait-Set labels are denser than sparse danger labels but sparser than dense danger labels: non-zero only when the opponent is in tenpai (~15–30% of mid/late-game states), with 1–8 active tiles per tenpai opponent. At loss weight 0.02, the gradient contribution is small relative to the policy head. Monitor gradient norms if combining with dense danger labels (both draw from the same backbone).
+
+### 4.7 Call-Intent / Yaku-Plan Inference Head
+
+Human players read opponent intent from the first call: an early pinzu chi + honor discards signals honitsu; pon of a value tile suggests yakuhai speed; multiple calls with terminal/honor retention suggests toitoi or honroutou. Hydra's current heads detect *tenpai status* and *tile-level danger*, but neither models the opponent's **strategic plan** — the yaku archetype they are pursuing.
+
+**Output:** `[B × 3 × K]` softmax, where K is the number of yaku archetypes. Recommended archetypes:
+
+| Index | Archetype | Observable Signals |
+|-------|-----------|-------------------|
+| 0 | Yakuhai speed | Pon of value tile (seat/round wind, dragons), fast discards |
+| 1 | Honitsu/Chinitsu | Calls concentrated in one suit, off-suit discards |
+| 2 | Toitoi/Honroutou | Multiple pon calls, no chi, terminal/honor retention |
+| 3 | Tanyao speed | Chi/pon of 2–8 tiles, early terminal/honor discards |
+| 4 | Sanshoku/Ittsuu | Specific chi patterns across suits |
+| 5 | Chanta/Junchan | Calls involving terminals, middle-tile discards |
+| 6 | Menzen (closed) | No calls, building toward riichi or damaten |
+| 7 | Other/Ambiguous | Catch-all for hands that don't fit a clear archetype |
+
+**Architecture:** GAP(256×34 → 256) → FC(256→64) → ReLU → FC(64→8×3) → Reshape to [B×3×8] → Softmax per opponent. Parameter cost: ~18K (+0.1% of total model).
+
+**Training signal:**
+- **Phase 1:** At each timestep after an opponent makes at least one call, label with the *eventual* winning yaku class if the opponent wins this kyoku. Map the winning yaku combination to the nearest archetype (e.g., honitsu+yakuhai → archetype 1). Mask the loss when the opponent makes no calls or does not win. Like the value head, this has survivorship bias — only winning hands get labeled.
+- **Phase 2–3:** Oracle teacher sees the actual hand and can compute exact yaku potential at every timestep.
+- **Loss:** Cross-entropy per opponent, masked to states where the opponent has ≥1 open meld. Weight: 0.02.
+
+**Integration with Danger Head:** The call-intent logits condition danger predictions via FiLM (Feature-wise Linear Modulation) or simple concatenation. When the intent head predicts honitsu with high confidence, the danger head should increase danger estimates for tiles in the predicted suit — giving the model "this tile is dangerous *because it fits their plan*" rather than only "this tile has a high historical deal-in rate."
+
+> **Novelty note:** No published mahjong AI predicts opponent yaku intent as an explicit output. [houou-statistics](https://github.com/chienshyong/houou-statistics) provides detailed analyses of open tenpai characteristics by yaku type, confirming that different yaku plans produce distinct observable signal patterns. The call-intent head makes these statistical patterns learnable as a first-class output.
+
+> **Risk note:** Labeling from eventual winning yaku introduces noise — an opponent may pursue honitsu but switch plans mid-hand. Survivorship bias means only successful plans get labeled, potentially underrepresenting abandoned plans. Mitigation: keep loss weight low (0.02), add entropy regularization on the intent distribution, and restrict labels to states after the first call (when intent is most readable). The head's primary value is as a *feature* for the danger head, not as a standalone prediction.
+
 ---
 
 ## 5. Oracle Distillation for Opponent Reading
@@ -437,6 +531,50 @@ These multiply on top of the base wait type multiplier:
 Mortal and Suphx both rely on the network to implicitly learn defensive concepts from raw game data. Hydra pre-computes and explicitly encodes these concepts, giving the network a structured foundation. The auxiliary heads (tenpai and danger) then provide focused learning targets for opponent-aware skills, while oracle distillation adds the implicit "intuition" layer that captures patterns beyond what explicit encoding can represent.
 
 ---
+
+## 7.5 Safety Reserve Feature
+
+Multi-threat defense is a documented weakness across all current mahjong AIs. The failure pattern: the agent discards its last genbutsu (absolutely safe tile) early, then a second opponent declares riichi, leaving the agent cornered with no safe tiles. Human experts maintain a "safety inventory" — they track how many safe tiles remain for each opponent and avoid spending them unnecessarily.
+
+**Concept:** Compute a per-tile "safety reserve value" estimating the future cost of losing this safe tile from your hand. Tiles that are safe against multiple opponents, or that are safe against opponents likely to declare riichi soon, have higher reserve value.
+
+**Implementation:** A derived feature, not a new head. At each decision point:
+1. Count genbutsu tiles remaining in hand per opponent.
+2. Compute reserve score per tile: `reserve(t) = Σ_i [is_genbutsu(t, i) × p_tenpai(i) × (1 / max(1, genbutsu_count(i)))]`
+3. Tiles that are genbutsu against an opponent with few other genbutsu in hand and high tenpai probability get high reserve scores.
+4. Inject as a 34-length float channel appended to the observation tensor (channel 84 → 85, or as a derived feature within the danger head).
+
+**Integration with policy:** The reserve value functions as a tie-breaker. When two tiles have similar policy logits but one has high reserve value (important safe tile), the agent should prefer discarding the lower-reserve tile. This can be implemented as:
+
+`adjusted_logits = policy_logits - α_reserve × reserve_values`
+
+Where `α_reserve` is a small scalar (0.1–0.5), tuned to avoid excessive conservatism.
+
+**Expected impact:** Reduction in "second-riichi deal-in rate" — deal-ins occurring within 3 turns of a second opponent declaring riichi. This is a measurable metric available from evaluation logs.
+
+> **Status:** Future extension — implement after the base tenpai and danger heads are validated (A2, A3 results). The reserve feature requires working tenpai predictions to compute meaningful reserve scores.
+
+---
+
+## 7.6 Future Extensions
+
+The following ideas have theoretical merit but are deferred until the base system is trained and validated. They are recorded here to guide future research.
+
+### Lateral Movement Predictor
+
+Predict a distribution over kyoku outcomes: `P(winner=i, loser=j, point_transfer=bin)` for each possible (winner, loser) pair. This turns folding into a strategic tool — in South rounds, the optimal play may involve engineering *who* wins/loses rather than maximizing your own hand value. The existing GRP head captures placement-level dynamics but not per-kyoku outcome routing. A lateral movement head would give the agent explicit awareness of inter-opponent point flow.
+
+**Deferred because:** Requires the GRP head to prove insufficient at endgame decisions first. If GRP + score context already produces correct orasu behavior, lateral movement adds complexity without value.
+
+### State-Conditioned Risk (Dynamic λ)
+
+Replace the PID-Lagrangian's single scalar λ with a state-dependent function λ(score, round, rank). The idea is that risk tolerance should vary: push more when 4th in South 4, fold more when leading comfortably.
+
+**Deferred because:** Hydra's reward advantage A^R is already state-dependent via the GRP head and 16-dim score context vector. The value function should already produce state-dependent push/fold behavior without modifying λ. Furthermore, state-dependent λ breaks the Lagrangian convergence framework (Stooke, Achiam, Abbeel, ICML 2020). If the base system shows measurable deficiency in state-dependent risk behavior, consider alternatives: (a) multi-constraint binning (3–4 scalar PID controllers, one per game phase), (b) backward value functions (Satija, Amortila, Pineau, ICML 2020) for budget-based risk allocation, (c) conditioning the value head on explicit risk context. See [TRAINING § PID-Lagrangian](TRAINING.md#pid-lagrangian-λ-auto-tuning) for the current design.
+
+### Discard Sequence Encoder (GRU)
+
+Per-opponent GRU over the full discard history to capture temporal patterns (tedashi/tsumogiri sequences, call interruptions). Directly addresses [Open Question #3](TRAINING.md#open-questions). Concrete ablation defined as [A9](ABLATION_PLAN.md#a9-discard-sequence-encoder-tedashi-gru).
 
 ## 8. Expected Improvements
 
