@@ -45,8 +45,12 @@ All experiments use the Phase 1 BC model (`bc_best.pt`) as the control baseline 
 | A6 | Joint 24-class GRP captures placement correlations better | Scalar GRP (MSE regression) | 24-class GRP (CE over permutations) | Placement-aware decision quality (orasu rank-pt delta) | Full (200K) | None | P1 |
 | A7 | Focal loss (gamma=2.0) outperforms weighted BCE for rare events | BCEWithLogitsLoss(pos_weight=10) | Focal BCE (alpha=0.25, gamma=2.0) | Danger head AUC | Quick (4K) | None | P2 |
 | A8 | ERN reduces last-tile variance and accelerates convergence | Raw terminal reward | ERN-smoothed reward | Value loss variance, convergence speed | Full (200K) | A4 | P2 |
+| A9 | Discard sequence GRU captures temporal patterns channel encoding misses | Channel-only tedashi encoding | Per-opponent GRU + FiLM conditioning | Tenpai AUC (non-riichi), deal-in rate | Full (200K) | A2 | P2 |
+| A10 | Dense danger labels (all 34 tiles) outperform sparse (discarded tile only) | Sparse labels, weight 0.05 | Dense labels, weight 0.005 | Danger AUC, deal-in rate, gradient norm ratio | Full (200K) | A3 | P1 |
+| A11 | Wait-set head improves multi-threat defense | No wait-set head | Wait-set head (sigmoid(3x34)), weight 0.02 | Deal-in rate (2+ tenpai opponents) | Full (200K) | A3 | P1 |
+| A12 | Value + intent heads improve open-hand defense | Tenpai head only | Tenpai + value (5-bin) + intent (8-class), weight 0.02 each | Deal-in rate vs open hands, deal-in by opponent value | Full (200K) | A2, A3 | P2 |
 
-**Execution order:** A1-A3 run in parallel (independent, no gates). A4-A6 run after A1-A3 results are known. A7 is a quick standalone experiment. A8 requires A4 results (it only matters if oracle distillation is used).
+**Execution order:** A1-A3 run in parallel (independent, no gates). A4-A6 and A10-A11 run after A1-A3 results are known. A7 is a quick standalone experiment. A8 requires A4 results. A9 and A12 are P2 refinements that run after P1 results are incorporated.
 
 ---
 
@@ -170,6 +174,52 @@ Each experiment follows this protocol:
 
 **Gate:** Depends on A4 results. If oracle distillation shows no benefit, the ERN (which also uses oracle information) may not be worth the complexity.
 
+### A9: Discard Sequence Encoder (Tedashi GRU)
+
+**Hypothesis:** A per-opponent GRU over the full discard sequence (with tedashi/tsumogiri flags, call interruptions, and turn index) captures temporal patterns that fixed channel encoding cannot — specifically improving damaten detection and opponent intent reading.
+
+**Control model:** Standard channel-only tedashi encoding (current: per-opponent discard channels with binary tedashi flag and exponential temporal decay).
+
+**Treatment model:** Add a small GRU (hidden_dim=64) per opponent that processes the discard sequence as tokens: `(tile_id, tsumogiri_flag, turn_index, after_call_flag)`. The GRU hidden state `h_i` conditions the tenpai, danger, and wait-set heads via FiLM (feature-wise linear modulation). The base 84×34 tensor is unchanged — the GRU adds a supplementary per-opponent context vector.
+
+**Parameter cost:** ~50K per opponent GRU × 3 opponents + FiLM layers = ~200K total (~1.2% of model). Modest overhead.
+
+**Measurement focus:** Tenpai detection AUC for non-riichi opponents (damaten), deal-in rate vs non-riichi opponents, and qualitative inspection of whether the GRU captures the tsumogiri→tedashi transition pattern described in [OPPONENT_MODELING § 3.4](OPPONENT_MODELING.md#34-tedashi-pattern-detection).
+
+**Resolves:** [Open Question #3](TRAINING.md#open-questions) (Tedashi Encoding: channel-only vs GRU head).
+
+### A10: Dense vs Sparse Danger Labels
+
+**Hypothesis:** Dense counterfactual danger labels (ron-eligibility for all 34 tiles at every timestep, computed from reconstructed opponent hands) produce a substantially better danger head than sparse labels (only the actually-discarded tile gets a label).
+
+**Control model:** Sparse danger labels (current default). Loss weight 0.05.
+
+**Treatment model:** Dense danger labels with furiten-filtered ron-eligibility for all 34 tiles. Loss weight **0.005** (10× lower to compensate for ~10× more active label positions — see [TRAINING § Gradient magnitude warning](TRAINING.md#auxiliary-losses)).
+
+**Measurement focus:** Danger head AUC on held-out evaluation set (should jump significantly), deal-in rate vs non-riichi opponents, deal-in rate vs riichi opponents, and backbone gradient norm ratio (policy head vs danger head — should stay within 2×). Also track win rate to detect over-defensive behavior from gradient magnitude shift.
+
+**Success criterion:** Danger AUC increases by ≥0.05 AND deal-in rate drops by ≥0.5pp AND win rate does not drop by more than 0.3pp. If win rate drops significantly, the gradient magnitude mitigation is insufficient — try stop-gradient or GradNorm (He et al., WWW 2022).
+
+### A11: Wait-Set Belief Head
+
+**Hypothesis:** An explicit wait-set prediction head improves multi-threat defense by providing the backbone with structured information about which tiles each opponent is waiting on.
+
+**Control model:** No wait-set head (current baseline with tenpai + danger only).
+
+**Treatment model:** Wait-set head (sigmoid(3×34)) with focal BCE, coefficient 0.02. Labels from reconstructed hands (Phase 1) or oracle (Phase 2+).
+
+**Measurement focus:** Deal-in rate in states where 2+ opponents are in tenpai simultaneously. Also measure whether danger head AUC improves (shared backbone should benefit from wait-set supervision). Secondary: total auxiliary gradient norm — should remain bounded with combined danger+wait-set heads.
+
+### A12: Value-Conditioned Tenpai + Call-Intent
+
+**Hypothesis:** Adding threat severity (hand value bins) and yaku-plan (call-intent archetypes) predictions improves push/fold decisions against open hands.
+
+**Control model:** Tenpai head only (binary sigmoid(3)).
+
+**Treatment model:** Tenpai + value head (softmax(3×5)) + call-intent head (softmax(3×8)). Both at loss weight 0.02.
+
+**Measurement focus:** Deal-in rate specifically against open-hand opponents (opponents with ≥1 call). Slice by opponent hand value at deal-in: expect fewer deal-ins against mangan+ hands and maintained aggression against cheap hands. Also measure win rate in games with heavy calling opponents.
+
 ---
 
 ## Gating Structure
@@ -186,18 +236,27 @@ graph LR
         A4[A4: Oracle Distillation]
         A5[A5: Score Context]
         A6[A6: GRP 24-way]
+        A10[A10: Dense Danger Labels]
+        A11[A11: Wait-Set Head]
     end
 
     subgraph "P2: Refinement"
         A7[A7: Focal Loss]
         A8[A8: ERN]
+        A9[A9: Discard GRU]
+        A12[A12: Value + Intent Heads]
     end
 
     A1 --> A4
     A1 --> A5
     A1 --> A6
     A2 --> A4
+    A2 --> A9
+    A2 --> A12
     A3 --> A4
+    A3 --> A10
+    A3 --> A11
+    A3 --> A12
     A4 --> A8
 ```
 
@@ -213,6 +272,6 @@ graph LR
 |--------------|----------|------------------------------|
 | 1. GRP Horizon: final game rank vs next round rank? | A6 | Compares 24-class (final game) vs scalar (can be configured for either). If scalar performs equally, the simpler approach wins. |
 | 2. Safety Plane Utility: do explicit suji/kabe planes help? | A1 | Directly tests 61ch (no safety) vs 84ch (full safety). |
-| 3. Tedashi Encoding: channel-only vs GRU head? | Not in current queue | Deferred — requires architectural change to the backbone. Add as A9 if resources permit. |
+| 3. Tedashi Encoding: channel-only vs GRU head? | A9 | Tests a per-opponent GRU over the full discard sequence (with tedashi/tsumogiri flags) vs channel-only encoding. Measures damaten detection AUC and deal-in rate vs non-riichi opponents. |
 | 4. Distillation Duration: when does teacher knowledge saturate? | A4 | If oracle distillation shows no benefit (BC -> League equals BC -> Oracle -> League), duration is moot. If it helps, monitor KL divergence curve during Phase 2 training to find the saturation point. |
 | 5. Aggression Balance: how to prevent oracle-guided passivity? | A4 + monitoring | Track win/deal-in ratio during Phase 2 training. Healthy range is 2:1 to 2.5:1 per [TRAINING.md](TRAINING.md). If the ratio exceeds 3:1, the agent is too passive. |
