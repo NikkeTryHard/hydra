@@ -60,9 +60,9 @@ Hydra addresses the opponent modeling gap through seven complementary systems:
 
 ## 2. Safety Planes: Explicit Defensive Encoding
 
-> For the channel-level summary, see [HYDRA_SPEC § Safety Channels](HYDRA_SPEC.md#safety-channels-6183). This section provides the detailed design rationale and encoding logic.
+> For the channel-level summary, see [HYDRA_SPEC § Safety Channels](HYDRA_SPEC.md#safety-channels-6284). This section provides the detailed design rationale and encoding logic.
 
-Hydra dedicates 23 input channels (channels 61–83) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
+Hydra dedicates 23 input channels (channels 62–84) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
 
 > **Quantitative basis:** The 23-channel safety encoding is grounded in mahjong theory (genbutsu, suji, kabe are the foundation of all human defensive play) but the specific channel design (9 genbutsu, 9 suji, 2 kabe, 3 tenpai hints) and encoding choices (suji float values, 3 sub-channels per genbutsu opponent) are based on domain analysis, not empirical ablation. Mortal achieves ~11% deal-in rate without any explicit safety planes, relying on implicit learning from 1012 raw channels. Whether pre-computed safety planes improve over implicit learning is an open empirical question — this is precisely what **Ablation A1** tests (see [ABLATION_PLAN.md § A1](ABLATION_PLAN.md#a1-safety-planes)). The safety plane design will be validated or revised based on A1 results. The conservative channel counts (9+9+2+3=23) were chosen to minimize parameter overhead (~0% increase to backbone) while covering the complete human defensive vocabulary.
 
@@ -146,7 +146,7 @@ When 3 out of 4 copies of a tile are visible, the remaining single copy makes wa
 
 **Encoding:** Channel 80 is a float mask over 34 tile types, indicating one-chance status.
 
-### 2.5 Tenpai Hints — Channels 81–83
+### 2.5 Tenpai Hints — Channels 82–84
 
 Three binary channels, one per opponent, indicating whether each opponent is likely in tenpai.
 
@@ -167,7 +167,7 @@ This feedback loop from the auxiliary head back into the input encoding is a key
 
 The feedback operates **across sequential decisions within a game**, not within a single forward pass (no double pass required):
 
-1. At decision time *t*, tenpai hint channels (81–83) are set to `max(riichi_status[i], cached_tenpai_pred[i] > 0.5)` for each opponent *i*.
+1. At decision time *t*, tenpai hint channels (82–84) are set to `max(riichi_status[i], cached_tenpai_pred[i] > 0.5)` for each opponent *i*.
 2. The model runs a single forward pass, producing all head outputs including tenpai predictions `[p₁, p₂, p₃]`.
 3. The tenpai predictions are cached: `cached_tenpai_pred = [p₁, p₂, p₃]`.
 4. At decision time *t+1*, step 1 uses the cached predictions from *t*.
@@ -178,7 +178,7 @@ The feedback operates **across sequential decisions within a game**, not within 
 | Forward passes per decision | 1 | No double-pass — feedback is across time steps |
 | Latency impact | Zero | Tenpai head output is already computed in the main forward pass |
 
-**Training behavior:** During training with oracle/ground-truth tenpai labels, channels 81–83 use the ground-truth tenpai status (not the head's predictions). The feedback loop with cached predictions activates only at inference time. This prevents error accumulation during training while teaching the model to use tenpai hints correctly.
+**Training behavior:** During training with oracle/ground-truth tenpai labels, channels 82–84 use the ground-truth tenpai status (not the head's predictions). The feedback loop with cached predictions activates only at inference time. This prevents error accumulation during training while teaching the model to use tenpai hints correctly.
 
 ---
 
@@ -250,7 +250,7 @@ where `y_i` is the ground-truth tenpai status and `p_i` is the predicted probabi
 
 The Tenpai Head output feeds into three downstream systems:
 
-1. **Safety plane channels 81–83** — High tenpai probability activates the tenpai hint channels, giving the backbone richer input on subsequent forward passes during multi-step reasoning.
+1. **Safety plane channels 82–84** — High tenpai probability activates the tenpai hint channels, giving the backbone richer input on subsequent forward passes during multi-step reasoning.
 2. **Danger Head** — Higher tenpai probability for an opponent increases the baseline danger level for all tiles. The danger head uses tenpai predictions as contextual input.
 3. **Policy Head** — When tenpai is detected, the policy shifts toward risk-adjusted actions, favoring safer discards and defensive play.
 
@@ -296,7 +296,7 @@ Estimate the deal-in probability for each possible discard tile. Given the curre
 
 > See [HYDRA_SPEC § Danger Head](HYDRA_SPEC.md#danger-head) for the canonical architecture specification (1×1 Conv1D(256→3) → Sigmoid, output [B × 3 × 34]).
 
-Per-opponent granularity (3×34) is essential for mawashi-uchi (回し打ち) — the strategy of dodging one specific dangerous opponent while continuing to push against others. An aggregate 1×34 output would discard the per-opponent information that the backbone already encodes (genbutsu channels 61–69, suji channels 70–78, tenpai hints 81–83 are all per-opponent), creating an information bottleneck.
+Per-opponent granularity (3×34) is essential for mawashi-uchi (回し打ち) — the strategy of dodging one specific dangerous opponent while continuing to push against others. An aggregate 1×34 output would discard the per-opponent information that the backbone already encodes (genbutsu channels 62–70, suji channels 71–79, tenpai hints 82–84 are all per-opponent), creating an information bottleneck.
 
 **Why 3×34 over 1×34:**
 - A tile can be safe against Player A (genbutsu) but deadly against Player B — the aggregate signal is ambiguous

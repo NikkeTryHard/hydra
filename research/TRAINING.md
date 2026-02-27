@@ -91,7 +91,7 @@ The Teacher uses the **same backbone architecture** as the Student but receives 
 
 **Student input shape:** `[Batch × 84 × 34]` (public only)
 
-**Stem difference:** Teacher: `Conv1d(289, 256, 3)`, Student: `Conv1d(84, 256, 3)`. All ResBlock weights (40 blocks, SE attention, etc.) are identical and fully transferable between teacher and student. This matches Mortal's approach (`model.py:109-155`, at commit `0cff2b5`) where `is_oracle=True` simply adds `oracle_obs_shape` to the stem input channels.
+**Stem difference:** Teacher: `Conv1d(290, 256, 3)`, Student: `Conv1d(85, 256, 3)`. All ResBlock weights (40 blocks, SE attention, etc.) are identical and fully transferable between teacher and student. This matches Mortal's approach (`model.py:109-155`, at commit `0cff2b5`) where `is_oracle=True` simply adds `oracle_obs_shape` to the stem input channels.
 
 ##### Oracle Channels: Opponent Hidden State (39 channels)
 
@@ -152,7 +152,7 @@ All 5 ura-dora indicators (hidden beneath dora indicators, revealed only at ron/
 | Ura-dora indicators (5 × 2) | 10 | 195–204 |
 | **TOTAL** | **205** | |
 
-**Combined teacher input: 84 (public) + 205 (oracle) = 289 channels × 34 tiles**
+**Combined teacher input: 85 (public) + 205 (oracle) = 290 channels × 34 tiles**
 
 For comparison, Mortal's oracle is 217 channels (51 opponent + 166 wall). Hydra's is 205 channels (39 opponent + 166 wall) — 12 fewer due to compressed shanten encoding (4ch vs 8ch per opponent).
 
@@ -205,17 +205,17 @@ Two feature groups are masked independently:
 
 ```mermaid
 graph TB
-    subgraph "Teacher (Oracle) — Conv1d(289, 256, 3)"
-        T_PUB["Public Obs<br/>[84 × 34]"]
+    subgraph "Teacher (Oracle) — Conv1d(290, 256, 3)"
+        T_PUB["Public Obs<br/>[85 × 34]"]
         T_ORA["Oracle Obs<br/>[205 × 34]<br/>Opp hands + wall order<br/>+ dora/ura"]
-        T_PUB --> T_CAT["Channel Concat<br/>[289 × 34]"]
+        T_PUB --> T_CAT["Channel Concat<br/>[290 × 34]"]
         T_ORA --> T_CAT
         T_CAT --> T_NET["Same 40-block<br/>SE-ResNet backbone"]
         T_NET --> T_POLICY["Teacher Policy πT"]
     end
 
-    subgraph "Student (Blind) — Conv1d(84, 256, 3)"
-        S_OBS["Public Obs<br/>[84 × 34]"] --> S_NET["Same 40-block<br/>SE-ResNet backbone"]
+    subgraph "Student (Blind) — Conv1d(85, 256, 3)"
+        S_OBS["Public Obs<br/>[85 × 34]"] --> S_NET["Same 40-block<br/>SE-ResNet backbone"]
         S_NET --> S_POLICY["Student Policy πS"]
     end
 
@@ -328,11 +328,11 @@ graph TB
 
  The oracle critic is an asymmetric actor-critic where the critic receives **full information** during training — all 4 players' hands and the wall composition — while the policy head sees only public observation. This dramatically reduces variance because the oracle sees 4× more information than the acting agent.
 
- **Architecture:** The oracle critic is the **teacher network's value head**, running on the oracle-augmented backbone (Conv1d(289, 256, 3) stem with 84 public + 205 oracle channels). It is architecturally identical to the student's value head (GAP → MLP with ReLU) but with two key differences:
+ **Architecture:** The oracle critic is the **teacher network's value head**, running on the oracle-augmented backbone (Conv1d(290, 256, 3) stem with 85 public + 205 oracle channels). It is architecturally identical to the student's value head (GAP → MLP with ReLU) but with two key differences:
 
  | Property | Student Value Head | Oracle Critic |
  |----------|-------------------|---------------|
- | Backbone input | 84 public channels | 289 channels (84 public + 205 oracle) |
+ | Backbone input | 85 public channels | 290 channels (85 public + 205 oracle) |
  | Output dimension | 1 scalar | **4 scalars** (one per player) |
  | Zero-sum constraint | No | Yes: V₁+V₂+V₃+V₄=0 |
  | Used at inference | Yes | No (discarded) |
