@@ -8,6 +8,8 @@ Opponent modeling is Hydra's primary differentiator from existing Mahjong AIs. T
 
 ### Mortal's Blind Spot
 
+> **Ownership note:** This document is the authoritative source for detailed opponent-modeling rationale (safety encoding logic, tenpai/danger head behavior, and expected effects). `HYDRA_SPEC.md` retains only high-level architecture summaries and links here for detail.
+
 Mortal uses `SinglePlayerTables` for EV calculation, assuming no opponent interaction. There are no safety features (suji, kabe, genbutsu) pre-computed, no opponent tenpai estimation, and no aggression or tendency profiling. The network must learn all opponent-relevant patterns implicitly through raw observation channels — and the evidence shows it fails at the hardest cases.
 
 ```mermaid
@@ -617,7 +619,7 @@ Per-opponent GRU over the full discard history to capture temporal patterns (ted
 
 > **Consensus note:** This approach was independently proposed as the #1 recommendation by two separate frontier AI analyses (GPT-5.2 Pro, two independent runs) without seeing each other's output. Both identified mahjong's tile-count conservation as the key structural property that makes Sinkhorn uniquely appropriate.
 
-### Pragmatic Deception via Rational Speech Acts (RSA)
+### Pragmatic Deception via Rational Speech Acts (Phase 3 Module)
 
 **Cross-field import:** Cognitive linguistics / computational pragmatics (Frank & Goodman, "Predicting Pragmatic Reasoning in Language Games", Science 336:998, 2012).
 
@@ -625,47 +627,168 @@ Per-opponent GRU over the full discard history to capture temporal patterns (ted
 
 **Solution:** Train Hydra to choose discards that actively minimize an observer model's ability to predict its true waiting tiles. In RSA terms: Hydra becomes a "pragmatic speaker" that selects "utterances" (discards) to manipulate the "listener's" (opponent's) Bayesian posterior away from truth.
 
-**Implementation sketch:**
-1. **Public-Only Observer (L0):** Train a separate lightweight model (~3M params) that predicts Hydra's wait from PUBLIC information only (discards, calls, visible tiles -- NOT Hydra's hand). Freeze after Phase 1.
-2. **Deception reward:** At tenpai, compute `r_deception = -alpha * log L0(true_wait | full_public_history)`. Hydra is rewarded when L0 assigns low probability to Hydra's actual waiting tiles.
-3. **Dynamic alpha:** Scale by hand value and shanten: `alpha = gamma * max(0, (E[value] - 3900) / 8000) * I(shanten <= 1)`. Cheap hands: alpha=0 (pure efficiency). Expensive hands: alpha scales up (sacrifice efficiency for concealment).
-4. **Frozen L0 prevents arms race:** L0 represents baseline human-level hand reading. Never update it during self-play -- this breaks the infinite recursion of "I know that they know that I know."
+#### L0 Public-Only Observer (Architecture)
 
-**Strategic implication against search-based opponents:** If LuckyJ's OLSS maintains Bayesian reach probabilities derived from standard play assumptions, deceptive discards poison those probabilities at the root. LuckyJ would sample a universe of hands that EXCLUDES Hydra's actual hand, then run perfect search against phantom states.
+A separate lightweight network trained to predict Hydra's wait from PUBLIC information only.
 
-**Deferred because:** Requires a working base agent first. The L0 model needs Phase 1 training data. Deception reward interacts with PPO in complex ways (risk of "adversarial self-delusion" -- sacrificing efficiency to be unpredictable). Add only after Phase 3 baseline is stable.
+| Property | Specification |
+|----------|---------------|
+| Architecture | 10-block SE-ResNet (same structure as Hydra, smaller) |
+| Input shape | `[B x 73 x 34]` (Hydra's 85 public channels MINUS 11 private hand/draw channels + 1 player-perspective channel) |
+| Output | `[B x 34]` sigmoid -- per-tile probability that the tile is in Hydra's waiting set |
+| Parameters | ~3M |
+| Training data | Phase 1 game logs. For each state where the acting player is in tenpai, label = binary wait mask (34-dim). Input = public info only. |
+| Training | Supervised BCE, 3 epochs on Phase 1 data. Should converge to ~30-35% top-3 accuracy (human-level hand reading from public info). |
+| Freeze point | After Phase 1 training. **Never updated during Phase 3 self-play.** |
+| Storage | `checkpoints/l0_observer/` -- single file, frozen. |
 
-**Metric:** Wait Obfuscation Rate (WOR) -- at tenpai, query L0 for top-3 predicted waits. WOR = percentage of games where true wait is absent from top-3. Baseline (non-deceptive agent): ~65-70%. Target: >90%.
+#### Deception Reward (Phase 3 PPO Integration)
+
+Added as an auxiliary reward term during Phase 3 self-play:
+
+```
+r_deception = -alpha * log(L0(true_wait | public_history) + epsilon)
+```
+
+Where:
+- `L0(true_wait | public_history)` = sum of L0's predicted probabilities for tiles that are actually in Hydra's wait set
+- `epsilon = 1e-8` for numerical stability
+- `alpha` = dynamic coefficient (see below)
+
+**Dynamic alpha (state-dependent):**
+
+```
+alpha = gamma * max(0, (E[hand_value] - 3900) / 8000) * I(shanten <= 1)
+```
+
+| State | alpha | Reasoning |
+|-------|-------|-----------|
+| Shanten >= 2 | 0.0 | Hand is far from ready -- pure efficiency, no deception |
+| Shanten 0-1, hand < 3900 pts | 0.0 | Cheap hand -- not worth sacrificing efficiency to hide |
+| Shanten 0-1, hand = 5200 pts | ~0.1 * gamma | Moderate hand -- light deception |
+| Shanten 0-1, hand = 12000+ pts (mangan) | ~1.0 * gamma | Expensive hand -- maximize concealment |
+
+Recommended gamma = 0.05 (start very small, tune upward if WOR improves without winrate collapse).
+
+**Reward integration:** `r_total = r_grp + gamma_deception * r_deception`. The deception reward is ADDED to the existing GRP-based reward, not replacing it. The PPO advantage function sees both signals.
+
+**Compute overhead:** L0 is called ONCE per episode at the moment of tenpai (not every step). In batched self-play with 512 concurrent games, this adds ~0.5ms per batch (single forward pass of a 3M param model). **<2% compute overhead** on the self-play loop. At deployment/inference, L0 is discarded entirely -- the deceptive policy is baked into Hydra's actor weights.
+
+#### Failure Modes and Mitigations
+
+| Failure | Detection | Mitigation |
+|---------|-----------|------------|
+| Adversarial self-delusion (sacrificing efficiency for unpredictability) | Win rate drops >2pp while WOR rises | Reduce gamma. Hard floor: if hand value < 3900, alpha = 0 always. |
+| L0 is too weak (predicts nothing, free reward) | L0 top-3 accuracy < 15% on eval set | Retrain L0 with more data or stronger architecture. |
+| L0 is too strong (deception is impossible) | WOR stuck at baseline despite gamma > 0 | L0 may be overfitting. Use dropout=0.2 in L0 training. |
+| Deception reward dominates GRP | Policy entropy spikes, placement worsens | Reduce gamma by 10x. |
+
+#### Evaluation Metric: Wait Obfuscation Rate (WOR)
+
+At the moment Hydra reaches tenpai, query the frozen L0 model for its top-3 predicted tiles.
+- **WOR** = percentage of games where Hydra's true wait is completely absent from L0's top-3.
+- **Baseline** (non-deceptive agent): ~65-70% WOR (true wait IS in top-3 roughly 30-35% of the time).
+- **Target**: >90% WOR (L0 top-3 accuracy drops below 10%).
+- **Constraint**: Overall Phase 3 win rate must stay within 1.5pp of the non-deceptive baseline.
+
+Secondary metric: *Suji Trap Frequency* -- how often Hydra's actual wait involves the suji of its own early discards. Baseline ~4%; target >12%.
+
+#### Phase Gate
+
+**Prerequisites:** Phase 3 baseline must be stable (converged PPO, deal-in rate within target, win rate >24%). L0 must be trained and frozen from Phase 1 data.
+**Activation:** Add `r_deception` to the PPO reward at Phase 3 step 2M+ (after baseline stabilizes).
+**Kill switch:** If win rate drops >2pp at any point, set gamma=0 and revert to pure GRP reward.
 
 **References:**
 - Frank & Goodman, "Predicting Pragmatic Reasoning in Language Games", Science 336:998, 2012
-- Strouse & Schwab, "Learning to Share and Hide Intentions using Information Regularization", NeurIPS 2018 (closest precedent: mutual information for controlling what agents reveal)
-- Ganin et al., "Domain-Adversarial Training of Neural Networks", JMLR 2016 ([arXiv:1505.07818](https://arxiv.org/abs/1505.07818)) (gradient reversal layer -- alternative mechanism for same goal)
+- Strouse & Schwab, "Learning to Share and Hide Intentions using Information Regularization", NeurIPS 2018
+- Ganin et al., "Domain-Adversarial Training of Neural Networks", JMLR 2016 ([arXiv:1505.07818](https://arxiv.org/abs/1505.07818))
 
 > **Novelty note:** RSA has never been applied to strategic game AI. The import from cognitive linguistics to mahjong discard selection is genuinely novel. The closest related work is Strouse & Schwab (NeurIPS 2018) on information regularization in multi-agent settings, but that addresses cooperative communication, not adversarial deception in a competitive game.
 
-### CVaR-on-GRP for Tail-Risk Placement Control
+---
 
-**Cross-field import:** Risk-sensitive RL / financial risk management (Chow et al., 2015; Tamar et al., 2015; Dabney et al., 2018).
+### CVaR-on-GRP for Tail-Risk Placement Control (Phase 3+ Inference Module)
+
+**Cross-field import:** Risk-sensitive RL / financial risk management (Chow et al., NeurIPS 2015; Dabney et al., AAAI 2018).
 
 **Problem:** Riichi placement scoring punishes disasters (4th place) more than it rewards marginal wins. Hydra's GRP head predicts the full 24-permutation placement distribution but the current reward (`deltaE[pts]`) optimizes EXPECTED placement -- not tail risk. In South 4, an agent should minimize the probability of catastrophic outcomes, not maximize average points.
 
 **Solution:** Compute CVaR (Conditional Value at Risk) directly from the existing GRP head's 24-permutation output -- zero new parameters needed.
 
-**Implementation (zero-parameter path):**
-1. GRP outputs P(permutation) for all 24 rank orderings.
-2. For each permutation, Hydra's rank is known. Map rank to utility via `pts_vector` (e.g., [3,1,-1,-3]).
-3. This gives a discrete 24-point utility distribution.
-4. Compute CVaR_alpha = expected utility over the worst alpha-fraction of this distribution.
-5. Use CVaR as an alternative objective for late-round value estimation or as an inference-time action scoring adjustment.
+#### CVaR Computation (Exact Procedure)
 
-**State-dependent alpha:** alpha=0.5 (moderate risk aversion) in early rounds. alpha=0.1 (extreme risk aversion, protect lead) in South 4 when leading. alpha=0.9 (risk-seeking, need a miracle) when 4th in all-last.
+```python
+def compute_cvar(grp_probs, pts_vector, alpha, player_idx):
+    """
+    grp_probs: [24] softmax -- P(permutation) for all 4! rank orderings
+    pts_vector: [4] -- utility per rank, e.g. [3, 1, -1, -3]
+    alpha: float in (0, 1] -- risk level (smaller = more conservative)
+    player_idx: int -- which seat we are (0-3)
+    """
+    # For each permutation, find our rank and map to utility
+    utilities = []
+    for perm_idx, perm in enumerate(itertools.permutations(range(4))):
+        our_rank = perm.index(player_idx)  # 0=1st, 3=4th
+        utilities.append(pts_vector[our_rank])
+    
+    # Sort (utility, probability) pairs by utility ascending (worst first)
+    pairs = sorted(zip(utilities, grp_probs), key=lambda x: x[0])
+    
+    # CVaR_alpha = expected utility in the worst alpha-fraction
+    cumulative_prob = 0.0
+    cvar = 0.0
+    for utility, prob in pairs:
+        if cumulative_prob + prob <= alpha:
+            cvar += utility * prob
+            cumulative_prob += prob
+        else:
+            remaining = alpha - cumulative_prob
+            cvar += utility * remaining
+            cumulative_prob = alpha
+            break
+    
+    return cvar / alpha
+```
 
-**Deferred because:** CVaR optimization in PPO has known instability issues (biased gradient estimates under sampling). Start with CVaR as an inference-time scoring adjustment on top of the trained policy, not as a training objective. If evaluation shows improved endgame placement, consider integrating into Phase 3 PPO via constrained optimization (CPPO; see Lee et al., IEEE 2024).
+#### State-Dependent Alpha Schedule
+
+| Game State | alpha | Behavior |
+|------------|-------|----------|
+| East rounds, any position | 0.5 | Moderate risk aversion (balanced play) |
+| South 1-3, currently 1st by >8000 | 0.2 | Protect lead aggressively |
+| South 1-3, currently 2nd-3rd | 0.5 | Standard play |
+| South 4, currently 1st | 0.1 | Extreme lead protection (fold almost everything) |
+| South 4, currently 2nd, within 8000 of 1st | 0.4 | Push selectively for 1st |
+| South 4, currently 3rd-4th, need mangan+ to place up | 0.9 | Risk-seeking (need a miracle) |
+
+Alpha is computed from the score context vector (already available in the GRP head's input).
+
+#### Integration (Two Modes)
+
+**Mode A: Inference-time scoring adjustment (recommended first)**
+- At each decision, compute `score(a) = (1-beta) * E[utility(a)] + beta * CVaR_alpha(a)` for each legal action
+- `E[utility]` comes from the standard GRP-based value
+- `CVaR_alpha` comes from the procedure above applied to the predicted GRP distribution after action a
+- beta = 0.0 in early rounds, 0.3-0.5 in South rounds (tunable)
+- **Zero training changes required.** Pure inference-time module.
+
+**Mode B: Training objective modification (Phase 3+ if Mode A shows gains)**
+- Replace the value target in PPO with a CVaR-weighted target: `V_target = (1-beta) * E[pts] + beta * CVaR_alpha[pts]`
+- Known instability risk: CVaR gradients are biased under sampling. Mitigation: use a larger batch size (2x) for value head updates when beta > 0.
+- Alternative: CPPO (Constrained PPO with CVaR constraint) -- add `P(4th) < epsilon` as a hard constraint via Lagrangian (similar to existing PID-Lagrangian for deal-in rate).
+
+#### Evaluation
+
+| Metric | Baseline (no CVaR) | Target (with CVaR) |
+|--------|--------------------|--------------------|
+| 4th place rate (overall) | ~25% (uniform) | <22% |
+| 4th place rate (South 4, leading by >8000) | ~5% (rare collapse) | <2% |
+| 1st place rate (South 4, trailing by <8000) | ~20% | >25% |
+| Mean placement | ~2.50 | ~2.45 |
 
 **References:**
 - Chow, Tamar, Mannor, Pavone, "Risk-Sensitive and Robust Decision-Making via CVaR Optimization", NeurIPS 2015
-- Tamar, Glassner, Mannor, "Optimizing the CVaR via Sampling", AAAI 2015
 - Dabney et al., "Distributional Reinforcement Learning with Quantile Regression", AAAI 2018 ([arXiv:1710.10044](https://arxiv.org/abs/1710.10044))
 
 > **Novelty note:** CVaR in RL is well-established. The novel aspect is computing it directly from Hydra's existing GRP 24-permutation output with zero additional parameters, and the state-dependent alpha conditioning on Riichi placement dynamics. No published mahjong AI uses CVaR for placement optimization.
@@ -681,7 +804,7 @@ Per-opponent GRU over the full discard history to capture temporal patterns (ted
 | Metric | Mortal Baseline | Hydra Target | Basis for Target |
 |--------|-----------------|--------------|------------------|
 | Deal-in rate (vs riichi) | ~12% | <10% | Explicit genbutsu/suji planes + danger head |
-| Deal-in rate (vs damaten) | ~18% | <12% | Tenpai predictor head + tedashi pattern detection |
+| Deal-in rate (vs damaten) | Not publicly benchmarked (Mortal docs publish overall/riichi/call breakdowns, not damaten-only) | <12% | Tenpai predictor head + tedashi pattern detection |
 | Tenpai detection accuracy | N/A (no mechanism) | >75% | Dedicated auxiliary head with oracle-labeled training |
 | Dangerous tile avoidance | Implicit (Q-value side effect) | Explicit decision (danger head output) | Per-tile danger probability enables principled risk-reward tradeoff |
 | Overall deal-in rate | 11.3% (Tenhou stats) | <10% | Combined safety encoding + explicit heads |
