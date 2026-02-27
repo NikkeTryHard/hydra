@@ -63,6 +63,8 @@ graph LR
 | Normalization | GroupNorm(32) | Batch-independent |
 | Augmentation | 6× suit permutation | — |
 
+> For the full Phase 1 optimizer configuration including warmup schedule, betas, epsilon, gradient clipping, and precision settings, see [INFRASTRUCTURE.md § Phase 1](INFRASTRUCTURE.md#phase-1-behavioral-cloning-supervised).
+
 **Phase 1 loss:**
 
 $$\mathcal{L}_{\text{IL}} = \text{CE}(\pi, a_{\text{human}}) + 0.5 \times \text{MSE}(V, \text{outcome}) + 0.1 \times \mathcal{L}_{\text{aux}}$$
@@ -87,9 +89,9 @@ Where $\mathcal{L}_{\text{aux}}$ includes GRP, tenpai, and danger auxiliary loss
 
 The Teacher uses the **same backbone architecture** as the Student but receives an augmented input that includes hidden information. The oracle observation is **concatenated along the channel dimension** with the standard public observation before the stem Conv1d — the only architectural difference is the stem's input channel count.
 
-**Teacher input shape:** `[Batch × 289 × 34]` (84 public + 205 oracle channels)
+**Teacher input shape:** `[Batch × 290 × 34]` (85 public + 205 oracle channels)
 
-**Student input shape:** `[Batch × 84 × 34]` (public only)
+**Student input shape:** `[Batch × 85 × 34]` (public only)
 
 **Stem difference:** Teacher: `Conv1d(290, 256, 3)`, Student: `Conv1d(85, 256, 3)`. All ResBlock weights (40 blocks, SE attention, etc.) are identical and fully transferable between teacher and student. This matches Mortal's approach (`model.py:109-155`, at commit `0cff2b5`) where `is_oracle=True` simply adds `oracle_obs_shape` to the stem input channels.
 
@@ -162,9 +164,11 @@ The Teacher is trained with PPO on self-play using the same reward function as a
 
 #### Student Distillation
 
-The Student receives only the standard 84-channel public observation. It learns by simultaneously optimizing its own PPO objective and minimizing KL divergence from the Teacher's policy distribution:
+The Student receives only the standard 85-channel public observation. It learns by simultaneously optimizing its own PPO objective and minimizing KL divergence from the Teacher's policy distribution:
 
-$$\mathcal{L}_{\text{distill}} = \mathcal{L}_{\text{PPO}}(\pi_S) + \lambda_{\text{KL}} \times D_{\text{KL}}(\pi_S \| \pi_T)$$
+$$\mathcal{L}_{\text{distill}} = \mathcal{L}_{\text{PPO}}(\pi_S) + \lambda_{\text{KL}} \times D_{\text{KL}}^{\tau}(\pi_S \| \pi_T) + \lambda_{\text{anchor}} \times D_{\text{KL}}(\pi_S \| \pi_{\text{BC}})$$
+
+where \(\tau = 3.0\) (KL temperature, softens teacher targets), \(\lambda_{\text{KL}}\) follows the feature dropout schedule below, and \(\lambda_{\text{anchor}} = 0.1\) decays linearly to 0 over Phase 2 (prevents catastrophic forgetting of Phase 1 behavioral cloning). See [INFRASTRUCTURE.md § Phase 2](INFRASTRUCTURE.md#phase-2-oracle-distillation-rl) for the full optimizer configuration.
 
 #### Feature Dropout Schedule
 
@@ -178,10 +182,10 @@ Two feature groups are masked independently:
 
 | Training Stage | mask_opp | mask_wall | KL Weight (λ_KL) |
 |----------------|----------|-----------|-------------------|
-| Early (Days 4–5) | 1.0 (full) | 1.0 (full) | 1.0 |
-| Mid (Days 6–7) | 0.7 | 0.5 | 0.8 |
-| Late (Days 8–9) | 0.3 | 0.2 | 0.5 |
-| Final (Day 10) | 0.0 | 0.0 | 0.3 |
+| Early (Steps 0–50K) | 1.0 (full) | 1.0 (full) | 1.0 |
+| Mid (Steps 50K–100K) | 0.7 | 0.5 | 0.8 |
+| Late (Steps 100K–150K) | 0.3 | 0.2 | 0.5 |
+| Final (Steps 150K+) | 0.0 | 0.0 | 0.3 |
 
 **Post-dropout continuation:** After masks reach 0.0, continue training with learning rate decayed to 1/10 and importance weight rejection (reject samples where π_new/π_old exceeds threshold). Suphx showed these tricks are critical for stability: "Without these tricks, the continual training is not stable and does not lead to further improvements" (arXiv:2003.13590).
 
@@ -265,9 +269,11 @@ graph TB
  | Minibatch size | 4096 | Transitions per PPO minibatch |
  | Update epochs | 3 | Conservative for self-play (reduce to 2 if approx_kl > 0.03) |
  | Gradient clip | 0.5 | Max grad norm, essential for stability |
- | Init | Orthogonal | std=√2 hidden, std=0.01 policy head, std=1.0 value head |
+ | Init | Orthogonal | std=√2 hidden layers, std=0.01 policy/GRP/tenpai/danger/wait-set/value-tenpai/call-intent heads, std=1.0 value head, std=1.0 Sinkhorn head |
 
- **Fresh samples only:** Unlike DQN (which Mortal uses), PPO is on-policy — no replay buffer. This eliminates one source of instability: stale off-policy transitions. However, PPO self-play can still suffer catastrophic forgetting from distributional shift; Hydra mitigates this via the league opponent pool and KL anchoring.
+ **Fresh samples only:** Unlike DQN (which Mortal uses), PPO is on-policy — no replay buffer. This eliminates one source of instability: stale off-policy transitions. However, PPO self-play can still suffer catastrophic forgetting from distributional shift; Hydra mitigates this via the league opponent pool and a KL anchor against the Phase 2 policy (λ_KL = 0.05, annealed to 0 over the first 30% of Phase 3 training; see [INFRASTRUCTURE.md § Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo)).
+
+**Phase 3 stopping criterion:** Phase 3 ends when OpenSkill conservative rating (μ − 3σ) plateaus — defined as < 0.5σ improvement over the trailing 500K training steps as measured by full evaluation (200K games). At that point, the best checkpoint by conservative rating is the final Hydra model.
 
  ### Reward Function
 
@@ -524,7 +530,19 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 3. **Calibration (offline, once):** Collect N=10,000 decision states from Phase 2 oracle data where at least one opponent is in tenpai. For each state, ground-truth ron-eligibility is known for all 34 tiles (oracle sees opponent hands). Compute the empirical risk `R_hat(lambda) = (1/N) * sum_k L_k(lambda)` where `L_k` is the deal-in rate within the safe set. Find `lambda_CRC = sup{lambda : R_hat(lambda) + sqrt(log(1/delta)/(2N)) <= epsilon}` via scanning, with failure probability delta=0.05.
 4. **Deployment:** At inference, when folding, hard-mask policy logits to only allow tiles in C(X). If C(X) is empty (all tiles dangerous), fall back to the minimum-danger tile.
 
-**State-dependent risk budget (Mondrian Conformal Prediction):** The risk budget epsilon should vary by game state (epsilon=0.01 when leading comfortably, epsilon=0.20 when 4th in all-last). Standard conformal prediction requires exchangeability between calibration and test sets, which breaks if epsilon varies per-state. **Fix:** Use Mondrian (stratified) conformal prediction (Vovk, Gammerman, Shafer, "Algorithmic Learning in a Random World", Springer 2005): partition calibration states into discrete score-context buckets (e.g., Leading/Middle/Trailing/Desperate) and calibrate lambda_CRC independently per partition. Conditional coverage guarantee is preserved within each stratum.
+**State-dependent risk budget (Mondrian Conformal Prediction):** The risk budget epsilon should vary by game state. Standard conformal prediction requires exchangeability between calibration and test sets, which breaks if epsilon varies per-state. **Fix:** Use Mondrian (stratified) conformal prediction (Vovk, Gammerman, Shafer, "Algorithmic Learning in a Random World", Springer 2005): partition calibration states into discrete score-context buckets and calibrate lambda_CRC independently per partition. Conditional coverage guarantee is preserved within each stratum.
+
+**Mondrian bucket definitions:**
+
+| Bucket | Score condition | Round context | epsilon | Rationale |
+|--------|----------------|---------------|---------|-----------|
+| Leading | 1st place AND gap to 2nd >= 8000 | Any | 0.01 | Protect lead; avoid catastrophic deal-in |
+| Comfortable | 1st or 2nd place, gap to 4th >= 16000 | East rounds | 0.03 | Mild protection; still have time |
+| Middle | All other states | East rounds | 0.08 | Balanced risk |
+| Trailing | 3rd or 4th place, gap to 1st >= 16000 | Any | 0.15 | Must take risks to recover |
+| Desperate | 4th place in South 3+ OR gap to 3rd >= 24000 | South 3+ | 0.20 | Survival mode; folding = losing |
+
+> Score thresholds are `[estimated -- requires empirical tuning]` based on common mahjong scoring boundaries (mangan = 8000, haneman = 12000, baiman = 16000). Calibrate on Phase 2 oracle data by measuring actual deal-in rates within each bucket and adjusting thresholds until per-bucket coverage holds. Minimum bucket size: 500 calibration states per bucket (discard any bucket with fewer samples and merge into the nearest neighbor).
 
 **Null set frequency:** At strict epsilon=0.01 against a single riichi opponent (turn 10+), the safe set is empty approximately 30-35% of the time. At epsilon=0.05, approximately 12-18%. At epsilon=0.10, approximately 5-8%. The fallback (minimum-danger tile) is the optimal defensive play when no statistically safe tile exists.
 

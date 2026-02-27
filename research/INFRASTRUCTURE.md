@@ -109,8 +109,8 @@ The `hydra-core` crate is organized as a flat module layout under `src/`:
 | `game.rs` | Game state machine (see state diagram below) |
 | `rules.rs` | Riichi rules validation and scoring |
 | `shanten.rs` | Wrapper around the `xiangting` crate for shanten calculation |
-| `encoder.rs` | Observation tensor encoder (84×34 output) |
-| `safety.rs` | Suji, kabe, and genbutsu safety calculations |
+| `encoder.rs` | Observation tensor encoder (85×34 output) |
+| `safety.rs` | Suji, kabe, and genbutsu safety calculations. Returns `SafetyInfo { genbutsu: [[bool; 34]; 3], suji: [[f32; 34]; 3], kabe: [f32; 34], one_chance: [f32; 34] }` mapping directly to observation channels 62–81. Updated incrementally on each discard/call/kan event. |
 | `mjai.rs` | MJAI protocol parser for log compatibility |
 | `simulator.rs` | Batch game simulation with rayon parallelism |
 | `python.rs` | PyO3 binding definitions exposed to Python |
@@ -143,7 +143,7 @@ MJAI is a line-delimited JSON protocol for mahjong AI communication. Hydra uses 
 
 #### Mortal Meta Extensions
 
-Mortal extends the MJAI protocol with a metadata structure attached to bot responses. Hydra may partially support these fields for compatibility with Mortal-based evaluation tools.
+Mortal extends the MJAI protocol with a metadata structure attached to bot responses. Hydra parses these fields when present but ignores unknown fields with a warning log. No partial interpretation — either the field is in the table below and Hydra uses it, or it is silently skipped.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -214,18 +214,18 @@ stateDiagram-v2
 | Suufon Renda | 四風連打 | All 4 players discard the same wind on their first turn |
 | Suucha Riichi | 四家立直 | All 4 players declare riichi |
 | Suukaikan | 四開槓 | 4 kans declared by different players (not all by one player) |
-| Sanchahou | 三家和 | Triple ron (3 players win on same discard — abortive in most rulesets) |
+| Sanchahou | 三家和 | Triple ron (3 players win on same discard — abortive per [HYDRA_SPEC § Target Ruleset](HYDRA_SPEC.md#target-ruleset-tenhou-houou-4-player-%E9%B3%B3%E5%87%B0%E5%8D%93-%E5%9B%9B%E4%BA%BA%E6%89%93%E3%81%A1)) |
 
 > **Nagashi Mangan** is checked at exhaustive draw: if a player's entire discard pile consists of terminals and honors, and none were called by opponents, they receive mangan payment.
 
 ### Observation Encoder
 
-The observation encoder produces the 84×34 tensor defined in the input encoding specification. It translates the current game state — hand tiles, discards, melds, dora indicators, and safety information — into a fixed-size numerical representation suitable for neural network input.
+The observation encoder produces the 85×34 tensor defined in the input encoding specification. It translates the current game state — hand tiles, discards, melds, dora indicators, and safety information — into a fixed-size numerical representation suitable for neural network input.
 
 Key performance considerations:
 
 - **Pre-allocated buffers** — tensor memory is allocated once per environment instance and reused across turns to avoid allocation overhead
-- **Contiguous memory layout** — the 84×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
+- **Contiguous memory layout** — the 85×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
 - **Incremental updates (planned optimization)** — most planes change minimally between turns (hand ±1 tile, discards +1). Delta-based encoding could reduce per-turn work, pending benchmarking to confirm the bookkeeping overhead is worthwhile. Mortal's encoder recomputes the full tensor from scratch each turn.
 
 ### Batch Simulator
@@ -296,7 +296,7 @@ graph LR
 
 **Decision: On-the-fly Rust parsing (default) with optional pre-encoded shards for production.**
 
-The default path stores raw MJAI logs as `.json.gz` files (~70 GB for ~6.6M games). A Rust `GameplayLoader` parses and encodes observations on-the-fly using rayon parallelism. This is Mortal's proven architecture — Mortal processes even larger tensors (1012×34 vs Hydra's 84×34) with the same approach, demonstrating that on-the-fly parsing is not a bottleneck at this scale.
+The default path stores raw MJAI logs as `.json.gz` files (~70 GB for ~6.6M games). A Rust `GameplayLoader` parses and encodes observations on-the-fly using rayon parallelism. This is Mortal's proven architecture — Mortal processes even larger tensors (1012×34 vs Hydra's 85×34) with the same approach, demonstrating that on-the-fly parsing is not a bottleneck at this scale.
 
 For production runs where maximum GPU utilization is critical, an optional pre-encoding step writes sharded binary files with Blosc+LZ4 compression (~500–800 GB for ~6.6M games compressed at ~7:1 ratio). This path eliminates all CPU parsing overhead but requires re-encoding whenever features change. Pre-encoding is only justified if GPU utilization drops below 80% with on-the-fly parsing.
 
@@ -320,7 +320,7 @@ Each DataLoader worker owns a disjoint slice of the file list (Mortal's partitio
 |-----------|-------|-----------|
 | `batch_size` | 2048 | 4× Mortal's 512; use linear LR scaling rule |
 | `num_workers` | 8 | Each worker spawns rayon threads internally |
-| `RAYON_NUM_THREADS` | 4 per worker | 8×4 = 32 logical threads matches recommended CPU |
+| `RAYON_NUM_THREADS` | `num_cpus / num_workers` (e.g., 4 per worker on 32-core) | Scale with available cores; avoid oversubscription |
 | `pin_memory` | `True` | Saves 0.5–2ms per batch on host-to-device transfer |
 | `persistent_workers` | `True` | Avoids worker re-spawn overhead between epochs (Mortal misses this) |
 | `prefetch_factor` | 2 | Default is sufficient for NVMe-backed storage |
@@ -334,7 +334,7 @@ Each DataLoader worker owns a disjoint slice of the file list (Mortal's partitio
 
 This 3-level strategy achieves temporal decorrelation comparable to a full-dataset shuffle without requiring the entire dataset to fit in memory. It mirrors KataGo's sliding-window shuffler design.
 
-**Sharding:** Raw MJAI logs (~6.6M individual game files) are pre-packed into ~660 mega-shards of 10K games each. Each shard is a concatenated gzip archive with a small JSON index mapping game offsets. This avoids filesystem metadata overhead from millions of small files and enables efficient sequential reads.
+**Sharding:** Raw MJAI logs (~6.6M individual game files) are pre-packed into ~660 mega-shards of 10K games each. Each shard is a concatenated gzip archive with a JSON index file (`.shard_index.json`) mapping game offsets. Index schema: `{ shard_id: str, num_games: int, games: [{ game_id: str, byte_offset: int, byte_length: int }] }`. This avoids filesystem metadata overhead from millions of small files and enables efficient sequential reads.
 
 ### Gap 3: Filtering Strategy
 
@@ -344,7 +344,7 @@ Rather than filtering at training time (wasting CPU cycles re-evaluating criteri
 
 **Three-step process:**
 
-1. **Scan:** Parse all ~6.6M game files and extract metadata (player names, room/lobby, source, basic stats). Store as a JSON manifest or SQLite database.
+1. **Scan:** Parse all ~6.6M game files and extract metadata. Store as a **JSON Lines** manifest (`.jsonl`, one JSON object per game). Schema: `{ game_id: str, source: "tenhou"|"majsoul", lobby: str, player_ids: [str; 4], player_ranks: [str; 4], num_rounds: int, final_scores: [int; 4], file_path: str, byte_offset: int, player_stats: { avg_rank: f32, dealin_rate: f32, win_rate: f32, num_games: int }[4] }`
 2. **Filter:** Apply quality criteria per data tier (see below). Output a filtered file list.
 3. **Train:** The DataLoader reads only files in the filtered list. Zero runtime filtering overhead.
 
@@ -354,7 +354,7 @@ Rather than filtering at training time (wasting CPU cycles re-evaluating criteri
 |------|--------|-----------------|-----------------|
 | Tier 1 | Tenhou Houou (Phoenix) | No additional filter (already R>=2000, 7-dan+) | 1.0 |
 | Tier 1 | Majsoul Throne Room | No additional filter (Saint+ room) | 1.0 |
-| Tier 2 | Majsoul Jade Room | Player-level stats filter (see below) | 0.5–0.7 |
+| Tier 2 | Majsoul Jade Room | Player-level stats filter (see below) | 0.6 |
 
 **Player-level filtering for Tier 2 data** (inspired by Mortal Discussion #91, where Nitasurin demonstrated +1.8–2.0 PT improvement from player-level cleaning alone):
 
@@ -400,7 +400,7 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 | Component | Size | Notes |
 |-----------|------|-------|
 | Raw MJAI logs (`.json.gz`) | ~70 GB | Source of truth; always retained |
-| Student obs (84×34×f32, uncompressed) | ~4.5 TB | Never stored — generated on-the-fly |
+| Student obs (85×34×f32, uncompressed) | ~4.5 TB | Never stored — generated on-the-fly |
 | Oracle obs (205×34×f32, uncompressed) | ~10.9 TB | Never stored — generated on-the-fly |
 | With 6× suit augmentation (uncompressed) | ~27 TB | Never pre-computed — applied on-the-fly |
 | Pre-encoded shards (Blosc+LZ4, ~7:1) | ~640 GB | Optional production path only |
@@ -411,14 +411,14 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 | Component | Memory | Phase |
 |-----------|--------|-------|
 | Model (~16.5M student / ~16.7M teacher, bf16) | ~33–34 MB | All phases |
-| Batch (2048 × 84×34 × 4B) | ~22 MB | Phase 1 (BC) |
+| Batch (2048 × 85×34 × 4B) | ~23 MB | Phase 1 (BC) |
 | DataLoader workers (8 × prefetch 2) | ~180 MB | Phase 1 (BC) |
 | Optimizer state (AdamW, bf16) | ~130 MB | All phases |
 | Opponent cache (5 × 33 MB bf16) | ~165 MB | Phase 3 |
 | PPO minibatch (on-GPU) | ~200–400 MB | Phase 2–3 (RL) |
 | **Total VRAM footprint** | **< 1 GB** (BC) / **~3.7 GB** (PPO+opponents) | — |
 
-The PPO rollout buffer is stored in **CPU pinned memory** (~6–12 GB per double buffer, uint8), not VRAM. Only individual minibatches are transferred to GPU via async `non_blocking=True` copies. Phase 1 behavioral cloning is memory-trivial.
+The PPO rollout buffer is stored in **CPU pinned memory** (12 GB per buffer, 24 GB for double buffer), not VRAM. Derived from: `512 envs × 2048 rollout steps × (85×34×4 bytes obs + 46×4 bytes logits + 4 bytes action + 4 bytes reward + 4 bytes value + 1 byte done)` ≈ 12 GB per buffer. Only individual minibatches are transferred to GPU via async `non_blocking=True` copies. Phase 1 behavioral cloning is memory-trivial.
 
 **Throughput estimates:**
 
@@ -507,7 +507,7 @@ Hydra's training proceeds through three distinct phases with different data sour
 | Optimizer | AdamW | Decoupled weight decay; faster convergence than SGD for short runs |
 | Peak LR | 5e-4 | 4× Mortal's 1e-4 due to 4× batch size (linear scaling rule) |
 | Final LR | 1e-5 | Cosine annealing floor |
-| Warmup | 5% of total steps (~30K steps) | Prevents early gradient explosions with large batch |
+| Warmup | Linear ramp, 5% of total steps (~30K steps), from 2.5e-5 to peak | Prevents early gradient explosions with large batch; start LR = peak/20 |
 | Weight decay | 0.01 | Applied only to Conv1d and Linear weights; biases and GroupNorm params excluded |
 | Betas | (0.9, 0.999) | AdamW defaults |
 | Epsilon | 1e-5 | Consistent across all phases (Huang 2022, CleanRL, SB3 all use 1e-5 for PPO; using the same value for SL maintains consistency and doesn't hurt convergence) |
@@ -556,7 +556,7 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 **Phase 1 readiness gate** (all must pass to enter Phase 2):
 - Discard accuracy ≥ 65%
 - SL loss plateaued (no improvement in 3 validation intervals)
-- Test play average placement ≤ 2.55 (1v3 vs random baseline)
+- Test play average placement ≤ 2.55 (1v3 vs uniformly random legal actions baseline)
 - Deal-in rate ≤ 15% in test play
 
 #### Phase 2: Oracle Distillation (RL)
@@ -567,19 +567,19 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 
 | Component | Configuration | VRAM |
 |-----------|--------------|------|
-| Teacher | Frozen, bf16, eval mode; Conv1d(289, 256, 3) stem; ~16.7M params | ~33 MB |
-| Student | fp32 master weights, bf16 autocast for compute; Conv1d(84, 256, 3) stem; ~16.5M params | ~67 MB |
+| Teacher | Frozen, bf16, eval mode; Conv1d(290, 256, 3) stem; ~16.7M params | ~33 MB |
+| Student | fp32 master weights, bf16 autocast for compute; Conv1d(85, 256, 3) stem; ~16.5M params | ~67 MB |
 | Teacher gradients | None (frozen) | 0 MB |
 | Student optimizer (AdamW m+v) | fp32 | ~134 MB |
 | Student gradients | fp32 | ~67 MB |
 | **Total Phase 2 VRAM** | | **~465 MB** |
 
-The teacher and student share identical ResBlock weights (all 40 blocks are architecturally equivalent and weight-transferable). Only the stem Conv1d differs: the teacher's 289-channel input concatenates 84 public + 205 oracle channels before encoding.
+The teacher and student share identical ResBlock weights (all 40 blocks are architecturally equivalent and weight-transferable). Only the stem Conv1d differs: the teacher's 290-channel input concatenates 85 public + 205 oracle channels before encoding.
 
 **Initialization from Phase 1:**
 - Load Phase 1 best checkpoint into all student ResBlocks, policy head, value head, and aux heads
 - Copy student ResBlocks into teacher (identical weights)
-- Initialize teacher stem Conv1d(289, 256, 3) with random weights (Kaiming/He init)
+- Initialize teacher stem Conv1d(290, 256, 3) with random weights (Kaiming/He init)
 - Freeze teacher: set to eval mode, disable gradients, cast to bf16
 - Save Phase 1 policy as a frozen "KL anchor" for catastrophic forgetting prevention
 - Create fresh AdamW optimizer (do NOT carry Phase 1 optimizer state — stale momentum from BC loss is counterproductive for RL)
@@ -648,14 +648,14 @@ graph TB
     INF -->|actions| GW
     GW -->|transitions| RB
     RB -->|swap on full| TRAIN
-    TRAIN -->|weight sync| INF
+    TRAIN -->|state_dict copy<br/>after each PPO update| INF
 ```
 
 **Key architecture decisions:**
 - **Dual CUDA streams:** Stream 0 handles inference (action selection during self-play). Stream 1 handles PPO gradient computation. These overlap on the GPU, maximizing utilization.
-- **InferenceServer thread:** A dedicated Python thread drains an observation queue, batches observations from all active games (~512 per step), runs a single GPU forward pass, and distributes actions back via futures. Batch inference latency: ~0.5-1ms for batch 512.
-- **Game workers:** The Rust game engine runs 512 concurrent hanchans. Feature encoding is parallelized via rayon within the game batch (Mortal's proven pattern). Game logic releases the GIL.
-- **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Both buffers use pre-allocated pinned memory for fast async CPU→GPU transfer via non_blocking=True. Observations stored as uint8 where possible, cast to float32 per-minibatch.
+- **InferenceServer thread:** A dedicated Python thread drains a bounded observation queue (`queue.Queue(maxsize=64)`), batches observations from all active games (~512 per step), runs a single GPU forward pass, and distributes actions back via futures. If the queue is full, game workers block (natural backpressure). Batch inference latency: ~0.5-1ms for batch 512.
+- **Game workers:** The Rust game engine runs 512 concurrent hanchans. Feature encoding is parallelized via rayon within the game batch (Mortal's proven pattern). Game logic releases the GIL. When a hanchan finishes, a new game immediately spawns with a fresh seed (no sync barrier). The rollout buffer fills from all active games regardless of their lifecycle stage.
+- **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Swap trigger: Buffer A reaches `rollout_steps × num_envs` (2048 × 512 = 1,048,576) transitions. Swap is coordinated via `threading.Event` — training thread signals completion, game thread swaps buffer pointers. Both buffers use pre-allocated pinned memory for fast async CPU→GPU transfer via `non_blocking=True`. Binary/count channels (0–10, 23–34) stored as uint8; float channels (temporal weights, normalized scores) stored as float32, cast to float32 per-minibatch on GPU.
 
  **Opponent pool** (composition weights defined in [TRAINING.md § Phase 3](TRAINING.md#phase-3-league-training)):
 
@@ -705,7 +705,7 @@ graph TB
 |-----------|-------------|-------------|
 | ResBlock weights (40 blocks) | ✅ Carry | ✅ Carry |
 | Policy head | ✅ Carry (also freeze copy as KL anchor) | ✅ Carry |
-| Value head | ❌ Reset (new oracle critic architecture) | ✅ Carry |
+| Value head | ❌ Reset (orthogonal init, std=1.0; new oracle critic architecture) | ✅ Carry |
 | Aux heads (GRP, tenpai, danger) | ✅ Carry | ✅ Carry |
 | Stem Conv1d | ⚠️ Student: carry; Teacher: new random stem | ✅ Carry (student stem) |
 | Optimizer state (Adam m, v) | ❌ Fresh AdamW | ❌ Fresh AdamW |
@@ -736,7 +736,7 @@ graph TB
 
 #### Rating and Evaluation
 
-**Rating system:** OpenSkill PlackettLuce — a patent-free Bayesian ranking system with native 4-player support (Weng & Lin 2011, JMLR). Each checkpoint maintains a skill belief (μ, σ). Conservative rating = μ − 3σ.
+**Rating system:** OpenSkill PlackettLuce — a patent-free Bayesian ranking system with native 4-player support (Weng & Lin 2011, JMLR). Each checkpoint maintains a skill belief (μ, σ) initialized at μ=25.0, σ=8.333 (library defaults). Conservative rating = μ − 3σ. Ratings updated after each 4-rotation evaluation set (4 games per seed).
 
 **Evaluation protocol:** 1v3 duplicate format following Mortal's established methodology:
 - Challenger (1 copy) vs Champion (3 copies)
@@ -750,11 +750,11 @@ graph TB
 
 | Purpose | Games | Sets (×4 rotations) | Sufficient For |
 |---------|-------|---------------------|----------------|
-| Quick eval (during training) | 4,000 | 1,000 | Trend detection |
+| Quick eval (during training) | 4,000 | 1,000 | Trend detection. Triggered every 50K training steps. |
 | Full eval (checkpoint release) | 200,000 | 50,000 | Publication-quality claims |
 | Ablation study | 1,000,000 | 250,000 | Detecting <1 rank pt/game differences |
 
-**Statistical significance:** Welch's t-test on per-game rank points (p < 0.05). Mahjong has high per-game variance (~σ = 80 rank pts); detecting a 1 rank-pt-per-game improvement at 95% confidence requires ~100K games in 1v3 duplicate format.
+**Statistical significance:** One-sided Welch’s t-test on per-game rank points (H1: new checkpoint > old, p < 0.05). Mahjong has high per-game variance (~σ = 80 rank pts); detecting a 1 rank-pt-per-game improvement at 95% confidence requires ~100K games in 1v3 duplicate format.
 
 #### Distributed Strategy
 
