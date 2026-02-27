@@ -191,29 +191,31 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 **Architecture:** A 1×1 convolution reduces the 256-channel latent to 64 channels, followed by flattening (64 × 34 = 2,176 features) and a fully-connected layer projecting to 46 action logits. Illegal actions are masked to negative infinity before softmax.
 
-**Action space (46 actions):**
+**Action space (46 actions, Mortal-compatible mapping):**
 
 | Range | Count | Action |
 |-------|-------|--------|
-| 0–33 | 34 | Discard tile type |
-| 34–36 | 3 | Chi (left/mid/right) |
-| 37 | 1 | Pon |
-| 38 | 1 | Open Kan |
-| 39 | 1 | Riichi |
-| 40 | 1 | Tsumo (self-draw win) |
-| 41 | 1 | Ron (deal-in win) |
-| 42 | 1 | Ankan (closed kan) |
-| 43 | 1 | Kakan (added kan) |
-| 44 | 1 | Kyuushu Kyuuhai (nine-tile abort) |
-| 45 | 1 | Pass |
+| 0–36 | 37 | Discard tile (34 base types + 3 aka-dora variants: red 5m=34, red 5p=35, red 5s=36). Indices 0–36 also serve as tile selection in the kan two-phase system (see below). |
+| 37 | 1 | Riichi declaration |
+| 38–40 | 3 | Chi (left/mid/right) |
+| 41 | 1 | Pon |
+| 42 | 1 | Kan (covers daiminkan, ankan, kakan — tile selection via two-phase, see below) |
+| 43 | 1 | Agari (win: tsumo or ron, context-determined) |
+| 44 | 1 | Ryuukyoku (draw declaration: kyuushu kyuuhai) |
+| 45 | 1 | Pass (decline call/win opportunity) |
 
-> **Known limitation (action space expressiveness):** The 46-action space has three under-specified composite actions that may silently cap play strength:
->
-> 1. **Riichi (action 39)** does not encode which tile to discard. In practice, riichi requires choosing a discard tile AND declaring riichi -- often multiple legal riichi discards exist with different waits/values. The current spec assumes a two-step process (engine resolves discard separately) but this is not documented. If the engine picks arbitrarily, training labels become inconsistent.
-> 2. **Ankan (42) and Kakan (43)** do not encode tile selection when multiple kans are available (rare but real). Same two-step ambiguity.
-> 3. **Discards (0-33)** use 34 tile types, not 37. Red fives (aka-dora) are encoded as input features (channels 40-42) but are not action-selectable -- the agent cannot choose to discard a red 5m vs a normal 5m. Mortal handles this with 37-action discards (adding aka variants).
->
-> **Options:** (a) Expand to ~47 actions (add 3 aka discards), define riichi as discard+flag (two-step), and add tile-selection for kans. (b) Accept the ceiling and use deterministic aka/kan resolution rules. (c) Hybrid: expand aka discards but keep riichi two-step. **Decision required before implementation.** This is the #1 correctness-critical gap identified by external review.
+**Two-phase composite actions (matching Mortal's proven approach):**
+
+Riichi and kan require selecting WHICH tile to discard/use, which cannot be expressed in a single 46-action pass. Mortal solves this with a two-phase system (verified from `libriichi/src/state.rs` and `mortal/model.py`, commit `0cff2b5`):
+
+1. **Riichi:** When the agent selects action 37 (riichi), the environment presents a SECOND decision point where the legal actions are the subset of indices 0–36 that correspond to valid riichi discards (tiles whose discard leaves the hand in tenpai). The agent selects which tile to discard from this restricted set.
+2. **Kan:** When the agent selects action 42 (kan), the environment sets `at_kan_select=true` and presents a SECOND decision point where legal actions are the subset of indices 0–36 corresponding to tiles that can form a kan. The agent selects which tile to kan.
+3. **Agari:** Action 43 covers both tsumo (self-draw win) and ron (deal-in win). The context (is it your turn or an opponent's discard?) determines which applies. No ambiguity.
+
+This two-phase approach means the Policy Head always outputs 46 logits per forward pass, but may be called TWICE per game action when riichi or kan is selected. The second pass reuses the same network with an updated observation (legal action mask changes).
+
+> **Source (Mortal):** Mortal uses this exact 46-action mapping with indices 0–36 for discards (including aka), 37 for riichi, 38–40 for chi, 41 for pon, 42 for kan (two-phase with `at_kan_select`), 43 for agari, 44 for ryuukyoku, 45 for pass. See [MORTAL_ANALYSIS § Architecture](MORTAL_ANALYSIS.md) for the verified mapping.
+> **Note:** The previous Hydra spec used a different 46-action mapping (0–33 for discards without aka, different indices for calls). This has been updated to match Mortal's proven mapping for dataset compatibility and to resolve the aka-dora selectability issue identified by external review.
 
 ### Value Head (Critic)
 
