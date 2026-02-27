@@ -68,7 +68,7 @@ Hydra dedicates 23 input channels (channels 62–84) to safety information — a
 
 > **Quantitative basis:** The 23-channel safety encoding is grounded in mahjong theory (genbutsu, suji, kabe are the foundation of all human defensive play) but the specific channel design (9 genbutsu, 9 suji, 2 kabe, 3 tenpai hints) and encoding choices (suji float values, 3 sub-channels per genbutsu opponent) are based on domain analysis, not empirical ablation. Mortal achieves ~11% deal-in rate without any explicit safety planes, relying on implicit learning from 1012 raw channels. Whether pre-computed safety planes improve over implicit learning is an open empirical question — this is precisely what **Ablation A1** tests (see [ABLATION_PLAN.md § A1](ABLATION_PLAN.md#a1-safety-planes)). The safety plane design will be validated or revised based on A1 results. The conservative channel counts (9+9+2+3=23) were chosen to minimize parameter overhead (~0% increase to backbone) while covering the complete human defensive vocabulary.
 
-### 2.1 Genbutsu (絶対安全牌) — Channels 61–69
+### 2.1 Genbutsu (絶対安全牌) — Channels 62–70
 
 **Definition:** Tiles that are 100% safe against a specific riichi player. Any tile discarded by the riichi player after their riichi declaration is genbutsu — they cannot win on a tile they themselves threw after declaring riichi.
 
@@ -96,7 +96,7 @@ graph TB
 
 **Why 3 channels per opponent, not 1:** While genbutsu is binary (safe or not), the sub-channel decomposition provides the network with pre-computed hand-reading signals. Tedashi genbutsu reveals which tiles the opponent actively rejected from their hand (matagi-suji and sotogawa inferences follow). Riichi-era genbutsu separates the temporal regime where the opponent's hand is locked. This mirrors Mortal v4's 3-channel kawa summary (all discards / tedashi-only / riichi-tile) but pre-computes the safety derivation. No existing mahjong AI pre-computes genbutsu channels — Mortal, Suphx, and Mjx all rely on the network to derive safety from raw discard data. Hydra's explicit encoding is a deliberate advantage.
 
-### 2.2 Suji (筋) — Channels 70–78
+### 2.2 Suji (筋) — Channels 71–79
 
 **Definition:** Probabilistic safety based on ryanmen (two-sided) wait patterns. When an opponent discards a tile, certain numerically related tiles become safer because common wait patterns involving the discarded tile become less likely.
 
@@ -115,7 +115,25 @@ graph TB
 
 **Half-suji vs Full-suji:** Half-suji means only one side of the sequence has been discarded. Full-suji means both sides are visible, providing stronger safety.
 
-**Encoding:** 9 float channels, 3 per opponent. Values range from 0.0 to 1.0 representing suji safety coverage — higher values indicate more suji evidence for that tile being safe against that opponent.
+**Encoding:** 9 float channels, 3 per opponent (one channel per suit: manzu, pinzu, souzu). Per-tile suji coverage is computed as follows:
+
+For each opponent and each numbered tile (1–9) in each suit, count how many of that tile's suji pairs have been discarded by that opponent:
+
+| Suji pairs for tile | Pairs | Coverage value |
+|---------------------|-------|----------------|
+| 1 | (4) | 0.0 if neither 4 discarded; 1.0 if 4 discarded |
+| 2 | (5) | 0.0 if neither 5 discarded; 1.0 if 5 discarded |
+| 3 | (6) | 0.0 if neither 6 discarded; 1.0 if 6 discarded |
+| 4 | (1, 7) | 0.0 / 0.5 / 1.0 for 0 / 1 / 2 partners discarded |
+| 5 | (2, 8) | 0.0 / 0.5 / 1.0 for 0 / 1 / 2 partners discarded |
+| 6 | (3, 9) | 0.0 / 0.5 / 1.0 for 0 / 1 / 2 partners discarded |
+| 7 | (4) | 0.0 if neither 4 discarded; 1.0 if 4 discarded |
+| 8 | (5) | 0.0 if neither 5 discarded; 1.0 if 5 discarded |
+| 9 | (6) | 0.0 if neither 6 discarded; 1.0 if 6 discarded |
+
+Tiles 1/2/3/7/8/9 have only one suji partner, so they are binary (0.0 or 1.0). Tiles 4/5/6 have two partners, so they use half-suji = 0.5 when one partner is discarded. Honor tiles always have suji value 0.0 (no suji relationship).
+
+> **Design note:** This encoding is purely structural (based on which tiles are in the discard pile) with no temporal decay — suji status does not change over time. The backbone learns to weight suji evidence against other signals (kabe, genbutsu, tedashi patterns). Mortal has no explicit suji channels; Hydra's explicit encoding is a hypothesis that pre-computed suji accelerates safety learning (tested by [ABLATION_PLAN A1](ABLATION_PLAN.md#a1-safety-plane-utility)).
 
 **Caveats — Suji is NOT 100% safe:**
 
@@ -127,7 +145,7 @@ Suji only protects against ryanmen (two-sided) waits. Opponents can still win wi
 
 Suji reduces probability but does not eliminate danger. The network must learn to weigh suji evidence appropriately against other signals.
 
-### 2.3 Kabe (壁) — Channel 79
+### 2.3 Kabe (壁) — Channel 80
 
 **Definition:** When all 4 copies of a tile are visible (in discards, melds, or own hand), certain sequence waits through that tile become impossible. This is called kabe (wall) because the tile forms a "wall" blocking wait patterns.
 
@@ -140,13 +158,13 @@ Suji reduces probability but does not eliminate danger. The network must learn t
 
 **Example:** If all 4 copies of 5p are visible, no opponent can have a 3-6p or 4-5p or 5-6p sequence wait. Tiles adjacent to the walled tile become significantly safer.
 
-**Encoding:** Channel 79 is a float mask over 34 tile types, indicating kabe (no-chance) status.
+**Encoding:** Channel 80 is a float mask over 34 tile types, indicating kabe (no-chance) status.
 
-### 2.4 One-Chance (ワンチャンス) — Channel 80
+### 2.4 One-Chance (ワンチャンス) — Channel 81
 
 When 3 out of 4 copies of a tile are visible, the remaining single copy makes waits through that tile probabilistically unlikely. This is weaker than full kabe but still provides meaningful safety information.
 
-**Encoding:** Channel 80 is a float mask over 34 tile types, indicating one-chance status.
+**Encoding:** Channel 81 is a float mask over 34 tile types, indicating one-chance status.
 
 ### 2.5 Tenpai Hints — Channels 82–84
 
@@ -154,9 +172,9 @@ Three binary channels, one per opponent, indicating whether each opponent is lik
 
 | Channel | Content |
 |---------|---------|
-| 81 | Opponent 1 riichi / high-probability tenpai |
-| 82 | Opponent 2 riichi / high-probability tenpai |
-| 83 | Opponent 3 riichi / high-probability tenpai |
+| 82 | Opponent 1 riichi / high-probability tenpai |
+| 83 | Opponent 2 riichi / high-probability tenpai |
+| 84 | Opponent 3 riichi / high-probability tenpai |
 
 **Two-phase encoding:**
 
@@ -437,11 +455,51 @@ Human players read opponent intent from the first call: an early pinzu chi + hon
 **Architecture:** GAP(256×34 → 256) → FC(256→64) → ReLU → FC(64→8×3) → Reshape to [B×3×8] → Softmax per opponent. Parameter cost: ~18K (+0.1% of total model).
 
 **Training signal:**
-- **Phase 1:** At each timestep after an opponent makes at least one call, label with the *eventual* winning yaku class if the opponent wins this kyoku. Map the winning yaku combination to the nearest archetype (e.g., honitsu+yakuhai → archetype 1). Mask the loss when the opponent makes no calls or does not win. Like the value head, this has survivorship bias — only winning hands get labeled.
+- **Phase 1:** At each timestep after an opponent makes at least one call, label with the *eventual* winning yaku class if the opponent wins this kyoku. When a winning hand scores multiple yaku, assign the archetype using the following priority (first match wins):
+
+| Priority | Condition | Archetype |
+|----------|-----------|-----------|
+| 1 | chinitsu in yaku | 1 (Honitsu/Chinitsu) |
+| 2 | honitsu in yaku | 1 (Honitsu/Chinitsu) |
+| 3 | toitoi in yaku OR honroutou in yaku | 2 (Toitoi/Honroutou) |
+| 4 | chanta in yaku OR junchan in yaku | 5 (Chanta/Junchan) |
+| 5 | sanshoku in yaku OR ittsuu in yaku | 4 (Sanshoku/Ittsuu) |
+| 6 | tanyao in yaku AND hand is open | 3 (Tanyao speed) |
+| 7 | any yakuhai (fanpai/sangenpai) AND hand is open | 0 (Yakuhai speed) |
+| 8 | hand is closed (riichi, damaten, menzen tsumo) | 6 (Menzen) |
+| 9 | none of the above | 7 (Other/Ambiguous) |
+
+  Mask the loss when the opponent makes no calls or does not win. Like the value head, this has survivorship bias — only winning hands get labeled.
 - **Phase 2–3:** Oracle teacher sees the actual hand and can compute exact yaku potential at every timestep.
 - **Loss:** Cross-entropy per opponent, masked to states where the opponent has ≥1 open meld. Weight: 0.02.
 
-**Integration with Danger Head:** The call-intent logits condition danger predictions via FiLM (Feature-wise Linear Modulation) or simple concatenation. When the intent head predicts honitsu with high confidence, the danger head should increase danger estimates for tiles in the predicted suit — giving the model "this tile is dangerous *because it fits their plan*" rather than only "this tile has a high historical deal-in rate."
+**FiLM Conditioning Interface (call-intent → danger head):**
+
+The call-intent head's per-opponent output conditions the danger head via FiLM (Feature-wise Linear Modulation, Perez et al. 2018). Exact tensor flow:
+
+```python
+# Call-intent output: [B, 3, 8] (3 opponents, 8 archetypes, softmax probabilities)
+# Backbone latent:   [B, 256, 34]
+# Danger output:     [B, 3, 34]
+
+# Shared FiLM generator (one Linear, used for all 3 opponents):
+film_proj = Linear(8, 512, bias=True)  # 8 -> 256 gamma + 256 beta = 512
+
+for k in range(3):  # per opponent
+    cond_k = call_intent[:, k, :]                   # [B, 8]
+    gamma_k, beta_k = film_proj(cond_k).chunk(2, -1) # [B, 256] each
+    gamma_k = gamma_k.unsqueeze(-1)                  # [B, 256, 1]
+    beta_k = beta_k.unsqueeze(-1)                    # [B, 256, 1]
+    modulated_k = (1 + gamma_k) * backbone + beta_k  # [B, 256, 34]
+    danger_k = danger_conv(modulated_k)               # [B, 1, 34]
+# Stack -> [B, 3, 34] -> sigmoid
+```
+
+Key design decisions:
+- **`(1 + gamma)` initialization trick:** At init (weights near zero), gamma ≈ 0, so `(1 + gamma) * x + beta ≈ x`. The danger head starts as if FiLM doesn't exist, then gradually learns to incorporate call-intent. This is critical for training stability (from the original FiLM paper, Section 7.2).
+- **Shared FiLM layer across opponents:** Same `Linear(8, 512)` for all 3 opponents. Different behavior comes from different conditioning inputs, not different weights. Parameter cost: 4,608 params (negligible).
+- **Gradients flow through conditioning:** No stop-gradient. The danger loss teaches the call-intent head to produce representations that are maximally useful for danger estimation. This is the standard pattern in all production FiLM implementations (Meta Seamless, DI-engine, MTRL).
+- **`danger_conv`:** `Conv1d(256, 1, kernel_size=1)` — shared across opponents (same conv applied to differently-modulated features).
 
 > **Architecture note (sequential dependency):** FiLM conditioning creates a sequential dependency between the call-intent head and the danger head — the call-intent output must be computed *before* the danger head can run. This conflicts with [HYDRA_SPEC](HYDRA_SPEC.md)'s description of heads operating "in parallel" from the shared backbone. **Options:** (a) Accept the sequential dependency and update HYDRA_SPEC (minimal latency impact since both heads are tiny). (b) Use simple concatenation instead of FiLM (preserves parallelism but weaker conditioning). (c) Defer FiLM to a second iteration after baseline danger head is validated. **Recommended: option (a)** — the latency cost of one extra small MLP forward pass (~0.1ms) is negligible.
 
@@ -589,9 +647,18 @@ Per-opponent GRU over the full discard history to capture temporal patterns (ted
 **Solution:** Add a differentiable Sinkhorn projection layer that enforces global tile conservation as a hard structural constraint inside the forward pass.
 
 **Architecture:**
-1. **TileAllocationHead**: `Conv1d(256 -> Z, kernel_size=1)` producing logits `[B x Z x 34]` where Z = number of hidden zones (e.g., Z=4: Opponent_Left_concealed, Opponent_Cross_concealed, Opponent_Right_concealed, Wall_remainder).
-2. Convert logits to positive matrix `A = softplus(logits)` (or `exp(logits/tau)`).
-3. Run **Sinkhorn-Knopp iterations** (10-30 iterations) to find matrix `X` whose:
+1. **TileAllocationHead**: `Conv1d(256 -> 4, kernel_size=1)` producing logits `[B x 4 x 34]` where Z=4 zones are:
+
+| Zone | Content | `zone_size[z]` computation |
+|------|---------|---------------------------|
+| 0 | Opponent Left (shimocha) concealed hand | 13 - open_meld_tiles[left] - kans[left] |
+| 1 | Opponent Cross (toimen) concealed hand | 13 - open_meld_tiles[cross] - kans[cross] |
+| 2 | Opponent Right (kamicha) concealed hand | 13 - open_meld_tiles[right] - kans[right] |
+| 3 | Wall remainder (live wall + dead wall unseen) | 136 - 4*13 - visible_tiles - dead_wall_revealed |
+
+> `remaining[t] = 4 - visible_count[t]` for each of 34 tile types. Visible tiles include: own hand, all discards, all open melds, all dora indicators. The sum `sum_z zone_size[z]` must equal `sum_t remaining[t]` (total unseen tiles) -- this is guaranteed by construction and serves as a runtime sanity check.
+2. Convert logits to positive matrix `A = softplus(logits)` (or `exp(logits/tau)` with tau=1.0 default).
+3. Run **Sinkhorn-Knopp iterations** (20 iterations default, range 10-30) in **log-domain** to find matrix `X` whose:
    - Row sums match the **remaining count** of each tile type (known exactly from visible tiles): `sum_z X[t,z] = remaining[t]`
    - Column sums match each zone's **unknown tile count** (known from public state: meld counts, hand sizes, wall size): `sum_t X[t,z] = zone_size[z]`
 4. Output: consistent expected tile counts per zone per tile type.
@@ -605,15 +672,15 @@ Per-opponent GRU over the full discard history to capture temporal patterns (ted
 **Training signal:**
 - **Phase 1:** Labels from log-reconstructed opponent hands (same infrastructure as tenpai/danger/wait-set labels). Target: per-opponent concealed tile count vectors (34-dim).
 - **Phase 2-3:** Oracle teacher sees exact hands. Dense, noise-free supervision.
-- **Loss:** KL divergence or CE on Sinkhorn-projected marginals vs ground truth counts, with small weight (0.01-0.05). Same gradient magnitude caution as dense danger labels.
+- **Loss:** KL divergence on Sinkhorn-projected marginals vs ground truth counts, weight 0.02. Same gradient magnitude caution as dense danger labels.
 
 **Integration with existing heads:** The Sinkhorn belief output serves as a force multiplier for all downstream opponent modeling:
 - **Danger head:** calibrate per-tile danger with "can they even structurally support this wait?"
 - **Wait-set head:** constrain wait predictions to be consistent with available tiles.
 - **Tenpai head:** if the belief assigns near-zero probability to tenpai-enabling tiles being in an opponent's hand, tenpai probability should be low.
-- Feed belief marginals (3x34 opponent tile probabilities) as extra channels into policy/danger heads *after the backbone*, not into the 84-channel observation.
+- Feed belief marginals (3x34 opponent tile probabilities) as extra channels into policy/danger heads *after the backbone*, not into the 85-channel observation.
 
-**Stability notes:** Log-domain Sinkhorn (log-sum-exp formulation) is required for numerical stability with small epsilon. Well-documented in the literature (Peyre & Cuturi, "Computational Optimal Transport", 2019). Known issues: gradient vanishing for very small epsilon (too peaked); gradient explosion for very large epsilon (too uniform). Sweet spot: epsilon = 0.01-0.1.
+**Stability notes:** Log-domain Sinkhorn (log-sum-exp formulation) is required for numerical stability with small epsilon. Well-documented in the literature (Peyre & Cuturi, "Computational Optimal Transport", 2019). Known issues: gradient vanishing for very small epsilon (too peaked); gradient explosion for very large epsilon (too uniform). **Default: epsilon = 0.05** (midpoint of 0.01–0.1 range). Tune by monitoring row/column sum constraint residuals during training.
 
 > **Novelty note:** No published mahjong AI or poker AI uses a Sinkhorn/OT projection layer for belief inference inside the agent network. The closest adjacent works are: (1) diffusion-based mahjong hand generation ([DMV Nico case study](https://dmv.nico/en/casestudy/mahjong_tehai_generation/)), which generates hands but requires post-hoc greedy discretization to enforce tile counts -- proving the constraint problem exists; (2) LinSATNet (Wang et al., ICML 2023, [GitHub](https://github.com/Thinklab-SJTU/LinSATNet)), a differentiable Sinkhorn-based constraint satisfaction layer proven to work for routing, graph matching, and portfolio allocation -- proving the mechanism works. The specific intersection of "differentiable Sinkhorn constraint layer inside a game-playing agent for hand inference" is empty in the literature. This is a genuine cross-field import from optimal transport / constrained structured prediction into game AI.
 
@@ -633,10 +700,10 @@ A separate lightweight network trained to predict Hydra's wait from PUBLIC infor
 
 | Property | Specification |
 |----------|---------------|
-| Architecture | 10-block SE-ResNet (same structure as Hydra, smaller) |
+| Architecture | 10-block SE-ResNet, **96 channels**, same block structure as Hydra's backbone (pre-activation, GroupNorm(32), Mish, dual-pool SE ratio=16). Stem: `Conv1d(73, 96, 3, padding=1, bias=False)`. Output head: `GAP(96×34 → 96) → FC(96 → 34) → Sigmoid`. |
 | Input shape | `[B x 73 x 34]` (Hydra's 85 public channels MINUS 11 private hand/draw channels + 1 player-perspective channel) |
 | Output | `[B x 34]` sigmoid -- per-tile probability that the tile is in Hydra's waiting set |
-| Parameters | ~3M |
+| Parameters | ~3.2M (10 blocks × ~300K/block at 96ch + stem ~21K + head ~3.3K) |
 | Training data | Phase 1 game logs. For each state where the acting player is in tenpai, label = binary wait mask (34-dim). Input = public info only. |
 | Training | Supervised BCE, 3 epochs on Phase 1 data. **[estimated]** Convergence accuracy unknown -- no published mahjong AI has measured wait prediction from public info only. Measure L0's top-3 accuracy on a held-out eval set after training; this becomes the empirical WOR baseline. |
 | Freeze point | After Phase 1 training. **Never updated during Phase 3 self-play.** |
