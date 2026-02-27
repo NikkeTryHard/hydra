@@ -33,6 +33,13 @@ See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specif
 | [TESTING.md](research/TESTING.md) | Testing strategy, correctness verification, property-based tests |
 | [ABLATION_PLAN.md](research/ABLATION_PLAN.md) | Structured experiment queue with hypotheses and protocols |
 
+### Documentation Ownership (SSOT)
+
+- `MORTAL_ANALYSIS.md`: authoritative Mortal strengths/limitations and architecture evidence
+- `OPPONENT_MODELING.md`: authoritative safety-channel, tenpai-head, and danger-head design rationale
+- `HYDRA_SPEC.md`: high-level architecture/inference summary with cross-references to detail docs
+- `COMMUNITY_INSIGHTS.md`: community observations and hypotheses (non-canonical for hard architectural claims)
+
 ## Status
 
 Research phase — documentation and architecture specification complete. Implementation not yet started.

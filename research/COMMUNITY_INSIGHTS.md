@@ -3,6 +3,7 @@
 Research compilation from Reddit, Japanese blogs, RL communities, and public AI analysis discussions. Focused on insights directly relevant to Hydra's development.
 
 > **Source volatility note:** Several references link to personal blogs (note.com, hatenablog, Ghost, nicovideo blomaga, modern-jan.com) that may go offline. All critical data points (statistics, architecture details, p-values) are reproduced inline so this document remains self-contained even if external links rot. Last verified: 2026-02-11.
+> **Maintenance cadence:** Re-verify external links and source-backed numeric claims quarterly (or before major documentation releases), and update this timestamp when verification is completed.
 
 ---
 
@@ -77,7 +78,7 @@ NAGA is a **pure supervised learning system** — no self-play, no reinforcement
 ### NAGA Rating System Limitations
 - NAGA's "match%" and "bad move rate" metrics are imperfect proxies for actual strength
 - Suphx (9–10 dan) only scored match% of 74.4 and average NAGA Rating of 86.3 — stats comparable to average 7-dan in 2020
-- Tencent's LuckyJ hit 10 dan with bad move rates >10% in many games
+- Tencent's LuckyJ hit 10 dan with bad move rates >10% in many games (riichinotes quote: "...LuckyJ hit 10 Dan with bad move rates of >10% in many games.")
 - **Takeaway**: Agreement with a specific AI is a poor metric for absolute strength
 
 Source: [riichinotes.blogspot.com](https://riichinotes.blogspot.com/2023/06/reviewing-my-first-50-houou-games-with.html)
@@ -374,6 +375,8 @@ If 2 of 3 → push. Otherwise → fold. Additional factors: round number, curren
 ---
 
 ## 13. Key Takeaways for Hydra
+
+> **Ownership note:** This section captures community-observed signals and hypotheses. Canonical Mortal limitation statements live in `MORTAL_ANALYSIS.md`; architecture-level Hydra-vs-Mortal deltas live in `HYDRA_SPEC.md`.
 
 ### Confirmed Gaps in Existing AIs (Opportunities for Hydra)
 
