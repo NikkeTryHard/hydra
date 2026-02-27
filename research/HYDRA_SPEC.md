@@ -159,18 +159,23 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 ### Parameter Budget
 
-| Component | Parameters | Percentage |
-|-----------|------------|------------|
-| Stem Conv (84→256, k=3) | ~65K | 0.4% |
-| ResNet Backbone (40 blocks × ~402K) | ~16.1M | 97.3% |
-| Policy Head | ~117K | 0.7% |
-| Value Head | ~132K | 0.8% |
-| GRP Head | ~106K | 0.6% |
-| Tenpai Head | ~17K | 0.1% |
-| Danger Head | 771 | <0.1% |
-| **Total (Student)** | **~16.5M** | **100%** |
+| Component | Parameters | Percentage | Status |
+||-----------|------------|------------|--------|
+| Stem Conv (84->256, k=3) | ~65K | 0.4% | Baseline |
+| ResNet Backbone (40 blocks x ~402K) | ~16.1M | 96.8% | Baseline |
+| Policy Head | ~117K | 0.7% | Baseline |
+| Value Head | ~132K | 0.8% | Baseline |
+| GRP Head (internal placement aux) | ~106K | 0.6% | Baseline |
+| Tenpai Head | ~17K | 0.1% | Baseline |
+| Danger Head | 771 | <0.1% | Baseline |
+| Wait-Set Belief Head | 771 | <0.1% | Extended ([OPPONENT_MODELING S 4.6](OPPONENT_MODELING.md#46-wait-set-belief-head-extended-opponent-modeling)) |
+| Value-Conditioned Tenpai Head | ~17K | 0.1% | Extended ([OPPONENT_MODELING S 3.7](OPPONENT_MODELING.md#37-value-conditioned-tenpai-threat-severity)) |
+| Call-Intent / Yaku-Plan Head | ~18K | 0.1% | Extended ([OPPONENT_MODELING S 4.7](OPPONENT_MODELING.md#47-call-intent--yaku-plan-inference-head)) |
+| Sinkhorn Tile Allocation Head | ~560 | <0.1% | Extended ([OPPONENT_MODELING S 7.6](OPPONENT_MODELING.md#constraint-consistent-belief-via-sinkhorn-projection-tile-allocation-head)) |
+| **Total (Student, baseline 5 heads)** | **~16.5M** | -- | |
+| **Total (Student, all 9 heads)** | **~16.6M** | **100%** | |
 
-> The backbone completely dominates the parameter budget. Head overhead is negligible (~2.3% total), meaning the five-head design adds opponent modeling capability at virtually zero parameter cost.
+> The backbone completely dominates the parameter budget. Head overhead is negligible (~2.5% total for all 9 heads), meaning the full extended head design adds opponent modeling capability at virtually zero parameter cost. Extended heads are gated by ablation results (see [ABLATION_PLAN S A10-A12](ABLATION_PLAN.md#a10-dense-vs-sparse-danger-labels)) and may be added incrementally.
 
 **Oracle Teacher stem:** `Conv1d(289, 256, 3)` = ~222K params (vs student's ~65K). The teacher total is ~16.7M — only +157K over the student (+0.95%). All other weights are shared.
 
@@ -201,6 +206,14 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 | 43 | 1 | Kakan (added kan) |
 | 44 | 1 | Kyuushu Kyuuhai (nine-tile abort) |
 | 45 | 1 | Pass |
+
+> **Known limitation (action space expressiveness):** The 46-action space has three under-specified composite actions that may silently cap play strength:
+>
+> 1. **Riichi (action 39)** does not encode which tile to discard. In practice, riichi requires choosing a discard tile AND declaring riichi -- often multiple legal riichi discards exist with different waits/values. The current spec assumes a two-step process (engine resolves discard separately) but this is not documented. If the engine picks arbitrarily, training labels become inconsistent.
+> 2. **Ankan (42) and Kakan (43)** do not encode tile selection when multiple kans are available (rare but real). Same two-step ambiguity.
+> 3. **Discards (0-33)** use 34 tile types, not 37. Red fives (aka-dora) are encoded as input features (channels 39-41) but are not action-selectable -- the agent cannot choose to discard a red 5m vs a normal 5m. Mortal handles this with 37-action discards (adding aka variants).
+>
+> **Options:** (a) Expand to ~47 actions (add 3 aka discards), define riichi as discard+flag (two-step), and add tile-selection for kans. (b) Accept the ceiling and use deterministic aka/kan resolution rules. (c) Hybrid: expand aka discards but keep riichi two-step. **Decision required before implementation.** This is the #1 correctness-critical gap identified by external review.
 
 ### Value Head (Critic)
 
@@ -336,6 +349,7 @@ Three channels per player (12 total):
 | 35–38 | Dora indicator tiles (up to 4 indicators, thermometer binary) |
 | 39–41 | Red five (aka) in hand — 3 binary channels, one per suit (5m-red, 5p-red, 5s-red). All-1 or all-0 plane per channel. Matches Mortal's `akas_in_hand[3]` and Mjx-large encoding. Only 3 aka-dora exist in standard Riichi Mahjong; no 4th channel is needed. Aka visibility in melds/discards is encoded in those respective channel blocks. |
 
+> **Known issue (dora indicator slots):** Standard riichi can reveal up to 5 dora indicators (1 initial + 4 after kans). The current encoding supports only 4 (channels 35–38). The 5th indicator is rare (requires 4 kans in a single hand) but occurs in high-variance situations. **Fix required:** expand to channels 35–39 (5 slots) and renumber all downstream channels (game metadata 43–61, safety 62–84, stem Conv1d(85, 256, 3)). This renumbering should be done in a single dedicated pass to avoid cascading errors.
 #### Game Metadata (Channels 42–60)
 
 | Channel | Content |
