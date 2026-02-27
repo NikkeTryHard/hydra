@@ -1,6 +1,6 @@
 # Hydra Architecture Specification
 
-A Riichi Mahjong AI designed to surpass current SOTA (Mortal, Suphx, NAGA) through a combination of proven techniques and novel opponent-aware features.
+A Riichi Mahjong AI designed to rival LuckyJ (Tencent AI Lab, 10.68 stable dan) through a combination of proven techniques, novel opponent-aware features, and inference-time search. Intermediate milestone: surpass Mortal, Suphx, and NAGA.
 
 ---
 
@@ -19,7 +19,7 @@ A Riichi Mahjong AI designed to surpass current SOTA (Mortal, Suphx, NAGA) throu
 | **Inference VRAM** | <1.5GB | Fits 8GB consumer GPUs easily |
 | **Inference Latency** | <15ms | Well under 50ms limit |
 | **Training VRAM** | <4GB active | Fits RTX PRO 6000 Blackwell (96GB) with massive headroom |
-| **Target Strength** | Beat Mortal | Surpass community-estimated ~7-dan play strength |
+| **Target Strength** | Rival LuckyJ | Surpass Mortal (~7-dan), approach LuckyJ-level play (10+ stable dan on Tenhou). See [COMMUNITY_INSIGHTS § LuckyJ](../research/COMMUNITY_INSIGHTS.md#4-luckyj-tencent-ai-lab) for competitive analysis. |
 
 > **Note on parameter count:** Each SE-ResBlock contains ~402K parameters (2× Conv1d(256,256,k=3) + 2× GroupNorm + SE module). 40 blocks × 402K ≈ 16.1M backbone. Heads add ~372K. This makes Hydra (~16.5M) roughly 50% larger than Mortal (~10.9M at 192ch/40 blocks), providing additional capacity for the five output heads and safety encoding.
 
