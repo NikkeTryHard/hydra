@@ -1,13 +1,13 @@
 # Hydra
 
-Open-source Riichi Mahjong AI. The goal is to build an AI stronger than [Mortal](https://github.com/Equim-chan/Mortal) with open weights — no restrictive licensing, no closed models.
+Open-source Riichi Mahjong AI. The goal is to build an AI that rivals [LuckyJ](https://haobofu.github.io/) (Tencent AI Lab, 10.68 stable dan on Tenhou) with open weights — no restrictive licensing, no closed models.
 
 ## Goal
 
 Train a mahjong AI that:
-- Beats Mortal (community-estimated ~7-dan play strength) in head-to-head evaluation
+- Surpasses [Mortal](https://github.com/Equim-chan/Mortal) (~7-dan) and approaches LuckyJ-level play (10+ dan) in head-to-head evaluation
 - Releases weights under a permissive license (MIT)
-- Adds opponent modeling — something no existing mahjong AI does
+- Adds opponent modeling and inference-time search — the two capabilities that separate LuckyJ from all other mahjong AIs
 
 ## Architecture
 
