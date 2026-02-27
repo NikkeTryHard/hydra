@@ -34,6 +34,61 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent AI Lab, 10.68 stable dan) 
 
 ---
 
+## Target Ruleset: Tenhou Houou 4-Player (鳳凰卓 四人打ち)
+
+Hydra targets the **Tenhou ranked 4-player (dan-i-sen)** ruleset as used in the Houou (鳳凰) lobby. This is the competitive environment where LuckyJ achieved 10.68 stable dan, and the ruleset under which all training data (2M+ Tenhou Houou games) was generated. The game engine MUST implement exactly these rules — deviations will corrupt label generation and scoring validation.
+
+**Sources:** [Tenhou Official Manual](https://tenhou.net/man/) § RULE (段位戦四人打ち), [riichi.wiki/Tenhou.net_rules](https://riichi.wiki/Tenhou.net/rules).
+
+### Scoring Edge Cases
+
+| Rule | Tenhou Value | Notes |
+|------|-------------|-------|
+| Kiriage mangan | **No** | 4 han 30 fu = 7700, 3 han 60 fu = 7700. NOT rounded up to mangan. Kiriage is a jansou-mode-only rule. |
+| Kazoe yakuman | **Yes** | 13+ han (excluding yakuman patterns) is scored as yakuman. |
+| Multiple yakuman | **Yes (additive)** | Distinct yakuman patterns in the same hand stack additively (e.g., daisangen + tsuuiisou = double yakuman = 64000/96000). Each pattern counts as one yakuman; no individual pattern is worth double yakuman by itself. |
+| Open tanyao (kuitan) | **Yes** | Kuitan ari is the default Houou setting with aka-dora. |
+| Renhou | **No** | Not a recognized yaku. Explicitly excluded alongside paarenchan and other optional yaku. |
+| Paarenchan | **No** | Not a recognized yaku. Eight consecutive dealer wins has no special scoring. Honba counter has no cap. |
+
+### Game Flow Rules
+
+| Rule | Tenhou Value | Notes |
+|------|-------------|-------|
+| Starting points | **25000** | Per player. Total table = 100000. |
+| Return (oka) | **30000** | 1st place receives 20000 oka bonus (4 × 5000 difference from start). |
+| Tobi (bankruptcy) | **Yes** | Game ends immediately when any player's score drops below 0. Score of exactly 0 does NOT trigger tobi. |
+| Agari yame | **Yes (automatic)** | In all-last hands, if dealer is in 1st place, the game automatically ends on dealer win or dealer tenpai at exhaustive draw. Introduced 2010/06/01. |
+| Uma | **Configurable** | Training: [3, 1, -1, -3]. Evaluation: [90, 45, 0, -135] (Tenhou Houou style). See [TRAINING.md § Placement Points](TRAINING.md#placement-points). |
+
+### Tile and Dora Rules
+
+| Rule | Tenhou Value | Notes |
+|------|-------------|-------|
+| Aka-dora (red fives) | **Yes (3 tiles)** | One red 5m, one red 5p, one red 5s. Each worth 1 additional han. |
+| Ura-dora | **Yes** | Revealed after winning with riichi. |
+| Ippatsu | **Yes** | Win within one turn cycle of riichi declaration (before next draw, if no intervening call). |
+| Kan-dora flip timing | **Immediate for ankan; after discard for minkan/kakan** | Ankan: new dora indicator revealed immediately. Minkan/kakan: revealed after the player's discard following rinshan draw. |
+
+### Abortive Draws
+
+| Rule | Tenhou Value | Notes |
+|------|-------------|-------|
+| Kyuushu kyuuhai | **Yes** | First-turn 9+ unique terminal/honor tiles; player may declare abort. Action 44 in Hydra's mapping. |
+| Suufon renda | **Yes** | All four players discard the same wind on the first turn (no calls). |
+| Suucha riichi | **Yes** | All four players declare riichi. |
+| Suukaikan | **Yes** | Four kans declared across multiple players (not all by one player). One player holding all four kans does NOT trigger abort — they draw from the dead wall normally. |
+| Sanchahou (triple ron) | **Yes** | Three players declare ron on the same discard. Game is aborted. |
+| Nagashi mangan | **Yes** | Checked at exhaustive draw. Tsumo-style payment (dealer pays more). All discards must be terminals/honors and none called by opponents. |
+
+### Calling Restrictions
+
+| Rule | Tenhou Value | Notes |
+|------|-------------|-------|
+| Kuikae (swap call) | **Banned** | After chi/pon, cannot discard the tile that would complete the same sequence/group. Both genbutsu-kuikae (exact tile) and suji-kuikae (sequence swap) are prohibited. |
+
+> **Ruleset as code:** The engine's `rules.rs` module ([INFRASTRUCTURE.md § Module Structure](INFRASTRUCTURE.md#module-structure)) should expose these as constants, not configuration toggles. Tenhou Houou rules are the only target for training and evaluation. If future work targets Majsoul or WRC rulesets, the constants can be swapped per-build, but the engine need not support runtime rule switching.
+
 ## Architecture Overview
 
 Hydra uses a **Unified Multi-Head SE-ResNet** architecture. A single deep convolutional backbone extracts features from the game state, and five specialized heads branch from the shared latent representation to produce all outputs simultaneously.
@@ -42,7 +97,7 @@ The input observation tensor has shape `[Batch × 85 × 34]`, encoding 85 featur
 
 For Phase 2 Oracle Distillation, the Teacher network uses the same backbone but with a wider stem: `Conv1d(290, 256, 3)` instead of `Conv1d(85, 256, 3)`. The 290-channel input is the public observation (85ch) concatenated with the oracle observation (205ch: opponent hands, wall draw order, dora/ura indicators). All 40 ResBlock weights are identical and transferable between teacher and student — only the stem Conv1d differs. See [Phase 2: Oracle Distillation RL](TRAINING.md#phase-2-oracle-distillation-rl) for the full oracle encoding specification.
 
-From this shared representation, five output heads operate in parallel: the Policy Head selects the next action, the Value Head estimates expected round outcome, the GRP Head predicts final game placement distribution, the Tenpai Head estimates opponent tenpai probabilities, and the Danger Head estimates per-tile deal-in risk per opponent.
+From this shared representation, output heads operate from the backbone: the Policy Head selects the next action, the Value Head estimates expected round outcome, the GRP Head predicts final game placement distribution, the Tenpai Head estimates opponent tenpai probabilities, and the Danger Head estimates per-tile deal-in risk per opponent. The baseline five heads run in parallel. When extended heads are active (call-intent, wait-set, value-tenpai, Sinkhorn), the call-intent head runs first and its output conditions the Danger Head via FiLM — a minor sequential dependency with negligible latency impact (~0.1ms). See [OPPONENT_MODELING § 4.7](OPPONENT_MODELING.md#47-call-intent--yaku-plan-inference-head) for details.
 
 ```mermaid
 graph TB
@@ -51,7 +106,7 @@ graph TB
     end
 
     subgraph "Stem"
-        STEM["Conv1D Stem<br/>3×1 kernel, 256 channels, stride 1"]
+        STEM["Conv1D Stem<br/>3×1 kernel, padding 1, no bias<br/>85→256 channels, stride 1"]
     end
 
     subgraph "Backbone"
@@ -146,7 +201,7 @@ graph LR
 
 ### Dropout Policy
 
-No dropout in the backbone architecture. During training (Phase 1 supervised and Phase 2 distillation), dropout of 0.1 is applied as a regularization technique for RL stability. Dropout is disabled at inference time. Note: Suphx's "perfect feature dropout" for oracle guiding is a different technique (masks oracle input features, not standard layer dropout).
+No dropout in the backbone architecture. During training (Phase 1 supervised and Phase 2 distillation), dropout of 0.1 is applied after the residual add in each SE-ResBlock as a regularization technique. Dropout is disabled at inference time. Note: Suphx's "perfect feature dropout" for oracle guiding is a different technique (masks oracle input features, not standard layer dropout).
 
 ### No-Pooling Rationale
 
@@ -161,7 +216,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 | Component | Parameters | Percentage | Status |
 ||-----------|------------|------------|--------|
-| Stem Conv (85->256, k=3) | ~66K | 0.4% | Baseline |
+| Stem Conv (85->256, k=3, pad=1, no bias) | ~66K | 0.4% | Baseline |
 | ResNet Backbone (40 blocks x ~402K) | ~16.1M | 96.8% | Baseline |
 | Policy Head | ~117K | 0.7% | Baseline |
 | Value Head | ~132K | 0.8% | Baseline |
@@ -171,7 +226,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 | Wait-Set Belief Head | 771 | <0.1% | Extended ([OPPONENT_MODELING S 4.6](OPPONENT_MODELING.md#46-wait-set-belief-head-extended-opponent-modeling)) |
 | Value-Conditioned Tenpai Head | ~17K | 0.1% | Extended ([OPPONENT_MODELING S 3.7](OPPONENT_MODELING.md#37-value-conditioned-tenpai-threat-severity)) |
 | Call-Intent / Yaku-Plan Head | ~18K | 0.1% | Extended ([OPPONENT_MODELING S 4.7](OPPONENT_MODELING.md#47-call-intent--yaku-plan-inference-head)) |
-| Sinkhorn Tile Allocation Head | ~560 | <0.1% | Extended ([OPPONENT_MODELING S 7.6](OPPONENT_MODELING.md#constraint-consistent-belief-via-sinkhorn-projection-tile-allocation-head)) |
+| Sinkhorn Tile Allocation Head | ~1K | <0.1% | Extended ([OPPONENT_MODELING S 7.6](OPPONENT_MODELING.md#constraint-consistent-belief-via-sinkhorn-projection-tile-allocation-head)) |
 | **Total (Student, baseline 5 heads)** | **~16.5M** | -- | |
 | **Total (Student, all 9 heads)** | **~16.6M** | **100%** | |
 
@@ -430,7 +485,8 @@ Each discard in channels 11–22 includes:
 - Tile identity (which tile was discarded)
 - Tedashi flag (whether it came from the hand or was the drawn tile)
 - Temporal position (exponential decay weighting)
-- Post-call flag (whether the discard followed a meld call)
+
+> **Note:** A post-call flag (whether the discard followed a meld call) is not part of the base 85-channel encoding. See [ABLATION_PLAN A9](ABLATION_PLAN.md#a9-discard-sequence-encoder-tedashi-gru) for a GRU-based extension that additionally encodes post-call context as a token feature.
 
 ### Data Flow
 
