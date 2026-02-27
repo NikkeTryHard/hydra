@@ -38,16 +38,16 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent AI Lab, 10.68 stable dan) 
 
 Hydra uses a **Unified Multi-Head SE-ResNet** architecture. A single deep convolutional backbone extracts features from the game state, and five specialized heads branch from the shared latent representation to produce all outputs simultaneously.
 
-The input observation tensor has shape `[Batch × 84 × 34]`, encoding 84 feature channels across the 34 tile types. A convolutional stem projects this into 256 channels using a 3×1 kernel. The representation then flows through 40 pre-activation SE-ResNet blocks — each applying GroupNorm, Mish activation, two 3×1 convolutions, and a squeeze-and-excitation attention gate — producing a shared latent tensor of shape `[B × 256 × 34]`. No pooling is applied anywhere in the backbone, preserving the full 34-tile spatial geometry.
+The input observation tensor has shape `[Batch × 85 × 34]`, encoding 85 feature channels across the 34 tile types. A convolutional stem projects this into 256 channels using a 3×1 kernel. The representation then flows through 40 pre-activation SE-ResNet blocks — each applying GroupNorm, Mish activation, two 3×1 convolutions, and a squeeze-and-excitation attention gate — producing a shared latent tensor of shape `[B × 256 × 34]`. No pooling is applied anywhere in the backbone, preserving the full 34-tile spatial geometry.
 
-For Phase 2 Oracle Distillation, the Teacher network uses the same backbone but with a wider stem: `Conv1d(289, 256, 3)` instead of `Conv1d(84, 256, 3)`. The 289-channel input is the public observation (84ch) concatenated with the oracle observation (205ch: opponent hands, wall draw order, dora/ura indicators). All 40 ResBlock weights are identical and transferable between teacher and student — only the stem Conv1d differs. See [Phase 2: Oracle Distillation RL](TRAINING.md#phase-2-oracle-distillation-rl) for the full oracle encoding specification.
+For Phase 2 Oracle Distillation, the Teacher network uses the same backbone but with a wider stem: `Conv1d(290, 256, 3)` instead of `Conv1d(85, 256, 3)`. The 290-channel input is the public observation (85ch) concatenated with the oracle observation (205ch: opponent hands, wall draw order, dora/ura indicators). All 40 ResBlock weights are identical and transferable between teacher and student — only the stem Conv1d differs. See [Phase 2: Oracle Distillation RL](TRAINING.md#phase-2-oracle-distillation-rl) for the full oracle encoding specification.
 
 From this shared representation, five output heads operate in parallel: the Policy Head selects the next action, the Value Head estimates expected round outcome, the GRP Head predicts final game placement distribution, the Tenpai Head estimates opponent tenpai probabilities, and the Danger Head estimates per-tile deal-in risk per opponent.
 
 ```mermaid
 graph TB
     subgraph "Input Layer"
-        INPUT["Observation Tensor<br/>[Batch × 84 × 34]<br/>61 base + 23 safety channels"]
+        INPUT["Observation Tensor<br/>[Batch × 85 × 34]<br/>62 base + 23 safety channels"]
     end
 
     subgraph "Stem"
@@ -161,7 +161,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 | Component | Parameters | Percentage | Status |
 ||-----------|------------|------------|--------|
-| Stem Conv (84->256, k=3) | ~65K | 0.4% | Baseline |
+| Stem Conv (85->256, k=3) | ~66K | 0.4% | Baseline |
 | ResNet Backbone (40 blocks x ~402K) | ~16.1M | 96.8% | Baseline |
 | Policy Head | ~117K | 0.7% | Baseline |
 | Value Head | ~132K | 0.8% | Baseline |
@@ -177,7 +177,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 > The backbone completely dominates the parameter budget. Head overhead is negligible (~2.5% total for all 9 heads), meaning the full extended head design adds opponent modeling capability at virtually zero parameter cost. Extended heads are gated by ablation results (see [ABLATION_PLAN S A10-A12](ABLATION_PLAN.md#a10-dense-vs-sparse-danger-labels)) and may be added incrementally.
 
-**Oracle Teacher stem:** `Conv1d(289, 256, 3)` = ~222K params (vs student's ~65K). The teacher total is ~16.7M — only +157K over the student (+0.95%). All other weights are shared.
+**Oracle Teacher stem:** `Conv1d(290, 256, 3)` = ~223K params (vs student's ~66K). The teacher total is ~16.7M — only +157K over the student (+0.95%). All other weights are shared.
 
 ---
 
@@ -211,7 +211,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 >
 > 1. **Riichi (action 39)** does not encode which tile to discard. In practice, riichi requires choosing a discard tile AND declaring riichi -- often multiple legal riichi discards exist with different waits/values. The current spec assumes a two-step process (engine resolves discard separately) but this is not documented. If the engine picks arbitrarily, training labels become inconsistent.
 > 2. **Ankan (42) and Kakan (43)** do not encode tile selection when multiple kans are available (rare but real). Same two-step ambiguity.
-> 3. **Discards (0-33)** use 34 tile types, not 37. Red fives (aka-dora) are encoded as input features (channels 39-41) but are not action-selectable -- the agent cannot choose to discard a red 5m vs a normal 5m. Mortal handles this with 37-action discards (adding aka variants).
+> 3. **Discards (0-33)** use 34 tile types, not 37. Red fives (aka-dora) are encoded as input features (channels 40-42) but are not action-selectable -- the agent cannot choose to discard a red 5m vs a normal 5m. Mortal handles this with 37-action discards (adding aka variants).
 >
 > **Options:** (a) Expand to ~47 actions (add 3 aka discards), define riichi as discard+flag (two-step), and add tile-selection for kans. (b) Accept the ceiling and use deterministic aka/kan resolution rules. (c) Hybrid: expand aka discards but keep riichi two-step. **Decision required before implementation.** This is the #1 correctness-critical gap identified by external review.
 
@@ -223,7 +223,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 
 **Architecture:** Global average pooling collapses the spatial dimension (256 × 34 → 256), followed by a two-layer MLP (256 → 512 → 1) with ReLU activation. The scalar output predicts the expected point gain or loss from the current game state.
 
-> **Oracle Critic (Phase 2–3 training only):** During RL training, an asymmetric oracle critic replaces this value head. The oracle critic runs on the **teacher** backbone (Conv1d(289, 256, 3) stem, receiving 84 public + 205 oracle channels) and outputs **4 scalars** (one per player) with a zero-sum auxiliary loss enforcing V₁+V₂+V₃+V₄=0. The student's 1-scalar value head described above is used only at inference. See [TRAINING § Oracle Critic](TRAINING.md#component-2-oracle-critic-training-only) for the full specification.
+> **Oracle Critic (Phase 2–3 training only):** During RL training, an asymmetric oracle critic replaces this value head. The oracle critic runs on the **teacher** backbone (Conv1d(290, 256, 3) stem, receiving 85 public + 205 oracle channels) and outputs **4 scalars** (one per player) with a zero-sum auxiliary loss enforcing V₁+V₂+V₃+V₄=0. The student's 1-scalar value head described above is used only at inference. See [TRAINING § Oracle Critic](TRAINING.md#component-2-oracle-critic-training-only) for the full specification.
 
 ### GRP Head (Global Rank Prediction)
 
@@ -271,9 +271,9 @@ Hydra adopts Mortal's 24-way formulation but extends it with a richer score cont
 
 The observation tensor encodes the complete game state visible to the current player. Hydra extends the standard Mortal-style encoding with 23 explicit safety planes for opponent modeling.
 
-**Total channels: 84** (61 base + 23 safety)
+**Total channels: 85** (62 base + 23 safety)
 
-**Tensor shape:** `[Batch × 84 × 34]`
+**Tensor shape:** `[Batch × 85 × 34]`
 
 The 34-dimension represents tile types: 9 manzu (萬) + 9 pinzu (筒) + 9 souzu (索) + 7 jihai (字牌).
 
@@ -286,25 +286,25 @@ The 34-dimension represents tile types: 9 manzu (萬) + 9 pinzu (筒) + 9 souzu 
 
 ```mermaid
 graph TB
-    subgraph "Input Tensor [84 × 34]"
-        subgraph "Base Channels [0-60]"
+    subgraph "Input Tensor [85 × 34]"
+        subgraph "Base Channels [0-61]"
             HAND["Hand State<br/>Ch 0-10"]
             DISC["Discards<br/>Ch 11-22"]
             MELD["Melds<br/>Ch 23-34"]
-            DORA["Dora/Aka<br/>Ch 35-41"]
-            META["Game Meta<br/>Ch 42-60"]
+            DORA["Dora/Aka<br/>Ch 35-42"]
+            META["Game Meta<br/>Ch 43-61"]
         end
 
-        subgraph "Safety Channels [61-83]"
-            GEN["Genbutsu<br/>Ch 61-69"]
-            SUJI["Suji<br/>Ch 70-78"]
-            KABE["Kabe/OneChance<br/>Ch 79-80"]
-            HINT["Tenpai Hints<br/>Ch 81-83"]
+        subgraph "Safety Channels [62-84]"
+            GEN["Genbutsu<br/>Ch 62-70"]
+            SUJI["Suji<br/>Ch 71-79"]
+            KABE["Kabe/OneChance<br/>Ch 80-81"]
+            HINT["Tenpai Hints<br/>Ch 82-84"]
         end
     end
 ```
 
-### Base Channels (0–60)
+### Base Channels (0–61)
 
 #### Hand State (Channels 0–10)
 
@@ -342,25 +342,24 @@ Three channels per player (12 total):
 | 1 | Pon (triplet) tiles |
 | 2 | Kan (quad) tiles |
 
-#### Dora and Aka (Channels 35–41)
+#### Dora and Aka (Channels 35–42)
 
 | Channel | Content |
 |---------|---------|
-| 35–38 | Dora indicator tiles (up to 4 indicators, thermometer binary) |
-| 39–41 | Red five (aka) in hand — 3 binary channels, one per suit (5m-red, 5p-red, 5s-red). All-1 or all-0 plane per channel. Matches Mortal's `akas_in_hand[3]` and Mjx-large encoding. Only 3 aka-dora exist in standard Riichi Mahjong; no 4th channel is needed. Aka visibility in melds/discards is encoded in those respective channel blocks. |
+| 35–39 | Dora indicator tiles (up to 5 indicators, thermometer binary). Standard riichi reveals 1 initial + up to 4 after kans = 5 total. |
+| 40–42 | Red five (aka) in hand — 3 binary channels, one per suit (5m-red, 5p-red, 5s-red). All-1 or all-0 plane per channel. Matches Mortal's `akas_in_hand[3]` and Mjx-large encoding. Only 3 aka-dora exist in standard Riichi Mahjong; no 4th channel is needed. Aka visibility in melds/discards is encoded in those respective channel blocks. |
 
-> **Known issue (dora indicator slots):** Standard riichi can reveal up to 5 dora indicators (1 initial + 4 after kans). The current encoding supports only 4 (channels 35–38). The 5th indicator is rare (requires 4 kans in a single hand) but occurs in high-variance situations. **Fix required:** expand to channels 35–39 (5 slots) and renumber all downstream channels (game metadata 43–61, safety 62–84, stem Conv1d(85, 256, 3)). This renumbering should be done in a single dedicated pass to avoid cascading errors.
-#### Game Metadata (Channels 42–60)
+#### Game Metadata (Channels 43–61)
 
 | Channel | Content |
 |---------|---------|
-| 42–45 | Riichi status per player (binary) |
-| 46–49 | Scores (normalized, **uncapped**) |
-| 50–53 | Relative score gaps (to each rank) |
-| 54–57 | Shanten (one-hot over 4 values: 0=tenpai, 1, 2, 3+). Single scalar = min(normal, chiitoitsu, kokushi). Matches Mortal and Mjx convention. Encoded once here — not duplicated in Hand State. Per-type decomposition is unnecessary: the network infers winning form proximity from tile counts. |
-| 58 | Round number (normalized) |
-| 59 | Honba (rescaled: honba/10, capped at 10). **Separate from kyotaku** — combining loses information about which contributes to what (honba affects deal-in payment, kyotaku is a pot). Mortal v4 encodes them separately. |
-| 60 | Kyotaku (rescaled: kyotaku/10, capped at 10). |
+| 43–46 | Riichi status per player (binary) |
+| 47–50 | Scores (normalized, **uncapped**) |
+| 51–54 | Relative score gaps (to each rank) |
+| 55–58 | Shanten (one-hot over 4 values: 0=tenpai, 1, 2, 3+). Single scalar = min(normal, chiitoitsu, kokushi). Matches Mortal and Mjx convention. Encoded once here — not duplicated in Hand State. Per-type decomposition is unnecessary: the network infers winning form proximity from tile counts. |
+| 59 | Round number (normalized) |
+| 60 | Honba (rescaled: honba/10, capped at 10). **Separate from kyotaku** — combining loses information about which contributes to what (honba affects deal-in payment, kyotaku is a pot). Mortal v4 encodes them separately. |
+| 61 | Kyotaku (rescaled: kyotaku/10, capped at 10). |
 
 ### Score Encoding (Critical Difference from Mortal)
 
@@ -372,11 +371,11 @@ Hydra uses uncapped scores with three complementary representations:
 - **Relative gaps:** `(my_score − other_score) / 30,000` for all pairwise comparisons. Preserves fine-grained placement information.
 - **Overtake thresholds:** Points needed to change placement against each opponent. Directly encodes "what do I need to win 2nd place?"
 
-### Safety Channels (61–83)
+### Safety Channels (62–84)
 
 These are novel additions for explicit opponent modeling. Standard Mahjong defense relies on genbutsu, suji, kabe, and one-chance analysis. Mortal learns these patterns implicitly; Hydra provides them as precomputed input features to accelerate learning and improve defensive accuracy.
 
-#### Genbutsu (Channels 61–69)
+#### Genbutsu (Channels 62–70)
 
 100% safe tiles guaranteed by the furiten rule — any tile an opponent has discarded (discard furiten), plus any tile discarded by any player after that opponent declared riichi (riichi furiten).
 
@@ -388,9 +387,9 @@ Three channels per opponent (9 total), encoding three semantically distinct safe
 | +1 | Tedashi genbutsu | Binary mask: subset of +0 where tile was hand-discarded (tedashi) by this opponent. Carries hand-shape information — tedashi implies the opponent evaluated and rejected this tile. |
 | +2 | Riichi-era genbutsu | Binary mask: subset of +0 where tile became safe AFTER this opponent declared riichi. Only non-zero when opponent is in riichi. Separates pre-riichi safety (mutable hand) from post-riichi safety (locked hand). |
 
-> See [OPPONENT_MODELING § 2.1 Genbutsu](OPPONENT_MODELING.md#21-genbutsu-絶対安全牌--channels-6169) for calculation flow, Mermaid diagram, and design rationale. No existing mahjong AI (Mortal, Suphx, Kanachan) pre-computes genbutsu channels — Hydra's explicit encoding is a deliberate advantage.
+> See [OPPONENT_MODELING § 2.1 Genbutsu](OPPONENT_MODELING.md#21-genbutsu-絶対安全牌--channels-6270) for calculation flow, Mermaid diagram, and design rationale. No existing mahjong AI (Mortal, Suphx, Kanachan) pre-computes genbutsu channels — Hydra's explicit encoding is a deliberate advantage.
 
-#### Suji (Channels 70–78)
+#### Suji (Channels 71–79)
 
 Suji (筋) defense logic — tiles sharing a numerical relationship with an opponent's discards, making certain waits impossible.
 
@@ -402,20 +401,20 @@ Suji (筋) defense logic — tiles sharing a numerical relationship with an oppo
 
 Three channels per opponent (9 total). Float value: suji safety score from 0.0 to 1.0.
 
-#### Kabe and One-Chance (Channels 79–80)
+#### Kabe and One-Chance (Channels 80–81)
 
 | Channel | Content | Logic |
 |---------|---------|-------|
-| 79 | Kabe (壁) | All 4 copies of a tile are visible → no-chance wait involving that tile |
-| 80 | One-chance | 3 copies visible → low probability of that tile being in a wait |
+| 80 | Kabe (壁) | All 4 copies of a tile are visible → no-chance wait involving that tile |
+| 81 | One-chance | 3 copies visible → low probability of that tile being in a wait |
 
-#### Tenpai Hints (Channels 81–83)
+#### Tenpai Hints (Channels 82–84)
 
 | Channel | Content |
 |---------|---------|
-| 81 | Opponent 1 riichi or high-probability tenpai |
-| 82 | Opponent 2 riichi or high-probability tenpai |
-| 83 | Opponent 3 riichi or high-probability tenpai |
+| 82 | Opponent 1 riichi or high-probability tenpai |
+| 83 | Opponent 2 riichi or high-probability tenpai |
+| 84 | Opponent 3 riichi or high-probability tenpai |
 
 Initially populated from riichi status (binary). During inference, these channels can be augmented by the Tenpai Head's predictions, creating a feedback loop where the model's own opponent-reading informs its defensive encoding.
 
@@ -448,7 +447,7 @@ graph LR
     end
 
     subgraph "Output"
-        TENSOR["[84 × 34] Tensor"]
+        TENSOR["[85 × 34] Tensor"]
     end
 
     GS --> HAND_ENC
@@ -498,7 +497,7 @@ Both configurations are well under the 50ms decision limit imposed by online pla
 | Feature | Mortal | Hydra |
 |---------|--------|-------|
 | Opponent modeling | None (SinglePlayerTables) | Oracle distillation + tenpai/danger heads |
-| Safety logic | Implicit (learned from data) | Explicit 23-plane input encoding (channels 61–83) |
+| Safety logic | Implicit (learned from data) | Explicit 23-plane input encoding (channels 62–84) |
 | Damaten detection | Poor (documented weakness) | Dedicated tenpai predictor head |
 | Score encoding | Dual-scale (100K/30K channels, degraded above 30K) | Uncapped + relative gaps + overtake thresholds |
 | Training algorithm | DQN + CQL (offline RL) | PPO + League (online RL) |
