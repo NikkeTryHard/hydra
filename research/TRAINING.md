@@ -279,6 +279,13 @@ graph TB
 
  #### Component 1: GRP-Based ΔE[pts] (Per-Kyoku Reward)
 
+> **Naming clarification (two GRP components):** Hydra has two distinct components both using the "GRP" name:
+>
+> 1. **External GRP reward model** (this section): A separate pretrained frozen 2-layer GRU (hidden=128) over per-kyoku score features. Used solely for reward computation (`deltaE[pts]`). Independent of the main network. Defined below.
+> 2. **Internal GRP auxiliary head** ([HYDRA_SPEC S GRP Head](HYDRA_SPEC.md#grp-head-global-rank-prediction)): An output head on the shared backbone (GAP -> concat score context -> MLP -> 24 softmax). Part of the agent network, trained with CE auxiliary loss (weight 0.1). Provides placement awareness to the backbone's learned representation.
+>
+> These are intentionally different: the external GRP provides a stable reward signal (frozen, never changes during RL), while the internal head gives the backbone gradient signal for learning placement-aware features. The loss formula's `L_GRP` term refers to the **internal head's** auxiliary loss, not the external reward model.
+
  The GRP (Game Result Prediction) head predicts the final game placement distribution at each kyoku boundary. The reward for kyoku k is the change in expected placement points:
 
  $$r_k = E[\text{pts}]_{\text{after kyoku } k} - E[\text{pts}]_{\text{before kyoku } k}$$
@@ -394,9 +401,11 @@ graph TB
 
 ### Total Loss
 
-The total training loss combines six components with phase-dependent weighting:
+The total training loss combines baseline and extended components with phase-dependent weighting:
 
-$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{policy}} + 0.5 \cdot \mathcal{L}_{\text{value}} + 0.1 \cdot \mathcal{L}_{\text{GRP}} + 0.05 \cdot \mathcal{L}_{\text{tenpai}} + 0.05 \cdot \mathcal{L}_{\text{danger}} + \lambda_{\text{KL}} \cdot D_{\text{KL}} - \beta \cdot H(\pi)$$
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{policy}} + 0.5 \cdot \mathcal{L}_{\text{value}} + 0.1 \cdot \mathcal{L}_{\text{GRP}} + 0.05 \cdot \mathcal{L}_{\text{tenpai}} + 0.05 \cdot \mathcal{L}_{\text{danger}} + [0.02 \cdot \mathcal{L}_{\text{wait-set}} + 0.02 \cdot \mathcal{L}_{\text{value-tenpai}} + 0.02 \cdot \mathcal{L}_{\text{call-intent}} + 0.02 \cdot \mathcal{L}_{\text{sinkhorn}}] + \lambda_{\text{KL}} \cdot D_{\text{KL}} - \beta \cdot H(\pi)$$
+
+Terms in brackets are **extended heads** -- included only when those heads are active (gated by ablation results from [ABLATION_PLAN A10-A12](ABLATION_PLAN.md#a10-dense-vs-sparse-danger-labels)). Baseline training uses only the first 5 auxiliary terms.
 
 Where:
 - $\mathcal{L}_{\text{policy}}$: PPO clipped surrogate objective (Phase 2–3) or cross-entropy with human actions (Phase 1)
@@ -413,7 +422,11 @@ Where:
 |------|---------|--------|---------|
 | GRP | $\text{CE}(\hat{y}_{\text{GRP}}, y_{\text{rank}})$ | 0.1 | Placement awareness |
 | Tenpai | $\text{BCE}(\hat{y}_{\text{tenpai}}, y_{\text{tenpai}})$ | 0.05 | Opponent reading |
-| Danger | Focal BCE (α=0.25, γ=2.0) on deal-in events | 0.05 | Defensive play |
+| Danger | Focal BCE (α=0.25, γ=2.0) on deal-in events | 0.05 (sparse) / 0.005 (dense) | Defensive play |
+| Wait-Set | Focal BCE (α=0.25, γ=2.0) on ron-eligible waits | 0.02 | Wait structure ([OPPONENT_MODELING § 4.6](OPPONENT_MODELING.md#46-wait-set-belief-head-extended-opponent-modeling)) |
+| Value-Tenpai | CE on hand value bins, masked to tenpai states | 0.02 | Threat severity ([OPPONENT_MODELING § 3.7](OPPONENT_MODELING.md#37-value-conditioned-tenpai-threat-severity)) |
+| Call-Intent | CE on yaku archetypes, masked to open-hand states | 0.02 | Yaku plan reading ([OPPONENT_MODELING § 4.7](OPPONENT_MODELING.md#47-call-intent--yaku-plan-inference-head)) |
+| Sinkhorn Alloc | KL on Sinkhorn-projected tile marginals vs ground truth | 0.02 | Count-consistent belief ([OPPONENT_MODELING § 7.6](OPPONENT_MODELING.md#constraint-consistent-belief-via-sinkhorn-projection-tile-allocation-head)) |
 
  **Tenpai label source (phase-specific):**
  - **Phase 1 (SL):** Ground-truth tenpai labels reconstructed from game logs — MJAI records contain all 4 players' starting hands in `start_kyoku`, and hand state is reconstructible at every decision point. Shanten=0 ↔ tenpai. No oracle mode required.
@@ -426,7 +439,7 @@ Where:
  - **Phase 2 enhancement:** The oracle teacher can generate **soft danger labels for all 34 tile positions** at every decision point (it sees opponent hands and can compute exact deal-in probability for each tile type). This dramatically densifies the signal and enables the danger head to learn counterfactual danger: "what WOULD have happened if I discarded tile X?"
  - **Phase 1 dense labels (from log reconstruction):** MJAI logs contain all 4 players' starting hands in `start_kyoku`. By replaying draws, discards, and calls, every opponent's hand is reconstructible at every decision point — the same infrastructure used for tenpai labels. At each timestep, compute for each opponent: (a) is the opponent in tenpai? (b) if yes, which of the 34 tile types are in their ron-eligible wait set? (c) apply furiten exclusion — if the opponent previously passed on a tile or discarded it, that tile is not ron-eligible. This produces a dense `[3×34]` binary label at every decision point, regardless of what the player actually discards. The loss then backpropagates through **all 34 tile positions**, not just the discarded tile.
  - **Correctness requirements for dense labels:** Furiten handling is critical. Three cases must be checked: (1) *discard furiten* — opponent discarded the tile themselves, (2) *temporary furiten* — opponent passed on a ron opportunity since their last draw, (3) *riichi furiten* — opponent passed on ron after declaring riichi (permanent for the round). Without furiten exclusion, dense labels will contain false positives for tiles in the wait set but not actually ron-callable, inflating danger estimates and producing an over-defensive agent.
- - **Gradient magnitude warning:** Switching from sparse (1 tile position per sample) to dense (34 tile positions per sample) labels increases the effective gradient contribution from the danger head by ~30×. At the default loss weight of 0.05, this risks the danger head dominating the shared backbone's gradient signal, warping the representation toward danger estimation at the expense of policy quality. **Mitigation:** reduce the danger loss weight to 0.005 when using dense labels (compensating for 10× more active positions), and monitor the gradient norm ratio between the policy head and danger head during training — keep them within 2× of each other (MetaBalance; He et al., WWW 2022). Alternatively, use `stop_gradient` on the danger head's backward pass through the backbone for the first N epochs, letting the head learn its own parameters before influencing the shared representation. See [ABLATION_PLAN § A9](ABLATION_PLAN.md#a9-dense-vs-sparse-danger-labels) for the controlled comparison.
+ - **Gradient magnitude warning:** Switching from sparse (1 tile position per sample) to dense (34 tile positions per sample) labels increases the effective gradient contribution from the danger head by ~30×. At the default loss weight of 0.05, this risks the danger head dominating the shared backbone's gradient signal, warping the representation toward danger estimation at the expense of policy quality. **Mitigation:** reduce the danger loss weight to 0.005 when using dense labels (compensating for 10× more active positions), and monitor the gradient norm ratio between the policy head and danger head during training — keep them within 2× of each other (MetaBalance; He et al., WWW 2022). Alternatively, use `stop_gradient` on the danger head's backward pass through the backbone for the first N epochs, letting the head learn its own parameters before influencing the shared representation. See [ABLATION_PLAN § A10](ABLATION_PLAN.md#a10-dense-vs-sparse-danger-labels) for the controlled comparison.
    - **Label source:** [houou-statistics](https://github.com/chienshyong/houou-statistics) demonstrates that hand reconstruction and wait computation from Tenhou logs is straightforward — its `log_hand_analyzer.py` tracks all 4 players' hands at every event, and `shanten.py` computes ukeire (waiting tiles) for any hand state. The computation is deterministic and adds negligible overhead to the data pipeline.
  - See [OPPONENT_MODELING § 4.4 Training Signal](OPPONENT_MODELING.md#44-training-signal) for per-opponent label format and class imbalance analysis.
 
@@ -493,7 +506,9 @@ At inference, λ is fixed to its final training value. The danger head output is
 
 `safe_logits = policy_logits - λ × danger_logits`
 
-This is mathematically equivalent to the Lagrangian formulation in log-probability space.
+Where `danger_logits` denotes the **pre-sigmoid logits** from the danger head (NOT the post-sigmoid probabilities). Using raw logits preserves the log-probability space interpretation. The danger head architecture (`Conv1d(256, 3, 1)`) produces logits; the sigmoid is applied only for the auxiliary loss target (BCE). At inference, the pre-sigmoid values are extracted before the activation.
+
+This is mathematically equivalent to the Lagrangian formulation in log-probability space: the combined score approximates `log pi(a) - lambda * log(p_danger(a) / (1 - p_danger(a)))`.
 
 ### Conformal Risk Control (Inference-Time Defense Governor)
 
