@@ -116,6 +116,8 @@ Source: GitHub Discussion #102 (Equim-chan)
 
 ## Community Observations
 
+> **Ownership note:** This file is the authoritative list of Mortal strengths/limitations with evidence context. `COMMUNITY_INSIGHTS.md` stores broader community signals; `HYDRA_SPEC.md` keeps only concise architecture-differentiator summaries.
+
 ### Playstyle Statistics
 
 Compared to akochan (another mahjong AI), Mortal plays a noticeably more conservative and efficient style:
@@ -129,6 +131,8 @@ Compared to akochan (another mahjong AI), Mortal plays a noticeably more conserv
 Despite lower action rates across the board, Mortal achieves a **higher win rate** than akochan — winning more often while declaring riichi less, calling less, and dealing in less.
 
 Source: `docs/src/perf/strength.md`
+
+Public Mortal performance tables also publish **Deal-in rate after riichi** and **Deal-in rate after call**. No dedicated **damaten-specific deal-in** breakdown is published in the same source.
 
 ### Known Weaknesses
 
