@@ -22,7 +22,7 @@ See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specif
 | [HYDRA_SPEC.md](research/HYDRA_SPEC.md) | Architecture, input encoding, output heads, inference |
 | [TRAINING.md](research/TRAINING.md) | Training pipeline (phases 1-3), loss functions, hyperparameters, roadmap |
 | [MORTAL_ANALYSIS.md](research/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
-| [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Safety planes, tenpai/danger heads, oracle distillation |
+| [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Safety planes, 9-head specs (tenpai/danger/FiLM/call-intent/Sinkhorn), RSA deception, CVaR, L0 observer |
 | [INFRASTRUCTURE.md](research/INFRASTRUCTURE.md) | Rust/Python stack, data pipeline, training infra, hardware, deployment |
 | [SEEDING.md](research/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
 | [CHECKPOINTING.md](research/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
@@ -32,6 +32,7 @@ See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specif
 | [REFERENCES.md](research/REFERENCES.md) | All citations with why each matters for Hydra |
 | [TESTING.md](research/TESTING.md) | Testing strategy, correctness verification, property-based tests |
 | [ABLATION_PLAN.md](research/ABLATION_PLAN.md) | Structured experiment queue with hypotheses and protocols |
+| [AUDIT_LOG.md](research/AUDIT_LOG.md) | Change history tracking SSOT fixes across all research docs |
 
 ### Documentation Ownership (SSOT)
 
