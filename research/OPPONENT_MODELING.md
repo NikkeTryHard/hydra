@@ -576,6 +576,45 @@ Replace the PID-Lagrangian's single scalar λ with a state-dependent function λ
 
 Per-opponent GRU over the full discard history to capture temporal patterns (tedashi/tsumogiri sequences, call interruptions). Directly addresses [Open Question #3](TRAINING.md#open-questions). Concrete ablation defined as [A9](ABLATION_PLAN.md#a9-discard-sequence-encoder-tedashi-gru).
 
+### Constraint-Consistent Belief via Sinkhorn Projection (Tile Allocation Head)
+
+**Cross-field import:** Optimal Transport / differentiable matrix scaling (Cuturi, NeurIPS 2013; Mena et al., ICLR 2018).
+
+**Problem:** Mahjong's hidden state is *constrained unknown*, not just unknown. At any time, the remaining tile multiset is fixed by counts (4 copies per type minus visible tiles). Opponents' concealed hands are strongly anti-correlated through shared tile availability. Neural heads that predict per-opponent tile distributions independently can output *inconsistent marginals* (e.g., "each opponent probably has 2x 5p" when only one 5p remains unseen). This miscalibration is systematic and worst in exactly the situations where defense/offense hinges on 1-2 tile copies.
+
+**Solution:** Add a differentiable Sinkhorn projection layer that enforces global tile conservation as a hard structural constraint inside the forward pass.
+
+**Architecture:**
+1. **TileAllocationHead**: `Conv1d(256 -> Z, kernel_size=1)` producing logits `[B x Z x 34]` where Z = number of hidden zones (e.g., Z=4: Opponent_Left_concealed, Opponent_Cross_concealed, Opponent_Right_concealed, Wall_remainder).
+2. Convert logits to positive matrix `A = softplus(logits)` (or `exp(logits/tau)`).
+3. Run **Sinkhorn-Knopp iterations** (10-30 iterations) to find matrix `X` whose:
+   - Row sums match the **remaining count** of each tile type (known exactly from visible tiles): `sum_z X[t,z] = remaining[t]`
+   - Column sums match each zone's **unknown tile count** (known from public state: meld counts, hand sizes, wall size): `sum_t X[t,z] = zone_size[z]`
+4. Output: consistent expected tile counts per zone per tile type.
+
+**Mathematical basis:** The standard entropic optimal transport problem minimizes `<C, P>` subject to `P*1 = r` and `P^T*1 = c`, where r and c are arbitrary non-negative marginals. Sinkhorn iterations alternate row and column normalization: `u^(l+1) = r / (K * v^(l))`, `v^(l+1) = c / (K^T * u^(l+1))`, where `K = exp(-C/epsilon)`. Convergence to the unique solution is guaranteed for positive matrices (Sinkhorn, 1964). Cuturi (NeurIPS 2013, [arXiv:1306.0895](https://arxiv.org/abs/1306.0895)) showed this can be computed efficiently and differentiated through. Mena et al. (ICLR 2018, [arXiv:1802.08665](https://arxiv.org/abs/1802.08665)) demonstrated differentiable Sinkhorn layers inside neural networks with backpropagation through the iterations.
+
+**For Hydra's mahjong case:** Row marginals = remaining tile counts per type (34 values, known exactly). Column marginals = zone sizes (opponent concealed hand sizes + wall remainder, known from public state). The Sinkhorn projection enforces that the belief over hidden tiles is globally consistent with tile conservation -- something no existing mahjong AI does.
+
+**Computational cost:** 10-30 iterations of matrix-vector multiply on a [34 x 4] matrix. Microseconds per forward pass, negligible vs the 40-block SE-ResNet backbone (~10ms).
+
+**Training signal:**
+- **Phase 1:** Labels from log-reconstructed opponent hands (same infrastructure as tenpai/danger/wait-set labels). Target: per-opponent concealed tile count vectors (34-dim).
+- **Phase 2-3:** Oracle teacher sees exact hands. Dense, noise-free supervision.
+- **Loss:** KL divergence or CE on Sinkhorn-projected marginals vs ground truth counts, with small weight (0.01-0.05). Same gradient magnitude caution as dense danger labels.
+
+**Integration with existing heads:** The Sinkhorn belief output serves as a force multiplier for all downstream opponent modeling:
+- **Danger head:** calibrate per-tile danger with "can they even structurally support this wait?"
+- **Wait-set head:** constrain wait predictions to be consistent with available tiles.
+- **Tenpai head:** if the belief assigns near-zero probability to tenpai-enabling tiles being in an opponent's hand, tenpai probability should be low.
+- Feed belief marginals (3x34 opponent tile probabilities) as extra channels into policy/danger heads *after the backbone*, not into the 84-channel observation.
+
+**Stability notes:** Log-domain Sinkhorn (log-sum-exp formulation) is required for numerical stability with small epsilon. Well-documented in the literature (Peyre & Cuturi, "Computational Optimal Transport", 2019). Known issues: gradient vanishing for very small epsilon (too peaked); gradient explosion for very large epsilon (too uniform). Sweet spot: epsilon = 0.01-0.1.
+
+> **Novelty note:** No published mahjong AI or poker AI uses a Sinkhorn/OT projection layer for belief inference inside the agent network. The closest adjacent works are: (1) diffusion-based mahjong hand generation ([DMV Nico case study](https://dmv.nico/en/casestudy/mahjong_tehai_generation/)), which generates hands but requires post-hoc greedy discretization to enforce tile counts -- proving the constraint problem exists; (2) LinSATNet (Wang et al., ICML 2023, [GitHub](https://github.com/Thinklab-SJTU/LinSATNet)), a differentiable Sinkhorn-based constraint satisfaction layer proven to work for routing, graph matching, and portfolio allocation -- proving the mechanism works. The specific intersection of "differentiable Sinkhorn constraint layer inside a game-playing agent for hand inference" is empty in the literature. This is a genuine cross-field import from optimal transport / constrained structured prediction into game AI.
+
+> **Consensus note:** This approach was independently proposed as the #1 recommendation by two separate frontier AI analyses (GPT-5.2 Pro, two independent runs) without seeing each other's output. Both identified mahjong's tile-count conservation as the key structural property that makes Sinkhorn uniquely appropriate.
+
 ## 8. Expected Improvements
 
 ### 8.1 Per-Phase Milestone Targets
