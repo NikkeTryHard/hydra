@@ -617,6 +617,59 @@ Per-opponent GRU over the full discard history to capture temporal patterns (ted
 
 > **Consensus note:** This approach was independently proposed as the #1 recommendation by two separate frontier AI analyses (GPT-5.2 Pro, two independent runs) without seeing each other's output. Both identified mahjong's tile-count conservation as the key structural property that makes Sinkhorn uniquely appropriate.
 
+### Pragmatic Deception via Rational Speech Acts (RSA)
+
+**Cross-field import:** Cognitive linguistics / computational pragmatics (Frank & Goodman, "Predicting Pragmatic Reasoning in Language Games", Science 336:998, 2012).
+
+**Problem:** Riichi discards are a 34-dimensional "language" that opponents read to infer your hand. Strong opponents (and search-based agents like LuckyJ) use your discard sequence to narrow down your possible hands. A predictable agent is an exploitable agent -- especially against inference-time search, which samples hands consistent with your observed behavior.
+
+**Solution:** Train Hydra to choose discards that actively minimize an observer model's ability to predict its true waiting tiles. In RSA terms: Hydra becomes a "pragmatic speaker" that selects "utterances" (discards) to manipulate the "listener's" (opponent's) Bayesian posterior away from truth.
+
+**Implementation sketch:**
+1. **Public-Only Observer (L0):** Train a separate lightweight model (~3M params) that predicts Hydra's wait from PUBLIC information only (discards, calls, visible tiles -- NOT Hydra's hand). Freeze after Phase 1.
+2. **Deception reward:** At tenpai, compute `r_deception = -alpha * log L0(true_wait | full_public_history)`. Hydra is rewarded when L0 assigns low probability to Hydra's actual waiting tiles.
+3. **Dynamic alpha:** Scale by hand value and shanten: `alpha = gamma * max(0, (E[value] - 3900) / 8000) * I(shanten <= 1)`. Cheap hands: alpha=0 (pure efficiency). Expensive hands: alpha scales up (sacrifice efficiency for concealment).
+4. **Frozen L0 prevents arms race:** L0 represents baseline human-level hand reading. Never update it during self-play -- this breaks the infinite recursion of "I know that they know that I know."
+
+**Strategic implication against search-based opponents:** If LuckyJ's OLSS maintains Bayesian reach probabilities derived from standard play assumptions, deceptive discards poison those probabilities at the root. LuckyJ would sample a universe of hands that EXCLUDES Hydra's actual hand, then run perfect search against phantom states.
+
+**Deferred because:** Requires a working base agent first. The L0 model needs Phase 1 training data. Deception reward interacts with PPO in complex ways (risk of "adversarial self-delusion" -- sacrificing efficiency to be unpredictable). Add only after Phase 3 baseline is stable.
+
+**Metric:** Wait Obfuscation Rate (WOR) -- at tenpai, query L0 for top-3 predicted waits. WOR = percentage of games where true wait is absent from top-3. Baseline (non-deceptive agent): ~65-70%. Target: >90%.
+
+**References:**
+- Frank & Goodman, "Predicting Pragmatic Reasoning in Language Games", Science 336:998, 2012
+- Strouse & Schwab, "Learning to Share and Hide Intentions using Information Regularization", NeurIPS 2018 (closest precedent: mutual information for controlling what agents reveal)
+- Ganin et al., "Domain-Adversarial Training of Neural Networks", JMLR 2016 ([arXiv:1505.07818](https://arxiv.org/abs/1505.07818)) (gradient reversal layer -- alternative mechanism for same goal)
+
+> **Novelty note:** RSA has never been applied to strategic game AI. The import from cognitive linguistics to mahjong discard selection is genuinely novel. The closest related work is Strouse & Schwab (NeurIPS 2018) on information regularization in multi-agent settings, but that addresses cooperative communication, not adversarial deception in a competitive game.
+
+### CVaR-on-GRP for Tail-Risk Placement Control
+
+**Cross-field import:** Risk-sensitive RL / financial risk management (Chow et al., 2015; Tamar et al., 2015; Dabney et al., 2018).
+
+**Problem:** Riichi placement scoring punishes disasters (4th place) more than it rewards marginal wins. Hydra's GRP head predicts the full 24-permutation placement distribution but the current reward (`deltaE[pts]`) optimizes EXPECTED placement -- not tail risk. In South 4, an agent should minimize the probability of catastrophic outcomes, not maximize average points.
+
+**Solution:** Compute CVaR (Conditional Value at Risk) directly from the existing GRP head's 24-permutation output -- zero new parameters needed.
+
+**Implementation (zero-parameter path):**
+1. GRP outputs P(permutation) for all 24 rank orderings.
+2. For each permutation, Hydra's rank is known. Map rank to utility via `pts_vector` (e.g., [3,1,-1,-3]).
+3. This gives a discrete 24-point utility distribution.
+4. Compute CVaR_alpha = expected utility over the worst alpha-fraction of this distribution.
+5. Use CVaR as an alternative objective for late-round value estimation or as an inference-time action scoring adjustment.
+
+**State-dependent alpha:** alpha=0.5 (moderate risk aversion) in early rounds. alpha=0.1 (extreme risk aversion, protect lead) in South 4 when leading. alpha=0.9 (risk-seeking, need a miracle) when 4th in all-last.
+
+**Deferred because:** CVaR optimization in PPO has known instability issues (biased gradient estimates under sampling). Start with CVaR as an inference-time scoring adjustment on top of the trained policy, not as a training objective. If evaluation shows improved endgame placement, consider integrating into Phase 3 PPO via constrained optimization (CPPO; see Lee et al., IEEE 2024).
+
+**References:**
+- Chow, Tamar, Mannor, Pavone, "Risk-Sensitive and Robust Decision-Making via CVaR Optimization", NeurIPS 2015
+- Tamar, Glassner, Mannor, "Optimizing the CVaR via Sampling", AAAI 2015
+- Dabney et al., "Distributional Reinforcement Learning with Quantile Regression", AAAI 2018 ([arXiv:1710.10044](https://arxiv.org/abs/1710.10044))
+
+> **Novelty note:** CVaR in RL is well-established. The novel aspect is computing it directly from Hydra's existing GRP 24-permutation output with zero additional parameters, and the state-dependent alpha conditioning on Riichi placement dynamics. No published mahjong AI uses CVaR for placement optimization.
+
 ## 8. Expected Improvements
 
 ### 8.1 Per-Phase Milestone Targets
