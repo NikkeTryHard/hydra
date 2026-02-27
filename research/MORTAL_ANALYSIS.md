@@ -8,7 +8,7 @@ Consolidated reference for the Mortal Mahjong AI — architecture, limitations, 
 
 Mortal's backbone is a ResNet with Channel Attention (Squeeze-Excitation style). The v4 observation shape is **(1012, 34)**, representing 1012 channels across 34 tile types (source: `libriichi/src/consts.rs:25` (at commit `0cff2b5`) — `obs_shape(4)` returns `[1012, 34]`; the 1012 channels are constructed in `libriichi/src/state/obs_repr.rs`). The action space consists of **46 discrete actions**: indices 0–36 map to discard or kan-tile-selection for each of 37 tiles (34 base + 3 aka), 37 is riichi declaration, 38–40 are the three chi variants (low/mid/high), 41 is pon, 42 is kan (covers all types: daiminkan, ankan, kakan — uses a two-phase system where a second forward pass with `at_kan_select=true` reuses indices 0–36 to pick *which* tile to kan), 43 is agari (win), 44 is ryuukyoku (draw), and 45 is pass.
 
-> **Note:** Mortal's action index allocation differs from Hydra's (see [HYDRA_SPEC.md § Policy Head](HYDRA_SPEC.md#policy-head-actor)). Both use 46 total actions but assign different indices — e.g., Mortal uses 0–36 for discards (including aka variants) while Hydra uses 0–33. Do not mix the two mappings.
+> **Note:** Hydra adopts Mortal's exact 46-action mapping (see [HYDRA_SPEC.md § Policy Head](HYDRA_SPEC.md#policy-head-actor)). Both use 46 total actions with the same indices: 0–36 for discards (including aka variants), 37 riichi, 38–40 chi, 41 pon, 42 kan, 43 agari, 44 ryuukyoku, 45 pass.
 
 All versions use the **Dueling DQN** decomposition `Q = V + A − mean(A)`, but the head architecture differs by version:
 

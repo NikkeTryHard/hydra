@@ -37,7 +37,7 @@ All experiments use the Phase 1 BC model (`bc_best.pt`) as the control baseline 
 
 | ID | Hypothesis | Control | Treatment | Primary Metric | Sample Size | Gates | Priority |
 |----|-----------|---------|-----------|---------------|-------------|-------|----------|
-| A1 | Safety planes (ch 61-83) reduce deal-in rate by >= 1pp | 61ch input (no safety planes) | 84ch input (full safety planes) | Deal-in rate | Full (200K) | A2, A3 | P0 |
+| A1 | Safety planes (ch 62-84) reduce deal-in rate by >= 1pp | 62ch input (no safety planes) | 85ch input (full safety planes) | Deal-in rate | Full (200K) | A2, A3 | P0 |
 | A2 | Tenpai aux head improves damaten deal-in avoidance | No tenpai head | Full tenpai head (sigmoid(3)) | Deal-in rate vs non-riichi opponents | Full (200K) | None | P0 |
 | A3 | Danger head improves tile-level deal-in avoidance | No danger head | Full danger head with focal loss | Deal-in rate, win/deal-in ratio | Full (200K) | None | P0 |
 | A4 | Oracle distillation (KD) improves implicit opponent reading | Skip Phase 2 (BC -> League) | Full 3-stage pipeline (BC -> Oracle -> League) | Avg placement | Ablation (1M) | None | P1 |
@@ -92,11 +92,11 @@ Each experiment follows this protocol:
 
 ### A1: Safety Planes
 
-**Hypothesis:** Explicit safety planes (genbutsu, suji, kabe — channels 61-83) reduce deal-in rate by at least 1 percentage point compared to a model that must learn these patterns implicitly from raw tile counts.
+**Hypothesis:** Explicit safety planes (genbutsu, suji, kabe — channels 62-84) reduce deal-in rate by at least 1 percentage point compared to a model that must learn these patterns implicitly from raw tile counts.
 
-**Control model:** Modify the stem to `Conv1d(61, 256, 3)`. Channels 61-83 are zeroed out during encoding. All other architecture and training identical.
+**Control model:** Modify the stem to `Conv1d(62, 256, 3)`. Channels 62-84 are zeroed out during encoding. All other architecture and training identical.
 
-**Treatment model:** Standard 84-channel Hydra architecture with full safety plane encoding.
+**Treatment model:** Standard 85-channel Hydra architecture with full safety plane encoding.
 
 **Secondary metrics:** Win rate (safety planes should not reduce aggression excessively), danger head AUC (with vs. without precomputed safety features as input), tenpai head AUC.
 
@@ -180,7 +180,7 @@ Each experiment follows this protocol:
 
 **Control model:** Standard channel-only tedashi encoding (current: per-opponent discard channels with binary tedashi flag and exponential temporal decay).
 
-**Treatment model:** Add a small GRU (hidden_dim=64) per opponent that processes the discard sequence as tokens: `(tile_id, tsumogiri_flag, turn_index, after_call_flag)`. The GRU hidden state `h_i` conditions the tenpai, danger, and wait-set heads via FiLM (feature-wise linear modulation). The base 84×34 tensor is unchanged — the GRU adds a supplementary per-opponent context vector.
+**Treatment model:** Add a small GRU (hidden_dim=64) per opponent that processes the discard sequence as tokens: `(tile_id, tsumogiri_flag, turn_index, after_call_flag)`. The GRU hidden state `h_i` conditions the tenpai, danger, and wait-set heads via FiLM (feature-wise linear modulation). The base 85×34 tensor is unchanged — the GRU adds a supplementary per-opponent context vector.
 
 **Parameter cost:** ~50K per opponent GRU × 3 opponents + FiLM layers = ~200K total (~1.2% of model). Modest overhead.
 
@@ -271,7 +271,7 @@ graph LR
 | Open Question | Ablation | How It Resolves the Question |
 |--------------|----------|------------------------------|
 | 1. GRP Horizon: final game rank vs next round rank? | A6 | Compares 24-class (final game) vs scalar (can be configured for either). If scalar performs equally, the simpler approach wins. |
-| 2. Safety Plane Utility: do explicit suji/kabe planes help? | A1 | Directly tests 61ch (no safety) vs 84ch (full safety). |
+| 2. Safety Plane Utility: do explicit suji/kabe planes help? | A1 | Directly tests 62ch (no safety) vs 85ch (full safety). |
 | 3. Tedashi Encoding: channel-only vs GRU head? | A9 | Tests a per-opponent GRU over the full discard sequence (with tedashi/tsumogiri flags) vs channel-only encoding. Measures damaten detection AUC and deal-in rate vs non-riichi opponents. |
 | 4. Distillation Duration: when does teacher knowledge saturate? | A4 | If oracle distillation shows no benefit (BC -> League equals BC -> Oracle -> League), duration is moot. If it helps, monitor KL divergence curve during Phase 2 training to find the saturation point. |
 | 5. Aggression Balance: how to prevent oracle-guided passivity? | A4 + monitoring | Track win/deal-in ratio during Phase 2 training. Healthy range is 2:1 to 2.5:1 per [TRAINING.md](TRAINING.md). If the ratio exceeds 3:1, the agent is too passive. |

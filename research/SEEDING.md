@@ -113,7 +113,7 @@ Opponent category selection (50% self / 30% random pool / 20% frozen baseline, a
 | Flag | Phase 1 (BC) | Phases 2–3 (RL) | Effect |
 |------|-------------|-----------------|--------|
 | `torch.manual_seed()` | Always | Always | Seeds all CPU + CUDA RNG streams |
-| `cudnn.benchmark = False` | Always | Always | Disables auto-tuning; fixed-size inputs (84x34) make perf cost negligible |
+| `cudnn.benchmark = False` | Always | Always | Disables auto-tuning; fixed-size inputs (85x34) make perf cost negligible |
 | `torch.use_deterministic_algorithms(True)` | Optional (debug) | No | Forces deterministic CUDA kernels; ~5–15% overhead |
 
 **Implementation notes:**

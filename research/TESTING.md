@@ -44,10 +44,10 @@ Cross-validate the Rust scoring engine against the `mahjong` Python library (v1.
 **Edge cases requiring explicit test fixtures:**
 
 - Pinfu tsumo (fu calculation differs from ron)
-- Double yakuman (e.g., Daisangen + Tsuuiisou)
-- Kazoe yakuman (13+ han from non-yakuman yaku)
-- Paarenchan (8+ consecutive dealer wins with honba stacking)
-- Kiriage mangan (rounding up 3 han 60 fu or 4 han 30 fu — ruleset-dependent)
+- Double yakuman (e.g., Daisangen + Tsuuiisou — additive stacking per [HYDRA_SPEC § Target Ruleset](HYDRA_SPEC.md#target-ruleset-tenhou-houou-4-player-%E9%B3%B3%E5%87%B0%E5%8D%93-%E5%9B%9B%E4%BA%BA%E6%89%93%E3%81%A1))
+- Kazoe yakuman (13+ han from non-yakuman yaku — scored as yakuman per Tenhou rules)
+- Paarenchan (8+ consecutive dealer wins — no special scoring per Tenhou rules; honba uncapped)
+- Kiriage mangan (3 han 60 fu / 4 han 30 fu = 7700, NOT rounded to mangan per Tenhou ranked rules)
 
 ### Wall Shuffle Determinism
 
@@ -83,9 +83,9 @@ All five abortive draw types from INFRASTRUCTURE.md must be tested:
 
 ## Observation Encoding Correctness
 
-### 84-Channel Verification
+### 85-Channel Verification
 
-Each of the 84 channels must encode exactly what HYDRA_SPEC claims. Build a test harness that constructs known game states and verifies the output tensor element by element.
+Each of the 85 channels must encode exactly what HYDRA_SPEC claims. Build a test harness that constructs known game states and verifies the output tensor element by element.
 
 **Channel-by-channel tests:**
 
@@ -95,12 +95,12 @@ Each of the 84 channels must encode exactly what HYDRA_SPEC claims. Build a test
 | 8 (drawn tile) | Draw 5p, verify only index 12 is 1.0, all others 0.0 |
 | 9-10 (shanten masks) | Construct a tenpai hand, verify keep-shanten and next-shanten masks match `xiangting` output |
 | 11-22 (discards) | Discard 3 tiles with known tedashi/tsumogiri flags, verify encoding |
-| 35-38 (dora) | Set 2 dora indicators, verify thermometer encoding |
+| 35-42 (dora/aka) | Set 2 dora indicators, verify thermometer encoding; check aka planes for red 5s |
 | 42-45 (riichi status) | Declare riichi for player 2, verify only ch43 is all-1.0 |
 | 46-49 (scores) | Set scores to [25000, 30000, 20000, 25000], verify normalization by 100000 |
-| 61-69 (genbutsu) | Opponent declares riichi then player discards 7s → 7s is genbutsu for that opponent |
-| 70-78 (suji) | Opponent discards 4m → verify 1m and 7m have suji safety > 0 |
-| 79-80 (kabe/one-chance) | All 4 copies of 3p visible → verify kabe flag at index 11 |
+| 62-70 (genbutsu) | Opponent declares riichi then player discards 7s → 7s is genbutsu for that opponent |
+| 71-79 (suji) | Opponent discards 4m → verify 1m and 7m have suji safety > 0 |
+| 80-81 (kabe/one-chance) | All 4 copies of 3p visible → verify kabe flag at index 11 |
 
 ### Known-State Golden Tests
 
@@ -108,7 +108,7 @@ Maintain a set of 20+ hand-crafted game states with pre-computed expected tensor
 
 ### Roundtrip Tests
 
-Construct a game state programmatically → encode to 84x34 tensor → verify expected values. The encoder is one-way (state → tensor), so "roundtrip" means verifying that the tensor faithfully represents the state, not that the state can be recovered from the tensor.
+Construct a game state programmatically → encode to 85x34 tensor → verify expected values. The encoder is one-way (state → tensor), so "roundtrip" means verifying that the tensor faithfully represents the state, not that the state can be recovered from the tensor.
 
 ---
 
@@ -227,7 +227,7 @@ Cross-validate Rust scoring against the `mahjong` Python library on 100K randoml
 
 ### Model Smoke Tests
 
-- Forward pass with random input `[1, 84, 34]` produces correct output shapes: policy `[1, 46]`, value `[1, 1]`, GRP `[1, 24]`, tenpai `[1, 3]`, danger `[1, 3, 34]`
+- Forward pass with random input `[1, 85, 34]` produces correct output shapes: policy `[1, 46]`, value `[1, 1]`, GRP `[1, 24]`, tenpai `[1, 3]`, danger `[1, 3, 34]`
 - Legal action masking: masked logits are negative infinity, softmax produces zero probability for illegal actions
 - ONNX export: export model, run inference through ONNX Runtime, verify output matches PyTorch within tolerance (atol=1e-5)
 
@@ -240,7 +240,7 @@ Cross-validate Rust scoring against the `mahjong` Python library on 100K randoml
 
 ### Data Pipeline Tests
 
-- DataLoader yields batches of correct shape `[2048, 84, 34]`
+- DataLoader yields batches of correct shape `[2048, 85, 34]`
 - 3-level shuffle produces different orderings across epochs (statistical test: correlation < 0.1)
 - Suit permutation produces 6 distinct outputs for the same input game
 - Filtering: a game with known bad metadata is excluded from the manifest
