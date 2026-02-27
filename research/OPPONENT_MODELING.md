@@ -638,7 +638,7 @@ A separate lightweight network trained to predict Hydra's wait from PUBLIC infor
 | Output | `[B x 34]` sigmoid -- per-tile probability that the tile is in Hydra's waiting set |
 | Parameters | ~3M |
 | Training data | Phase 1 game logs. For each state where the acting player is in tenpai, label = binary wait mask (34-dim). Input = public info only. |
-| Training | Supervised BCE, 3 epochs on Phase 1 data. Should converge to ~30-35% top-3 accuracy (human-level hand reading from public info). |
+| Training | Supervised BCE, 3 epochs on Phase 1 data. **[estimated]** Convergence accuracy unknown -- no published mahjong AI has measured wait prediction from public info only. Measure L0's top-3 accuracy on a held-out eval set after training; this becomes the empirical WOR baseline. |
 | Freeze point | After Phase 1 training. **Never updated during Phase 3 self-play.** |
 | Storage | `checkpoints/l0_observer/` -- single file, frozen. |
 
@@ -658,21 +658,23 @@ Where:
 **Dynamic alpha (state-dependent):**
 
 ```
-alpha = gamma * max(0, (E[hand_value] - 3900) / 8000) * I(shanten <= 1)
+alpha = gamma * max(0, (E[hand_value] - THRESHOLD) / SCALE) * I(shanten <= 1)
 ```
 
 | State | alpha | Reasoning |
 |-------|-------|-----------|
 | Shanten >= 2 | 0.0 | Hand is far from ready -- pure efficiency, no deception |
-| Shanten 0-1, hand < 3900 pts | 0.0 | Cheap hand -- not worth sacrificing efficiency to hide |
-| Shanten 0-1, hand = 5200 pts | ~0.1 * gamma | Moderate hand -- light deception |
-| Shanten 0-1, hand = 12000+ pts (mangan) | ~1.0 * gamma | Expensive hand -- maximize concealment |
+| Shanten 0-1, hand < THRESHOLD pts | 0.0 | Cheap hand -- not worth sacrificing efficiency to hide |
+| Shanten 0-1, hand = moderate | ~0.1 * gamma | Moderate hand -- light deception |
+| Shanten 0-1, hand = mangan+ | ~1.0 * gamma | Expensive hand -- maximize concealment |
 
-Recommended gamma = 0.05 (start very small, tune upward if WOR improves without winrate collapse).
+**[estimated -- requires empirical tuning]** THRESHOLD and SCALE are hyperparameters. Starting point: THRESHOLD=3900, SCALE=8000 (based on common push/fold EV thresholds in riichinotes analysis where 3900 is roughly the break-even point for pushing against a riichi opponent with moderate hand). These MUST be tuned against actual Phase 3 win/deal-in metrics. The [riichinotes push/fold analysis](https://riichinotes.blogspot.com/2023/11/push-fold-fundamentals-winratedealinrate.html) provides EV charts that can inform better thresholds once Hydra's danger head is calibrated.
+
+**[estimated -- requires empirical tuning]** Recommended starting gamma = 0.05. This is arbitrary -- no prior work exists for deception reward coefficients in game AI. Start at 0.01 and increase by 2x until WOR begins moving, then fine-tune.
 
 **Reward integration:** `r_total = r_grp + gamma_deception * r_deception`. The deception reward is ADDED to the existing GRP-based reward, not replacing it. The PPO advantage function sees both signals.
 
-**Compute overhead:** L0 is called ONCE per episode at the moment of tenpai (not every step). In batched self-play with 512 concurrent games, this adds ~0.5ms per batch (single forward pass of a 3M param model). **<2% compute overhead** on the self-play loop. At deployment/inference, L0 is discarded entirely -- the deceptive policy is baked into Hydra's actor weights.
+**Compute overhead:** L0 is called ONCE per episode at the moment of tenpai (not every step). In batched self-play with 512 concurrent games, this adds an estimated ~0.5ms per batch (single forward pass of a 3M param model). **[estimated -- benchmark during implementation]** At deployment/inference, L0 is discarded entirely -- the deceptive policy is baked into Hydra's actor weights.
 
 #### Failure Modes and Mitigations
 
@@ -687,15 +689,15 @@ Recommended gamma = 0.05 (start very small, tune upward if WOR improves without 
 
 At the moment Hydra reaches tenpai, query the frozen L0 model for its top-3 predicted tiles.
 - **WOR** = percentage of games where Hydra's true wait is completely absent from L0's top-3.
-- **Baseline** (non-deceptive agent): ~65-70% WOR (true wait IS in top-3 roughly 30-35% of the time).
-- **Target**: >90% WOR (L0 top-3 accuracy drops below 10%).
-- **Constraint**: Overall Phase 3 win rate must stay within 1.5pp of the non-deceptive baseline.
+- **Baseline** (non-deceptive agent): **[unknown -- measure empirically]** No published data exists on wait prediction accuracy from public info in Riichi Mahjong. The baseline WOR is whatever L0 achieves on the non-deceptive Phase 3 agent. This becomes the reference point.
+- **Target**: Improve WOR by at least 15 percentage points over measured baseline (e.g., if baseline is 60%, target is 75%+). **[estimated -- adjust after measuring baseline]**
+- **Constraint**: Overall Phase 3 win rate must stay within 1.5pp of the non-deceptive baseline. **[estimated -- 1.5pp is arbitrary, adjust based on how sensitive placement is to win rate changes in evaluation]**
 
-Secondary metric: *Suji Trap Frequency* -- how often Hydra's actual wait involves the suji of its own early discards. Baseline ~4%; target >12%.
+Secondary metric: *Suji Trap Frequency* -- how often Hydra's actual wait involves the suji of its own early discards. **[unknown baseline -- measure from Phase 1 game logs before adding deception reward]** The [houou-statistics](https://github.com/chienshyong/houou-statistics) `tedashi_reading.py` analyzer computes related statistics (how often the final wait is near previous tedashi discards) that can inform this baseline.
 
 #### Phase Gate
 
-**Prerequisites:** Phase 3 baseline must be stable (converged PPO, deal-in rate within target, win rate >24%). L0 must be trained and frozen from Phase 1 data.
+**Prerequisites:** Phase 3 baseline must be stable (converged PPO, deal-in rate within target, win rate >24%). **[estimated -- 24% is slightly below uniform 25%, adjust based on actual Phase 3 convergence]** L0 must be trained and frozen from Phase 1 data.
 **Activation:** Add `r_deception` to the PPO reward at Phase 3 step 2M+ (after baseline stabilizes).
 **Kill switch:** If win rate drops >2pp at any point, set gamma=0 and revert to pure GRP reward.
 
@@ -753,8 +755,10 @@ def compute_cvar(grp_probs, pts_vector, alpha, player_idx):
 
 #### State-Dependent Alpha Schedule
 
-| Game State | alpha | Behavior |
-|------------|-------|----------|
+**[estimated -- all alpha values require empirical tuning]** No prior work exists on CVaR alpha schedules for Riichi Mahjong placement games. These are starting points based on game-theoretic intuition about risk tolerance in different game states. The 8000-point thresholds correspond to roughly mangan distance (a common strategic threshold in competitive play). Tune by sweeping alpha values in evaluation and measuring placement distribution shifts.
+
+| Game State | alpha (starting) | Behavior |
+|------------|-------------------|----------|
 | East rounds, any position | 0.5 | Moderate risk aversion (balanced play) |
 | South 1-3, currently 1st by >8000 | 0.2 | Protect lead aggressively |
 | South 1-3, currently 2nd-3rd | 0.5 | Standard play |
@@ -770,7 +774,7 @@ Alpha is computed from the score context vector (already available in the GRP he
 - At each decision, compute `score(a) = (1-beta) * E[utility(a)] + beta * CVaR_alpha(a)` for each legal action
 - `E[utility]` comes from the standard GRP-based value
 - `CVaR_alpha` comes from the procedure above applied to the predicted GRP distribution after action a
-- beta = 0.0 in early rounds, 0.3-0.5 in South rounds (tunable)
+- **[estimated -- requires tuning]** beta = 0.0 in early rounds, 0.3-0.5 in South rounds. Sweep beta in [0.1, 0.3, 0.5, 0.7] on South-round-only eval seeds to find the value that improves 4th avoidance without collapsing 1st-place rate.
 - **Zero training changes required.** Pure inference-time module.
 
 **Mode B: Training objective modification (Phase 3+ if Mode A shows gains)**
@@ -780,12 +784,16 @@ Alpha is computed from the score context vector (already available in the GRP he
 
 #### Evaluation
 
-| Metric | Baseline (no CVaR) | Target (with CVaR) |
-|--------|--------------------|--------------------|
-| 4th place rate (overall) | ~25% (uniform) | <22% |
-| 4th place rate (South 4, leading by >8000) | ~5% (rare collapse) | <2% |
-| 1st place rate (South 4, trailing by <8000) | ~20% | >25% |
-| Mean placement | ~2.50 | ~2.45 |
+**[estimated -- all targets are directional, not grounded in prior data]** No published mahjong AI uses CVaR for placement, so there are no reference numbers. Targets should be set relative to Phase 3 baseline measurements, not absolute numbers.
+
+| Metric | How to measure | Expected direction |
+|--------|---------------|-------------------|
+| 4th place rate (overall) | Count from 1v3 duplicate eval | Should decrease (baseline: measure from Phase 3 without CVaR) |
+| 4th place rate (South 4, leading) | Slice eval to S4 states where Hydra enters as 1st | Should decrease significantly |
+| 1st place rate (South 4, trailing) | Slice eval to S4 states where Hydra enters as 3rd-4th | Should increase (higher-alpha pushes) |
+| Mean placement | Overall average rank | Should improve (lower is better; 2.50 is uniform random) |
+
+Reference data for baselines: Tenhou Houou-table average placement distribution is approximately 26.5/25.5/24.5/23.5 (1st/2nd/3rd/4th) for the strongest players, with 4th-avoidance rate being the primary differentiator between dan levels ([houou-statistics](https://github.com/chienshyong/houou-statistics) `hand_outcome.py` computes placement by round). Suphx reported a stable dan of 8.74 on Tenhou (approximately 10-dan peak) with placement metrics in the paper but not broken down by round/position ([arXiv:2003.13590](https://arxiv.org/abs/2003.13590)).
 
 **References:**
 - Chow, Tamar, Mannor, Pavone, "Risk-Sensitive and Robust Decision-Making via CVaR Optimization", NeurIPS 2015
