@@ -20,78 +20,78 @@ Training a mahjong AI involves randomness at every layer: tile shuffles, suit au
 
 A single integer master seed governs all randomness in a training run. This seed is the sole input needed to reconstruct the full random state of any component at any point in training.
 
-- **Source:** Passed as a CLI argument (`--seed`). Logged to W&B as a top-level run config parameter at run start.
+- **Source:** Passed as a CLI argument (`--seed`). Logged to experiment tracker.
 - **Contract:** Same `master_seed` + same code version + same hardware = bitwise-identical Phase 1 training; approximately identical Phases 2–3 (see Known Limitations below).
-- **Default behavior:** If no seed is provided, one is generated from `os.urandom`, converted to a 64-bit integer, and logged. This ensures every run is reproducible after the fact — the seed is never lost.
+- **Default behavior:** If no seed is provided, one is generated from system entropy (getrandom), converted to a 64-bit integer, and logged. This ensures every run is reproducible after the fact — the seed is never lost.
 - **Rust side:** The master seed feeds into the `rand 0.9+` ecosystem listed in the Crate Dependencies table. All Rust-side RNG is derived from this seed, never from system entropy during training.
 
 ### Seed Hierarchy
 
-**Decision: NumPy SeedSequence as the root of all randomness.**
+**Decision: Rust rand crate with ChaCha20Rng as the root of all randomness.**
 
-NumPy's `SeedSequence` implements a hash-based seed derivation scheme (based on ThreeFry) that guarantees statistically independent child streams from a single parent seed. This eliminates the classic anti-pattern of using `seed + i` for component seeds, which produces correlated low bits across components.
+Seed derivation uses SHA-256 KDF (matching hydra-core's existing seeding infrastructure). This eliminates the classic anti-pattern of using `seed + i` for component seeds, which produces correlated low bits across components.
 
-**Component allocation via `spawn()`:**
+**Component allocation via `derive_seed()`:**
 
 | Spawn Index | Component | Description |
 |-------------|-----------|-------------|
-| 0 | PyTorch model init | Seeds `torch.manual_seed()` before model construction |
-| 1 | DataLoader workers | Seeds the `torch.Generator` passed to DataLoader |
+| 0 | Burn model init | Seeds Burn backend RNG before model construction |
+| 1 | DataLoader workers | Seeds Burn DataLoader shuffle RNG |
 | 2 | Suit augmentation | Seeds per-worker permutation selection |
 | 3 | Rust game engine | Session seed for self-play game generation |
 | 4 | Opponent pool selection | Seeds opponent category sampling (Phase 3) |
 | 5 | Evaluation seed bank | Seeds generation of the fixed evaluation game set |
 
-**Phase-level derivation:** Each training phase derives its own `SeedSequence` via `SeedSequence(master_seed, spawn_key=(phase_number,))`. This ensures Phase 2 explores different random trajectories than Phase 1 even though both originate from the same master seed.
+**Phase-level derivation:** Each training phase derives its own seed via `derive_seed(master_seed, phase_number)` using SHA-256 KDF. This ensures Phase 2 explores different random trajectories than Phase 1 even though both originate from the same master seed.
 
 ```mermaid
 graph TD
-    MASTER["master_seed (CLI or os.urandom)"]
-    MASTER --> P1["SeedSequence(master, spawn_key=(1,))"]
-    MASTER --> P2["SeedSequence(master, spawn_key=(2,))"]
-    MASTER --> P3["SeedSequence(master, spawn_key=(3,))"]
+    MASTER["master_seed (CLI or getrandom)"]
+    MASTER --> P1["derive_seed(master, 1) via SHA-256 KDF"]
+    MASTER --> P2["derive_seed(master, 2) via SHA-256 KDF"]
+    MASTER --> P3["derive_seed(master, 3) via SHA-256 KDF"]
 
-    P1 --> S0_1["spawn(0): PyTorch Init"]
-    P1 --> S1_1["spawn(1): DataLoader"]
-    P1 --> S2_1["spawn(2): Suit Augment"]
+    P1 --> S0_1["derive(0): Burn Init"]
+    P1 --> S1_1["derive(1): DataLoader"]
+    P1 --> S2_1["derive(2): Suit Augment"]
 
-    P2 --> S0_2["spawn(0): PyTorch Init"]
-    P2 --> S1_2["spawn(1): DataLoader"]
-    P2 --> S2_2["spawn(2): Suit Augment"]
-    P2 --> S3_2["spawn(3): Rust Self-Play"]
+    P2 --> S0_2["derive(0): Burn Init"]
+    P2 --> S1_2["derive(1): DataLoader"]
+    P2 --> S2_2["derive(2): Suit Augment"]
+    P2 --> S3_2["derive(3): Rust Self-Play"]
 
-    P3 --> S0_3["spawn(0): PyTorch Init"]
-    P3 --> S3_3["spawn(3): Rust Self-Play"]
-    P3 --> S4_3["spawn(4): Opponent Pool"]
+    P3 --> S0_3["derive(0): Burn Init"]
+    P3 --> S3_3["derive(3): Rust Self-Play"]
+    P3 --> S4_3["derive(4): Opponent Pool"]
 
     S3_3 --> GAME["Per-Game: set_stream(game_index)"]
-    GAME --> KYOKU["Per-Kyoku: SHA-256 KDF → wall shuffle"]
+    GAME --> KYOKU["Per-Kyoku: SHA-256 KDF --> wall shuffle"]
 ```
 
 **Anti-patterns (never do):**
 - `seed + i` for sequential component seeds — correlated low bits across components
 - Reusing the same seed for multiple components — introduces hidden statistical dependencies
-- Calling `random.seed()` at module import time — pollutes the global RNG state before the hierarchy is established
+- Calling RNG initialization at module load time — pollutes the global RNG state before the hierarchy is established
 
 ### Per-Component Seeding
 
-**3a. PyTorch (model init and training)**
+**3a. Burn (model init and training)**
 
-`torch.manual_seed(component_seed)` seeds CPU and all CUDA device RNG streams simultaneously. This is called once before model construction at the start of each phase, ensuring that orthogonal initialization (specified in the [Model Definition](INFRASTRUCTURE.md#model-definition) section) produces identical weights given the same seed. During training, PyTorch's RNG governs dropout (if any) and any stochastic layers — though Hydra's architecture uses no dropout, so the primary effect is on initialization.
+The Burn backend is seeded with `component_seed` before model construction at the start of each phase, ensuring that orthogonal initialization (specified in the [Model Definition](INFRASTRUCTURE.md#model-definition) section) produces identical weights given the same seed. During training, the backend RNG governs any stochastic layers — though Hydra's architecture uses no dropout, so the primary effect is on initialization.
 
 **3b. DataLoader Workers**
 
-Each DataLoader worker receives a deterministic seed derived from the hierarchy's DataLoader child via PyTorch's `Generator` parameter. The `worker_init_fn` callback uses this seed to initialize each worker's local NumPy and Python `random` state, ensuring that the 8 workers specified in the [Data Loading Pipeline](INFRASTRUCTURE.md#gap-2-data-loading-pipeline) section produce deterministic file ordering and buffer shuffling across runs. Workers must never share RNG state or seed from `time()`.
+Each DataLoader worker receives a deterministic seed derived from the hierarchy's DataLoader child. Workers use this seed to initialize their local ChaCha8Rng, ensuring that the 8 workers specified in the [Data Loading Pipeline](INFRASTRUCTURE.md#gap-2-data-loading-pipeline) section produce deterministic file ordering and buffer shuffling across runs. Workers must never share RNG state or seed from system time.
 
 **3c. Suit Augmentation**
 
-Each DataLoader worker maintains a local RNG for selecting 1-of-6 suit permutations per game, as specified in the [Suit Permutation Augmentation](INFRASTRUCTURE.md#gap-4-suit-permutation-augmentation) section. The local RNG is derived from the worker's own seed (not global state), avoiding GIL contention between workers. Over 6 epochs, this produces approximately uniform coverage of all 6 permutations for each game, without requiring coordination between workers.
+Each DataLoader worker maintains a local ChaCha8Rng for selecting 1-of-6 suit permutations per game, as specified in the [Suit Permutation Augmentation](INFRASTRUCTURE.md#gap-4-suit-permutation-augmentation) section. The local RNG is derived from the worker's own seed (not global state). Over 6 epochs, this produces approximately uniform coverage of all 6 permutations for each game, without requiring coordination between workers.
 
 **3d. Rust Game Engine (Self-Play Seeds)**
 
 The Rust game engine receives a session seed derived from the hierarchy's game engine child. The derivation path:
 
-- **Session level:** `SeedSequence.generate_state(8)` produces a `[u8; 32]` array, used to seed a `ChaCha8Rng` via `from_seed()`.
+- **Session level:** `derive_seed(engine_child, 0)` produces a `[u8; 32]` array, used to seed a `ChaCha8Rng` via `from_seed()`.
 - **Per-game:** The session `ChaCha8Rng` uses `set_stream(game_index)` to create 2^64 independent game streams from a single session seed. Each game index maps to a unique, non-overlapping keystream.
 - **Per-kyoku:** Within each game, wall shuffles use a KDF pattern proven by Mortal: `SHA-256(session_seed || nonce || kyoku || honba)` produces a 32-byte seed for a fresh `ChaCha8Rng` that drives the Fisher-Yates shuffle for that specific kyoku's wall, dead wall, and dora indicators.
 - **Version pinning:** Pin `chacha20 = "=0.10.0"` in `Cargo.toml` to ensure cross-version replay stability. A minor version bump in the cipher crate could silently change the keystream, breaking deterministic replay.
@@ -104,25 +104,23 @@ Game seeds are determined before dispatch to rayon workers — rayon distributes
 
 **3f. Opponent Pool Selection (Phase 3)**
 
-Opponent category selection (50% self / 30% random pool / 20% frozen baseline, as specified in the Phase 3 opponent pool table) uses its own `SeedSequence` child. Given the same seed and the same pool contents (same checkpoints at the same FIFO positions), the same opponent matchups are produced. This enables controlled ablations where only the training policy changes while the opponent schedule remains fixed.
+Opponent category selection (50% self / 30% random pool / 20% frozen baseline, as specified in the Phase 3 opponent pool table) uses its own derived seed child. Given the same seed and the same pool contents (same checkpoints at the same FIFO positions), the same opponent matchups are produced. This enables controlled ablations where only the training policy changes while the opponent schedule remains fixed.
 
-### CUDA Determinism
+### GPU Determinism
 
 **Decision: Full determinism available for Phase 1 debugging; relaxed for Phases 2–3 performance.**
 
 | Flag | Phase 1 (BC) | Phases 2–3 (RL) | Effect |
 |------|-------------|-----------------|--------|
-| `torch.manual_seed()` | Always | Always | Seeds all CPU + CUDA RNG streams |
-| `cudnn.benchmark = False` | Always | Always | Disables auto-tuning; fixed-size inputs (85x34) make perf cost negligible |
-| `torch.use_deterministic_algorithms(True)` | Optional (debug) | No | Forces deterministic CUDA kernels; ~5–15% overhead |
+| Burn backend seed | Always | Always | Seeds all backend RNG streams |
+| cuDNN benchmark off | Always | Always | Disables auto-tuning; fixed-size inputs (85x34) make perf cost negligible |
+| Deterministic kernels | Optional (debug) | No | Forces deterministic CUDA kernels; ~5–15% overhead |
 
 **Implementation notes:**
-- `torch.use_deterministic_algorithms(True)` subsumes the older `torch.backends.cudnn.deterministic = True` — use the modern API exclusively.
-- `CUBLAS_WORKSPACE_CONFIG` environment variable is no longer needed in PyTorch 2.x — deterministic cuBLAS workspace selection is handled internally when `use_deterministic_algorithms` is enabled.
 - bf16 matrix multiplications are deterministic given identical inputs; non-determinism in mixed-precision training comes from reduction ordering in multi-stream operations (e.g., gradient all-reduce), not from the matmul itself.
 - GroupNorm (used throughout the model, as specified in the [Model Definition](INFRASTRUCTURE.md#model-definition) section) is fully deterministic — it has no running statistics and no non-deterministic CUDA kernels.
 - Conv1d switches to a deterministic cuDNN kernel when deterministic mode is enabled, with ~5–8% overhead compared to the auto-tuned non-deterministic kernel.
-- **Recommendation:** Enable full determinism for Phase 1 ablation studies and seed-specific debugging. Do not enable for Phases 2–3 — RL exploration, rayon work-stealing, and GIL contention already make these phases non-bitwise-reproducible, so the 5–15% overhead buys no additional reproducibility guarantee.
+- **Recommendation:** Enable full determinism for Phase 1 ablation studies and seed-specific debugging. Do not enable for Phases 2–3 — RL exploration and rayon work-stealing already make these phases non-bitwise-reproducible, so the 5–15% overhead buys no additional reproducibility guarantee.
 
 ### Checkpoint RNG State
 
@@ -130,10 +128,9 @@ Every checkpoint saves the following RNG state alongside model weights and optim
 
 | Component | What is Saved | Purpose |
 |-----------|---------------|---------|
-| PyTorch CPU RNG | `torch.random.get_rng_state()` | Reproducible forward pass on resume |
-| CUDA RNG (all devices) | `torch.cuda.get_rng_state_all()` | Reproducible GPU operations on resume |
-| Python `random` module | `random.getstate()` | Any Python-level randomness (logging, sampling) |
-| NumPy RNG | `SeedSequence` spawn counter + bit generator state | DataLoader and augmentation state |
+| Burn backend RNG | Backend-specific RNG state via `Record` | Reproducible forward pass on resume |
+| System RNG (rand crate) | ChaCha20Rng serialized state | Reproducible Rust-level randomness on resume |
+| DataLoader RNG | ChaCha8Rng state per worker | DataLoader and augmentation state |
 | Training progress | Epoch number, global step, file cursor position | Reconstruct DataLoader file ordering on resume |
 
 **Resume protocol:** On checkpoint load, all RNG states are restored before the first forward pass. The DataLoader reconstructs its file ordering from the saved epoch number and file cursor, ensuring that resumed training sees exactly the same data sequence as uninterrupted training.
@@ -143,15 +140,14 @@ Every checkpoint saves the following RNG state alongside model weights and optim
 
 ### Phase Transition Seeding
 
-At each phase boundary, all RNG components are re-seeded from the new phase's `SeedSequence` child. This extends the carry/reset table in the [Phase Transitions](INFRASTRUCTURE.md#phase-transitions) section:
+At each phase boundary, all RNG components are re-seeded from the new phase's derived seed child. This extends the carry/reset table in the [Phase Transitions](INFRASTRUCTURE.md#phase-transitions) section:
 
 | Component | Phase 1 → 2 | Phase 2 → 3 |
 |-----------|-------------|-------------|
-| SeedSequence | New child: `spawn_key=(2,)` | New child: `spawn_key=(3,)` |
-| PyTorch RNG | Re-seeded from new phase child | Re-seeded from new phase child |
+| SHA-256 KDF | New child: `derive_seed(master, 2)` | New child: `derive_seed(master, 3)` |
+| Burn backend RNG | Re-seeded from new phase child | Re-seeded from new phase child |
 | Rust game engine | New session seed | New session seed |
-| NumPy RNG | Re-seeded | Re-seeded |
-| DataLoader Generator | Re-seeded | Re-seeded |
+| DataLoader RNG | Re-seeded | Re-seeded |
 | Opponent pool RNG | N/A | Initialized from new phase child |
 
 **Rationale:** Re-seeding ensures each phase explores different random trajectories even with the same master seed. Without re-seeding, Phase 2's game engine would replay the same wall shuffles as Phase 1's evaluation games, creating an artificial correlation between training and evaluation data.
@@ -162,7 +158,7 @@ At each phase boundary, all RNG components are re-seeded from the new phase's `S
 
 A standardized set of 50,000 game seeds ensures cross-run and cross-version comparability of evaluation results. The seed bank is a first-class artifact, not a runtime computation.
 
-- **Generation:** Derived from a published constant (`EVAL_MASTER = 0x2000`) using `SeedSequence(0x2000).generate_state(50000)`. The constant follows Mortal's convention for evaluation key derivation.
+- **Generation:** Derived from a published constant (`EVAL_MASTER = 0x2000`) using `derive_seed(0x2000, i)` for i in 0..50000. The constant follows Mortal's convention for evaluation key derivation.
 - **Storage:** Checked into the repository as `data/eval_seeds.json` — never generated at runtime. This eliminates any risk of evaluation seed drift across code versions or platforms.
 - **Usage tiers** (matching [INFRASTRUCTURE.md § Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation)):
 
@@ -178,8 +174,8 @@ A standardized set of 50,000 game seeds ensures cross-run and cross-version comp
 
 What cannot be made deterministic and why:
 
-- **Phases 2–3 are NOT bitwise reproducible.** Four independent sources of non-determinism interact: GPU reduction ordering in multi-stream operations, rayon work-stealing thread scheduling, Python GIL contention timing, and `torch.compile()` JIT trace differences across runs.
-- **Phase 1 CAN be bitwise reproducible** with `torch.use_deterministic_algorithms(True)` enabled and a fixed seed. This is the recommended configuration for ablation studies and hyperparameter sweeps.
+- **Phases 2–3 are NOT bitwise reproducible.** Multiple independent sources of non-determinism interact: GPU reduction ordering in multi-stream operations, rayon work-stealing thread scheduling, and backend-specific kernel non-determinism.
+- **Phase 1 CAN be bitwise reproducible** with deterministic CUDA kernels enabled and a fixed seed. This is the recommended configuration for ablation studies and hyperparameter sweeps.
 - **Game-level replay IS always deterministic** regardless of training-level non-determinism. Given the same `(seed, kyoku, honba)` tuple, the wall shuffle, dora indicators, and draw order are identical across any platform, any Rust version, any number of threads.
 - **Consistent with industry practice:** KataGo, Mortal, and AlphaStar all achieve game-level determinism without full training reproducibility. No production RL system claims bitwise-reproducible multi-phase training.
 - **Reporting standard:** Following Henderson et al. 2018, report results over 5+ seeds with confidence intervals. Following Agarwal et al. 2021, use interquartile mean (IQM) with bootstrap confidence intervals for RL evaluation rather than mean +/- standard deviation, which is sensitive to outliers in heavy-tailed reward distributions.

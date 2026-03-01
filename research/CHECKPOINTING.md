@@ -16,16 +16,16 @@ This section specifies the full checkpoint lifecycle: what is saved, where it li
 
 ### Checkpoint Format
 
-Every checkpoint is a single dictionary serialized via torch.save. The dictionary is self-describing: it contains the full training configuration, the current phase, and a schema version integer so that future format changes can be handled by explicit migration logic rather than silent breakage.
+Every checkpoint is a single record serialized via Burn's Record system (NamedMpkFileRecorder or BinFileRecorder). The record is self-describing: it contains the full training configuration, the current phase, and a schema version integer so that future format changes can be handled by explicit migration logic rather than silent breakage.
 
 **Core keys present in every checkpoint (all phases):**
 
 | Key | Content | Notes |
 |-----|---------|-------|
-| model_state_dict | Student network weights (bf16) | SE-ResNet backbone + all heads |
-| optimizer_state_dict | AdamW state (fp32 momentum buffers) | See dtype note below |
-| scheduler_state_dict | LR scheduler internal state | Cosine annealing position |
-| rng_state | PyTorch, CUDA, NumPy, Python RNG states | See [Checkpoint RNG State](SEEDING.md#checkpoint-rng-state) |
+| model_record | Student network weights (bf16) | Burn's Module::record(); SE-ResNet backbone + all heads |
+| optimizer_record | AdamW state (fp32 momentum buffers) | Burn's Optimizer::record(); see dtype note below |
+| scheduler_record | LR scheduler internal state | Cosine annealing position |
+| rng_state | Burn backend + system RNG states | See [Checkpoint RNG State](SEEDING.md#checkpoint-rng-state) |
 | global_step | Monotonic training step counter | Continuous across the entire run |
 | phase | Current phase (1, 2, or 3) | Integer |
 | config | Full training configuration | Makes checkpoint self-describing |
@@ -45,7 +45,7 @@ Every checkpoint is a single dictionary serialized via torch.save. The dictionar
 - **KL anchor policy:** Saved as a standalone frozen copy alongside each training checkpoint. This is the snapshot of the previous phase's policy used for the KL divergence penalty that prevents catastrophic forgetting.
 - **GRP network:** A separate checkpoint file containing the pretrained, frozen game result prediction network. This file never changes during training and is shared across all phases.
 
-**Dtype discipline:** The student model is saved in its native bf16 dtype, halving checkpoint size relative to fp32. AdamW's internal momentum buffers (exp_avg and exp_avg_sq) are always fp32 — this is correct and intentional. Casting optimizer state to bf16 would silently destroy the precision that adaptive learning rates depend on. The save protocol preserves whatever dtype each tensor already has; no casting occurs at save time.
+**Dtype discipline:** The student model is saved in its native bf16 dtype, halving checkpoint size relative to fp32. AdamW's internal momentum buffers (exp_avg and exp_avg_sq) are always fp32 — this is correct and intentional. Casting optimizer state to bf16 would silently destroy the precision that adaptive learning rates depend on. Burn's Record system preserves tensor dtypes natively; no casting occurs at save time.
 
 **Size estimates:**
 
