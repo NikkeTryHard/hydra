@@ -175,9 +175,40 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// Invariant 4 (tile count bounds) -- no tile type > 4 across all visible
-// locations. Requires internal GameState tile-audit API (not yet public).
+// Invariant 4: no player's hand contains more than 4 copies of any tile type.
+// Called tiles may appear in both discard pool and meld (double-counted in
+// visible info), so we only check per-hand counts which are always clean.
 // ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    #[test]
+    fn hand_tile_count_never_exceeds_four(seed in 0u64..1000) {
+        let mut state = new_game(seed);
+        let mut counter = 0u64;
+        let mut steps = 0u32;
+        while !state.is_done && steps < MAX_STEPS {
+            for pid in 0..4u8 {
+                let obs = state.get_observation(pid);
+                let mut counts = [0u8; 34];
+                for &t in &obs.hands[pid as usize] {
+                    let tt = (t / 4) as usize;
+                    if tt < 34 { counts[tt] += 1; }
+                }
+                for (tt, &c) in counts.iter().enumerate() {
+                    prop_assert!(
+                        c <= 4,
+                        "player {} has {} of tile type {} at step {}, seed {}",
+                        pid, c, tt, steps, seed,
+                    );
+                }
+            }
+            step_game(&mut state, seed, &mut counter);
+            steps += 1;
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Invariant 5 (136 total tiles) -- all tiles accounted for across wall,
