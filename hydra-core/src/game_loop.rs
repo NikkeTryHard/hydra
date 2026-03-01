@@ -153,13 +153,18 @@ impl GameRunner {
             ActionType::Discard => {
                 if let Some(tile136) = action.tile {
                     let tile_type = tile136 / 4;
+                    // Tedashi = discarded from hand (not the just-drawn tile).
+                    // drawn_tile is still set here because track_action runs
+                    // BEFORE state.step() clears it.
+                    let is_tsumogiri = self.state.drawn_tile == Some(tile136);
+                    let is_tedashi = !is_tsumogiri;
                     // Update safety from each OTHER player's perspective
                     for observer in 0..4u8 {
                         if observer == actor { continue; }
                         let opp_idx = ((actor + 4 - observer) % 4).wrapping_sub(1) as usize;
                         if opp_idx < 3 {
                             self.safety[observer as usize]
-                                .on_discard(tile_type, opp_idx, false);
+                                .on_discard(tile_type, opp_idx, is_tedashi);
                         }
                     }
                 }
@@ -245,4 +250,22 @@ mod tests {
 
         assert_eq!(runner_a.scores(), runner_b.scores());
         assert_eq!(runner_a.total_actions(), runner_b.total_actions());
+    }
+
+    #[test]
+    fn tedashi_detected_during_game() {
+        // Run a game for enough steps that some tedashi discards happen.
+        // FirstActionSelector usually picks the first legal action, which
+        // for WaitAct is often the first discard -- typically NOT the drawn tile.
+        let mut runner = GameRunner::new(Some(42), 0);
+        let mut selector = FirstActionSelector;
+        for _ in 0..50 {
+            if !runner.step_once(&mut selector) { break; }
+        }
+        let has_tedashi = (0..4).any(|p| {
+            let s = runner.safety(p);
+            s.genbutsu_tedashi.iter().any(|opp| opp.iter().any(|&v| v))
+        });
+        assert!(has_tedashi, "at least one tedashi should be detected after 50 steps");
+    }
 }
