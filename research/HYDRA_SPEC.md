@@ -9,6 +9,7 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent AI Lab, 10.68 stable dan) 
 - [TRAINING.md](TRAINING.md) — Training pipeline, loss functions, hyperparameters, roadmap
 - [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, hardware, deployment
 
+- [MORL_PLACEMENT.md](MORL_PLACEMENT.md) -- Non-convex placement MORL (Phase 3 modification, preference-conditioned training)
 ---
 
 ## Executive Summary
