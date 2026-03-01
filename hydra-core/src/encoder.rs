@@ -58,6 +58,7 @@ const NUM_PLAYERS: usize = 4;
 /// the individual `encode_*` methods, or use [`encode`] as the one-shot
 /// entry point.
 #[derive(Clone)]
+#[repr(C)]
 pub struct ObservationEncoder {
     /// Flat buffer: 85 channels x 34 tiles, row-major.
     buffer: [f32; OBS_SIZE],
@@ -74,6 +75,14 @@ impl ObservationEncoder {
     /// Zero the entire buffer.
     pub fn clear(&mut self) {
         self.buffer.fill(0.0);
+    }
+
+    /// Zero only the channels in range `[start_ch, end_ch)` (exclusive end).
+    #[inline]
+    pub fn clear_range(&mut self, start_ch: usize, end_ch: usize) {
+        let start = start_ch * NUM_TILES;
+        let end = end_ch * NUM_TILES;
+        self.buffer[start..end].fill(0.0);
     }
 
     /// Read-only view of the flat observation buffer.
@@ -367,6 +376,7 @@ impl ObservationEncoder {
 
 /// Game metadata for encoding channels 43-61.
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub struct GameMetadata {
     /// Riichi status for all 4 players (relative to observer). Index 0 = self.
     pub riichi: [bool; 4],
@@ -479,6 +489,57 @@ impl ObservationEncoder {
 }
 
 // ---------------------------------------------------------------------------
+// Incremental encoding: selective channel updates
+// ---------------------------------------------------------------------------
+
+/// Dirty flags indicating which channel groups need re-encoding.
+///
+/// Use with [`ObservationEncoder::encode_incremental`] to avoid
+/// recomputing the full 85x34 tensor when only a few groups changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct DirtyFlags(pub u16);
+
+impl DirtyFlags {
+    pub const HAND: Self       = Self(1 << 0);  // Ch 0-3
+    pub const OPEN_MELD: Self  = Self(1 << 1);  // Ch 4-7
+    pub const DRAWN: Self      = Self(1 << 2);  // Ch 8
+    pub const SHANTEN: Self    = Self(1 << 3);  // Ch 9-10
+    pub const DISCARDS: Self   = Self(1 << 4);  // Ch 11-22
+    pub const MELDS: Self      = Self(1 << 5);  // Ch 23-34
+    pub const DORA: Self       = Self(1 << 6);  // Ch 35-42
+    pub const META: Self       = Self(1 << 7);  // Ch 43-61
+    pub const SAFETY: Self     = Self(1 << 8);  // Ch 62-84
+    pub const ALL: Self        = Self(0x1FF);
+
+    /// After a draw: hand, drawn tile, shanten, metadata.
+    pub const AFTER_DRAW: Self = Self(
+        Self::HAND.0 | Self::DRAWN.0 | Self::SHANTEN.0 | Self::META.0
+    );
+    /// After a discard: hand, drawn, shanten, discards, metadata, safety.
+    pub const AFTER_DISCARD: Self = Self(
+        Self::HAND.0 | Self::DRAWN.0 | Self::SHANTEN.0
+        | Self::DISCARDS.0 | Self::META.0 | Self::SAFETY.0
+    );
+    /// After a call: hand, open melds, shanten, discards, melds, meta, safety.
+    pub const AFTER_CALL: Self = Self(
+        Self::HAND.0 | Self::OPEN_MELD.0 | Self::SHANTEN.0
+        | Self::DISCARDS.0 | Self::MELDS.0 | Self::META.0 | Self::SAFETY.0
+    );
+    /// New round: everything.
+    pub const NEW_ROUND: Self = Self::ALL;
+
+    #[inline]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+    #[inline]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Full encode entry point
 // ---------------------------------------------------------------------------
 
@@ -510,6 +571,69 @@ impl ObservationEncoder {
         self.encode_aka(dora);
         self.encode_metadata(meta);
         self.encode_safety(safety);
+        self.as_slice()
+    }
+}
+
+impl ObservationEncoder {
+    /// Incrementally re-encode only the channel groups marked dirty.
+    ///
+    /// Unlike [`encode`], this does NOT clear the entire buffer. It only
+    /// clears and rewrites the specific channel ranges that changed.
+    /// Use [`DirtyFlags`] presets (`AFTER_DRAW`, `AFTER_DISCARD`,
+    /// `AFTER_CALL`) for common game events.
+    ///
+    /// For a new round or first encode, use `DirtyFlags::ALL` or [`encode`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_incremental(
+        &mut self,
+        dirty: DirtyFlags,
+        hand: &[u8; NUM_TILES],
+        drawn_tile: Option<u8>,
+        open_meld_counts: &[u8; NUM_TILES],
+        discards: &[PlayerDiscards; NUM_PLAYERS],
+        melds: &[Vec<MeldInfo>; NUM_PLAYERS],
+        dora: &DoraInfo,
+        meta: &GameMetadata,
+        safety: &SafetyInfo,
+    ) -> &[f32; OBS_SIZE] {
+        if dirty.contains(DirtyFlags::HAND) {
+            self.clear_range(CH_HAND, CH_HAND + 4);
+            self.encode_hand(hand);
+        }
+        if dirty.contains(DirtyFlags::OPEN_MELD) {
+            self.clear_range(CH_OPEN_MELD, CH_OPEN_MELD + 4);
+            self.encode_open_meld_hand(open_meld_counts);
+        }
+        if dirty.contains(DirtyFlags::DRAWN) {
+            self.clear_range(CH_DRAWN, CH_DRAWN + 1);
+            self.encode_drawn_tile(drawn_tile);
+        }
+        if dirty.contains(DirtyFlags::SHANTEN) {
+            self.clear_range(CH_SHANTEN_MASK, CH_SHANTEN_MASK + 2);
+            self.encode_shanten_masks(hand);
+        }
+        if dirty.contains(DirtyFlags::DISCARDS) {
+            self.clear_range(CH_DISCARDS, CH_DISCARDS + 12);
+            self.encode_discards(discards);
+        }
+        if dirty.contains(DirtyFlags::MELDS) {
+            self.clear_range(CH_MELDS, CH_MELDS + 12);
+            self.encode_melds(melds);
+        }
+        if dirty.contains(DirtyFlags::DORA) {
+            self.clear_range(CH_DORA, CH_AKA + 3);
+            self.encode_dora(dora);
+            self.encode_aka(dora);
+        }
+        if dirty.contains(DirtyFlags::META) {
+            self.clear_range(CH_META, CH_META + 19);
+            self.encode_metadata(meta);
+        }
+        if dirty.contains(DirtyFlags::SAFETY) {
+            self.clear_range(CH_SAFETY, CH_SAFETY + 23);
+            self.encode_safety(safety);
+        }
         self.as_slice()
     }
 }
@@ -961,5 +1085,69 @@ mod tests {
         let empty_hand = [0u8; NUM_TILES];
         enc.encode(&empty_hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety);
         assert_eq!(get(&enc, 2, 0), 0.0);
+    }
+
+    #[test]
+    fn incremental_matches_full_encode() {
+        let mut hand = [0u8; NUM_TILES];
+        hand[0] = 3; hand[9] = 2; hand[18] = 1;
+        let open_meld = [0u8; NUM_TILES];
+        let discards = empty_discards();
+        let melds = empty_melds();
+        let dora = DoraInfo { indicators: vec![4], aka_flags: [true, false, false] };
+        let meta = test_metadata();
+        let safety = SafetyInfo::new();
+
+        // Full encode
+        let mut full = ObservationEncoder::new();
+        full.encode(&hand, Some(18), &open_meld, &discards, &melds, &dora, &meta, &safety);
+
+        // Incremental with ALL flags = same as full encode
+        let mut inc = ObservationEncoder::new();
+        inc.encode_incremental(
+            DirtyFlags::ALL, &hand, Some(18), &open_meld,
+            &discards, &melds, &dora, &meta, &safety,
+        );
+
+        for i in 0..OBS_SIZE {
+            assert!(
+                (full.as_slice()[i] - inc.as_slice()[i]).abs() < 1e-6,
+                "mismatch at index {}: full={}, inc={}",
+                i, full.as_slice()[i], inc.as_slice()[i],
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_partial_updates_only_dirty() {
+        let hand = [0u8; NUM_TILES];
+        let open_meld = [0u8; NUM_TILES];
+        let discards = empty_discards();
+        let melds = empty_melds();
+        let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
+        let meta = test_metadata();
+        let safety = SafetyInfo::new();
+
+        let mut enc = ObservationEncoder::new();
+        // Full encode first to set baseline
+        enc.encode(&hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety);
+        let baseline = *enc.as_slice();
+
+        // Incremental with only META dirty -- only ch 43-61 should change
+        let mut meta2 = test_metadata();
+        meta2.scores = [50000, 10000, 10000, 30000];
+        enc.encode_incremental(
+            DirtyFlags::META, &hand, None, &open_meld,
+            &discards, &melds, &dora, &meta2, &safety,
+        );
+
+        // Ch 0-42 should be unchanged
+        for (i, &base_val) in baseline[..(CH_META * NUM_TILES)].iter().enumerate() {
+            assert_eq!(enc.as_slice()[i], base_val, "non-meta ch changed at {i}");
+        }
+        // Ch 43-61 should differ (scores changed)
+        let meta_start = CH_META * NUM_TILES;
+        let scores_start = meta_start + 4 * NUM_TILES; // ch 47
+        assert!((enc.as_slice()[scores_start] - 0.5).abs() < 1e-6); // 50000/100000
     }
 }
