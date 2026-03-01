@@ -126,7 +126,8 @@ impl HydraEnv {
     /// Get current observation as numpy array [2890].
     fn get_observation<'py>(&mut self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f32>> {
         let obs = self.state.get_observation(AGENT_SEAT);
-        let tensor = encode_observation(&mut self.encoder, &obs, &self.safety);
+        let drawn = self.state.drawn_tile.map(|t| t / 4);
+        let tensor = encode_observation(&mut self.encoder, &obs, &self.safety, drawn);
         numpy::PyArray1::from_slice(py, &tensor)
     }
 

@@ -179,13 +179,16 @@ pub fn extract_metadata(obs: &Observation, hand_counts: &[u8; NUM_TILE_TYPES]) -
 /// # Drawn tile limitation
 ///
 /// The drawn tile cannot be reliably determined from `Observation` alone.
-/// When the hand has 14 tiles the drawn tile is ambiguous without
-/// `GameState` context — we pass `None` in that case. Callers with
-/// access to `GameState` should extract the drawn tile themselves.
+/// Encode a full observation into the 85x34 tensor.
+///
+/// `drawn_tile` should be `Some(tile_type)` when the observer just drew a
+/// tile (obtain from `GameState.drawn_tile` mapped to tile type via `/ 4`).
+/// Pass `None` when no draw occurred or the information is unavailable.
 pub fn encode_observation(
     encoder: &mut ObservationEncoder,
     obs: &Observation,
     safety: &SafetyInfo,
+    drawn_tile: Option<u8>,
 ) -> [f32; OBS_SIZE] {
     let hand = extract_hand(obs);
     let discards = extract_discards(obs);
@@ -193,10 +196,6 @@ pub fn encode_observation(
     let open_meld_counts = extract_observer_meld_counts(obs);
     let dora = extract_dora(obs);
     let meta = extract_metadata(obs, &hand);
-
-    // Drawn tile: 14 tiles means one was just drawn, but we can't
-    // identify which from the observation alone. Pass None.
-    let drawn_tile: Option<u8> = None;
 
     let slice = encoder.encode(
         &hand, drawn_tile, &open_meld_counts, &discards, &melds, &dora, &meta, safety,
@@ -282,7 +281,7 @@ mod tests {
         let obs = fresh_obs();
         let safety = SafetyInfo::new();
         let mut encoder = ObservationEncoder::new();
-        let result = encode_observation(&mut encoder, &obs, &safety);
+        let result = encode_observation(&mut encoder, &obs, &safety, None);
         let nonzero = result.iter().filter(|&&v| v != 0.0).count();
         assert!(nonzero > 0, "encoded observation should have nonzero values");
     }
