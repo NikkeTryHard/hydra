@@ -3,15 +3,20 @@
 //! Encodes the full game state into a flat `[f32; 85 * 34]` array (row-major)
 //! that serves as input to the Hydra SE-ResNet model. Channels are grouped:
 //!
-//! - 0..3:   self hand (thresholded tile counts)
-//! - 4..15:  discards per player (presence, tedashi, temporal)
-//! - 16..27: melds per player (open, closed kan, kakan)
-//! - 28..31: dora info (indicators, actual dora, aka, ura)
-//! - 32..61: game metadata (winds, riichi, scores, shanten, etc.)
+//! - 0..3:   closed hand (thresholded tile counts)
+//! - 4..7:   open meld hand counts (thresholded)
+//! - 8:      drawn tile one-hot
+//! - 9..10:  shanten masks (keep / next)
+//! - 11..22: discards per player (presence, tedashi, temporal)
+//! - 23..34: melds per player (chi, pon, kan)
+//! - 35..39: dora indicator thermometer
+//! - 40..42: aka dora flags (per suit plane)
+//! - 43..61: game metadata (riichi, scores, gaps, shanten, round, honba, kyotaku)
 //! - 62..84: safety channels (genbutsu, suji, kabe, one-chance, tenpai)
 
 use crate::safety::SafetyInfo;
 use crate::tile::NUM_TILE_TYPES;
+use riichienv_core::shanten::calc_shanten_from_counts;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -29,14 +34,19 @@ pub const OBS_SIZE: usize = NUM_CHANNELS * NUM_TILES; // 2890
 // -- Channel group starts --
 
 const CH_HAND: usize = 0; // 0..3   (4 channels)
-const CH_DISCARDS: usize = 4; // 4..15  (12 channels: 3 per player)
-const CH_MELDS: usize = 16; // 16..27 (12 channels: 3 per player)
-const CH_DORA: usize = 28; // 28..31 (4 channels)
-const CH_META: usize = 32; // 32..61 (30 channels)
+const CH_OPEN_MELD: usize = 4; // 4..7   (4 channels)
+const CH_DRAWN: usize = 8; // 8      (1 channel)
+const CH_SHANTEN_MASK: usize = 9; // 9..10  (2 channels)
+const CH_DISCARDS: usize = 11; // 11..22 (12 channels: 3 per player)
+const CH_MELDS: usize = 23; // 23..34 (12 channels: 3 per player)
+const CH_DORA: usize = 35; // 35..39 (5 channels)
+const CH_AKA: usize = 40; // 40..42 (3 channels)
+const CH_META: usize = 43; // 43..61 (19 channels)
 const CH_SAFETY: usize = 62; // 62..84 (23 channels)
 
 /// Number of players at the table.
 const NUM_PLAYERS: usize = 4;
+
 
 // ---------------------------------------------------------------------------
 // ObservationEncoder
@@ -92,30 +102,94 @@ impl Default for ObservationEncoder {
 }
 
 // ---------------------------------------------------------------------------
-// Encoding: self hand (channels 0-3)
+// Encoding: closed hand (channels 0-3)
 // ---------------------------------------------------------------------------
 
 impl ObservationEncoder {
-    /// Encode the observer's hand tile counts into channels 0-3.
+    /// Encode the observer's closed hand tile counts into channels 0-3.
     ///
     /// Binary thresholded planes:
     /// - Ch 0: count >= 1
     /// - Ch 1: count >= 2
     /// - Ch 2: count >= 3
     /// - Ch 3: count == 4
-    pub fn encode_hand(&mut self, hand_counts: &[u8; NUM_TILES], drawn_tile: Option<u8>) {
+    pub fn encode_hand(&mut self, hand_counts: &[u8; NUM_TILES]) {
         for (tile, &count) in hand_counts.iter().enumerate() {
             if count >= 1 { self.set(CH_HAND, tile, 1.0); }
             if count >= 2 { self.set(CH_HAND + 1, tile, 1.0); }
             if count >= 3 { self.set(CH_HAND + 2, tile, 1.0); }
             if count == 4 { self.set(CH_HAND + 3, tile, 1.0); }
         }
-        // Channel 56 (CH_META + 24): drawn tile indicator (one-hot for tsumo tile)
-        if let Some(dt) = drawn_tile {
-            let t = dt as usize;
-            if t < NUM_TILES {
-                self.set(56, t, 1.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoding: open meld hand counts (channels 4-7)
+// ---------------------------------------------------------------------------
+
+impl ObservationEncoder {
+    /// Encode tile counts contributed by open melds into channels 4-7.
+    ///
+    /// Same thermometer encoding as the closed hand:
+    /// - Ch 4: count >= 1
+    /// - Ch 5: count >= 2
+    /// - Ch 6: count >= 3
+    /// - Ch 7: count == 4
+    pub fn encode_open_meld_hand(&mut self, counts: &[u8; NUM_TILES]) {
+        for (tile, &count) in counts.iter().enumerate() {
+            if count >= 1 { self.set(CH_OPEN_MELD, tile, 1.0); }
+            if count >= 2 { self.set(CH_OPEN_MELD + 1, tile, 1.0); }
+            if count >= 3 { self.set(CH_OPEN_MELD + 2, tile, 1.0); }
+            if count == 4 { self.set(CH_OPEN_MELD + 3, tile, 1.0); }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoding: drawn tile (channel 8)
+// ---------------------------------------------------------------------------
+
+impl ObservationEncoder {
+    /// Encode the drawn tile as a one-hot on channel 8.
+    /// `None` means no tile was drawn (e.g. first turn or after a call).
+    pub fn encode_drawn_tile(&mut self, tile: Option<u8>) {
+        if let Some(t) = tile {
+            let idx = t as usize;
+            if idx < NUM_TILES {
+                self.set(CH_DRAWN, idx, 1.0);
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoding: shanten masks (channels 9-10)
+// ---------------------------------------------------------------------------
+
+impl ObservationEncoder {
+    /// Encode shanten-based discard masks into channels 9-10.
+    ///
+    /// - Ch 9 (keep-shanten): 1.0 for tiles whose discard does not increase shanten.
+    /// - Ch 10 (next-shanten): 1.0 for tiles whose discard decreases shanten.
+    ///
+    /// `hand` is the full hand including drawn tile (typically 14 tiles).
+    pub fn encode_shanten_masks(&mut self, hand: &[u8; NUM_TILES]) {
+        let total: u8 = hand.iter().sum();
+        let len_div3 = total / 3;
+        let base = calc_shanten_from_counts(hand, len_div3);
+        let mut tmp = *hand;
+        for tile in 0..NUM_TILES {
+            if tmp[tile] == 0 { continue; }
+            tmp[tile] -= 1;
+            let after_len_div3 = (total - 1) / 3;
+            let after = calc_shanten_from_counts(&tmp, after_len_div3);
+            if after <= base {
+                self.set(CH_SHANTEN_MASK, tile, 1.0);
+            }
+            if after < base {
+                self.set(CH_SHANTEN_MASK + 1, tile, 1.0);
+            }
+            tmp[tile] += 1;
         }
     }
 }
@@ -143,14 +217,14 @@ pub struct PlayerDiscards {
 }
 
 // ---------------------------------------------------------------------------
-// Encoding: discards (channels 4-15)
+// Encoding: discards (channels 11-22)
 // ---------------------------------------------------------------------------
 
 /// Temporal decay factor for discard recency weighting.
 const DISCARD_DECAY: f32 = 0.2;
 
 impl ObservationEncoder {
-    /// Encode discard info for all 4 players into channels 4-15.
+    /// Encode discard info for all 4 players into channels 11-22.
     ///
     /// Per player (3 channels each):
     /// - presence:  binary 1.0 if tile was discarded by this player
@@ -159,21 +233,16 @@ impl ObservationEncoder {
     pub fn encode_discards(&mut self, discards: &[PlayerDiscards; NUM_PLAYERS]) {
         for (p, pd) in discards.iter().enumerate() {
             let ch_base = CH_DISCARDS + 3 * p;
-            // Find max turn for temporal weighting
             let t_max = pd.discards.iter().map(|d| d.turn).max().unwrap_or(0);
             for d in &pd.discards {
                 let t = d.tile as usize;
                 if t >= NUM_TILES { continue; }
-                // Presence
                 self.set(ch_base, t, 1.0);
-                // Tedashi
                 if d.is_tedashi {
                     self.set(ch_base + 1, t, 1.0);
                 }
-                // Temporal weight (most recent = 1.0, older decays)
                 let dt = (t_max - d.turn) as f32;
                 let w = (-DISCARD_DECAY * dt).exp();
-                // Keep the highest weight if a tile was discarded multiple times
                 let idx = (ch_base + 2) * NUM_TILES + t;
                 if w > self.buffer[idx] {
                     self.buffer[idx] = w;
@@ -190,12 +259,12 @@ impl ObservationEncoder {
 /// Type of meld for encoding purposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeldType {
-    /// Chi, pon, or daiminkan (open).
-    Open,
-    /// Closed kan (ankan).
-    ClosedKan,
-    /// Added kan (kakan) -- the single added tile.
-    Kakan,
+    /// Chi (sequence call).
+    Chi,
+    /// Pon (triplet call).
+    Pon,
+    /// Kan (any kan: ankan, daiminkan, kakan).
+    Kan,
 }
 
 /// A single meld for encoding.
@@ -208,24 +277,24 @@ pub struct MeldInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Encoding: melds (channels 16-27)
+// Encoding: melds (channels 23-34)
 // ---------------------------------------------------------------------------
 
 impl ObservationEncoder {
-    /// Encode melds for all 4 players into channels 16-27.
+    /// Encode melds for all 4 players into channels 23-34.
     ///
     /// Per player (3 channels each):
-    /// - open meld tiles (chi/pon/daiminkan)
-    /// - closed kan tiles
-    /// - kakan (added tile)
+    /// - chi tiles
+    /// - pon tiles
+    /// - kan tiles
     pub fn encode_melds(&mut self, melds: &[Vec<MeldInfo>; NUM_PLAYERS]) {
         for (p, player_melds) in melds.iter().enumerate() {
             let ch_base = CH_MELDS + 3 * p;
             for meld in player_melds {
                 let ch_offset = match meld.meld_type {
-                    MeldType::Open => 0,
-                    MeldType::ClosedKan => 1,
-                    MeldType::Kakan => 2,
+                    MeldType::Chi => 0,
+                    MeldType::Pon => 1,
+                    MeldType::Kan => 2,
                 };
                 for &tile in &meld.tiles {
                     let t = tile as usize;
@@ -239,7 +308,7 @@ impl ObservationEncoder {
 }
 
 // ---------------------------------------------------------------------------
-// Encoding: dora (channels 28-31)
+// Encoding: dora (channels 35-39) and aka (channels 40-42)
 // ---------------------------------------------------------------------------
 
 /// Dora information for encoding.
@@ -251,53 +320,44 @@ pub struct DoraInfo {
     pub aka_flags: [bool; 3],
 }
 
-/// Map a dora indicator tile type to the actual dora tile type.
-/// Wraps within suit: 9m indicator -> 1m dora, 9p -> 1p, 9s -> 1s.
-/// Wraps within winds (E-S-W-N) and dragons (haku-hatsu-chun).
-fn indicator_to_dora(indicator: u8) -> u8 {
-    let i = indicator as usize;
-    if i >= NUM_TILES { return 0; }
-    match i {
-        // Suited tiles: next in suit, wrap 9->1
-        0..27 => {
-            let suit_start = (i / 9) * 9;
-            let num = i - suit_start;
-            (suit_start + (num + 1) % 9) as u8
-        }
-        // Winds: E->S->W->N->E (27-30)
-        27..31 => ((i - 27 + 1) % 4 + 27) as u8,
-        // Dragons: haku->hatsu->chun->haku (31-33)
-        31..34 => ((i - 31 + 1) % 3 + 31) as u8,
-        _ => 0,
-    }
-}
-
-/// Aka-dora tile type indices (5m=4, 5p=13, 5s=22).
-const AKA_TILE_TYPES: [usize; 3] = [4, 13, 22];
-
 impl ObservationEncoder {
-    /// Encode dora information into channels 28-31.
+    /// Encode dora indicators as a thermometer into channels 35-39.
     ///
-    /// - Ch 28: dora indicator tiles (binary)
-    /// - Ch 29: actual dora tiles (indicator + 1, the tiles that score)
-    /// - Ch 30: aka dora flags (red fives)
-    /// - Ch 31: ura dora (all zeros during play, filled post-win)
+    /// Counts how many indicators point to each tile type, then thresholds:
+    /// - Ch 35: count >= 1
+    /// - Ch 36: count >= 2
+    /// - Ch 37: count >= 3
+    /// - Ch 38: count >= 4
+    /// - Ch 39: count >= 5
     pub fn encode_dora(&mut self, dora: &DoraInfo) {
+        let mut counts = [0u8; NUM_TILES];
         for &ind in &dora.indicators {
             let i = ind as usize;
             if i < NUM_TILES {
-                self.set(CH_DORA, i, 1.0);
-                let actual = indicator_to_dora(ind) as usize;
-                self.set(CH_DORA + 1, actual, 1.0);
+                counts[i] = counts[i].saturating_add(1);
             }
         }
-        // Aka dora flags
-        for (slot, &has_aka) in dora.aka_flags.iter().enumerate() {
+        for (tile, &c) in counts.iter().enumerate() {
+            if c >= 1 { self.set(CH_DORA, tile, 1.0); }
+            if c >= 2 { self.set(CH_DORA + 1, tile, 1.0); }
+            if c >= 3 { self.set(CH_DORA + 2, tile, 1.0); }
+            if c >= 4 { self.set(CH_DORA + 3, tile, 1.0); }
+            if c >= 5 { self.set(CH_DORA + 4, tile, 1.0); }
+        }
+    }
+
+    /// Encode aka dora flags into channels 40-42 (one plane per suit).
+    ///
+    /// Each channel is fully filled with 1.0 if the corresponding aka is present.
+    /// - Ch 40: has red 5m
+    /// - Ch 41: has red 5p
+    /// - Ch 42: has red 5s
+    pub fn encode_aka(&mut self, dora: &DoraInfo) {
+        for (suit, &has_aka) in dora.aka_flags.iter().enumerate() {
             if has_aka {
-                self.set(CH_DORA + 2, AKA_TILE_TYPES[slot], 1.0);
+                self.fill_channel(CH_AKA + suit, 1.0);
             }
         }
-        // Ch 31 (ura dora) stays zero during play
     }
 }
 
@@ -305,78 +365,68 @@ impl ObservationEncoder {
 // Game metadata input type
 // ---------------------------------------------------------------------------
 
-/// Game metadata for encoding channels 32-61.
+/// Game metadata for encoding channels 43-61.
 #[derive(Debug, Clone)]
 pub struct GameMetadata {
-    /// Round wind: 0=East, 1=South, 2=West, 3=North.
-    pub round_wind: u8,
-    /// Observer's seat wind: 0=East, 1=South, 2=West, 3=North.
-    pub seat_wind: u8,
-    /// True if observer is the dealer.
-    pub is_dealer: bool,
     /// Riichi status for all 4 players (relative to observer). Index 0 = self.
-    pub riichi: [bool; NUM_PLAYERS],
+    pub riichi: [bool; 4],
+    /// Scores for all 4 players (relative to observer). Raw point values.
+    pub scores: [i32; 4],
+    /// Observer's shanten number (from calc_shanten_from_counts).
+    pub shanten: i8,
+    /// Round index (0-7: East 1 = 0, South 4 = 7).
+    pub kyoku_index: u8,
     /// Honba (repeat) counter.
     pub honba: u8,
     /// Number of riichi sticks deposited on the table.
-    pub riichi_sticks: u8,
-    /// Tiles remaining in the wall.
-    pub tiles_remaining: u8,
-    /// Scores for all 4 players (relative to observer). Raw point values.
-    pub scores: [i32; NUM_PLAYERS],
+    pub kyotaku: u8,
 }
 
 // ---------------------------------------------------------------------------
-// Encoding: game metadata (channels 32-61)
+// Encoding: game metadata (channels 43-61)
 // ---------------------------------------------------------------------------
 
 impl ObservationEncoder {
-    /// Encode game metadata into channels 32-61.
+    /// Encode game metadata into channels 43-61.
     ///
     /// Layout:
-    /// - Ch 32-35: round wind one-hot
-    /// - Ch 36-39: seat wind one-hot
-    /// - Ch 40: dealer flag
-    /// - Ch 41: self riichi
-    /// - Ch 42-44: opponent riichi
-    /// - Ch 45: honba (normalized / 8.0)
-    /// - Ch 46: riichi sticks (normalized / 4.0)
-    /// - Ch 47: wall remaining (normalized / 70.0)
-    /// - Ch 48-51: player scores (normalized / 100000.0)
-    /// - Ch 52-61: reserved (zeros)
+    /// - Ch 43-46: riichi flags (4 players)
+    /// - Ch 47-50: scores / 100000.0 (4 players)
+    /// - Ch 51-54: relative score gaps (my - their) / 30000.0 (4 players)
+    /// - Ch 55-58: shanten one-hot (0=tenpai, 1, 2, 3+)
+    /// - Ch 59: round number (kyoku_index / 8.0)
+    /// - Ch 60: honba / 10.0
+    /// - Ch 61: kyotaku / 10.0
     pub fn encode_metadata(&mut self, meta: &GameMetadata) {
-        // Round wind one-hot (ch 32-35)
-        let rw = meta.round_wind as usize;
-        if rw < 4 { self.fill_channel(CH_META + rw, 1.0); }
-
-        // Seat wind one-hot (ch 36-39)
-        let sw = meta.seat_wind as usize;
-        if sw < 4 { self.fill_channel(CH_META + 4 + sw, 1.0); }
-
-        // Dealer flag (ch 40)
-        if meta.is_dealer { self.fill_channel(CH_META + 8, 1.0); }
-
-        // Riichi flags (ch 41 = self, ch 42-44 = opponents)
+        // Riichi flags (ch 43-46)
         for (i, &r) in meta.riichi.iter().enumerate() {
-            if r && i < NUM_PLAYERS {
-                self.fill_channel(CH_META + 9 + i, 1.0);
-            }
+            if r { self.fill_channel(CH_META + i, 1.0); }
         }
 
-        // Honba normalized (ch 45)
-        self.fill_channel(CH_META + 13, meta.honba as f32 / 8.0);
-
-        // Riichi sticks normalized (ch 46)
-        self.fill_channel(CH_META + 14, meta.riichi_sticks as f32 / 4.0);
-
-        // Wall remaining normalized (ch 47)
-        self.fill_channel(CH_META + 15, meta.tiles_remaining as f32 / 70.0);
-
-        // Player scores normalized (ch 48-51)
+        // Scores normalized (ch 47-50)
         for (i, &score) in meta.scores.iter().enumerate() {
-            self.fill_channel(CH_META + 16 + i, score as f32 / 100_000.0);
+            self.fill_channel(CH_META + 4 + i, score as f32 / 100_000.0);
         }
-        // Ch 52-61 reserved (already zero from clear)
+
+        // Relative score gaps (ch 51-54): (my_score - their_score) / 30000
+        let my_score = meta.scores[0];
+        for (i, &their_score) in meta.scores.iter().enumerate() {
+            let gap = (my_score - their_score) as f32 / 30_000.0;
+            self.fill_channel(CH_META + 8 + i, gap);
+        }
+
+        // Shanten one-hot (ch 55-58): 0=tenpai, 1, 2, 3+
+        let sh = meta.shanten.clamp(0, 3) as usize;
+        self.fill_channel(CH_META + 12 + sh, 1.0);
+
+        // Round number (ch 59)
+        self.fill_channel(CH_META + 16, meta.kyoku_index as f32 / 8.0);
+
+        // Honba (ch 60)
+        self.fill_channel(CH_META + 17, meta.honba as f32 / 10.0);
+
+        // Kyotaku (ch 61)
+        self.fill_channel(CH_META + 18, meta.kyotaku as f32 / 10.0);
     }
 }
 
@@ -402,26 +452,21 @@ impl ObservationEncoder {
     pub fn encode_safety(&mut self, safety: &SafetyInfo) {
         for opp in 0..NUM_OPPS {
             for tile in 0..NUM_TILES {
-                // Genbutsu (ch 62-64)
                 if safety.genbutsu_all[opp][tile] {
                     self.set(CH_SAFETY + opp, tile, 1.0);
                 }
-                // Tedashi genbutsu (ch 65-67)
                 if safety.genbutsu_tedashi[opp][tile] {
                     self.set(CH_SAFETY + NUM_OPPS + opp, tile, 1.0);
                 }
-                // Riichi-era genbutsu (ch 68-70)
                 if safety.genbutsu_riichi_era[opp][tile] {
                     self.set(CH_SAFETY + 2 * NUM_OPPS + opp, tile, 1.0);
                 }
-                // Suji scores (ch 71-73)
                 let suji = safety.suji[opp][tile];
                 if suji > 0.0 {
                     self.set(CH_SAFETY + 3 * NUM_OPPS + opp, tile, suji);
                 }
             }
         }
-        // Kabe (ch 80) and one-chance (ch 81)
         for tile in 0..NUM_TILES {
             if safety.kabe[tile] {
                 self.set(CH_SAFETY + 18, tile, 1.0);
@@ -430,7 +475,6 @@ impl ObservationEncoder {
                 self.set(CH_SAFETY + 19, tile, 1.0);
             }
         }
-        // Ch 74-79, 82-84 reserved (already zero)
     }
 }
 
@@ -446,8 +490,9 @@ impl ObservationEncoder {
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
-        hand_counts: &[u8; NUM_TILES],
+        hand: &[u8; NUM_TILES],
         drawn_tile: Option<u8>,
+        open_meld_counts: &[u8; NUM_TILES],
         discards: &[PlayerDiscards; NUM_PLAYERS],
         melds: &[Vec<MeldInfo>; NUM_PLAYERS],
         dora: &DoraInfo,
@@ -455,10 +500,14 @@ impl ObservationEncoder {
         safety: &SafetyInfo,
     ) -> &[f32; OBS_SIZE] {
         self.clear();
-        self.encode_hand(hand_counts, drawn_tile);
+        self.encode_hand(hand);
+        self.encode_open_meld_hand(open_meld_counts);
+        self.encode_drawn_tile(drawn_tile);
+        self.encode_shanten_masks(hand);
         self.encode_discards(discards);
         self.encode_melds(melds);
         self.encode_dora(dora);
+        self.encode_aka(dora);
         self.encode_metadata(meta);
         self.encode_safety(safety);
         self.as_slice()
@@ -493,26 +542,28 @@ mod tests {
         assert!(enc.as_slice().iter().all(|&v| v == 0.0));
     }
 
+    // -- Hand tests (ch 0-3) --
+
     #[test]
     fn hand_single_tile() {
         let mut enc = ObservationEncoder::new();
         let mut hand = [0u8; NUM_TILES];
-        hand[0] = 1; // one copy of 1m
-        enc.encode_hand(&hand, None);
-        assert_eq!(get(&enc, 0, 0), 1.0); // ch0: count >= 1
-        assert_eq!(get(&enc, 1, 0), 0.0); // ch1: count >= 2
+        hand[0] = 1;
+        enc.encode_hand(&hand);
+        assert_eq!(get(&enc, 0, 0), 1.0);
+        assert_eq!(get(&enc, 1, 0), 0.0);
     }
 
     #[test]
     fn hand_four_copies() {
         let mut enc = ObservationEncoder::new();
         let mut hand = [0u8; NUM_TILES];
-        hand[5] = 4; // four copies of 6m
-        enc.encode_hand(&hand, None);
-        assert_eq!(get(&enc, 0, 5), 1.0); // >= 1
-        assert_eq!(get(&enc, 1, 5), 1.0); // >= 2
-        assert_eq!(get(&enc, 2, 5), 1.0); // >= 3
-        assert_eq!(get(&enc, 3, 5), 1.0); // == 4
+        hand[5] = 4;
+        enc.encode_hand(&hand);
+        assert_eq!(get(&enc, 0, 5), 1.0);
+        assert_eq!(get(&enc, 1, 5), 1.0);
+        assert_eq!(get(&enc, 2, 5), 1.0);
+        assert_eq!(get(&enc, 3, 5), 1.0);
     }
 
     #[test]
@@ -520,31 +571,100 @@ mod tests {
         let mut enc = ObservationEncoder::new();
         let mut hand = [0u8; NUM_TILES];
         hand[10] = 3;
-        enc.encode_hand(&hand, None);
-        assert_eq!(get(&enc, 2, 10), 1.0); // >= 3
-        assert_eq!(get(&enc, 3, 10), 0.0); // == 4 should be off
+        enc.encode_hand(&hand);
+        assert_eq!(get(&enc, 2, 10), 1.0);
+        assert_eq!(get(&enc, 3, 10), 0.0);
     }
+
+    // -- Open meld hand tests (ch 4-7) --
+
+    #[test]
+    fn open_meld_hand_thermometer() {
+        let mut enc = ObservationEncoder::new();
+        let mut counts = [0u8; NUM_TILES];
+        counts[0] = 3; // 3 tiles of type 0 from melds
+        counts[9] = 1; // 1 tile of type 9
+        enc.encode_open_meld_hand(&counts);
+        // tile 0: ch4=1, ch5=1, ch6=1, ch7=0
+        assert_eq!(get(&enc, 4, 0), 1.0);
+        assert_eq!(get(&enc, 5, 0), 1.0);
+        assert_eq!(get(&enc, 6, 0), 1.0);
+        assert_eq!(get(&enc, 7, 0), 0.0);
+        // tile 9: ch4=1, ch5=0
+        assert_eq!(get(&enc, 4, 9), 1.0);
+        assert_eq!(get(&enc, 5, 9), 0.0);
+    }
+
+    #[test]
+    fn open_meld_hand_four() {
+        let mut enc = ObservationEncoder::new();
+        let mut counts = [0u8; NUM_TILES];
+        counts[27] = 4; // kan of East
+        enc.encode_open_meld_hand(&counts);
+        assert_eq!(get(&enc, 7, 27), 1.0);
+    }
+
+    // -- Drawn tile tests (ch 8) --
 
     #[test]
     fn drawn_tile_encoded() {
         let mut enc = ObservationEncoder::new();
-        let hand = [0u8; NUM_TILES];
-        enc.encode_hand(&hand, Some(5)); // drew 6m
-        assert_eq!(get(&enc, 56, 5), 1.0); // channel 56, tile 5
-        assert_eq!(get(&enc, 56, 0), 0.0); // other tiles zero
+        enc.encode_drawn_tile(Some(5));
+        assert_eq!(get(&enc, 8, 5), 1.0);
+        assert_eq!(get(&enc, 8, 0), 0.0);
     }
 
     #[test]
     fn drawn_tile_none_leaves_channel_zero() {
         let mut enc = ObservationEncoder::new();
-        let hand = [0u8; NUM_TILES];
-        enc.encode_hand(&hand, None);
+        enc.encode_drawn_tile(None);
         for t in 0..NUM_TILES {
-            assert_eq!(get(&enc, 56, t), 0.0);
+            assert_eq!(get(&enc, 8, t), 0.0);
         }
     }
 
-    // -- Discard tests --
+    // -- Shanten mask tests (ch 9-10) --
+
+    #[test]
+    fn shanten_masks_complete_hand() {
+        // Complete 14-tile hand: 123m 456m 789m 123p 11s
+        // 4 sequences + 1 pair = agari (shanten = -1)
+        let mut enc = ObservationEncoder::new();
+        let mut hand = [0u8; NUM_TILES];
+        hand[..9].fill(1); // 1-9m
+        hand[9] = 1; hand[10] = 1; hand[11] = 1; // 1-3p
+        hand[18] = 2; // 1s pair
+        // 14 tiles, len_div3=4, shanten=-1
+        enc.encode_shanten_masks(&hand);
+        // After discarding any tile, shanten goes from -1 to 0 (worsens).
+        // So next-shanten (ch10) should have NO tiles set.
+        for t in 0..NUM_TILES {
+            assert_eq!(get(&enc, 10, t), 0.0);
+        }
+    }
+
+    #[test]
+    fn shanten_masks_one_away() {
+        // Simple iishanten hand: 1m,2m,3m, 4m,5m,6m, 7m,8m,9m, 1p,1p,1p, 2p, drawn 5s
+        let mut enc = ObservationEncoder::new();
+        let mut hand = [0u8; NUM_TILES];
+        hand[0] = 1; hand[1] = 1; hand[2] = 1; // 123m
+        hand[3] = 1; hand[4] = 1; hand[5] = 1; // 456m
+        hand[6] = 1; hand[7] = 1; hand[8] = 1; // 789m
+        hand[9] = 3; // 1p x3
+        hand[10] = 1; // 2p
+        hand[22] = 1; // 5s (drawn tile)
+        // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
+        // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
+        // shanten = 0 (tenpai)
+        enc.encode_shanten_masks(&hand);
+        // Discarding 2p or 5s keeps tenpai (shanten stays 0), so ch9 should be set
+        // The exact tiles depend on shanten calc, but at minimum some tiles on ch9
+        let ch9_sum: f32 = (0..NUM_TILES).map(|t| get(&enc, 9, t)).sum();
+        assert!(ch9_sum > 0.0, "keep-shanten mask should have some tiles set");
+    }
+
+    // -- Discard tests (ch 11-22) --
 
     fn empty_discards() -> [PlayerDiscards; NUM_PLAYERS] {
         [
@@ -562,162 +682,216 @@ mod tests {
         discards[0].discards.push(DiscardEntry { tile: 5, is_tedashi: true, turn: 0 });
         discards[1].discards.push(DiscardEntry { tile: 10, is_tedashi: false, turn: 0 });
         enc.encode_discards(&discards);
-        // Player 0: ch_base=4, presence=ch4, tedashi=ch5
-        assert_eq!(get(&enc, 4, 5), 1.0);  // presence
-        assert_eq!(get(&enc, 5, 5), 1.0);  // tedashi
-        // Player 1: ch_base=7, presence=ch7, tedashi=ch8
-        assert_eq!(get(&enc, 7, 10), 1.0); // presence
-        assert_eq!(get(&enc, 8, 10), 0.0); // NOT tedashi (tsumogiri)
+        // Player 0: ch_base=11, presence=ch11, tedashi=ch12
+        assert_eq!(get(&enc, 11, 5), 1.0);
+        assert_eq!(get(&enc, 12, 5), 1.0);
+        // Player 1: ch_base=14, presence=ch14, tedashi=ch15
+        assert_eq!(get(&enc, 14, 10), 1.0);
+        assert_eq!(get(&enc, 15, 10), 0.0); // tsumogiri
     }
 
     #[test]
     fn discard_temporal_decay() {
         let mut enc = ObservationEncoder::new();
         let mut discards = empty_discards();
-        // Two discards by player 0 at different turns
         discards[0].discards.push(DiscardEntry { tile: 0, is_tedashi: false, turn: 0 });
         discards[0].discards.push(DiscardEntry { tile: 1, is_tedashi: false, turn: 5 });
         enc.encode_discards(&discards);
-        // Tile at turn 5 (t_max=5): weight = exp(-0.2*(5-5)) = 1.0
-        assert!((get(&enc, 6, 1) - 1.0).abs() < 1e-6);
-        // Tile at turn 0: weight = exp(-0.2*(5-0)) = exp(-1.0)
+        // temporal ch = 11 + 2 = 13
+        assert!((get(&enc, 13, 1) - 1.0).abs() < 1e-6);
         let expected = (-1.0f32).exp();
-        assert!((get(&enc, 6, 0) - expected).abs() < 1e-6);
+        assert!((get(&enc, 13, 0) - expected).abs() < 1e-6);
     }
 
-    // -- Meld tests --
+    // -- Meld tests (ch 23-34) --
 
     fn empty_melds() -> [Vec<MeldInfo>; NUM_PLAYERS] {
         [vec![], vec![], vec![], vec![]]
     }
 
     #[test]
-    fn meld_open_chi() {
+    fn meld_chi() {
         let mut enc = ObservationEncoder::new();
         let mut melds = empty_melds();
         melds[0].push(MeldInfo {
-            tiles: vec![0, 1, 2], // 1m-2m-3m chi
-            meld_type: MeldType::Open,
+            tiles: vec![0, 1, 2],
+            meld_type: MeldType::Chi,
         });
         enc.encode_melds(&melds);
-        // Player 0 open meld = ch 16
-        assert_eq!(get(&enc, 16, 0), 1.0);
-        assert_eq!(get(&enc, 16, 1), 1.0);
-        assert_eq!(get(&enc, 16, 2), 1.0);
-        assert_eq!(get(&enc, 17, 0), 0.0); // closed kan channel empty
+        // Player 0 chi = ch 23
+        assert_eq!(get(&enc, 23, 0), 1.0);
+        assert_eq!(get(&enc, 23, 1), 1.0);
+        assert_eq!(get(&enc, 23, 2), 1.0);
+        assert_eq!(get(&enc, 24, 0), 0.0); // pon channel empty
     }
 
     #[test]
-    fn meld_closed_kan() {
+    fn meld_pon() {
         let mut enc = ObservationEncoder::new();
         let mut melds = empty_melds();
         melds[2].push(MeldInfo {
-            tiles: vec![27, 27, 27, 27], // East ankan by player 2
-            meld_type: MeldType::ClosedKan,
+            tiles: vec![27, 27, 27],
+            meld_type: MeldType::Pon,
         });
         enc.encode_melds(&melds);
-        // Player 2: ch_base = 16 + 3*2 = 22, closed_kan = ch 23
-        assert_eq!(get(&enc, 23, 27), 1.0);
+        // Player 2: ch_base = 23 + 3*2 = 29, pon = ch 30
+        assert_eq!(get(&enc, 30, 27), 1.0);
     }
 
-    // -- Dora tests --
+    #[test]
+    fn meld_kan() {
+        let mut enc = ObservationEncoder::new();
+        let mut melds = empty_melds();
+        melds[1].push(MeldInfo {
+            tiles: vec![31, 31, 31, 31],
+            meld_type: MeldType::Kan,
+        });
+        enc.encode_melds(&melds);
+        // Player 1: ch_base = 23 + 3*1 = 26, kan = ch 28
+        assert_eq!(get(&enc, 28, 31), 1.0);
+    }
+
+    // -- Dora tests (ch 35-39) --
 
     #[test]
-    fn dora_indicator_and_actual() {
+    fn dora_indicator_thermometer_single() {
         let mut enc = ObservationEncoder::new();
         let dora = DoraInfo {
-            indicators: vec![0], // 1m indicator -> 2m is dora
-            aka_flags: [false, false, false],
+            indicators: vec![0], // one indicator on 1m
+            aka_flags: [false; 3],
         };
         enc.encode_dora(&dora);
-        assert_eq!(get(&enc, 28, 0), 1.0); // indicator on ch 28
-        assert_eq!(get(&enc, 29, 1), 1.0); // actual dora (2m) on ch 29
+        assert_eq!(get(&enc, 35, 0), 1.0); // >= 1
+        assert_eq!(get(&enc, 36, 0), 0.0); // >= 2 not set
     }
 
     #[test]
-    fn dora_9m_wraps_to_1m() {
-        // indicator 9m (idx 8) -> dora is 1m (idx 0)
-        assert_eq!(indicator_to_dora(8), 0);
+    fn dora_indicator_thermometer_multiple_same() {
+        let mut enc = ObservationEncoder::new();
+        let dora = DoraInfo {
+            indicators: vec![5, 5, 5], // three indicators on 6m
+            aka_flags: [false; 3],
+        };
+        enc.encode_dora(&dora);
+        assert_eq!(get(&enc, 35, 5), 1.0); // >= 1
+        assert_eq!(get(&enc, 36, 5), 1.0); // >= 2
+        assert_eq!(get(&enc, 37, 5), 1.0); // >= 3
+        assert_eq!(get(&enc, 38, 5), 0.0); // >= 4 not set
     }
 
     #[test]
-    fn dora_wind_wrap() {
-        // North (30) -> East (27)
-        assert_eq!(indicator_to_dora(30), 27);
-        // East (27) -> South (28)
-        assert_eq!(indicator_to_dora(27), 28);
+    fn dora_indicator_thermometer_different() {
+        let mut enc = ObservationEncoder::new();
+        let dora = DoraInfo {
+            indicators: vec![0, 10], // 1m and 2p indicators
+            aka_flags: [false; 3],
+        };
+        enc.encode_dora(&dora);
+        assert_eq!(get(&enc, 35, 0), 1.0);
+        assert_eq!(get(&enc, 35, 10), 1.0);
+        assert_eq!(get(&enc, 36, 0), 0.0);
+        assert_eq!(get(&enc, 36, 10), 0.0);
     }
 
-    #[test]
-    fn dora_dragon_wrap() {
-        // Chun (33) -> Haku (31)
-        assert_eq!(indicator_to_dora(33), 31);
-        // Haku (31) -> Hatsu (32)
-        assert_eq!(indicator_to_dora(31), 32);
-    }
+    // -- Aka tests (ch 40-42) --
 
     #[test]
-    fn aka_dora_flags() {
+    fn aka_dora_plane_fill() {
         let mut enc = ObservationEncoder::new();
         let dora = DoraInfo {
             indicators: vec![],
-            aka_flags: [true, false, true], // has red 5m and red 5s
+            aka_flags: [true, false, true],
         };
-        enc.encode_dora(&dora);
-        assert_eq!(get(&enc, 30, 4), 1.0);  // 5m on ch30
-        assert_eq!(get(&enc, 30, 13), 0.0); // 5p NOT set
-        assert_eq!(get(&enc, 30, 22), 1.0); // 5s on ch30
+        enc.encode_aka(&dora);
+        // Ch 40 (5m): entire channel filled
+        assert_eq!(get(&enc, 40, 0), 1.0);
+        assert_eq!(get(&enc, 40, 33), 1.0);
+        // Ch 41 (5p): not set
+        assert_eq!(get(&enc, 41, 0), 0.0);
+        // Ch 42 (5s): entire channel filled
+        assert_eq!(get(&enc, 42, 0), 1.0);
     }
 
-    // -- Metadata tests --
+    // -- Metadata tests (ch 43-61) --
 
     fn test_metadata() -> GameMetadata {
         GameMetadata {
-            round_wind: 0, // East
-            seat_wind: 1,  // South
-            is_dealer: false,
             riichi: [true, false, false, false],
-            honba: 2,
-            riichi_sticks: 1,
-            tiles_remaining: 35,
             scores: [25000, 25000, 25000, 25000],
+            shanten: 1,
+            kyoku_index: 0,
+            honba: 2,
+            kyotaku: 1,
         }
-    }
-
-    #[test]
-    fn metadata_winds_one_hot() {
-        let mut enc = ObservationEncoder::new();
-        enc.encode_metadata(&test_metadata());
-        // Round wind: East (idx 0) -> ch 32 filled with 1.0
-        assert_eq!(get(&enc, 32, 0), 1.0);
-        assert_eq!(get(&enc, 33, 0), 0.0); // South channel empty
-        // Seat wind: South (idx 1) -> ch 37 filled with 1.0
-        assert_eq!(get(&enc, 37, 0), 1.0);
     }
 
     #[test]
     fn metadata_riichi_and_scores() {
         let mut enc = ObservationEncoder::new();
         enc.encode_metadata(&test_metadata());
-        // Self riichi = ch 41 (CH_META + 9)
-        assert_eq!(get(&enc, 41, 0), 1.0);
-        // Opponent 1 riichi = ch 42 -- NOT set
-        assert_eq!(get(&enc, 42, 0), 0.0);
-        // Honba = 2/8 = 0.25 on ch 45
-        assert!((get(&enc, 45, 0) - 0.25).abs() < 1e-6);
-        // Score ch 48 = 25000/100000 = 0.25
-        assert!((get(&enc, 48, 0) - 0.25).abs() < 1e-6);
+        // Self riichi = ch 43 filled
+        assert_eq!(get(&enc, 43, 0), 1.0);
+        // Opponent 1 riichi = ch 44 -- NOT set
+        assert_eq!(get(&enc, 44, 0), 0.0);
+        // Score ch 47 = 25000/100000 = 0.25
+        assert!((get(&enc, 47, 0) - 0.25).abs() < 1e-6);
     }
 
     #[test]
-    fn metadata_wall_remaining() {
+    fn metadata_score_gaps() {
         let mut enc = ObservationEncoder::new();
-        enc.encode_metadata(&test_metadata());
-        // tiles_remaining=35, normalized=35/70=0.5 on ch 47
-        assert!((get(&enc, 47, 0) - 0.5).abs() < 1e-6);
+        let mut meta = test_metadata();
+        meta.scores = [30000, 25000, 20000, 25000];
+        enc.encode_metadata(&meta);
+        // gap[0] = (30000-30000)/30000 = 0.0
+        assert!((get(&enc, 51, 0) - 0.0).abs() < 1e-6);
+        // gap[1] = (30000-25000)/30000 = 0.1667
+        assert!((get(&enc, 52, 0) - 5000.0 / 30000.0).abs() < 1e-4);
+        // gap[2] = (30000-20000)/30000 = 0.3333
+        assert!((get(&enc, 53, 0) - 10000.0 / 30000.0).abs() < 1e-4);
     }
 
-    // -- Safety tests --
+    #[test]
+    fn metadata_shanten_one_hot() {
+        // shanten = 0 (tenpai) -> ch 55
+        let mut enc = ObservationEncoder::new();
+        let mut meta = test_metadata();
+        meta.shanten = 0;
+        enc.encode_metadata(&meta);
+        assert_eq!(get(&enc, 55, 0), 1.0);
+        assert_eq!(get(&enc, 56, 0), 0.0);
+
+        // shanten = 2 -> ch 57
+        enc.clear();
+        meta.shanten = 2;
+        enc.encode_metadata(&meta);
+        assert_eq!(get(&enc, 57, 0), 1.0);
+        assert_eq!(get(&enc, 55, 0), 0.0);
+
+        // shanten = 5 (clamped to 3+) -> ch 58
+        enc.clear();
+        meta.shanten = 5;
+        enc.encode_metadata(&meta);
+        assert_eq!(get(&enc, 58, 0), 1.0);
+    }
+
+    #[test]
+    fn metadata_round_honba_kyotaku() {
+        let mut enc = ObservationEncoder::new();
+        let mut meta = test_metadata();
+        meta.kyoku_index = 4; // South 1
+        meta.honba = 3;
+        meta.kyotaku = 2;
+        enc.encode_metadata(&meta);
+        // Ch 59: 4/8 = 0.5
+        assert!((get(&enc, 59, 0) - 0.5).abs() < 1e-6);
+        // Ch 60: 3/10 = 0.3
+        assert!((get(&enc, 60, 0) - 0.3).abs() < 1e-6);
+        // Ch 61: 2/10 = 0.2
+        assert!((get(&enc, 61, 0) - 0.2).abs() < 1e-6);
+    }
+
+    // -- Safety tests (ch 62-84, unchanged) --
 
     #[test]
     fn safety_genbutsu_channels() {
@@ -727,21 +901,17 @@ mod tests {
         si.genbutsu_tedashi[1][10] = true;
         si.genbutsu_riichi_era[2][20] = true;
         enc.encode_safety(&si);
-        // genbutsu_all: ch 62 + opp
-        assert_eq!(get(&enc, 62, 5), 1.0);  // opp 0
-        // tedashi: ch 65 + opp
-        assert_eq!(get(&enc, 66, 10), 1.0); // opp 1, ch 65+1=66
-        // riichi_era: ch 68 + opp
-        assert_eq!(get(&enc, 70, 20), 1.0); // opp 2, ch 68+2=70
+        assert_eq!(get(&enc, 62, 5), 1.0);
+        assert_eq!(get(&enc, 66, 10), 1.0);
+        assert_eq!(get(&enc, 70, 20), 1.0);
     }
 
     #[test]
     fn safety_suji_channel() {
         let mut enc = ObservationEncoder::new();
         let mut si = SafetyInfo::new();
-        si.suji[0][0] = 1.0; // 1m has suji for opp 0
+        si.suji[0][0] = 1.0;
         enc.encode_safety(&si);
-        // suji: ch 71 + opp
         assert_eq!(get(&enc, 71, 0), 1.0);
     }
 
@@ -752,7 +922,6 @@ mod tests {
         si.kabe[15] = true;
         si.one_chance[20] = true;
         enc.encode_safety(&si);
-        // kabe = ch 80 (62+18), one_chance = ch 81 (62+19)
         assert_eq!(get(&enc, 80, 15), 1.0);
         assert_eq!(get(&enc, 81, 20), 1.0);
     }
@@ -763,32 +932,34 @@ mod tests {
     fn full_encode_returns_correct_size() {
         let mut enc = ObservationEncoder::new();
         let hand = [0u8; NUM_TILES];
+        let open_meld = [0u8; NUM_TILES];
         let discards = empty_discards();
         let melds = empty_melds();
         let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
-        let obs = enc.encode(&hand, None, &discards, &melds, &dora, &meta, &safety);
+        let obs = enc.encode(
+            &hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety,
+        );
         assert_eq!(obs.len(), OBS_SIZE);
     }
 
     #[test]
     fn full_encode_clears_between_calls() {
         let mut enc = ObservationEncoder::new();
-        // First encode with some hand data
         let mut hand = [0u8; NUM_TILES];
         hand[0] = 3;
+        let open_meld = [0u8; NUM_TILES];
         let discards = empty_discards();
         let melds = empty_melds();
         let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
-        enc.encode(&hand, None, &discards, &melds, &dora, &meta, &safety);
-        assert_eq!(get(&enc, 2, 0), 1.0); // ch2 tile 0 set
+        enc.encode(&hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety);
+        assert_eq!(get(&enc, 2, 0), 1.0);
 
-        // Second encode with empty hand -- should be cleared
         let empty_hand = [0u8; NUM_TILES];
-        enc.encode(&empty_hand, None, &discards, &melds, &dora, &meta, &safety);
-        assert_eq!(get(&enc, 2, 0), 0.0); // cleared
+        enc.encode(&empty_hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety);
+        assert_eq!(get(&enc, 2, 0), 0.0);
     }
 }
