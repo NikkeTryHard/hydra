@@ -2,7 +2,7 @@
 
 ## Overview
 
-Hydra uses a hybrid Rust + Python architecture. Rust handles the game engine, observation encoding, and simulation — everything that benefits from low-level performance. Python handles neural network training and experiment tracking — everything that benefits from the ML ecosystem. This mirrors Mortal's design but with all original code (no AGPL-derived components).
+Hydra uses a 100% Rust architecture. Burn framework with burn-tch (libtorch/cuDNN) backend. See [RUST_STACK.md](RUST_STACK.md) for decision rationale. Rust handles the game engine, observation encoding, simulation, neural network training, and experiment tracking. This mirrors Mortal's game engine design but with all original code (no AGPL-derived components) and a fully unified Rust stack.
 
 ## Related Documents
 
@@ -13,7 +13,7 @@ Hydra uses a hybrid Rust + Python architecture. Rust handles the game engine, ob
 
 ## System Architecture
 
-The system is composed of four major subsystems: the Rust core game engine, Python bindings via PyO3, the Python training stack, and the deployment pipeline. Data flows from the game engine through PyO3 into the training loop, and trained models are exported back through ONNX for pure-Rust inference.
+The system is composed of three major subsystems: the Rust core game engine, the Rust training stack (Burn framework), and the deployment pipeline. Data flows from the game engine directly into the Burn training loop within a single Rust process. Trained models are saved via Burn's Record system for inference.
 
 ```mermaid
 graph TB
@@ -25,41 +25,34 @@ graph TB
         SIM[Batch Simulator]
     end
 
-    subgraph "Python Bindings (hydra-py)"
-        PYO3[PyO3 Bridge]
-        ENV[Gym-like Environment]
-    end
-
-    subgraph "Python Training (hydra-train)"
-        MODEL[PyTorch Model]
+    subgraph "Rust Training (hydra-train)"
+        MODEL[Burn Model]
+        LOOP[Burn Training Loop]
         P1[Phase 1: Behavioral Cloning]
         P2[Phase 2: Oracle Distillation]
         P3[Phase 3: League Self-Play]
-        WANDB[Weights & Biases]
+        WANDB[W&B REST API]
     end
 
     subgraph "Deployment"
-        ONNX[ONNX Export]
-        INFER[Rust Inference]
+        RECORD[Burn Record Save]
+        INFER[Burn Inference]
     end
 
     ENGINE --> SHANTEN
     ENGINE --> ENCODER
     ENGINE --> MJAI
     ENGINE --> SIM
-    SIM --> PYO3
-    PYO3 --> ENV
+    SIM --> LOOP
+    MODEL --> LOOP
+    LOOP --> P1
     P1 --> P2
     P2 --> P3
-    ENV --> P3
-    MODEL --> P1
-    MODEL --> P2
-    MODEL --> P3
     P1 --> WANDB
     P2 --> WANDB
     P3 --> WANDB
-    MODEL --> ONNX
-    ONNX --> INFER
+    MODEL --> RECORD
+    RECORD --> INFER
 ```
 
 ## Rust Core (hydra-core)
@@ -69,7 +62,7 @@ graph TB
 | Crate | Version | Purpose | License |
 |-------|---------|---------|---------|
 | xiangting | 5.0+ | Shanten calculation | MIT |
-| pyo3 | 0.28+ | Python bindings | MIT OR Apache-2.0 |
+| burn | 0.21+ | Deep learning framework | Apache-2.0/MIT |
 | rayon | 1.10+ | Parallel simulation | MIT OR Apache-2.0 |
 | serde | 1.0+ | JSON serialization | MIT OR Apache-2.0 |
 | serde_json | 1.0+ | MJAI parsing | MIT OR Apache-2.0 |
@@ -113,7 +106,6 @@ The `hydra-core` crate is organized as a flat module layout under `src/`:
 | `safety.rs` | Suji, kabe, and genbutsu safety calculations. Returns `SafetyInfo { genbutsu: [[bool; 34]; 3], suji: [[f32; 34]; 3], kabe: [f32; 34], one_chance: [f32; 34] }` mapping directly to observation channels 62–81. Updated incrementally on each discard/call/kan event. |
 | `mjai.rs` | MJAI protocol parser for log compatibility |
 | `simulator.rs` | Batch game simulation with rayon parallelism |
-| `python.rs` | PyO3 binding definitions exposed to Python |
 
 ### MJAI Protocol
 
@@ -273,9 +265,8 @@ graph LR
         AUG["Suit Permutation\n(random 1-of-6)"]
     end
 
-    subgraph "PyTorch Pipeline"
-        IDS["IterableDataset"]
-        DL["DataLoader\n(8 workers, pin_memory)"]
+    subgraph "Burn Data Pipeline"
+        DLB["DataLoaderBuilder\n(multi-threaded batching)"]
         SHUFFLE["3-Level Shuffle\n(file + buffer + reserve)"]
     end
 
@@ -286,10 +277,9 @@ graph LR
     LOGS --> LOADER
     MANIFEST --> LOADER
     LOADER --> AUG
-    AUG --> IDS
-    IDS --> SHUFFLE
-    SHUFFLE --> DL
-    DL --> GPU
+    AUG --> SHUFFLE
+    SHUFFLE --> DLB
+    DLB --> GPU
 ```
 
 ### Gap 1: Storage Format
@@ -310,21 +300,20 @@ For production runs where maximum GPU utilization is critical, an optional pre-e
 
 ### Gap 2: Data Loading Pipeline
 
-**Decision: PyTorch IterableDataset backed by Rust batch decoding via PyO3.**
+**Decision: Burn DataLoaderBuilder backed by Rust GameplayLoader with rayon parallelism.**
 
-Each DataLoader worker owns a disjoint slice of the file list (Mortal's partitioning pattern). Within each worker, the Rust `GameplayLoader` uses rayon parallel iterators and `GzDecoder` for concurrent file parsing, producing pre-encoded observation tensors that are yielded directly to the PyTorch training loop.
+The Burn DataLoader partitions the file list across worker threads (Mortal's partitioning pattern). Within each worker, the Rust `GameplayLoader` uses rayon parallel iterators and `GzDecoder` for concurrent file parsing, producing pre-encoded observation tensors that are fed directly into the Burn training loop. Single-process architecture -- no IPC overhead.
 
 **DataLoader configuration:**
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| `batch_size` | 2048 | 4× Mortal's 512; use linear LR scaling rule |
-| `num_workers` | 8 | Each worker spawns rayon threads internally |
+| `batch_size` | 2048 | 4x Mortal's 512; use linear LR scaling rule |
+| `num_workers` | 8 | Burn DataLoader thread count; each worker spawns rayon threads internally |
 | `RAYON_NUM_THREADS` | `num_cpus / num_workers` (e.g., 4 per worker on 32-core) | Scale with available cores; avoid oversubscription |
-| `pin_memory` | `True` | Saves 0.5–2ms per batch on host-to-device transfer |
-| `persistent_workers` | `True` | Avoids worker re-spawn overhead between epochs (Mortal misses this) |
-| `prefetch_factor` | 2 | Default is sufficient for NVMe-backed storage |
-| `drop_last` | `True` | Clean batch boundaries for consistent gradient scale |
+| `drop_last` | `true` | Clean batch boundaries for consistent gradient scale |
+
+> **Note:** Burn's DataLoader runs in-process with direct memory sharing. No `pin_memory`, `persistent_workers`, or `prefetch_factor` needed -- these are PyTorch concepts for cross-process IPC that do not apply to a single-process Rust architecture.
 
 **Shuffling strategy (3-level):**
 
@@ -412,13 +401,13 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 |-----------|--------|-------|
 | Model (~16.5M student / ~16.7M teacher, bf16) | ~33–34 MB | All phases |
 | Batch (2048 × 85×34 × 4B) | ~23 MB | Phase 1 (BC) |
-| DataLoader workers (8 × prefetch 2) | ~180 MB | Phase 1 (BC) |
+| Burn DataLoader workers (8 threads) | ~180 MB | Phase 1 (BC) |
 | Optimizer state (AdamW, bf16) | ~130 MB | All phases |
 | Opponent cache (5 × 33 MB bf16) | ~165 MB | Phase 3 |
 | PPO minibatch (on-GPU) | ~200–400 MB | Phase 2–3 (RL) |
 | **Total VRAM footprint** | **< 1 GB** (BC) / **~3.7 GB** (PPO+opponents) | — |
 
-The PPO rollout buffer is stored in **CPU pinned memory** (12 GB per buffer, 24 GB for double buffer), not VRAM. Derived from: `512 envs × 2048 rollout steps × (85×34×4 bytes obs + 46×4 bytes logits + 4 bytes action + 4 bytes reward + 4 bytes value + 1 byte done)` ≈ 12 GB per buffer. Only individual minibatches are transferred to GPU via async `non_blocking=True` copies. Phase 1 behavioral cloning is memory-trivial.
+The PPO rollout buffer is stored in **CPU pinned memory** (12 GB per buffer, 24 GB for double buffer), not VRAM. Derived from: `512 envs x 2048 rollout steps x (85x34x4 bytes obs + 46x4 bytes logits + 4 bytes action + 4 bytes reward + 4 bytes value + 1 byte done)` = ~12 GB per buffer. Only individual minibatches are transferred to GPU via async copies through burn-tch. Phase 1 behavioral cloning is memory-trivial.
 
 **Throughput estimates:**
 
@@ -432,65 +421,23 @@ The PPO rollout buffer is stored in **CPU pinned memory** (12 GB per buffer, 24 
 
 **Bottom line:** On-the-fly Rust parsing is the clear winner. Both NVMe I/O and CPU parsing capacity are massively overprovisioned relative to the training throughput target. The GPU is the sole bottleneck — specifically the forward/backward pass during training. The PPO rollout buffer lives in CPU pinned memory and does not consume VRAM.
 
-## Python Bindings (hydra-py)
+## Python Bindings
 
-### PyO3 Interface
+Removed. Hydra uses a 100% Rust stack. See [RUST_STACK.md](RUST_STACK.md) for details.
 
-The following Rust functions are exposed to Python via PyO3:
-
-| Python Function | Rust Implementation |
-|-----------------|---------------------|
-| `Game.new()` | `Game::new()` |
-| `Game.step(action)` | `Game::step()` |
-| `Game.get_observation()` | `Encoder::encode()` |
-| `Game.legal_actions()` | `Game::legal_actions()` |
-| `Game.is_done()` | `Game::is_terminal()` |
-| `simulate_batch(n)` | `Simulator::run_batch()` |
-
-### Gym-like Environment
-
-The Python environment wraps the Rust game engine in a Gymnasium-compatible interface. Two classes are provided:
-
-**MahjongEnv** — single-environment interface for one game at a time:
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `reset()` | → `observation` | Resets the environment and returns the initial observation tensor |
-| `step(action)` | → `(obs, reward, done, info)` | Advances the game by one action, returning the new observation, reward signal, terminal flag, and info dictionary |
-| `legal_actions()` | → `list` | Returns the list of currently legal action indices |
-| `render()` | → `str` | Returns a human-readable string representation of the current game state |
-
-**VectorEnv** — batched interface that manages multiple `MahjongEnv` instances in parallel:
-
-| Method / Attribute | Signature | Description |
-|--------------------|-----------|-------------|
-| `num_envs` | `int` (attribute) | The number of parallel environments in the batch |
-| `reset()` | → `observations` | Resets all environments and returns a batch of initial observations |
-| `step(actions)` | → `(obs, rewards, dones, infos)` | Steps all environments simultaneously with a batch of actions |
-
-`VectorEnv` wraps multiple `MahjongEnv` instances and manages them in parallel, providing a batched API for efficient PPO rollout collection.
-
-### Installation
-
-The `hydra-py` package is built and installed via maturin:
-
-```
-maturin develop --release
-```
-
-## Python Training (hydra-train)
+## Rust Training (hydra-train)
 
 ### Dependencies
 
-| Package | Purpose |
-|---------|---------| 
-| torch | Neural network definition and training |
-| numpy | Array operations and data manipulation |
-| wandb | Experiment tracking and visualization |
-| hydra-py | Game environment (Rust-backed) |
-| einops | Tensor reshaping utilities |
-| rich | Progress bars and terminal output |
-| mahjong (dev) | Hand scoring oracle for Rust engine verification — yaku/han/fu/score validation against 11M+ Tenhou hands (pin to v1.4.0) |
+| Crate | Purpose |
+|-------|---------|
+| burn | Deep learning framework (model definition, autodiff) |
+| burn-tch | libtorch backend (CUDA/cuDNN acceleration) |
+| burn-train | Training loop infrastructure (learner, metrics, checkpointing) |
+| rayon | Data pipeline parallelism |
+| reqwest | W&B REST API for experiment tracking |
+| indicatif | Progress bars and terminal output |
+| flate2 | Gzip decompression for MJAI log parsing |
 
 ### Per-Phase Training Infrastructure
 
@@ -520,7 +467,7 @@ Hydra's training proceeds through three distinct phases with different data sour
 | Batch size | 2048 | 4× Mortal's 512; linear scaling with LR |
 | Gradient accumulation | 1 | Effective batch = 2048 (sufficient on 96GB) |
 | Precision | bf16 (autocast) | Blackwell-native; same dynamic range as fp32, no GradScaler needed |
-| torch.compile | Enabled | ~10-30% throughput gain via operator fusion; GroupNorm safe in bf16 |
+| CubeCL JIT | Planned (burn-cuda upgrade) | Kernel fusion via burn-cuda backend. Currently using burn-tch (libtorch). See [RUST_STACK.md](RUST_STACK.md). |
 
 **Loss function:**
 L_IL = CE(π, a_human) + 0.5 × MSE(V, outcome) + 0.1 × L_aux
@@ -545,7 +492,7 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 - Total wall time: ~6.6 hours for 3 epochs
 - GPU memory: ~400 MB total (model + optimizer + batch — massive headroom on 96 GB)
 
-**Monitoring (via Weights & Biases):**
+**Monitoring (via W&B REST API / tensorboard-rs):**
 
 | Frequency | Metrics |
 |-----------|---------|
@@ -626,18 +573,18 @@ Post-dropout continuation: LR decayed to 1/10 of current value, importance weigh
 
 **Self-play architecture:**
 
-Hydra uses a single-process, multi-threaded architecture for Phase 3. Python threading (not multiprocessing) is used because the Rust game engine releases the GIL during CPU-bound work. No IPC overhead. No Ray. No distributed framework.
+Hydra uses a single-process, multi-threaded architecture for Phase 3. Rust rayon thread pool manages concurrent games. No GIL, no IPC overhead. Single-process architecture. No Ray. No distributed framework.
 
 ```mermaid
 graph TB
     subgraph "GPU (RTX PRO 6000)"
-        INF[Inference Model<br/>bf16, torch.compiled<br/>CUDA Stream 0]
-        TRAIN[Training Model<br/>bf16 autocast<br/>CUDA Stream 1]
+        INF[Inference Model<br/>bf16, Burn<br/>CUDA Stream 0]
+        TRAIN[Training Model<br/>bf16, Burn<br/>CUDA Stream 1]
         POOL[Opponent Cache<br/>5 models × ~33MB]
     end
 
     subgraph "CPU (Game Workers)"
-        GW[512 Concurrent Games<br/>Rust via PyO3 + rayon]
+        GW[512 Concurrent Games<br/>Rust rayon thread pool]
     end
 
     subgraph "Memory (Pinned)"
@@ -648,14 +595,14 @@ graph TB
     INF -->|actions| GW
     GW -->|transitions| RB
     RB -->|swap on full| TRAIN
-    TRAIN -->|state_dict copy<br/>after each PPO update| INF
+    TRAIN -->|record copy<br/>after each PPO update| INF
 ```
 
 **Key architecture decisions:**
 - **Dual CUDA streams:** Stream 0 handles inference (action selection during self-play). Stream 1 handles PPO gradient computation. These overlap on the GPU, maximizing utilization.
-- **InferenceServer thread:** A dedicated Python thread drains a bounded observation queue (`queue.Queue(maxsize=64)`), batches observations from all active games (~512 per step), runs a single GPU forward pass, and distributes actions back via futures. If the queue is full, game workers block (natural backpressure). Batch inference latency: ~0.5-1ms for batch 512.
-- **Game workers:** The Rust game engine runs 512 concurrent hanchans. Feature encoding is parallelized via rayon within the game batch (Mortal's proven pattern). Game logic releases the GIL. When a hanchan finishes, a new game immediately spawns with a fresh seed (no sync barrier). The rollout buffer fills from all active games regardless of their lifecycle stage.
-- **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Swap trigger: Buffer A reaches `rollout_steps × num_envs` (2048 × 512 = 1,048,576) transitions. Swap is coordinated via `threading.Event` — training thread signals completion, game thread swaps buffer pointers. Both buffers use pre-allocated pinned memory for fast async CPU→GPU transfer via `non_blocking=True`. Binary/count channels (0–10, 23–34) stored as uint8; float channels (temporal weights, normalized scores) stored as float32, cast to float32 per-minibatch on GPU.
+- **InferenceServer thread:** A dedicated Rust thread drains a bounded observation channel (`crossbeam::channel` with capacity 64), batches observations from all active games (~512 per step), runs a single GPU forward pass via Burn, and distributes actions back via channels. If the channel is full, game workers block (natural backpressure). Batch inference latency: ~0.5-1ms for batch 512.
+- **Game workers:** The Rust game engine runs 512 concurrent hanchans via rayon thread pool. Feature encoding is parallelized within the game batch (Mortal's proven pattern). When a hanchan finishes, a new game immediately spawns with a fresh seed (no sync barrier). The rollout buffer fills from all active games regardless of their lifecycle stage.
+- **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Swap trigger: Buffer A reaches `rollout_steps x num_envs` (2048 x 512 = 1,048,576) transitions. Swap is coordinated via `std::sync::Condvar` -- training thread signals completion, game thread swaps buffer pointers. Both buffers use pre-allocated memory for direct GPU transfer via burn-tch. Binary/count channels (0-10, 23-34) stored as u8; float channels (temporal weights, normalized scores) stored as f32, cast to f32 per-minibatch on GPU.
 
  **Opponent pool** (composition weights defined in [TRAINING.md § Phase 3](TRAINING.md#phase-3-league-training)):
 
@@ -766,7 +713,7 @@ graph TB
 
 | Phase | GPU | CPU | Parallelism |
 |-------|-----|-----|-------------|
-| Phase 1 (BC) | Forward/backward on single device | 8 DataLoader workers with rayon | Data parallelism via workers |
+| Phase 1 (BC) | Forward/backward on single device | 8 Burn DataLoader workers with rayon | Data parallelism via workers |
 | Phase 2 (Oracle) | Teacher (bf16 inference) + Student (training) | Self-play game workers | Dual model, single device |
 | Phase 3 (League) | Dual CUDA streams (inference + training) | 512 concurrent games via Rust/rayon threading | Overlapped inference and gradient computation |
 
@@ -774,9 +721,9 @@ graph TB
 
 ### Model Definition
 
-The PyTorch model implements the SE-ResNet architecture defined in HYDRA_SPEC.md. Key infrastructure considerations:
+The Burn model implements the SE-ResNet architecture defined in HYDRA_SPEC.md. Key infrastructure considerations:
 
-- **torch.compile()** is enabled for all phases. For Phase 3 self-play inference, use mode="reduce-overhead" which activates CUDAGraphs for fixed-shape inputs — particularly beneficial for the InferenceServer where batch size is stable. For training, use mode="default" to allow dynamic shapes from action masking.
+- **CubeCL JIT fusion (burn-cuda upgrade path):** Currently using burn-tch (libtorch) backend. Future upgrade to burn-cuda will enable CubeCL kernel fusion for fixed-shape inputs -- particularly beneficial for the InferenceServer where batch size is stable. See [RUST_STACK.md](RUST_STACK.md).
 - **Precision: bf16** (not fp16). Blackwell GPUs have native bf16 tensor core support at full throughput. bf16 has the same dynamic range as fp32 (8 exponent bits), eliminating the need for GradScaler and the risk of gradient overflow/underflow. fp16 (5 exponent bits, max 65504) requires GradScaler and can cause training instabilities early in learning when gradients are large.
 - **Gradient checkpointing** is available but unnecessary at this model scale. The ~16.7M param model's activations occupy ~100-200 MB during forward/backward — negligible on 96 GB. Gradient checkpointing would add ~30% compute overhead for <0.2% memory savings.
 - **GroupNorm(32)** is used throughout instead of BatchNorm. GroupNorm has no running statistics, so it is immune to distribution shift between BC data and self-play data — unlike Mortal's BatchNorm which must be frozen during online RL.
@@ -792,29 +739,21 @@ The PyTorch model implements the SE-ResNet architecture defined in HYDRA_SPEC.md
 
 ## Deployment
 
-### ONNX Export
+### Model Persistence and Inference
 
-For production inference, trained PyTorch models are exported to the ONNX format. This enables the model to run through ONNX Runtime, which can then be called from Rust — eliminating the Python dependency entirely at serving time.
+Inference uses Burn directly with the burn-tch backend. For deployment, models are saved via Burn's Record system (named tensor serialization). This keeps the entire pipeline in Rust with zero format conversion overhead.
 
 ```mermaid
 graph LR
-    PT[PyTorch Model] --> EXPORT[torch.onnx.export]
-    EXPORT --> ONNX[ONNX Model]
-    ONNX --> ORT[ONNX Runtime]
-    ORT --> RUST[Rust Inference]
+    BURN[Burn Model] --> SAVE[Record::save]
+    SAVE --> FILE[Model Record File]
+    FILE --> LOAD[Record::load]
+    LOAD --> INFER[Burn Inference]
 ```
 
-### Rust Inference Options
+**Alternative export path:** For interoperability, models can be exported via tch-rs `CModule::save` for TorchScript format, enabling loading from C++/libtorch consumers.
 
-For maximum performance, inference can run entirely in Rust using one of three crate options:
-
-| Crate | Description |
-|-------|-------------|
-| `ort` | Rust bindings to ONNX Runtime — mature, GPU-accelerated, broadest operator coverage |
-| `tract` | Pure Rust inference engine — no C/C++ dependencies, easier to cross-compile |
-| `candle` | HuggingFace's Rust ML framework — native tensor operations, growing ecosystem |
-
-The core advantage of Rust-side inference is the complete elimination of Python at runtime. This removes the GIL, startup overhead, and Python dependency management from the inference path, enabling sub-15ms decision latency suitable for real-time play.
+The core advantage of a 100% Rust stack is zero FFI boundary at inference time. No GIL, no Python startup overhead, no cross-language serialization -- enabling sub-15ms decision latency suitable for real-time play.
 
 ## Hardware Requirements
 
@@ -847,7 +786,7 @@ The core advantage of Rust-side inference is the complete elimination of Python 
 
 ## Development Workflow
 
-The end-to-end workflow flows through three phases: development (write code, run tests, benchmark), training (launch training runs, monitor via W&B, evaluate results), and deployment (export to ONNX, deploy for inference).
+The end-to-end workflow flows through three phases: development (write code, run tests, benchmark), training (launch training runs, monitor via W&B, evaluate results), and deployment (save model record, deploy for inference).
 
 ```mermaid
 graph LR
@@ -863,8 +802,8 @@ graph LR
     end
 
     subgraph "Deployment"
-        EVAL --> EXPORT[Export ONNX]
-        EXPORT --> DEPLOY[Deploy]
+        EVAL --> SAVE[Save Model Record]
+        SAVE --> DEPLOY[Deploy]
     end
 ```
 
@@ -876,11 +815,8 @@ Every pull request and merge to main runs automated checks to catch regressions 
 |-------|---------|---------|---------------|
 | Rust lint | `cargo clippy --all-targets -- -D warnings` | Every PR | ~30s |
 | Rust test | `cargo test --release` | Every PR | ~2min |
-| Python lint | `ruff check hydra-train/` | Every PR | ~5s |
-| Python type check | `pyright hydra-train/` | Every PR | ~30s |
-| Python test | `pytest hydra-train/tests/ -x` | Every PR | ~1min |
-| ONNX export smoke | `python scripts/export_onnx.py --smoke` | Every PR | ~30s |
+| Burn model smoke test | `cargo test --release model_smoke_tests` | Every PR | ~30s |
 | Encoding regression | `cargo test --release encoder_golden_tests` | Every PR | ~1min |
-| Full eval (200K games) | `python scripts/evaluate.py --tier full` | Merge to main | ~4h |
+| Full eval (200K games) | `cargo run --release --bin evaluate -- --tier full` | Merge to main | ~4h |
 
 **Design rationale:** The encoding regression stage runs the golden tests from TESTING.md § Known-State Golden Tests. Any encoder change that alters output tensors must explicitly regenerate golden files — accidental encoding drift is the single most dangerous silent failure mode in the pipeline. The full eval runs only on merge to main because it takes hours and is not needed for incremental development.

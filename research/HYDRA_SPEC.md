@@ -31,7 +31,7 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent AI Lab, 10.68 stable dan) 
 1. **Proven over Novel** — Prioritize techniques with published evidence (Suphx, Mortal). Novel additions (safety planes, danger head) are grounded in Mahjong theory, not speculation.
 2. **Practical Constraints** — Must fit <8GB inference VRAM, <50ms latency.
 3. **Clean IP** — No Mortal-derived code (AGPL restriction). All code written from scratch, all dependencies MIT/Apache licensed.
-4. **Rust + Python Hybrid** — Fast game engine in Rust with PyO3 bindings, flexible training loop in Python/PyTorch.
+4. **100% Rust** — Game engine, training, and inference all in Rust. Burn framework with burn-tch (libtorch/cuDNN) backend. See [RUST_STACK.md](RUST_STACK.md).
 
 ---
 
@@ -523,7 +523,7 @@ graph LR
 
 ### Deployment Configuration
 
-Inference runs in FP16 (half precision) with `torch.compile` in "reduce-overhead" mode. CUDA graphs are used for batch-1 inference with static input shapes, eliminating kernel launch overhead.
+Inference runs in bf16 with Burn's burn-tch backend (libtorch/cuDNN). For burn-cuda upgrade path, CubeCL JIT provides kernel fusion.
 
 ### VRAM Breakdown
 
@@ -584,13 +584,12 @@ Hydra can reference Mortal's published *techniques* (observable from papers and 
 | **Use riichi-rs** | Rust, permissive license | Less mature |
 | **Use Mjai protocol only** | Interface standard, no code copying | Still need own engine |
 
-**Recommended approach:** Build a custom Rust engine with PyO3 bindings. This gives full control, clean IP, and the performance characteristics needed for high-throughput self-play.
+**Recommended approach:** Build a custom Rust engine with Burn for training and inference. This gives full control, clean IP, and the performance characteristics needed for high-throughput self-play.
 
 **Dependency licenses:**
 - xiangting (MIT) — Shanten calculation
-- PyO3 (MIT OR Apache-2.0) — Rust-Python bindings
-- PyTorch (BSD) — Neural network training
-
+- burn (Apache-2.0/MIT) — Deep learning framework
+- burn-tch (Apache-2.0/MIT) — libtorch backend
 ---
 
 ---
@@ -606,23 +605,21 @@ graph TB
         MJAI[MJAI Protocol Parser]
     end
 
-    subgraph "Python Training"
-        NN["Neural Network<br/>PyTorch"]
-        TL[Training Loop]
-        EXP["Experiment Tracking<br/>wandb"]
+    subgraph "Rust Training"
+        BURN["Burn Model"]
+        TL["Training Loop (Rust)"]
     end
 
     subgraph "Outputs"
         WEIGHTS[Trained Weights]
-        ONNX[ONNX Export]
+        CKPT["Burn Checkpoint"]
     end
 
     GE --> SP
     GE --> OE
     MJAI --> GE
-    OE -->|"PyO3"| NN
-    NN --> TL
-    TL --> EXP
+    OE --> BURN
+    BURN --> TL
     TL --> WEIGHTS
-    WEIGHTS --> ONNX
+    WEIGHTS --> CKPT
 ```
