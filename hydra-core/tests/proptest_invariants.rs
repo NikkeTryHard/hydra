@@ -141,19 +141,47 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// TODO: Invariant 3 (shanten bounds) -- requires shanten calculator from
-// riichienv-core internals. Add when a public shanten API is available.
+// Invariant 3: shanten is always in range -1..=6 for any valid hand.
+// Uses the public shanten API from riichienv-core.
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    #[test]
+    fn shanten_always_bounded(seed in 0u64..1000) {
+        let mut state = new_game(seed);
+        let mut counter = 0u64;
+        let mut steps = 0u32;
+        while !state.is_done && steps < MAX_STEPS {
+            if matches!(state.phase, Phase::WaitAct) {
+                let obs = state.get_observation(state.current_player);
+                let hand_counts = hydra_core::bridge::extract_hand(&obs);
+                let total: u8 = hand_counts.iter().sum();
+                let len_div3 = total / 3;
+                let sh = riichienv_core::shanten::calc_shanten_from_counts(
+                    &hand_counts, len_div3,
+                );
+                prop_assert!(
+                    (-1..=6).contains(&sh),
+                    "shanten {} out of range at step {}, seed {}",
+                    sh, steps, seed,
+                );
+            }
+            step_game(&mut state, seed, &mut counter);
+            steps += 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Invariant 4 (tile count bounds) -- no tile type > 4 across all visible
+// locations. Requires internal GameState tile-audit API (not yet public).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// TODO: Invariant 4 (tile count bounds) -- no tile type > 4 across all visible
-// locations. Requires per-tile tracking from GameState internals or a dedicated
-// tile audit function. Add when GameState exposes full tile location data.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// TODO: Invariant 5 (136 total tiles) -- all tiles accounted for across wall,
-// hands, discards, melds. Requires internal GameState access.
+// Invariant 5 (136 total tiles) -- all tiles accounted for across wall,
+// hands, discards, melds. Requires internal GameState access (not yet public).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
