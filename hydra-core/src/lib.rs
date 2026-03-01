@@ -11,3 +11,4 @@ pub mod encoder;
 pub mod simulator;
 pub mod seeding;
 pub mod bridge;
+pub mod game_loop;
