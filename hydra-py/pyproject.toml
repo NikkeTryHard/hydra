@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "hydra-engine"
+version = "0.1.0"
+description = "Python bindings for the Hydra Riichi Mahjong game engine"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[tool.maturin]
+module-name = "hydra._hydra"
+manifest-path = "Cargo.toml"
+python-source = "python"
