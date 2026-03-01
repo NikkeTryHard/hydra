@@ -4,7 +4,7 @@
 //! in parallel using a dedicated rayon ThreadPool.
 
 use rayon::prelude::*;
-use riichienv_core::action::Action;
+use riichienv_core::action::{Action, Phase};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 use std::collections::HashMap;
@@ -66,17 +66,31 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
             continue;
         }
 
-        // Get legal actions for the current player.
-        let obs = state.get_observation(state.current_player);
-        let legal = obs.legal_actions_method();
+        let mut actions = HashMap::new();
 
-        if legal.is_empty() {
-            break;
+        match state.phase {
+            Phase::WaitAct => {
+                let obs = state.get_observation(state.current_player);
+                let legal = obs.legal_actions_method();
+                if legal.is_empty() {
+                    break;
+                }
+                actions.insert(state.current_player, legal[0].clone());
+            }
+            Phase::WaitResponse => {
+                // Clone active_players to avoid borrow conflict with get_observation.
+                for &pid in &state.active_players.clone() {
+                    let obs = state.get_observation(pid);
+                    let legal = obs.legal_actions_method();
+                    if legal.is_empty() {
+                        continue;
+                    }
+                    // Always pass for benchmark (first legal = usually Pass).
+                    actions.insert(pid, legal[0].clone());
+                }
+            }
         }
 
-        // Pick first legal action (deterministic baseline).
-        let mut actions = HashMap::new();
-        actions.insert(state.current_player, legal[0].clone());
         state.step(&actions);
         total_actions += 1;
     }
@@ -157,6 +171,8 @@ mod tests {
         let result = simulate_single_game(Some(42), 0);
         assert!(result.total_actions > 0, "game should have actions");
         assert!(result.rounds_played > 0, "game should have rounds");
+        assert!(result.total_actions > 10,
+            "game had only {} actions, expected more than 10", result.total_actions);
     }
 
     #[test]
@@ -209,6 +225,14 @@ mod tests {
         for r in &results {
             assert!(r.total_actions > 0);
         }
+    }
+
+    #[test]
+    fn game_has_realistic_action_count() {
+        // A full hanchan with first-legal-action should have 50-500 actions.
+        let result = simulate_single_game(Some(42), 0);
+        assert!(result.total_actions > 20,
+            "game had only {} actions, expected realistic count", result.total_actions);
     }
 
 }

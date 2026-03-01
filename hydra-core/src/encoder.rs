@@ -110,8 +110,13 @@ impl ObservationEncoder {
             if count >= 3 { self.set(CH_HAND + 2, tile, 1.0); }
             if count == 4 { self.set(CH_HAND + 3, tile, 1.0); }
         }
-        // drawn_tile reserved for future use (tsumo indicator channel)
-        let _ = drawn_tile;
+        // Channel 56 (CH_META + 24): drawn tile indicator (one-hot for tsumo tile)
+        if let Some(dt) = drawn_tile {
+            let t = dt as usize;
+            if t < NUM_TILES {
+                self.set(56, t, 1.0);
+            }
+        }
     }
 }
 
@@ -518,6 +523,25 @@ mod tests {
         enc.encode_hand(&hand, None);
         assert_eq!(get(&enc, 2, 10), 1.0); // >= 3
         assert_eq!(get(&enc, 3, 10), 0.0); // == 4 should be off
+    }
+
+    #[test]
+    fn drawn_tile_encoded() {
+        let mut enc = ObservationEncoder::new();
+        let hand = [0u8; NUM_TILES];
+        enc.encode_hand(&hand, Some(5)); // drew 6m
+        assert_eq!(get(&enc, 56, 5), 1.0); // channel 56, tile 5
+        assert_eq!(get(&enc, 56, 0), 0.0); // other tiles zero
+    }
+
+    #[test]
+    fn drawn_tile_none_leaves_channel_zero() {
+        let mut enc = ObservationEncoder::new();
+        let hand = [0u8; NUM_TILES];
+        enc.encode_hand(&hand, None);
+        for t in 0..NUM_TILES {
+            assert_eq!(get(&enc, 56, t), 0.0);
+        }
     }
 
     // -- Discard tests --

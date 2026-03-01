@@ -3,7 +3,7 @@
 //! Maps between Hydra's compact 46-action representation and
 //! riichienv-core's ActionType/Action structs.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use riichienv_core::action::{Action, ActionType};
 
 use crate::tile::{AKA_MANZU_136, AKA_PINZU_136, AKA_SOUZU_136};
@@ -85,21 +85,27 @@ pub enum ActionPhase {
 
 /// Convert a HydraAction to a riichienv Action.
 ///
-/// For discard actions, converts tile type (0-33) to 136-format by multiplying
-/// by 4 (picks copy 0). Aka discards (34-36) use the known aka 136-indices.
+/// For discard actions, converts tile type (0-33) to 136-format. For 5m/5p/5s
+/// (types 4,13,22), uses copy 1 to avoid the aka slot. Aka discards (34-36)
+/// use the known aka 136-indices directly.
 ///
 /// Some actions (chi variants, kan) need game context to fully resolve.
 /// This function produces a best-effort Action that captures the action type.
 pub fn hydra_to_riichienv(hydra: HydraAction) -> Result<Action> {
     let id = hydra.id();
     match id {
-        // Normal discards: tile type 0-33 -> 136-format = type * 4
-        0..=33 => Ok(Action::new(
-            ActionType::Discard,
-            Some(id * 4),
-            vec![],
-            None,
-        )),
+        // Normal discards: tile type 0-33 -> 136-format = type * 4 + copy
+        // For 5m/5p/5s (types 4,13,22), copy 0 is the aka tile.
+        // Use copy 1 for normal discards to avoid the collision.
+        0..=33 => {
+            let copy = if matches!(id, 4 | 13 | 22) { 1 } else { 0 };
+            Ok(Action::new(
+                ActionType::Discard,
+                Some(id * 4 + copy),
+                vec![],
+                None,
+            ))
+        }
         // Aka 5m discard
         34 => Ok(Action::new(
             ActionType::Discard,
@@ -153,9 +159,9 @@ pub fn hydra_to_riichienv(hydra: HydraAction) -> Result<Action> {
 pub fn riichienv_to_hydra(action: &Action) -> Result<HydraAction> {
     let id = match action.action_type {
         ActionType::Discard => {
-            let tile = action.tile.ok_or_else(|| {
-                anyhow::anyhow!("Discard action missing tile")
-            })?;
+            let tile = action
+                .tile
+                .ok_or_else(|| anyhow::anyhow!("Discard action missing tile"))?;
             // Check if this is an aka tile in 136-format
             match tile {
                 AKA_MANZU_136 => AKA_5M,
@@ -167,22 +173,18 @@ pub fn riichienv_to_hydra(action: &Action) -> Result<HydraAction> {
         ActionType::Riichi => RIICHI,
         ActionType::Chi => {
             // Determine chi variant from called tile position among sorted tiles
-            let target = action.tile.ok_or_else(|| {
-                anyhow::anyhow!("Chi action missing target tile")
-            })?;
+            let target = action
+                .tile
+                .ok_or_else(|| anyhow::anyhow!("Chi action missing target tile"))?;
             let target_34 = target / 4;
-            let mut tiles_34: Vec<u8> = action
-                .consume_tiles
-                .iter()
-                .map(|&x| x / 4)
-                .collect();
+            let mut tiles_34: Vec<u8> = action.consume_tiles.iter().map(|&x| x / 4).collect();
             tiles_34.push(target_34);
             tiles_34.sort();
             tiles_34.dedup();
             if target_34 == tiles_34[0] {
-                CHI_LEFT  // called tile is lowest
+                CHI_LEFT // called tile is lowest
             } else if target_34 == tiles_34[1] {
-                CHI_MID   // called tile is middle
+                CHI_MID // called tile is middle
             } else {
                 CHI_RIGHT // called tile is highest
             }
@@ -194,8 +196,7 @@ pub fn riichienv_to_hydra(action: &Action) -> Result<HydraAction> {
         ActionType::Pass => PASS,
         ActionType::Kita => bail!("Kita not supported in Hydra 4-player action space"),
     };
-    HydraAction::new(id)
-        .ok_or_else(|| anyhow::anyhow!("computed invalid HydraAction id: {id}"))
+    HydraAction::new(id).ok_or_else(|| anyhow::anyhow!("computed invalid HydraAction id: {id}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -208,14 +209,24 @@ pub fn riichienv_to_hydra(action: &Action) -> Result<HydraAction> {
 /// action index is legal. Actions that fail conversion (e.g. Kita) are skipped.
 pub fn build_legal_mask(
     legal_actions: &[Action],
-    _phase: ActionPhase,
+    phase: ActionPhase,
 ) -> [bool; HYDRA_ACTION_SPACE] {
     let mut mask = [false; HYDRA_ACTION_SPACE];
     for action in legal_actions {
         if let Ok(hydra) = riichienv_to_hydra(action) {
             let idx = hydra.id() as usize;
-            if idx < HYDRA_ACTION_SPACE {
-                mask[idx] = true;
+            if idx >= HYDRA_ACTION_SPACE {
+                continue;
+            }
+            match phase {
+                ActionPhase::Normal => {
+                    mask[idx] = true;
+                }
+                ActionPhase::RiichiSelect | ActionPhase::KanSelect => {
+                    if hydra.is_discard() {
+                        mask[idx] = true;
+                    }
+                }
             }
         }
     }
@@ -362,9 +373,9 @@ mod tests {
     #[test]
     fn legal_mask_basic() {
         let actions = vec![
-            Action::new(ActionType::Discard, Some(0), vec![], None),  // 1m -> idx 0
+            Action::new(ActionType::Discard, Some(0), vec![], None), // 1m -> idx 0
             Action::new(ActionType::Discard, Some(16), vec![], None), // aka 5m -> idx 34
-            Action::new(ActionType::Pass, None, vec![], None),        // -> idx 45
+            Action::new(ActionType::Pass, None, vec![], None),       // -> idx 45
         ];
         let mask = build_legal_mask(&actions, ActionPhase::Normal);
         assert!(mask[0]);
@@ -373,5 +384,59 @@ mod tests {
         // Everything else should be false
         assert!(!mask[1]);
         assert!(!mask[37]);
+    }
+
+    #[test]
+    fn discard_5m_is_not_aka() {
+        // Normal 5m (Hydra id=4) must NOT map to the aka 136-index (16)
+        let hydra = HydraAction::new(4).unwrap();
+        let action = hydra_to_riichienv(hydra).unwrap();
+        let tile136 = action.tile.unwrap();
+        assert_ne!(tile136, 16, "normal 5m must not use aka 136-index");
+        assert_eq!(tile136 / 4, 4, "must still be tile type 5m");
+    }
+
+    #[test]
+    fn discard_aka_5m_is_aka() {
+        // Aka 5m (Hydra id=34) MUST map to aka 136-index (16)
+        let hydra = HydraAction::new(34).unwrap();
+        let action = hydra_to_riichienv(hydra).unwrap();
+        assert_eq!(action.tile.unwrap(), 16);
+    }
+
+    #[test]
+    fn all_five_tiles_avoid_aka_collision() {
+        // Check 5m, 5p, 5s normal discards
+        for (hydra_id, aka_136) in [(4u8, 16u8), (13, 52), (22, 88)] {
+            let hydra = HydraAction::new(hydra_id).unwrap();
+            let action = hydra_to_riichienv(hydra).unwrap();
+            let tile136 = action.tile.unwrap();
+            assert_ne!(
+                tile136, aka_136,
+                "normal discard of type {} must not use aka 136-index {}",
+                hydra_id, aka_136,
+            );
+            assert_eq!(
+                tile136 / 4,
+                hydra_id,
+                "tile type must still be {}",
+                hydra_id,
+            );
+        }
+    }
+
+    #[test]
+    fn legal_mask_riichi_select_filters_non_discards() {
+        let actions = vec![
+            Action::new(ActionType::Discard, Some(0), vec![], None),
+            Action::new(ActionType::Discard, Some(16), vec![], None),
+            Action::new(ActionType::Pass, None, vec![], None),
+            Action::new(ActionType::Tsumo, None, vec![], None),
+        ];
+        let mask = build_legal_mask(&actions, ActionPhase::RiichiSelect);
+        assert!(mask[0]); // discard 1m allowed
+        assert!(mask[34]); // discard aka 5m allowed
+        assert!(!mask[45]); // pass NOT allowed in riichi select
+        assert!(!mask[43]); // agari NOT allowed in riichi select
     }
 }
