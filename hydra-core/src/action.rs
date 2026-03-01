@@ -79,19 +79,41 @@ pub enum ActionPhase {
     KanSelect,
 }
 
+/// Find a 136-format tile of the given type in a hand.
+fn find_tile_in_hand(hand: &[u8], tile_type: u8) -> Result<u8> {
+    hand.iter()
+        .find(|&&t| t / 4 == tile_type)
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("tile type {} not in hand", tile_type))
+}
+
+
+/// Context from the game state needed to resolve certain Hydra actions
+/// into complete riichienv-core Actions.
+#[derive(Debug, Clone)]
+pub struct GameContext {
+    /// The last discarded tile (136-format) -- needed for chi/pon calls
+    pub last_discard: Option<u8>,
+    /// Current game phase -- needed to distinguish tsumo vs ron
+    pub phase: ActionPhase,
+    /// Tiles in the acting player's hand (136-format) -- needed for chi consume_tiles
+    pub hand: Vec<u8>,
+}
+
+
 // ---------------------------------------------------------------------------
 // Hydra -> riichienv conversion
 // ---------------------------------------------------------------------------
 
-/// Convert a HydraAction to a riichienv Action.
+/// Convert a HydraAction to a riichienv Action using game context.
 ///
 /// For discard actions, converts tile type (0-33) to 136-format. For 5m/5p/5s
 /// (types 4,13,22), uses copy 1 to avoid the aka slot. Aka discards (34-36)
 /// use the known aka 136-indices directly.
 ///
-/// Some actions (chi variants, kan) need game context to fully resolve.
-/// This function produces a best-effort Action that captures the action type.
-pub fn hydra_to_riichienv(hydra: HydraAction) -> Result<Action> {
+/// Chi, kan, and agari actions use the `GameContext` to resolve the full
+/// action details (consume tiles, kan type, tsumo vs ron).
+pub fn hydra_to_riichienv(hydra: HydraAction, ctx: &GameContext) -> Result<Action> {
     let id = hydra.id();
     match id {
         // Normal discards: tile type 0-33 -> 136-format = type * 4 + copy
@@ -129,17 +151,40 @@ pub fn hydra_to_riichienv(hydra: HydraAction) -> Result<Action> {
         )),
         // Riichi declaration (tile selection is a separate phase)
         37 => Ok(Action::new(ActionType::Riichi, None, vec![], None)),
-        // Chi variants -- consume_tiles need game context to resolve
-        // TODO: caller must fill in tile + consume_tiles from game state
-        38 => Ok(Action::new(ActionType::Chi, None, vec![], None)),
-        39 => Ok(Action::new(ActionType::Chi, None, vec![], None)),
-        40 => Ok(Action::new(ActionType::Chi, None, vec![], None)),
+        // Chi variants -- resolved using last_discard and hand from context
+        38..=40 => {
+            let called = ctx.last_discard
+                .ok_or_else(|| anyhow::anyhow!("chi requires last_discard"))?;
+            let called_type = called / 4;
+            let (offset_a, offset_b) = match id {
+                38 => (1i8, 2i8),   // left: called is lowest
+                39 => (-1i8, 1i8),  // mid: called is middle
+                _ => (-2i8, -1i8),  // right: called is highest
+            };
+            let type_a = (called_type as i8 + offset_a) as u8;
+            let type_b = (called_type as i8 + offset_b) as u8;
+            let tile_a = find_tile_in_hand(&ctx.hand, type_a)?;
+            let tile_b = find_tile_in_hand(&ctx.hand, type_b)?;
+            Ok(Action::new(ActionType::Chi, Some(called), vec![tile_a, tile_b], None))
+        }
         // Pon
         41 => Ok(Action::new(ActionType::Pon, None, vec![], None)),
-        // Kan -- defaults to Daiminkan; caller should resolve ankan/kakan from context
-        42 => Ok(Action::new(ActionType::Daiminkan, None, vec![], None)),
-        // Agari -- defaults to Tsumo; caller should resolve tsumo vs ron from phase
-        43 => Ok(Action::new(ActionType::Tsumo, None, vec![], None)),
+        // Kan -- resolved from game phase
+        42 => {
+            let action_type = match ctx.phase {
+                ActionPhase::Normal => ActionType::Ankan,
+                _ => ActionType::Daiminkan,
+            };
+            Ok(Action::new(action_type, None, vec![], None))
+        }
+        // Agari -- tsumo during own turn, ron during response
+        43 => {
+            let action_type = match ctx.phase {
+                ActionPhase::Normal => ActionType::Tsumo,
+                _ => ActionType::Ron,
+            };
+            Ok(Action::new(action_type, None, vec![], None))
+        }
         // Kyushu kyuhai (abortive draw)
         44 => Ok(Action::new(ActionType::KyushuKyuhai, None, vec![], None)),
         // Pass
@@ -241,6 +286,14 @@ pub fn build_legal_mask(
 mod tests {
     use super::*;
 
+    fn dummy_ctx() -> GameContext {
+        GameContext {
+            last_discard: Some(0),
+            phase: ActionPhase::Normal,
+            hand: vec![],
+        }
+    }
+
     #[test]
     fn hydra_action_valid_range() {
         for i in 0..46u8 {
@@ -288,7 +341,7 @@ mod tests {
         let pass = Action::new(ActionType::Pass, None, vec![], None);
         let hydra = riichienv_to_hydra(&pass).unwrap();
         assert_eq!(hydra.id(), PASS);
-        let back = hydra_to_riichienv(hydra).unwrap();
+        let back = hydra_to_riichienv(hydra, &dummy_ctx()).unwrap();
         assert_eq!(back.action_type, ActionType::Pass);
     }
 
@@ -322,7 +375,7 @@ mod tests {
         assert!(hydra.is_aka_discard());
 
         // Roundtrip back: Hydra 34 -> 136-index 16
-        let back = hydra_to_riichienv(hydra).unwrap();
+        let back = hydra_to_riichienv(hydra, &dummy_ctx()).unwrap();
         assert_eq!(back.tile, Some(AKA_MANZU_136));
     }
 
@@ -390,7 +443,7 @@ mod tests {
     fn discard_5m_is_not_aka() {
         // Normal 5m (Hydra id=4) must NOT map to the aka 136-index (16)
         let hydra = HydraAction::new(4).unwrap();
-        let action = hydra_to_riichienv(hydra).unwrap();
+        let action = hydra_to_riichienv(hydra, &dummy_ctx()).unwrap();
         let tile136 = action.tile.unwrap();
         assert_ne!(tile136, 16, "normal 5m must not use aka 136-index");
         assert_eq!(tile136 / 4, 4, "must still be tile type 5m");
@@ -400,7 +453,7 @@ mod tests {
     fn discard_aka_5m_is_aka() {
         // Aka 5m (Hydra id=34) MUST map to aka 136-index (16)
         let hydra = HydraAction::new(34).unwrap();
-        let action = hydra_to_riichienv(hydra).unwrap();
+        let action = hydra_to_riichienv(hydra, &dummy_ctx()).unwrap();
         assert_eq!(action.tile.unwrap(), 16);
     }
 
@@ -409,7 +462,7 @@ mod tests {
         // Check 5m, 5p, 5s normal discards
         for (hydra_id, aka_136) in [(4u8, 16u8), (13, 52), (22, 88)] {
             let hydra = HydraAction::new(hydra_id).unwrap();
-            let action = hydra_to_riichienv(hydra).unwrap();
+            let action = hydra_to_riichienv(hydra, &dummy_ctx()).unwrap();
             let tile136 = action.tile.unwrap();
             assert_ne!(
                 tile136, aka_136,
@@ -438,5 +491,45 @@ mod tests {
         assert!(mask[34]); // discard aka 5m allowed
         assert!(!mask[45]); // pass NOT allowed in riichi select
         assert!(!mask[43]); // agari NOT allowed in riichi select
+    }
+
+    #[test]
+    fn chi_left_resolves_consume_tiles() {
+        // Chi left (38): called tile is lowest (1m=type0), need type1 + type2 from hand
+        // Discard: tile 0 (type 0, 1m). Hand has tiles 4 (type 1, 2m) and 8 (type 2, 3m)
+        let ctx = GameContext {
+            last_discard: Some(0),
+            phase: ActionPhase::Normal,
+            hand: vec![4, 8, 20, 24],
+        };
+        let hydra = HydraAction::new(CHI_LEFT).unwrap();
+        let action = hydra_to_riichienv(hydra, &ctx).unwrap();
+        assert_eq!(action.action_type, ActionType::Chi);
+        assert_eq!(action.tile, Some(0));
+        assert_eq!(action.consume_tiles, vec![4, 8]);
+    }
+
+    #[test]
+    fn agari_resolves_to_tsumo_in_normal_phase() {
+        let ctx = GameContext {
+            last_discard: None,
+            phase: ActionPhase::Normal,
+            hand: vec![],
+        };
+        let hydra = HydraAction::new(AGARI).unwrap();
+        let action = hydra_to_riichienv(hydra, &ctx).unwrap();
+        assert_eq!(action.action_type, ActionType::Tsumo);
+    }
+
+    #[test]
+    fn agari_resolves_to_ron_in_response_phase() {
+        let ctx = GameContext {
+            last_discard: Some(0),
+            phase: ActionPhase::RiichiSelect, // non-Normal = response
+            hand: vec![],
+        };
+        let hydra = HydraAction::new(AGARI).unwrap();
+        let action = hydra_to_riichienv(hydra, &ctx).unwrap();
+        assert_eq!(action.action_type, ActionType::Ron);
     }
 }
