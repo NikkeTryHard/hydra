@@ -4,7 +4,7 @@
 
 Testing is critical for a mahjong AI because engine bugs silently corrupt training data. A single incorrect legal action mask, a mis-scored hand, or a wrong tile encoding feeds the neural network garbage labels for hundreds of thousands of training steps before anyone notices. Unlike a web app where users report bugs, a training pipeline happily trains on wrong data and produces a model that plays "confidently wrong" — the worst possible outcome. Every component that touches training data must be verified against independent ground truth.
 
-This document specifies the testing strategy across all Hydra subsystems: the Rust game engine, observation encoder, MJAI parser, suit permutation augmentation, and the Python training stack.
+This document specifies the testing strategy across all Hydra subsystems: the Rust game engine, observation encoder, MJAI parser, suit permutation augmentation, and the Burn training stack.
 
 ---
 
@@ -32,7 +32,7 @@ Every transition in INFRASTRUCTURE.md's state diagram must have a dedicated test
 
 ### Scoring Verification
 
-Cross-validate the Rust scoring engine against the `mahjong` Python library (v1.4.0, already listed in INFRASTRUCTURE.md dependencies). The verification corpus is the full set of 11M+ Tenhou Houou hands.
+Cross-validate the Rust scoring engine against the `mahjong` Python library (v1.4.0, used via one-time build.rs validation script). The verification corpus is the full set of 11M+ Tenhou Houou hands.
 
 **Methodology:**
 
@@ -223,24 +223,24 @@ Cross-validate Rust scoring against the `mahjong` Python library on 100K randoml
 
 ---
 
-## Python Training Stack
+## Burn Training Stack
 
 ### Model Smoke Tests
 
 - Forward pass with random input `[1, 85, 34]` produces correct output shapes: policy `[1, 46]`, value `[1, 1]`, GRP `[1, 24]`, tenpai `[1, 3]`, danger `[1, 3, 34]`
 - Legal action masking: masked logits are negative infinity, softmax produces zero probability for illegal actions
-- ONNX export: export model, run inference through ONNX Runtime, verify output matches PyTorch within tolerance (atol=1e-5)
+- Inference: run forward pass through burn-tch backend, verify output matches expected within tolerance (atol=1e-5)
 
 ### Loss Function Tests
 
-- Policy CE loss with known logits and labels → verify against hand-computed value
+- Policy CE loss with known logits and labels — verify against hand-computed value
 - GRP 24-way CE loss sums to correct value for a known permutation distribution
 - Focal BCE loss with γ=2.0 produces lower loss for high-confidence correct predictions than standard BCE
 - Composite loss with known component values → verify weighted sum matches expected total
 
 ### Data Pipeline Tests
 
-- DataLoader yields batches of correct shape `[2048, 85, 34]`
+- Burn DataLoaderBuilder yields batches of correct shape `[2048, 85, 34]`
 - 3-level shuffle produces different orderings across epochs (statistical test: correlation < 0.1)
 - Suit permutation produces 6 distinct outputs for the same input game
 - Filtering: a game with known bad metadata is excluded from the manifest

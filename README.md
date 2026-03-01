@@ -11,7 +11,7 @@ Train a mahjong AI that:
 
 ## Architecture
 
-SE-ResNet backbone (40 blocks, 256 channels) with PPO training. Three-phase pipeline: supervised warm start on ~6.6M games (2M Tenhou Houou + 1M Majsoul Throne + 3M Majsoul Jade) → oracle distillation → league self-play. Hybrid Rust (game engine) + Python (training) stack.
+SE-ResNet backbone (40 blocks, 256 channels) with PPO training. Three-phase pipeline: supervised warm start on ~6.6M games (2M Tenhou Houou + 1M Majsoul Throne + 3M Majsoul Jade) -> oracle distillation -> league self-play. 100% Rust stack using [Burn](https://github.com/tracel-ai/burn) framework with burn-tch (libtorch/cuDNN) backend.
 
 See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specification and [research/TRAINING.md](research/TRAINING.md) for the training pipeline.
 
@@ -23,7 +23,7 @@ See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specif
 | [TRAINING.md](research/TRAINING.md) | Training pipeline (phases 1-3), loss functions, hyperparameters, roadmap |
 | [MORTAL_ANALYSIS.md](research/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
 | [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Safety planes, 9-head specs (tenpai/danger/FiLM/call-intent/Sinkhorn), RSA deception, CVaR, L0 observer |
-| [INFRASTRUCTURE.md](research/INFRASTRUCTURE.md) | Rust/Python stack, data pipeline, training infra, hardware, deployment |
+| [INFRASTRUCTURE.md](research/INFRASTRUCTURE.md) | Rust stack, data pipeline, training infra, hardware, deployment |
 | [SEEDING.md](research/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
 | [CHECKPOINTING.md](research/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
 | [ECOSYSTEM.md](research/ECOSYSTEM.md) | Every useful repo, tool, and framework in the mahjong AI space |
@@ -33,6 +33,7 @@ See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specif
 | [TESTING.md](research/TESTING.md) | Testing strategy, correctness verification, property-based tests |
 | [ABLATION_PLAN.md](research/ABLATION_PLAN.md) | Structured experiment queue with hypotheses and protocols |
 | [AUDIT_LOG.md](research/AUDIT_LOG.md) | Change history tracking SSOT fixes across all research docs |
+| [RUST_STACK.md](research/RUST_STACK.md) | 100% Rust decision, Burn framework, Python migration, all concerns resolved |
 
 ### Documentation Ownership (SSOT)
 

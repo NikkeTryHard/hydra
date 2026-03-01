@@ -5,10 +5,11 @@
 ## Related Documents
 
 - [HYDRA_SPEC.md](HYDRA_SPEC.md) — Architecture, input encoding, output heads, inference
-- [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, Rust/Python stack, hardware, deployment
+- [INFRASTRUCTURE.md](INFRASTRUCTURE.md) -- Data pipeline, Rust stack, hardware, deployment
 - [REWARD_DESIGN.md](REWARD_DESIGN.md) — Reward function design and RVR variance reduction
 - [SEARCH_PGOI.md](SEARCH_PGOI.md) -- Inference-time oracle reuse (post-Phase 2, optional)
 - [MORL_PLACEMENT.md](MORL_PLACEMENT.md) -- Multi-objective RL for placement (Phase 3 variant, optional)
+- [RUST_STACK.md](RUST_STACK.md) -- 100% Rust stack decision, Burn framework, migration from Python
 
 ---
 
@@ -267,7 +268,7 @@ graph TB
  | GAE λ | 0.95 | Per-kyoku advantage estimation |
  | γ (discount) | 1.0 | Undiscounted episodic (matches Mortal) |
  | Value clip | Disabled | Hurts performance per Engstrom et al. (2020) and Andrychowicz et al. (2021) |
- | LR | 1e-4, cosine annealing | Adam ε=1e-5 (not PyTorch default 1e-8) |
+ | LR | 1e-4, cosine annealing | Adam eps=1e-5 (not default 1e-8) |
  | Minibatch size | 4096 | Transitions per PPO minibatch |
  | Update epochs | 3 | Conservative for self-play (reduce to 2 if approx_kl > 0.03) |
  | Gradient clip | 0.5 | Max grad norm, essential for stability |
@@ -323,7 +324,7 @@ graph TB
  | Data source | Same game logs as Phase 1 (Tenhou Houou + Majsoul) | Raw `.json.gz` game records |
  | Training samples | Every kyoku boundary prefix within each game | 4–12 samples per game (one per prefix of the score-state sequence) |
  | Input per timestep | `[grand_kyoku, honba, kyotaku, s0/10000, s1/10000, s2/10000, s3/10000]` | 7 features |
- | Label | Index (0–23) of the permutation matching actual final ranking | From `itertools.permutations(range(4))` |
+ | Label | Index (0-23) of the permutation matching actual final ranking | From the 24 permutations of [0,1,2,3] (const lookup table) |
  | Precision | float64 | Matches Mortal — GRP runs in double precision for numerical stability |
  | Optimizer | AdamW(lr=1e-3, weight_decay=1e-4) | — |
  | Convergence | val_loss plateau (3–5K steps), val_acc ~23% top-1 | 24-class random baseline is 4.2%; ~23% is 5.5× random |
@@ -453,7 +454,7 @@ Where:
 
 > **Evidence note (auxiliary loss weights):** The tenpai and danger heads are **novel to Hydra** — neither Mortal nor Mortal-Policy has these auxiliary tasks (verified from source: Mortal's only aux is `next_rank_weight=0.2` in `config.example.toml`; Mortal-Policy removed all auxiliaries). The 0.05 default weights are conservative since these are untested in any mahjong AI. Mortal's GRP aux weight (0.2) and standard PPO value coefficients (0.5) suggest 0.05 is at the low end of reasonable, which is intentional — novel heads should not dominate gradients until validated. [ABLATION_PLAN.md](ABLATION_PLAN.md) tests tenpai at 0.1 (2×) and danger at 0.2 (4×) as treatment variants.
 
-> **Evidence note (Adam ε):** All phases use ε=1e-5 (not PyTorch default 1e-8). This matches CleanRL, Stable-Baselines3, and Huang 2022 ("37 Implementation Details of PPO"). Mortal uses 1e-8 (DQN, not PPO). Mortal-Policy also uses 1e-8 but this appears to be an inherited default rather than a deliberate choice — ε=1e-5 is the established PPO standard.
+> **Evidence note (Adam eps):** All phases use eps=1e-5 (not the common default of 1e-8). This matches CleanRL, Stable-Baselines3, and Huang 2022 ("37 Implementation Details of PPO"). Mortal uses 1e-8 (DQN, not PPO). Mortal-Policy also uses 1e-8 but this appears to be an inherited default rather than a deliberate choice -- eps=1e-5 is the established PPO standard.
 
 > **Design note (CQL):** CQL was considered for Phase 1 offline regularization but requires per-action Q-values, incompatible with Hydra's PPO actor-critic architecture. Cross-entropy behavioral cloning naturally stays close to the expert distribution. If offline regularization proves necessary, PPO-compatible alternatives include filtered behavioral cloning or advantage-weighted regression.
 
@@ -602,7 +603,7 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 
 - Build Rust mahjong engine (tile, hand, game state, all edge cases)
 - Implement MJAI protocol parser
-- Create PyO3 bindings for Python training
+- Implement Burn model definition (SE-ResNet backbone + all heads)
 - Implement shanten calculator (tomohxx algorithm via xiangting crate, MIT)
 - Add observation encoder with safety planes
 - Comprehensive correctness testing (property-based, cross-validation against MahjongRepository/mahjong)
