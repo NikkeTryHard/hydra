@@ -12,6 +12,7 @@ const NUM_TILES: usize = 34;
 /// Safety information for the current player against all opponents.
 /// Updated incrementally as the game progresses.
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub struct SafetyInfo {
     // -- Genbutsu (safe tiles): 3 sub-channels per opponent --
     // genbutsu_all[opp][tile] = true if tile is 100% safe against opponent
