@@ -108,7 +108,7 @@ fn main() {
     let start = Instant::now();
     let results: Vec<(u32, [i32; 4])> = (0..n_multi)
         .into_par_iter()
-        .map(|i| simulate_game_random(i))
+        .map(simulate_game_random)
         .collect();
     let elapsed = start.elapsed();
 
