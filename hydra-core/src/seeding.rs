@@ -13,15 +13,11 @@
 //!
 //! # RNG choice
 //!
-//! Uses `rand::rngs::StdRng` which is ChaCha12 in rand 0.9. The SEEDING.md
-//! spec prefers ChaCha8 for speed, but ChaCha12 is acceptable — determinism
-//! is guaranteed by pinning the rand version. Both use the same `[u8; 32]`
-//! seed format and the same `SeedableRng` trait.
-//
-// TODO: Switch to ChaCha8Rng when rand_chacha is added as a direct dependency.
-// ChaCha8 is ~33% faster than ChaCha12 for the same determinism guarantees.
+//! Uses `ChaCha8Rng` from `rand_chacha` as specified in SEEDING.md.
+//! ChaCha8 is ~33% faster than ChaCha12 (StdRng) with the same determinism
+//! guarantees. Both use the same `[u8; 32]` seed format and `SeedableRng`.
 
-use rand::rngs::StdRng;
+use rand_chacha::ChaCha8Rng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 
@@ -44,7 +40,7 @@ pub fn fisher_yates_shuffle<T>(slice: &mut [T], rng: &mut impl Rng) {
 /// Derive a deterministic seed for a specific kyoku within a game.
 ///
 /// Uses SHA-256 as a KDF: `SHA-256(session_seed || nonce_le || kyoku || honba)`
-/// produces a 32-byte seed suitable for `StdRng::from_seed`.
+/// produces a 32-byte seed suitable for `ChaCha8Rng::from_seed`.
 ///
 /// This is the foundation of the `(seed, kyoku, honba) -> wall` determinism
 /// contract described in SEEDING.md.
@@ -68,12 +64,12 @@ pub fn derive_kyoku_seed(session_seed: &[u8; 32], nonce: u64, kyoku: u8, honba: 
 /// # Algorithm
 ///
 /// 1. Derive a kyoku-specific seed via `SHA-256(session_seed || nonce || kyoku || honba)`
-/// 2. Seed a fresh `StdRng` (ChaCha12) from that hash
+/// 2. Seed a fresh `ChaCha8Rng` from that hash
 /// 3. Initialize a sorted wall `[0, 1, 2, ..., 135]`
 /// 4. Apply vendored Fisher-Yates shuffle
 pub fn generate_wall(session_seed: &[u8; 32], nonce: u64, kyoku: u8, honba: u8) -> [u8; 136] {
     let seed = derive_kyoku_seed(session_seed, nonce, kyoku, honba);
-    let mut rng = StdRng::from_seed(seed);
+    let mut rng = ChaCha8Rng::from_seed(seed);
 
     let mut wall = [0u8; WALL_SIZE];
     for (i, tile) in wall.iter_mut().enumerate() {
@@ -239,8 +235,8 @@ mod tests {
         let mut data_a: Vec<u32> = (0..100).collect();
         let mut data_b: Vec<u32> = (0..100).collect();
 
-        let mut rng_a = StdRng::from_seed(seed);
-        let mut rng_b = StdRng::from_seed(seed);
+        let mut rng_a = ChaCha8Rng::from_seed(seed);
+        let mut rng_b = ChaCha8Rng::from_seed(seed);
 
         fisher_yates_shuffle(&mut data_a, &mut rng_a);
         fisher_yates_shuffle(&mut data_b, &mut rng_b);
@@ -250,7 +246,7 @@ mod tests {
 
     #[test]
     fn fisher_yates_empty_and_single() {
-        let mut rng = StdRng::from_seed([0u8; 32]);
+        let mut rng = ChaCha8Rng::from_seed([0u8; 32]);
 
         // Empty slice: no-op, should not panic
         let mut empty: Vec<u8> = vec![];
