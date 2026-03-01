@@ -3,3 +3,7 @@ mortal-github-repo/
 .claude/
 Mortal-Policy/
 .mcp.json
+RiichiEnv/
+AGENTS.md
+target/
+Cargo.lock
