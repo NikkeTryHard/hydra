@@ -46,7 +46,7 @@ fn bench_encoder(c: &mut Criterion) {
     c.bench_function("encode_observation_1000x", |b| {
         b.iter(|| {
             for _ in 0..1000 {
-                bridge::encode_observation(&mut encoder, &obs, &safety);
+                bridge::encode_observation(&mut encoder, &obs, &safety, None);
             }
         });
     });
