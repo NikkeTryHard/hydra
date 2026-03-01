@@ -147,7 +147,7 @@ SE-ResNet captures global board state (e.g., "expensive field," dora density) vi
 |--------------|------|------|---------|
 | ResNet | Fast, proven for spatial | Limited global context | Suphx (50 blocks, 256 filters) |
 | ResNet + Channel Attention | Global context via squeeze-excite | Slightly more params | Mortal v1–v4 (dual-pool SE) |
-| Transformer | Long-range dependencies | ~90-310M params (45-155× larger than ResNet); no published mahjong performance benchmarks despite 5+ years of Kanachan development; impractical for online RL self-play | Kanachan (no results), Tjong |
+| Transformer | Long-range dependencies | ~90-310M params (45-155× larger than ResNet); no published mahjong performance benchmarks despite multi-year Kanachan development (public repo created 2021-08-05); impractical for online RL self-play | Kanachan (no results), Tjong |
 | Hybrid | Best of both | Complexity, unproven | — |
 
 ### Block Structure
