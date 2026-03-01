@@ -5,6 +5,7 @@
 //! between the game engine and the neural network.
 
 use riichienv_core::observation::Observation;
+use riichienv_core::shanten::calc_shanten_from_counts;
 use riichienv_core::types::MeldType as RiichiMeldType;
 
 use crate::encoder::{
@@ -69,10 +70,10 @@ pub fn extract_discards(obs: &Observation) -> [PlayerDiscards; 4] {
 
 /// Extract meld info for all 4 players from an Observation.
 ///
-/// Maps riichienv `MeldType` variants to encoder's three-category system:
-/// - Chi/Pon/Daiminkan -> `MeldType::Open`
-/// - Ankan -> `MeldType::ClosedKan`
-/// - Kakan -> `MeldType::Kakan`
+/// Maps riichienv `MeldType` variants to the encoder's three-category system:
+/// - Chi -> `MeldType::Chi`
+/// - Pon -> `MeldType::Pon`
+/// - Daiminkan/Ankan/Kakan -> `MeldType::Kan` (all kan variants merged)
 ///
 /// Meld tile IDs are converted from 136-format (u8) to 34-format tile types.
 pub fn extract_melds(obs: &Observation) -> [Vec<MeldInfo>; 4] {
@@ -84,16 +85,34 @@ pub fn extract_melds(obs: &Observation) -> [Vec<MeldInfo>; 4] {
             .map(|meld| {
                 let tiles: Vec<u8> = meld.tiles.iter().map(|&t| t / 4).collect();
                 let meld_type = match meld.meld_type {
-                    RiichiMeldType::Chi
-                    | RiichiMeldType::Pon
-                    | RiichiMeldType::Daiminkan => MeldType::Open,
-                    RiichiMeldType::Ankan => MeldType::ClosedKan,
-                    RiichiMeldType::Kakan => MeldType::Kakan,
+                    RiichiMeldType::Chi => MeldType::Chi,
+                    RiichiMeldType::Pon => MeldType::Pon,
+                    RiichiMeldType::Daiminkan
+                    | RiichiMeldType::Ankan
+                    | RiichiMeldType::Kakan => MeldType::Kan,
                 };
                 MeldInfo { tiles, meld_type }
             })
             .collect()
     })
+}
+
+/// Count tile types across the observer's melds for channel 4-7 encoding.
+///
+/// Returns a 34-element histogram where each entry is the number of tiles
+/// of that type present in the observer's open/called melds.
+pub fn extract_observer_meld_counts(obs: &Observation) -> [u8; NUM_TILE_TYPES] {
+    let observer = obs.player_id as usize;
+    let mut counts = [0u8; NUM_TILE_TYPES];
+    for meld in &obs.melds[observer] {
+        for &tile in &meld.tiles {
+            let t = (tile / 4) as usize;
+            if t < NUM_TILE_TYPES {
+                counts[t] = counts[t].saturating_add(1);
+            }
+        }
+    }
+    counts
 }
 
 /// Extract dora information from an Observation.
@@ -123,42 +142,31 @@ pub fn extract_dora(obs: &Observation) -> DoraInfo {
     }
 }
 
-/// Estimate tiles remaining in the wall from observable information.
-///
-/// Standard 4-player: 136 total - 14 dead wall - 52 dealt (13x4) = 70 drawable.
-/// Each discard or kan draw reduces this count.
-fn estimate_tiles_remaining(obs: &Observation) -> u8 {
-    let total_discards: usize = obs.discards.iter().map(|d| d.len()).sum();
-    // Each open meld (chi/pon) consumed 1 tile from discards (already counted),
-    // but kan calls draw from the dead wall, reducing drawable tiles by 1 each.
-    let kan_count: usize = obs.melds.iter().flat_map(|m| m.iter()).filter(|m| {
-        matches!(
-            m.meld_type,
-            RiichiMeldType::Daiminkan | RiichiMeldType::Ankan | RiichiMeldType::Kakan
-        )
-    }).count();
-    70u8.saturating_sub((total_discards + kan_count) as u8)
-}
-
 /// Extract game metadata from an Observation.
 ///
-/// All player-relative fields (riichi, scores) are rotated so
-/// index 0 = observer, index 1 = shimocha, etc.
-pub fn extract_metadata(obs: &Observation) -> GameMetadata {
+/// Computes shanten from the observer's hand counts. All player-relative
+/// fields (riichi, scores) are rotated so index 0 = observer,
+/// index 1 = shimocha, etc.
+pub fn extract_metadata(obs: &Observation, hand_counts: &[u8; NUM_TILE_TYPES]) -> GameMetadata {
     let observer = obs.player_id as usize;
+
+    // Compute shanten: len_div3 is based on the closed hand tile count.
+    // A 13-tile hand has len_div3=4, a 14-tile hand also has len_div3=4.
+    let hand_total: u8 = hand_counts.iter().sum();
+    let len_div3 = hand_total / 3;
+    let shanten = calc_shanten_from_counts(hand_counts, len_div3);
+
     GameMetadata {
-        round_wind: obs.round_wind,
-        seat_wind: (obs.player_id + 4 - obs.oya) % 4,
-        is_dealer: obs.player_id == obs.oya,
         riichi: std::array::from_fn(|i| {
             obs.riichi_declared[(observer + i) % 4]
         }),
-        honba: obs.honba,
-        riichi_sticks: obs.riichi_sticks.min(255) as u8,
-        tiles_remaining: estimate_tiles_remaining(obs),
         scores: std::array::from_fn(|i| {
             obs.scores[(observer + i) % 4]
         }),
+        shanten,
+        kyoku_index: obs.kyoku_index,
+        honba: obs.honba,
+        kyotaku: obs.riichi_sticks.min(255) as u8,
     }
 }
 
@@ -167,6 +175,13 @@ pub fn extract_metadata(obs: &Observation) -> GameMetadata {
 /// This is the main bridge entry point. Extracts all components from
 /// a riichienv [`Observation`], feeds them through the encoder pipeline,
 /// and returns a reference to the filled `[f32; 2890]` buffer.
+///
+/// # Drawn tile limitation
+///
+/// The drawn tile cannot be reliably determined from `Observation` alone.
+/// When the hand has 14 tiles the drawn tile is ambiguous without
+/// `GameState` context — we pass `None` in that case. Callers with
+/// access to `GameState` should extract the drawn tile themselves.
 pub fn encode_observation(
     encoder: &mut ObservationEncoder,
     obs: &Observation,
@@ -175,10 +190,17 @@ pub fn encode_observation(
     let hand = extract_hand(obs);
     let discards = extract_discards(obs);
     let melds = extract_melds(obs);
+    let open_meld_counts = extract_observer_meld_counts(obs);
     let dora = extract_dora(obs);
-    let meta = extract_metadata(obs);
+    let meta = extract_metadata(obs, &hand);
 
-    let slice = encoder.encode(&hand, None, &discards, &melds, &dora, &meta, safety);
+    // Drawn tile: 14 tiles means one was just drawn, but we can't
+    // identify which from the observation alone. Pass None.
+    let drawn_tile: Option<u8> = None;
+
+    let slice = encoder.encode(
+        &hand, drawn_tile, &open_meld_counts, &discards, &melds, &dora, &meta, safety,
+    );
     *slice
 }
 
@@ -235,11 +257,24 @@ mod tests {
     #[test]
     fn extract_metadata_sane_values() {
         let obs = fresh_obs();
-        let meta = extract_metadata(&obs);
-        assert_eq!(meta.round_wind, 0, "first round is East");
-        assert!(meta.seat_wind < 4);
-        assert!(meta.tiles_remaining <= 70);
+        let hand = extract_hand(&obs);
+        let meta = extract_metadata(&obs, &hand);
+        assert_eq!(meta.kyoku_index, obs.kyoku_index);
         assert_eq!(meta.honba, 0);
+        assert_eq!(meta.kyotaku, 0);
+        // Shanten for a dealt hand should be reasonable (-1 to 8)
+        assert!(
+            (-1..=8).contains(&meta.shanten),
+            "shanten {} out of range",
+            meta.shanten,
+        );
+    }
+
+    #[test]
+    fn extract_observer_meld_counts_initially_zero() {
+        let obs = fresh_obs();
+        let counts = extract_observer_meld_counts(&obs);
+        assert_eq!(counts.iter().sum::<u8>(), 0, "no melds at game start");
     }
 
     #[test]
