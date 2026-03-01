@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 /// Configuration for a batch simulation run.
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub struct BatchConfig {
     /// Number of games to simulate.
     pub num_games: usize,
@@ -35,6 +36,7 @@ impl Default for BatchConfig {
 
 /// Result from a single completed game.
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub struct GameResult {
     /// Final scores for each player (4 players).
     pub scores: [i32; 4],
