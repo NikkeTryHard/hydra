@@ -262,6 +262,13 @@ graph LR
 
 **Reading the diagram:** Arrows indicate "results from X inform the design of Y." A1-A3 run first because their results determine what the baseline model looks like for all subsequent experiments. A4-A6 run after P0 results are incorporated. A8 depends on A4 because the ERN only makes sense if oracle distillation is part of the pipeline.
 
+### P3: Post-Base-System Modules (After Phase 3 Baseline Exists)
+
+These experiments are defined in their own docs and run ONLY after the scalar Phase 3 baseline is working:
+
+- **PGOI experiments (P1-P6):** Inference-time oracle reuse. See [SEARCH_PGOI.md S Ablation Plan](SEARCH_PGOI.md). Prerequisites: Phase 2 complete, Sinkhorn head validated (MAE < 0.3).
+- **MORL experiments (M1-M5):** Multi-objective placement training. See [MORL_PLACEMENT.md S Ablation Plan](MORL_PLACEMENT.md). Prerequisites: Scalar Phase 3 baseline complete. Start with M1 (cheap validation: 3 fixed-preference models) before committing to full MORL training.
+
 ---
 
 ## Open Questions from HYDRA_SPEC

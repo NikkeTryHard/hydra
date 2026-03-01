@@ -7,6 +7,8 @@
 - [HYDRA_SPEC.md](HYDRA_SPEC.md) — Architecture, input encoding, output heads, inference
 - [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, Rust/Python stack, hardware, deployment
 - [REWARD_DESIGN.md](REWARD_DESIGN.md) — Reward function design and RVR variance reduction
+- [SEARCH_PGOI.md](SEARCH_PGOI.md) -- Inference-time oracle reuse (post-Phase 2, optional)
+- [MORL_PLACEMENT.md](MORL_PLACEMENT.md) -- Multi-objective RL for placement (Phase 3 variant, optional)
 
 ---
 
@@ -353,7 +355,7 @@ graph TB
 
  This enforces $V_1 + V_2 + V_3 + V_4 = 0$, which is correct by construction for zero-sum placement rewards. The RVR paper (Li et al., IEEE CoG 2022) showed this component provides significant training speedup (the paper reports faster convergence but does not state a specific multiplier).
 
- At inference, only the student's 1-scalar value head and policy head are used — the oracle critic is discarded entirely.
+ At inference, only the student's 1-scalar value head and policy head are used — the oracle critic is not loaded by default. **Exception:** If PGOI is enabled ([SEARCH_PGOI.md](SEARCH_PGOI.md)), the oracle stem is loaded alongside the student for inference-time belief-guided oracle queries.
 
  #### Component 3: Expected Reward Network (Phase 3+)
 

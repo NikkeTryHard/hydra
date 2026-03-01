@@ -235,7 +235,7 @@ Phase transitions are the most delicate moments in the training pipeline. The st
 
 **Strict loading:** Both transitions use strict model loading, meaning every key in the checkpoint must match exactly one key in the model, and vice versa. This is safe because the student architecture is identical across all three phases — same ResBlock count, same channel width, same head structure. A key mismatch at transition time indicates a code bug, not an expected architecture change, and should fail loudly.
 
-**Teacher isolation:** The teacher model in Phase 2 is a separate instantiation with its own state_dict. It is never mixed into the student's state_dict and has no entry in the student's optimizer. When the teacher is discarded at the Phase 2 → 3 transition, no cleanup of the student checkpoint is needed.
+**Teacher isolation:** The teacher model in Phase 2 is a separate instantiation with its own state_dict. It is never mixed into the student's state_dict and has no entry in the student's optimizer. By default, the teacher is discarded at the Phase 2 -> 3 transition and no cleanup of the student checkpoint is needed. **If PGOI is enabled** ([SEARCH_PGOI.md](SEARCH_PGOI.md)), the teacher's stem state_dict is preserved in the Phase 3 checkpoint for inference-time oracle queries.
 
 ### Checkpoint Integrity
 
