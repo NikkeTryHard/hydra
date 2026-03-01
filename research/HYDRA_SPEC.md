@@ -215,7 +215,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 ### Parameter Budget
 
 | Component | Parameters | Percentage | Status |
-||-----------|------------|------------|--------|
+| ----------- | ---------- | ---------- | ------ |
 | Stem Conv (85->256, k=3, pad=1, no bias) | ~66K | 0.4% | Baseline |
 | ResNet Backbone (40 blocks x ~402K) | ~16.1M | 96.8% | Baseline |
 | Policy Head | ~117K | 0.7% | Baseline |
