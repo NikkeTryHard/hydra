@@ -1,0 +1,37 @@
+[package]
+name = "hydra-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Hydra Riichi Mahjong game engine - simulator, encoder, and batch runner"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# Game engine foundation (Apache-2.0)
+riichienv-core = "0.3"
+
+# Spec'd dependencies from INFRASTRUCTURE.md
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ndarray = "0.16"
+rand = "0.9"
+sha2 = "0.10"
+chacha20 = "=0.10.0"
+anyhow = "1.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "simulator_bench"
+harness = false
+
+[features]
+default = []
+python = ["riichienv-core/python"]
