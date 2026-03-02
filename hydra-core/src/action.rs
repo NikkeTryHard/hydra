@@ -3,7 +3,7 @@
 //! Maps between Hydra's compact 46-action representation and
 //! riichienv-core's ActionType/Action structs.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use riichienv_core::action::{Action, ActionType};
 
 use crate::tile::{AKA_MANZU_136, AKA_PINZU_136, AKA_SOUZU_136};
@@ -11,14 +11,14 @@ use crate::tile::{AKA_MANZU_136, AKA_PINZU_136, AKA_SOUZU_136};
 /// Total number of distinct actions in Hydra's action space.
 pub const HYDRA_ACTION_SPACE: usize = 46;
 
-// Discard actions: 0-33 = base tile types, 34-36 = aka (red five) discards
+/// Discard actions: 0-33 = base tile types, 34-36 = aka (red five) discards.
 pub const DISCARD_START: u8 = 0;
 pub const DISCARD_END: u8 = 36;
 pub const AKA_5M: u8 = 34;
 pub const AKA_5P: u8 = 35;
 pub const AKA_5S: u8 = 36;
 
-// Non-discard actions
+/// Non-discard actions.
 pub const RIICHI: u8 = 37;
 pub const CHI_LEFT: u8 = 38;
 pub const CHI_MID: u8 = 39;
@@ -35,7 +35,8 @@ pub struct HydraAction(u8);
 
 impl HydraAction {
     /// Create from raw index. Returns None if out of range.
-    pub fn new(id: u8) -> Option<Self> {
+    #[inline]
+    pub const fn new(id: u8) -> Option<Self> {
         if (id as usize) < HYDRA_ACTION_SPACE {
             Some(Self(id))
         } else {
@@ -43,21 +44,25 @@ impl HydraAction {
         }
     }
 
-    pub fn id(self) -> u8 {
+    #[inline]
+    pub const fn id(self) -> u8 {
         self.0
     }
 
-    pub fn is_discard(self) -> bool {
+    #[inline]
+    pub const fn is_discard(self) -> bool {
         self.0 <= DISCARD_END
     }
 
-    pub fn is_aka_discard(self) -> bool {
+    #[inline]
+    pub const fn is_aka_discard(self) -> bool {
         matches!(self.0, 34..=36)
     }
 
     /// For discard actions, returns the base tile type (0-33).
     /// Aka discards map back: 34->4(5m), 35->13(5p), 36->22(5s).
-    pub fn discard_tile_type(self) -> Option<u8> {
+    #[inline]
+    pub const fn discard_tile_type(self) -> Option<u8> {
         match self.0 {
             0..=33 => Some(self.0),
             34 => Some(4),  // aka 5m -> 5m
@@ -87,7 +92,6 @@ fn find_tile_in_hand(hand: &[u8], tile_type: u8) -> Result<u8> {
         .ok_or_else(|| anyhow::anyhow!("tile type {} not in hand", tile_type))
 }
 
-
 /// Context from the game state needed to resolve certain Hydra actions
 /// into complete riichienv-core Actions.
 #[derive(Debug, Clone)]
@@ -97,9 +101,9 @@ pub struct GameContext {
     /// Current game phase -- needed to distinguish tsumo vs ron
     pub phase: ActionPhase,
     /// Tiles in the acting player's hand (136-format) -- needed for chi consume_tiles
-    pub hand: Vec<u8>,
+    pub hand: [u8; 14],
+    pub hand_len: u8,
 }
-
 
 // ---------------------------------------------------------------------------
 // Hydra -> riichienv conversion
@@ -124,7 +128,7 @@ pub fn hydra_to_riichienv(hydra: HydraAction, ctx: &GameContext) -> Result<Actio
             Ok(Action::new(
                 ActionType::Discard,
                 Some(id * 4 + copy),
-                vec![],
+                &[],
                 None,
             ))
         }
@@ -132,50 +136,56 @@ pub fn hydra_to_riichienv(hydra: HydraAction, ctx: &GameContext) -> Result<Actio
         34 => Ok(Action::new(
             ActionType::Discard,
             Some(AKA_MANZU_136),
-            vec![],
+            &[],
             None,
         )),
         // Aka 5p discard
         35 => Ok(Action::new(
             ActionType::Discard,
             Some(AKA_PINZU_136),
-            vec![],
+            &[],
             None,
         )),
         // Aka 5s discard
         36 => Ok(Action::new(
             ActionType::Discard,
             Some(AKA_SOUZU_136),
-            vec![],
+            &[],
             None,
         )),
         // Riichi declaration (tile selection is a separate phase)
-        37 => Ok(Action::new(ActionType::Riichi, None, vec![], None)),
+        37 => Ok(Action::new(ActionType::Riichi, None, &[], None)),
         // Chi variants -- resolved using last_discard and hand from context
         38..=40 => {
-            let called = ctx.last_discard
+            let called = ctx
+                .last_discard
                 .ok_or_else(|| anyhow::anyhow!("chi requires last_discard"))?;
             let called_type = called / 4;
             let (offset_a, offset_b) = match id {
-                38 => (1i8, 2i8),   // left: called is lowest
-                39 => (-1i8, 1i8),  // mid: called is middle
-                _ => (-2i8, -1i8),  // right: called is highest
+                38 => (1i8, 2i8),  // left: called is lowest
+                39 => (-1i8, 1i8), // mid: called is middle
+                _ => (-2i8, -1i8), // right: called is highest
             };
             let type_a = (called_type as i8 + offset_a) as u8;
             let type_b = (called_type as i8 + offset_b) as u8;
-            let tile_a = find_tile_in_hand(&ctx.hand, type_a)?;
-            let tile_b = find_tile_in_hand(&ctx.hand, type_b)?;
-            Ok(Action::new(ActionType::Chi, Some(called), vec![tile_a, tile_b], None))
+            let tile_a = find_tile_in_hand(&ctx.hand[..ctx.hand_len as usize], type_a)?;
+            let tile_b = find_tile_in_hand(&ctx.hand[..ctx.hand_len as usize], type_b)?;
+            Ok(Action::new(
+                ActionType::Chi,
+                Some(called),
+                &[tile_a, tile_b],
+                None,
+            ))
         }
         // Pon
-        41 => Ok(Action::new(ActionType::Pon, None, vec![], None)),
+        41 => Ok(Action::new(ActionType::Pon, None, &[], None)),
         // Kan -- resolved from game phase
         42 => {
             let action_type = match ctx.phase {
                 ActionPhase::Normal => ActionType::Ankan,
                 _ => ActionType::Daiminkan,
             };
-            Ok(Action::new(action_type, None, vec![], None))
+            Ok(Action::new(action_type, None, &[], None))
         }
         // Agari -- tsumo during own turn, ron during response
         43 => {
@@ -183,12 +193,12 @@ pub fn hydra_to_riichienv(hydra: HydraAction, ctx: &GameContext) -> Result<Actio
                 ActionPhase::Normal => ActionType::Tsumo,
                 _ => ActionType::Ron,
             };
-            Ok(Action::new(action_type, None, vec![], None))
+            Ok(Action::new(action_type, None, &[], None))
         }
         // Kyushu kyuhai (abortive draw)
-        44 => Ok(Action::new(ActionType::KyushuKyuhai, None, vec![], None)),
+        44 => Ok(Action::new(ActionType::KyushuKyuhai, None, &[], None)),
         // Pass
-        45 => Ok(Action::new(ActionType::Pass, None, vec![], None)),
+        45 => Ok(Action::new(ActionType::Pass, None, &[], None)),
         _ => bail!("invalid HydraAction id: {id}"),
     }
 }
@@ -222,13 +232,19 @@ pub fn riichienv_to_hydra(action: &Action) -> Result<HydraAction> {
                 .tile
                 .ok_or_else(|| anyhow::anyhow!("Chi action missing target tile"))?;
             let target_34 = target / 4;
-            let mut tiles_34: Vec<u8> = action.consume_tiles.iter().map(|&x| x / 4).collect();
-            tiles_34.push(target_34);
-            tiles_34.sort();
-            tiles_34.dedup();
-            if target_34 == tiles_34[0] {
+            let slice = action.consume_slice();
+            let mut tiles_34 = [0u8; 4];
+            for (i, &t) in slice.iter().enumerate() {
+                tiles_34[i] = t / 4;
+            }
+            let tile_count = slice.len();
+            tiles_34[tile_count] = target_34;
+            let total = tile_count + 1;
+            let used = &mut tiles_34[..total];
+            used.sort();
+            if target_34 == used[0] {
                 CHI_LEFT // called tile is lowest
-            } else if target_34 == tiles_34[1] {
+            } else if target_34 == used[1] {
                 CHI_MID // called tile is middle
             } else {
                 CHI_RIGHT // called tile is highest
@@ -290,7 +306,8 @@ mod tests {
         GameContext {
             last_discard: Some(0),
             phase: ActionPhase::Normal,
-            hand: vec![],
+            hand: [0u8; 14],
+            hand_len: 0,
         }
     }
 
@@ -338,7 +355,7 @@ mod tests {
 
     #[test]
     fn roundtrip_pass() {
-        let pass = Action::new(ActionType::Pass, None, vec![], None);
+        let pass = Action::new(ActionType::Pass, None, &[], None);
         let hydra = riichienv_to_hydra(&pass).unwrap();
         assert_eq!(hydra.id(), PASS);
         let back = hydra_to_riichienv(hydra, &dummy_ctx()).unwrap();
@@ -348,12 +365,12 @@ mod tests {
     #[test]
     fn roundtrip_agari() {
         // Tsumo -> AGARI -> Tsumo (default)
-        let tsumo = Action::new(ActionType::Tsumo, None, vec![], None);
+        let tsumo = Action::new(ActionType::Tsumo, None, &[], None);
         let hydra = riichienv_to_hydra(&tsumo).unwrap();
         assert_eq!(hydra.id(), AGARI);
 
         // Ron also maps to AGARI
-        let ron = Action::new(ActionType::Ron, None, vec![], None);
+        let ron = Action::new(ActionType::Ron, None, &[], None);
         let hydra_ron = riichienv_to_hydra(&ron).unwrap();
         assert_eq!(hydra_ron.id(), AGARI);
     }
@@ -361,7 +378,7 @@ mod tests {
     #[test]
     fn discard_normal_roundtrip() {
         // Discard 1m (type 0, 136-format = 0)
-        let discard = Action::new(ActionType::Discard, Some(0), vec![], None);
+        let discard = Action::new(ActionType::Discard, Some(0), &[], None);
         let hydra = riichienv_to_hydra(&discard).unwrap();
         assert_eq!(hydra.id(), 0);
     }
@@ -369,7 +386,7 @@ mod tests {
     #[test]
     fn discard_aka_roundtrip() {
         // Aka 5m: 136-index 16 -> Hydra 34
-        let discard = Action::new(ActionType::Discard, Some(16), vec![], None);
+        let discard = Action::new(ActionType::Discard, Some(16), &[], None);
         let hydra = riichienv_to_hydra(&discard).unwrap();
         assert_eq!(hydra.id(), AKA_5M);
         assert!(hydra.is_aka_discard());
@@ -386,7 +403,7 @@ mod tests {
         let chi = Action::new(
             ActionType::Chi,
             Some(2 * 4), // 3m in 136-format
-            vec![3 * 4, 4 * 4],
+            &[3 * 4, 4 * 4],
             None,
         );
         let hydra = riichienv_to_hydra(&chi).unwrap();
@@ -396,7 +413,7 @@ mod tests {
         let chi_mid = Action::new(
             ActionType::Chi,
             Some(3 * 4), // 4m
-            vec![2 * 4, 4 * 4],
+            &[2 * 4, 4 * 4],
             None,
         );
         assert_eq!(riichienv_to_hydra(&chi_mid).unwrap().id(), CHI_MID);
@@ -405,7 +422,7 @@ mod tests {
         let chi_right = Action::new(
             ActionType::Chi,
             Some(4 * 4), // 5m
-            vec![2 * 4, 3 * 4],
+            &[2 * 4, 3 * 4],
             None,
         );
         assert_eq!(riichienv_to_hydra(&chi_right).unwrap().id(), CHI_RIGHT);
@@ -413,22 +430,22 @@ mod tests {
 
     #[test]
     fn kan_variants_all_map_to_kan() {
-        let daiminkan = Action::new(ActionType::Daiminkan, Some(0), vec![], None);
+        let daiminkan = Action::new(ActionType::Daiminkan, Some(0), &[], None);
         assert_eq!(riichienv_to_hydra(&daiminkan).unwrap().id(), KAN);
 
-        let ankan = Action::new(ActionType::Ankan, None, vec![0, 1, 2, 3], None);
+        let ankan = Action::new(ActionType::Ankan, None, &[0, 1, 2, 3], None);
         assert_eq!(riichienv_to_hydra(&ankan).unwrap().id(), KAN);
 
-        let kakan = Action::new(ActionType::Kakan, None, vec![0], None);
+        let kakan = Action::new(ActionType::Kakan, None, &[0], None);
         assert_eq!(riichienv_to_hydra(&kakan).unwrap().id(), KAN);
     }
 
     #[test]
     fn legal_mask_basic() {
         let actions = vec![
-            Action::new(ActionType::Discard, Some(0), vec![], None), // 1m -> idx 0
-            Action::new(ActionType::Discard, Some(16), vec![], None), // aka 5m -> idx 34
-            Action::new(ActionType::Pass, None, vec![], None),       // -> idx 45
+            Action::new(ActionType::Discard, Some(0), &[], None), // 1m -> idx 0
+            Action::new(ActionType::Discard, Some(16), &[], None), // aka 5m -> idx 34
+            Action::new(ActionType::Pass, None, &[], None),       // -> idx 45
         ];
         let mask = build_legal_mask(&actions, ActionPhase::Normal);
         assert!(mask[0]);
@@ -481,10 +498,10 @@ mod tests {
     #[test]
     fn legal_mask_riichi_select_filters_non_discards() {
         let actions = vec![
-            Action::new(ActionType::Discard, Some(0), vec![], None),
-            Action::new(ActionType::Discard, Some(16), vec![], None),
-            Action::new(ActionType::Pass, None, vec![], None),
-            Action::new(ActionType::Tsumo, None, vec![], None),
+            Action::new(ActionType::Discard, Some(0), &[], None),
+            Action::new(ActionType::Discard, Some(16), &[], None),
+            Action::new(ActionType::Pass, None, &[], None),
+            Action::new(ActionType::Tsumo, None, &[], None),
         ];
         let mask = build_legal_mask(&actions, ActionPhase::RiichiSelect);
         assert!(mask[0]); // discard 1m allowed
@@ -497,16 +514,19 @@ mod tests {
     fn chi_left_resolves_consume_tiles() {
         // Chi left (38): called tile is lowest (1m=type0), need type1 + type2 from hand
         // Discard: tile 0 (type 0, 1m). Hand has tiles 4 (type 1, 2m) and 8 (type 2, 3m)
+        let mut hand = [0u8; 14];
+        hand[..4].copy_from_slice(&[4, 8, 20, 24]);
         let ctx = GameContext {
             last_discard: Some(0),
             phase: ActionPhase::Normal,
-            hand: vec![4, 8, 20, 24],
+            hand,
+            hand_len: 4,
         };
         let hydra = HydraAction::new(CHI_LEFT).unwrap();
         let action = hydra_to_riichienv(hydra, &ctx).unwrap();
         assert_eq!(action.action_type, ActionType::Chi);
         assert_eq!(action.tile, Some(0));
-        assert_eq!(action.consume_tiles, vec![4, 8]);
+        assert_eq!(action.consume_slice(), &[4, 8]);
     }
 
     #[test]
@@ -514,7 +534,8 @@ mod tests {
         let ctx = GameContext {
             last_discard: None,
             phase: ActionPhase::Normal,
-            hand: vec![],
+            hand: [0u8; 14],
+            hand_len: 0,
         };
         let hydra = HydraAction::new(AGARI).unwrap();
         let action = hydra_to_riichienv(hydra, &ctx).unwrap();
@@ -526,7 +547,8 @@ mod tests {
         let ctx = GameContext {
             last_discard: Some(0),
             phase: ActionPhase::RiichiSelect, // non-Normal = response
-            hand: vec![],
+            hand: [0u8; 14],
+            hand_len: 0,
         };
         let hydra = HydraAction::new(AGARI).unwrap();
         let action = hydra_to_riichienv(hydra, &ctx).unwrap();
