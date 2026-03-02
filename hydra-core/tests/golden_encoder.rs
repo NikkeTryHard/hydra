@@ -38,16 +38,11 @@ fn assert_close(actual: f32, expected: f32, msg: &str) {
 }
 
 fn empty_discards() -> [PlayerDiscards; 4] {
-    [
-        PlayerDiscards { discards: vec![] },
-        PlayerDiscards { discards: vec![] },
-        PlayerDiscards { discards: vec![] },
-        PlayerDiscards { discards: vec![] },
-    ]
+    [PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new()]
 }
 
-fn empty_melds() -> [Vec<MeldInfo>; 4] {
-    [vec![], vec![], vec![], vec![]]
+fn empty_melds() -> [PlayerMelds; 4] {
+    [PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new()]
 }
 
 fn default_meta() -> GameMetadata {
@@ -180,7 +175,7 @@ fn golden_shanten_masks() {
     let open_meld_counts = [0u8; 34];
     let discards = empty_discards();
     let melds = empty_melds();
-    let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
+    let dora = DoraInfo { indicators: [0; 5], indicator_count: 0, aka_flags: [false; 3] };
     let mut meta = default_meta();
     meta.shanten = 0; // tenpai
     let si = SafetyInfo::new();
@@ -207,7 +202,7 @@ fn golden_shanten_masks() {
 fn golden_discard_presence_player0() {
     let mut enc = ObservationEncoder::new();
     let mut discards = empty_discards();
-    discards[0].discards.push(DiscardEntry {
+    discards[0].push(DiscardEntry {
         tile: 5, is_tedashi: true, turn: 0,
     });
     enc.encode_discards(&discards);
@@ -222,7 +217,7 @@ fn golden_discard_presence_player0() {
 fn golden_discard_tsumogiri_no_tedashi() {
     let mut enc = ObservationEncoder::new();
     let mut discards = empty_discards();
-    discards[1].discards.push(DiscardEntry {
+    discards[1].push(DiscardEntry {
         tile: 10, is_tedashi: false, turn: 0,
     });
     enc.encode_discards(&discards);
@@ -236,10 +231,10 @@ fn golden_discard_temporal_decay() {
     let mut enc = ObservationEncoder::new();
     let mut discards = empty_discards();
     // Player 2 discards at turn 0 and turn 5
-    discards[2].discards.push(DiscardEntry {
+    discards[2].push(DiscardEntry {
         tile: 0, is_tedashi: false, turn: 0,
     });
-    discards[2].discards.push(DiscardEntry {
+    discards[2].push(DiscardEntry {
         tile: 1, is_tedashi: false, turn: 5,
     });
     enc.encode_discards(&discards);
@@ -260,7 +255,8 @@ fn golden_meld_chi_player0() {
     let mut enc = ObservationEncoder::new();
     let mut melds = empty_melds();
     melds[0].push(MeldInfo {
-        tiles: vec![0, 1, 2], // 1m-2m-3m chi
+        tiles: [0, 1, 2, 0],
+        tile_count: 3,
         meld_type: MeldType::Chi,
     });
     enc.encode_melds(&melds);
@@ -277,7 +273,8 @@ fn golden_meld_kan_player2() {
     let mut enc = ObservationEncoder::new();
     let mut melds = empty_melds();
     melds[2].push(MeldInfo {
-        tiles: vec![27, 27, 27, 27], // East kan
+        tiles: [27, 27, 27, 27],
+        tile_count: 4,
         meld_type: MeldType::Kan,
     });
     enc.encode_melds(&melds);
@@ -297,7 +294,8 @@ fn golden_meld_kan_player2() {
 fn golden_dora_single_indicator() {
     let mut enc = ObservationEncoder::new();
     let dora = DoraInfo {
-        indicators: vec![0], // 1m indicator
+        indicators: [0, 0, 0, 0, 0],
+        indicator_count: 1,
         aka_flags: [false; 3],
     };
     enc.encode_dora(&dora);
@@ -314,7 +312,8 @@ fn golden_dora_thermometer() {
     let mut enc = ObservationEncoder::new();
     // Two indicators on the same tile (e.g., two dora revealed as 1m)
     let dora = DoraInfo {
-        indicators: vec![0, 0],
+        indicators: [0, 0, 0, 0, 0],
+        indicator_count: 2,
         aka_flags: [false; 3],
     };
     enc.encode_dora(&dora);
@@ -331,7 +330,8 @@ fn golden_dora_multiple_indicators() {
     let mut enc = ObservationEncoder::new();
     // Three different indicators
     let dora = DoraInfo {
-        indicators: vec![0, 9, 18],
+        indicators: [0, 9, 18, 0, 0],
+        indicator_count: 3,
         aka_flags: [false; 3],
     };
     enc.encode_dora(&dora);
@@ -347,8 +347,9 @@ fn golden_dora_multiple_indicators() {
 fn golden_aka_flags() {
     let mut enc = ObservationEncoder::new();
     let dora = DoraInfo {
-        indicators: vec![],
-        aka_flags: [true, false, true], // red 5m and red 5s
+        indicators: [0, 0, 0, 0, 0],
+        indicator_count: 0,
+        aka_flags: [true, false, true],
     };
     enc.encode_aka(&dora);
     // Ch40 = man aka (filled uniformly), ch41 = pin aka, ch42 = sou aka
@@ -543,16 +544,18 @@ fn golden_full_encode_roundtrip() {
     open_meld_counts[10] = 1;
     open_meld_counts[11] = 1;
     let mut discards = empty_discards();
-    discards[0].discards.push(DiscardEntry {
+    discards[0].push(DiscardEntry {
         tile: 3, is_tedashi: true, turn: 0,
     });
     let mut melds = empty_melds();
     melds[1].push(MeldInfo {
-        tiles: vec![9, 10, 11],
+        tiles: [9, 10, 11, 0],
+        tile_count: 3,
         meld_type: MeldType::Chi,
     });
     let dora = DoraInfo {
-        indicators: vec![4],
+        indicators: [4, 0, 0, 0, 0],
+        indicator_count: 1,
         aka_flags: [true, false, false],
     };
     let meta = default_meta();
@@ -591,7 +594,7 @@ fn golden_full_encode_with_safety() {
     let open_meld_counts = [0u8; 34];
     let discards = empty_discards();
     let melds = empty_melds();
-    let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
+    let dora = DoraInfo { indicators: [0; 5], indicator_count: 0, aka_flags: [false; 3] };
     let mut meta = default_meta();
     meta.riichi = [false, true, false, false]; // opp1 riichi
     meta.kyoku_index = 4;
@@ -621,7 +624,7 @@ fn golden_encode_clears_stale_data() {
     let open_meld_counts = [0u8; 34];
     let discards = empty_discards();
     let melds = empty_melds();
-    let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
+    let dora = DoraInfo { indicators: [0; 5], indicator_count: 0, aka_flags: [false; 3] };
     let meta = default_meta();
     let si = SafetyInfo::new();
 

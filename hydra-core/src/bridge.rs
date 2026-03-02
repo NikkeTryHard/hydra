@@ -11,7 +11,7 @@ use riichienv_core::observation_ref::ObservationRef;
 
 use crate::encoder::{
     DiscardEntry, DoraInfo, GameMetadata, MeldInfo, MeldType, ObservationEncoder, PlayerDiscards,
-    OBS_SIZE,
+    PlayerMelds, OBS_SIZE,
 };
 use crate::safety::SafetyInfo;
 use crate::tile::NUM_TILE_TYPES;
@@ -55,19 +55,16 @@ pub fn extract_discards(obs: &Observation) -> [PlayerDiscards; 4] {
         let abs = (observer + relative_idx) % 4;
         let disc = &obs.discards[abs];
         let tsumogiri = &obs.tsumogiri_flags[abs];
-        let entries: Vec<DiscardEntry> = disc
-            .iter()
-            .enumerate()
-            .map(|(turn, &tile136)| {
-                let is_tsumogiri = tsumogiri.get(turn).copied().unwrap_or(false);
-                DiscardEntry {
-                    tile: tile136_to_type(tile136),
-                    is_tedashi: !is_tsumogiri,
-                    turn: turn as u16,
-                }
-            })
-            .collect();
-        PlayerDiscards { discards: entries }
+        let mut pd = PlayerDiscards::new();
+        for (turn, &tile136) in disc.iter().enumerate() {
+            let is_tsumogiri = tsumogiri.get(turn).copied().unwrap_or(false);
+            pd.push(DiscardEntry {
+                tile: tile136_to_type(tile136),
+                is_tedashi: !is_tsumogiri,
+                turn: turn as u16,
+            });
+        }
+        pd
     })
 }
 
@@ -80,24 +77,27 @@ pub fn extract_discards(obs: &Observation) -> [PlayerDiscards; 4] {
 ///
 /// Meld tile IDs are converted from 136-format (u8) to 34-format tile types.
 #[inline]
-pub fn extract_melds(obs: &Observation) -> [Vec<MeldInfo>; 4] {
+pub fn extract_melds(obs: &Observation) -> [PlayerMelds; 4] {
     let observer = obs.player_id as usize;
     std::array::from_fn(|relative_idx| {
         let abs = (observer + relative_idx) % 4;
-        obs.melds[abs]
-            .iter()
-            .map(|meld| {
-                let tiles: Vec<u8> = meld.tiles.iter().map(|&t| t / 4).collect();
-                let meld_type = match meld.meld_type {
-                    RiichiMeldType::Chi => MeldType::Chi,
-                    RiichiMeldType::Pon => MeldType::Pon,
-                    RiichiMeldType::Daiminkan
-                    | RiichiMeldType::Ankan
-                    | RiichiMeldType::Kakan => MeldType::Kan,
-                };
-                MeldInfo { tiles, meld_type }
-            })
-            .collect()
+        let mut pm = PlayerMelds::new();
+        for meld in &obs.melds[abs] {
+            let mut tiles = [0u8; 4];
+            let tile_count = meld.tiles.len().min(4) as u8;
+            for (i, &t) in meld.tiles.iter().enumerate().take(4) {
+                tiles[i] = t / 4;
+            }
+            let meld_type = match meld.meld_type {
+                RiichiMeldType::Chi => MeldType::Chi,
+                RiichiMeldType::Pon => MeldType::Pon,
+                RiichiMeldType::Daiminkan
+                | RiichiMeldType::Ankan
+                | RiichiMeldType::Kakan => MeldType::Kan,
+            };
+            pm.push(MeldInfo { tiles, tile_count, meld_type });
+        }
+        pm
     })
 }
 
@@ -127,11 +127,11 @@ pub fn extract_observer_meld_counts(obs: &Observation) -> [u8; NUM_TILE_TYPES] {
 /// indices 16 (5m), 52 (5p), 88 (5s).
 #[inline]
 pub fn extract_dora(obs: &Observation) -> DoraInfo {
-    let indicators: Vec<u8> = obs
-        .dora_indicators
-        .iter()
-        .map(|&t| tile136_to_type(t))
-        .collect();
+    let mut indicators = [0u8; 5];
+    let indicator_count = obs.dora_indicators.len().min(5) as u8;
+    for (i, &t) in obs.dora_indicators.iter().enumerate().take(5) {
+        indicators[i] = tile136_to_type(t);
+    }
 
     // Scan observer's hand for aka dora tiles
     let observer = obs.player_id as usize;
@@ -144,6 +144,7 @@ pub fn extract_dora(obs: &Observation) -> DoraInfo {
 
     DoraInfo {
         indicators,
+        indicator_count,
         aka_flags,
     }
 }
@@ -246,39 +247,41 @@ pub fn extract_discards_ref(obs: &ObservationRef<'_>) -> [PlayerDiscards; 4] {
     std::array::from_fn(|relative_idx| {
         let abs = (observer + relative_idx) % 4;
         let disc = obs.discards[abs];
-        let entries: Vec<DiscardEntry> = disc
-            .iter()
-            .enumerate()
-            .map(|(turn, &tile136)| DiscardEntry {
+        let mut pd = PlayerDiscards::new();
+        for (turn, &tile136) in disc.iter().enumerate() {
+            pd.push(DiscardEntry {
                 tile: (tile136 / 4),
                 is_tedashi: true,
                 turn: turn as u16,
-            })
-            .collect();
-        PlayerDiscards { discards: entries }
+            });
+        }
+        pd
     })
 }
 
 /// Extract meld info for all 4 players from an ObservationRef.
 #[inline]
-pub fn extract_melds_ref(obs: &ObservationRef<'_>) -> [Vec<MeldInfo>; 4] {
+pub fn extract_melds_ref(obs: &ObservationRef<'_>) -> [PlayerMelds; 4] {
     let observer = obs.player_id as usize;
     std::array::from_fn(|relative_idx| {
         let abs = (observer + relative_idx) % 4;
-        obs.melds[abs]
-            .iter()
-            .map(|meld| {
-                let tiles: Vec<u8> = meld.tiles.iter().map(|&t| t / 4).collect();
-                let meld_type = match meld.meld_type {
-                    RiichiMeldType::Chi => MeldType::Chi,
-                    RiichiMeldType::Pon => MeldType::Pon,
-                    RiichiMeldType::Daiminkan
-                    | RiichiMeldType::Ankan
-                    | RiichiMeldType::Kakan => MeldType::Kan,
-                };
-                MeldInfo { tiles, meld_type }
-            })
-            .collect()
+        let mut pm = PlayerMelds::new();
+        for meld in obs.melds[abs] {
+            let mut tiles = [0u8; 4];
+            let tile_count = meld.tiles.len().min(4) as u8;
+            for (i, &t) in meld.tiles.iter().enumerate().take(4) {
+                tiles[i] = t / 4;
+            }
+            let meld_type = match meld.meld_type {
+                RiichiMeldType::Chi => MeldType::Chi,
+                RiichiMeldType::Pon => MeldType::Pon,
+                RiichiMeldType::Daiminkan
+                | RiichiMeldType::Ankan
+                | RiichiMeldType::Kakan => MeldType::Kan,
+            };
+            pm.push(MeldInfo { tiles, tile_count, meld_type });
+        }
+        pm
     })
 }
 
@@ -301,11 +304,11 @@ pub fn extract_observer_meld_counts_ref(obs: &ObservationRef<'_>) -> [u8; NUM_TI
 /// Extract dora information from an ObservationRef.
 #[inline]
 pub fn extract_dora_ref(obs: &ObservationRef<'_>) -> DoraInfo {
-    let indicators: Vec<u8> = obs
-        .dora_indicators
-        .iter()
-        .map(|&t| t / 4)
-        .collect();
+    let mut indicators = [0u8; 5];
+    let indicator_count = obs.dora_indicators.len().min(5) as u8;
+    for (i, &t) in obs.dora_indicators.iter().enumerate().take(5) {
+        indicators[i] = t / 4;
+    }
 
     let aka_flags = [
         obs.observer_hand.contains(&AKA_5M_U8),
@@ -315,6 +318,7 @@ pub fn extract_dora_ref(obs: &ObservationRef<'_>) -> DoraInfo {
 
     DoraInfo {
         indicators,
+        indicator_count,
         aka_flags,
     }
 }
@@ -398,7 +402,7 @@ mod tests {
         let obs = fresh_obs();
         let discards = extract_discards(&obs);
         for pd in &discards {
-            assert!(pd.discards.is_empty());
+            assert_eq!(pd.len, 0);
         }
     }
 
@@ -407,7 +411,7 @@ mod tests {
         let obs = fresh_obs();
         let melds = extract_melds(&obs);
         for player_melds in &melds {
-            assert!(player_melds.is_empty());
+            assert_eq!(player_melds.len, 0);
         }
     }
 
@@ -415,7 +419,7 @@ mod tests {
     fn extract_dora_has_one_indicator() {
         let obs = fresh_obs();
         let dora = extract_dora(&obs);
-        assert_eq!(dora.indicators.len(), 1, "initial game has 1 dora indicator");
+        assert_eq!(dora.indicator_count, 1, "initial game has 1 dora indicator");
         assert!(dora.indicators[0] < 34, "tile type must be 0-33");
     }
 

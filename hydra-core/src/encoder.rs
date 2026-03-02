@@ -229,10 +229,45 @@ pub struct DiscardEntry {
 }
 
 /// Per-player discard history for encoding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PlayerDiscards {
-    /// Ordered list of discards (oldest first).
-    pub discards: Vec<DiscardEntry>,
+    /// Fixed-size array of discards (oldest first).
+    pub discards: [DiscardEntry; 30],
+    /// Number of valid entries in `discards`.
+    pub len: u8,
+}
+
+impl Default for PlayerDiscards {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlayerDiscards {
+    /// Create an empty discard history.
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            discards: [DiscardEntry { tile: 0, is_tedashi: false, turn: 0 }; 30],
+            len: 0,
+        }
+    }
+
+    /// Append a discard entry. Silently drops if at capacity (30).
+    #[inline]
+    pub fn push(&mut self, entry: DiscardEntry) {
+        let i = self.len as usize;
+        if i < 30 {
+            self.discards[i] = entry;
+            self.len += 1;
+        }
+    }
+
+    /// Return a slice of valid entries.
+    #[inline]
+    pub fn as_slice(&self) -> &[DiscardEntry] {
+        &self.discards[..self.len as usize]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,8 +330,9 @@ impl ObservationEncoder {
     pub fn encode_discards(&mut self, discards: &[PlayerDiscards; NUM_PLAYERS]) {
         for (p, pd) in discards.iter().enumerate() {
             let ch_base = CH_DISCARDS + 3 * p;
-            let t_max = pd.discards.iter().map(|d| d.turn).max().unwrap_or(0);
-            for d in &pd.discards {
+            let sl = pd.as_slice();
+            let t_max = sl.iter().map(|d| d.turn).max().unwrap_or(0);
+            for d in sl {
                 let t = d.tile as usize;
                 if t >= NUM_TILES {
                     continue;
@@ -332,12 +368,60 @@ pub enum MeldType {
 }
 
 /// A single meld for encoding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct MeldInfo {
-    /// Tile types present in the meld (0-33 each).
-    pub tiles: Vec<u8>,
+    /// Tile types present in the meld (0-33 each). Up to 4 tiles.
+    pub tiles: [u8; 4],
+    /// Number of valid tiles in `tiles`.
+    pub tile_count: u8,
     /// What kind of meld this is.
     pub meld_type: MeldType,
+}
+
+/// Per-player meld collection for encoding.
+#[derive(Debug, Clone, Copy)]
+pub struct PlayerMelds {
+    /// Fixed-size array of melds (max 4 per player).
+    pub melds: [MeldInfo; 4],
+    /// Number of valid melds.
+    pub len: u8,
+}
+
+impl Default for PlayerMelds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlayerMelds {
+    /// Create an empty meld collection.
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            melds: [MeldInfo {
+                tiles: [0; 4],
+                tile_count: 0,
+                meld_type: MeldType::Chi,
+            }; 4],
+            len: 0,
+        }
+    }
+
+    /// Append a meld. Silently drops if at capacity (4).
+    #[inline]
+    pub fn push(&mut self, meld: MeldInfo) {
+        let i = self.len as usize;
+        if i < 4 {
+            self.melds[i] = meld;
+            self.len += 1;
+        }
+    }
+
+    /// Return a slice of valid melds.
+    #[inline]
+    pub fn as_slice(&self) -> &[MeldInfo] {
+        &self.melds[..self.len as usize]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,16 +436,16 @@ impl ObservationEncoder {
     /// - pon tiles
     /// - kan tiles
     #[inline]
-    pub fn encode_melds(&mut self, melds: &[Vec<MeldInfo>; NUM_PLAYERS]) {
+    pub fn encode_melds(&mut self, melds: &[PlayerMelds; NUM_PLAYERS]) {
         for (p, player_melds) in melds.iter().enumerate() {
             let ch_base = CH_MELDS + 3 * p;
-            for meld in player_melds {
+            for meld in player_melds.as_slice() {
                 let ch_offset = match meld.meld_type {
                     MeldType::Chi => 0,
                     MeldType::Pon => 1,
                     MeldType::Kan => 2,
                 };
-                for &tile in &meld.tiles {
+                for &tile in &meld.tiles[..meld.tile_count as usize] {
                     let t = tile as usize;
                     if t < NUM_TILES {
                         self.set(ch_base + ch_offset, t, 1.0);
@@ -377,10 +461,12 @@ impl ObservationEncoder {
 // ---------------------------------------------------------------------------
 
 /// Dora information for encoding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct DoraInfo {
-    /// Dora indicator tile types (0-33). Up to 5 kan dora.
-    pub indicators: Vec<u8>,
+    /// Dora indicator tile types (0-33). Fixed array, up to 5 kan dora.
+    pub indicators: [u8; 5],
+    /// Number of valid indicators.
+    pub indicator_count: u8,
     /// Aka dora flags: `[has_aka_5m, has_aka_5p, has_aka_5s]`.
     pub aka_flags: [bool; 3],
 }
@@ -397,7 +483,7 @@ impl ObservationEncoder {
     #[inline]
     pub fn encode_dora(&mut self, dora: &DoraInfo) {
         let mut counts = [0u8; NUM_TILES];
-        for &ind in &dora.indicators {
+        for &ind in &dora.indicators[..dora.indicator_count as usize] {
             let i = ind as usize;
             if i < NUM_TILES {
                 counts[i] = counts[i].saturating_add(1);
@@ -635,7 +721,7 @@ impl ObservationEncoder {
         drawn_tile: Option<u8>,
         open_meld_counts: &[u8; NUM_TILES],
         discards: &[PlayerDiscards; NUM_PLAYERS],
-        melds: &[Vec<MeldInfo>; NUM_PLAYERS],
+        melds: &[PlayerMelds; NUM_PLAYERS],
         dora: &DoraInfo,
         meta: &GameMetadata,
         safety: &SafetyInfo,
@@ -672,7 +758,7 @@ impl ObservationEncoder {
         drawn_tile: Option<u8>,
         open_meld_counts: &[u8; NUM_TILES],
         discards: &[PlayerDiscards; NUM_PLAYERS],
-        melds: &[Vec<MeldInfo>; NUM_PLAYERS],
+        melds: &[PlayerMelds; NUM_PLAYERS],
         dora: &DoraInfo,
         meta: &GameMetadata,
         safety: &SafetyInfo,
@@ -882,24 +968,19 @@ mod tests {
     // -- Discard tests (ch 11-22) --
 
     fn empty_discards() -> [PlayerDiscards; NUM_PLAYERS] {
-        [
-            PlayerDiscards { discards: vec![] },
-            PlayerDiscards { discards: vec![] },
-            PlayerDiscards { discards: vec![] },
-            PlayerDiscards { discards: vec![] },
-        ]
+        [PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new()]
     }
 
     #[test]
     fn discard_presence_and_tedashi() {
         let mut enc = ObservationEncoder::new();
         let mut discards = empty_discards();
-        discards[0].discards.push(DiscardEntry {
+        discards[0].push(DiscardEntry {
             tile: 5,
             is_tedashi: true,
             turn: 0,
         });
-        discards[1].discards.push(DiscardEntry {
+        discards[1].push(DiscardEntry {
             tile: 10,
             is_tedashi: false,
             turn: 0,
@@ -917,12 +998,12 @@ mod tests {
     fn discard_temporal_decay() {
         let mut enc = ObservationEncoder::new();
         let mut discards = empty_discards();
-        discards[0].discards.push(DiscardEntry {
+        discards[0].push(DiscardEntry {
             tile: 0,
             is_tedashi: false,
             turn: 0,
         });
-        discards[0].discards.push(DiscardEntry {
+        discards[0].push(DiscardEntry {
             tile: 1,
             is_tedashi: false,
             turn: 5,
@@ -936,8 +1017,8 @@ mod tests {
 
     // -- Meld tests (ch 23-34) --
 
-    fn empty_melds() -> [Vec<MeldInfo>; NUM_PLAYERS] {
-        [vec![], vec![], vec![], vec![]]
+    fn empty_melds() -> [PlayerMelds; NUM_PLAYERS] {
+        [PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new()]
     }
 
     #[test]
@@ -945,7 +1026,8 @@ mod tests {
         let mut enc = ObservationEncoder::new();
         let mut melds = empty_melds();
         melds[0].push(MeldInfo {
-            tiles: vec![0, 1, 2],
+            tiles: [0, 1, 2, 0],
+            tile_count: 3,
             meld_type: MeldType::Chi,
         });
         enc.encode_melds(&melds);
@@ -961,7 +1043,8 @@ mod tests {
         let mut enc = ObservationEncoder::new();
         let mut melds = empty_melds();
         melds[2].push(MeldInfo {
-            tiles: vec![27, 27, 27],
+            tiles: [27, 27, 27, 0],
+            tile_count: 3,
             meld_type: MeldType::Pon,
         });
         enc.encode_melds(&melds);
@@ -974,7 +1057,8 @@ mod tests {
         let mut enc = ObservationEncoder::new();
         let mut melds = empty_melds();
         melds[1].push(MeldInfo {
-            tiles: vec![31, 31, 31, 31],
+            tiles: [31, 31, 31, 31],
+            tile_count: 4,
             meld_type: MeldType::Kan,
         });
         enc.encode_melds(&melds);
@@ -988,7 +1072,8 @@ mod tests {
     fn dora_indicator_thermometer_single() {
         let mut enc = ObservationEncoder::new();
         let dora = DoraInfo {
-            indicators: vec![0], // one indicator on 1m
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 1,
             aka_flags: [false; 3],
         };
         enc.encode_dora(&dora);
@@ -1000,7 +1085,8 @@ mod tests {
     fn dora_indicator_thermometer_multiple_same() {
         let mut enc = ObservationEncoder::new();
         let dora = DoraInfo {
-            indicators: vec![5, 5, 5], // three indicators on 6m
+            indicators: [5, 5, 5, 0, 0],
+            indicator_count: 3,
             aka_flags: [false; 3],
         };
         enc.encode_dora(&dora);
@@ -1014,7 +1100,8 @@ mod tests {
     fn dora_indicator_thermometer_different() {
         let mut enc = ObservationEncoder::new();
         let dora = DoraInfo {
-            indicators: vec![0, 10], // 1m and 2p indicators
+            indicators: [0, 10, 0, 0, 0],
+            indicator_count: 2,
             aka_flags: [false; 3],
         };
         enc.encode_dora(&dora);
@@ -1030,7 +1117,8 @@ mod tests {
     fn aka_dora_plane_fill() {
         let mut enc = ObservationEncoder::new();
         let dora = DoraInfo {
-            indicators: vec![],
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 0,
             aka_flags: [true, false, true],
         };
         enc.encode_aka(&dora);
@@ -1167,7 +1255,8 @@ mod tests {
         let discards = empty_discards();
         let melds = empty_melds();
         let dora = DoraInfo {
-            indicators: vec![],
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 0,
             aka_flags: [false; 3],
         };
         let meta = test_metadata();
@@ -1187,7 +1276,8 @@ mod tests {
         let discards = empty_discards();
         let melds = empty_melds();
         let dora = DoraInfo {
-            indicators: vec![],
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 0,
             aka_flags: [false; 3],
         };
         let meta = test_metadata();
@@ -1221,7 +1311,8 @@ mod tests {
         let discards = empty_discards();
         let melds = empty_melds();
         let dora = DoraInfo {
-            indicators: vec![4],
+            indicators: [4, 0, 0, 0, 0],
+            indicator_count: 1,
             aka_flags: [true, false, false],
         };
         let meta = test_metadata();
@@ -1272,7 +1363,8 @@ mod tests {
         let discards = empty_discards();
         let melds = empty_melds();
         let dora = DoraInfo {
-            indicators: vec![],
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 0,
             aka_flags: [false; 3],
         };
         let meta = test_metadata();
