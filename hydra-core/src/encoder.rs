@@ -13,8 +13,7 @@
 //! - 40..42: aka dora flags (per suit plane)
 //! - 43..61: game metadata (riichi, scores, gaps, shanten, round, honba, kyotaku)
 //! - 62..84: safety channels (genbutsu, suji, kabe, one-chance, tenpai)
-
-use crate::safety::SafetyInfo;
+use crate::safety::{SafetyInfo, bit_test};
 use crate::tile::NUM_TILE_TYPES;
 
 // ---------------------------------------------------------------------------
@@ -613,13 +612,13 @@ impl ObservationEncoder {
     pub fn encode_safety(&mut self, safety: &SafetyInfo) {
         for opp in 0..NUM_OPPS {
             for tile in 0..NUM_TILES {
-                if safety.genbutsu_all[opp][tile] {
+                if bit_test(safety.genbutsu_all[opp], tile) {
                     self.set(CH_SAFETY + opp, tile, 1.0);
                 }
-                if safety.genbutsu_tedashi[opp][tile] {
+                if bit_test(safety.genbutsu_tedashi[opp], tile) {
                     self.set(CH_SAFETY + NUM_OPPS + opp, tile, 1.0);
                 }
-                if safety.genbutsu_riichi_era[opp][tile] {
+                if bit_test(safety.genbutsu_riichi_era[opp], tile) {
                     self.set(CH_SAFETY + 2 * NUM_OPPS + opp, tile, 1.0);
                 }
                 let suji = safety.suji[opp][tile];
@@ -629,10 +628,10 @@ impl ObservationEncoder {
             }
         }
         for tile in 0..NUM_TILES {
-            if safety.kabe[tile] {
+            if bit_test(safety.kabe, tile) {
                 self.set(CH_SAFETY + 18, tile, 1.0);
             }
-            if safety.one_chance[tile] {
+            if bit_test(safety.one_chance, tile) {
                 self.set(CH_SAFETY + 19, tile, 1.0);
             }
         }
@@ -804,6 +803,7 @@ impl ObservationEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::safety::bit_set;
 
     /// Helper: read a single cell from the obs buffer.
     fn get(enc: &ObservationEncoder, ch: usize, tile: usize) -> f32 {
@@ -1209,9 +1209,9 @@ mod tests {
     fn safety_genbutsu_channels() {
         let mut enc = ObservationEncoder::new();
         let mut si = SafetyInfo::new();
-        si.genbutsu_all[0][5] = true;
-        si.genbutsu_tedashi[1][10] = true;
-        si.genbutsu_riichi_era[2][20] = true;
+        bit_set(&mut si.genbutsu_all[0], 5);
+        bit_set(&mut si.genbutsu_tedashi[1], 10);
+        bit_set(&mut si.genbutsu_riichi_era[2], 20);
         enc.encode_safety(&si);
         assert_eq!(get(&enc, 62, 5), 1.0);
         assert_eq!(get(&enc, 66, 10), 1.0);
@@ -1231,8 +1231,8 @@ mod tests {
     fn safety_kabe_and_one_chance() {
         let mut enc = ObservationEncoder::new();
         let mut si = SafetyInfo::new();
-        si.kabe[15] = true;
-        si.one_chance[20] = true;
+        bit_set(&mut si.kabe, 15);
+        bit_set(&mut si.one_chance, 20);
         enc.encode_safety(&si);
         assert_eq!(get(&enc, 80, 15), 1.0);
         assert_eq!(get(&enc, 81, 20), 1.0);

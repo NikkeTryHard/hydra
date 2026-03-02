@@ -22,7 +22,7 @@
 //!   62-84: Safety
 
 use hydra_core::encoder::*;
-use hydra_core::safety::SafetyInfo;
+use hydra_core::safety::{SafetyInfo, bit_set};
 
 /// Read a single cell: buffer[ch * 34 + tile].
 fn get(enc: &ObservationEncoder, ch: usize, tile: usize) -> f32 {
@@ -471,8 +471,8 @@ fn golden_meta_round_honba_kyotaku() {
 fn golden_safety_genbutsu_all() {
     let mut enc = ObservationEncoder::new();
     let mut si = SafetyInfo::new();
-    si.genbutsu_all[0][5] = true;  // 6m safe vs opp0
-    si.genbutsu_all[2][33] = true; // chun safe vs opp2
+    bit_set(&mut si.genbutsu_all[0], 5);  // 6m safe vs opp0
+    bit_set(&mut si.genbutsu_all[2], 33); // chun safe vs opp2
     enc.encode_safety(&si);
     assert_eq!(get(&enc, 62, 5), 1.0, "ch62 opp0 genbutsu 6m");
     assert_eq!(get(&enc, 62, 0), 0.0, "ch62 opp0 1m not safe");
@@ -484,8 +484,8 @@ fn golden_safety_genbutsu_all() {
 fn golden_safety_tedashi_and_riichi_era() {
     let mut enc = ObservationEncoder::new();
     let mut si = SafetyInfo::new();
-    si.genbutsu_tedashi[1][10] = true;     // opp1 tedashi 2p
-    si.genbutsu_riichi_era[0][20] = true;  // opp0 riichi-era 3s
+    bit_set(&mut si.genbutsu_tedashi[1], 10);     // opp1 tedashi 2p
+    bit_set(&mut si.genbutsu_riichi_era[0], 20);  // opp0 riichi-era 3s
     enc.encode_safety(&si);
     // Tedashi: ch65 + opp -> ch66
     assert_eq!(get(&enc, 66, 10), 1.0, "ch66 opp1 tedashi 2p");
@@ -512,8 +512,8 @@ fn golden_safety_suji() {
 fn golden_safety_kabe_one_chance() {
     let mut enc = ObservationEncoder::new();
     let mut si = SafetyInfo::new();
-    si.kabe[15] = true;       // 7p kabe
-    si.one_chance[20] = true; // 3s one-chance
+    bit_set(&mut si.kabe, 15);       // 7p kabe
+    bit_set(&mut si.one_chance, 20); // 3s one-chance
     enc.encode_safety(&si);
     // Kabe = ch80 (62+18), one-chance = ch81 (62+19)
     assert_eq!(get(&enc, 80, 15), 1.0, "ch80 kabe 7p");
@@ -600,8 +600,8 @@ fn golden_full_encode_with_safety() {
     meta.kyoku_index = 4;
     meta.honba = 2;
     let mut si = SafetyInfo::new();
-    si.genbutsu_all[0][0] = true;
-    si.kabe[27] = true;
+    bit_set(&mut si.genbutsu_all[0], 0);
+    bit_set(&mut si.kabe, 27);
     enc.encode(
         &hand, None, &open_meld_counts, &discards, &melds,
         &dora, &meta, &si,
