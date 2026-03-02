@@ -47,9 +47,9 @@ Full methodology in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARK
 
 | Benchmark | Time |
 |-----------|------|
-| Single game (FirstActionSelector) | 417us |
-| Batch 100 games (4 cores, rayon) | 12.2ms (8,170 games/sec) |
-| Observation encode (85x34) | 405ns |
+| Single game (FirstActionSelector) | 397us |
+| Batch 100 games (4 cores, rayon) | 3.9ms (25,641 games/sec) |
+| Observation encode (85x34) | 437ns |
 
 ## License
 

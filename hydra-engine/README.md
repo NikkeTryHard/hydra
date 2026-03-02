@@ -72,15 +72,15 @@ in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARKS.md).
 
 | Benchmark | hydra-engine | riichienv-core 0.3.4 | Delta |
 |-----------|-------------|---------------------|-------|
-| Single game (1 core) | 417us | 627us | **1.50x faster** |
-| Batch 100 (4 cores, rayon) | 12.2ms (8,170/sec) | 73.8ms seq (1,355/sec) | **6.0x faster** |
-| Observation encode | 405ns | n/a | -- |
+| Single game (1 core) | 397us | 627us | **1.58x faster** |
+| Batch 100 (4 cores, rayon) | 3.9ms (25,641/sec) | 73.8ms seq (1,355/sec) | **18.9x faster** |
+| Observation encode | 437ns | n/a | -- |
 
 Cross-engine comparison (single-threaded, first-action agent unless noted):
 
 | Engine | Language | Per-Game | Games/sec |
 |--------|----------|----------|-----------|
-| hydra-engine | Rust | 417us | 2,398 |
+| hydra-engine | Rust | 397us | 2,519 |
 | riichienv-core | Rust | 627us | 1,595 |
 | mahjax | JAX/Python | 873us | 1,145 |
 | Mjx | C++ | 17,498us | 57 |
