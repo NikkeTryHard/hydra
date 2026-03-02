@@ -13,6 +13,8 @@ pub struct WallState {
     pub salt: String,
     pub seed: Option<u64>,
     pub hand_index: u64,
+    /// Cursor for rinshan draws from the front of the wall.
+    pub draw_cursor: usize,
 }
 
 impl WallState {
@@ -26,6 +28,7 @@ impl WallState {
             salt: String::new(),
             seed,
             hand_index: 0,
+            draw_cursor: 0,
         }
     }
 
@@ -56,6 +59,7 @@ impl WallState {
 
         w.reverse();
         self.tiles = w;
+        self.draw_cursor = 0;
 
         self.dora_indicators.clear();
         if self.tiles.len() > 5 {
@@ -63,6 +67,20 @@ impl WallState {
         }
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
+    }
+
+    /// Returns the number of remaining drawable tiles in the wall.
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.tiles.len() - self.draw_cursor
+    }
+
+    /// Draws the next rinshan tile from the front of the wall via cursor.
+    #[inline]
+    pub fn draw_rinshan(&mut self) -> u8 {
+        let t = self.tiles[self.draw_cursor];
+        self.draw_cursor += 1;
+        t
     }
 
     pub fn load_wall(&mut self, tiles: Vec<u8>) {
@@ -75,6 +93,7 @@ impl WallState {
         }
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
+        self.draw_cursor = 0;
     }
 }
 
