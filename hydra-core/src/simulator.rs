@@ -7,7 +7,6 @@ use rayon::prelude::*;
 use riichienv_core::action::{Action, Phase};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
-use std::collections::HashMap;
 
 /// Configuration for a batch simulation run.
 #[derive(Debug, Clone)]
@@ -59,18 +58,18 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
     // Safety limit to prevent infinite loops from engine bugs.
     const MAX_STEPS: u32 = 10_000;
 
-    let mut actions: HashMap<u8, Action> = HashMap::with_capacity(4);
+    let mut actions: [Option<Action>; 4];
 
     while !state.is_done && total_actions < MAX_STEPS {
         // When a round ends, step() auto-initializes the next round.
         if state.needs_initialize_next_round {
-            let empty: HashMap<u8, Action> = HashMap::new();
-            state.step_unchecked(&empty);
+state.step_unchecked(&[None;
+4]);
             rounds += 1;
             continue;
         }
 
-        actions.clear();
+        actions = [None; 4];
 
         match state.phase {
             Phase::WaitAct => {
@@ -78,7 +77,7 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
                 if legal.is_empty() {
                     break;
                 }
-                actions.insert(state.current_player, legal[0]);
+                actions[state.current_player as usize] = Some(legal[0]);
             }
             Phase::WaitResponse => {
                 let n = state.active_players.len().min(4);
@@ -89,7 +88,7 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
                     if legal.is_empty() {
                         continue;
                     }
-                    actions.insert(pid, legal[0]);
+                    actions[pid as usize] = Some(legal[0]);
                 }
             }
         }
