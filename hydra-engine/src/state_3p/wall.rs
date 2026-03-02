@@ -7,8 +7,10 @@ use crate::types::is_sanma_excluded_tile;
 /// Wall state for 3-player mahjong (108 tiles, sanma hardcoded).
 #[derive(Debug, Clone)]
 pub struct WallState3P {
-    pub tiles: Vec<u8>,
-    pub dora_indicators: Vec<u8>,
+    pub tiles: [u8; 136],
+    pub tile_count: u8,
+    pub dora_indicators: [u8; 5],
+    pub dora_indicator_count: u8,
     /// Pre-extracted dora indicator tiles (omote) in order D1..D5.
     pub dora_indicator_tiles: [u8; 5],
     /// Pre-extracted ura dora indicator tiles in order U1..U5.
@@ -26,8 +28,10 @@ pub struct WallState3P {
 impl WallState3P {
     pub fn new(seed: Option<u64>) -> Self {
         Self {
-            tiles: Vec::new(),
-            dora_indicators: Vec::new(),
+            tiles: [0; 136],
+            tile_count: 0,
+            dora_indicators: [0; 5],
+            dora_indicator_count: 0,
             dora_indicator_tiles: [0; 5],
             ura_indicator_tiles: [0; 5],
             rinshan_draw_count: 0,
@@ -41,8 +45,15 @@ impl WallState3P {
     }
 
     pub fn shuffle(&mut self, skip_digest: bool) {
-        // 3P: 108 tiles (no 2m-8m)
-        let mut w: Vec<u8> = (0..136u8).filter(|&t| !is_sanma_excluded_tile(t)).collect();
+        // 3P: 108 tiles (no 2m-8m). Filter into temp, then copy to fixed array.
+        let mut count = 0u8;
+        for i in 0..136u8 {
+            if !is_sanma_excluded_tile(i) {
+                self.tiles[count as usize] = i;
+                count += 1;
+            }
+        }
+        self.tile_count = count;
 
         let mut rng = if let Some(episode_seed) = self.seed {
             let hand_seed = splitmix64(episode_seed.wrapping_add(self.hand_index));
@@ -53,7 +64,7 @@ impl WallState3P {
             StdRng::from_entropy()
         };
 
-        w.shuffle(&mut rng);
+        self.tiles[..count as usize].shuffle(&mut rng);
         if skip_digest {
             self.salt.clear();
             self.wall_digest.clear();
@@ -61,14 +72,13 @@ impl WallState3P {
             self.salt = format!("{:016x}", rng.next_u64());
             let mut hasher = Sha256::new();
             hasher.update(self.salt.as_bytes());
-            for &t in &w {
+            for &t in &self.tiles[..count as usize] {
                 hasher.update([t]);
             }
             self.wall_digest = format!("{:x}", hasher.finalize());
         }
 
-        w.reverse();
-        self.tiles = w;
+        self.tiles[..count as usize].reverse();
 
         // Pre-extract dora/ura indicators from standard layout.
         // After reversal: D_i omote at tiles[4+2i], ura at tiles[5+2i].
@@ -77,8 +87,8 @@ impl WallState3P {
             self.ura_indicator_tiles[i] = self.tiles[5 + 2 * i];
         }
 
-        self.dora_indicators.clear();
-        self.dora_indicators.push(self.dora_indicator_tiles[0]);
+        self.dora_indicators[0] = self.dora_indicator_tiles[0];
+        self.dora_indicator_count = 1;
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
         self.draw_cursor = 0;
@@ -87,7 +97,7 @@ impl WallState3P {
     /// Returns the number of remaining drawable tiles in the wall.
     #[inline]
     pub fn remaining(&self) -> usize {
-        self.tiles.len() - self.draw_cursor
+        self.tile_count as usize - self.draw_cursor
     }
 
     /// Draws the next rinshan tile from the front of the wall via cursor.
@@ -99,7 +109,7 @@ impl WallState3P {
     }
 
     pub fn load_wall(&mut self, tiles: Vec<u8>) {
-        let mut t = tiles;
+        let len = tiles.len().min(136);
 
         // MjSoul 3P dead wall layout (positions 94-107):
         //   Positions 94-99: dora stacks 1-3 (each pair [X,X+1] = ura,omote)
@@ -109,21 +119,55 @@ impl WallState3P {
         //     Stack4=[92,93]  Stack5=[90,91]
         // These are pre-extracted before any draws, so it's safe even if
         // those live wall positions are later drawn during normal play.
-        if t.len() == 108 {
+        if len == 108 {
             // D1..D5 omote indicators
-            self.dora_indicator_tiles = [t[99], t[97], t[95], t[93], t[91]];
+            self.dora_indicator_tiles = [tiles[99], tiles[97], tiles[95], tiles[93], tiles[91]];
             // U1..U5 ura indicators
-            self.ura_indicator_tiles = [t[98], t[96], t[94], t[92], t[90]];
+            self.ura_indicator_tiles = [tiles[98], tiles[96], tiles[94], tiles[92], tiles[90]];
         }
 
-        t.reverse();
-        self.tiles = t;
-        self.dora_indicators.clear();
-        self.dora_indicators.push(self.dora_indicator_tiles[0]);
+        self.tiles[..len].copy_from_slice(&tiles[..len]);
+        self.tiles[..len].reverse();
+        self.tile_count = len as u8;
+        self.dora_indicators[0] = self.dora_indicator_tiles[0];
+        self.dora_indicator_count = 1;
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
         self.draw_cursor = 0;
     }
+
+    /// Draws the next tile from the back of the wall (equivalent to Vec::pop).
+    #[inline]
+    pub fn draw_back(&mut self) -> Option<u8> {
+        if self.tile_count == 0 {
+            return None;
+        }
+        self.tile_count -= 1;
+        Some(self.tiles[self.tile_count as usize])
+    }
+
+    /// Returns the current dora indicators as a slice.
+    #[inline]
+    pub fn dora_indicator_slice(&self) -> &[u8] {
+        &self.dora_indicators[..self.dora_indicator_count as usize]
+    }
+
+    /// Pushes a new dora indicator.
+    #[inline]
+    pub fn push_dora_indicator(&mut self, tile: u8) {
+        if (self.dora_indicator_count as usize) < 5 {
+            self.dora_indicators[self.dora_indicator_count as usize] = tile;
+            self.dora_indicator_count += 1;
+        }
+    }
+
+    /// Resets dora indicators to a single tile.
+    #[inline]
+    pub fn set_dora_indicators_single(&mut self, tile: u8) {
+        self.dora_indicators[0] = tile;
+        self.dora_indicator_count = 1;
+    }
+
 }
 
 fn splitmix64(x: u64) -> u64 {
