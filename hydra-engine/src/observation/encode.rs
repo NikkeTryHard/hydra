@@ -44,7 +44,7 @@ impl Observation {
                 if m_idx >= 4 {
                     break;
                 }
-                for &t in &meld.tiles {
+                for &t in meld.tiles_slice() {
                     let idx = (t as usize) / 4;
                     if idx < 34 {
                         set_val(buf, ch_offset, 5 + m_idx, idx, 1.0);
@@ -98,7 +98,7 @@ impl Observation {
         }
         for melds_list in &self.melds {
             for meld in melds_list {
-                tiles_used += meld.tiles.len();
+                tiles_used += meld.tile_count as usize;
                 // Subtract 1 for claimed tile (already counted in discards)
                 if meld.called_tile.is_some() {
                     tiles_used -= 1;
@@ -184,7 +184,7 @@ impl Observation {
         let mut dora_counts = [0u8; 4];
         for (player_idx, dora_count) in dora_counts.iter_mut().enumerate() {
             for meld in &self.melds[player_idx] {
-                for &tile in &meld.tiles {
+                for &tile in meld.tiles_slice() {
                     for &dora_ind in &self.dora_indicators {
                         let dora_tile = get_next_tile(dora_ind);
                         if (tile / 4) == (dora_tile / 4) {
@@ -231,7 +231,7 @@ impl Observation {
         }
         for mlist in &self.melds {
             for m in mlist {
-                for &t in &m.tiles {
+                for &t in m.tiles_slice() {
                     seen[(t as usize) / 4] += 1;
                 }
             }
@@ -314,7 +314,7 @@ impl Observation {
         }
         for melds_list in &self.melds {
             for meld in melds_list {
-                all_visible.extend(meld.tiles.iter().map(|&x| x as u32));
+                all_visible.extend(meld.tiles_slice().iter().map(|&x| x as u32));
             }
         }
         all_visible.extend(self.dora_indicators.iter().copied());
@@ -347,7 +347,7 @@ impl Observation {
         for (player_idx, melds) in self.melds.iter().enumerate() {
             for meld in melds {
                 if matches!(meld.meld_type, MeldType::Ankan) {
-                    if let Some(&tile) = meld.tiles.first() {
+                    if let Some(&tile) = meld.tiles_slice().first() {
                         let tile_type = (tile / 4) as usize;
                         if tile_type < 34 {
                             set_val(buf, ch_offset, player_idx, tile_type, 1.0);
@@ -366,7 +366,7 @@ impl Observation {
                 if meld_idx >= 4 {
                     break;
                 }
-                for (tile_slot_idx, &tile) in meld.tiles.iter().enumerate() {
+                for (tile_slot_idx, &tile) in meld.tiles_slice().iter().enumerate() {
                     if tile_slot_idx >= 4 {
                         break;
                     }

@@ -27,7 +27,7 @@ impl YakuPossibility {
 /// Check if tanyao (all simples) is possible
 pub fn check_tanyao(melds: &[Meld]) -> YakuPossibility {
     for meld in melds {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             // Check for terminals (0,8,9,17,18,26) or honors (27-33)
             if tile_type.is_multiple_of(9) || tile_type % 9 == 8 || tile_type >= 27 {
@@ -66,9 +66,9 @@ pub fn check_yakuhai(
 ) -> YakuPossibility {
     // Check if there's a pon/kan of this tile in melds
     for meld in melds {
-        if !meld.tiles.is_empty() {
+        if !meld.tile_count == 0 {
             let meld_tile_type = (meld.tiles[0] / 4) as usize;
-            if meld_tile_type == tile_type && meld.tiles.len() >= 3 {
+            if meld_tile_type == tile_type && meld.tile_count as usize >= 3 {
                 return YakuPossibility::Possible;
             }
         }
@@ -95,7 +95,7 @@ pub fn check_flush(melds: &[Meld]) -> (YakuPossibility, YakuPossibility) {
     let mut has_honor = false;
 
     for meld in melds {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             if tile_type < 9 {
                 has_man = true;
@@ -141,7 +141,7 @@ pub fn check_flush(melds: &[Meld]) -> (YakuPossibility, YakuPossibility) {
 pub fn check_toitoi(melds: &[Meld]) -> YakuPossibility {
     for meld in melds {
         // If there's any chi (sequence), toitoi is impossible
-        if meld.tiles.len() == 3 {
+        if meld.tile_count as usize == 3 {
             let t0 = (meld.tiles[0] / 4) as usize;
             let t1 = (meld.tiles[1] / 4) as usize;
             let t2 = (meld.tiles[2] / 4) as usize;
@@ -157,7 +157,7 @@ pub fn check_toitoi(melds: &[Meld]) -> YakuPossibility {
     if !melds.is_empty()
         && melds
             .iter()
-            .all(|m| m.tiles.len() >= 3 && m.tiles[0] / 4 == m.tiles[1] / 4)
+            .all(|m| m.tile_count as usize >= 3 && m.tiles[0] / 4 == m.tiles[1] / 4)
     {
         return YakuPossibility::Possible;
     }
@@ -212,7 +212,7 @@ pub fn check_daisangen(
     // Count how many dragon pons are visible
     for &dragon_type in &dragons {
         let has_pon = melds.iter().any(|m| {
-            m.tiles.len() >= 3 && !m.tiles.is_empty() && (m.tiles[0] / 4) as usize == dragon_type
+            m.tile_count as usize >= 3 && !m.tile_count == 0 && (m.tiles[0] / 4) as usize == dragon_type
         });
 
         if has_pon {
@@ -237,7 +237,7 @@ pub fn check_daisangen(
 /// Check if tsuuiisou (all honors) is possible
 pub fn check_tsuuiisou(melds: &[Meld]) -> YakuPossibility {
     for meld in melds {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             if tile_type < 27 {
                 // Number tile found = impossible
@@ -251,7 +251,7 @@ pub fn check_tsuuiisou(melds: &[Meld]) -> YakuPossibility {
 /// Check if chinroutou (all terminals) is possible
 pub fn check_chinroutou(melds: &[Meld]) -> YakuPossibility {
     for meld in melds {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             // Must be terminals only (0, 8, 9, 17, 18, 26)
             if tile_type >= 27 || (!tile_type.is_multiple_of(9) && tile_type % 9 != 8) {
@@ -265,7 +265,7 @@ pub fn check_chinroutou(melds: &[Meld]) -> YakuPossibility {
 /// Check if honroutou (all terminals and honors) is possible
 pub fn check_honroutou(melds: &[Meld]) -> YakuPossibility {
     for meld in melds {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             // Must be terminals (0,8,9,17,18,26) or honors (27+)
             if tile_type < 27 && !tile_type.is_multiple_of(9) && tile_type % 9 != 8 {
@@ -304,12 +304,12 @@ pub fn check_chanta(melds: &[Meld]) -> YakuPossibility {
     // Chanta requires terminals or honors in every group
     // If there are simples-only melds (pon of 2-8, chi with no terminals), it's impossible
     for meld in melds {
-        if meld.tiles.is_empty() {
+        if meld.tile_count == 0 {
             continue;
         }
 
         let mut has_terminal_or_honor = false;
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             // Check if terminal (0,8,9,17,18,26) or honor (27+)
             if tile_type.is_multiple_of(9) || tile_type % 9 == 8 || tile_type >= 27 {
@@ -331,12 +331,12 @@ pub fn check_chanta(melds: &[Meld]) -> YakuPossibility {
 pub fn check_junchan(melds: &[Meld]) -> YakuPossibility {
     // Junchan requires terminals (no honors) in every group
     for meld in melds {
-        if meld.tiles.is_empty() {
+        if meld.tile_count == 0 {
             continue;
         }
 
         let mut has_terminal = false;
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             // Check if honor
             if tile_type >= 27 {
@@ -366,7 +366,7 @@ pub fn check_sanshoku_doujun(melds: &[Meld]) -> YakuPossibility {
     // We can only mark it impossible if there are honor melds or if the melds show incompatible patterns
 
     for meld in melds {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             // If there are honor tiles in melds, sequences are not possible
             if tile_type >= 27 {
@@ -398,7 +398,7 @@ pub fn check_ittsu(melds: &[Meld]) -> YakuPossibility {
 
     // Count if we have honors in melds (doesn't make ittsu impossible, but limits possibilities)
     for meld in melds {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let tile_type = (tile / 4) as usize;
             if tile_type >= 27 {
                 // Honor melds don't prevent ittsu

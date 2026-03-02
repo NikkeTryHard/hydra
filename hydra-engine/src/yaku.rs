@@ -616,7 +616,7 @@ fn calculate_fu_with_waiting(
         }
     }
     for m in melds {
-        if m.tiles.len() >= 3 && m.tiles[0] == m.tiles[1] {
+        if m.tile_count as usize >= 3 && m.tiles[0] == m.tiles[1] {
             let mut f = 2; // Open
             if !m.opened {
                 f = 4;
@@ -697,7 +697,7 @@ fn is_honroutou(hand: &Hand, melds: &[Meld]) -> bool {
     }
     if melds
         .iter()
-        .any(|m| m.tiles.iter().any(|&t| !is_terminal(t)))
+        .any(|m| m.tiles_slice().iter().any(|&t| !is_terminal(t)))
     {
         return false;
     }
@@ -723,7 +723,7 @@ fn is_junchan(div: &Division, melds: &[Meld]) -> bool {
         }
     }
     for m in melds {
-        if m.tiles.iter().all(|&t| !is_number_terminal(t)) {
+        if m.tiles_slice().iter().all(|&t| !is_number_terminal(t)) {
             return false;
         }
     }
@@ -753,10 +753,10 @@ fn is_chantai(div: &Division, melds: &[Meld]) -> bool {
         }
     }
     for m in melds {
-        if m.tiles.iter().all(|&t| !is_terminal(t)) {
+        if m.tiles_slice().iter().all(|&t| !is_terminal(t)) {
             return false;
         }
-        if m.tiles.iter().any(|&t| is_honor(t)) {
+        if m.tiles_slice().iter().any(|&t| is_honor(t)) {
             has_honor = true;
         }
     }
@@ -790,7 +790,7 @@ fn is_honitsu(hand: &Hand, melds: &[Meld]) -> bool {
         }
     }
     for meld in melds {
-        for &t in &meld.tiles {
+        for &t in meld.tiles_slice() {
             let idx = t as usize;
             if idx < 9 {
                 suits[0] = true;
@@ -823,7 +823,7 @@ fn is_chinitsu(hand: &Hand, melds: &[Meld]) -> bool {
         }
     }
     for meld in melds {
-        for &t in &meld.tiles {
+        for &t in meld.tiles_slice() {
             let idx = t as usize;
             if idx >= 27 {
                 return false;
@@ -1006,15 +1006,15 @@ fn apply_yakuman(
     let haku_koutsu = div.body.iter().any(|m| match m {
         Mentsu::Koutsu(t) => *t == 31,
         _ => false,
-    }) || melds.iter().any(|m| m.tiles.contains(&31));
+    }) || melds.iter().any(|m| m.tiles_slice().contains(&31));
     let hatsu_koutsu = div.body.iter().any(|m| match m {
         Mentsu::Koutsu(t) => *t == 32,
         _ => false,
-    }) || melds.iter().any(|m| m.tiles.contains(&32));
+    }) || melds.iter().any(|m| m.tiles_slice().contains(&32));
     let chun_koutsu = div.body.iter().any(|m| match m {
         Mentsu::Koutsu(t) => *t == 33,
         _ => false,
-    }) || melds.iter().any(|m| m.tiles.contains(&33));
+    }) || melds.iter().any(|m| m.tiles_slice().contains(&33));
 
     if haku_koutsu && hatsu_koutsu && chun_koutsu {
         yakuman_count += 1;
@@ -1061,7 +1061,7 @@ fn is_tsuu_iisou(hand: &Hand, melds: &[Meld]) -> bool {
         }
     }
     for m in melds {
-        if m.tiles.iter().any(|&t| t < 27) {
+        if m.tiles_slice().iter().any(|&t| t < 27) {
             return false;
         }
     }
@@ -1075,7 +1075,7 @@ fn is_chinroutou(hand: &Hand, melds: &[Meld]) -> bool {
         }
     }
     for m in melds {
-        if m.tiles.iter().any(|&t| !is_number_terminal(t)) {
+        if m.tiles_slice().iter().any(|&t| !is_number_terminal(t)) {
             return false;
         }
     }
@@ -1091,7 +1091,7 @@ fn is_ryuu_iisou(hand: &Hand, melds: &[Meld]) -> bool {
         }
     }
     for m in melds {
-        if m.tiles.iter().any(|&t| !green_tiles.contains(&t)) {
+        if m.tiles_slice().iter().any(|&t| !green_tiles.contains(&t)) {
             return false;
         }
     }
@@ -1231,7 +1231,7 @@ fn is_tanyao(hand: &Hand, melds: &[Meld]) -> bool {
         }
     }
     for meld in melds {
-        for &t in &meld.tiles {
+        for &t in meld.tiles_slice() {
             if terminals.contains(&(t as usize)) {
                 return false;
             }
