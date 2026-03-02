@@ -857,10 +857,10 @@ impl GameState {
                                     };
                                     total_yakuman_val += val;
                                     if let Some(liable) =
-                                        self.players[pid as usize].pao.get(&(yid as u8))
+                                        self.players[pid as usize].pao_get(yid as u8)
                                     {
                                         pao_yakuman_val += val;
-                                        pao_payer = Some(*liable);
+                                        pao_payer = Some(liable);
                                     }
                                 }
                             }
@@ -947,7 +947,8 @@ impl GameState {
                             }
 
                             let mut val = res;
-                            for (&yid, &liable) in &self.players[pid as usize].pao {
+                            for i in 0..self.players[pid as usize].pao_count as usize {
+                                let (yid, liable) = self.players[pid as usize].pao[i];
                                 if val.yaku.contains(&(yid as u32)) {
                                     val.pao_payer = Some(liable);
                                     break;
@@ -1150,10 +1151,10 @@ impl GameState {
                                 };
                                 total_yakuman_val += val;
                                 if let Some(liable) =
-                                    self.players[w_pid as usize].pao.get(&(yid as u8))
+                                    self.players[w_pid as usize].pao_get(yid as u8)
                                 {
                                     has_pao = true;
-                                    pao_payer = *liable;
+                                    pao_payer = liable;
                                     pao_yakuman_val += val;
                                 }
                             }
@@ -1194,7 +1195,8 @@ impl GameState {
                         }
 
                         let mut val = res;
-                        for (&yid, &liable) in &self.players[w_pid as usize].pao {
+                        for i in 0..self.players[w_pid as usize].pao_count as usize {
+                            let (yid, liable) = self.players[w_pid as usize].pao[i];
                             if val.yaku.contains(&(yid as u32)) {
                                 val.pao_payer = Some(liable);
                                 break;
@@ -1254,7 +1256,7 @@ impl GameState {
                 if action.action_type == ActionType::Daiminkan {
                     self.current_player = claimer;
                     self.set_single_active_player(claimer);
-                    self.players[claimer as usize].forbidden_discards.clear();
+                    self.players[claimer as usize].clear_forbidden();
                     // Handled exclusively by _resolve_kan
                     self._resolve_kan(claimer, action);
                     return; // Skip the rest of claim handling (Pon/Chi)
@@ -1336,7 +1338,7 @@ impl GameState {
                             })
                             .count();
                         if dragon_melds == 3 {
-                            self.players[claimer as usize].pao.insert(37, discarder);
+                            self.players[claimer as usize].pao_insert(37, discarder);
                         }
                     } else if (27..=30).contains(&tile_val) {
                         let wind_melds = self.players[claimer as usize]
@@ -1348,7 +1350,7 @@ impl GameState {
                             })
                             .count();
                         if wind_melds == 4 {
-                            self.players[claimer as usize].pao.insert(50, discarder);
+                            self.players[claimer as usize].pao_insert(50, discarder);
                         }
                     }
                 }
@@ -1356,12 +1358,12 @@ impl GameState {
                 self.current_player = claimer;
                 self.phase = Phase::WaitAct;
                 self.set_single_active_player(claimer);
-                self.players[claimer as usize].forbidden_discards.clear();
+                self.players[claimer as usize].clear_forbidden();
 
                 if action.action_type == ActionType::Pon {
-                    self.players[claimer as usize].forbidden_discards.push(tile);
+                    self.players[claimer as usize].push_forbidden(tile);
                 } else if action.action_type == ActionType::Chi {
-                    self.players[claimer as usize].forbidden_discards.push(tile);
+                    self.players[claimer as usize].push_forbidden(tile);
                     let t34 = tile / 4;
                     let mut consumed_34: Vec<u8> =
                         action.consume_slice().iter().map(|&x| x / 4).collect();
@@ -1369,8 +1371,7 @@ impl GameState {
                     if consumed_34[0] == t34 + 1 && consumed_34[1] == t34 + 2 {
                         if t34 % 9 <= 5 {
                             self.players[claimer as usize]
-                                .forbidden_discards
-                                .push((t34 + 3) * 4);
+                                .push_forbidden((t34 + 3) * 4);
                         }
                     } else if t34 >= 2
                         && consumed_34[1] == t34 - 1
@@ -1378,8 +1379,7 @@ impl GameState {
                         && t34 % 9 >= 3
                     {
                         self.players[claimer as usize]
-                            .forbidden_discards
-                            .push((t34 - 3) * 4);
+                            .push_forbidden((t34 - 3) * 4);
                     }
                 }
 
@@ -1761,10 +1761,10 @@ impl GameState {
                                     };
                                     total_yakuman_val += val;
                                     if let Some(liable) =
-                                        self.players[pid as usize].pao.get(&(yid as u8))
+                                        self.players[pid as usize].pao_get(yid as u8)
                                     {
                                         pao_yakuman_val += val;
-                                        pao_payer = Some(*liable);
+                                        pao_payer = Some(liable);
                                     }
                                 }
                             }
@@ -1851,7 +1851,8 @@ impl GameState {
                             }
 
                             let mut val = res;
-                            for (&yid, &liable) in &self.players[pid as usize].pao {
+                            for i in 0..self.players[pid as usize].pao_count as usize {
+                                let (yid, liable) = self.players[pid as usize].pao[i];
                                 if val.yaku.contains(&(yid as u32)) {
                                     val.pao_payer = Some(liable);
                                     break;
@@ -2054,10 +2055,10 @@ impl GameState {
                                 };
                                 total_yakuman_val += val;
                                 if let Some(liable) =
-                                    self.players[w_pid as usize].pao.get(&(yid as u8))
+                                    self.players[w_pid as usize].pao_get(yid as u8)
                                 {
                                     has_pao = true;
-                                    pao_payer = *liable;
+                                    pao_payer = liable;
                                     pao_yakuman_val += val;
                                 }
                             }
@@ -2098,7 +2099,8 @@ impl GameState {
                         }
 
                         let mut val = res;
-                        for (&yid, &liable) in &self.players[w_pid as usize].pao {
+                        for i in 0..self.players[w_pid as usize].pao_count as usize {
+                            let (yid, liable) = self.players[w_pid as usize].pao[i];
                             if val.yaku.contains(&(yid as u32)) {
                                 val.pao_payer = Some(liable);
                                 break;
@@ -2158,7 +2160,7 @@ impl GameState {
                 if action.action_type == ActionType::Daiminkan {
                     self.current_player = claimer;
                     self.set_single_active_player(claimer);
-                    self.players[claimer as usize].forbidden_discards.clear();
+                    self.players[claimer as usize].clear_forbidden();
                     // Handled exclusively by _resolve_kan
                     self._resolve_kan(claimer, action);
                     return; // Skip the rest of claim handling (Pon/Chi)
@@ -2240,7 +2242,7 @@ impl GameState {
                             })
                             .count();
                         if dragon_melds == 3 {
-                            self.players[claimer as usize].pao.insert(37, discarder);
+                            self.players[claimer as usize].pao_insert(37, discarder);
                         }
                     } else if (27..=30).contains(&tile_val) {
                         let wind_melds = self.players[claimer as usize]
@@ -2252,7 +2254,7 @@ impl GameState {
                             })
                             .count();
                         if wind_melds == 4 {
-                            self.players[claimer as usize].pao.insert(50, discarder);
+                            self.players[claimer as usize].pao_insert(50, discarder);
                         }
                     }
                 }
@@ -2260,12 +2262,12 @@ impl GameState {
                 self.current_player = claimer;
                 self.phase = Phase::WaitAct;
                 self.set_single_active_player(claimer);
-                self.players[claimer as usize].forbidden_discards.clear();
+                self.players[claimer as usize].clear_forbidden();
 
                 if action.action_type == ActionType::Pon {
-                    self.players[claimer as usize].forbidden_discards.push(tile);
+                    self.players[claimer as usize].push_forbidden(tile);
                 } else if action.action_type == ActionType::Chi {
-                    self.players[claimer as usize].forbidden_discards.push(tile);
+                    self.players[claimer as usize].push_forbidden(tile);
                     let t34 = tile / 4;
                     let mut consumed_34: Vec<u8> =
                         action.consume_slice().iter().map(|&x| x / 4).collect();
@@ -2273,8 +2275,7 @@ impl GameState {
                     if consumed_34[0] == t34 + 1 && consumed_34[1] == t34 + 2 {
                         if t34 % 9 <= 5 {
                             self.players[claimer as usize]
-                                .forbidden_discards
-                                .push((t34 + 3) * 4);
+                                .push_forbidden((t34 + 3) * 4);
                         }
                     } else if t34 >= 2
                         && consumed_34[1] == t34 - 1
@@ -2282,8 +2283,7 @@ impl GameState {
                         && t34 % 9 >= 3
                     {
                         self.players[claimer as usize]
-                            .forbidden_discards
-                            .push((t34 - 3) * 4);
+                            .push_forbidden((t34 - 3) * 4);
                     }
                 }
 
@@ -2497,7 +2497,7 @@ impl GameState {
                         })
                         .count();
                     if dragon_melds == 3 {
-                        self.players[p_idx].pao.insert(37, discarder);
+                        self.players[p_idx].pao_insert(37, discarder);
                     }
                 } else if (27..=30).contains(&tile_val) {
                     let wind_melds = self.players[p_idx]
@@ -2509,7 +2509,7 @@ impl GameState {
                         })
                         .count();
                     if wind_melds == 4 {
-                        self.players[p_idx].pao.insert(50, discarder);
+                        self.players[p_idx].pao_insert(50, discarder);
                     }
                 }
             }
@@ -2629,7 +2629,7 @@ impl GameState {
                 ev.insert("pai".to_string(), Value::String(tid_to_mjai(t)));
                 self._push_mjai_event(Value::Object(ev));
             }
-            self.players[pid as usize].forbidden_discards.clear();
+            self.players[pid as usize].clear_forbidden();
         }
     }
 

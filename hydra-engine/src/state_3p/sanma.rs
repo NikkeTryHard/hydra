@@ -18,7 +18,7 @@ impl GameState3P {
         }
 
         // Add to kita_tiles
-        self.players[p_idx].kita_tiles.push(tile);
+        self.players[p_idx].push_kita(tile);
 
         // Kita declaration breaks first-turn status (invalidates Tenhou/Chiihou)
         self.is_first_turn = false;
@@ -93,7 +93,7 @@ impl GameState3P {
                 honba: self.honba as u32,
                 is_sanma: true,
                 num_players: np,
-                kita_count: self.players[i as usize].kita_tiles.len() as u8,
+                kita_count: self.players[i as usize].kita_count,
                 ..Default::default()
             };
 

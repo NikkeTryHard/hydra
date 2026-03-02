@@ -226,7 +226,7 @@ impl GameState3PEventHandler for GameState3P {
                     .position(|&t| t / 4 == north_id)
                 {
                     let tile = self.players[actor].remove_hand(idx);
-                    self.players[actor].kita_tiles.push(tile);
+                    self.players[actor].push_kita(tile);
                 }
                 self.needs_tsumo = true;
             }
@@ -358,7 +358,7 @@ impl GameState3PEventHandler for GameState3P {
                                 })
                                 .count();
                             if dragon_melds == 3 {
-                                self.players[*seat].pao.insert(37, discarder);
+                                self.players[*seat].pao_insert(37, discarder);
                             }
                         } else if (27..=30).contains(&tile_val) {
                             let wind_melds = self.players[*seat]
@@ -370,7 +370,7 @@ impl GameState3PEventHandler for GameState3P {
                                 })
                                 .count();
                             if wind_melds == 4 {
-                                self.players[*seat].pao.insert(50, discarder);
+                                self.players[*seat].pao_insert(50, discarder);
                             }
                         }
                     }
@@ -459,7 +459,7 @@ impl GameState3PEventHandler for GameState3P {
                     .position(|&x| x / 4 == north_34)
                 {
                     let tile = self.players[*seat].remove_hand(idx);
-                    self.players[*seat].kita_tiles.push(tile);
+                    self.players[*seat].push_kita(tile);
                     // Record as last_discard so ron-on-kita (Hule) can identify
                     // the kita declarer as the payer.
                     self.last_discard = Some((*seat as u8, tile));
@@ -503,7 +503,7 @@ impl GameState3PEventHandler for GameState3P {
                                     1
                                 };
                                 total_yakuman_val += val;
-                                if let Some(&liable) = self.players[winner].pao.get(&(yid as u8)) {
+                                if let Some(liable) = self.players[winner].pao_get(yid as u8) {
                                     pao_yakuman_val += val;
                                     pao_payer = Some(liable);
                                 }
@@ -595,7 +595,7 @@ impl GameState3PEventHandler for GameState3P {
                                     1
                                 };
                                 total_yakuman_val += val;
-                                if let Some(&liable) = self.players[winner].pao.get(&(yid as u8)) {
+                                if let Some(liable) = self.players[winner].pao_get(yid as u8) {
                                     pao_yakuman_val += val;
                                     pao_payer = Some(liable);
                                 }

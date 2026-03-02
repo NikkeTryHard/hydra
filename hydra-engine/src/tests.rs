@@ -552,7 +552,7 @@ mod unit_tests {
         state.players[pid_us].score = 25000;
         state.players[pid_us].riichi_declared = false;
         state.players[pid_us].riichi_stage = false;
-        state.players[pid_us].forbidden_discards.clear();
+        state.players[pid_us].clear_forbidden();
         state.drawn_tile = Some(88);
         state.phase = Phase::WaitAct;
         state.active_players = [pid, 0, 0, 0];
@@ -1192,8 +1192,8 @@ mod unit_tests {
 
         // PAO should be set: yaku 37 (daisangen) → discarder 3
         assert_eq!(
-            state.players[0].pao.get(&37),
-            Some(&discarder),
+            state.players[0].pao_get(37),
+            Some(discarder),
             "Daisangen PAO should point to discarder {}",
             discarder
         );
@@ -1239,8 +1239,8 @@ mod unit_tests {
 
         // PAO should be set: yaku 50 (daisuushii) → discarder 2
         assert_eq!(
-            state.players[0].pao.get(&50),
-            Some(&discarder),
+            state.players[0].pao_get(50),
+            Some(discarder),
             "Daisuushii PAO should point to discarder {}",
             discarder
         );
@@ -1285,9 +1285,9 @@ mod unit_tests {
 
         // No PAO should be set (only 2 dragon melds, need 3)
         assert!(
-            state.players[0].pao.is_empty(),
-            "PAO should NOT be set with only 2 dragon melds, got: {:?}",
-            state.players[0].pao
+            state.players[0].pao_count == 0,
+            "PAO should NOT be set with only 2 dragon melds, got pao_count: {}",
+            state.players[0].pao_count
         );
     }
 

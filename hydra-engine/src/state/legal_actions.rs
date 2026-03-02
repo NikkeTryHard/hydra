@@ -73,7 +73,7 @@ impl GameStateLegalActions for GameState {
 
             if !self.players[pid_us].riichi_declared || declaration_turn {
                 let mut forbidden_set = [false; 34];
-                for &f in &self.players[pid_us].forbidden_discards {
+                for &f in self.players[pid_us].forbidden_slice() {
                     forbidden_set[(f / 4) as usize] = true;
                 }
                 for &t in self.players[pid_us].hand_slice().iter() {
@@ -297,7 +297,7 @@ impl GameStateLegalActions for GameState {
 
             if !self.players[pid_us].riichi_declared || declaration_turn {
                 let mut forbidden_set = [false; 34];
-                for &f in &self.players[pid_us].forbidden_discards {
+                for &f in self.players[pid_us].forbidden_slice() {
                     forbidden_set[(f / 4) as usize] = true;
                 }
                 for &t in self.players[pid_us].hand_slice().iter() {

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::types::Meld;
 
 #[derive(Debug, Clone)]
@@ -22,10 +20,13 @@ pub struct PlayerState3P {
     pub missed_agari_doujun: bool,
     pub nagashi_eligible: bool,
     pub ippatsu_cycle: bool,
-    pub pao: HashMap<u8, u8>,
-    pub forbidden_discards: Vec<u8>,
+    pub pao: [(u8, u8); 3],
+    pub pao_count: u8,
+    pub forbidden_discards: [u8; 6],
+    pub forbidden_discard_count: u8,
     pub mjai_log: Vec<String>,
-    pub kita_tiles: Vec<u8>,
+    pub kita_tiles: [u8; 4],
+    pub kita_count: u8,
 }
 
 impl PlayerState3P {
@@ -49,10 +50,13 @@ impl PlayerState3P {
             missed_agari_doujun: false,
             nagashi_eligible: true,
             ippatsu_cycle: false,
-            pao: HashMap::new(),
-            forbidden_discards: Vec::new(),
+            pao: [(0, 0); 3],
+            pao_count: 0,
+            forbidden_discards: [0; 6],
+            forbidden_discard_count: 0,
             mjai_log: Vec::new(),
-            kita_tiles: Vec::new(),
+            kita_tiles: [0; 4],
+            kita_count: 0,
         }
     }
 
@@ -132,9 +136,79 @@ impl PlayerState3P {
         self.missed_agari_doujun = false;
         self.nagashi_eligible = true;
         self.ippatsu_cycle = false;
-        self.forbidden_discards.clear();
+        self.clear_forbidden();
         self.mjai_log.clear();
-        self.kita_tiles.clear();
-        self.pao.clear();
+        self.kita_count = 0;
+        self.pao_clear();
     }
+
+    // ---- pao helpers ----
+
+    /// Looks up a pao entry by tile key.
+    #[inline]
+    pub fn pao_get(&self, key: u8) -> Option<u8> {
+        for i in 0..self.pao_count as usize {
+            if self.pao[i].0 == key {
+                return Some(self.pao[i].1);
+            }
+        }
+        None
+    }
+
+    /// Inserts or updates a pao entry.
+    #[inline]
+    pub fn pao_insert(&mut self, key: u8, val: u8) {
+        for i in 0..self.pao_count as usize {
+            if self.pao[i].0 == key {
+                self.pao[i].1 = val;
+                return;
+            }
+        }
+        self.pao[self.pao_count as usize] = (key, val);
+        self.pao_count += 1;
+    }
+
+    /// Clears all pao entries.
+    #[inline]
+    pub fn pao_clear(&mut self) {
+        self.pao_count = 0;
+    }
+
+
+    // ---- forbidden_discards helpers ----
+
+    /// Returns the current forbidden discards as a slice.
+    #[inline]
+    pub fn forbidden_slice(&self) -> &[u8] {
+        &self.forbidden_discards[..self.forbidden_discard_count as usize]
+    }
+
+    /// Appends a tile to the forbidden discards list.
+    #[inline]
+    pub fn push_forbidden(&mut self, tile: u8) {
+        self.forbidden_discards[self.forbidden_discard_count as usize] = tile;
+        self.forbidden_discard_count += 1;
+    }
+
+    /// Clears all forbidden discards.
+    #[inline]
+    pub fn clear_forbidden(&mut self) {
+        self.forbidden_discard_count = 0;
+    }
+
+    // ---- kita helpers ----
+
+    /// Returns the kita tiles as a slice.
+    #[inline]
+    pub fn kita_slice(&self) -> &[u8] {
+        &self.kita_tiles[..self.kita_count as usize]
+    }
+
+    /// Appends a kita tile.
+    #[inline]
+    pub fn push_kita(&mut self, tile: u8) {
+        self.kita_tiles[self.kita_count as usize] = tile;
+        self.kita_count += 1;
+    }
+
 }
