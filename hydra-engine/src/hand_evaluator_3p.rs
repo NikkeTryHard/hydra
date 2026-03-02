@@ -18,6 +18,7 @@ pub struct HandEvaluator3P {
 }
 
 impl HandEvaluator3P {
+    /// Returns the active melds as a slice.
     #[inline]
     pub fn melds_slice(&self) -> &[Meld] {
         &self.melds[..self.meld_count as usize]
