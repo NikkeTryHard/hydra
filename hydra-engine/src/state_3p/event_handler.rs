@@ -106,13 +106,13 @@ impl GameState3PEventHandler for GameState3P {
                     }
                 }
 
-                self.players[actor].melds.push(Meld {
-                    meld_type: MeldType::Pon,
-                    tiles: form_tiles,
-                    opened: true,
-                    from_who: -1,
-                    called_tile: Some(tile),
-                });
+                self.players[actor].melds.push(Meld::new(
+                    MeldType::Pon,
+                    &form_tiles,
+                    true,
+                    -1,
+                    Some(tile),
+                ));
                 self.drawn_tile = None;
                 self.needs_tsumo = false;
             }
@@ -135,13 +135,13 @@ impl GameState3PEventHandler for GameState3P {
                     }
                 }
 
-                self.players[actor].melds.push(Meld {
-                    meld_type: MeldType::Chi,
-                    tiles: form_tiles,
-                    opened: true,
-                    from_who: -1,
-                    called_tile: Some(tile),
-                });
+                self.players[actor].melds.push(Meld::new(
+                    MeldType::Chi,
+                    &form_tiles,
+                    true,
+                    -1,
+                    Some(tile),
+                ));
                 self.drawn_tile = None;
                 self.needs_tsumo = false;
             }
@@ -165,13 +165,13 @@ impl GameState3PEventHandler for GameState3P {
                     }
                 }
 
-                self.players[actor].melds.push(Meld {
-                    meld_type: MeldType::Daiminkan,
-                    tiles,
-                    opened: true,
-                    from_who: -1,
-                    called_tile: Some(tile),
-                });
+                self.players[actor].melds.push(Meld::new(
+                    MeldType::Daiminkan,
+                    &tiles,
+                    true,
+                    -1,
+                    Some(tile),
+                ));
                 self.needs_tsumo = true;
             }
             MjaiEvent::Ankan { actor, consumed } => {
@@ -183,13 +183,13 @@ impl GameState3PEventHandler for GameState3P {
                         self.players[actor].hand.remove(idx);
                     }
                 }
-                self.players[actor].melds.push(Meld {
-                    meld_type: MeldType::Ankan,
-                    tiles,
-                    opened: false,
-                    from_who: -1,
-                    called_tile: None,
-                });
+                self.players[actor].melds.push(Meld::new(
+                    MeldType::Ankan,
+                    &tiles,
+                    false,
+                    -1,
+                    None,
+                ));
                 self.needs_tsumo = true;
             }
             MjaiEvent::Kakan { actor, pai } => {
@@ -200,7 +200,8 @@ impl GameState3PEventHandler for GameState3P {
                 for m in self.players[actor].melds.iter_mut() {
                     if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
                         m.meld_type = MeldType::Kakan;
-                        m.tiles.push(tile);
+                        m.push_tile(tile);
+                        m.tiles_slice_mut().sort();
                         break;
                     }
                 }
@@ -340,13 +341,13 @@ impl GameState3PEventHandler for GameState3P {
                     .find(|(_, &f)| f != *seat)
                     .map(|(&t, _)| t);
                 let discarder = from_who.max(0) as u8;
-                self.players[*seat].melds.push(Meld {
-                    meld_type: *meld_type,
-                    tiles: tiles.clone(),
-                    opened: true,
+                self.players[*seat].melds.push(Meld::new(
+                    *meld_type,
+                    tiles,
+                    true,
                     from_who,
-                    called_tile: ct,
-                });
+                    ct,
+                ));
 
                 // PAO detection: daisangen (3 dragon melds) or daisuushii (4 wind melds)
                 if *meld_type == MeldType::Pon || *meld_type == MeldType::Daiminkan {
@@ -414,13 +415,13 @@ impl GameState3PEventHandler for GameState3P {
                         m_tiles = vec![88, 89, 90, 91];
                     }
 
-                    self.players[*seat].melds.push(Meld {
-                        meld_type: *meld_type,
-                        tiles: m_tiles,
-                        opened: false,
-                        from_who: -1,
-                        called_tile: None,
-                    });
+                    self.players[*seat].melds.push(Meld::new(
+                        *meld_type,
+                        &m_tiles,
+                        false,
+                        -1,
+                        None,
+                    ));
                 } else {
                     let tile = tiles[0];
                     if let Some(idx) = self.players[*seat].hand.iter().position(|&x| x == tile) {
@@ -429,8 +430,8 @@ impl GameState3PEventHandler for GameState3P {
                     for m in self.players[*seat].melds.iter_mut() {
                         if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
                             m.meld_type = MeldType::Kakan;
-                            m.tiles.push(tile);
-                            m.tiles.sort();
+                            m.push_tile(tile);
+                            m.tiles_slice_mut().sort();
                             break;
                         }
                     }

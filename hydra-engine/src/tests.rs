@@ -1166,20 +1166,8 @@ mod unit_tests {
         // Give player 0 two open dragon pon melds (haku=31, hatsu=32).
         // Tiles in melds use 34-tile notation.
         state.players[0].melds = vec![
-            Meld {
-                meld_type: MeldType::Pon,
-                tiles: vec![124, 125, 126], // haku (31*4=124)
-                opened: true,
-                from_who: 1,
-                called_tile: Some(124),
-            },
-            Meld {
-                meld_type: MeldType::Pon,
-                tiles: vec![128, 129, 130], // hatsu (32*4=128)
-                opened: true,
-                from_who: 2,
-                called_tile: Some(128),
-            },
+            Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)),
+            Meld::new(MeldType::Pon, &[128, 129, 130], true, 2, Some(128)),
         ];
 
         // Player 3 discards chun (33*4=132). Player 0 calls daiminkan.
@@ -1217,27 +1205,9 @@ mod unit_tests {
 
         // Give player 0 three open wind pon melds (E=27, S=28, W=29).
         state.players[0].melds = vec![
-            Meld {
-                meld_type: MeldType::Pon,
-                tiles: vec![108, 109, 110], // E (27*4=108)
-                opened: true,
-                from_who: 1,
-                called_tile: Some(108),
-            },
-            Meld {
-                meld_type: MeldType::Pon,
-                tiles: vec![112, 113, 114], // S (28*4=112)
-                opened: true,
-                from_who: 2,
-                called_tile: Some(112),
-            },
-            Meld {
-                meld_type: MeldType::Pon,
-                tiles: vec![116, 117, 118], // W (29*4=116)
-                opened: true,
-                from_who: 3,
-                called_tile: Some(116),
-            },
+            Meld::new(MeldType::Pon, &[108, 109, 110], true, 1, Some(108)),
+            Meld::new(MeldType::Pon, &[112, 113, 114], true, 2, Some(112)),
+            Meld::new(MeldType::Pon, &[116, 117, 118], true, 3, Some(116)),
         ];
 
         // Player 2 discards N (30*4=120). Player 0 calls daiminkan.
@@ -1273,13 +1243,9 @@ mod unit_tests {
         let pid: u8 = 0;
 
         // Give player 0 only ONE dragon pon meld (haku=31).
-        state.players[0].melds = vec![Meld {
-            meld_type: MeldType::Pon,
-            tiles: vec![124, 125, 126], // haku (31*4=124)
-            opened: true,
-            from_who: 1,
-            called_tile: Some(124),
-        }];
+        state.players[0].melds = vec![
+            Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)),
+        ];
 
         // Player 1 discards hatsu (32*4=128). Player 0 calls daiminkan.
         // After this, player 0 has 2 dragon melds — NOT 3, so no PAO.
