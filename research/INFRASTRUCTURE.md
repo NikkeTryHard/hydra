@@ -75,7 +75,7 @@ graph TB
 
 | License | Commercial | Derivatives | Notes |
 |---------|------------|-------------|-------|
-| MIT | ✓ | ✓ | Preferred for Hydra components |
+| MIT | ✓ | ✓ | Required for dependencies |
 | Apache-2.0 | ✓ | ✓ | Patent grant included |
 | BSD | ✓ | ✓ | Various versions acceptable |
 
