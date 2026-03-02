@@ -102,6 +102,19 @@ pub struct Meld {
     pub called_tile: Option<u8>,
 }
 
+impl Default for Meld {
+    fn default() -> Self {
+        Self {
+            meld_type: MeldType::Chi,
+            tiles: [0; 4],
+            tile_count: 0,
+            opened: false,
+            from_who: 0,
+            called_tile: None,
+        }
+    }
+}
+
 impl Meld {
     /// Create a new Meld from a tile slice (max 4 tiles).
     pub fn new(

@@ -12,11 +12,17 @@ use pyo3::prelude::*;
 pub struct HandEvaluator3P {
     pub hand: Hand,      // Normalised for agari detection
     pub full_hand: Hand, // Full counts for dora/yaku
-    pub melds: Vec<Meld>,
+    pub melds: [Meld; 4],
+    pub meld_count: u8,
     pub aka_dora_count: u8,
 }
 
 impl HandEvaluator3P {
+    #[inline]
+    pub fn melds_slice(&self) -> &[Meld] {
+        &self.melds[..self.meld_count as usize]
+    }
+
     pub fn hand_from_text(text: &str) -> RiichiResult<Self> {
         let (tiles, melds) = crate::parser::parse_hand_internal(text)?;
         Ok(Self::new(&tiles, &melds))
@@ -36,17 +42,11 @@ impl HandEvaluator3P {
 
         let mut hand = full_hand.clone();
 
-        let mut internal_melds = Vec::with_capacity(melds.len());
+        let mut internal_melds = [Meld::default(); 4];
+        let mut meld_count = 0u8;
 
         for meld in melds {
-            let mut new_meld = Meld {
-                meld_type: meld.meld_type,
-                tiles: [0; 4],
-                tile_count: meld.tile_count,
-                opened: meld.opened,
-                from_who: meld.from_who,
-                called_tile: meld.called_tile,
-            };
+            let mut new_meld = *meld;
 
             if new_meld.meld_type == MeldType::Daiminkan
                 || new_meld.meld_type == MeldType::Ankan
@@ -69,13 +69,15 @@ impl HandEvaluator3P {
             if new_meld.meld_type == MeldType::Chi {
                 new_meld.tiles_slice_mut().sort();
             }
-            internal_melds.push(new_meld);
+            internal_melds[meld_count as usize] = new_meld;
+            meld_count += 1;
         }
 
         Self {
             hand,
             full_hand,
             melds: internal_melds,
+            meld_count,
             aka_dora_count,
         }
     }
@@ -94,7 +96,7 @@ impl HandEvaluator3P {
         let mut hand_14 = self.hand.clone();
         let mut full_hand_14 = self.full_hand.clone();
 
-        let current_total: u8 = hand_14.counts.iter().sum::<u8>() + (self.melds.len() as u8 * 3);
+        let current_total: u8 = hand_14.counts.iter().sum::<u8>() + (self.meld_count * 3);
 
         if current_total == 13 {
             hand_14.add(win_tile_34);
@@ -152,10 +154,10 @@ impl HandEvaluator3P {
             nukidora_count,
             round_wind: 27 + conditions.round_wind as u8,
             seat_wind: 27 + conditions.player_wind as u8,
-            is_menzen: self.melds.iter().all(|m| !m.opened),
+            is_menzen: self.melds_slice().iter().all(|m| !m.opened),
         };
 
-        let yaku_res = yaku_3p::calculate_yaku_3p(&hand_14, &self.melds, &ctx, win_tile_34);
+        let yaku_res = yaku_3p::calculate_yaku_3p(&hand_14, self.melds_slice(), &ctx, win_tile_34);
 
         let is_oya = conditions.player_wind == Wind::East;
         // Kazoe yakuman: cap han at 13 for scoring (single yakuman)
@@ -196,7 +198,7 @@ impl HandEvaluator3P {
     }
 
     pub fn is_tenpai(&self) -> bool {
-        let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.melds.len() as u8 * 3);
+        let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.meld_count * 3);
         if current_total != 13 {
             return false;
         }
@@ -215,7 +217,7 @@ impl HandEvaluator3P {
 
     pub fn get_waits_u8(&self) -> Vec<u8> {
         let mut waits = Vec::new();
-        let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.melds.len() as u8 * 3);
+        let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.meld_count * 3);
         if current_total != 13 {
             return waits;
         }
