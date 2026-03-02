@@ -5,8 +5,10 @@ use sha2::{Digest, Sha256};
 /// Wall state for 4-player mahjong (136 tiles).
 #[derive(Debug, Clone)]
 pub struct WallState {
-    pub tiles: Vec<u8>,
-    pub dora_indicators: Vec<u8>,
+    pub tiles: [u8; 136],
+    pub tile_count: u8,
+    pub dora_indicators: [u8; 5],
+    pub dora_indicator_count: u8,
     pub rinshan_draw_count: u8,
     pub pending_kan_dora_count: u8,
     pub wall_digest: String,
@@ -20,8 +22,10 @@ pub struct WallState {
 impl WallState {
     pub fn new(seed: Option<u64>) -> Self {
         Self {
-            tiles: Vec::new(),
-            dora_indicators: Vec::new(),
+            tiles: [0; 136],
+            tile_count: 0,
+            dora_indicators: [0; 5],
+            dora_indicator_count: 0,
             rinshan_draw_count: 0,
             pending_kan_dora_count: 0,
             wall_digest: String::new(),
@@ -33,7 +37,9 @@ impl WallState {
     }
 
     pub fn shuffle(&mut self, skip_digest: bool) {
-        let mut w: Vec<u8> = (0..136).collect();
+        for i in 0..136u8 {
+            self.tiles[i as usize] = i;
+        }
         let mut rng = if let Some(episode_seed) = self.seed {
             let hand_seed = splitmix64(episode_seed.wrapping_add(self.hand_index));
             self.hand_index = self.hand_index.wrapping_add(1);
@@ -43,7 +49,7 @@ impl WallState {
             StdRng::from_entropy()
         };
 
-        w.shuffle(&mut rng);
+        self.tiles.shuffle(&mut rng);
         if skip_digest {
             self.salt.clear();
             self.wall_digest.clear();
@@ -51,20 +57,18 @@ impl WallState {
             self.salt = format!("{:016x}", rng.next_u64());
             let mut hasher = Sha256::new();
             hasher.update(self.salt.as_bytes());
-            for &t in &w {
+            for &t in &self.tiles {
                 hasher.update([t]);
             }
             self.wall_digest = format!("{:x}", hasher.finalize());
         }
 
-        w.reverse();
-        self.tiles = w;
+        self.tiles.reverse();
+        self.tile_count = 136;
         self.draw_cursor = 0;
 
-        self.dora_indicators.clear();
-        if self.tiles.len() > 5 {
-            self.dora_indicators.push(self.tiles[4]);
-        }
+        self.dora_indicators[0] = self.tiles[4];
+        self.dora_indicator_count = 1;
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
     }
@@ -72,7 +76,7 @@ impl WallState {
     /// Returns the number of remaining drawable tiles in the wall.
     #[inline]
     pub fn remaining(&self) -> usize {
-        self.tiles.len() - self.draw_cursor
+        self.tile_count as usize - self.draw_cursor
     }
 
     /// Draws the next rinshan tile from the front of the wall via cursor.
@@ -84,17 +88,53 @@ impl WallState {
     }
 
     pub fn load_wall(&mut self, tiles: Vec<u8>) {
-        let mut t = tiles;
-        t.reverse();
-        self.tiles = t;
-        self.dora_indicators.clear();
-        if self.tiles.len() > 5 {
-            self.dora_indicators.push(self.tiles[4]);
+        let len = tiles.len().min(136);
+        self.tiles[..len].copy_from_slice(&tiles[..len]);
+        // Reverse in place
+        self.tiles[..len].reverse();
+        self.tile_count = len as u8;
+        self.dora_indicator_count = 0;
+        if len > 5 {
+            self.dora_indicators[0] = self.tiles[4];
+            self.dora_indicator_count = 1;
         }
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
         self.draw_cursor = 0;
     }
+
+    /// Draws the next tile from the back of the wall (equivalent to Vec::pop).
+    #[inline]
+    pub fn draw_back(&mut self) -> Option<u8> {
+        if self.tile_count == 0 {
+            return None;
+        }
+        self.tile_count -= 1;
+        Some(self.tiles[self.tile_count as usize])
+    }
+
+    /// Returns the current dora indicators as a slice.
+    #[inline]
+    pub fn dora_indicator_slice(&self) -> &[u8] {
+        &self.dora_indicators[..self.dora_indicator_count as usize]
+    }
+
+    /// Pushes a new dora indicator.
+    #[inline]
+    pub fn push_dora_indicator(&mut self, tile: u8) {
+        if (self.dora_indicator_count as usize) < 5 {
+            self.dora_indicators[self.dora_indicator_count as usize] = tile;
+            self.dora_indicator_count += 1;
+        }
+    }
+
+    /// Resets dora indicators to a single tile.
+    #[inline]
+    pub fn set_dora_indicators_single(&mut self, tile: u8) {
+        self.dora_indicators[0] = tile;
+        self.dora_indicator_count = 1;
+    }
+
 }
 
 fn splitmix64(x: u64) -> u64 {
