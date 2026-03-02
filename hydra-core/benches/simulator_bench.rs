@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use hydra_core::bridge;
 use hydra_core::encoder::ObservationEncoder;
 use hydra_core::game_loop::{FirstActionSelector, GameRunner};
@@ -12,7 +12,7 @@ fn bench_single_game(c: &mut Criterion) {
             let mut runner = GameRunner::new(Some(42), 0);
             let mut selector = FirstActionSelector;
             runner.run_to_completion(&mut selector);
-            runner.scores()
+            black_box(runner.scores())
         });
     });
 }
@@ -30,7 +30,7 @@ fn bench_batch_100(c: &mut Criterion) {
                     r.scores()
                 })
                 .collect();
-            results
+            black_box(results)
         });
     });
 }
@@ -43,11 +43,10 @@ fn bench_encoder(c: &mut Criterion) {
     let safety = SafetyInfo::new();
     let mut encoder = ObservationEncoder::new();
 
-    c.bench_function("encode_observation_1000x", |b| {
+    c.bench_function("encode_observation", |b| {
         b.iter(|| {
-            for _ in 0..1000 {
-                bridge::encode_observation(&mut encoder, &obs, &safety, None);
-            }
+            bridge::encode_observation(&mut encoder, &obs, &safety, None);
+            black_box(encoder.as_slice());
         });
     });
 }
