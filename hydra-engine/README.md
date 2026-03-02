@@ -75,7 +75,7 @@ in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARKS.md).
 | Single game (1 core) | 397us | 627us | **1.58x faster** |
 | Batch 100 (1 core, seq) | 44.9ms (2,228/sec) | 73.8ms (1,355/sec) | **1.64x faster** |
 | Batch 100 (4 cores, rayon) | 3.5ms (28,986/sec) | n/a (no rayon) | -- |
-| Observation encode | 439ns | n/a | -- |
+| Observation encode | 421ns | n/a | -- |
 
 Cross-engine comparison (single-threaded, first-action agent unless noted):
 
