@@ -16,7 +16,6 @@
 
 use crate::safety::SafetyInfo;
 use crate::tile::NUM_TILE_TYPES;
-use riichienv_core::shanten::calc_shanten_from_counts;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -193,22 +192,16 @@ impl ObservationEncoder {
     pub fn encode_shanten_masks(&mut self, hand: &[u8; NUM_TILES]) {
         let total: u8 = hand.iter().sum();
         let len_div3 = total / 3;
-        let base = calc_shanten_from_counts(hand, len_div3);
-        let mut tmp = *hand;
+        let batch = crate::shanten_batch::batch_discard_shanten(hand, len_div3);
         for tile in 0..NUM_TILES {
-            if tmp[tile] == 0 {
-                continue;
+            if let Some(after) = batch.discard[tile] {
+                if after <= batch.base {
+                    self.set(CH_SHANTEN_MASK, tile, 1.0);
+                }
+                if after < batch.base {
+                    self.set(CH_SHANTEN_MASK + 1, tile, 1.0);
+                }
             }
-            tmp[tile] -= 1;
-            let after_len_div3 = (total - 1) / 3;
-            let after = calc_shanten_from_counts(&tmp, after_len_div3);
-            if after <= base {
-                self.set(CH_SHANTEN_MASK, tile, 1.0);
-            }
-            if after < base {
-                self.set(CH_SHANTEN_MASK + 1, tile, 1.0);
-            }
-            tmp[tile] += 1;
         }
     }
 }
