@@ -14,7 +14,7 @@ const MAX_STEPS: u32 = 10_000;
 /// Pick a "random" action deterministically from seed + counter.
 fn pick_action(seed: u64, counter: u64, legal: &[Action]) -> Action {
     let idx = (seed.wrapping_mul(counter.wrapping_add(1))) as usize % legal.len();
-    legal[idx].clone()
+    legal[idx]
 }
 
 /// Advance the game one step with random action selection.
