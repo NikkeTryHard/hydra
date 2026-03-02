@@ -88,10 +88,8 @@ state.step_unchecked(&[None;
                 actions[state.current_player as usize] = Some(legal_buf[0]);
             }
             Phase::WaitResponse => {
-                let n = state.active_players.len().min(4);
-                let mut pids = [0u8; 4];
-                pids[..n].copy_from_slice(&state.active_players[..n]);
-                for &pid in &pids[..n] {
+                let pids = state.active_player_slice();
+                for &pid in pids {
                     state.get_legal_actions_into(pid, legal_buf);
                     if legal_buf.is_empty() {
                         continue;

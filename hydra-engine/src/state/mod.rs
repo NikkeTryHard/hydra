@@ -48,7 +48,8 @@ pub struct GameState {
 
     pub riichi_sticks: u32,
     pub phase: Phase,
-    pub active_players: Vec<u8>,
+    pub active_players: [u8; 4],
+    pub active_player_count: u8,
     pub last_discard: Option<(u8, u8)>,
     pub current_claims: [Option<Vec<Action>>; NP],
     pub pending_kan: Option<(u8, Action)>,
@@ -89,6 +90,40 @@ impl GameState {
         NP
     }
 
+    /// Returns the currently active players as a slice.
+    #[inline]
+    pub fn active_player_slice(&self) -> &[u8] {
+        &self.active_players[..self.active_player_count as usize]
+    }
+
+    /// Appends a player to the active players list.
+    #[allow(dead_code)]
+    #[inline]
+    fn push_active_player(&mut self, pid: u8) {
+        self.active_players[self.active_player_count as usize] = pid;
+        self.active_player_count += 1;
+    }
+
+    /// Clears the active players list.
+    #[inline]
+    fn clear_active_players(&mut self) {
+        self.active_player_count = 0;
+    }
+
+    /// Sets active players to a single player.
+    #[inline]
+    fn set_single_active_player(&mut self, pid: u8) {
+        self.active_players[0] = pid;
+        self.active_player_count = 1;
+    }
+
+    /// Sets active players from a slice.
+    #[inline]
+    fn set_active_players_from_slice(&mut self, pids: &[u8]) {
+        self.active_players[..pids.len()].copy_from_slice(pids);
+        self.active_player_count = pids.len() as u8;
+    }
+
     pub fn new(
         game_mode: u8,
         skip_mjai_logging: bool,
@@ -113,7 +148,8 @@ impl GameState {
             pending_is_draw: false,
             riichi_sticks: 0,
             phase: Phase::WaitAct,
-            active_players: Vec::new(),
+            active_players: [0; 4],
+            active_player_count: 0,
             last_discard: None,
             current_claims: Default::default(),
             pending_kan: None,
@@ -169,6 +205,17 @@ impl GameState {
         mjai_event!(self, crate::mjai_event::MjaiEvent::StartGame);
     }
 
+    /// Resets the game state for a new game, reusing configuration.
+    ///
+    /// Uses `*self = Self::new(...)` for correctness -- can't miss a field.
+    /// The allocation cost (~2.5us) is negligible compared to a full game.
+    pub fn reset_for_new_game(&mut self, new_seed: Option<u64>) {
+        let rule = self.rule;
+        let game_mode = self.game_mode;
+        let skip_logging = self.skip_mjai_logging;
+        *self = Self::new(game_mode, skip_logging, new_seed, 0, rule);
+    }
+
     pub fn get_observation(&mut self, player_id: u8) -> Observation {
         let pid = player_id as usize;
 
@@ -183,7 +230,7 @@ impl GameState {
         let legal_actions = if self.is_done {
             Vec::new()
         } else if (self.phase == Phase::WaitAct && self.current_player == player_id)
-            || (self.phase == Phase::WaitResponse && self.active_players.contains(&player_id))
+            || (self.phase == Phase::WaitResponse && self.active_player_slice().contains(&player_id))
         {
             self._get_legal_actions_internal(player_id)
         } else {
@@ -277,14 +324,15 @@ impl GameState {
         log_action_str: &str,
     ) -> RiichiResult<Observation> {
         let original_phase = self.phase;
-        let original_active_players = self.active_players.clone();
+        let original_active_players = self.active_players;
+        let original_active_player_count = self.active_player_count;
         let original_claims = self.current_claims.clone();
         let original_riichi = self.players[pid as usize].riichi_declared;
 
         match env_action.action_type {
             ActionType::Ron | ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
                 self.phase = Phase::WaitResponse;
-                self.active_players = vec![pid];
+                self.set_single_active_player(pid);
                 self.current_claims[pid as usize]
                     .get_or_insert_with(Vec::new)
                     .push(*env_action);
@@ -320,6 +368,7 @@ impl GameState {
 
         self.phase = original_phase;
         self.active_players = original_active_players;
+        self.active_player_count = original_active_player_count;
         self.current_claims = original_claims;
 
         if !exists {
@@ -459,7 +508,7 @@ impl GameState {
                     ActionType::Riichi => {
                         // Declare Riichi
                         if self.players[pid as usize].score >= 1000
-                            && self.wall.tiles.len() >= 18
+                            && self.wall.remaining() >= 18
                             && !self.players[pid as usize].riichi_declared
                         {
                             self.players[pid as usize].riichi_stage = true;
@@ -549,7 +598,7 @@ impl GameState {
                         if !chankan_ronners.is_empty() {
                             self.pending_kan = Some((pid, *act));
                             self.phase = Phase::WaitResponse;
-                            self.active_players = chankan_ronners;
+                            self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile));
                         } else {
                             self._resolve_kan(pid, *act);
@@ -680,7 +729,7 @@ impl GameState {
                         if !chankan_ronners.is_empty() {
                             self.pending_kan = Some((pid, *act));
                             self.phase = Phase::WaitResponse;
-                            self.active_players = chankan_ronners;
+                            self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile)); // Treat Kakan tile as discard for Ron targeting
                         } else {
                             self._resolve_kan(pid, *act);
@@ -695,7 +744,7 @@ impl GameState {
                             riichi: self.players[pid as usize].riichi_declared,
                             double_riichi: self.players[pid as usize].double_riichi_declared,
                             ippatsu: self.players[pid as usize].ippatsu_cycle,
-                            haitei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                            haitei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
                                 && self.players.iter().all(|p| p.melds.is_empty()),
@@ -925,7 +974,7 @@ impl GameState {
             let mut ron_claims = Vec::new();
             let mut call_claim: Option<(u8, Action)> = None;
 
-            for &pid in &self.active_players {
+            for &pid in self.active_player_slice() {
                 if let Some(act) = actions.get(&pid) {
                     if act.action_type == ActionType::Ron {
                         ron_claims.push(pid);
@@ -986,7 +1035,7 @@ impl GameState {
                         double_riichi: self.players[w_pid as usize].double_riichi_declared,
                         ippatsu: self.players[w_pid as usize].ippatsu_cycle,
                         haitei: false,
-                        houtei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                        houtei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                         rinshan: false,
                         chankan: is_chankan,
                         tsumo_first_turn: false,
@@ -1163,7 +1212,7 @@ impl GameState {
 
                 if action.action_type == ActionType::Daiminkan {
                     self.current_player = claimer;
-                    self.active_players = vec![claimer];
+                    self.set_single_active_player(claimer);
                     self.players[claimer as usize].forbidden_discards.clear();
                     // Handled exclusively by _resolve_kan
                     self._resolve_kan(claimer, action);
@@ -1265,7 +1314,7 @@ impl GameState {
 
                 self.current_player = claimer;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![claimer];
+                self.set_single_active_player(claimer);
                 self.players[claimer as usize].forbidden_discards.clear();
 
                 if action.action_type == ActionType::Pon {
@@ -1302,7 +1351,7 @@ impl GameState {
             } else {
                 // All Pass
                 self.current_claims = Default::default();
-                self.active_players.clear();
+                self.clear_active_players();
 
                 if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
                     self._resolve_kan(pk_pid, pk_act);
@@ -1365,7 +1414,7 @@ impl GameState {
                     ActionType::Riichi => {
                         // Declare Riichi
                         if self.players[pid as usize].score >= 1000
-                            && self.wall.tiles.len() >= 18
+                            && self.wall.remaining() >= 18
                             && !self.players[pid as usize].riichi_declared
                         {
                             self.players[pid as usize].riichi_stage = true;
@@ -1455,7 +1504,7 @@ impl GameState {
                         if !chankan_ronners.is_empty() {
                             self.pending_kan = Some((pid, act));
                             self.phase = Phase::WaitResponse;
-                            self.active_players = chankan_ronners;
+                            self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile));
                         } else {
                             self._resolve_kan(pid, act);
@@ -1586,7 +1635,7 @@ impl GameState {
                         if !chankan_ronners.is_empty() {
                             self.pending_kan = Some((pid, act));
                             self.phase = Phase::WaitResponse;
-                            self.active_players = chankan_ronners;
+                            self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile)); // Treat Kakan tile as discard for Ron targeting
                         } else {
                             self._resolve_kan(pid, act);
@@ -1601,7 +1650,7 @@ impl GameState {
                             riichi: self.players[pid as usize].riichi_declared,
                             double_riichi: self.players[pid as usize].double_riichi_declared,
                             ippatsu: self.players[pid as usize].ippatsu_cycle,
-                            haitei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                            haitei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
                                 && self.players.iter().all(|p| p.melds.is_empty()),
@@ -1831,7 +1880,7 @@ impl GameState {
             let mut ron_claims = Vec::new();
             let mut call_claim: Option<(u8, Action)> = None;
 
-            for &pid in &self.active_players {
+            for &pid in self.active_player_slice() {
                 if let Some(act) = actions[pid as usize] {
                     if act.action_type == ActionType::Ron {
                         ron_claims.push(pid);
@@ -1892,7 +1941,7 @@ impl GameState {
                         double_riichi: self.players[w_pid as usize].double_riichi_declared,
                         ippatsu: self.players[w_pid as usize].ippatsu_cycle,
                         haitei: false,
-                        houtei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                        houtei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                         rinshan: false,
                         chankan: is_chankan,
                         tsumo_first_turn: false,
@@ -2069,7 +2118,7 @@ impl GameState {
 
                 if action.action_type == ActionType::Daiminkan {
                     self.current_player = claimer;
-                    self.active_players = vec![claimer];
+                    self.set_single_active_player(claimer);
                     self.players[claimer as usize].forbidden_discards.clear();
                     // Handled exclusively by _resolve_kan
                     self._resolve_kan(claimer, action);
@@ -2171,7 +2220,7 @@ impl GameState {
 
                 self.current_player = claimer;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![claimer];
+                self.set_single_active_player(claimer);
                 self.players[claimer as usize].forbidden_discards.clear();
 
                 if action.action_type == ActionType::Pon {
@@ -2208,7 +2257,7 @@ impl GameState {
             } else {
                 // All Pass
                 self.current_claims = Default::default();
-                self.active_players.clear();
+                self.clear_active_players();
 
                 if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
                     self._resolve_kan(pk_pid, pk_act);
@@ -2334,7 +2383,7 @@ impl GameState {
         self.players[pid as usize].nagashi_eligible &= crate::types::is_terminal_tile(tile);
 
         self.current_claims = Default::default();
-        self.active_players.clear();
+        self.clear_active_players();
         let mut has_claims = false;
         let mut claim_active = Vec::new();
 
@@ -2357,7 +2406,7 @@ impl GameState {
 
         if has_claims {
             self.phase = Phase::WaitResponse;
-            self.active_players = claim_active;
+            self.set_active_players_from_slice(&claim_active);
         } else {
             if let Some(_rp) = self.riichi_pending_acceptance {
                 self._accept_riichi();
@@ -2380,8 +2429,9 @@ impl GameState {
         } else {
             // Ankan / Daiminkan
             for &t in action.consume_slice() {
-                if let Some(idx) = self.players[p_idx].hand.iter().position(|&x| x == t) {
-                    self.players[p_idx].hand.remove(idx);
+                let pos = self.players[p_idx].hand.partition_point(|&x| x < t);
+                if pos < self.players[p_idx].hand.len() && self.players[p_idx].hand[pos] == t {
+                    self.players[p_idx].hand.remove(pos);
                 }
             }
             let (m_type, tiles, from_who, ct) = if action.action_type == ActionType::Ankan {
@@ -2437,9 +2487,9 @@ impl GameState {
             p.ippatsu_cycle = false;
         }
 
-        if self.wall.tiles.len() > 14 {
-            // Rinshan tiles are at the beginning of the wall vector (0-3)
-            let t = self.wall.tiles.remove(0);
+        if self.wall.remaining() > 14 {
+            // Rinshan tiles drawn via cursor (no memmove)
+            let t = self.wall.draw_rinshan();
             sorted_insert(&mut self.players[p_idx].hand, t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
@@ -2501,7 +2551,7 @@ impl GameState {
                 self._push_mjai_event(Value::Object(t_ev));
             }
             self.phase = Phase::WaitAct;
-            self.active_players = vec![pid];
+            self.set_single_active_player(pid);
         }
     }
 
@@ -2527,7 +2577,7 @@ impl GameState {
 
     pub fn _deal_next(&mut self) {
         self.is_rinshan_flag = false;
-        if self.wall.tiles.len() <= 14 {
+        if self.wall.remaining() <= 14 {
             self._trigger_ryukyoku("exhaustive_draw");
             return;
         }
@@ -2537,7 +2587,7 @@ impl GameState {
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
             self.phase = Phase::WaitAct;
-            self.active_players = vec![pid];
+            self.set_single_active_player(pid);
 
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
@@ -2740,7 +2790,7 @@ impl GameState {
 
         self.current_player = self.oya;
         self.phase = Phase::WaitAct;
-        self.active_players = vec![self.oya];
+        self.set_single_active_player(self.oya);
 
         // Draw 14th tile for Oya
         if let Some(t) = self.wall.tiles.pop() {
@@ -2936,9 +2986,9 @@ impl GameState {
     pub fn _reveal_kan_dora(&mut self) {
         let count = self.wall.dora_indicators.len();
         if count < 5 {
-            // Base indices for Omote Dora are 4, 6, 8, 10, 12 in the wall
-            // Since we use remove(0) for Rinshan draws, the indices shift down.
-            let base_idx = (4 + 2 * count).saturating_sub(self.wall.rinshan_draw_count as usize);
+            // Base indices for Omote Dora are 4, 6, 8, 10, 12 in the wall.
+            // With draw_cursor, tiles stay in place so indices are stable.
+            let base_idx = 4 + 2 * count;
             if base_idx < self.wall.tiles.len() {
                 self.wall.dora_indicators.push(self.wall.tiles[base_idx]);
                 if !self.skip_mjai_logging {
@@ -2959,7 +3009,7 @@ impl GameState {
     fn _get_ura_indicators(&self) -> Vec<u8> {
         let mut indicators = Vec::new();
         for i in 0..self.wall.dora_indicators.len() {
-            let idx = (5 + 2 * i).saturating_sub(self.wall.rinshan_draw_count as usize);
+            let idx = 5 + 2 * i;
             if idx < self.wall.tiles.len() {
                 indicators.push(self.wall.tiles[idx]);
             }
@@ -2970,8 +3020,7 @@ impl GameState {
     pub fn _get_ura_markers(&self) -> Vec<String> {
         let mut markers = Vec::new();
         for i in 0..self.wall.dora_indicators.len() {
-            let idx = (5 + 2 * i).saturating_sub(self.wall.rinshan_draw_count as usize); // Ura is next to front.
-                                                                                         // Original: `self.wall[5 + 2*i]`
+            let idx = 5 + 2 * i;
             if idx < self.wall.tiles.len() {
                 markers.push(tid_to_mjai(self.wall.tiles[idx]));
             }

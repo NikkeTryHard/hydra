@@ -110,7 +110,7 @@ impl GameState3P {
         if !chankan_ronners.is_empty() {
             // Offer ron to opponents (chankan-style)
             self.phase = crate::action::Phase::WaitResponse;
-            self.active_players = chankan_ronners;
+            self.set_active_players_from_slice(&chankan_ronners);
             self.last_discard = Some((pid, tile));
             // Store kita as pending kan for resolution
             self.pending_kan = Some((pid, *act));
@@ -130,7 +130,7 @@ impl GameState3P {
         }
 
         // Must have tiles left in wall (enough for rinshan draw)
-        if self.wall.tiles.len() <= 14 {
+        if self.wall.remaining() <= 14 {
             return Vec::new();
         }
 
@@ -151,15 +151,15 @@ impl GameState3P {
     pub fn resolve_kita_rinshan(&mut self, pid: u8) {
         let p_idx = pid as usize;
 
-        if self.wall.tiles.len() > 14 {
+        if self.wall.remaining() > 14 {
             // Reveal any pending kan dora (e.g. from a prior kakan/daiminkan)
             while self.wall.pending_kan_dora_count > 0 {
                 self.wall.pending_kan_dora_count -= 1;
                 self._reveal_kan_dora();
             }
 
-            // Draw from rinshan (front of wall vector)
-            let t = self.wall.tiles.remove(0);
+            // Draw from rinshan via cursor (no memmove)
+            let t = self.wall.draw_rinshan();
             self.players[p_idx].hand.push(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
@@ -176,7 +176,7 @@ impl GameState3P {
             }
 
             self.phase = crate::action::Phase::WaitAct;
-            self.active_players = vec![pid];
+            self.set_single_active_player(pid);
         }
     }
 }

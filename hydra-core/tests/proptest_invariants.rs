@@ -41,7 +41,9 @@ fn step_game(state: &mut GameState, seed: u64, counter: &mut u64) -> bool {
             actions.insert(state.current_player, pick_action(seed, *counter, &legal));
         }
         Phase::WaitResponse => {
-            for &pid in &state.active_players.clone() {
+            let ap = state.active_players;
+            let n = state.active_player_count as usize;
+            for &pid in &ap[..n] {
                 let obs = state.get_observation(pid);
                 let legal = obs.legal_actions_method();
                 if legal.is_empty() { continue; }
@@ -113,7 +115,9 @@ proptest! {
                     );
                 }
                 Phase::WaitResponse => {
-                    for &pid in &state.active_players.clone() {
+                    let ap = state.active_players;
+                    let n = state.active_player_count as usize;
+                    for &pid in &ap[..n] {
                         let obs = state.get_observation(pid);
                         let legal = obs.legal_actions_method();
                         if legal.is_empty() { continue; }
