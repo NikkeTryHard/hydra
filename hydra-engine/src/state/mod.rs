@@ -262,6 +262,14 @@ impl GameState {
         self._get_legal_actions_internal(player_id)
     }
 
+    /// Get legal actions without allocating a new Vec.
+    /// Clears `buf` and pushes legal actions into it.
+    #[inline]
+    pub fn get_legal_actions_into(&self, player_id: u8, buf: &mut Vec<Action>) {
+        buf.clear();
+        self._get_legal_actions_into(player_id, buf);
+    }
+
     pub fn get_observation_for_replay(
         &mut self,
         pid: u8,
