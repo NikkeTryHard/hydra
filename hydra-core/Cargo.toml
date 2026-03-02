@@ -11,17 +11,15 @@ crate-type = ["rlib"]
 
 [dependencies]
 # Game engine foundation (Apache-2.0)
-riichienv-core = "0.3"
+riichienv-core = { path = "../hydra-engine", package = "hydra-engine" }
 
 # Spec'd dependencies from INFRASTRUCTURE.md
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-ndarray = "0.16"
 rand = "0.9"
 rand_chacha = "0.9"
 sha2 = "0.10"
-chacha20 = "=0.10.0"
 anyhow = "1.0"
 thiserror = "2.0"
 
@@ -33,6 +31,3 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "simulator_bench"
 harness = false
 
-[features]
-default = []
-python = ["riichienv-core/python"]
