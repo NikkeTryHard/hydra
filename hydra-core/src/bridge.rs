@@ -16,10 +16,6 @@ use crate::encoder::{
 use crate::safety::SafetyInfo;
 use crate::tile::NUM_TILE_TYPES;
 
-// -- Aka dora tile IDs in 136-format --
-const AKA_5M: u32 = 16;
-const AKA_5P: u32 = 52;
-const AKA_5S: u32 = 88;
 
 /// Convert a 136-format tile ID (u32) to its 34-format tile type (u8).
 #[inline]
@@ -133,14 +129,17 @@ pub fn extract_dora(obs: &Observation) -> DoraInfo {
         indicators[i] = tile136_to_type(t);
     }
 
-    // Scan observer's hand for aka dora tiles
+    // Single-pass aka dora detection
     let observer = obs.player_id as usize;
-    let hand = &obs.hands[observer];
-    let aka_flags = [
-        hand.contains(&AKA_5M),
-        hand.contains(&AKA_5P),
-        hand.contains(&AKA_5S),
-    ];
+    let mut aka_flags = [false; 3];
+    for &t in &obs.hands[observer] {
+        match t {
+            16 => aka_flags[0] = true,
+            52 => aka_flags[1] = true,
+            88 => aka_flags[2] = true,
+            _ => {}
+        }
+    }
 
     DoraInfo {
         indicators,
@@ -216,10 +215,6 @@ pub fn encode_observation(
 // ObservationRef extractors (zero-copy path)
 // ---------------------------------------------------------------------------
 
-/// Aka dora tile IDs in 136-format (u8 variant for ObservationRef).
-const AKA_5M_U8: u8 = 16;
-const AKA_5P_U8: u8 = 52;
-const AKA_5S_U8: u8 = 88;
 
 /// Extract hand tile counts from an ObservationRef.
 ///
@@ -310,11 +305,15 @@ pub fn extract_dora_ref(obs: &ObservationRef<'_>) -> DoraInfo {
         indicators[i] = t / 4;
     }
 
-    let aka_flags = [
-        obs.observer_hand.contains(&AKA_5M_U8),
-        obs.observer_hand.contains(&AKA_5P_U8),
-        obs.observer_hand.contains(&AKA_5S_U8),
-    ];
+    let mut aka_flags = [false; 3];
+    for &t in obs.observer_hand {
+        match t {
+            16 => aka_flags[0] = true,
+            52 => aka_flags[1] = true,
+            88 => aka_flags[2] = true,
+            _ => {}
+        }
+    }
 
     DoraInfo {
         indicators,
