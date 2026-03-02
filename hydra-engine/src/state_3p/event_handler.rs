@@ -281,7 +281,7 @@ impl GameState3PEventHandler for GameState3P {
                 self.players[s].nagashi_eligible &= crate::types::is_terminal_tile(t);
                 self.current_player = (s as u8 + 1) % np;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![self.current_player];
+                self.set_single_active_player(self.current_player);
                 self.needs_tsumo = true;
                 self.is_first_turn = false;
                 self.is_after_kan = false;
@@ -296,7 +296,7 @@ impl GameState3PEventHandler for GameState3P {
                 self.drawn_tile = Some(*tile);
                 self.current_player = *seat as u8;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![self.current_player];
+                self.set_single_active_player(self.current_player);
                 self.is_rinshan_flag = self.is_after_kan && *seat == self.current_player as usize;
                 self.needs_tsumo = false;
                 self.is_after_kan = false;
@@ -382,7 +382,7 @@ impl GameState3PEventHandler for GameState3P {
 
                 self.current_player = *seat as u8;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![self.current_player];
+                self.set_single_active_player(self.current_player);
                 let is_gang = *meld_type == MeldType::Daiminkan;
                 self.needs_tsumo = is_gang;
                 self.is_first_turn = false;
@@ -438,7 +438,7 @@ impl GameState3PEventHandler for GameState3P {
                 self.players[*seat].hand.sort();
                 self.current_player = *seat as u8;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![self.current_player];
+                self.set_single_active_player(self.current_player);
                 self.needs_tsumo = true;
                 self.is_first_turn = false;
                 self.is_after_kan = true;
@@ -471,7 +471,7 @@ impl GameState3PEventHandler for GameState3P {
                 self.players[*seat].hand.sort();
                 self.current_player = *seat as u8;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![self.current_player];
+                self.set_single_active_player(self.current_player);
                 self.needs_tsumo = true;
                 self.is_first_turn = false;
             }

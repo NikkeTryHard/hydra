@@ -137,9 +137,9 @@ impl GameRunner {
                 self.actions[pid as usize] = Some(chosen);
             }
             Phase::WaitResponse => {
-                let n = self.state.active_players.len().min(4);
+                let n = self.state.active_player_count as usize;
                 let mut pids = [0u8; 4];
-                pids[..n].copy_from_slice(&self.state.active_players[..n]);
+                pids[..n].copy_from_slice(self.state.active_player_slice());
                 for &pid in &pids[..n] {
                     self.state.get_legal_actions_into(pid, &mut self.legal_buf);
                     if self.legal_buf.is_empty() { continue; }

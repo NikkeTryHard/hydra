@@ -35,7 +35,9 @@ fn play_game_with_mjai_log(seed: u64) -> (GameState, [i32; 4]) {
                 actions.insert(state.current_player, legal[0]);
             }
             Phase::WaitResponse => {
-                for &pid in &state.active_players.clone() {
+                let ap = state.active_players;
+                let n = state.active_player_count as usize;
+                for &pid in &ap[..n] {
                     let obs = state.get_observation(pid);
                     let legal = obs.legal_actions_method();
                     if legal.is_empty() {
@@ -124,7 +126,9 @@ fn play_game_fast(seed: u64) -> [i32; 4] {
                 actions.insert(state.current_player, legal[0]);
             }
             Phase::WaitResponse => {
-                for &pid in &state.active_players.clone() {
+                let ap = state.active_players;
+                let n = state.active_player_count as usize;
+                for &pid in &ap[..n] {
                     let obs = state.get_observation(pid);
                     let legal = obs.legal_actions_method();
                     if legal.is_empty() { continue; }

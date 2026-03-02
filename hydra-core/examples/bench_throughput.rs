@@ -42,7 +42,9 @@ fn simulate_game_random(seed: u64) -> (u32, [i32; 4]) {
             }
             Phase::WaitResponse => {
                 // All active players respond (chi/pon/ron/pass)
-                for &pid in &state.active_players.clone() {
+                let ap = state.active_players;
+                let n = state.active_player_count as usize;
+                for &pid in &ap[..n] {
                     let obs = state.get_observation(pid);
                     let legal = obs.legal_actions_method();
                     if legal.is_empty() {

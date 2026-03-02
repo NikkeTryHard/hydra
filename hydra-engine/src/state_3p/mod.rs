@@ -40,7 +40,8 @@ pub struct GameState3P {
 
     pub riichi_sticks: u32,
     pub phase: Phase,
-    pub active_players: Vec<u8>,
+    pub active_players: [u8; 4],
+    pub active_player_count: u8,
     pub last_discard: Option<(u8, u8)>,
     pub current_claims: HashMap<u8, Vec<Action>>,
     pub pending_kan: Option<(u8, Action)>,
@@ -80,6 +81,40 @@ impl GameState3P {
         NP
     }
 
+    /// Returns the currently active players as a slice.
+    #[inline]
+    pub fn active_player_slice(&self) -> &[u8] {
+        &self.active_players[..self.active_player_count as usize]
+    }
+
+    /// Appends a player to the active players list.
+    #[allow(dead_code)]
+    #[inline]
+    fn push_active_player(&mut self, pid: u8) {
+        self.active_players[self.active_player_count as usize] = pid;
+        self.active_player_count += 1;
+    }
+
+    /// Clears the active players list.
+    #[inline]
+    fn clear_active_players(&mut self) {
+        self.active_player_count = 0;
+    }
+
+    /// Sets active players to a single player.
+    #[inline]
+    fn set_single_active_player(&mut self, pid: u8) {
+        self.active_players[0] = pid;
+        self.active_player_count = 1;
+    }
+
+    /// Sets active players from a slice.
+    #[inline]
+    fn set_active_players_from_slice(&mut self, pids: &[u8]) {
+        self.active_players[..pids.len()].copy_from_slice(pids);
+        self.active_player_count = pids.len() as u8;
+    }
+
     pub fn new(
         game_mode: u8,
         skip_mjai_logging: bool,
@@ -104,7 +139,8 @@ impl GameState3P {
             pending_is_draw: false,
             riichi_sticks: 0,
             phase: Phase::WaitAct,
-            active_players: Vec::new(),
+            active_players: [0; 4],
+            active_player_count: 0,
             last_discard: None,
             current_claims: HashMap::new(),
             pending_kan: None,
@@ -155,6 +191,17 @@ impl GameState3P {
         }
     }
 
+    /// Resets the game state for a new game, reusing configuration.
+    ///
+    /// Uses `*self = Self::new(...)` for correctness -- can't miss a field.
+    /// The allocation cost (~2.5us) is negligible compared to a full game.
+    pub fn reset_for_new_game(&mut self, new_seed: Option<u64>) {
+        let rule = self.rule;
+        let game_mode = self.game_mode;
+        let skip_logging = self.skip_mjai_logging;
+        *self = Self::new(game_mode, skip_logging, new_seed, 0, rule);
+    }
+
     pub fn get_observation(&mut self, player_id: u8) -> Observation3P {
         let pid = player_id as usize;
 
@@ -169,7 +216,7 @@ impl GameState3P {
         let legal_actions = if self.is_done {
             Vec::new()
         } else if (self.phase == Phase::WaitAct && self.current_player == player_id)
-            || (self.phase == Phase::WaitResponse && self.active_players.contains(&player_id))
+            || (self.phase == Phase::WaitResponse && self.active_player_slice().contains(&player_id))
         {
             self._get_legal_actions_internal(player_id)
         } else {
@@ -227,14 +274,15 @@ impl GameState3P {
         log_action_str: &str,
     ) -> RiichiResult<Observation3P> {
         let original_phase = self.phase;
-        let original_active_players = self.active_players.clone();
+        let original_active_players = self.active_players;
+        let original_active_player_count = self.active_player_count;
         let original_claims = self.current_claims.clone();
         let original_riichi = self.players[pid as usize].riichi_declared;
 
         match env_action.action_type {
             ActionType::Ron | ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
                 self.phase = Phase::WaitResponse;
-                self.active_players = vec![pid];
+                self.set_single_active_player(pid);
                 self.current_claims
                     .entry(pid)
                     .or_default()
@@ -271,6 +319,7 @@ impl GameState3P {
 
         self.phase = original_phase;
         self.active_players = original_active_players;
+        self.active_player_count = original_active_player_count;
         self.current_claims = original_claims;
 
         if !exists {
@@ -397,7 +446,7 @@ impl GameState3P {
                     }
                     ActionType::Riichi => {
                         if self.players[pid as usize].score >= 1000
-                            && self.wall.tiles.len() > 14
+                            && self.wall.remaining() > 14
                             && !self.players[pid as usize].riichi_declared
                         {
                             self.players[pid as usize].riichi_stage = true;
@@ -478,7 +527,7 @@ impl GameState3P {
                         if !chankan_ronners.is_empty() {
                             self.pending_kan = Some((pid, *act));
                             self.phase = Phase::WaitResponse;
-                            self.active_players = chankan_ronners;
+                            self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile));
                         } else {
                             self._resolve_kan(pid, *act);
@@ -588,7 +637,7 @@ impl GameState3P {
                         if !chankan_ronners.is_empty() {
                             self.pending_kan = Some((pid, *act));
                             self.phase = Phase::WaitResponse;
-                            self.active_players = chankan_ronners;
+                            self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile));
                         } else {
                             self._resolve_kan(pid, *act);
@@ -603,7 +652,7 @@ impl GameState3P {
                             riichi: self.players[pid as usize].riichi_declared,
                             double_riichi: self.players[pid as usize].double_riichi_declared,
                             ippatsu: self.players[pid as usize].ippatsu_cycle,
-                            haitei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                            haitei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
                                 && self.players.iter().all(|p| p.melds.is_empty()),
@@ -836,7 +885,7 @@ impl GameState3P {
             let mut ron_claims = Vec::new();
             let mut call_claim: Option<(u8, Action)> = None;
 
-            for &pid in &self.active_players {
+            for &pid in self.active_player_slice() {
                 if let Some(act) = actions.get(&pid) {
                     if act.action_type == ActionType::Ron {
                         ron_claims.push(pid);
@@ -894,7 +943,7 @@ impl GameState3P {
                         double_riichi: self.players[w_pid as usize].double_riichi_declared,
                         ippatsu: self.players[w_pid as usize].ippatsu_cycle,
                         haitei: false,
-                        houtei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                        houtei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                         rinshan: false,
                         chankan: is_chankan,
                         tsumo_first_turn: false,
@@ -1067,7 +1116,7 @@ impl GameState3P {
 
                 if action.action_type == ActionType::Daiminkan {
                     self.current_player = claimer;
-                    self.active_players = vec![claimer];
+                    self.set_single_active_player(claimer);
                     self.players[claimer as usize].forbidden_discards.clear();
                     self._resolve_kan(claimer, action);
                     return;
@@ -1158,7 +1207,7 @@ impl GameState3P {
 
                 self.current_player = claimer;
                 self.phase = Phase::WaitAct;
-                self.active_players = vec![claimer];
+                self.set_single_active_player(claimer);
                 self.players[claimer as usize].forbidden_discards.clear();
 
                 if action.action_type == ActionType::Pon {
@@ -1174,7 +1223,7 @@ impl GameState3P {
             } else {
                 // All Pass
                 self.current_claims.clear();
-                self.active_players.clear();
+                self.clear_active_players();
 
                 if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
                     if pk_act.action_type == ActionType::Kita {
@@ -1271,7 +1320,7 @@ impl GameState3P {
         self.players[pid as usize].nagashi_eligible &= crate::types::is_terminal_tile(tile);
 
         self.current_claims.clear();
-        self.active_players.clear();
+        self.clear_active_players();
         let mut has_claims = false;
         let mut claim_active = Vec::new();
 
@@ -1292,7 +1341,7 @@ impl GameState3P {
 
         if has_claims {
             self.phase = Phase::WaitResponse;
-            self.active_players = claim_active;
+            self.set_active_players_from_slice(&claim_active);
         } else {
             if let Some(_rp) = self.riichi_pending_acceptance {
                 self._accept_riichi();
@@ -1372,8 +1421,8 @@ impl GameState3P {
             p.ippatsu_cycle = false;
         }
 
-        if self.wall.tiles.len() > 14 {
-            let t = self.wall.tiles.remove(0);
+        if self.wall.remaining() > 14 {
+            let t = self.wall.draw_rinshan();
             self.players[p_idx].hand.push(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
@@ -1434,7 +1483,7 @@ impl GameState3P {
                 self._push_mjai_event(Value::Object(t_ev));
             }
             self.phase = Phase::WaitAct;
-            self.active_players = vec![pid];
+            self.set_single_active_player(pid);
         }
     }
 
@@ -1460,7 +1509,7 @@ impl GameState3P {
 
     pub fn _deal_next(&mut self) {
         self.is_rinshan_flag = false;
-        if self.wall.tiles.len() <= 14 {
+        if self.wall.remaining() <= 14 {
             self._trigger_ryukyoku("exhaustive_draw");
             return;
         }
@@ -1470,7 +1519,7 @@ impl GameState3P {
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
             self.phase = Phase::WaitAct;
-            self.active_players = vec![pid];
+            self.set_single_active_player(pid);
 
             if !self.skip_mjai_logging {
                 let mut ev = serde_json::Map::new();
@@ -1671,7 +1720,7 @@ impl GameState3P {
 
         self.current_player = self.oya;
         self.phase = Phase::WaitAct;
-        self.active_players = vec![self.oya];
+        self.set_single_active_player(self.oya);
 
         if let Some(t) = self.wall.tiles.pop() {
             self.players[self.oya as usize].hand.push(t);

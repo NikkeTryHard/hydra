@@ -256,7 +256,8 @@ mod unit_tests {
         // Setup P3 (Kamicha of P0)
         state.current_player = 3;
         state.phase = Phase::WaitAct;
-        state.active_players = vec![3];
+        state.active_players = [3, 0, 0, 0];
+        state.active_player_count = 1;
         state.players[3].hand.push(8); // Give 3m
 
         // Action: P3 discards 3m
@@ -556,7 +557,8 @@ mod unit_tests {
         state.players[pid_us].forbidden_discards.clear();
         state.drawn_tile = Some(88);
         state.phase = Phase::WaitAct;
-        state.active_players = vec![pid];
+        state.active_players = [pid, 0, 0, 0];
+        state.active_player_count = 1;
 
         // Step 1: リーチ宣言 (tile=None)
         let mut actions = HashMap::new();
@@ -574,7 +576,7 @@ mod unit_tests {
         // 他家にクレームがある場合は WaitResponse → 全員パス
         if state.phase == Phase::WaitResponse {
             let mut pass_actions = HashMap::new();
-            for &ap in &state.active_players.clone() {
+            for &ap in state.active_player_slice() {
                 pass_actions.insert(ap, Action::new(ActionType::Pass, None, &[], None));
             }
             state.step(&pass_actions);
@@ -726,7 +728,8 @@ mod unit_tests {
         state.current_player = 0;
         state.drawn_tile = Some(state.players[0].hand[0]);
         state.phase = Phase::WaitAct;
-        state.active_players = vec![0];
+        state.active_players = [0, 0, 0, 0];
+        state.active_player_count = 1;
         state.needs_tsumo = false;
 
         let discard_tile = state.players[0].hand[0];
@@ -765,7 +768,8 @@ mod unit_tests {
         state.drawn_tile = Some(120);
         state.current_player = 0;
         state.phase = Phase::WaitAct;
-        state.active_players = vec![0];
+        state.active_players = [0, 0, 0, 0];
+        state.active_player_count = 1;
         state.needs_tsumo = false;
 
         let legal = state._get_legal_actions_internal(0);
@@ -1032,7 +1036,8 @@ mod unit_tests {
         state.drawn_tile = Some(state.players[0].hand[0]);
         state.current_player = 0;
         state.phase = Phase::WaitAct;
-        state.active_players = vec![0];
+        state.active_players = [0, 0, 0, 0];
+        state.active_player_count = 1;
         state.needs_tsumo = false;
 
         let obs = state.get_observation(0);
