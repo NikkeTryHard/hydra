@@ -43,7 +43,7 @@ pub struct GameState3P {
     pub active_players: [u8; 4],
     pub active_player_count: u8,
     pub last_discard: Option<(u8, u8)>,
-    pub current_claims: [[Action; 16]; NP],
+    pub current_claims: [[Action; 54]; NP],
     pub current_claim_counts: [u8; NP],
     pub pending_kan: Option<(u8, Action)>,
 
@@ -125,7 +125,7 @@ impl GameState3P {
     /// Sets claims for a player from a Vec.
     #[inline]
     fn set_claims_from_vec(&mut self, pid: usize, legals: &[Action]) {
-        let count = legals.len().min(16);
+        let count = legals.len().min(54);
         self.current_claims[pid][..count].copy_from_slice(&legals[..count]);
         self.current_claim_counts[pid] = count as u8;
     }
@@ -171,7 +171,7 @@ impl GameState3P {
             active_players: [0; 4],
             active_player_count: 0,
             last_discard: None,
-            current_claims: [[Action::default(); 16]; NP],
+            current_claims: [[Action::default(); 54]; NP],
             current_claim_counts: [0; NP],
             pending_kan: None,
             oya: 0,
