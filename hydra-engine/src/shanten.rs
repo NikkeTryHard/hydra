@@ -183,6 +183,7 @@ pub fn hash_zipai(tiles: &[u8]) -> usize {
     h
 }
 
+#[inline]
 pub fn calc_normal(tiles: &[u8; TILE_MAX], len_div3: u8) -> i8 {
     let m = len_div3 as usize;
     let k0_m = SHUPAI_KEYS[hash_shupai(&tiles[0..9])] as usize;
@@ -195,6 +196,7 @@ pub fn calc_normal(tiles: &[u8; TILE_MAX], len_div3: u8) -> i8 {
     (replacement as i8) - 1
 }
 
+#[inline]
 pub fn calc_chitoi(tiles: &[u8; TILE_MAX]) -> i8 {
     let mut pairs = 0u8;
     let mut kinds = 0u8;
@@ -210,6 +212,7 @@ pub fn calc_chitoi(tiles: &[u8; TILE_MAX]) -> i8 {
     7 - pairs as i8 + redunct - 1
 }
 
+#[inline]
 pub fn calc_kokushi(tiles: &[u8; TILE_MAX]) -> i8 {
     const TERMINALS: [usize; 13] = [0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33];
     let mut kinds = 0i8;
@@ -225,6 +228,7 @@ pub fn calc_kokushi(tiles: &[u8; TILE_MAX]) -> i8 {
     14 - kinds - has_pair as i8 - 1
 }
 
+#[inline]
 pub fn calc_shanten_from_counts(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -> i8 {
     let mut shanten = calc_normal(tehai, tehai_len_div3);
     if shanten <= 0 || tehai_len_div3 < 4 {

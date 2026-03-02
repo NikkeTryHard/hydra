@@ -74,6 +74,7 @@ impl HandEvaluator {
         }
     }
 
+    #[inline]
     pub fn calc(
         &self,
         win_tile: u8,
@@ -175,6 +176,7 @@ impl HandEvaluator {
         }
     }
 
+    #[inline]
     pub fn is_tenpai(&self) -> bool {
         let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.melds.len() as u8 * 3);
         if current_total != 13 {
@@ -193,6 +195,7 @@ impl HandEvaluator {
         false
     }
 
+    #[inline]
     pub fn get_waits_u8(&self) -> Vec<u8> {
         let mut waits = Vec::new();
         let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.melds.len() as u8 * 3);
