@@ -4,7 +4,6 @@
 //! WaitAct/WaitResponse handling, SafetyInfo updates, and
 //! policy-driven action selection.
 
-use std::collections::HashMap;
 
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::rule::GameRule;
@@ -37,7 +36,7 @@ pub struct GameRunner {
     safety: [SafetyInfo; 4],
     total_actions: u32,
     rounds_played: u32,
-    actions: HashMap<u8, Action>,
+    actions: [Option<Action>; 4],
 }
 impl GameRunner {
     /// Create a new game runner.
@@ -49,7 +48,7 @@ impl GameRunner {
             safety: std::array::from_fn(|_| SafetyInfo::new()),
             total_actions: 0,
             rounds_played: 1,
-            actions: HashMap::with_capacity(4),
+            actions: [None; 4],
         }
     }
 
@@ -72,7 +71,7 @@ impl GameRunner {
             safety: std::array::from_fn(|_| SafetyInfo::new()),
             total_actions: 0,
             rounds_played: 1,
-            actions: HashMap::with_capacity(4),
+            actions: [None; 4],
         }
     }
 
@@ -114,7 +113,7 @@ impl GameRunner {
 
         // Handle round transitions
         if self.state.needs_initialize_next_round {
-            self.state.step_unchecked(&HashMap::new());
+            self.state.step_unchecked(&[None; 4]);
             self.rounds_played += 1;
             // Reset safety for new round
             for s in &mut self.safety {
@@ -123,7 +122,7 @@ impl GameRunner {
             return !self.state.is_done;
         }
 
-        self.actions.clear();
+        self.actions = [None; 4];
 
         match self.state.phase {
             Phase::WaitAct => {
@@ -132,7 +131,7 @@ impl GameRunner {
                 if legal.is_empty() { return false; }
                 let chosen = selector.select_action(pid, &legal);
                 self.track_action(pid, &chosen);
-                self.actions.insert(pid, chosen);
+                self.actions[pid as usize] = Some(chosen);
             }
             Phase::WaitResponse => {
                 let n = self.state.active_players.len().min(4);
@@ -143,7 +142,7 @@ impl GameRunner {
                     if legal.is_empty() { continue; }
                     let chosen = selector.select_action(pid, &legal);
                     self.track_action(pid, &chosen);
-                    self.actions.insert(pid, chosen);
+                    self.actions[pid as usize] = Some(chosen);
                 }
             }
         }
