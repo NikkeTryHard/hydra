@@ -15,7 +15,7 @@ This is a workspace-internal crate. It isn't published to crates.io.
 - Vendored from `riichienv-core` v0.3.4 by [smly](https://github.com/smly) (Apache-2.0).
 - Correctness verified upstream against 1M+ hanchan using Mortal as a black-box MJAI player, zero errors ([source](https://github.com/smly/RiichiEnv)).
 - The lib name stays `riichienv_core` for backward compatibility with `hydra-core` imports.
-- Original license preserved (Apache-2.0). Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) are MIT-licensed.
+- Original license preserved (Apache-2.0). Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) are BSL-1.1-licensed (same as `hydra-core`).
 
 ## Hydra Modifications
 
@@ -90,4 +90,4 @@ Cross-engine comparison (single-threaded, first-action agent unless noted):
 ## License
 
 Apache-2.0 (original `riichienv-core` license). See the LICENSE file.
-Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) are MIT-licensed.
+Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) are BSL-1.1-licensed (same as `hydra-core`).

@@ -1,12 +1,12 @@
 # Hydra
 
-Open-source Riichi Mahjong AI. The goal is to build an AI that rivals [LuckyJ](https://haobofu.github.io/) (Tencent AI Lab, 10.68 stable dan on Tenhou) with open weights — no restrictive licensing, no closed models.
+Open-source Riichi Mahjong AI. The goal is to build an AI that rivals [LuckyJ](https://haobofu.github.io/) (Tencent AI Lab, 10.68 stable dan on Tenhou) with open weights.
 
 ## Goal
 
 Train a mahjong AI that:
 - Surpasses [Mortal](https://github.com/Equim-chan/Mortal) (~7-dan) and approaches LuckyJ-level play (10+ dan) in head-to-head evaluation
-- Releases weights under a permissive license (MIT)
+- Releases weights under a permissive license
 - Adds opponent modeling and inference-time search — the two capabilities that separate LuckyJ from all other mahjong AIs
 
 ## Architecture
@@ -48,4 +48,5 @@ Research phase — documentation and architecture specification complete. Implem
 
 ## License
 
-MIT
+- **hydra-core** (encoder, training pipeline): [BSL 1.1](hydra-core/LICENSE) -- free for non-commercial use, converts to Apache-2.0 on 2031-03-02
+- **hydra-engine** (game rules): Apache-2.0 (vendored from riichienv-core)
