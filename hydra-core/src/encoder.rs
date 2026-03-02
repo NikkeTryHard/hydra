@@ -13,7 +13,7 @@
 //! - 40..42: aka dora flags (per suit plane)
 //! - 43..61: game metadata (riichi, scores, gaps, shanten, round, honba, kyotaku)
 //! - 62..84: safety channels (genbutsu, suji, kabe, one-chance, tenpai)
-use crate::safety::{SafetyInfo, bit_test};
+use crate::safety::SafetyInfo;
 use crate::tile::NUM_TILE_TYPES;
 
 // ---------------------------------------------------------------------------
@@ -596,6 +596,19 @@ impl ObservationEncoder {
 /// Number of opponents for safety channels.
 const NUM_OPPS: usize = crate::safety::NUM_OPPONENTS; // 3
 
+/// Iterate over set bits in a `u64` bitmask using trailing-zeros extraction.
+///
+/// More efficient than scanning all 34 positions when the mask is sparse
+/// (typically 5-10 bits set).
+#[inline]
+fn for_each_set_bit(mut bits: u64, mut f: impl FnMut(usize)) {
+    while bits != 0 {
+        let idx = bits.trailing_zeros() as usize;
+        f(idx);
+        bits &= bits - 1; // clear lowest set bit
+    }
+}
+
 impl ObservationEncoder {
     /// Encode safety info into channels 62-84 (23 channels total).
     ///
@@ -611,30 +624,28 @@ impl ObservationEncoder {
     #[inline]
     pub fn encode_safety(&mut self, safety: &SafetyInfo) {
         for opp in 0..NUM_OPPS {
+            for_each_set_bit(safety.genbutsu_all[opp], |tile| {
+                self.set(CH_SAFETY + opp, tile, 1.0);
+            });
+            for_each_set_bit(safety.genbutsu_tedashi[opp], |tile| {
+                self.set(CH_SAFETY + NUM_OPPS + opp, tile, 1.0);
+            });
+            for_each_set_bit(safety.genbutsu_riichi_era[opp], |tile| {
+                self.set(CH_SAFETY + 2 * NUM_OPPS + opp, tile, 1.0);
+            });
             for tile in 0..NUM_TILES {
-                if bit_test(safety.genbutsu_all[opp], tile) {
-                    self.set(CH_SAFETY + opp, tile, 1.0);
-                }
-                if bit_test(safety.genbutsu_tedashi[opp], tile) {
-                    self.set(CH_SAFETY + NUM_OPPS + opp, tile, 1.0);
-                }
-                if bit_test(safety.genbutsu_riichi_era[opp], tile) {
-                    self.set(CH_SAFETY + 2 * NUM_OPPS + opp, tile, 1.0);
-                }
                 let suji = safety.suji[opp][tile];
                 if suji > 0.0 {
                     self.set(CH_SAFETY + 3 * NUM_OPPS + opp, tile, suji);
                 }
             }
         }
-        for tile in 0..NUM_TILES {
-            if bit_test(safety.kabe, tile) {
-                self.set(CH_SAFETY + 18, tile, 1.0);
-            }
-            if bit_test(safety.one_chance, tile) {
-                self.set(CH_SAFETY + 19, tile, 1.0);
-            }
-        }
+        for_each_set_bit(safety.kabe, |tile| {
+            self.set(CH_SAFETY + 18, tile, 1.0);
+        });
+        for_each_set_bit(safety.one_chance, |tile| {
+            self.set(CH_SAFETY + 19, tile, 1.0);
+        });
     }
 }
 
