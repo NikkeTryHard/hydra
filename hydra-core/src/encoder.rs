@@ -47,7 +47,6 @@ const CH_SAFETY: usize = 62; // 62..84 (23 channels)
 /// Number of players at the table.
 const NUM_PLAYERS: usize = 4;
 
-
 // ---------------------------------------------------------------------------
 // ObservationEncoder
 // ---------------------------------------------------------------------------
@@ -66,6 +65,7 @@ pub struct ObservationEncoder {
 
 impl ObservationEncoder {
     /// Create a new encoder with a zeroed buffer.
+    #[inline]
     pub fn new() -> Self {
         Self {
             buffer: [0.0; OBS_SIZE],
@@ -73,6 +73,7 @@ impl ObservationEncoder {
     }
 
     /// Zero the entire buffer.
+    #[inline]
     pub fn clear(&mut self) {
         self.buffer.fill(0.0);
     }
@@ -86,6 +87,7 @@ impl ObservationEncoder {
     }
 
     /// Read-only view of the flat observation buffer.
+    #[inline]
     pub fn as_slice(&self) -> &[f32; OBS_SIZE] {
         &self.buffer
     }
@@ -122,12 +124,14 @@ impl ObservationEncoder {
     /// - Ch 1: count >= 2
     /// - Ch 2: count >= 3
     /// - Ch 3: count == 4
+    #[inline]
     pub fn encode_hand(&mut self, hand_counts: &[u8; NUM_TILES]) {
         for (tile, &count) in hand_counts.iter().enumerate() {
-            if count >= 1 { self.set(CH_HAND, tile, 1.0); }
-            if count >= 2 { self.set(CH_HAND + 1, tile, 1.0); }
-            if count >= 3 { self.set(CH_HAND + 2, tile, 1.0); }
-            if count == 4 { self.set(CH_HAND + 3, tile, 1.0); }
+            let vals = &THERMO[count as usize];
+            self.buffer[CH_HAND * NUM_TILES + tile] = vals[0];
+            self.buffer[(CH_HAND + 1) * NUM_TILES + tile] = vals[1];
+            self.buffer[(CH_HAND + 2) * NUM_TILES + tile] = vals[2];
+            self.buffer[(CH_HAND + 3) * NUM_TILES + tile] = vals[3];
         }
     }
 }
@@ -144,12 +148,14 @@ impl ObservationEncoder {
     /// - Ch 5: count >= 2
     /// - Ch 6: count >= 3
     /// - Ch 7: count == 4
+    #[inline]
     pub fn encode_open_meld_hand(&mut self, counts: &[u8; NUM_TILES]) {
         for (tile, &count) in counts.iter().enumerate() {
-            if count >= 1 { self.set(CH_OPEN_MELD, tile, 1.0); }
-            if count >= 2 { self.set(CH_OPEN_MELD + 1, tile, 1.0); }
-            if count >= 3 { self.set(CH_OPEN_MELD + 2, tile, 1.0); }
-            if count == 4 { self.set(CH_OPEN_MELD + 3, tile, 1.0); }
+            let vals = &THERMO[count as usize];
+            self.buffer[CH_OPEN_MELD * NUM_TILES + tile] = vals[0];
+            self.buffer[(CH_OPEN_MELD + 1) * NUM_TILES + tile] = vals[1];
+            self.buffer[(CH_OPEN_MELD + 2) * NUM_TILES + tile] = vals[2];
+            self.buffer[(CH_OPEN_MELD + 3) * NUM_TILES + tile] = vals[3];
         }
     }
 }
@@ -161,6 +167,7 @@ impl ObservationEncoder {
 impl ObservationEncoder {
     /// Encode the drawn tile as a one-hot on channel 8.
     /// `None` means no tile was drawn (e.g. first turn or after a call).
+    #[inline]
     pub fn encode_drawn_tile(&mut self, tile: Option<u8>) {
         if let Some(t) = tile {
             let idx = t as usize;
@@ -182,13 +189,16 @@ impl ObservationEncoder {
     /// - Ch 10 (next-shanten): 1.0 for tiles whose discard decreases shanten.
     ///
     /// `hand` is the full hand including drawn tile (typically 14 tiles).
+    #[inline]
     pub fn encode_shanten_masks(&mut self, hand: &[u8; NUM_TILES]) {
         let total: u8 = hand.iter().sum();
         let len_div3 = total / 3;
         let base = calc_shanten_from_counts(hand, len_div3);
         let mut tmp = *hand;
         for tile in 0..NUM_TILES {
-            if tmp[tile] == 0 { continue; }
+            if tmp[tile] == 0 {
+                continue;
+            }
             tmp[tile] -= 1;
             let after_len_div3 = (total - 1) / 3;
             let after = calc_shanten_from_counts(&tmp, after_len_div3);
@@ -229,8 +239,50 @@ pub struct PlayerDiscards {
 // Encoding: discards (channels 11-22)
 // ---------------------------------------------------------------------------
 
-/// Temporal decay factor for discard recency weighting.
-const DISCARD_DECAY: f32 = 0.2;
+/// Precomputed `exp(-DISCARD_DECAY * i)` for `i` in `0..=30`.
+/// DISCARD_DECAY is 0.2, so entry `i` = `exp(-0.2 * i)`.
+#[allow(clippy::excessive_precision)]
+const DISCARD_EXP_TABLE: [f32; 31] = [
+    1.0,           // exp(0.0)
+    0.818_730_8,   // exp(-0.2)
+    0.670_320_0,   // exp(-0.4)
+    0.548_811_6,   // exp(-0.6)
+    0.449_329_0,   // exp(-0.8)
+    0.367_879_5,   // exp(-1.0)
+    0.301_194_2,   // exp(-1.2)
+    0.246_597_0,   // exp(-1.4)
+    0.201_896_5,   // exp(-1.6)
+    0.165_298_9,   // exp(-1.8)
+    0.135_335_3,   // exp(-2.0)
+    0.110_803_2,   // exp(-2.2)
+    0.090_717_96,  // exp(-2.4)
+    0.074_273_58,  // exp(-2.6)
+    0.060_810_06,  // exp(-2.8)
+    0.049_787_07,  // exp(-3.0)
+    0.040_762_20,  // exp(-3.2)
+    0.033_373_27,  // exp(-3.4)
+    0.027_323_72,  // exp(-3.6)
+    0.022_370_77,  // exp(-3.8)
+    0.018_315_64,  // exp(-4.0)
+    0.014_995_58,  // exp(-4.2)
+    0.012_277_34,  // exp(-4.4)
+    0.010_051_84,  // exp(-4.6)
+    0.008_229_747, // exp(-4.8)
+    0.006_737_947, // exp(-5.0)
+    0.005_516_564, // exp(-5.2)
+    0.004_516_581, // exp(-5.4)
+    0.003_697_864, // exp(-5.6)
+    0.003_027_555, // exp(-5.8)
+    0.002_478_752, // exp(-6.0)
+];
+// Thermometer encoding table for 0..4 counts (per tile, 4 channels)
+const THERMO: [[f32; 4]; 5] = [
+    [0.0, 0.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0, 0.0],
+    [1.0, 1.0, 0.0, 0.0],
+    [1.0, 1.0, 1.0, 0.0],
+    [1.0, 1.0, 1.0, 1.0],
+];
 
 impl ObservationEncoder {
     /// Encode discard info for all 4 players into channels 11-22.
@@ -239,19 +291,22 @@ impl ObservationEncoder {
     /// - presence:  binary 1.0 if tile was discarded by this player
     /// - tedashi:   binary 1.0 if that discard was from hand (not tsumogiri)
     /// - temporal:  exp(-0.2 * (t_max - t_discard))
+    #[inline]
     pub fn encode_discards(&mut self, discards: &[PlayerDiscards; NUM_PLAYERS]) {
         for (p, pd) in discards.iter().enumerate() {
             let ch_base = CH_DISCARDS + 3 * p;
             let t_max = pd.discards.iter().map(|d| d.turn).max().unwrap_or(0);
             for d in &pd.discards {
                 let t = d.tile as usize;
-                if t >= NUM_TILES { continue; }
+                if t >= NUM_TILES {
+                    continue;
+                }
                 self.set(ch_base, t, 1.0);
                 if d.is_tedashi {
                     self.set(ch_base + 1, t, 1.0);
                 }
-                let dt = (t_max - d.turn) as f32;
-                let w = (-DISCARD_DECAY * dt).exp();
+                let dt = (t_max - d.turn).min(30) as usize;
+                let w = DISCARD_EXP_TABLE[dt];
                 let idx = (ch_base + 2) * NUM_TILES + t;
                 if w > self.buffer[idx] {
                     self.buffer[idx] = w;
@@ -296,6 +351,7 @@ impl ObservationEncoder {
     /// - chi tiles
     /// - pon tiles
     /// - kan tiles
+    #[inline]
     pub fn encode_melds(&mut self, melds: &[Vec<MeldInfo>; NUM_PLAYERS]) {
         for (p, player_melds) in melds.iter().enumerate() {
             let ch_base = CH_MELDS + 3 * p;
@@ -338,6 +394,7 @@ impl ObservationEncoder {
     /// - Ch 37: count >= 3
     /// - Ch 38: count >= 4
     /// - Ch 39: count >= 5
+    #[inline]
     pub fn encode_dora(&mut self, dora: &DoraInfo) {
         let mut counts = [0u8; NUM_TILES];
         for &ind in &dora.indicators {
@@ -347,11 +404,21 @@ impl ObservationEncoder {
             }
         }
         for (tile, &c) in counts.iter().enumerate() {
-            if c >= 1 { self.set(CH_DORA, tile, 1.0); }
-            if c >= 2 { self.set(CH_DORA + 1, tile, 1.0); }
-            if c >= 3 { self.set(CH_DORA + 2, tile, 1.0); }
-            if c >= 4 { self.set(CH_DORA + 3, tile, 1.0); }
-            if c >= 5 { self.set(CH_DORA + 4, tile, 1.0); }
+            if c >= 1 {
+                self.set(CH_DORA, tile, 1.0);
+            }
+            if c >= 2 {
+                self.set(CH_DORA + 1, tile, 1.0);
+            }
+            if c >= 3 {
+                self.set(CH_DORA + 2, tile, 1.0);
+            }
+            if c >= 4 {
+                self.set(CH_DORA + 3, tile, 1.0);
+            }
+            if c >= 5 {
+                self.set(CH_DORA + 4, tile, 1.0);
+            }
         }
     }
 
@@ -361,6 +428,7 @@ impl ObservationEncoder {
     /// - Ch 40: has red 5m
     /// - Ch 41: has red 5p
     /// - Ch 42: has red 5s
+    #[inline]
     pub fn encode_aka(&mut self, dora: &DoraInfo) {
         for (suit, &has_aka) in dora.aka_flags.iter().enumerate() {
             if has_aka {
@@ -407,10 +475,13 @@ impl ObservationEncoder {
     /// - Ch 59: round number (kyoku_index / 8.0)
     /// - Ch 60: honba / 10.0
     /// - Ch 61: kyotaku / 10.0
+    #[inline]
     pub fn encode_metadata(&mut self, meta: &GameMetadata) {
         // Riichi flags (ch 43-46)
         for (i, &r) in meta.riichi.iter().enumerate() {
-            if r { self.fill_channel(CH_META + i, 1.0); }
+            if r {
+                self.fill_channel(CH_META + i, 1.0);
+            }
         }
 
         // Scores normalized (ch 47-50)
@@ -459,6 +530,7 @@ impl ObservationEncoder {
     /// - Ch 80: kabe
     /// - Ch 81: one-chance
     /// - Ch 82-84: reserved tenpai hints (zeros)
+    #[inline]
     pub fn encode_safety(&mut self, safety: &SafetyInfo) {
         for opp in 0..NUM_OPPS {
             for tile in 0..NUM_TILES {
@@ -501,30 +573,38 @@ impl ObservationEncoder {
 pub struct DirtyFlags(pub u16);
 
 impl DirtyFlags {
-    pub const HAND: Self       = Self(1 << 0);  // Ch 0-3
-    pub const OPEN_MELD: Self  = Self(1 << 1);  // Ch 4-7
-    pub const DRAWN: Self      = Self(1 << 2);  // Ch 8
-    pub const SHANTEN: Self    = Self(1 << 3);  // Ch 9-10
-    pub const DISCARDS: Self   = Self(1 << 4);  // Ch 11-22
-    pub const MELDS: Self      = Self(1 << 5);  // Ch 23-34
-    pub const DORA: Self       = Self(1 << 6);  // Ch 35-42
-    pub const META: Self       = Self(1 << 7);  // Ch 43-61
-    pub const SAFETY: Self     = Self(1 << 8);  // Ch 62-84
-    pub const ALL: Self        = Self(0x1FF);
+    pub const HAND: Self = Self(1 << 0); // Ch 0-3
+    pub const OPEN_MELD: Self = Self(1 << 1); // Ch 4-7
+    pub const DRAWN: Self = Self(1 << 2); // Ch 8
+    pub const SHANTEN: Self = Self(1 << 3); // Ch 9-10
+    pub const DISCARDS: Self = Self(1 << 4); // Ch 11-22
+    pub const MELDS: Self = Self(1 << 5); // Ch 23-34
+    pub const DORA: Self = Self(1 << 6); // Ch 35-42
+    pub const META: Self = Self(1 << 7); // Ch 43-61
+    pub const SAFETY: Self = Self(1 << 8); // Ch 62-84
+    pub const ALL: Self = Self(0x1FF);
 
     /// After a draw: hand, drawn tile, shanten, metadata.
-    pub const AFTER_DRAW: Self = Self(
-        Self::HAND.0 | Self::DRAWN.0 | Self::SHANTEN.0 | Self::META.0
-    );
+    pub const AFTER_DRAW: Self =
+        Self(Self::HAND.0 | Self::DRAWN.0 | Self::SHANTEN.0 | Self::META.0);
     /// After a discard: hand, drawn, shanten, discards, metadata, safety.
     pub const AFTER_DISCARD: Self = Self(
-        Self::HAND.0 | Self::DRAWN.0 | Self::SHANTEN.0
-        | Self::DISCARDS.0 | Self::META.0 | Self::SAFETY.0
+        Self::HAND.0
+            | Self::DRAWN.0
+            | Self::SHANTEN.0
+            | Self::DISCARDS.0
+            | Self::META.0
+            | Self::SAFETY.0,
     );
     /// After a call: hand, open melds, shanten, discards, melds, meta, safety.
     pub const AFTER_CALL: Self = Self(
-        Self::HAND.0 | Self::OPEN_MELD.0 | Self::SHANTEN.0
-        | Self::DISCARDS.0 | Self::MELDS.0 | Self::META.0 | Self::SAFETY.0
+        Self::HAND.0
+            | Self::OPEN_MELD.0
+            | Self::SHANTEN.0
+            | Self::DISCARDS.0
+            | Self::MELDS.0
+            | Self::META.0
+            | Self::SAFETY.0,
     );
     /// New round: everything.
     pub const NEW_ROUND: Self = Self::ALL;
@@ -756,9 +836,11 @@ mod tests {
         let mut enc = ObservationEncoder::new();
         let mut hand = [0u8; NUM_TILES];
         hand[..9].fill(1); // 1-9m
-        hand[9] = 1; hand[10] = 1; hand[11] = 1; // 1-3p
+        hand[9] = 1;
+        hand[10] = 1;
+        hand[11] = 1; // 1-3p
         hand[18] = 2; // 1s pair
-        // 14 tiles, len_div3=4, shanten=-1
+                      // 14 tiles, len_div3=4, shanten=-1
         enc.encode_shanten_masks(&hand);
         // After discarding any tile, shanten goes from -1 to 0 (worsens).
         // So next-shanten (ch10) should have NO tiles set.
@@ -772,20 +854,29 @@ mod tests {
         // Simple iishanten hand: 1m,2m,3m, 4m,5m,6m, 7m,8m,9m, 1p,1p,1p, 2p, drawn 5s
         let mut enc = ObservationEncoder::new();
         let mut hand = [0u8; NUM_TILES];
-        hand[0] = 1; hand[1] = 1; hand[2] = 1; // 123m
-        hand[3] = 1; hand[4] = 1; hand[5] = 1; // 456m
-        hand[6] = 1; hand[7] = 1; hand[8] = 1; // 789m
+        hand[0] = 1;
+        hand[1] = 1;
+        hand[2] = 1; // 123m
+        hand[3] = 1;
+        hand[4] = 1;
+        hand[5] = 1; // 456m
+        hand[6] = 1;
+        hand[7] = 1;
+        hand[8] = 1; // 789m
         hand[9] = 3; // 1p x3
         hand[10] = 1; // 2p
         hand[22] = 1; // 5s (drawn tile)
-        // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
-        // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
-        // shanten = 0 (tenpai)
+                      // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
+                      // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
+                      // shanten = 0 (tenpai)
         enc.encode_shanten_masks(&hand);
         // Discarding 2p or 5s keeps tenpai (shanten stays 0), so ch9 should be set
         // The exact tiles depend on shanten calc, but at minimum some tiles on ch9
         let ch9_sum: f32 = (0..NUM_TILES).map(|t| get(&enc, 9, t)).sum();
-        assert!(ch9_sum > 0.0, "keep-shanten mask should have some tiles set");
+        assert!(
+            ch9_sum > 0.0,
+            "keep-shanten mask should have some tiles set"
+        );
     }
 
     // -- Discard tests (ch 11-22) --
@@ -803,8 +894,16 @@ mod tests {
     fn discard_presence_and_tedashi() {
         let mut enc = ObservationEncoder::new();
         let mut discards = empty_discards();
-        discards[0].discards.push(DiscardEntry { tile: 5, is_tedashi: true, turn: 0 });
-        discards[1].discards.push(DiscardEntry { tile: 10, is_tedashi: false, turn: 0 });
+        discards[0].discards.push(DiscardEntry {
+            tile: 5,
+            is_tedashi: true,
+            turn: 0,
+        });
+        discards[1].discards.push(DiscardEntry {
+            tile: 10,
+            is_tedashi: false,
+            turn: 0,
+        });
         enc.encode_discards(&discards);
         // Player 0: ch_base=11, presence=ch11, tedashi=ch12
         assert_eq!(get(&enc, 11, 5), 1.0);
@@ -818,8 +917,16 @@ mod tests {
     fn discard_temporal_decay() {
         let mut enc = ObservationEncoder::new();
         let mut discards = empty_discards();
-        discards[0].discards.push(DiscardEntry { tile: 0, is_tedashi: false, turn: 0 });
-        discards[0].discards.push(DiscardEntry { tile: 1, is_tedashi: false, turn: 5 });
+        discards[0].discards.push(DiscardEntry {
+            tile: 0,
+            is_tedashi: false,
+            turn: 0,
+        });
+        discards[0].discards.push(DiscardEntry {
+            tile: 1,
+            is_tedashi: false,
+            turn: 5,
+        });
         enc.encode_discards(&discards);
         // temporal ch = 11 + 2 = 13
         assert!((get(&enc, 13, 1) - 1.0).abs() < 1e-6);
@@ -1059,7 +1166,10 @@ mod tests {
         let open_meld = [0u8; NUM_TILES];
         let discards = empty_discards();
         let melds = empty_melds();
-        let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
+        let dora = DoraInfo {
+            indicators: vec![],
+            aka_flags: [false; 3],
+        };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
         let obs = enc.encode(
@@ -1076,44 +1186,81 @@ mod tests {
         let open_meld = [0u8; NUM_TILES];
         let discards = empty_discards();
         let melds = empty_melds();
-        let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
+        let dora = DoraInfo {
+            indicators: vec![],
+            aka_flags: [false; 3],
+        };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
-        enc.encode(&hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety);
+        enc.encode(
+            &hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety,
+        );
         assert_eq!(get(&enc, 2, 0), 1.0);
 
         let empty_hand = [0u8; NUM_TILES];
-        enc.encode(&empty_hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety);
+        enc.encode(
+            &empty_hand,
+            None,
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta,
+            &safety,
+        );
         assert_eq!(get(&enc, 2, 0), 0.0);
     }
 
     #[test]
     fn incremental_matches_full_encode() {
         let mut hand = [0u8; NUM_TILES];
-        hand[0] = 3; hand[9] = 2; hand[18] = 1;
+        hand[0] = 3;
+        hand[9] = 2;
+        hand[18] = 1;
         let open_meld = [0u8; NUM_TILES];
         let discards = empty_discards();
         let melds = empty_melds();
-        let dora = DoraInfo { indicators: vec![4], aka_flags: [true, false, false] };
+        let dora = DoraInfo {
+            indicators: vec![4],
+            aka_flags: [true, false, false],
+        };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
 
         // Full encode
         let mut full = ObservationEncoder::new();
-        full.encode(&hand, Some(18), &open_meld, &discards, &melds, &dora, &meta, &safety);
+        full.encode(
+            &hand,
+            Some(18),
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta,
+            &safety,
+        );
 
         // Incremental with ALL flags = same as full encode
         let mut inc = ObservationEncoder::new();
         inc.encode_incremental(
-            DirtyFlags::ALL, &hand, Some(18), &open_meld,
-            &discards, &melds, &dora, &meta, &safety,
+            DirtyFlags::ALL,
+            &hand,
+            Some(18),
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta,
+            &safety,
         );
 
         for i in 0..OBS_SIZE {
             assert!(
                 (full.as_slice()[i] - inc.as_slice()[i]).abs() < 1e-6,
                 "mismatch at index {}: full={}, inc={}",
-                i, full.as_slice()[i], inc.as_slice()[i],
+                i,
+                full.as_slice()[i],
+                inc.as_slice()[i],
             );
         }
     }
@@ -1124,21 +1271,33 @@ mod tests {
         let open_meld = [0u8; NUM_TILES];
         let discards = empty_discards();
         let melds = empty_melds();
-        let dora = DoraInfo { indicators: vec![], aka_flags: [false; 3] };
+        let dora = DoraInfo {
+            indicators: vec![],
+            aka_flags: [false; 3],
+        };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
 
         let mut enc = ObservationEncoder::new();
         // Full encode first to set baseline
-        enc.encode(&hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety);
+        enc.encode(
+            &hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety,
+        );
         let baseline = *enc.as_slice();
 
         // Incremental with only META dirty -- only ch 43-61 should change
         let mut meta2 = test_metadata();
         meta2.scores = [50000, 10000, 10000, 30000];
         enc.encode_incremental(
-            DirtyFlags::META, &hand, None, &open_meld,
-            &discards, &melds, &dora, &meta2, &safety,
+            DirtyFlags::META,
+            &hand,
+            None,
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta2,
+            &safety,
         );
 
         // Ch 0-42 should be unchanged
