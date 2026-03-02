@@ -64,6 +64,29 @@ Changes from upstream `riichienv-core`, all targeting training throughput:
 - **MPSZ notation**: `1m`-`9m` (man), `1p`-`9p` (pin), `1s`-`9s` (sou), `1z`-`7z` (honors).
 - Red fives (aka-dora) are at indices 16, 52, 88 in 136-format.
 
+## Benchmarks
+
+Measured on Intel Core Ultra 7 265KF, 20 cores, `RAYON_NUM_THREADS=4`.
+Trivial agent (first legal action), Criterion median. Full methodology
+in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARKS.md).
+
+| Benchmark | hydra-engine | riichienv-core 0.3.4 | Delta |
+|-----------|-------------|---------------------|-------|
+| Single game (1 core) | 417us | 627us | **1.50x faster** |
+| Batch 100 (4 cores, rayon) | 12.2ms (8,170/sec) | 73.8ms seq (1,355/sec) | **6.0x faster** |
+| Observation encode | 405ns | n/a | -- |
+
+Cross-engine comparison (single-threaded, first-action agent unless noted):
+
+| Engine | Language | Per-Game | Games/sec |
+|--------|----------|----------|-----------|
+| hydra-engine | Rust | 417us | 2,398 |
+| riichienv-core | Rust | 627us | 1,595 |
+| mahjax | JAX/Python | 873us | 1,145 |
+| Mjx | C++ | 17,498us | 57 |
+| Mjai | Ruby | 86,883us | 12 |
+
+
 ## License
 
 Apache-2.0 (original `riichienv-core` license). See the LICENSE file.
