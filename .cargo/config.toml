@@ -1,0 +1,5 @@
+# Enable native CPU features for benchmarks and training.
+# This unlocks AVX2, POPCNT, BMI2, etc. on modern x86-64 CPUs.
+# Note: binaries built with this are NOT portable to other machines.
+[target.'cfg(any(target_arch = "x86_64", target_arch = "x86"))']
+rustflags = ["-C", "target-cpu=native"]
