@@ -95,17 +95,16 @@ The `hydra-core` crate is organized as a flat module layout under `src/`:
 | File | Responsibility |
 |------|----------------|
 | `lib.rs` | Crate root and public API surface |
-| `tile.rs` | Tile representation using the 0–33 index scheme |
-| `hand.rs` | Hand management and meld tracking |
-| `wall.rs` | Wall, dead wall, and dora indicator logic |
-| `player.rs` | Player state and discard tracking |
-| `game.rs` | Game state machine (see state diagram below) |
-| `rules.rs` | Riichi rules validation and scoring |
-| `shanten.rs` | Wrapper around the `xiangting` crate for shanten calculation |
-| `encoder.rs` | Observation tensor encoder (85×34 output) |
-| `safety.rs` | Suji, kabe, and genbutsu safety calculations. Returns `SafetyInfo { genbutsu: [[bool; 34]; 3], suji: [[f32; 34]; 3], kabe: [f32; 34], one_chance: [f32; 34] }` mapping directly to observation channels 62–81. Updated incrementally on each discard/call/kan event. |
-| `mjai.rs` | MJAI protocol parser for log compatibility |
-| `simulator.rs` | Batch game simulation with rayon parallelism |
+| `tile.rs` | Tile representation (0-33 index), 136-format, aka-dora, suit permutation |
+| `action.rs` | 46-action space mapping (Mortal-compatible), bidirectional riichienv conversion |
+| `encoder.rs` | 85x34 observation tensor encoder with incremental dirty-flag updates |
+| `safety.rs` | Genbutsu, suji, kabe, one-chance safety calculations for channels 62-84 |
+| `bridge.rs` | Converts riichienv `Observation`/`ObservationRef` into encoder input types |
+| `game_loop.rs` | `GameRunner`, `ActionSelector` trait, phase handling, safety tracking |
+| `simulator.rs` | Batch game simulation with rayon parallelism and configurable thread pools |
+| `seeding.rs` | Deterministic RNG hierarchy: SHA-256 KDF, ChaCha8Rng, vendored Fisher-Yates |
+| `batch_encoder.rs` | Pre-allocated contiguous buffer for encoding N observations without per-obs allocation |
+| `shanten_batch.rs` | Batch shanten computation with hierarchical hash caching (base + all 34 discards) |
 
 ### MJAI Protocol
 
