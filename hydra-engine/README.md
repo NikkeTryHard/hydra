@@ -73,7 +73,8 @@ in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARKS.md).
 | Benchmark | hydra-engine | riichienv-core 0.3.4 | Delta |
 |-----------|-------------|---------------------|-------|
 | Single game (1 core) | 397us | 627us | **1.58x faster** |
-| Batch 100 (4 cores, rayon) | 3.9ms (25,641/sec) | 73.8ms seq (1,355/sec) | **18.9x faster** |
+| Batch 100 (1 core, seq) | 46.1ms (2,169/sec) | 73.8ms (1,355/sec) | **1.60x faster** |
+| Batch 100 (4 cores, rayon) | 3.9ms (25,641/sec) | n/a (no rayon) | -- |
 | Observation encode | 437ns | n/a | -- |
 
 Cross-engine comparison (single-threaded, first-action agent unless noted):

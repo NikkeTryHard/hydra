@@ -44,7 +44,8 @@ Six engines built, compiled, and benchmarked on the same machine.
 | Engine | Language | Per-Game Time | Games/sec | Cores | Notes |
 |--------|----------|--------------|-----------|-------|-------|
 | **hydra-engine** | Rust | 397us | 2,519 | 1 | Criterion, FirstActionSelector |
-| **hydra-engine** (batch) | Rust | 3.9ms / 100 games | 25,641 | 4 | rayon parallel |
+| **hydra-engine** (seq batch) | Rust | 46.1ms / 100 games | 2,169 | 1 | Sequential, RAYON_NUM_THREADS=1 |
+| **hydra-engine** (par batch) | Rust | 3.9ms / 100 games | 25,641 | 4 | rayon parallel |
 | **riichienv-core 0.3.4** | Rust | 627us | 1,595 | 1 | Criterion, same game loop |
 | **riichienv-core 0.3.4** (seq) | Rust | 73.8ms / 100 games | 1,355 | 1 | Sequential, no rayon |
 | **mahjax** | JAX/Python | 873us | 1,145 | 1 | CPU only, JIT compiled |
