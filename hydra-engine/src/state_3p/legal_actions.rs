@@ -217,8 +217,9 @@ impl GameState3PLegalActions for GameState3P {
             let kita_actions = self.get_kita_legal_actions(pid);
             legals.extend(kita_actions);
         } else if self.phase == Phase::WaitResponse {
-            if let Some(acts) = self.current_claims.get(&pid) {
-                legals.extend(acts.clone());
+            let claims = self.claims_slice(pid as usize);
+            if !claims.is_empty() {
+                legals.extend_from_slice(claims);
             }
             legals.push(Action::new(ActionType::Pass, None, &[], Some(pid)));
         }
@@ -295,24 +296,25 @@ impl GameState3PLegalActions for GameState3P {
             let count = hand.iter().filter(|&&t| t / 4 == tile / 4).count();
             if count >= 2 && hand.len() >= 3 {
                 let check_pon_kuikae = |consumes: &[u8]| -> bool {
-                    let mut forbidden_34 = Vec::new();
-                    if self.rule.kuikae_forbidden {
-                        forbidden_34.push(tile / 4);
-                    }
-                    let mut used_consumes = vec![false; consumes.len()];
+                    let forbidden_tile: Option<u8> = if self.rule.kuikae_forbidden {
+                        Some(tile / 4)
+                    } else {
+                        None
+                    };
+                    let (mut used_0, mut used_1) = (false, false);
                     for &t in hand.iter() {
                         let mut consumed_this = false;
-                        for (idx, &c) in consumes.iter().enumerate() {
-                            if !used_consumes[idx] && c == t {
-                                used_consumes[idx] = true;
-                                consumed_this = true;
-                                break;
-                            }
+                        if !used_0 && consumes[0] == t {
+                            used_0 = true;
+                            consumed_this = true;
+                        } else if !used_1 && consumes[1] == t {
+                            used_1 = true;
+                            consumed_this = true;
                         }
                         if consumed_this {
                             continue;
                         }
-                        if !forbidden_34.contains(&(t / 4)) {
+                        if forbidden_tile != Some(t / 4) {
                             return true;
                         }
                     }
@@ -322,17 +324,22 @@ impl GameState3PLegalActions for GameState3P {
                 // Generate all distinct pon consume pairs.
                 // When a player has 3 copies of a tile (e.g. red 5m + 5m + 5m),
                 // we need separate pon options with and without the red five.
-                let matching: Vec<u8> = hand
-                    .iter()
-                    .filter(|&&t| t / 4 == tile / 4)
-                    .cloned()
-                    .collect();
-                let mut seen_pairs: Vec<(u8, u8)> = Vec::new();
-                for a in 0..matching.len() {
-                    for b in (a + 1)..matching.len() {
+                let mut matching = [0u8; 3];
+                let mut matching_len = 0u8;
+                for &t in hand.iter() {
+                    if t / 4 == tile / 4 {
+                        matching[matching_len as usize] = t;
+                        matching_len += 1;
+                    }
+                }
+                let mut seen_pairs = [(0u8, 0u8); 3];
+                let mut seen_len = 0u8;
+                for a in 0..matching_len as usize {
+                    for b in (a + 1)..matching_len as usize {
                         let pair = (matching[a], matching[b]);
-                        if !seen_pairs.contains(&pair) {
-                            seen_pairs.push(pair);
+                        if !seen_pairs[..seen_len as usize].contains(&pair) {
+                            seen_pairs[seen_len as usize] = pair;
+                            seen_len += 1;
                             let consumes = [pair.0, pair.1];
                             if check_pon_kuikae(&consumes) {
                                 legals.push(Action::new(
@@ -347,12 +354,17 @@ impl GameState3PLegalActions for GameState3P {
                 }
             }
             if count >= 3 {
-                let consumes: Vec<u8> = hand
-                    .iter()
-                    .filter(|&&t| t / 4 == tile / 4)
-                    .take(3)
-                    .cloned()
-                    .collect();
+                let mut consumes = [0u8; 3];
+                let mut ci = 0usize;
+                for &t in hand.iter() {
+                    if t / 4 == tile / 4 {
+                        consumes[ci] = t;
+                        ci += 1;
+                        if ci == 3 {
+                            break;
+                        }
+                    }
+                }
                 legals.push(Action::new(
                     ActionType::Daiminkan,
                     Some(tile),
