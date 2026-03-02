@@ -276,7 +276,7 @@ mod tests {
         }
         let has_tedashi = (0..4).any(|p| {
             let s = runner.safety(p);
-            s.genbutsu_tedashi.iter().any(|opp| opp.iter().any(|&v| v))
+            s.genbutsu_tedashi.iter().any(|&bits| bits != 0)
         });
         assert!(has_tedashi, "at least one tedashi should be detected after 50 steps");
     }

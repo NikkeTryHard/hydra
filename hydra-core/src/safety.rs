@@ -9,18 +9,30 @@ pub const NUM_OPPONENTS: usize = 3;
 /// Number of tile types.
 const NUM_TILES: usize = 34;
 
+/// Set bit `idx` (0-33) in a u64 bitfield.
+#[inline]
+pub fn bit_set(field: &mut u64, idx: usize) {
+    *field |= 1u64 << idx;
+}
+
+/// Test bit `idx` (0-33) in a u64 bitfield.
+#[inline]
+pub fn bit_test(field: u64, idx: usize) -> bool {
+    (field >> idx) & 1 != 0
+}
+
 /// Safety information for the current player against all opponents.
 /// Updated incrementally as the game progresses.
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct SafetyInfo {
     /// Genbutsu (safe tiles): 3 sub-channels per opponent.
-    /// `genbutsu_all[opp][tile]` = true if tile is 100% safe against opponent.
-    pub genbutsu_all: [[bool; NUM_TILES]; NUM_OPPONENTS],
-    /// `genbutsu_tedashi[opp][tile]` = true if opponent discarded this tile from hand (not tsumogiri).
-    pub genbutsu_tedashi: [[bool; NUM_TILES]; NUM_OPPONENTS],
-    /// `genbutsu_riichi_era[opp][tile]` = true if tile was discarded after opponent's riichi.
-    pub genbutsu_riichi_era: [[bool; NUM_TILES]; NUM_OPPONENTS],
+    /// `bit_test(genbutsu_all[opp], tile)` = true if tile is 100% safe against opponent.
+    pub genbutsu_all: [u64; NUM_OPPONENTS],
+    /// `bit_test(genbutsu_tedashi[opp], tile)` = true if opponent discarded this tile from hand (not tsumogiri).
+    pub genbutsu_tedashi: [u64; NUM_OPPONENTS],
+    /// `bit_test(genbutsu_riichi_era[opp], tile)` = true if tile was discarded after opponent's riichi.
+    pub genbutsu_riichi_era: [u64; NUM_OPPONENTS],
 
     /// Suji (2-away inference): float 0.0-1.0 per tile.
     ///
@@ -28,10 +40,10 @@ pub struct SafetyInfo {
     pub suji: [[f32; NUM_TILES]; NUM_OPPONENTS],
 
     /// Kabe (wall block): all 4 copies visible.
-    pub kabe: [bool; NUM_TILES],
+    pub kabe: u64,
 
     /// One-chance: 3 copies visible, 1 remaining.
-    pub one_chance: [bool; NUM_TILES],
+    pub one_chance: u64,
 
     /// Visible tile counts (for kabe/one-chance calculation).
     pub visible_counts: [u8; NUM_TILES],
@@ -45,12 +57,12 @@ impl SafetyInfo {
     #[inline]
     pub fn new() -> Self {
         Self {
-            genbutsu_all: [[false; NUM_TILES]; NUM_OPPONENTS],
-            genbutsu_tedashi: [[false; NUM_TILES]; NUM_OPPONENTS],
-            genbutsu_riichi_era: [[false; NUM_TILES]; NUM_OPPONENTS],
+            genbutsu_all: [0; NUM_OPPONENTS],
+            genbutsu_tedashi: [0; NUM_OPPONENTS],
+            genbutsu_riichi_era: [0; NUM_OPPONENTS],
             suji: [[0.0; NUM_TILES]; NUM_OPPONENTS],
-            kabe: [false; NUM_TILES],
-            one_chance: [false; NUM_TILES],
+            kabe: 0,
+            one_chance: 0,
             visible_counts: [0; NUM_TILES],
             opponent_riichi: [false; NUM_OPPONENTS],
         }
@@ -83,12 +95,12 @@ impl SafetyInfo {
         }
 
         // Update genbutsu
-        self.genbutsu_all[opponent_idx][t] = true;
+        bit_set(&mut self.genbutsu_all[opponent_idx], t);
         if is_tedashi {
-            self.genbutsu_tedashi[opponent_idx][t] = true;
+            bit_set(&mut self.genbutsu_tedashi[opponent_idx], t);
         }
         if self.opponent_riichi[opponent_idx] {
-            self.genbutsu_riichi_era[opponent_idx][t] = true;
+            bit_set(&mut self.genbutsu_riichi_era[opponent_idx], t);
         }
 
         // Update visible counts and kabe/one-chance
@@ -132,8 +144,14 @@ impl SafetyInfo {
     /// Update kabe and one-chance flags based on visible tile counts.
     #[inline]
     fn update_kabe_one_chance(&mut self, tile: usize) {
-        self.kabe[tile] = self.visible_counts[tile] >= 4;
-        self.one_chance[tile] = self.visible_counts[tile] == 3;
+        if self.visible_counts[tile] >= 4 {
+            bit_set(&mut self.kabe, tile);
+        }
+        if self.visible_counts[tile] == 3 {
+            bit_set(&mut self.one_chance, tile);
+        } else {
+            self.one_chance &= !(1u64 << tile);
+        }
     }
 }
 
@@ -177,14 +195,14 @@ mod tests {
     fn new_safety_info_is_zeroed() {
         let si = SafetyInfo::new();
         for opp in 0..NUM_OPPONENTS {
-            assert!(si.genbutsu_all[opp].iter().all(|&v| !v));
-            assert!(si.genbutsu_tedashi[opp].iter().all(|&v| !v));
-            assert!(si.genbutsu_riichi_era[opp].iter().all(|&v| !v));
+            assert_eq!(si.genbutsu_all[opp], 0);
+            assert_eq!(si.genbutsu_tedashi[opp], 0);
+            assert_eq!(si.genbutsu_riichi_era[opp], 0);
             assert!(si.suji[opp].iter().all(|&v| v == 0.0));
             assert!(!si.opponent_riichi[opp]);
         }
-        assert!(si.kabe.iter().all(|&v| !v));
-        assert!(si.one_chance.iter().all(|&v| !v));
+        assert_eq!(si.kabe, 0);
+        assert_eq!(si.one_chance, 0);
         assert!(si.visible_counts.iter().all(|&v| v == 0));
     }
 
@@ -192,17 +210,17 @@ mod tests {
     fn on_discard_sets_genbutsu_all() {
         let mut si = SafetyInfo::new();
         si.on_discard(5, 0, false); // 6m tsumogiri by opponent 0
-        assert!(si.genbutsu_all[0][5]);
-        assert!(!si.genbutsu_tedashi[0][5]);
-        assert!(!si.genbutsu_all[1][5]); // other opponents unaffected
+        assert!(bit_test(si.genbutsu_all[0], 5));
+        assert!(!bit_test(si.genbutsu_tedashi[0], 5));
+        assert!(!bit_test(si.genbutsu_all[1], 5)); // other opponents unaffected
     }
 
     #[test]
     fn on_discard_tedashi_sets_both_flags() {
         let mut si = SafetyInfo::new();
         si.on_discard(10, 1, true); // 2p tedashi by opponent 1
-        assert!(si.genbutsu_all[1][10]);
-        assert!(si.genbutsu_tedashi[1][10]);
+        assert!(bit_test(si.genbutsu_all[1], 10));
+        assert!(bit_test(si.genbutsu_tedashi[1], 10));
     }
 
     #[test]
@@ -210,9 +228,9 @@ mod tests {
         let mut si = SafetyInfo::new();
         si.on_riichi(2);
         si.on_discard(0, 2, false); // 1m after opponent 2's riichi
-        assert!(si.genbutsu_riichi_era[2][0]);
+        assert!(bit_test(si.genbutsu_riichi_era[2], 0));
         // Before riichi, should not be set
-        assert!(!si.genbutsu_riichi_era[0][0]);
+        assert!(!bit_test(si.genbutsu_riichi_era[0], 0));
     }
 
     #[test]
@@ -240,11 +258,11 @@ mod tests {
         for _ in 0..3 {
             si.on_discard(15, 0, false); // discard 7p three times
         }
-        assert!(!si.kabe[15]);
-        assert!(si.one_chance[15]);
+        assert!(!bit_test(si.kabe, 15));
+        assert!(bit_test(si.one_chance, 15));
         si.on_discard(15, 1, false); // 4th copy
-        assert!(si.kabe[15]);
-        assert!(!si.one_chance[15]); // no longer one-chance at 4
+        assert!(bit_test(si.kabe, 15));
+        assert!(!bit_test(si.one_chance, 15)); // no longer one-chance at 4
     }
 
     #[test]
@@ -270,8 +288,8 @@ mod tests {
         si.on_riichi(1);
         si.on_dora_revealed(20);
         si.reset();
-        assert!(!si.genbutsu_all[0][5]);
-        assert!(!si.genbutsu_tedashi[0][5]);
+        assert!(!bit_test(si.genbutsu_all[0], 5));
+        assert!(!bit_test(si.genbutsu_tedashi[0], 5));
         assert!(!si.opponent_riichi[1]);
         assert_eq!(si.visible_counts[20], 0);
     }
