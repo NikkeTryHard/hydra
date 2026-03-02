@@ -25,11 +25,24 @@ use wall::WallState;
 
 const NP: usize = 4;
 
-/// Insert `tile` into a sorted hand, maintaining sort order.
+/// Insert `tile` into a sorted hand Vec, maintaining sort order.
 #[inline]
 fn sorted_insert(hand: &mut Vec<u8>, tile: u8) {
     let pos = hand.partition_point(|&t| t < tile);
     hand.insert(pos, tile);
+}
+
+/// Insert `tile` into a sorted fixed-size hand array, maintaining sort order.
+#[inline]
+fn sorted_insert_arr(arr: &mut [u8; 14], len: &mut u8, val: u8) {
+    let l = *len as usize;
+    debug_assert!(l < 14, "sorted_insert_arr: hand overflow (len={l}, val={val})");
+    let pos = arr[..l].partition_point(|&x| x < val);
+    for i in (pos..l).rev() {
+        arr[i + 1] = arr[i];
+    }
+    arr[pos] = val;
+    *len += 1;
 }
 
 #[cfg_attr(feature = "python", pyo3::pyclass)]
@@ -251,7 +264,7 @@ impl GameState {
 
         let masked_hands: [Vec<u8>; 4] = std::array::from_fn(|i| {
             if i == pid {
-                self.players[i].hand.clone()
+                self.players[i].hand_slice().to_vec()
             } else {
                 Vec::new()
             }
@@ -277,14 +290,14 @@ impl GameState {
         self.player_event_counts[pid] = full_log_len;
 
         let calc = crate::hand_evaluator::HandEvaluator::new(
-            &self.players[pid].hand,
-            &self.players[pid].melds,
+            self.players[pid].hand_slice(),
+            self.players[pid].melds_slice(),
         );
         let waits = calc.get_waits_u8();
         let is_tenpai = !waits.is_empty();
 
-        let melds: [Vec<Meld>; 4] = std::array::from_fn(|i| self.players[i].melds.clone());
-        let discards: [Vec<u8>; 4] = std::array::from_fn(|i| self.players[i].discards.clone());
+        let melds: [Vec<Meld>; 4] = std::array::from_fn(|i| self.players[i].melds_slice().to_vec());
+        let discards: [Vec<u8>; 4] = std::array::from_fn(|i| self.players[i].discards_slice().to_vec());
         let scores: [i32; 4] = std::array::from_fn(|i| self.players[i].score);
         let riichi_declared: [bool; 4] = std::array::from_fn(|i| self.players[i].riichi_declared);
 
@@ -293,7 +306,7 @@ impl GameState {
             masked_hands,
             melds,
             discards,
-            self.wall.dora_indicators.clone(),
+            self.wall.dora_indicator_slice().to_vec(),
             scores,
             riichi_declared,
             legal_actions,
@@ -316,10 +329,10 @@ impl GameState {
         let pid = player_id as usize;
         ObservationRef {
             player_id,
-            observer_hand: &self.players[pid].hand,
-            melds: std::array::from_fn(|i| self.players[i].melds.as_slice()),
-            discards: std::array::from_fn(|i| self.players[i].discards.as_slice()),
-            dora_indicators: &self.wall.dora_indicators,
+            observer_hand: self.players[pid].hand_slice(),
+            melds: std::array::from_fn(|i| self.players[i].melds_slice()),
+            discards: std::array::from_fn(|i| self.players[i].discards_slice()),
+            dora_indicators: self.wall.dora_indicator_slice(),
             scores: std::array::from_fn(|i| self.players[i].score),
             riichi_declared: std::array::from_fn(|i| self.players[i].riichi_declared),
             honba: self.honba,
@@ -519,7 +532,7 @@ impl GameState {
                                 .iter()
                                 .position(|&t| t == tile)
                             {
-                                self.players[pid as usize].hand.remove(idx);
+                                self.players[pid as usize].remove_hand(idx);
                                 valid = true;
                                 if let Some(dt) = self.drawn_tile {
                                     if dt == tile {
@@ -562,10 +575,10 @@ impl GameState {
                                     self.last_tedashis[pid as usize] = Some(t);
                                 }
                                 {
-                                    let hand = &mut self.players[pid as usize].hand;
-                                    let pos = hand.partition_point(|&x| x < t);
-                                    if pos < hand.len() && hand[pos] == t {
-                                        hand.remove(pos);
+                                    let p = &mut self.players[pid as usize];
+                                    let pos = p.hand_slice().partition_point(|&x| x < t);
+                                    if pos < p.hand_len as usize && p.hand[pos] == t {
+                                        p.remove_hand(pos);
                                     }
                                 }
                                 self._resolve_discard(pid, t, tsumogiri);
@@ -583,14 +596,12 @@ impl GameState {
                                 }
 
                                 // Check Kokushi Only
-                                let hand = &self.players[i as usize].hand;
-                                let melds = &self.players[i as usize].melds;
+                                let hand = self.players[i as usize].hand_slice();
+                                let melds = self.players[i as usize].melds_slice();
 
                                 // Furiten check
                                 let tile_class = tile / 4;
-                                let in_discards = self.players[i as usize]
-                                    .discards
-                                    .iter()
+                                let in_discards = self.players[i as usize].discards_slice().iter()
                                     .any(|&d| d / 4 == tile_class);
                                 if in_discards {
                                     continue;
@@ -611,7 +622,7 @@ impl GameState {
                                 );
                                 let res = calc.calc(
                                     tile,
-                                    &self.wall.dora_indicators,
+                                    self.wall.dora_indicator_slice(),
                                     &[],
                                     Some(cond),
                                 );
@@ -640,13 +651,13 @@ impl GameState {
 
                         // Update state BEFORE logging/waiting to keep observations in sync
                         {
-                            let hand = &mut self.players[p_idx].hand;
-                            let pos = hand.partition_point(|&x| x < tile);
-                            if pos < hand.len() && hand[pos] == tile {
-                                hand.remove(pos);
+                            let p = &mut self.players[p_idx];
+                            let pos = p.hand_slice().partition_point(|&x| x < tile);
+                            if pos < p.hand_len as usize && p.hand[pos] == tile {
+                                p.remove_hand(pos);
                             }
                         }
-                        for m in self.players[p_idx].melds.iter_mut() {
+                        for m in self.players[p_idx].melds_slice_mut().iter_mut() {
                             if m.meld_type == crate::types::MeldType::Pon
                                 && m.tiles[0] / 4 == tile / 4
                             {
@@ -684,8 +695,8 @@ impl GameState {
                                 continue;
                             }
                             // Check WinResult
-                            let hand = &self.players[i as usize].hand;
-                            let melds = &self.players[i as usize].melds;
+                            let hand = self.players[i as usize].hand_slice();
+                            let melds = self.players[i as usize].melds_slice();
                             let p_wind = (i + np as u8 - self.oya) % np as u8;
                             let cond = Conditions {
                                 tsumo: false,
@@ -712,9 +723,7 @@ impl GameState {
                             let mut is_furiten = false;
                             let waits = calc.get_waits_u8();
                             for &w in &waits {
-                                if self.players[i as usize]
-                                    .discards
-                                    .iter()
+                                if self.players[i as usize].discards_slice().iter()
                                     .any(|&d| d / 4 == w)
                                 {
                                     is_furiten = true;
@@ -731,7 +740,7 @@ impl GameState {
                             let res = if !is_furiten {
                                 calc.calc(
                                     tile,
-                                    &self.wall.dora_indicators,
+                                    self.wall.dora_indicator_slice(),
                                     &[],
                                     Some(cond),
                                 )
@@ -767,8 +776,8 @@ impl GameState {
                         }
                     }
                     ActionType::Tsumo => {
-                        let hand = &self.players[pid as usize].hand;
-                        let melds = &self.players[pid as usize].melds;
+                        let hand = self.players[pid as usize].hand_slice();
+                        let melds = self.players[pid as usize].melds_slice();
                         let p_wind = (pid + np as u8 - self.oya) % np as u8;
                         let cond = Conditions {
                             tsumo: true,
@@ -778,7 +787,7 @@ impl GameState {
                             haitei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
-                                && self.players.iter().all(|p| p.melds.is_empty()),
+                                && self.players.iter().all(|p| p.meld_count == 0 ),
                             player_wind: Wind::from(p_wind),
                             round_wind: Wind::from(self.round_wind),
                             riichi_sticks: self.riichi_sticks,
@@ -795,7 +804,7 @@ impl GameState {
                         };
                         let mut res = calc.calc(
                             win_tile,
-                            &self.wall.dora_indicators,
+                            self.wall.dora_indicator_slice(),
                             &ura_indicators,
                             Some(cond.clone()),
                         );
@@ -1048,8 +1057,8 @@ impl GameState {
                 let mut honba_taken = false;
 
                 for &w_pid in &winners {
-                    let hand = &self.players[w_pid as usize].hand;
-                    let melds = &self.players[w_pid as usize].melds;
+                    let hand = self.players[w_pid as usize].hand_slice();
+                    let melds = self.players[w_pid as usize].melds_slice();
                     let p_wind = (w_pid + np as u8 - self.oya) % np as u8;
                     let is_chankan = self.pending_kan.is_some();
 
@@ -1087,7 +1096,7 @@ impl GameState {
                     };
                     let mut res = calc.calc(
                         win_tile,
-                        &self.wall.dora_indicators,
+                        self.wall.dora_indicator_slice(),
                         &ura_indicators,
                         Some(cond),
                     );
@@ -1257,7 +1266,7 @@ impl GameState {
                         .iter()
                         .position(|&x| x == t)
                     {
-                        self.players[claimer as usize].hand.remove(idx);
+                        self.players[claimer as usize].remove_hand(idx);
                     }
                 }
                 let (discarder, tile) = self.last_discard.unwrap();
@@ -1268,7 +1277,7 @@ impl GameState {
                     ActionType::Chi => MeldType::Chi,
                     _ => MeldType::Chi, // Should not happen for this block anymore
                 };
-                self.players[claimer as usize].melds.push(Meld::new(
+                self.players[claimer as usize].push_meld(Meld::new(
                     meld_type,
                     &tiles,
                     true,
@@ -1427,7 +1436,7 @@ impl GameState {
                                 .iter()
                                 .position(|&t| t == tile)
                             {
-                                self.players[pid as usize].hand.remove(idx);
+                                self.players[pid as usize].remove_hand(idx);
                                 valid = true;
                                 if let Some(dt) = self.drawn_tile {
                                     if dt == tile {
@@ -1470,10 +1479,10 @@ impl GameState {
                                     self.last_tedashis[pid as usize] = Some(t);
                                 }
                                 {
-                                    let hand = &mut self.players[pid as usize].hand;
-                                    let pos = hand.partition_point(|&x| x < t);
-                                    if pos < hand.len() && hand[pos] == t {
-                                        hand.remove(pos);
+                                    let p = &mut self.players[pid as usize];
+                                    let pos = p.hand_slice().partition_point(|&x| x < t);
+                                    if pos < p.hand_len as usize && p.hand[pos] == t {
+                                        p.remove_hand(pos);
                                     }
                                 }
                                 self._resolve_discard(pid, t, tsumogiri);
@@ -1491,14 +1500,12 @@ impl GameState {
                                 }
 
                                 // Check Kokushi Only
-                                let hand = &self.players[i as usize].hand;
-                                let melds = &self.players[i as usize].melds;
+                                let hand = self.players[i as usize].hand_slice();
+                                let melds = self.players[i as usize].melds_slice();
 
                                 // Furiten check
                                 let tile_class = tile / 4;
-                                let in_discards = self.players[i as usize]
-                                    .discards
-                                    .iter()
+                                let in_discards = self.players[i as usize].discards_slice().iter()
                                     .any(|&d| d / 4 == tile_class);
                                 if in_discards {
                                     continue;
@@ -1519,7 +1526,7 @@ impl GameState {
                                 );
                                 let res = calc.calc(
                                     tile,
-                                    &self.wall.dora_indicators,
+                                    self.wall.dora_indicator_slice(),
                                     &[],
                                     Some(cond),
                                 );
@@ -1548,13 +1555,13 @@ impl GameState {
 
                         // Update state BEFORE logging/waiting to keep observations in sync
                         {
-                            let hand = &mut self.players[p_idx].hand;
-                            let pos = hand.partition_point(|&x| x < tile);
-                            if pos < hand.len() && hand[pos] == tile {
-                                hand.remove(pos);
+                            let p = &mut self.players[p_idx];
+                            let pos = p.hand_slice().partition_point(|&x| x < tile);
+                            if pos < p.hand_len as usize && p.hand[pos] == tile {
+                                p.remove_hand(pos);
                             }
                         }
-                        for m in self.players[p_idx].melds.iter_mut() {
+                        for m in self.players[p_idx].melds_slice_mut().iter_mut() {
                             if m.meld_type == crate::types::MeldType::Pon
                                 && m.tiles[0] / 4 == tile / 4
                             {
@@ -1592,8 +1599,8 @@ impl GameState {
                                 continue;
                             }
                             // Check WinResult
-                            let hand = &self.players[i as usize].hand;
-                            let melds = &self.players[i as usize].melds;
+                            let hand = self.players[i as usize].hand_slice();
+                            let melds = self.players[i as usize].melds_slice();
                             let p_wind = (i + np as u8 - self.oya) % np as u8;
                             let cond = Conditions {
                                 tsumo: false,
@@ -1620,9 +1627,7 @@ impl GameState {
                             let mut is_furiten = false;
                             let waits = calc.get_waits_u8();
                             for &w in &waits {
-                                if self.players[i as usize]
-                                    .discards
-                                    .iter()
+                                if self.players[i as usize].discards_slice().iter()
                                     .any(|&d| d / 4 == w)
                                 {
                                     is_furiten = true;
@@ -1639,7 +1644,7 @@ impl GameState {
                             let res = if !is_furiten {
                                 calc.calc(
                                     tile,
-                                    &self.wall.dora_indicators,
+                                    self.wall.dora_indicator_slice(),
                                     &[],
                                     Some(cond),
                                 )
@@ -1675,8 +1680,8 @@ impl GameState {
                         }
                     }
                     ActionType::Tsumo => {
-                        let hand = &self.players[pid as usize].hand;
-                        let melds = &self.players[pid as usize].melds;
+                        let hand = self.players[pid as usize].hand_slice();
+                        let melds = self.players[pid as usize].melds_slice();
                         let p_wind = (pid + np as u8 - self.oya) % np as u8;
                         let cond = Conditions {
                             tsumo: true,
@@ -1686,7 +1691,7 @@ impl GameState {
                             haitei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
-                                && self.players.iter().all(|p| p.melds.is_empty()),
+                                && self.players.iter().all(|p| p.meld_count == 0 ),
                             player_wind: Wind::from(p_wind),
                             round_wind: Wind::from(self.round_wind),
                             riichi_sticks: self.riichi_sticks,
@@ -1703,7 +1708,7 @@ impl GameState {
                         };
                         let mut res = calc.calc(
                             win_tile,
-                            &self.wall.dora_indicators,
+                            self.wall.dora_indicator_slice(),
                             &ura_indicators,
                             Some(cond.clone()),
                         );
@@ -1956,8 +1961,8 @@ impl GameState {
                 let mut honba_taken = false;
 
                 for &w_pid in &winners {
-                    let hand = &self.players[w_pid as usize].hand;
-                    let melds = &self.players[w_pid as usize].melds;
+                    let hand = self.players[w_pid as usize].hand_slice();
+                    let melds = self.players[w_pid as usize].melds_slice();
                     let p_wind = (w_pid + np as u8 - self.oya) % np as u8;
                     let is_chankan = self.pending_kan.is_some();
 
@@ -1995,7 +2000,7 @@ impl GameState {
                     };
                     let mut res = calc.calc(
                         win_tile,
-                        &self.wall.dora_indicators,
+                        self.wall.dora_indicator_slice(),
                         &ura_indicators,
                         Some(cond),
                     );
@@ -2165,7 +2170,7 @@ impl GameState {
                         .iter()
                         .position(|&x| x == t)
                     {
-                        self.players[claimer as usize].hand.remove(idx);
+                        self.players[claimer as usize].remove_hand(idx);
                     }
                 }
                 let (discarder, tile) = self.last_discard.unwrap();
@@ -2176,7 +2181,7 @@ impl GameState {
                     ActionType::Chi => MeldType::Chi,
                     _ => MeldType::Chi, // Should not happen for this block anymore
                 };
-                self.players[claimer as usize].melds.push(Meld::new(
+                self.players[claimer as usize].push_meld(Meld::new(
                     meld_type,
                     &tiles,
                     true,
@@ -2359,16 +2364,10 @@ impl GameState {
         // declaration discard won't wrongly clear it because _accept_riichi() runs
         // AFTER this and sets ippatsu_cycle = true.
         self.players[pid as usize].ippatsu_cycle = false;
-        self.players[pid as usize].discards.push(tile);
+        let riichi_stage = self.players[pid as usize].riichi_stage;
+        self.players[pid as usize].push_discard(tile, !tsumogiri, riichi_stage);
         self.last_discard = Some((pid, tile));
         self.drawn_tile = None;
-        self.players[pid as usize]
-            .discard_from_hand
-            .push(!tsumogiri);
-        let riichi_stage = self.players[pid as usize].riichi_stage;
-        self.players[pid as usize]
-            .discard_is_riichi
-            .push(riichi_stage);
 
         // Track last tedashi (hand discard, not tsumogiri)
         if !tsumogiri {
@@ -2383,7 +2382,7 @@ impl GameState {
                 self.players[pid as usize].double_riichi_declared = true;
             }
             self.players[pid as usize].riichi_declaration_index =
-                Some(self.players[pid as usize].discards.len() - 1);
+                Some(self.players[pid as usize].discard_len as usize - 1);
             self.players[pid as usize].riichi_stage = false;
             self.riichi_pending_acceptance = Some(pid);
         }
@@ -2463,9 +2462,9 @@ impl GameState {
         } else {
             // Ankan / Daiminkan
             for &t in action.consume_slice() {
-                let pos = self.players[p_idx].hand.partition_point(|&x| x < t);
-                if pos < self.players[p_idx].hand.len() && self.players[p_idx].hand[pos] == t {
-                    self.players[p_idx].hand.remove(pos);
+                let pos = self.players[p_idx].hand_slice().partition_point(|&x| x < t);
+                if pos < self.players[p_idx].hand_len as usize && self.players[p_idx].hand[pos] == t {
+                    self.players[p_idx].remove_hand(pos);
                 }
             }
             let (m_type, tiles, from_who, ct) = if action.action_type == ActionType::Ankan {
@@ -2476,7 +2475,7 @@ impl GameState {
                 sorted_insert(&mut t_vec, tile);
                 (MeldType::Daiminkan, t_vec, discarder as i8, Some(tile))
             };
-            self.players[p_idx].melds.push(Meld::new(
+            self.players[p_idx].push_meld(Meld::new(
                 m_type,
                 &tiles,
                 m_type == MeldType::Daiminkan,
@@ -2524,7 +2523,7 @@ impl GameState {
         if self.wall.remaining() > 14 {
             // Rinshan tiles drawn via cursor (no memmove)
             let t = self.wall.draw_rinshan();
-            sorted_insert(&mut self.players[p_idx].hand, t);
+            sorted_insert_arr(&mut self.players[p_idx].hand, &mut self.players[p_idx].hand_len, t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
             self.is_rinshan_flag = true;
@@ -2615,9 +2614,9 @@ impl GameState {
             self._trigger_ryukyoku("exhaustive_draw");
             return;
         }
-        if let Some(t) = self.wall.tiles.pop() {
+        if let Some(t) = self.wall.draw_back() {
             let pid = self.current_player;
-            sorted_insert(&mut self.players[pid as usize].hand, t);
+            sorted_insert_arr(&mut self.players[pid as usize].hand, &mut self.players[pid as usize].hand_len, t);
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
             self.phase = Phase::WaitAct;
@@ -2772,20 +2771,20 @@ impl GameState {
             for idx in 0..np {
                 let p = (idx + oya as usize) % np;
                 for _ in 0..4 {
-                    if let Some(t) = self.wall.tiles.pop() {
-                        self.players[p].hand.push(t);
+                    if let Some(t) = self.wall.draw_back() {
+                        self.players[p].push_hand(t);
                     }
                 }
             }
         }
         for idx in 0..np {
             let p = (idx + oya as usize) % np;
-            if let Some(t) = self.wall.tiles.pop() {
-                self.players[p].hand.push(t);
+            if let Some(t) = self.wall.draw_back() {
+                self.players[p].push_hand(t);
             }
         }
         for p in &mut self.players {
-            p.hand.sort();
+            p.hand_slice_mut().sort();
         }
 
         if !self.skip_mjai_logging {
@@ -2814,7 +2813,7 @@ impl GameState {
 
             let mut tehais = Vec::new();
             for p in &self.players {
-                let hand_strs: Vec<String> = p.hand.iter().map(|&t| tid_to_mjai(t)).collect();
+                let hand_strs: Vec<String> = p.hand_slice().iter().map(|&t| tid_to_mjai(t)).collect();
                 tehais.push(hand_strs);
             }
             ev.insert("tehais".to_string(), serde_json::to_value(tehais).unwrap());
@@ -2827,8 +2826,8 @@ impl GameState {
         self.set_single_active_player(self.oya);
 
         // Draw 14th tile for Oya
-        if let Some(t) = self.wall.tiles.pop() {
-            sorted_insert(&mut self.players[self.oya as usize].hand, t);
+        if let Some(t) = self.wall.draw_back() {
+            sorted_insert_arr(&mut self.players[self.oya as usize].hand, &mut self.players[self.oya as usize].hand_len, t);
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
 
@@ -2969,17 +2968,17 @@ impl GameState {
 
     fn check_abortive_draw(&mut self) -> bool {
         // 1. Sufuurenta (Four Winds)
-        let turns_ok = self.players.iter().all(|p| p.discards.len() == 1);
-        let melds_empty = self.players.iter().all(|p| p.melds.is_empty());
+        let turns_ok = self.players.iter().all(|p| p.discard_len == 1);
+        let melds_empty = self.players.iter().all(|p| p.meld_count == 0 );
 
         if turns_ok && melds_empty {
-            if let Some(first_tile) = self.players[0].discards.first() {
+            if let Some(&first_tile) = self.players[0].discards_slice().first() {
                 let first = first_tile / 4;
                 if (27..=30).contains(&first)
                     && self
                         .players
                         .iter()
-                        .all(|p| p.discards.first().map(|&t| t / 4) == Some(first))
+                        .all(|p| p.discards_slice().first().map(|&t| t / 4) == Some(first))
                 {
                     self._trigger_ryukyoku("sufuurenta");
                     return true;
@@ -3018,21 +3017,20 @@ impl GameState {
     }
 
     pub fn _reveal_kan_dora(&mut self) {
-        let count = self.wall.dora_indicators.len();
+        let count = self.wall.dora_indicator_count as usize;
         if count < 5 {
             // Base indices for Omote Dora are 4, 6, 8, 10, 12 in the wall.
             // With draw_cursor, tiles stay in place so indices are stable.
             let base_idx = 4 + 2 * count;
-            if base_idx < self.wall.tiles.len() {
-                self.wall.dora_indicators.push(self.wall.tiles[base_idx]);
+            if base_idx < self.wall.tile_count as usize {
+                let new_dora = self.wall.tiles[base_idx];
+                self.wall.push_dora_indicator(new_dora);
                 if !self.skip_mjai_logging {
                     let mut ev = serde_json::Map::new();
                     ev.insert("type".to_string(), Value::String("dora".to_string()));
                     ev.insert(
                         "dora_marker".to_string(),
-                        Value::String(tid_to_mjai(
-                            self.wall.dora_indicators.last().copied().unwrap(),
-                        )),
+                        Value::String(tid_to_mjai(new_dora)),
                     );
                     self._push_mjai_event(Value::Object(ev));
                 }
@@ -3042,9 +3040,9 @@ impl GameState {
 
     fn _get_ura_indicators(&self) -> Vec<u8> {
         let mut indicators = Vec::new();
-        for i in 0..self.wall.dora_indicators.len() {
+        for i in 0..self.wall.dora_indicator_count as usize {
             let idx = 5 + 2 * i;
-            if idx < self.wall.tiles.len() {
+            if idx < self.wall.tile_count as usize {
                 indicators.push(self.wall.tiles[idx]);
             }
         }
@@ -3053,9 +3051,9 @@ impl GameState {
 
     pub fn _get_ura_markers(&self) -> Vec<String> {
         let mut markers = Vec::new();
-        for i in 0..self.wall.dora_indicators.len() {
+        for i in 0..self.wall.dora_indicator_count as usize {
             let idx = 5 + 2 * i;
-            if idx < self.wall.tiles.len() {
+            if idx < self.wall.tile_count as usize {
                 markers.push(tid_to_mjai(self.wall.tiles[idx]));
             }
         }

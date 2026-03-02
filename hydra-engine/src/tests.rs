@@ -251,14 +251,14 @@ mod unit_tests {
 
         // Hand: 4m, 5m, 6m, 6m. (12, 16, 20, 21)
         // 3m is 8.
-        state.players[pid as usize].hand = vec![12, 16, 20, 21];
+        { let tiles: [u8; 4] = [12, 16, 20, 21]; state.players[pid as usize].hand[..4].copy_from_slice(&tiles); state.players[pid as usize].hand_len = 4; }
 
         // Setup P3 (Kamicha of P0)
         state.current_player = 3;
         state.phase = Phase::WaitAct;
         state.active_players = [3, 0, 0, 0];
         state.active_player_count = 1;
-        state.players[3].hand.push(8); // Give 3m
+        state.players[3].push_hand(8); // Give 3m
 
         // Action: P3 discards 3m
         let mut actions = HashMap::new();
@@ -412,7 +412,7 @@ mod unit_tests {
         state.apply_mjai_event(start);
 
         // Player 0: verify honor tiles are parsed correctly
-        let hand0 = &state.players[0].hand;
+        let hand0 = state.players[0].hand_slice();
         // E=108, S=112, W=116, N=120, P=124, F=128, C=132
         assert!(
             hand0.contains(&108),
@@ -451,7 +451,7 @@ mod unit_tests {
         );
 
         // Player 1: verify red 5s (5sr = tid 88)
-        let hand1 = &state.players[1].hand;
+        let hand1 = state.players[1].hand_slice();
         assert!(
             hand1.contains(&88),
             "5sr should be tid 88, hand: {:?}",
@@ -459,7 +459,7 @@ mod unit_tests {
         );
 
         // Player 2: verify red 5p (5pr = tid 52)
-        let hand2 = &state.players[2].hand;
+        let hand2 = state.players[2].hand_slice();
         assert!(
             hand2.contains(&52),
             "5pr should be tid 52, hand: {:?}",
@@ -480,9 +480,9 @@ mod unit_tests {
         };
         state.apply_mjai_event(tsumo);
         assert!(
-            state.players[0].hand.contains(&132),
+            state.players[0].hand_slice().contains(&132),
             "Tsumo C should add tid 132 to hand, hand: {:?}",
-            state.players[0].hand
+            state.players[0].hand_slice()
         );
 
         // Test dahai with honor tile
@@ -493,9 +493,9 @@ mod unit_tests {
         };
         state.apply_mjai_event(dahai);
         assert!(
-            state.players[0].discards.contains(&108),
+            state.players[0].discards_slice().contains(&108),
             "Dahai E should discard tid 108, discards: {:?}",
-            state.players[0].discards
+            state.players[0].discards_slice()
         );
 
         // Test dora event with mjai honor
@@ -546,9 +546,9 @@ mod unit_tests {
         // テンパイ形の手牌を構築 (14枚 = 13 + ツモ牌):
         //   123m 456m 789m 12p 11s + ツモ 5sr(88)
         //   5sr を切ると 123456789m 12p 11s → 3p 待ちテンパイ
-        state.players[pid_us].hand = vec![0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 72, 73, 88];
-        state.players[pid_us].hand.sort();
-        state.players[pid_us].melds.clear();
+        { let tiles: [u8; 14] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 72, 73, 88]; state.players[pid_us].hand[..14].copy_from_slice(&tiles); state.players[pid_us].hand_len = 14; }
+        state.players[pid_us].hand_slice_mut().sort();
+        state.players[pid_us].meld_count = 0;
         state.players[pid_us].score = 25000;
         state.players[pid_us].riichi_declared = false;
         state.players[pid_us].riichi_stage = false;
@@ -666,7 +666,7 @@ mod unit_tests {
         let state = create_sanma_test_state(3);
 
         let total_tiles =
-            state.wall.tiles.len() + state.players.iter().map(|p| p.hand.len()).sum::<usize>();
+            state.wall.tile_count as usize + state.players.iter().map(|p| p.hand_len as usize).sum::<usize>();
         assert_eq!(total_tiles, 108, "Total tiles should be 108 for sanma");
 
         // Verify no manzu 2-8 tiles (tile types 1-7, tile IDs 4-31)
@@ -681,7 +681,7 @@ mod unit_tests {
                 );
             }
         }
-        for &t in &state.wall.tiles {
+        for &t in &state.wall.tiles[..state.wall.tile_count as usize] {
             let tile_type = t / 4;
             assert!(
                 !(1..=7).contains(&tile_type),
@@ -698,13 +698,13 @@ mod unit_tests {
 
         assert_eq!(state.players.len(), 3);
         assert_eq!(
-            state.players[0].hand.len(),
+            state.players[0].hand_len as usize,
             14,
             "Oya (player 0) should have 14 tiles after deal"
         );
         for i in 1..3 {
             assert_eq!(
-                state.players[i].hand.len(),
+                state.players[i].hand_len as usize,
                 13,
                 "Player {} should have 13 tiles after deal",
                 i
@@ -722,7 +722,7 @@ mod unit_tests {
         state._initialize_round(0, 0, 0, 0, None, None);
 
         // Give player 1 a sequential hand that could chi
-        state.players[1].hand = vec![36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84];
+        { let tiles: [u8; 13] = [36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84]; state.players[1].hand[..13].copy_from_slice(&tiles); state.players[1].hand_len = 13; }
         state.current_player = 0;
         state.drawn_tile = Some(state.players[0].hand[0]);
         state.phase = Phase::WaitAct;
@@ -762,7 +762,7 @@ mod unit_tests {
         let mut state = create_sanma_test_state(3);
         state._initialize_round(0, 0, 0, 0, None, None);
 
-        state.players[0].hand = vec![0, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 120];
+        { let tiles: [u8; 13] = [0, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 120]; state.players[0].hand[..13].copy_from_slice(&tiles); state.players[0].hand_len = 13; }
         state.drawn_tile = Some(120);
         state.current_player = 0;
         state.phase = Phase::WaitAct;
@@ -1161,12 +1161,20 @@ mod unit_tests {
 
         let pid: u8 = 0;
 
+        // Set player 0's hand to include the 3 chun tiles (133,134,135)
+        // plus 5 other tiles, simulating a hand after 2 open pon calls.
+        // Open hand has 14 - 2*3 = 8 closed tiles + drawn tile.
+        state.players[0].hand_len = 0;
+        for &t in &[0, 4, 8, 12, 16, 133, 134, 135] {
+            state.players[0].push_hand(t);
+        }
+        state.players[0].hand_slice_mut().sort();
+        state.drawn_tile = Some(135);
+
         // Give player 0 two open dragon pon melds (haku=31, hatsu=32).
-        // Tiles in melds use 34-tile notation.
-        state.players[0].melds = vec![
-            Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)),
-            Meld::new(MeldType::Pon, &[128, 129, 130], true, 2, Some(128)),
-        ];
+        state.players[0].meld_count = 0;
+        state.players[0].push_meld(Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)));
+        state.players[0].push_meld(Meld::new(MeldType::Pon, &[128, 129, 130], true, 2, Some(128)));
 
         // Player 3 discards chun (33*4=132). Player 0 calls daiminkan.
         let discarder: u8 = 3;
@@ -1201,12 +1209,20 @@ mod unit_tests {
 
         let pid: u8 = 0;
 
+        // Set player 0's hand to include the 3 N tiles (121,122,123)
+        // plus 2 other tiles, simulating a hand after 3 open pon calls.
+        state.players[0].hand_len = 0;
+        for &t in &[0, 4, 121, 122, 123] {
+            state.players[0].push_hand(t);
+        }
+        state.players[0].hand_slice_mut().sort();
+        state.drawn_tile = Some(123);
+
         // Give player 0 three open wind pon melds (E=27, S=28, W=29).
-        state.players[0].melds = vec![
-            Meld::new(MeldType::Pon, &[108, 109, 110], true, 1, Some(108)),
-            Meld::new(MeldType::Pon, &[112, 113, 114], true, 2, Some(112)),
-            Meld::new(MeldType::Pon, &[116, 117, 118], true, 3, Some(116)),
-        ];
+        state.players[0].meld_count = 0;
+        state.players[0].push_meld(Meld::new(MeldType::Pon, &[108, 109, 110], true, 1, Some(108)));
+        state.players[0].push_meld(Meld::new(MeldType::Pon, &[112, 113, 114], true, 2, Some(112)));
+        state.players[0].push_meld(Meld::new(MeldType::Pon, &[116, 117, 118], true, 3, Some(116)));
 
         // Player 2 discards N (30*4=120). Player 0 calls daiminkan.
         let discarder: u8 = 2;
@@ -1240,10 +1256,18 @@ mod unit_tests {
 
         let pid: u8 = 0;
 
+        // Set player 0's hand to include the 3 hatsu tiles (129,130,131)
+        // plus 8 other tiles, simulating a hand after 1 open pon call.
+        state.players[0].hand_len = 0;
+        for &t in &[0, 4, 8, 12, 16, 20, 24, 28, 129, 130, 131] {
+            state.players[0].push_hand(t);
+        }
+        state.players[0].hand_slice_mut().sort();
+        state.drawn_tile = Some(131);
+
         // Give player 0 only ONE dragon pon meld (haku=31).
-        state.players[0].melds = vec![
-            Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)),
-        ];
+        state.players[0].meld_count = 0;
+        state.players[0].push_meld(Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)));
 
         // Player 1 discards hatsu (32*4=128). Player 0 calls daiminkan.
         // After this, player 0 has 2 dragon melds — NOT 3, so no PAO.
