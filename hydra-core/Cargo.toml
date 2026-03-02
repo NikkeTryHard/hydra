@@ -2,7 +2,7 @@
 name = "hydra-core"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license-file = "LICENSE"
 description = "Hydra Riichi Mahjong game engine - simulator, encoder, and batch runner"
 repository = "https://github.com/hydra-mahjong/hydra"
 

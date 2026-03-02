@@ -53,4 +53,10 @@ Full methodology in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARK
 
 ## License
 
-MIT
+Business Source License 1.1 (BSL). See [LICENSE](LICENSE) for full terms.
+
+- Free for personal, non-commercial, and academic use
+- Commercial mahjong AI services require a paid license from the Licensor
+- Converts to Apache-2.0 on 2031-03-02
+
+For commercial licensing inquiries, contact Sho Kaneko.
