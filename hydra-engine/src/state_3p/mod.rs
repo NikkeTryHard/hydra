@@ -43,7 +43,8 @@ pub struct GameState3P {
     pub active_players: [u8; 4],
     pub active_player_count: u8,
     pub last_discard: Option<(u8, u8)>,
-    pub current_claims: HashMap<u8, Vec<Action>>,
+    pub current_claims: [[Action; 16]; NP],
+    pub current_claim_counts: [u8; NP],
     pub pending_kan: Option<(u8, Action)>,
 
     pub oya: u8,
@@ -101,6 +102,34 @@ impl GameState3P {
         self.active_player_count = 0;
     }
 
+    /// Returns the claims slice for a given player.
+    #[inline]
+    fn claims_slice(&self, pid: usize) -> &[Action] {
+        &self.current_claims[pid][..self.current_claim_counts[pid] as usize]
+    }
+
+    /// Pushes a claim action for a player.
+    #[inline]
+    fn push_claim(&mut self, pid: usize, action: Action) {
+        let idx = self.current_claim_counts[pid] as usize;
+        self.current_claims[pid][idx] = action;
+        self.current_claim_counts[pid] += 1;
+    }
+
+    /// Clears all current claims.
+    #[inline]
+    fn clear_claims(&mut self) {
+        self.current_claim_counts = [0; NP];
+    }
+
+    /// Sets claims for a player from a Vec.
+    #[inline]
+    fn set_claims_from_vec(&mut self, pid: usize, legals: &[Action]) {
+        let count = legals.len().min(16);
+        self.current_claims[pid][..count].copy_from_slice(&legals[..count]);
+        self.current_claim_counts[pid] = count as u8;
+    }
+
     /// Sets active players to a single player.
     #[inline]
     fn set_single_active_player(&mut self, pid: u8) {
@@ -142,7 +171,8 @@ impl GameState3P {
             active_players: [0; 4],
             active_player_count: 0,
             last_discard: None,
-            current_claims: HashMap::new(),
+            current_claims: [[Action::default(); 16]; NP],
+            current_claim_counts: [0; NP],
             pending_kan: None,
             oya: 0,
             honba: 0,
@@ -276,17 +306,15 @@ impl GameState3P {
         let original_phase = self.phase;
         let original_active_players = self.active_players;
         let original_active_player_count = self.active_player_count;
-        let original_claims = self.current_claims.clone();
+        let original_claims = self.current_claims;
+        let original_claim_counts = self.current_claim_counts;
         let original_riichi = self.players[pid as usize].riichi_declared;
 
         match env_action.action_type {
             ActionType::Ron | ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
                 self.phase = Phase::WaitResponse;
                 self.set_single_active_player(pid);
-                self.current_claims
-                    .entry(pid)
-                    .or_default()
-                    .push(*env_action);
+                self.push_claim(pid as usize, *env_action);
             }
             _ => {}
         }
@@ -321,6 +349,7 @@ impl GameState3P {
         self.active_players = original_active_players;
         self.active_player_count = original_active_player_count;
         self.current_claims = original_claims;
+        self.current_claim_counts = original_claim_counts;
 
         if !exists {
             return Err(RiichiError::InvalidState {
@@ -519,7 +548,7 @@ impl GameState3P {
                                 if res.is_win && (res.yaku.contains(&42) || res.yaku.contains(&49))
                                 {
                                     chankan_ronners.push(i);
-                                    self.current_claims.entry(i).or_default().push(Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
+                                    self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
                                 }
                             }
                         }
@@ -630,7 +659,7 @@ impl GameState3P {
 
                             if res.is_win && (res.yakuman || res.han >= 1) {
                                 chankan_ronners.push(i);
-                                self.current_claims.entry(i).or_default().push(Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
+                                self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
                             }
                         }
 
@@ -865,7 +894,10 @@ impl GameState3P {
             }
         } else if self.phase == Phase::WaitResponse {
             // Check Missed WinResult
-            for (&pid, legals) in &self.current_claims {
+            for pid in 0..NP {
+                if self.current_claim_counts[pid] == 0 { continue; }
+                let legals = self.claims_slice(pid);
+                let pid = pid as u8;
                 if legals.iter().any(|a| a.action_type == ActionType::Ron) {
                     let mut roned = false;
                     if let Some(act) = actions.get(&pid) {
@@ -1222,7 +1254,7 @@ impl GameState3P {
                 }
             } else {
                 // All Pass
-                self.current_claims.clear();
+                self.clear_claims();
                 self.clear_active_players();
 
                 if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
@@ -1319,7 +1351,7 @@ impl GameState3P {
         self.players[pid as usize].missed_agari_doujun = false;
         self.players[pid as usize].nagashi_eligible &= crate::types::is_terminal_tile(tile);
 
-        self.current_claims.clear();
+        self.clear_claims();
         self.clear_active_players();
         let mut has_claims = false;
         let mut claim_active = Vec::new();
@@ -1335,7 +1367,7 @@ impl GameState3P {
             if !legals.is_empty() {
                 has_claims = true;
                 claim_active.push(i);
-                self.current_claims.insert(i, legals);
+                self.set_claims_from_vec(i as usize, &legals);
             }
         }
 
@@ -1632,7 +1664,7 @@ impl GameState3P {
             p.reset_round();
         }
         self.is_done = false;
-        self.current_claims = HashMap::new();
+        self.clear_claims();
         self.pending_kan = None;
         self.is_rinshan_flag = false;
         self.wall.rinshan_draw_count = 0;

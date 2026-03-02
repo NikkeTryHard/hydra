@@ -103,7 +103,7 @@ impl GameState3P {
 
             if res.is_win && (res.yakuman || res.han >= 1) {
                 chankan_ronners.push(i);
-                self.current_claims.entry(i).or_default().push(Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
+                self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
             }
         }
 

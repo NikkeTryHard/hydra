@@ -276,9 +276,7 @@ mod unit_tests {
         assert_eq!(state.current_player, 0, "Should be P0's turn");
 
         // Verify current_claims is empty or does not contain 0
-        if let Some(claims) = state.current_claims[0].as_ref() {
-            assert!(claims.is_empty(), "P0 should have no legal claims");
-        }
+        assert!(state.current_claim_counts[0] == 0, "P0 should have no legal claims");
     }
     #[test]
     fn test_match_84_agari_check() {

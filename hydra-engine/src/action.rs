@@ -79,6 +79,18 @@ pub struct Action {
     pub actor: Option<u8>,
 }
 
+impl Default for Action {
+    fn default() -> Self {
+        Self {
+            action_type: ActionType::Pass,
+            tile: None,
+            consume_tiles: [0; 4],
+            consume_count: 0,
+            actor: None,
+        }
+    }
+}
+
 impl Serialize for Action {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
