@@ -37,6 +37,7 @@ pub struct GameRunner {
     total_actions: u32,
     rounds_played: u32,
     actions: [Option<Action>; 4],
+    legal_buf: Vec<Action>,
 }
 impl GameRunner {
     /// Create a new game runner.
@@ -49,6 +50,7 @@ impl GameRunner {
             total_actions: 0,
             rounds_played: 1,
             actions: [None; 4],
+            legal_buf: Vec::with_capacity(46),
         }
     }
 
@@ -72,6 +74,7 @@ impl GameRunner {
             total_actions: 0,
             rounds_played: 1,
             actions: [None; 4],
+            legal_buf: Vec::with_capacity(46),
         }
     }
 
@@ -127,9 +130,9 @@ impl GameRunner {
         match self.state.phase {
             Phase::WaitAct => {
                 let pid = self.state.current_player;
-                let legal = self.state.get_legal_actions(pid);
-                if legal.is_empty() { return false; }
-                let chosen = selector.select_action(pid, &legal);
+                self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                if self.legal_buf.is_empty() { return false; }
+                let chosen = selector.select_action(pid, &self.legal_buf);
                 self.track_action(pid, &chosen);
                 self.actions[pid as usize] = Some(chosen);
             }
@@ -138,9 +141,9 @@ impl GameRunner {
                 let mut pids = [0u8; 4];
                 pids[..n].copy_from_slice(&self.state.active_players[..n]);
                 for &pid in &pids[..n] {
-                    let legal = self.state.get_legal_actions(pid);
-                    if legal.is_empty() { continue; }
-                    let chosen = selector.select_action(pid, &legal);
+                    self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                    if self.legal_buf.is_empty() { continue; }
+                    let chosen = selector.select_action(pid, &self.legal_buf);
                     self.track_action(pid, &chosen);
                     self.actions[pid as usize] = Some(chosen);
                 }

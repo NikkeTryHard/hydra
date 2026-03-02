@@ -59,6 +59,7 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
     const MAX_STEPS: u32 = 10_000;
 
     let mut actions: [Option<Action>; 4];
+    let mut legal_buf: Vec<Action> = Vec::with_capacity(46);
 
     while !state.is_done && total_actions < MAX_STEPS {
         // When a round ends, step() auto-initializes the next round.
@@ -73,22 +74,22 @@ state.step_unchecked(&[None;
 
         match state.phase {
             Phase::WaitAct => {
-                let legal = state.get_legal_actions(state.current_player);
-                if legal.is_empty() {
+                state.get_legal_actions_into(state.current_player, &mut legal_buf);
+                if legal_buf.is_empty() {
                     break;
                 }
-                actions[state.current_player as usize] = Some(legal[0]);
+                actions[state.current_player as usize] = Some(legal_buf[0]);
             }
             Phase::WaitResponse => {
                 let n = state.active_players.len().min(4);
                 let mut pids = [0u8; 4];
                 pids[..n].copy_from_slice(&state.active_players[..n]);
                 for &pid in &pids[..n] {
-                    let legal = state.get_legal_actions(pid);
-                    if legal.is_empty() {
+                    state.get_legal_actions_into(pid, &mut legal_buf);
+                    if legal_buf.is_empty() {
                         continue;
                     }
-                    actions[pid as usize] = Some(legal[0]);
+                    actions[pid as usize] = Some(legal_buf[0]);
                 }
             }
         }
