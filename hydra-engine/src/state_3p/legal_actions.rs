@@ -11,7 +11,7 @@ impl GameState3PLegalActions for GameState3P {
     fn _get_legal_actions_internal(&self, pid: u8) -> Vec<Action> {
         let mut legals = Vec::new();
         let pid_us = pid as usize;
-        let mut hand = self.players[pid_us].hand.clone();
+        let mut hand = self.players[pid_us].hand_slice().to_vec();
         hand.sort();
         let np: u8 = 3;
 
@@ -39,23 +39,23 @@ impl GameState3PLegalActions for GameState3P {
                         houtei: false,
                         rinshan: self.is_rinshan_flag,
                         tsumo_first_turn: self.is_first_turn
-                            && self.players[pid_us].discards.is_empty(),
+                            && (self.players[pid_us].discard_len == 0),
                         riichi_sticks: self.riichi_sticks,
                         honba: self.honba as u32,
                         is_sanma: true,
                         num_players: np,
                         ..Default::default()
                     };
-                    let mut hand = self.players[pid_us].hand.clone();
+                    let mut hand = self.players[pid_us].hand_slice().to_vec();
                     if let Some(idx) = hand.iter().rposition(|&t| t == tile) {
                         hand.remove(idx);
                     }
                     let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(
                         &hand,
-                        &self.players[pid_us].melds,
+                        self.players[pid_us].melds_slice(),
                     );
                     let res =
-                        calc.calc(tile, &self.wall.dora_indicators, &[], Some(cond));
+                        calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
                     if res.is_win && (res.yakuman || res.han >= 1) {
                         legals.push(Action::new(ActionType::Tsumo, Some(tile), &[], Some(pid)));
                     }
@@ -65,7 +65,7 @@ impl GameState3PLegalActions for GameState3P {
             // 2. Discard / Riichi
             let declaration_turn = if self.players[pid_us].riichi_declared {
                 if let Some(idx) = self.players[pid_us].riichi_declaration_index {
-                    self.players[pid_us].discards.len() <= idx
+                    self.players[pid_us].discard_len as usize <= idx
                 } else {
                     false
                 }
@@ -78,7 +78,7 @@ impl GameState3PLegalActions for GameState3P {
                 for &f in &self.players[pid_us].forbidden_discards {
                     forbidden_set[(f / 4) as usize] = true;
                 }
-                for &t in self.players[pid_us].hand.iter() {
+                for &t in self.players[pid_us].hand_slice().iter() {
                     if !forbidden_set[(t / 4) as usize] {
                         legals.push(Action::new(ActionType::Discard, Some(t), &[], Some(pid)));
                     }
@@ -88,18 +88,18 @@ impl GameState3PLegalActions for GameState3P {
                 if !self.players[pid_us].riichi_declared
                     && self.players[pid_us].score >= 1000
                     && self.wall.remaining() > 14
-                    && self.players[pid_us].melds.iter().all(|m| !m.opened)
+                    && self.players[pid_us].melds_slice().iter().all(|m| !m.opened)
                     && !self.players[pid_us].riichi_stage
                 {
-                    let indices: Vec<usize> = (0..self.players[pid_us].hand.len()).collect();
+                    let indices: Vec<usize> = (0..self.players[pid_us].hand_len as usize).collect();
                     let mut can_riichi = false;
 
                     for &skip_idx in &indices {
-                        let mut temp_hand = self.players[pid_us].hand.clone();
+                        let mut temp_hand = self.players[pid_us].hand_slice().to_vec();
                         temp_hand.remove(skip_idx);
                         let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(
                             &temp_hand,
-                            &self.players[pid_us].melds,
+                            self.players[pid_us].melds_slice(),
                         );
                         if calc.is_tenpai() {
                             can_riichi = true;
@@ -117,7 +117,7 @@ impl GameState3PLegalActions for GameState3P {
             // 3. Kan (Ankan / Kakan)
             if self.wall.remaining() > 14 && self.drawn_tile.is_some() {
                 let mut counts = [0; 34];
-                for &t in &self.players[pid_us].hand {
+                for &t in self.players[pid_us].hand_slice() {
                     let idx = t as usize / 4;
                     counts[idx] += 1;
                 }
@@ -137,10 +137,10 @@ impl GameState3PLegalActions for GameState3P {
                         }
                     }
                     // Kakan
-                    for m in &self.players[pid_us].melds {
+                    for m in self.players[pid_us].melds_slice() {
                         if m.meld_type == MeldType::Pon {
                             let target = m.tiles[0] / 4;
-                            for &t in &self.players[pid_us].hand {
+                            for &t in self.players[pid_us].hand_slice() {
                                 if t / 4 == target {
                                     legals.push(Action::new(
                                         ActionType::Kakan,
@@ -156,20 +156,20 @@ impl GameState3PLegalActions for GameState3P {
                     if let Some(t) = self.drawn_tile {
                         let t34 = t / 4;
                         if counts[t34 as usize] == 4 {
-                            let mut hand_pre = self.players[pid_us].hand.clone();
+                            let mut hand_pre = self.players[pid_us].hand_slice().to_vec();
                             if let Some(pos) = hand_pre.iter().position(|&x| x == t) {
                                 hand_pre.remove(pos);
                             }
                             let calc_pre = crate::hand_evaluator_3p::HandEvaluator3P::new(
                                 &hand_pre,
-                                &self.players[pid_us].melds,
+                                self.players[pid_us].melds_slice(),
                             );
                             let mut waits_pre = calc_pre.get_waits();
                             waits_pre.sort();
 
-                            let mut hand_post = self.players[pid_us].hand.clone();
+                            let mut hand_post = self.players[pid_us].hand_slice().to_vec();
                             hand_post.retain(|&x| x / 4 != t34);
-                            let mut melds_post = self.players[pid_us].melds.clone();
+                            let mut melds_post = self.players[pid_us].melds_slice().to_vec();
                             let lowest = t34 * 4;
                             melds_post.push(Meld::new(
                                 MeldType::Ankan,
@@ -199,11 +199,11 @@ impl GameState3PLegalActions for GameState3P {
             }
 
             // 4. Kyushu Kyuhai
-            let no_calls = self.players.iter().all(|p| p.melds.is_empty());
+            let no_calls = self.players.iter().all(|p| p.meld_count == 0 );
 
             if self.is_first_turn && no_calls && !self.players[pid_us].riichi_stage {
                 let mut distinct_terminals = std::collections::HashSet::new();
-                for &t in &self.players[pid_us].hand {
+                for &t in self.players[pid_us].hand_slice() {
                     if is_terminal_tile(t) {
                         distinct_terminals.insert(t / 4);
                     }
@@ -230,15 +230,13 @@ impl GameState3PLegalActions for GameState3P {
         let mut legals = Vec::new();
         let mut missed_agari = false;
         let i_us = i as usize;
-        let hand = &self.players[i_us].hand;
-        let melds = &self.players[i_us].melds;
+        let hand = self.players[i_us].hand_slice();
+        let melds = self.players[i_us].melds_slice();
         let np: u8 = 3;
 
         // 1. Ron
         let tile_class = tile / 4;
-        let in_discards = self.players[i_us]
-            .discards
-            .iter()
+        let in_discards = self.players[i_us].discards_slice().iter()
             .any(|&d| d / 4 == tile_class);
         let in_missed = self.players[i_us].missed_agari_doujun
             || (self.players[i_us].riichi_declared && self.players[i_us].missed_agari_riichi);
@@ -282,7 +280,7 @@ impl GameState3PLegalActions for GameState3P {
             }
 
             if !is_furiten {
-                let res = calc.calc(tile, &self.wall.dora_indicators, &[], Some(cond));
+                let res = calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
                 if res.is_win {
                     legals.push(Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
                 } else if res.has_win_shape {

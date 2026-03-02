@@ -13,8 +13,8 @@ impl GameState3P {
         let p_idx = pid as usize;
 
         // Remove North tile from hand
-        if let Some(idx) = self.players[p_idx].hand.iter().position(|&t| t == tile) {
-            self.players[p_idx].hand.remove(idx);
+        if let Some(idx) = self.players[p_idx].hand_slice().iter().position(|&t| t == tile) {
+            self.players[p_idx].remove_hand(idx);
         }
 
         // Add to kita_tiles
@@ -55,17 +55,15 @@ impl GameState3P {
             if i == pid {
                 continue;
             }
-            let hand = &self.players[i as usize].hand;
-            let melds = &self.players[i as usize].melds;
+            let hand = self.players[i as usize].hand_slice();
+            let melds = self.players[i as usize].melds_slice();
 
             // Furiten check
             let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(hand, melds);
             let waits = calc.get_waits_u8();
             let mut is_furiten = false;
             for &w in &waits {
-                if self.players[i as usize]
-                    .discards
-                    .iter()
+                if self.players[i as usize].discards_slice().iter()
                     .any(|&d| d / 4 == w)
                 {
                     is_furiten = true;
@@ -99,7 +97,7 @@ impl GameState3P {
                 ..Default::default()
             };
 
-            let res = calc.calc(tile, &self.wall.dora_indicators, &[], Some(cond));
+            let res = calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
 
             if res.is_win && (res.yakuman || res.han >= 1) {
                 chankan_ronners.push(i);
@@ -138,7 +136,7 @@ impl GameState3P {
         let mut actions = Vec::new();
 
         // Find North tiles (type 30, IDs 120-123) in hand
-        for &tile in &self.players[p_idx].hand {
+        for &tile in self.players[p_idx].hand_slice() {
             if tile / 4 == 30 {
                 // North wind
                 actions.push(Action::new(ActionType::Kita, Some(tile), &[], Some(pid)));
@@ -160,7 +158,7 @@ impl GameState3P {
 
             // Draw from rinshan via cursor (no memmove)
             let t = self.wall.draw_rinshan();
-            self.players[p_idx].hand.push(t);
+            self.players[p_idx].push_hand(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
             self.is_rinshan_flag = true;

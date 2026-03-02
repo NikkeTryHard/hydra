@@ -566,14 +566,18 @@ impl LogKyoku {
         for p in state.players.iter_mut() {
             p.hand.sort();
         }
-        state.wall.dora_indicators = doras;
+        // Set dora indicators from parsed doras
+        state.wall.dora_indicator_count = 0;
+        for d in &doras {
+            state.wall.push_dora_indicator(*d);
+        }
 
-        // If wall was initialized from a full wall (136 tiles), pop all tiles starting hands consumed
-        if state.wall.tiles.len() == 136 {
+        // If wall was initialized from a full wall (136 tiles), draw_back all tiles starting hands consumed
+        if state.wall.tile_count == 136 {
             let total_hand_tiles: usize = state.players.iter().map(|p| p.hand.len()).sum();
             for _ in 0..total_hand_tiles {
-                if !state.wall.tiles.is_empty() {
-                    state.wall.tiles.pop();
+                if state.wall.tile_count > 0 {
+                    state.wall.draw_back();
                 }
             }
         }
