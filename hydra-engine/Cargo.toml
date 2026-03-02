@@ -1,0 +1,39 @@
+[package]
+edition = "2021"
+name = "hydra-engine"
+version = "0.3.4"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Japanese Mahjong (Riichi) game engine with MJAI protocol support"
+readme = "README.md"
+keywords = ["mahjong", "riichi", "mjai", "game-engine"]
+categories = ["game-engines", "simulation"]
+license = "Apache-2.0"
+repository = "https://github.com/smly/RiichiEnv"
+
+[lib]
+name = "riichienv_core"
+crate-type = ["rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+ahash = "0.8"
+base64 = "0.22"
+flate2 = "1.0"
+hex = "0.4"
+ndarray = "0.17"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
+sha2 = "0.10"
+
+[features]
+default = ["mjai-logging"]
+mjai-logging = ["serde_json"]
+# Kept as no-op so cfg(feature = "python") guards compile without warnings.
+# The actual pyo3 dependency is removed; these code paths are dead.
+python = []
