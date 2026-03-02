@@ -28,11 +28,11 @@ pub struct PlayerState {
 impl PlayerState {
     pub fn new(starting_score: i32) -> Self {
         Self {
-            hand: Vec::new(),
-            melds: Vec::new(),
-            discards: Vec::new(),
-            discard_from_hand: Vec::new(),
-            discard_is_riichi: Vec::new(),
+            hand: Vec::with_capacity(14),
+            melds: Vec::with_capacity(4),
+            discards: Vec::with_capacity(30),
+            discard_from_hand: Vec::with_capacity(30),
+            discard_is_riichi: Vec::with_capacity(30),
             riichi_declaration_index: None,
             score: starting_score,
             score_delta: 0,

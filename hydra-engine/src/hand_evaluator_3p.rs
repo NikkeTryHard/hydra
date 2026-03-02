@@ -24,16 +24,16 @@ impl HandEvaluator3P {
 
     pub fn new(tiles_136: &[u8], melds: &[Meld]) -> Self {
         let mut aka_dora_count = 0;
-        let mut tiles_34 = Vec::with_capacity(tiles_136.len());
 
+        // Build hand directly without intermediate Vec
+        let mut full_hand = Hand::default();
         for &t in tiles_136 {
             if t == 16 || t == 52 || t == 88 {
                 aka_dora_count += 1;
             }
-            tiles_34.push(t / 4);
+            full_hand.add(t / 4);
         }
 
-        let mut full_hand = Hand::new(Some(tiles_34));
         let mut hand = full_hand.clone();
 
         let mut internal_melds = Vec::with_capacity(melds.len());

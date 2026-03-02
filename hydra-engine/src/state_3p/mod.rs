@@ -1613,7 +1613,7 @@ impl GameState3P {
         if let Some(w) = wall {
             self.wall.load_wall(w);
         } else {
-            self.wall.shuffle();
+            self.wall.shuffle(self.skip_mjai_logging);
         }
 
         // Deal logic
