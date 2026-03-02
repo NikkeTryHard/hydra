@@ -14,33 +14,35 @@ const NUM_TILES: usize = 34;
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct SafetyInfo {
-    // -- Genbutsu (safe tiles): 3 sub-channels per opponent --
-    // genbutsu_all[opp][tile] = true if tile is 100% safe against opponent
+    /// Genbutsu (safe tiles): 3 sub-channels per opponent.
+    /// `genbutsu_all[opp][tile]` = true if tile is 100% safe against opponent.
     pub genbutsu_all: [[bool; NUM_TILES]; NUM_OPPONENTS],
-    // genbutsu_tedashi[opp][tile] = true if opponent discarded this tile from hand (not tsumogiri)
+    /// `genbutsu_tedashi[opp][tile]` = true if opponent discarded this tile from hand (not tsumogiri).
     pub genbutsu_tedashi: [[bool; NUM_TILES]; NUM_OPPONENTS],
-    // genbutsu_riichi_era[opp][tile] = true if tile was discarded after opponent's riichi
+    /// `genbutsu_riichi_era[opp][tile]` = true if tile was discarded after opponent's riichi.
     pub genbutsu_riichi_era: [[bool; NUM_TILES]; NUM_OPPONENTS],
 
-    // -- Suji (2-away inference): float 0.0-1.0 per tile --
-    // e.g., if 4m is genbutsu, then 1m and 7m get suji safety
+    /// Suji (2-away inference): float 0.0-1.0 per tile.
+    ///
+    /// e.g., if 4m is genbutsu, then 1m and 7m get suji safety.
     pub suji: [[f32; NUM_TILES]; NUM_OPPONENTS],
 
-    // -- Kabe (wall block): all 4 copies visible --
+    /// Kabe (wall block): all 4 copies visible.
     pub kabe: [bool; NUM_TILES],
 
-    // -- One-chance: 3 copies visible, 1 remaining --
+    /// One-chance: 3 copies visible, 1 remaining.
     pub one_chance: [bool; NUM_TILES],
 
-    // -- Visible tile counts (for kabe/one-chance calculation) --
+    /// Visible tile counts (for kabe/one-chance calculation).
     pub visible_counts: [u8; NUM_TILES],
 
-    // -- Opponent riichi status (for genbutsu_riichi_era tracking) --
+    /// Opponent riichi status (for genbutsu_riichi_era tracking).
     pub opponent_riichi: [bool; NUM_OPPONENTS],
 }
 
 impl SafetyInfo {
     /// Create a new `SafetyInfo` with all fields zeroed/false.
+    #[inline]
     pub fn new() -> Self {
         Self {
             genbutsu_all: [[false; NUM_TILES]; NUM_OPPONENTS],
@@ -55,6 +57,7 @@ impl SafetyInfo {
     }
 
     /// Reset all safety data to initial state.
+    #[inline]
     pub fn reset(&mut self) {
         *self = Self::new();
     }
@@ -72,6 +75,7 @@ impl SafetyInfo {
     /// `tile_type`: 0-33 tile type index
     /// `opponent_idx`: which opponent (0-2) discarded it, relative to the observing player
     /// `is_tedashi`: true if discarded from hand (not tsumogiri)
+    #[inline]
     pub fn on_discard(&mut self, tile_type: u8, opponent_idx: usize, is_tedashi: bool) {
         let t = tile_type as usize;
         if t >= NUM_TILES || opponent_idx >= NUM_OPPONENTS {
@@ -101,6 +105,7 @@ impl SafetyInfo {
     ///
     /// Suji pattern: if tile N is safe, tiles N-3 and N+3 get suji inference.
     /// Only applies to suited tiles (indices 0-26). Honors have no suji.
+    #[inline]
     fn update_suji(&mut self, opponent_idx: usize, tile: usize) {
         // Suji only applies to suited tiles (0-26)
         if tile >= 27 {
@@ -125,6 +130,7 @@ impl SafetyInfo {
     }
 
     /// Update kabe and one-chance flags based on visible tile counts.
+    #[inline]
     fn update_kabe_one_chance(&mut self, tile: usize) {
         self.kabe[tile] = self.visible_counts[tile] >= 4;
         self.one_chance[tile] = self.visible_counts[tile] == 3;
@@ -133,6 +139,7 @@ impl SafetyInfo {
 
 impl SafetyInfo {
     /// Update when an opponent declares riichi.
+    #[inline]
     pub fn on_riichi(&mut self, opponent_idx: usize) {
         if opponent_idx < NUM_OPPONENTS {
             self.opponent_riichi[opponent_idx] = true;
@@ -140,6 +147,7 @@ impl SafetyInfo {
     }
 
     /// Update visible counts when tiles are revealed via call (chi/pon/kan).
+    #[inline]
     pub fn on_call(&mut self, tiles: &[u8]) {
         for &t in tiles {
             let idx = t as usize;
@@ -151,6 +159,7 @@ impl SafetyInfo {
     }
 
     /// Update visible counts when a dora indicator is revealed.
+    #[inline]
     pub fn on_dora_revealed(&mut self, tile_type: u8) {
         let idx = tile_type as usize;
         if idx < NUM_TILES {
