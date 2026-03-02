@@ -27,18 +27,18 @@ pub struct FirstActionSelector;
 
 impl ActionSelector for FirstActionSelector {
     fn select_action(&mut self, _player: u8, legal_actions: &[Action]) -> Action {
-        legal_actions[0].clone()
+        legal_actions[0]
     }
 }
 
 /// Runs a complete game with proper phase handling and safety tracking.
 pub struct GameRunner {
     state: GameState,
-    safety: [SafetyInfo; 4], // one SafetyInfo per player perspective
+    safety: [SafetyInfo; 4],
     total_actions: u32,
     rounds_played: u32,
+    actions: HashMap<u8, Action>,
 }
-
 impl GameRunner {
     /// Create a new game runner.
     pub fn new(seed: Option<u64>, game_mode: u8) -> Self {
@@ -49,6 +49,7 @@ impl GameRunner {
             safety: std::array::from_fn(|_| SafetyInfo::new()),
             total_actions: 0,
             rounds_played: 1,
+            actions: HashMap::with_capacity(4),
         }
     }
 
@@ -71,26 +72,32 @@ impl GameRunner {
             safety: std::array::from_fn(|_| SafetyInfo::new()),
             total_actions: 0,
             rounds_played: 1,
+            actions: HashMap::with_capacity(4),
         }
     }
 
+    #[inline]
     pub fn is_done(&self) -> bool {
         self.state.is_done
     }
 
+    #[inline]
     pub fn total_actions(&self) -> u32 {
         self.total_actions
     }
 
+    #[inline]
     pub fn rounds_played(&self) -> u32 {
         self.rounds_played
     }
 
+    #[inline]
     pub fn scores(&self) -> [i32; 4] {
         std::array::from_fn(|i| self.state.players[i].score)
     }
 
     /// Get safety info from a specific player's perspective.
+    #[inline]
     pub fn safety(&self, player: u8) -> &SafetyInfo {
         &self.safety[player as usize]
     }
@@ -100,14 +107,14 @@ const MAX_STEPS: u32 = 50_000;
 
 impl GameRunner {
     /// Advance the game by one step. Returns false if game is over.
-    pub fn step_once(&mut self, selector: &mut dyn ActionSelector) -> bool {
+    pub fn step_once<S: ActionSelector>(&mut self, selector: &mut S) -> bool {
         if self.state.is_done || self.total_actions >= MAX_STEPS {
             return false;
         }
 
         // Handle round transitions
         if self.state.needs_initialize_next_round {
-            self.state.step(&HashMap::new());
+            self.state.step_unchecked(&HashMap::new());
             self.rounds_played += 1;
             // Reset safety for new round
             for s in &mut self.safety {
@@ -116,31 +123,32 @@ impl GameRunner {
             return !self.state.is_done;
         }
 
-        let mut actions = HashMap::new();
+        self.actions.clear();
 
         match self.state.phase {
             Phase::WaitAct => {
                 let pid = self.state.current_player;
-                let obs = self.state.get_observation(pid);
-                let legal = obs.legal_actions_method();
+                let legal = self.state.get_legal_actions(pid);
                 if legal.is_empty() { return false; }
                 let chosen = selector.select_action(pid, &legal);
                 self.track_action(pid, &chosen);
-                actions.insert(pid, chosen);
+                self.actions.insert(pid, chosen);
             }
             Phase::WaitResponse => {
-                for &pid in &self.state.active_players.clone() {
-                    let obs = self.state.get_observation(pid);
-                    let legal = obs.legal_actions_method();
+                let n = self.state.active_players.len().min(4);
+                let mut pids = [0u8; 4];
+                pids[..n].copy_from_slice(&self.state.active_players[..n]);
+                for &pid in &pids[..n] {
+                    let legal = self.state.get_legal_actions(pid);
                     if legal.is_empty() { continue; }
                     let chosen = selector.select_action(pid, &legal);
                     self.track_action(pid, &chosen);
-                    actions.insert(pid, chosen);
+                    self.actions.insert(pid, chosen);
                 }
             }
         }
 
-        self.state.step(&actions);
+        self.state.step_unchecked(&self.actions);
         self.total_actions += 1;
         !self.state.is_done
     }
@@ -170,11 +178,13 @@ impl GameRunner {
                 }
             }
             ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
-                let tile_types: Vec<u8> = action.consume_tiles.iter()
-                    .map(|&t| t / 4)
-                    .collect();
+                let mut tile_types = [0u8; 4];
+                let count = action.consume_count as usize;
+                for (i, &t) in action.consume_slice().iter().enumerate() {
+                    tile_types[i] = t / 4;
+                }
                 for s in &mut self.safety {
-                    s.on_call(&tile_types);
+                    s.on_call(&tile_types[..count]);
                 }
             }
             ActionType::Riichi => {
@@ -191,7 +201,7 @@ impl GameRunner {
     }
 
     /// Run the full game to completion.
-    pub fn run_to_completion(&mut self, selector: &mut dyn ActionSelector) {
+    pub fn run_to_completion<S: ActionSelector>(&mut self, selector: &mut S) {
         while self.step_once(selector) {}
     }
 }
