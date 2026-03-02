@@ -1,6 +1,7 @@
 mortal-github-repo/
 .worktrees/
 .claude/
+.opencode/
 Mortal-Policy/
 .mcp.json
 RiichiEnv/
