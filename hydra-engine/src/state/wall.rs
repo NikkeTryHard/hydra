@@ -29,7 +29,7 @@ impl WallState {
         }
     }
 
-    pub fn shuffle(&mut self) {
+    pub fn shuffle(&mut self, skip_digest: bool) {
         let mut w: Vec<u8> = (0..136).collect();
         let mut rng = if let Some(episode_seed) = self.seed {
             let hand_seed = splitmix64(episode_seed.wrapping_add(self.hand_index));
@@ -41,14 +41,18 @@ impl WallState {
         };
 
         w.shuffle(&mut rng);
-        self.salt = format!("{:016x}", rng.next_u64());
-
-        let mut hasher = Sha256::new();
-        hasher.update(self.salt.as_bytes());
-        for &t in &w {
-            hasher.update([t]);
+        if skip_digest {
+            self.salt.clear();
+            self.wall_digest.clear();
+        } else {
+            self.salt = format!("{:016x}", rng.next_u64());
+            let mut hasher = Sha256::new();
+            hasher.update(self.salt.as_bytes());
+            for &t in &w {
+                hasher.update([t]);
+            }
+            self.wall_digest = format!("{:x}", hasher.finalize());
         }
-        self.wall_digest = format!("{:x}", hasher.finalize());
 
         w.reverse();
         self.tiles = w;

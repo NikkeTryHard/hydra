@@ -49,7 +49,14 @@ pub struct GameResult {
 
 /// Simulate a single complete game with first-legal-action selection.
 /// Used for benchmarking throughput -- real training uses NN policy.
+#[cfg(test)]
 fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
+    let mut legal_buf = Vec::with_capacity(46);
+    simulate_single_game_with_buf(seed, game_mode, &mut legal_buf)
+}
+
+/// Simulate a single game, reusing the provided legal-action buffer.
+fn simulate_single_game_with_buf(seed: Option<u64>, game_mode: u8, legal_buf: &mut Vec<Action>) -> GameResult {
     let rule = GameRule::default_tenhou();
     let mut state = GameState::new(game_mode, true, seed, 0, rule);
     let mut total_actions: u32 = 0;
@@ -59,7 +66,7 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
     const MAX_STEPS: u32 = 10_000;
 
     let mut actions: [Option<Action>; 4];
-    let mut legal_buf: Vec<Action> = Vec::with_capacity(46);
+
 
     while !state.is_done && total_actions < MAX_STEPS {
         // When a round ends, step() auto-initializes the next round.
@@ -74,7 +81,7 @@ state.step_unchecked(&[None;
 
         match state.phase {
             Phase::WaitAct => {
-                state.get_legal_actions_into(state.current_player, &mut legal_buf);
+                state.get_legal_actions_into(state.current_player, legal_buf);
                 if legal_buf.is_empty() {
                     break;
                 }
@@ -85,7 +92,7 @@ state.step_unchecked(&[None;
                 let mut pids = [0u8; 4];
                 pids[..n].copy_from_slice(&state.active_players[..n]);
                 for &pid in &pids[..n] {
-                    state.get_legal_actions_into(pid, &mut legal_buf);
+                    state.get_legal_actions_into(pid, legal_buf);
                     if legal_buf.is_empty() {
                         continue;
                     }
@@ -140,10 +147,13 @@ impl BatchSimulator {
         self.pool.install(|| {
             (0..num_games)
                 .into_par_iter()
-                .map(|i| {
-                    let seed = base_seed.map(|s| s.wrapping_add(i as u64));
-                    simulate_single_game(seed, game_mode)
-                })
+                .map_init(
+                    || Vec::with_capacity(46),
+                    |legal_buf, i| {
+                        let seed = base_seed.map(|s| s.wrapping_add(i as u64));
+                        simulate_single_game_with_buf(seed, game_mode, legal_buf)
+                    },
+                )
                 .collect()
         })
     }
@@ -158,10 +168,13 @@ pub fn run_batch_simple(config: &BatchConfig) -> Vec<GameResult> {
 
     (0..num_games)
         .into_par_iter()
-        .map(|i| {
-            let seed = base_seed.map(|s| s.wrapping_add(i as u64));
-            simulate_single_game(seed, game_mode)
-        })
+        .map_init(
+            || Vec::with_capacity(46),
+            |legal_buf, i| {
+                let seed = base_seed.map(|s| s.wrapping_add(i as u64));
+                simulate_single_game_with_buf(seed, game_mode, legal_buf)
+            },
+        )
         .collect()
 }
 

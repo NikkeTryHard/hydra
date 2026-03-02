@@ -72,12 +72,12 @@ impl GameStateLegalActions for GameState {
             };
 
             if !self.players[pid_us].riichi_declared || declaration_turn {
+                let mut forbidden_set = [false; 34];
+                for &f in &self.players[pid_us].forbidden_discards {
+                    forbidden_set[(f / 4) as usize] = true;
+                }
                 for &t in self.players[pid_us].hand.iter() {
-                    let is_forbidden = self.players[pid_us]
-                        .forbidden_discards
-                        .iter()
-                        .any(|&f| f / 4 == t / 4);
-                    if !is_forbidden {
+                    if !forbidden_set[(t / 4) as usize] {
                         legals.push(Action::new(ActionType::Discard, Some(t), &[], Some(pid)));
                     }
                 }
@@ -206,13 +206,13 @@ impl GameStateLegalActions for GameState {
             let no_calls = self.players.iter().all(|p| p.melds.is_empty());
 
             if self.is_first_turn && no_calls && !self.players[pid_us].riichi_stage {
-                let mut distinct_terminals = std::collections::HashSet::new();
+                let mut terminal_bits: u64 = 0;
                 for &t in &self.players[pid_us].hand {
                     if is_terminal_tile(t) {
-                        distinct_terminals.insert(t / 4);
+                        terminal_bits |= 1u64 << (t / 4);
                     }
                 }
-                if distinct_terminals.len() >= 9 {
+                if terminal_bits.count_ones() >= 9 {
                     legals.push(Action::new(ActionType::KyushuKyuhai, None, &[], Some(pid)));
                 }
             }
@@ -295,12 +295,12 @@ impl GameStateLegalActions for GameState {
             };
 
             if !self.players[pid_us].riichi_declared || declaration_turn {
+                let mut forbidden_set = [false; 34];
+                for &f in &self.players[pid_us].forbidden_discards {
+                    forbidden_set[(f / 4) as usize] = true;
+                }
                 for &t in self.players[pid_us].hand.iter() {
-                    let is_forbidden = self.players[pid_us]
-                        .forbidden_discards
-                        .iter()
-                        .any(|&f| f / 4 == t / 4);
-                    if !is_forbidden {
+                    if !forbidden_set[(t / 4) as usize] {
                         buf.push(Action::new(ActionType::Discard, Some(t), &[], Some(pid)));
                     }
                 }
@@ -452,13 +452,13 @@ impl GameStateLegalActions for GameState {
             let no_calls = self.players.iter().all(|p| p.melds.is_empty());
 
             if self.is_first_turn && no_calls && !self.players[pid_us].riichi_stage {
-                let mut distinct_terminals = std::collections::HashSet::new();
+                let mut terminal_bits: u64 = 0;
                 for &t in &self.players[pid_us].hand {
                     if is_terminal_tile(t) {
-                        distinct_terminals.insert(t / 4);
+                        terminal_bits |= 1u64 << (t / 4);
                     }
                 }
-                if distinct_terminals.len() >= 9 {
+                if terminal_bits.count_ones() >= 9 {
                     buf.push(Action::new(ActionType::KyushuKyuhai, None, &[], Some(pid)));
                 }
             }
@@ -508,8 +508,12 @@ impl GameStateLegalActions for GameState {
 
             let mut is_furiten = false;
             let waits = calc.get_waits_u8();
+            let mut discard_set = [false; 34];
+            for &d in &self.players[i_us].discards {
+                discard_set[(d / 4) as usize] = true;
+            }
             for &w in &waits {
-                if self.players[i_us].discards.iter().any(|&d| d / 4 == w) {
+                if discard_set[w as usize] {
                     is_furiten = true;
                     break;
                 }

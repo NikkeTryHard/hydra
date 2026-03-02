@@ -128,8 +128,8 @@ impl GameState {
             win_results: Default::default(),
             last_win_results: Default::default(),
             round_end_scores: None,
-            mjai_log: Vec::new(),
-            mjai_events: Vec::with_capacity(300),
+            mjai_log: if skip_mjai_logging { Vec::new() } else { Vec::with_capacity(300) },
+            mjai_events: if skip_mjai_logging { Vec::new() } else { Vec::with_capacity(300) },
             player_event_counts: [0; NP],
             mjai_log_per_player: Default::default(),
             mode,
@@ -482,10 +482,12 @@ impl GameState {
                                 if !tsumogiri {
                                     self.last_tedashis[pid as usize] = Some(t);
                                 }
-                                if let Some(idx) =
-                                    self.players[pid as usize].hand.iter().position(|&x| x == t)
                                 {
-                                    self.players[pid as usize].hand.remove(idx);
+                                    let hand = &mut self.players[pid as usize].hand;
+                                    let pos = hand.partition_point(|&x| x < t);
+                                    if pos < hand.len() && hand[pos] == t {
+                                        hand.remove(pos);
+                                    }
                                 }
                                 self._resolve_discard(pid, t, tsumogiri);
                             }
@@ -558,9 +560,12 @@ impl GameState {
                         let p_idx = pid as usize;
 
                         // Update state BEFORE logging/waiting to keep observations in sync
-                        if let Some(idx) = self.players[p_idx].hand.iter().position(|&x| x == tile)
                         {
-                            self.players[p_idx].hand.remove(idx);
+                            let hand = &mut self.players[p_idx].hand;
+                            let pos = hand.partition_point(|&x| x < tile);
+                            if pos < hand.len() && hand[pos] == tile {
+                                hand.remove(pos);
+                            }
                         }
                         for m in self.players[p_idx].melds.iter_mut() {
                             if m.meld_type == crate::types::MeldType::Pon
@@ -1383,10 +1388,12 @@ impl GameState {
                                 if !tsumogiri {
                                     self.last_tedashis[pid as usize] = Some(t);
                                 }
-                                if let Some(idx) =
-                                    self.players[pid as usize].hand.iter().position(|&x| x == t)
                                 {
-                                    self.players[pid as usize].hand.remove(idx);
+                                    let hand = &mut self.players[pid as usize].hand;
+                                    let pos = hand.partition_point(|&x| x < t);
+                                    if pos < hand.len() && hand[pos] == t {
+                                        hand.remove(pos);
+                                    }
                                 }
                                 self._resolve_discard(pid, t, tsumogiri);
                             }
@@ -1459,9 +1466,12 @@ impl GameState {
                         let p_idx = pid as usize;
 
                         // Update state BEFORE logging/waiting to keep observations in sync
-                        if let Some(idx) = self.players[p_idx].hand.iter().position(|&x| x == tile)
                         {
-                            self.players[p_idx].hand.remove(idx);
+                            let hand = &mut self.players[p_idx].hand;
+                            let pos = hand.partition_point(|&x| x < tile);
+                            if pos < hand.len() && hand[pos] == tile {
+                                hand.remove(pos);
+                            }
                         }
                         for m in self.players[p_idx].melds.iter_mut() {
                             if m.meld_type == crate::types::MeldType::Pon
@@ -2670,7 +2680,7 @@ impl GameState {
         if let Some(w) = wall {
             self.wall.load_wall(w);
         } else {
-            self.wall.shuffle();
+            self.wall.shuffle(self.skip_mjai_logging);
         }
 
         // Deal logic

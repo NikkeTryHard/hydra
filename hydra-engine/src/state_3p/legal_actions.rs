@@ -74,12 +74,12 @@ impl GameState3PLegalActions for GameState3P {
             };
 
             if !self.players[pid_us].riichi_declared || declaration_turn {
+                let mut forbidden_set = [false; 34];
+                for &f in &self.players[pid_us].forbidden_discards {
+                    forbidden_set[(f / 4) as usize] = true;
+                }
                 for &t in self.players[pid_us].hand.iter() {
-                    let is_forbidden = self.players[pid_us]
-                        .forbidden_discards
-                        .iter()
-                        .any(|&f| f / 4 == t / 4);
-                    if !is_forbidden {
+                    if !forbidden_set[(t / 4) as usize] {
                         legals.push(Action::new(ActionType::Discard, Some(t), &[], Some(pid)));
                     }
                 }
@@ -266,8 +266,12 @@ impl GameState3PLegalActions for GameState3P {
 
             let mut is_furiten = false;
             let waits = calc.get_waits_u8();
+            let mut discard_set = [false; 34];
+            for &d in &self.players[i_us].discards {
+                discard_set[(d / 4) as usize] = true;
+            }
             for &w in &waits {
-                if self.players[i_us].discards.iter().any(|&d| d / 4 == w) {
+                if discard_set[w as usize] {
                     is_furiten = true;
                     break;
                 }

@@ -37,7 +37,7 @@ impl WallState3P {
         }
     }
 
-    pub fn shuffle(&mut self) {
+    pub fn shuffle(&mut self, skip_digest: bool) {
         // 3P: 108 tiles (no 2m-8m)
         let mut w: Vec<u8> = (0..136u8).filter(|&t| !is_sanma_excluded_tile(t)).collect();
 
@@ -51,15 +51,18 @@ impl WallState3P {
         };
 
         w.shuffle(&mut rng);
-        self.salt = format!("{:016x}", rng.next_u64());
-
-        // Calculate digest
-        let mut hasher = Sha256::new();
-        hasher.update(self.salt.as_bytes());
-        for &t in &w {
-            hasher.update([t]);
+        if skip_digest {
+            self.salt.clear();
+            self.wall_digest.clear();
+        } else {
+            self.salt = format!("{:016x}", rng.next_u64());
+            let mut hasher = Sha256::new();
+            hasher.update(self.salt.as_bytes());
+            for &t in &w {
+                hasher.update([t]);
+            }
+            self.wall_digest = format!("{:x}", hasher.finalize());
         }
-        self.wall_digest = format!("{:x}", hasher.finalize());
 
         w.reverse();
         self.tiles = w;
