@@ -56,7 +56,7 @@ Additional measurement:
 
 | Benchmark | hydra-engine | libriichi |
 |-----------|-------------|-----------|
-| Observation encode | **439ns** | **806us** (not apples-to-apples) |
+| Observation encode | **421ns** | **806us** (not apples-to-apples) |
 
 ### Notes on the table
 
