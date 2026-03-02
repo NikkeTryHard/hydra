@@ -38,7 +38,7 @@ fn simulate_game_random(seed: u64) -> (u32, [i32; 4]) {
                     break;
                 }
                 let idx = rng.random_range(0..legal.len());
-                actions.insert(state.current_player, legal[idx].clone());
+                actions.insert(state.current_player, legal[idx]);
             }
             Phase::WaitResponse => {
                 // All active players respond (chi/pon/ron/pass)
@@ -50,7 +50,7 @@ fn simulate_game_random(seed: u64) -> (u32, [i32; 4]) {
                     }
                     // For benchmarking: pick random action (often Pass)
                     let idx = rng.random_range(0..legal.len());
-                    actions.insert(pid, legal[idx].clone());
+                    actions.insert(pid, legal[idx]);
                 }
             }
         }
