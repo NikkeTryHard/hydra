@@ -46,6 +46,8 @@ Because riichienv-core's correctness is already verified upstream -- smly ran Mo
 | `seeding` | `seeding.rs` | SHA-256 KDF, `SessionRng`, deterministic wall generation, Fisher-Yates shuffle |
 | `bridge` | `bridge.rs` | Converts riichienv `Observation` into encoder-ready data via `extract_*` functions |
 | `game_loop` | `game_loop.rs` | `GameRunner`, `ActionSelector` trait, step-by-step or run-to-completion execution |
+| `batch_encoder` | `batch_encoder.rs` | Pre-allocated contiguous buffer for encoding N observations without per-obs allocation |
+| `shanten_batch` | `shanten_batch.rs` | Batch shanten with hierarchical hash caching (base + all 34 discards in one pass) |
 
 
 ## Tile System (`tile.rs`)
