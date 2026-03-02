@@ -59,41 +59,42 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
     // Safety limit to prevent infinite loops from engine bugs.
     const MAX_STEPS: u32 = 10_000;
 
+    let mut actions: HashMap<u8, Action> = HashMap::with_capacity(4);
+
     while !state.is_done && total_actions < MAX_STEPS {
         // When a round ends, step() auto-initializes the next round.
         if state.needs_initialize_next_round {
             let empty: HashMap<u8, Action> = HashMap::new();
-            state.step(&empty);
+            state.step_unchecked(&empty);
             rounds += 1;
             continue;
         }
 
-        let mut actions = HashMap::new();
+        actions.clear();
 
         match state.phase {
             Phase::WaitAct => {
-                let obs = state.get_observation(state.current_player);
-                let legal = obs.legal_actions_method();
+                let legal = state.get_legal_actions(state.current_player);
                 if legal.is_empty() {
                     break;
                 }
-                actions.insert(state.current_player, legal[0].clone());
+                actions.insert(state.current_player, legal[0]);
             }
             Phase::WaitResponse => {
-                // Clone active_players to avoid borrow conflict with get_observation.
-                for &pid in &state.active_players.clone() {
-                    let obs = state.get_observation(pid);
-                    let legal = obs.legal_actions_method();
+                let n = state.active_players.len().min(4);
+                let mut pids = [0u8; 4];
+                pids[..n].copy_from_slice(&state.active_players[..n]);
+                for &pid in &pids[..n] {
+                    let legal = state.get_legal_actions(pid);
                     if legal.is_empty() {
                         continue;
                     }
-                    // Always pass for benchmark (first legal = usually Pass).
-                    actions.insert(pid, legal[0].clone());
+                    actions.insert(pid, legal[0]);
                 }
             }
         }
 
-        state.step(&actions);
+        state.step_unchecked(&actions);
         total_actions += 1;
     }
 
