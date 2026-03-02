@@ -232,7 +232,7 @@ fn parse_meld(chars: &mut Peekable<Chars>, tm: &mut TileManager) -> RiichiResult
             );
         }
         tiles_136.sort();
-        Ok(Meld::new(MeldType::Chi, tiles_136, true, -1, None))
+        Ok(Meld::new(MeldType::Chi, &tiles_136, true, -1, None))
     } else {
         let val_d = digits[0].to_digit(10).unwrap() as usize;
         let (base_34, is_red_indicated) = if val_d == 0 {
@@ -294,7 +294,7 @@ fn parse_meld(chars: &mut Peekable<Chars>, tm: &mut TileManager) -> RiichiResult
 
         let opened = mtype != MeldType::Ankan;
 
-        Ok(Meld::new(mtype, tiles_136, opened, -1, None))
+        Ok(Meld::new(mtype, &tiles_136, opened, -1, None))
     }
 }
 

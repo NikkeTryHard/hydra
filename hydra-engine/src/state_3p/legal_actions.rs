@@ -145,7 +145,7 @@ impl GameState3PLegalActions for GameState3P {
                                     legals.push(Action::new(
                                         ActionType::Kakan,
                                         Some(t),
-                                        &m.tiles,
+                                        m.tiles_slice(),
                                         Some(pid),
                                     ));
                                 }
@@ -173,7 +173,7 @@ impl GameState3PLegalActions for GameState3P {
                             let lowest = t34 * 4;
                             melds_post.push(Meld::new(
                                 MeldType::Ankan,
-                                vec![lowest, lowest + 1, lowest + 2, lowest + 3],
+                                &[lowest, lowest + 1, lowest + 2, lowest + 3],
                                 false,
                                 -1,
                                 None,

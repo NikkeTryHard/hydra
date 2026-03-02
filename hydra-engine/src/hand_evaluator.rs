@@ -38,30 +38,35 @@ impl HandEvaluator {
         let mut internal_melds = Vec::with_capacity(melds.len());
 
         for meld in melds {
-            let mut new_meld = meld.clone();
+            let mut new_meld = Meld {
+                meld_type: meld.meld_type,
+                tiles: [0; 4],
+                tile_count: meld.tile_count,
+                opened: meld.opened,
+                from_who: meld.from_who,
+                called_tile: meld.called_tile,
+            };
 
             if new_meld.meld_type == MeldType::Daiminkan
                 || new_meld.meld_type == MeldType::Ankan
                 || new_meld.meld_type == MeldType::Kakan
             {
-                let t_34 = new_meld.tiles[0] / 4;
+                let t_34 = meld.tiles[0] / 4;
                 if hand.counts[t_34 as usize] == 4 {
                     hand.counts[t_34 as usize] = 3;
                 }
             }
 
-            let mut meld_tiles_34 = Vec::with_capacity(new_meld.tiles.len());
-            for &t in &new_meld.tiles {
+            for (i, &t) in meld.tiles_slice().iter().enumerate() {
                 if t == 16 || t == 52 || t == 88 {
                     aka_dora_count += 1;
                 }
                 let t_34 = t / 4;
-                meld_tiles_34.push(t_34);
+                new_meld.tiles[i] = t_34;
                 full_hand.add(t_34);
             }
-            new_meld.tiles = meld_tiles_34;
             if new_meld.meld_type == MeldType::Chi {
-                new_meld.tiles.sort();
+                new_meld.tiles_slice_mut().sort();
             }
             internal_melds.push(new_meld);
         }

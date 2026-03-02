@@ -90,10 +90,11 @@ impl Wind {
 }
 
 #[cfg_attr(feature = "python", pyclass)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Meld {
     pub meld_type: MeldType,
-    pub tiles: Vec<u8>,
+    pub tiles: [u8; 4],
+    pub tile_count: u8,
     pub opened: bool,
     pub from_who: i8,
     /// The tile claimed from another player's discard (for chi/pon/daiminkan).
@@ -102,24 +103,42 @@ pub struct Meld {
 }
 
 impl Meld {
+    /// Create a new Meld from a tile slice (max 4 tiles).
     pub fn new(
         meld_type: MeldType,
-        tiles: Vec<u8>,
+        tiles: &[u8],
         opened: bool,
         from_who: i8,
         called_tile: Option<u8>,
     ) -> Self {
-        Self {
-            meld_type,
-            tiles,
-            opened,
-            from_who,
-            called_tile,
-        }
+        let mut arr = [0u8; 4];
+        let count = tiles.len().min(4);
+        arr[..count].copy_from_slice(&tiles[..count]);
+        Self { meld_type, tiles: arr, tile_count: count as u8, opened, from_who, called_tile }
     }
 
+    /// Get the active tiles as a slice.
+    #[inline]
+    pub fn tiles_slice(&self) -> &[u8] {
+        &self.tiles[..self.tile_count as usize]
+    }
+
+    /// Get the active tiles as a mutable slice.
+    #[inline]
+    pub fn tiles_slice_mut(&mut self) -> &mut [u8] {
+        &mut self.tiles[..self.tile_count as usize]
+    }
+
+    /// Push a tile (for kakan upgrade: 3->4).
+    #[inline]
+    pub fn push_tile(&mut self, tile: u8) {
+        self.tiles[self.tile_count as usize] = tile;
+        self.tile_count += 1;
+    }
+
+    /// Return tiles as u32 vec (for Python compatibility).
     pub fn tiles_as_u32(&self) -> Vec<u32> {
-        self.tiles.iter().map(|&t| t as u32).collect()
+        self.tiles_slice().iter().map(|&t| t as u32).collect()
     }
 }
 
@@ -135,7 +154,7 @@ impl Meld {
         from_who: i8,
         called_tile: Option<u8>,
     ) -> Self {
-        Self::new(meld_type, tiles, opened, from_who, called_tile)
+        Self::new(meld_type, &tiles, opened, from_who, called_tile)
     }
 
     #[getter]
@@ -155,7 +174,10 @@ impl Meld {
 
     #[setter]
     pub fn set_tiles(&mut self, tiles: Vec<u8>) {
-        self.tiles = tiles;
+        let count = tiles.len().min(4);
+        self.tiles = [0u8; 4];
+        self.tiles[..count].copy_from_slice(&tiles[..count]);
+        self.tile_count = count as u8;
     }
 
     #[getter]

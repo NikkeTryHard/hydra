@@ -84,8 +84,8 @@ pub fn extract_melds(obs: &Observation) -> [PlayerMelds; 4] {
         let mut pm = PlayerMelds::new();
         for meld in &obs.melds[abs] {
             let mut tiles = [0u8; 4];
-            let tile_count = meld.tiles.len().min(4) as u8;
-            for (i, &t) in meld.tiles.iter().enumerate().take(4) {
+            let tile_count = meld.tile_count;
+            for (i, &t) in meld.tiles_slice().iter().enumerate() {
                 tiles[i] = t / 4;
             }
             let meld_type = match meld.meld_type {
@@ -110,7 +110,7 @@ pub fn extract_observer_meld_counts(obs: &Observation) -> [u8; NUM_TILE_TYPES] {
     let observer = obs.player_id as usize;
     let mut counts = [0u8; NUM_TILE_TYPES];
     for meld in &obs.melds[observer] {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let t = (tile / 4) as usize;
             if t < NUM_TILE_TYPES {
                 counts[t] = counts[t].saturating_add(1);
@@ -268,8 +268,8 @@ pub fn extract_melds_ref(obs: &ObservationRef<'_>) -> [PlayerMelds; 4] {
         let mut pm = PlayerMelds::new();
         for meld in obs.melds[abs] {
             let mut tiles = [0u8; 4];
-            let tile_count = meld.tiles.len().min(4) as u8;
-            for (i, &t) in meld.tiles.iter().enumerate().take(4) {
+            let tile_count = meld.tile_count;
+            for (i, &t) in meld.tiles_slice().iter().enumerate() {
                 tiles[i] = t / 4;
             }
             let meld_type = match meld.meld_type {
@@ -291,7 +291,7 @@ pub fn extract_observer_meld_counts_ref(obs: &ObservationRef<'_>) -> [u8; NUM_TI
     let observer = obs.player_id as usize;
     let mut counts = [0u8; NUM_TILE_TYPES];
     for meld in obs.melds[observer] {
-        for &tile in &meld.tiles {
+        for &tile in meld.tiles_slice() {
             let t = (tile / 4) as usize;
             if t < NUM_TILE_TYPES {
                 counts[t] = counts[t].saturating_add(1);

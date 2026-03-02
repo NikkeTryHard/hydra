@@ -300,7 +300,7 @@ impl KyokuStepIterator {
                             let mut consume = Vec::new();
                             for m in &slf.state.players[pid as usize].melds {
                                 if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == t34 {
-                                    consume = m.tiles.clone();
+                                    consume = m.tiles_slice().to_vec();
                                     break;
                                 }
                             }

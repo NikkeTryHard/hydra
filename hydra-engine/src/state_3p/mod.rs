@@ -544,8 +544,8 @@ impl GameState3P {
                         for m in self.players[p_idx].melds.iter_mut() {
                             if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
                                 m.meld_type = MeldType::Kakan;
-                                m.tiles.push(tile);
-                                m.tiles.sort();
+                                m.push_tile(tile);
+                                m.tiles_slice_mut().sort();
                                 break;
                             }
                         }
@@ -1139,13 +1139,13 @@ impl GameState3P {
                     ActionType::Pon => MeldType::Pon,
                     _ => MeldType::Pon,
                 };
-                self.players[claimer as usize].melds.push(Meld {
+                self.players[claimer as usize].melds.push(Meld::new(
                     meld_type,
-                    tiles: tiles.clone(),
-                    opened: true,
-                    from_who: discarder as i8,
-                    called_tile: Some(tile),
-                });
+                    &tiles,
+                    true,
+                    discarder as i8,
+                    Some(tile),
+                ));
 
                 if !self.skip_mjai_logging {
                     let type_str = match action.action_type {
@@ -1376,13 +1376,13 @@ impl GameState3P {
                 t_vec.sort();
                 (MeldType::Daiminkan, t_vec, discarder as i8, Some(tile))
             };
-            self.players[p_idx].melds.push(Meld {
-                meld_type: m_type,
-                tiles,
-                opened: m_type == MeldType::Daiminkan,
+            self.players[p_idx].melds.push(Meld::new(
+                m_type,
+                &tiles,
+                m_type == MeldType::Daiminkan,
                 from_who,
-                called_tile: ct,
-            });
+                ct,
+            ));
 
             // PAO check for Daiminkan
             if action.action_type == ActionType::Daiminkan {
