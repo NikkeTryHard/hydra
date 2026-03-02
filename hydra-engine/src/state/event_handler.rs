@@ -351,7 +351,7 @@ impl GameStateEventHandler for GameState {
                                 })
                                 .count();
                             if dragon_melds == 3 {
-                                self.players[*seat].pao.insert(37, discarder);
+                                self.players[*seat].pao_insert(37, discarder);
                             }
                         } else if (27..=30).contains(&tile_val) {
                             let wind_melds = self.players[*seat]
@@ -363,7 +363,7 @@ impl GameStateEventHandler for GameState {
                                 })
                                 .count();
                             if wind_melds == 4 {
-                                self.players[*seat].pao.insert(50, discarder);
+                                self.players[*seat].pao_insert(50, discarder);
                             }
                         }
                     }
@@ -478,7 +478,7 @@ impl GameStateEventHandler for GameState {
                                     1
                                 };
                                 total_yakuman_val += val;
-                                if let Some(&liable) = self.players[winner].pao.get(&(yid as u8)) {
+                                if let Some(liable) = self.players[winner].pao_get(yid as u8) {
                                     pao_yakuman_val += val;
                                     pao_payer = Some(liable);
                                 }
@@ -559,7 +559,7 @@ impl GameStateEventHandler for GameState {
                         let mut pao_payer_ron: Option<u8> = None;
                         if h.yiman {
                             for &yid in &h.fans {
-                                if let Some(&liable) = self.players[winner].pao.get(&(yid as u8)) {
+                                if let Some(liable) = self.players[winner].pao_get(yid as u8) {
                                     pao_payer_ron = Some(liable);
                                     break;
                                 }
