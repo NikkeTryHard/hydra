@@ -30,7 +30,7 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent AI Lab, 10.68 stable dan) 
 
 1. **Proven over Novel** — Prioritize techniques with published evidence (Suphx, Mortal). Novel additions (safety planes, danger head) are grounded in Mahjong theory, not speculation.
 2. **Practical Constraints** — Must fit <8GB inference VRAM, <50ms latency.
-3. **Clean IP** — No Mortal-derived code (AGPL restriction). All code written from scratch, all dependencies MIT/Apache licensed.
+3. **Clean IP** -- No Mortal-derived code (AGPL restriction). All code written from scratch. hydra-core is BSL-1.1, hydra-engine is Apache-2.0, all dependencies MIT/Apache licensed.
 4. **100% Rust** — Game engine, training, and inference all in Rust. Burn framework with burn-tch (libtorch/cuDNN) backend. See [RUST_STACK.md](RUST_STACK.md).
 
 ---
