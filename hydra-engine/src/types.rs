@@ -2,15 +2,18 @@
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// The total number of distinct tile types in mahjong (0-33).
 pub const TILE_MAX: usize = 34;
 
 /// A hand representation using a histogram of tile types (0-33).
 #[derive(Debug, Clone)]
 pub struct Hand {
+    /// The tile-type histogram (index = tile type 0-33, value = count).
     pub counts: [u8; TILE_MAX],
 }
 
 impl Hand {
+    /// Creates a new hand, optionally populated from a list of tile types.
     pub fn new(tiles: Option<Vec<u8>>) -> Self {
         let mut h = Hand {
             counts: [0; TILE_MAX],
@@ -23,12 +26,14 @@ impl Hand {
         h
     }
 
+    /// Adds a tile type to the hand, incrementing its count.
     pub fn add(&mut self, t: u8) {
         if (t as usize) < TILE_MAX {
             self.counts[t as usize] += 1;
         }
     }
 
+    /// Removes a tile type from the hand, decrementing its count if present.
     pub fn remove(&mut self, t: u8) {
         if (t as usize) < TILE_MAX && self.counts[t as usize] > 0 {
             self.counts[t as usize] -= 1;
@@ -48,13 +53,19 @@ impl Default for Hand {
     }
 }
 
+/// The type of meld (open/closed group of tiles).
 #[cfg_attr(feature = "python", pyclass(eq, eq_int))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MeldType {
+    /// A sequence of three consecutive suited tiles claimed from the left player.
     Chi = 0,
+    /// A triplet formed by claiming another player's discard.
     Pon = 1,
+    /// An open quad formed by claiming another player's discard.
     Daiminkan = 2,
+    /// A concealed quad declared from four identical tiles in hand.
     Ankan = 3,
+    /// An added quad formed by upgrading a pon with the fourth tile.
     Kakan = 4,
 }
 
@@ -63,9 +74,13 @@ pub enum MeldType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Wind {
     #[default]
+    /// East wind (ton).
     East = 0,
+    /// South wind (nan).
     South = 1,
+    /// West wind (shaa).
     West = 2,
+    /// North wind (pei).
     North = 3,
 }
 
@@ -89,13 +104,19 @@ impl Wind {
     }
 }
 
+/// A declared meld (chi, pon, or kan) consisting of up to 4 tiles.
 #[cfg_attr(feature = "python", pyclass)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Meld {
+    /// The type of this meld (chi, pon, daiminkan, ankan, kakan).
     pub meld_type: MeldType,
+    /// The tile IDs in this meld (136-format), padded with zeros.
     pub tiles: [u8; 4],
+    /// The number of active tiles in the `tiles` array.
     pub tile_count: u8,
+    /// Whether this meld is open (visible to other players).
     pub opened: bool,
+    /// The relative seat of the player the tile was claimed from (-1 if N/A).
     pub from_who: i8,
     /// The tile claimed from another player's discard (for chi/pon/daiminkan).
     /// None for ankan/kakan or melds not involving a discard claim.
@@ -219,24 +240,41 @@ impl Meld {
     }
 }
 
+/// Contextual conditions for hand evaluation (win method, special states, round info).
 #[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 #[derive(Debug, Clone)]
 pub struct Conditions {
+    /// Whether the win was by self-draw (tsumo).
     pub tsumo: bool,
+    /// Whether the player declared riichi.
     pub riichi: bool,
+    /// Whether the player declared double riichi (riichi on first turn).
     pub double_riichi: bool,
+    /// Whether the win occurred within one turn of declaring riichi.
     pub ippatsu: bool,
+    /// Whether the win was on the last drawable tile (haitei raoyue).
     pub haitei: bool,
+    /// Whether the win was on the last discarded tile (houtei raoyui).
     pub houtei: bool,
+    /// Whether the winning tile was drawn from the dead wall after a kan.
     pub rinshan: bool,
+    /// The player's seat wind.
     pub player_wind: Wind,
+    /// The prevailing round wind.
     pub round_wind: Wind,
+    /// Whether the win was by robbing a kan (chankan).
     pub chankan: bool,
+    /// Whether the win occurred on the very first uninterrupted turn.
     pub tsumo_first_turn: bool,
+    /// The number of riichi sticks on the table.
     pub riichi_sticks: u32,
+    /// The current honba (repeat counter) for the round.
     pub honba: u32,
+    /// The number of kita (north tile) declarations by this player (sanma).
     pub kita_count: u8,
+    /// Whether the game is three-player (sanma) mode.
     pub is_sanma: bool,
+    /// The number of players in the game (3 or 4).
     pub num_players: u8,
 }
 
@@ -308,23 +346,36 @@ impl Conditions {
     }
 }
 
+/// The result of evaluating a hand for a win, including score and yaku breakdown.
 #[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 #[derive(Debug, Clone, Copy)]
 pub struct WinResult {
+    /// Whether the hand is a valid winning hand.
     pub is_win: bool,
+    /// Whether the hand qualifies as yakuman.
     pub yakuman: bool,
+    /// The ron payment amount (from the discarder).
     pub ron_agari: u32,
+    /// The tsumo payment from the dealer (oya) when a non-dealer wins.
     pub tsumo_agari_oya: u32,
+    /// The tsumo payment from each non-dealer (ko).
     pub tsumo_agari_ko: u32,
+    /// Fixed-size array of yaku IDs present in the winning hand.
     pub yaku: [u32; 16],
+    /// The number of active entries in the `yaku` array.
     pub yaku_count: u8,
+    /// The total han (doubles) count.
     pub han: u32,
+    /// The fu (minipoints) count.
     pub fu: u32,
+    /// The player index responsible for pao (liability), if any.
     pub pao_payer: Option<u8>,
+    /// Whether the hand has a valid winning tile grouping (regardless of yaku).
     pub has_win_shape: bool,
 }
 
 impl WinResult {
+    /// Creates a new win result from all scoring components.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         is_win: bool,
@@ -406,6 +457,7 @@ impl WinResult {
         )
     }
 
+    /// Returns the list of resolved yaku objects for this win.
     pub fn yaku_list(&self) -> Vec<crate::yaku::Yaku> {
         self.yaku_slice()
             .iter()
@@ -414,6 +466,7 @@ impl WinResult {
     }
 }
 
+/// Returns whether a tile ID (0-135) is a terminal or honor tile.
 pub fn is_terminal_tile(t: u8) -> bool {
     let t_type = t / 4;
     let rank = t_type % 9;

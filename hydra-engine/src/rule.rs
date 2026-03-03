@@ -2,20 +2,29 @@
 use pyo3::{pyclass, pymethods};
 use serde::{Deserialize, Serialize};
 
+/// Configuration for game rules and yakuman/scoring variants.
 #[cfg_attr(
     feature = "python",
     pyclass(module = "riichienv._riichienv", get_all, set_all)
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GameRule {
+    /// Whether ron is allowed on an ankan that completes kokushi musou.
     pub allows_ron_on_ankan_for_kokushi_musou: bool,
+    /// Whether 13-wait kokushi musou counts as double yakuman.
     pub is_kokushi_musou_13machi_double: bool,
+    /// Whether single-wait suuankou (tanki) counts as double yakuman.
     pub is_suuankou_tanki_double: bool,
+    /// Whether pure nine gates (junsei chuurenpoutou) counts as double yakuman.
     pub is_junsei_chuurenpoutou_double: bool,
+    /// Whether big four winds (daisuushii) counts as double yakuman.
     pub is_daisuushii_double: bool,
+    /// Whether yakuman pao only applies to the liable player (not split).
     pub yakuman_pao_is_liability_only: bool,
+    /// Whether triple ron (sanchaho) results in an abortive draw.
     pub sanchaho_is_draw: bool,
 
+    /// Whether swap-calling (kuikae) is forbidden.
     pub kuikae_forbidden: bool,
 
     /// Whether open kan (Daiminkan/Kakan) dora is revealed after the discard.
@@ -34,6 +43,7 @@ impl Default for GameRule {
 }
 
 impl GameRule {
+    /// Returns the default Tenhou 4-player rule set.
     pub fn default_tenhou() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: false,
@@ -50,6 +60,7 @@ impl GameRule {
         }
     }
 
+    /// Returns the default Mahjong Soul 4-player rule set.
     pub fn default_mjsoul() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: true,
@@ -66,6 +77,7 @@ impl GameRule {
         }
     }
 
+    /// Returns the default Mortal-compatible 4-player rule set.
     pub fn default_mortal() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: false,
@@ -82,6 +94,7 @@ impl GameRule {
         }
     }
 
+    /// Returns the default Mahjong Soul 3-player (sanma) rule set.
     pub fn default_mjsoul_sanma() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: true,
@@ -98,6 +111,7 @@ impl GameRule {
         }
     }
 
+    /// Returns the default Tenhou 3-player (sanma) rule set.
     pub fn default_tenhou_sanma() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: false,
@@ -114,6 +128,7 @@ impl GameRule {
         }
     }
 
+    /// Returns the default Mortal-compatible 3-player (sanma) rule set.
     pub fn default_mortal_sanma() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: false,
