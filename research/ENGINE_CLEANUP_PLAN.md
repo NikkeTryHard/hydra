@@ -86,7 +86,7 @@ logging and state assertions.
 
 ## High (code quality / maintainability)
 
-### H1: Unify 4p/3p code duplication (~5,500 lines)
+### H1: Unify 4p/3p code duplication (~5,500 lines) -- CANCELLED (Oracle review: actual overlap is 40-60%, divergence is real game rules not accidental duplication. Forcing into const generic would create bug minefield. Keep separate files.)
 
 **Problem**: 9 file pairs with 85-95% identical code. state/mod.rs
 (2273 lines) mirrors state_3p/mod.rs (2018 lines). Same for
