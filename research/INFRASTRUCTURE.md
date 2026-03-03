@@ -754,6 +754,52 @@ graph LR
 
 The core advantage of a 100% Rust stack is zero FFI boundary at inference time. No GIL, no Python startup overhead, no cross-language serialization -- enabling sub-15ms decision latency suitable for real-time play.
 
+## TACC Frontera Allocation
+
+Hydra has a Startup allocation on TACC Frontera (UT System TxRAS path). This section documents the allocation details and the proposal framing used in the justification document.
+
+### Allocation Details
+
+| Field | Value |
+|-------|-------|
+| System | Frontera GPU nodes (rtx queue) |
+| PI | Dr. Sihong He, UT Arlington |
+| Researcher | Sho Kaneko (TACC username: louiskaneko) |
+| Allocation type | Startup (UT System via TxRAS) |
+| Requested | 667 node-hours (= 2,000 SUs at 3 SU/node-hour rtx multiplier) |
+| Startup GPU limit | 3,000 SUs (TxRAS path for UT System institutions) |
+| Allocation end | 2026-05-31 (Frontera expected shutdown) |
+| Submission portal | https://submit-tacc.xras.org/ |
+
+### Frontera RTX Node Specs
+
+| Component | Specification |
+|-----------|--------------|
+| GPUs per node | 4x NVIDIA Quadro RTX 5000 |
+| GPU memory | 16 GB GDDR6 per card |
+| CUDA cores | 3,072 per card |
+| Tensor cores | 384 per card |
+| CPUs | 2x Intel Xeon E5-2620 v4 (Broadwell) |
+| RAM | 128 GB DDR4 |
+| Local storage | 144 GB /tmp on 240 GB SSD |
+| Charge rate | 3 SUs per node-hour (rtx queue) |
+
+Hydra's peak VRAM usage is under 4 GB (Phase 3 with 5 cached opponent models). Each RTX 5000's 16 GB provides ample headroom, enabling all 4 GPUs per node to run independent experiments simultaneously.
+
+### Compute Budget
+
+| Workload | GPU-Hours | Node-Hours | SUs |
+|----------|-----------|------------|-----|
+| Phase 1: Behavioral cloning + contrastive clustering | 600 | 150 | 450 |
+| Phase 2: Oracle distillation + search calibration | 800 | 200 | 600 |
+| Phase 3: League self-play validation | 800 | 200 | 600 |
+| Ablation studies + debugging buffer | 468 | 117 | 350 |
+| **Total** | **2,668** | **667** | **2,000** |
+
+### Proposal Framing Note
+
+The TACC justification document describes the project as "Learned Abstraction Search (LAS) for Mahjong AI," framing the architecture as a neural abstraction layer (inspired by the LAMIR framework, ICLR 2026) that enables real-time MCCFR search. This is the long-term research direction for Hydra. The current implementation plan (SE-ResNet + PPO + oracle distillation) is the foundation that the allocation compute will be used for. The LAS/MCCFR search capability is a post-Phase-3 extension documented in [SEARCH_PGOI.md](SEARCH_PGOI.md).
+
 ## Hardware Requirements
 
 ### Training
