@@ -40,7 +40,7 @@ Update all `.get()`, `.insert()`, `.clear()` call sites.
 
 ---
 
-### C3: Fill reserved encoder channels (9 zeros)
+### C3: Fill reserved encoder channels (9 zeros) -- DONE (half-suji, matagi, tenpai hints)
 
 **Problem**: Ch 74-79 (suji context) and Ch 82-84 (tenpai hints) are
 permanently zero. 10.6% of input tensor is wasted.
