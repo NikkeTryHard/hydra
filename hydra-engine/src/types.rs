@@ -309,14 +309,15 @@ impl Conditions {
 }
 
 #[cfg_attr(feature = "python", pyclass(get_all, set_all))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct WinResult {
     pub is_win: bool,
     pub yakuman: bool,
     pub ron_agari: u32,
     pub tsumo_agari_oya: u32,
     pub tsumo_agari_ko: u32,
-    pub yaku: Vec<u32>,
+    pub yaku: [u32; 16],
+    pub yaku_count: u8,
     pub han: u32,
     pub fu: u32,
     pub pao_payer: Option<u8>,
@@ -331,7 +332,8 @@ impl WinResult {
         ron_agari: u32,
         tsumo_agari_oya: u32,
         tsumo_agari_ko: u32,
-        yaku: Vec<u32>,
+        yaku: [u32; 16],
+        yaku_count: u8,
         han: u32,
         fu: u32,
         pao_payer: Option<u8>,
@@ -344,11 +346,25 @@ impl WinResult {
             tsumo_agari_oya,
             tsumo_agari_ko,
             yaku,
+            yaku_count,
             han,
             fu,
             pao_payer,
             has_win_shape,
         }
+    }
+
+    /// Get the active yaku IDs as a slice.
+    #[inline]
+    pub fn yaku_slice(&self) -> &[u32] {
+        &self.yaku[..self.yaku_count as usize]
+    }
+
+    /// Push a yaku ID into the fixed array.
+    #[inline]
+    pub fn push_yaku(&mut self, id: u32) {
+        self.yaku[self.yaku_count as usize] = id;
+        self.yaku_count += 1;
     }
 }
 
@@ -370,13 +386,19 @@ impl WinResult {
         pao_payer: Option<u8>,
         has_win_shape: bool,
     ) -> Self {
+        let mut arr = [0u32; 16];
+        let count = yaku.len().min(16);
+        for (i, &id) in yaku.iter().take(16).enumerate() {
+            arr[i] = id;
+        }
         Self::new(
             is_win,
             yakuman,
             ron_agari,
             tsumo_agari_oya,
             tsumo_agari_ko,
-            yaku,
+            arr,
+            count as u8,
             han,
             fu,
             pao_payer,
@@ -385,7 +407,7 @@ impl WinResult {
     }
 
     pub fn yaku_list(&self) -> Vec<crate::yaku::Yaku> {
-        self.yaku
+        self.yaku_slice()
             .iter()
             .filter_map(|&id| crate::yaku::get_yaku_by_id(id))
             .collect()

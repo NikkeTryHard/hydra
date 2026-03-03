@@ -104,7 +104,7 @@ mod unit_tests {
 
         let res = calculate_yaku(&hand, &[], &YakuContext::default(), 31);
         assert!(res.han >= 13);
-        assert!(res.yaku_ids.contains(&39));
+        assert!(res.yaku_ids_slice().contains(&39));
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod unit_tests {
 
         let res = calculate_yaku(&hand, &[], &YakuContext::default(), 19);
         assert!(res.han >= 13);
-        assert!(res.yaku_ids.contains(&40));
+        assert!(res.yaku_ids_slice().contains(&40));
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod unit_tests {
 
         let res = calculate_yaku(&hand, &[], &YakuContext::default(), 0);
         assert!(res.han >= 26);
-        assert!(res.yaku_ids.contains(&50));
+        assert!(res.yaku_ids_slice().contains(&50));
     }
 
     fn create_test_state(game_type: u8) -> crate::state::GameState {
@@ -325,7 +325,7 @@ mod unit_tests {
         let res6p = calc.calc(56, &[], &[], Some(cond.clone()));
         println!(
             "6p Result: is_win={}, Shape={}, Han={}, Yaku={:?}",
-            res6p.is_win, res6p.has_win_shape, res6p.han, res6p.yaku
+            res6p.is_win, res6p.has_win_shape, res6p.han, res6p.yaku_slice()
         );
         assert!(!res6p.is_win, "6p should NOT be a win (No Yaku)");
         assert!(res6p.has_win_shape, "6p should have win shape");
@@ -335,7 +335,7 @@ mod unit_tests {
         let res9p = calc.calc(68, &[], &[], Some(cond));
         println!(
             "9p Result: is_win={}, Han={}, Yaku={:?}",
-            res9p.is_win, res9p.han, res9p.yaku
+            res9p.is_win, res9p.han, res9p.yaku_slice()
         );
         assert!(res9p.is_win, "9p should be a win");
         assert!(res9p.han >= 3, "9p should be Junchan (>= 3 Han)"); // Junchan (3)
