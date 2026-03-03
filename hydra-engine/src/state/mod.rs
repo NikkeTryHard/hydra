@@ -652,7 +652,7 @@ impl GameState {
                 );
 
                 // 42=Kokushi, 49=Kokushi13
-                if res.is_win && (res.yaku.contains(&42) || res.yaku.contains(&49))
+                if res.is_win && (res.yaku_slice().contains(&42) || res.yaku_slice().contains(&49))
                 {
                     chankan_ronners[chankan_count] = i; chankan_count += 1;
                     self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
@@ -779,7 +779,8 @@ impl GameState {
                     0,
                     0,
                     0,
-                    vec![],
+                    [0u32; 16],
+                    0,
                     0,
                     0,
                     None,
@@ -843,7 +844,7 @@ impl GameState {
         // Cap double yakuman patterns when not enabled per rule flags
         if res.yakuman && res.han > 13 {
             let mut cap = 0u32;
-            for &y in &res.yaku {
+            for &y in res.yaku_slice() {
                 match y {
                     47 if !self.rule.is_junsei_chuurenpoutou_double => cap += 13,
                     48 if !self.rule.is_suuankou_tanki_double => cap += 13,
@@ -878,7 +879,7 @@ impl GameState {
             let mut total_yakuman_val = 0;
 
             if res.yakuman {
-                for &yid in &res.yaku {
+                for &yid in res.yaku_slice() {
                     let val = match yid {
                         47 if self.rule.is_junsei_chuurenpoutou_double => 2,
                         48 if self.rule.is_suuankou_tanki_double => 2,
@@ -980,7 +981,7 @@ impl GameState {
             let mut val = res;
             for i in 0..self.players[pid as usize].pao_count as usize {
                 let (yid, liable) = self.players[pid as usize].pao[i];
-                if val.yaku.contains(&(yid as u32)) {
+                if val.yaku_slice().contains(&(yid as u32)) {
                     val.pao_payer = Some(liable);
                     break;
                 }
@@ -1134,7 +1135,7 @@ impl GameState {
                 // Cap double yakuman patterns when not enabled per rule flags
                 if res.yakuman && res.han > 13 {
                     let mut cap = 0u32;
-                    for &y in &res.yaku {
+                    for &y in res.yaku_slice() {
                         match y {
                             47 if !self.rule.is_junsei_chuurenpoutou_double => cap += 13,
                             48 if !self.rule.is_suuankou_tanki_double => cap += 13,
@@ -1170,7 +1171,7 @@ impl GameState {
                         let mut total_yakuman_val = 0i32;
                         let mut pao_yakuman_val = 0i32;
 
-                        for &yid in &res.yaku {
+                        for &yid in res.yaku_slice() {
                             let val: i32 = match yid {
                                 47 if self.rule.is_junsei_chuurenpoutou_double => 2,
                                 48 if self.rule.is_suuankou_tanki_double => 2,
@@ -1226,7 +1227,7 @@ impl GameState {
                     let mut val = res;
                     for i in 0..self.players[w_pid as usize].pao_count as usize {
                         let (yid, liable) = self.players[w_pid as usize].pao[i];
-                        if val.yaku.contains(&(yid as u32)) {
+                        if val.yaku_slice().contains(&(yid as u32)) {
                             val.pao_payer = Some(liable);
                             break;
                         }

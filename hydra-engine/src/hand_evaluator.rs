@@ -107,7 +107,7 @@ impl HandEvaluator {
         let is_agari = agari::is_agari(&mut hand_14);
 
         if !is_agari {
-            return WinResult::new(false, false, 0, 0, 0, vec![], 0, 0, None, false);
+            return WinResult::new(false, false, 0, 0, 0, [0; 16], 0, 0, 0, None, false);
         }
 
         let mut dora_count = 0;
@@ -163,12 +163,9 @@ impl HandEvaluator {
             conditions.honba,
             4, // Always 4 players
         );
-        let has_yaku = yaku_res
-            .yaku_ids
-            .iter()
+        let has_yaku = yaku_res.yaku_ids_slice().iter()
             .any(|&id| id != yaku::ID_DORA && id != yaku::ID_AKADORA && id != yaku::ID_URADORA);
 
-        let official_yaku: Vec<u32> = yaku_res.yaku_ids.into_iter().collect();
 
         WinResult {
             is_win: (has_yaku || yaku_res.yakuman_count > 0) && yaku_res.han >= 1,
@@ -176,7 +173,8 @@ impl HandEvaluator {
             ron_agari: score_res.pay_ron,
             tsumo_agari_oya: score_res.pay_tsumo_oya,
             tsumo_agari_ko: score_res.pay_tsumo_ko,
-            yaku: official_yaku,
+            yaku: yaku_res.yaku_ids,
+            yaku_count: yaku_res.yaku_id_count,
             han: yaku_res.han as u32,
             fu: yaku_res.fu as u32,
             pao_payer: None,

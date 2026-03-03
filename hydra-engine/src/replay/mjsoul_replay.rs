@@ -367,7 +367,7 @@ impl MjSoulReplay {
 
                 let sim_han = ctx.actual.han;
                 let sim_fu = ctx.actual.fu;
-                let sim_yaku = ctx.actual.yaku.clone();
+                let sim_yaku: Vec<u32> = ctx.actual.yaku_slice().to_vec();
 
                 let exp_han = ctx.expected_han;
                 let exp_fu = ctx.expected_fu;
@@ -380,7 +380,7 @@ impl MjSoulReplay {
                 let mut sim_filtered: Vec<u32> = sim_yaku
                     .iter()
                     .filter(|y| !ignored.contains(y))
-                    .cloned()
+                    .copied()
                     .collect();
                 let mut exp_filtered: Vec<u32> = exp_yaku
                     .iter()
