@@ -57,8 +57,8 @@ pub struct GameState3P {
     pub riichi_pending_acceptance: Option<u8>,
     pub drawn_tile: Option<u8>,
 
-    pub win_results: HashMap<u8, WinResult>,
-    pub last_win_results: HashMap<u8, WinResult>,
+    pub win_results: [Option<WinResult>; NP],
+    pub last_win_results: [Option<WinResult>; NP],
 
     pub mjai_log: Vec<String>,
     pub player_event_counts: [usize; NP],
@@ -173,8 +173,8 @@ impl GameState3P {
             is_first_turn: true,
             riichi_pending_acceptance: None,
             drawn_tile: None,
-            win_results: HashMap::new(),
-            last_win_results: HashMap::new(),
+            win_results: [None, None, None],
+            last_win_results: [None, None, None],
             mjai_log: Vec::new(),
             player_event_counts: [0; NP],
             mjai_log_per_player: Default::default(),
@@ -427,9 +427,23 @@ impl GameState3P {
             }
         }
 
+        // Convert HashMap to array and delegate to the single implementation
+        let mut action_arr: [Option<Action>; 3] = [None; 3];
+        for (&pid, &act) in actions {
+            action_arr[pid as usize] = Some(act);
+        }
+        self._execute_step_array(&action_arr);
+    }
+
+    /// Execute game logic for one step, without validating actions.
+    ///
+    /// This is the shared implementation called by both `step()` (after validation)
+    /// and `step_unchecked()` (without validation).
+    #[inline]
+    fn _execute_step_array(&mut self, actions: &[Option<Action>; 3]) {
         if self.phase == Phase::WaitAct {
             let pid = self.current_player;
-            if let Some(act) = actions.get(&pid) {
+            if let Some(act) = actions[pid as usize] {
                 match act.action_type {
                     ActionType::Discard => {
                         if let Some(tile) = act.tile {
@@ -533,7 +547,7 @@ impl GameState3P {
                                     &[],
                                     Some(cond),
                                 );
-                                if res.is_win && (res.yaku.contains(&42) || res.yaku.contains(&49))
+                                if res.is_win && (res.yaku_slice().contains(&42) || res.yaku_slice().contains(&49))
                                 {
                                     chankan_ronners.push(i);
                                     self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
@@ -542,12 +556,12 @@ impl GameState3P {
                         }
 
                         if !chankan_ronners.is_empty() {
-                            self.pending_kan = Some((pid, *act));
+                            self.pending_kan = Some((pid, act));
                             self.phase = Phase::WaitResponse;
                             self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile));
                         } else {
-                            self._resolve_kan(pid, *act);
+                            self._resolve_kan(pid, act);
                         }
                     }
                     ActionType::Kakan => {
@@ -640,7 +654,7 @@ impl GameState3P {
                                     Some(cond),
                                 )
                             } else {
-                                WinResult::new(false, false, 0, 0, 0, vec![], 0, 0, None, false)
+                                WinResult::new(false, false, 0, 0, 0, [0u32; 16], 0, 0, 0, None, false)
                             };
 
                             if res.is_win && (res.yakuman || res.han >= 1) {
@@ -650,12 +664,12 @@ impl GameState3P {
                         }
 
                         if !chankan_ronners.is_empty() {
-                            self.pending_kan = Some((pid, *act));
+                            self.pending_kan = Some((pid, act));
                             self.phase = Phase::WaitResponse;
                             self.set_active_players_from_slice(&chankan_ronners);
                             self.last_discard = Some((pid, tile));
                         } else {
-                            self._resolve_kan(pid, *act);
+                            self._resolve_kan(pid, act);
                         }
                     }
                     ActionType::Tsumo => {
@@ -700,7 +714,7 @@ impl GameState3P {
                         // Cap double yakuman patterns when not enabled per rule flags
                         if res.yakuman && res.han > 13 {
                             let mut cap = 0u32;
-                            for &y in &res.yaku {
+                            for &y in res.yaku_slice() {
                                 match y {
                                     47 if !self.rule.is_junsei_chuurenpoutou_double => cap += 13,
                                     48 if !self.rule.is_suuankou_tanki_double => cap += 13,
@@ -734,7 +748,7 @@ impl GameState3P {
                             let mut total_yakuman_val = 0;
 
                             if res.yakuman {
-                                for &yid in &res.yaku {
+                                for &yid in res.yaku_slice() {
                                     let val = match yid {
                                         47 if self.rule.is_junsei_chuurenpoutou_double => 2,
                                         48 if self.rule.is_suuankou_tanki_double => 2,
@@ -839,12 +853,12 @@ impl GameState3P {
                             let mut val = res;
                             for i in 0..self.players[pid as usize].pao_count as usize {
                                 let (yid, liable) = self.players[pid as usize].pao[i];
-                                if val.yaku.contains(&(yid as u32)) {
+                                if val.yaku_slice().contains(&(yid as u32)) {
                                     val.pao_payer = Some(liable);
                                     break;
                                 }
                             }
-                            self.win_results.insert(pid, val);
+                            self.win_results[pid as usize] = Some(val);
 
                             if !self.skip_mjai_logging {
                                 let mut ev = serde_json::Map::new();
@@ -874,7 +888,7 @@ impl GameState3P {
                         }
                     }
                     ActionType::Kita => {
-                        self.handle_kita(pid, act);
+                        self.handle_kita(pid, &act);
                     }
                     _ => {}
                 }
@@ -887,7 +901,7 @@ impl GameState3P {
                 let pid = pid as u8;
                 if legals.iter().any(|a| a.action_type == ActionType::Ron) {
                     let mut roned = false;
-                    if let Some(act) = actions.get(&pid) {
+                    if let Some(act) = actions[pid as usize] {
                         if act.action_type == ActionType::Ron {
                             roned = true;
                         }
@@ -905,7 +919,7 @@ impl GameState3P {
             let mut call_claim: Option<(u8, Action)> = None;
 
             for &pid in self.active_player_slice() {
-                if let Some(act) = actions.get(&pid) {
+                if let Some(act) = actions[pid as usize] {
                     if act.action_type == ActionType::Ron {
                         ron_claims.push(pid);
                     } else if act.action_type == ActionType::Pon
@@ -917,10 +931,10 @@ impl GameState3P {
                             let new_is_pon = act.action_type == ActionType::Pon
                                 || act.action_type == ActionType::Daiminkan;
                             if !old_is_pon && new_is_pon {
-                                call_claim = Some((pid, *act));
+                                call_claim = Some((pid, act));
                             }
                         } else {
-                            call_claim = Some((pid, *act));
+                            call_claim = Some((pid, act));
                         }
                     }
                 }
@@ -992,7 +1006,7 @@ impl GameState3P {
                     // Cap double yakuman patterns when not enabled per rule flags
                     if res.yakuman && res.han > 13 {
                         let mut cap = 0u32;
-                        for &y in &res.yaku {
+                        for &y in res.yaku_slice() {
                             match y {
                                 47 if !self.rule.is_junsei_chuurenpoutou_double => cap += 13,
                                 48 if !self.rule.is_suuankou_tanki_double => cap += 13,
@@ -1026,7 +1040,7 @@ impl GameState3P {
                             let mut has_pao = false;
                             let mut total_yakuman_val = 0i32;
                             let mut pao_yakuman_val = 0i32;
-                            for &yid in &res.yaku {
+                            for &yid in res.yaku_slice() {
                                 let val: i32 = match yid {
                                     47 if self.rule.is_junsei_chuurenpoutou_double => 2,
                                     48 if self.rule.is_suuankou_tanki_double => 2,
@@ -1080,12 +1094,12 @@ impl GameState3P {
                         let mut val = res;
                         for i in 0..self.players[w_pid as usize].pao_count as usize {
                             let (yid, liable) = self.players[w_pid as usize].pao[i];
-                            if val.yaku.contains(&(yid as u32)) {
+                            if val.yaku_slice().contains(&(yid as u32)) {
                                 val.pao_payer = Some(liable);
                                 break;
                             }
                         }
-                        self.win_results.insert(w_pid, val);
+                        self.win_results[w_pid as usize] = Some(val);
 
                         if w_pid == self.oya {
                             oya_won = true;
@@ -1266,6 +1280,46 @@ impl GameState3P {
                 }
             }
         }
+    }
+
+    /// Step with array-indexed actions instead of HashMap.
+    ///
+    /// `actions[pid]` = `Some(action)` if player pid has an action, `None` otherwise.
+    /// Thin wrapper that converts to HashMap and delegates to `step()`.
+    pub fn step_array(&mut self, actions: &[Option<Action>; 3]) {
+        let mut map = std::collections::HashMap::with_capacity(3);
+        for (pid, act) in actions.iter().enumerate() {
+            if let Some(a) = act {
+                map.insert(pid as u8, *a);
+            }
+        }
+        self.step(&map);
+    }
+
+    #[inline]
+    /// Step without validating actions against legal moves.
+    ///
+    /// For trusted self-play only -- caller guarantees actions are legal.
+    /// Using this with illegal actions will corrupt game state.
+    pub fn step_unchecked(&mut self, actions: &[Option<Action>; 3]) {
+        if self.is_done {
+            return;
+        }
+
+        if self.needs_initialize_next_round {
+            self._initialize_next_round(self.pending_oya_won, self.pending_is_draw);
+            return;
+        }
+
+        self._execute_step_array(actions);
+    }
+
+    /// Unchecked step with array-indexed actions instead of HashMap.
+    ///
+    /// `actions[pid]` = `Some(action)` if player pid has an action, `None` otherwise.
+    /// For trusted self-play only -- caller guarantees actions are legal.
+    pub fn step_array_unchecked(&mut self, actions: &[Option<Action>; 3]) {
+        self.step_unchecked(actions);
     }
 
     fn _resolve_discard(&mut self, pid: u8, tile: u8, tsumogiri: bool) {
@@ -1659,8 +1713,8 @@ impl GameState3P {
         self.pending_oya_won = false;
         self.pending_is_draw = false;
         self.last_discard = None;
-        self.win_results.clear();
-        self.last_win_results.clear();
+        self.win_results = [None; NP];
+        self.last_win_results = [None; NP];
         self.riichi_sutehais = [None; NP];
         self.last_tedashis = [None; NP];
 
