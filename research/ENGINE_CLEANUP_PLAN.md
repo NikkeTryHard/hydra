@@ -7,7 +7,7 @@ Ordered by priority. Each item has scope, effort, and dependencies.
 
 ## Critical (fix before training pipeline)
 
-### C1: Refactor state_3p/mod.rs step() (911 lines)
+### C1: Refactor state_3p/mod.rs step() (911 lines) -- DONE
 
 **Problem**: 3p variant still has the monolithic `_execute_step` (HashMap-based)
 and no extracted handler methods. 4p was refactored but 3p was skipped.
@@ -25,7 +25,7 @@ and no extracted handler methods. 4p was refactored but 3p was skipped.
 
 ---
 
-### C2: Replace HashMap in state_3p GameState
+### C2: Replace HashMap in state_3p GameState -- DONE
 
 **Problem**: `win_results: HashMap<u8, WinResult>` and
 `last_win_results: HashMap<u8, WinResult>` still use HashMap. 4p uses arrays.
@@ -196,7 +196,7 @@ but is actually infrastructure for hydra-train.
 
 ---
 
-### M4: Fix suji channel spec discrepancy
+### M4: Fix suji channel spec discrepancy -- DONE
 
 **Problem**: HYDRA_SPEC.md diagram shows Ch 71-79 as "Suji" (9 channels)
 but encoder only fills 3 (71-73). Channels 74-79 are zeros.
@@ -210,7 +210,7 @@ but encoder only fills 3 (71-73). Channels 74-79 are zeros.
 
 ---
 
-### M5: Convert WinResult.yaku to fixed array
+### M5: Convert WinResult.yaku to fixed array -- DONE
 
 **Problem**: `yaku: Vec<u32>` is heap-allocated. Max ~15 yaku per hand.
 Allocated on every win (once per round end).
