@@ -179,6 +179,7 @@ impl Action {
 
         if self.consume_count > 0 {
             let cons: Vec<String> = self.consume_slice().iter().map(|&t| tid_to_mjai(t)).collect();
+            // SAFETY: serialization of Vec<String> never fails
             data.insert("consumed".to_string(), serde_json::to_value(cons).unwrap());
         }
 

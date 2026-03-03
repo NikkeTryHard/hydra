@@ -703,6 +703,7 @@ impl GameState {
             ev.insert("pai".to_string(), Value::String(tid_to_mjai(tile)));
             let cons: Vec<String> =
                 act.consume_slice().iter().map(|&t| tid_to_mjai(t)).collect();
+            // SAFETY: serialization of Vec<String> never fails
             ev.insert("consumed".to_string(), serde_json::to_value(cons).unwrap());
             self._push_mjai_event(Value::Object(ev));
         }
@@ -995,6 +996,7 @@ impl GameState {
                 ev.insert("target".to_string(), Value::Number(pid.into()));
                 ev.insert(
                     "deltas".to_string(),
+                    // SAFETY: serialization of Vec<i32> never fails
                     serde_json::to_value(deltas).unwrap(),
                 );
                 ev.insert("tsumo".to_string(), Value::Bool(true));
@@ -1005,6 +1007,7 @@ impl GameState {
                 }
                 ev.insert(
                     "ura_markers".to_string(),
+                    // SAFETY: serialization of Vec<String> never fails
                     serde_json::to_value(&ura_markers).unwrap(),
                 );
 
@@ -1245,6 +1248,7 @@ impl GameState {
                         ev.insert("target".to_string(), Value::Number(target_pid.into()));
                         ev.insert(
                             "deltas".to_string(),
+                            // SAFETY: serialization of Vec<i32> never fails
                             serde_json::to_value(this_deltas).unwrap(),
                         );
 
@@ -1254,6 +1258,7 @@ impl GameState {
                         }
                         ev.insert(
                             "ura_markers".to_string(),
+                            // SAFETY: serialization of Vec<String> never fails
                             serde_json::to_value(&ura_markers).unwrap(),
                         );
 
@@ -1301,6 +1306,7 @@ impl GameState {
                     self.players[claimer as usize].remove_hand(idx);
                 }
             }
+            // SAFETY: last_discard is always Some when processing claim actions (pon/chi/kan)
             let (discarder, tile) = self.last_discard.unwrap();
             let (tiles_buf, tiles_len) = copy_and_sorted_insert(action.consume_slice(), tile);
             let meld_type = match action.action_type {
@@ -1345,6 +1351,7 @@ impl GameState {
                         .collect();
                     ev.insert(
                         "consumed".to_string(),
+                        // SAFETY: serialization of Vec<String> never fails
                         serde_json::to_value(cons_strs).unwrap(),
                     );
                     self._push_mjai_event(serde_json::Value::Object(ev));
@@ -1598,6 +1605,7 @@ impl GameState {
                 buf[..n].copy_from_slice(&src[..n]);
                 (MeldType::Ankan, buf, n, -1i8, None)
             } else {
+                // SAFETY: last_discard is always Some when processing daiminkan claims
                 let (discarder, tile) = self.last_discard.unwrap();
                 let (buf, n) = copy_and_sorted_insert(action.consume_slice(), tile);
                 (MeldType::Daiminkan, buf, n, discarder as i8, Some(tile))
@@ -1612,6 +1620,7 @@ impl GameState {
 
             // PAO check for Daiminkan
             if action.action_type == ActionType::Daiminkan {
+                // SAFETY: last_discard is always Some when processing daiminkan claims
                 let (discarder, tile) = self.last_discard.unwrap();
                 let tile_val = tile / 4;
                 if (31..=33).contains(&tile_val) {
@@ -1682,6 +1691,7 @@ impl GameState {
                         .collect();
                     ev.insert(
                         "consumed".to_string(),
+                        // SAFETY: serialization of Vec<String> never fails
                         serde_json::to_value(cons_strs).unwrap(),
                     );
                     self._push_mjai_event(Value::Object(ev));
@@ -1929,6 +1939,7 @@ impl GameState {
             let scores_vec: Vec<i32> = self.players.iter().map(|p| p.score).collect();
             ev.insert(
                 "scores".to_string(),
+                // SAFETY: serialization of Vec<i32> never fails
                 serde_json::to_value(scores_vec).unwrap(),
             );
             ev.insert(
@@ -1941,6 +1952,7 @@ impl GameState {
                 let hand_strs: Vec<String> = p.hand_slice().iter().map(|&t| tid_to_mjai(t)).collect();
                 tehais.push(hand_strs);
             }
+            // SAFETY: serialization of Vec<Vec<String>> never fails
             ev.insert("tehais".to_string(), serde_json::to_value(tehais).unwrap());
 
             self._push_mjai_event(Value::Object(ev));
@@ -2084,6 +2096,7 @@ impl GameState {
             ev.insert("type".to_string(), Value::String("ryukyoku".to_string()));
             ev.insert("reason".to_string(), Value::String(final_reason.clone()));
             let deltas: Vec<i32> = self.players.iter().map(|p| p.score_delta).collect();
+            // SAFETY: serialization of Vec<i32> never fails
             ev.insert("deltas".to_string(), serde_json::to_value(deltas).unwrap());
             self._push_mjai_event(Value::Object(ev));
         }
@@ -2208,6 +2221,7 @@ impl GameState {
         if self.skip_mjai_logging {
             return;
         }
+        // SAFETY: serialization of serde_json::Value always succeeds
         let json_str = serde_json::to_string(&event).unwrap();
         self.mjai_log.push(json_str.clone());
 
@@ -2228,18 +2242,23 @@ impl GameState {
                         } else {
                             let len = hand_val.as_array().map(|a| a.len()).unwrap_or(13);
                             let masked = vec!["?".to_string(); len];
+                            // SAFETY: serialization of Vec<String> never fails
                             masked_tehais.push(serde_json::to_value(masked).unwrap());
                         }
                     }
+                    // SAFETY: event was constructed as Value::Object, so as_object() always succeeds
                     let mut masked_event = event.as_object().unwrap().clone();
                     masked_event.insert("tehais".to_string(), Value::Array(masked_tehais));
+                    // SAFETY: serialization of serde_json::Value always succeeds
                     final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
                 }
             } else if type_str == "tsumo" {
                 if let Some(act_id) = actor {
                     if act_id != pid {
+                        // SAFETY: event was constructed as Value::Object, so as_object() always succeeds
                         let mut masked_event = event.as_object().unwrap().clone();
                         masked_event.insert("pai".to_string(), Value::String("?".to_string()));
+                        // SAFETY: serialization of serde_json::Value always succeeds
                         final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
                     }
                 }
