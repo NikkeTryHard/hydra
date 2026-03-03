@@ -1,32 +1,57 @@
 use crate::types::Meld;
+/// Per-player state for a 4-player mahjong game.
 #[derive(Debug, Clone)]
 pub struct PlayerState {
+    /// Sorted hand tiles (136-format), valid up to `hand_len`.
     pub hand: [u8; 14],
+    /// Number of tiles currently in hand.
     pub hand_len: u8,
+    /// Called melds (pon, chi, kan), valid up to `meld_count`.
     pub melds: [Meld; 4],
+    /// Number of active melds.
     pub meld_count: u8,
+    /// Discarded tiles in order, valid up to `discard_len`.
     pub discards: [u8; 30],
+    /// Whether each discard came from the hand (true) or was tsumogiri (false).
     pub discard_from_hand: [bool; 30],
+    /// Whether each discard was a riichi declaration discard.
     pub discard_is_riichi: [bool; 30],
+    /// Number of discards made this round.
     pub discard_len: u8,
+    /// Index into the discards array where riichi was declared, if any.
     pub riichi_declaration_index: Option<usize>,
+    /// Current score in points.
     pub score: i32,
+    /// Score change from the most recent scoring event.
     pub score_delta: i32,
+    /// Whether riichi has been declared and accepted.
     pub riichi_declared: bool,
+    /// Whether a riichi declaration is pending acceptance.
     pub riichi_stage: bool,
+    /// Whether double riichi was declared on the first turn.
     pub double_riichi_declared: bool,
+    /// Whether a ron opportunity was missed while in riichi (permanent furiten).
     pub missed_agari_riichi: bool,
+    /// Whether a ron opportunity was missed this turn (temporary furiten).
     pub missed_agari_doujun: bool,
+    /// Whether this player is still eligible for nagashi mangan.
     pub nagashi_eligible: bool,
+    /// Whether the ippatsu window is active after riichi.
     pub ippatsu_cycle: bool,
+    /// Pao (liability) entries mapping yaku id to liable player.
     pub pao: [(u8, u8); 3],
+    /// Number of active pao entries.
     pub pao_count: u8,
+    /// Tiles forbidden from being discarded after a call.
     pub forbidden_discards: [u8; 6],
+    /// Number of active forbidden discard entries.
     pub forbidden_discard_count: u8,
+    /// Per-player MJAI event log for observation diffing.
     pub mjai_log: Vec<String>,
 }
 
 impl PlayerState {
+    /// Create a new player state with the given starting score.
     pub fn new(starting_score: i32) -> Self {
         Self {
             hand: [0; 14],
@@ -119,6 +144,7 @@ impl PlayerState {
         self.discard_len += 1;
     }
 
+    /// Reset all round-specific state for the start of a new round.
     pub fn reset_round(&mut self) {
         self.hand_len = 0;
         self.meld_count = 0;

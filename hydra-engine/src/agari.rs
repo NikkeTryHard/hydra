@@ -1,17 +1,24 @@
 use crate::types::{Hand, TILE_MAX};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A single mentsu (group) in a winning hand decomposition.
 pub enum Mentsu {
+    /// Triplet of the given tile index.
     Koutsu(u8),
+    /// Sequence starting at the given tile index.
     Shuntsu(u8),
 }
 
 #[derive(Debug, Clone)]
+/// One possible decomposition of a winning hand into a head and body groups.
 pub struct Division {
+    /// Tile index of the pair (head).
     pub head: u8,
+    /// Ordered list of mentsu forming the hand body.
     pub body: Vec<Mentsu>,
 }
 
+/// Return whether the hand is one tile away from a complete hand.
 pub fn is_tenpai(hand: &mut Hand) -> bool {
     // Try adding each tile 0..34
     // If is_agari becomes true, then it is tenpai.
@@ -60,6 +67,7 @@ pub fn is_tenpai(hand: &mut Hand) -> bool {
     false
 }
 
+/// Return whether the hand is a complete winning hand.
 pub fn is_agari(hand: &mut Hand) -> bool {
     if is_kokushi(hand) {
         return true;
@@ -70,6 +78,7 @@ pub fn is_agari(hand: &mut Hand) -> bool {
     is_standard_agari(hand)
 }
 
+/// Enumerate all valid standard-form decompositions of a winning hand.
 pub fn find_divisions(hand: &Hand) -> Vec<Division> {
     let mut divisions = Vec::new();
     for i in 0..TILE_MAX {
@@ -138,6 +147,7 @@ fn decompose_all(
     }
 }
 
+/// Return whether the hand is a valid kokushi musou (thirteen orphans).
 pub fn is_kokushi(hand: &Hand) -> bool {
     let kokushi_indices = [0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33];
     let mut pair_found = false;
@@ -163,6 +173,7 @@ pub fn is_kokushi(hand: &Hand) -> bool {
     pair_found
 }
 
+/// Return whether the hand is a valid chiitoitsu (seven pairs).
 pub fn is_chiitoitsu(hand: &Hand) -> bool {
     // 7 pairs
     let mut pairs = 0;
@@ -176,6 +187,7 @@ pub fn is_chiitoitsu(hand: &Hand) -> bool {
     pairs == 7
 }
 
+/// Return whether the hand has a valid standard agari (head + four mentsu).
 pub fn is_standard_agari(hand: &mut Hand) -> bool {
     // Basic backtracking
     // 1. Find a pair (head)

@@ -51,60 +51,102 @@ fn copy_and_sorted_insert(src: &[u8], extra: u8) -> ([u8; 5], usize) {
     (buf, n + 1)
 }
 
+/// Full game state for a 4-player Riichi Mahjong game.
 #[cfg_attr(feature = "python", pyo3::pyclass)]
 #[derive(Debug, Clone)]
 pub struct GameState {
+    /// Wall state containing tiles, dora indicators, and draw cursors.
     pub wall: WallState,
+    /// Per-player state for all four players.
     pub players: [PlayerState; 4],
 
+    /// Index of the player whose turn it is (0-3).
     pub current_player: u8,
+    /// Number of full turns elapsed in the current round.
     pub turn_count: u32,
+    /// Whether the game has ended.
     pub is_done: bool,
+    /// Whether the current player needs to draw a tile.
     pub needs_tsumo: bool,
+    /// Whether the next step should initialize a new round.
     pub needs_initialize_next_round: bool,
+    /// Whether the oya won the previous round (for renchan).
     pub pending_oya_won: bool,
+    /// Whether the previous round ended in a draw.
     pub pending_is_draw: bool,
 
+    /// Number of riichi deposit sticks on the table.
     pub riichi_sticks: u32,
+    /// Current game phase (WaitAct or WaitResponse).
     pub phase: Phase,
+    /// Player indices that must act in the current phase.
     pub active_players: [u8; 4],
+    /// Number of active players in the current phase.
     pub active_player_count: u8,
+    /// Last discarded tile as (player_id, tile), if any.
     pub last_discard: Option<(u8, u8)>,
+    /// Pending claim actions per player for the current discard.
     pub current_claims: [[Action; 54]; NP],
+    /// Number of pending claims per player.
     pub current_claim_counts: [u8; NP],
+    /// Pending kan action awaiting chankan resolution.
     pub pending_kan: Option<(u8, Action)>,
 
+    /// Dealer seat index (0-3).
     pub oya: u8,
+    /// Repeat counter for the current round.
     pub honba: u8,
+    /// Kyoku index (same as oya for display).
     pub kyoku_idx: u8,
+    /// Prevailing wind (0=East, 1=South, 2=West, 3=North).
     pub round_wind: u8,
 
+    /// Whether the current draw is a rinshan (replacement after kan).
     pub is_rinshan_flag: bool,
+    /// Whether it is still the first go-around of discards.
     pub is_first_turn: bool,
+    /// Player whose riichi stick payment is pending, if any.
     pub riichi_pending_acceptance: Option<u8>,
+    /// Tile most recently drawn by the current player, if any.
     pub drawn_tile: Option<u8>,
 
+    /// Win results for the current round, one per player.
     pub win_results: [Option<WinResult>; NP],
+    /// Win results from the previous round.
     pub last_win_results: [Option<WinResult>; NP],
 
+    /// Global MJAI event log as JSON strings.
     pub mjai_log: Vec<String>,
+    /// Typed MJAI events for zero-cost structured logging.
     pub mjai_events: Vec<crate::mjai_event::MjaiEvent>,
+    /// Number of events each player has consumed from their log.
     pub player_event_counts: [usize; NP],
+    /// Per-player MJAI event logs with masked private info.
     pub mjai_log_per_player: [Vec<String>; NP],
 
+    /// Game mode configuration derived from `game_mode` and `rule`.
     pub mode: GameModeConfig,
+    /// Numeric game mode identifier (e.g. 0=one-round, 1=tonpuu, 2=hanchan).
     pub game_mode: u8,
+    /// Whether to skip MJAI logging for throughput.
     pub skip_mjai_logging: bool,
+    /// Optional deterministic seed for reproducible games.
     pub seed: Option<u64>,
+    /// Rule configuration (Tenhou, MjSoul, or custom).
     pub rule: GameRule,
+    /// Last error message from an illegal action, if any.
     pub last_error: Option<String>,
+    /// Whether the last action was a kan (for kan-related logic).
     pub is_after_kan: bool,
 
-    pub riichi_sutehais: [Option<u8>; NP], // Tile discarded when declaring riichi
-    pub last_tedashis: [Option<u8>; NP],   // Last hand discard (not tsumogiri)
+    /// Tile discarded when declaring riichi, per player.
+    pub riichi_sutehais: [Option<u8>; NP],
+    /// Last hand discard (not tsumogiri) per player.
+    pub last_tedashis: [Option<u8>; NP],
 }
 
 impl GameState {
+    /// Return the number of players (always 4).
     pub fn np(&self) -> usize {
         NP
     }
@@ -155,6 +197,7 @@ impl GameState {
         self.active_player_count = pids.len() as u8;
     }
 
+    /// Create a new game state with the given configuration and deal the first hand.
     pub fn new(
         game_mode: u8,
         skip_mjai_logging: bool,
@@ -222,6 +265,7 @@ impl GameState {
         state
     }
 
+    /// Reset MJAI logs and event counters without changing game state.
     pub fn reset(&mut self) {
         self.mjai_log = Vec::new();
         self.mjai_log_per_player = Default::default();
@@ -247,6 +291,7 @@ impl GameState {
         *self = Self::new(game_mode, skip_logging, new_seed, 0, rule);
     }
 
+    /// Build a player-facing observation with legal actions and event diff.
     pub fn get_observation(&mut self, player_id: u8) -> Observation {
         let pid = player_id as usize;
 
@@ -348,6 +393,7 @@ impl GameState {
         self._get_legal_actions_into(player_id, buf);
     }
 
+    /// Build an observation for replay validation, temporarily adjusting phase if needed.
     pub fn get_observation_for_replay(
         &mut self,
         pid: u8,
@@ -417,6 +463,7 @@ impl GameState {
         Ok(obs)
     }
 
+    /// Advance the game by one step, validating all player actions.
     pub fn step(&mut self, actions: &HashMap<u8, Action>) {
         if self.is_done {
             return;
@@ -1586,6 +1633,7 @@ impl GameState {
         }
     }
 
+    /// Resolve a kan action (ankan, daiminkan, or kakan) and draw a rinshan tile.
     pub fn _resolve_kan(&mut self, pid: u8, action: Action) {
         let p_idx = pid as usize;
         if action.action_type == ActionType::Kakan {
@@ -1745,6 +1793,7 @@ impl GameState {
         }
     }
 
+    /// Deal the next tile to the current player, or trigger exhaustive draw.
     pub fn _deal_next(&mut self) {
         self.is_rinshan_flag = false;
         if self.wall.remaining() <= 14 {
@@ -1770,6 +1819,7 @@ impl GameState {
         }
     }
 
+    /// Advance to the next round or end the game based on scores and wind rotation.
     pub fn _initialize_next_round(&mut self, oya_won: bool, is_draw: bool) {
         if self.is_done {
             return;
@@ -1848,6 +1898,7 @@ impl GameState {
         );
     }
 
+    /// Initialize a round with the given parameters, shuffle the wall, and deal hands.
     pub fn _initialize_round(
         &mut self,
         oya: u8,
@@ -1981,6 +2032,7 @@ impl GameState {
         }
     }
 
+    /// Trigger a draw (ryuukyoku) for the given reason and settle scores.
     pub fn _trigger_ryukyoku(&mut self, reason: &str) {
         self._accept_riichi();
 
@@ -2154,6 +2206,7 @@ impl GameState {
         false
     }
 
+    /// Reveal the next kan dora indicator from the dead wall.
     pub fn _reveal_kan_dora(&mut self) {
         let count = self.wall.dora_indicator_count as usize;
         if count < 5 {
@@ -2187,6 +2240,7 @@ impl GameState {
         indicators
     }
 
+    /// Return ura-dora indicator tiles as MJAI notation strings.
     pub fn _get_ura_markers(&self) -> Vec<String> {
         let mut markers = Vec::new();
         for i in 0..self.wall.dora_indicator_count as usize {
@@ -2198,6 +2252,7 @@ impl GameState {
         markers
     }
 
+    /// Mark the game as done and log the end-game event.
     pub(crate) fn _process_end_game(&mut self) {
         self.is_done = true;
         if !self.skip_mjai_logging {
@@ -2207,16 +2262,19 @@ impl GameState {
         }
     }
 
+    /// Apply a typed MJAI event to advance game state.
     pub fn apply_mjai_event(&mut self, event: MjaiEvent) {
         <Self as GameStateEventHandler>::apply_mjai_event(self, event)
     }
 
+    /// Apply a replay log action to advance game state.
     pub fn apply_log_action(&mut self, action: &LogAction) {
         <Self as GameStateEventHandler>::apply_log_action(self, action)
     }
 }
 
 impl GameState {
+    /// Append a JSON MJAI event to global and per-player logs.
     pub fn _push_mjai_event(&mut self, event: Value) {
         if self.skip_mjai_logging {
             return;

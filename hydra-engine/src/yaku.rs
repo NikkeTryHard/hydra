@@ -10,11 +10,17 @@ use crate::types::{Hand, Meld};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyclass(get_all))]
+/// A single yaku (winning hand pattern) with IDs and localized names.
 pub struct Yaku {
+    /// Internal yaku identifier (matches MJSoul ID).
     pub id: u32,
+    /// Japanese name of the yaku.
     pub name: String,
+    /// English name of the yaku.
     pub name_en: String,
+    /// Tenhou-compatible yaku ID.
     pub tenhou_id: i32,
+    /// MJSoul-compatible yaku ID.
     pub mjsoul_id: i32,
 }
 
@@ -91,6 +97,7 @@ const YAKU_TABLE: &[(u32, &str, &str, i32, i32)] = &[
     (50, "大四喜", "Dai Suusi", 49, 50),
 ];
 
+/// Look up a yaku by its numeric ID.
 pub fn get_yaku_by_id(id: u32) -> Option<Yaku> {
     YAKU_TABLE.iter().find(|&&(yid, ..)| yid == id).map(
         |&(yid, name, name_en, tenhou_id, mjsoul_id)| Yaku {
@@ -128,63 +135,119 @@ pub fn get_all_yaku_py() -> Vec<Yaku> {
 
 // ---------------------------------------------------------------------------
 // Yaku IDs based on yans.yml
+/// Yaku ID for Menzen Tsumo.
 pub const ID_TSUMO: u32 = 1;
+/// Yaku ID for Riichi.
 pub const ID_RIICHI: u32 = 2;
+/// Yaku ID for Chankan (robbing a kan).
 pub const ID_CHANKAN: u32 = 3;
+/// Yaku ID for Rinshan Kaihou (after-kan draw).
 pub const ID_RINSHAN: u32 = 4;
+/// Yaku ID for Haitei Raoyue (last-draw tsumo).
 pub const ID_HAITEI: u32 = 5;
+/// Yaku ID for Houtei Raoyui (last-discard ron).
 pub const ID_HOUTEI: u32 = 6;
+/// Yaku ID for Yakuhai Haku (white dragon).
 pub const ID_HAKU: u32 = 7;
+/// Yaku ID for Yakuhai Hatsu (green dragon).
 pub const ID_HATSU: u32 = 8;
+/// Yaku ID for Yakuhai Chun (red dragon).
 pub const ID_CHUN: u32 = 9;
+/// Yaku ID for seat wind (Jikaze).
 pub const ID_JIKAZE: u32 = 10;
+/// Yaku ID for round wind (Bakaze).
 pub const ID_BAKAZE: u32 = 11;
+/// Yaku ID for Tanyao (all simples).
 pub const ID_TANYAO: u32 = 12;
+/// Yaku ID for Iipeiko (pure double sequence).
 pub const ID_IPEIKO: u32 = 13;
+/// Yaku ID for Pinfu (all sequences, no-points).
 pub const ID_PINFU: u32 = 14;
+/// Yaku ID for Chanta (outside hand).
 pub const ID_CHANTA: u32 = 15;
+/// Yaku ID for Ittsu (straight).
 pub const ID_ITTSU: u32 = 16;
+/// Yaku ID for Sanshoku Doujun (three-colored straight).
 pub const ID_SANSHOKU: u32 = 17;
+/// Yaku ID for Double Riichi.
 pub const ID_DOUBLE_RIICHI: u32 = 18;
+/// Yaku ID for Sanshoku Doukou (three-colored triplets).
 pub const ID_SANSHOKU_DOKO: u32 = 19;
+/// Yaku ID for San Kantsu (three kans).
 pub const ID_SANKANTSU: u32 = 20;
+/// Yaku ID for Toitoi (all triplets).
 pub const ID_TOITOI: u32 = 21;
+/// Yaku ID for San Ankou (three concealed triplets).
 pub const ID_SANANKOU: u32 = 22;
+/// Yaku ID for Shou Sangen (small three dragons).
 pub const ID_SHOSANGEN: u32 = 23;
+/// Yaku ID for Honroutou (all terminals and honors).
 pub const ID_HONROUTO: u32 = 24;
+/// Yaku ID for Chiitoitsu (seven pairs).
 pub const ID_CHITOITSU: u32 = 25;
+/// Yaku ID for Junchan (terminals in all groups).
 pub const ID_JUNCHAN: u32 = 26;
+/// Yaku ID for Honitsu (half flush).
 pub const ID_HONITSU: u32 = 27;
+/// Yaku ID for Ryanpeikou (two double sequences).
 pub const ID_RYANPEIKO: u32 = 28;
+/// Yaku ID for Chinitsu (full flush).
 pub const ID_CHINITSU: u32 = 29;
+/// Yaku ID for Ippatsu (one-shot after riichi).
 pub const ID_IPPATSU: u32 = 30;
+/// Yaku ID for Dora bonus tiles.
 pub const ID_DORA: u32 = 31;
+/// Yaku ID for Aka Dora (red fives).
 pub const ID_AKADORA: u32 = 32;
+/// Yaku ID for Ura Dora (under-dora).
 pub const ID_URADORA: u32 = 33;
+/// Yaku ID for Nuki Dora (extracted north tiles in sanma).
 pub const ID_NUKIDORA: u32 = 34;
+/// Yakuman ID for Tenhou (heavenly hand).
 pub const ID_TENHO: u32 = 35;
+/// Yakuman ID for Chiihou (earthly hand).
 pub const ID_CHIHO: u32 = 36;
+/// Yakuman ID for Dai Sangen (big three dragons).
 pub const ID_DAISANGEN: u32 = 37;
+/// Yakuman ID for Su Ankou (four concealed triplets).
 pub const ID_SUANKO: u32 = 38;
+/// Yakuman ID for Tsuu iisou (all honors).
 pub const ID_TSUISO: u32 = 39;
+/// Yakuman ID for Ryuu iisou (all green).
 pub const ID_RYUISOU: u32 = 40;
+/// Yakuman ID for Chinroutou (all terminals).
 pub const ID_CHINROUTO: u32 = 41;
+/// Yakuman ID for Kokushi Musou (thirteen orphans).
 pub const ID_KOKUSHI: u32 = 42;
+/// Yakuman ID for Shou Suushi (small four winds).
 pub const ID_SHOUSUUSHI: u32 = 43;
+/// Yakuman ID for Su Kantsu (four kans).
 pub const ID_SUKANTSU: u32 = 44;
+/// Yakuman ID for Chuuren Poutou (nine gates).
 pub const ID_CHUUREN: u32 = 45;
+/// Double yakuman ID for Junsei Chuuren Poutou (pure nine gates).
 pub const ID_JUNSEI_CHUUREN: u32 = 47;
+/// Double yakuman ID for Su Ankou Tanki (four concealed triplets, pair wait).
 pub const ID_SUANKO_TANKI: u32 = 48;
+/// Double yakuman ID for Kokushi Musou 13-men (thirteen orphans, 13-sided wait).
 pub const ID_KOKUSHI_13: u32 = 49;
+/// Double yakuman ID for Dai Suushi (big four winds).
 pub const ID_DAISUUSHI: u32 = 50;
 
 #[derive(Debug, Clone, Default)]
+/// Aggregated result of yaku evaluation for a winning hand.
 pub struct YakuResult {
+    /// Total han count.
     pub han: u8,
+    /// Computed fu (minipoints).
     pub fu: u8,
+    /// Fixed-size buffer of matched yaku IDs.
     pub yaku_ids: [u32; 16],
+    /// Number of valid entries in `yaku_ids`.
     pub yaku_id_count: u8,
+    /// Human-readable names of matched yaku.
     pub yaku_names: Vec<String>,
+    /// Number of yakuman counted (0 for normal hands).
     pub yakuman_count: u8,
 }
 
@@ -204,21 +267,37 @@ impl YakuResult {
 }
 
 #[derive(Debug)]
+/// Contextual flags and counters for yaku evaluation.
 pub struct YakuContext {
+    /// Whether the hand is fully concealed (menzen).
     pub is_menzen: bool,
+    /// Whether the player declared riichi.
     pub is_reach: bool,
+    /// Whether the win occurred within one turn of riichi (ippatsu).
     pub is_ippatsu: bool,
+    /// Whether the win is by self-draw (tsumo).
     pub is_tsumo: bool,
+    /// Whether this is the last drawable tile (haitei).
     pub is_haitei: bool,
+    /// Whether this is the last discarded tile (houtei).
     pub is_houtei: bool,
+    /// Whether the win came from a kan replacement draw (rinshan).
     pub is_rinshan: bool,
+    /// Whether the win is by robbing a kan (chankan).
     pub is_chankan: bool,
+    /// Whether the tsumo occurred on the player's very first draw.
     pub is_tsumo_first_turn: bool,
+    /// Whether the player declared double riichi.
     pub is_daburu_reach: bool,
+    /// Count of dora bonus tiles in the hand.
     pub dora_count: u8,
+    /// Count of red five (aka dora) tiles in the hand.
     pub aka_dora: u8,
+    /// Count of ura dora bonus tiles in the hand.
     pub ura_dora_count: u8,
+    /// Round wind as tile index (27=East, 28=South, 29=West, 30=North).
     pub round_wind: u8, // 27=East, 28=South, etc.
+    /// Seat wind as tile index (27=East, 28=South, 29=West, 30=North).
     pub seat_wind: u8,
 }
 
@@ -244,6 +323,7 @@ impl Default for YakuContext {
     }
 }
 
+/// Evaluate all yaku for a winning hand and return the highest-scoring combination.
 pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: u8) -> YakuResult {
     let divisions = agari::find_divisions(hand);
     let mut best_res = YakuResult::default();

@@ -17,34 +17,54 @@ use crate::types::Meld;
     pyo3::pyclass(module = "riichienv._riichienv", get_all)
 )]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Player-facing snapshot of the game state at a decision point.
 pub struct Observation {
+    /// Seat index of the observing player (0-3).
     pub player_id: u8,
+    /// Hands for all four players (tile IDs as u32).
     pub hands: [Vec<u32>; 4],
+    /// Open melds declared by each player.
     pub melds: [Vec<Meld>; 4],
+    /// Discard ponds for all four players (tile IDs as u32).
     pub discards: [Vec<u32>; 4],
+    /// Revealed dora indicator tiles (u32).
     pub dora_indicators: Vec<u32>,
+    /// Current point totals for each player.
     pub scores: [i32; 4],
+    /// Whether each player has declared riichi.
     pub riichi_declared: [bool; 4],
 
     pub(crate) _legal_actions: Vec<Action>,
 
     pub(crate) events: Vec<String>,
 
+    /// Current honba (repeat) counter.
     pub honba: u8,
+    /// Number of riichi sticks on the table.
     pub riichi_sticks: u32,
+    /// Round wind tile index (27=East, 28=South, 29=West, 30=North).
     pub round_wind: u8,
+    /// Seat index of the current dealer.
     pub oya: u8,
+    /// Current round number within the game.
     pub kyoku_index: u8,
+    /// Tile indices the player is waiting on for tenpai.
     pub waits: Vec<u8>,
+    /// Whether the observing player is currently tenpai.
     pub is_tenpai: bool,
+    /// Per-player flags indicating tsumogiri (drawn-tile discard) for each discard.
     pub tsumogiri_flags: [Vec<bool>; 4],
+    /// Tile discarded to declare riichi for each player, if any.
     pub riichi_sutehais: [Option<u8>; 4],
+    /// Last non-tsumogiri discard tile for each player, if any.
     pub last_tedashis: [Option<u8>; 4],
+    /// Most recent discard tile on the table, if any.
     pub last_discard: Option<u32>,
 }
 
 /// Pure Rust methods (no PyO3 dependency).
 impl Observation {
+    /// Create a new observation from raw game state components.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         player_id: u8,
@@ -95,6 +115,7 @@ impl Observation {
         }
     }
 
+    /// Return a cloned list of legal actions.
     pub fn legal_actions_method(&self) -> Vec<Action> {
         self._legal_actions.clone()
     }
@@ -104,6 +125,7 @@ impl Observation {
         &self._legal_actions
     }
 
+    /// Find a legal action by its encoded action ID.
     pub fn find_action(&self, action_id: usize) -> Option<Action> {
         let encoder = ActionEncoder::FourPlayer;
         self._legal_actions
@@ -118,6 +140,7 @@ impl Observation {
             .cloned()
     }
 
+    /// Return a cloned list of MJAI event strings.
     pub fn new_events(&self) -> Vec<String> {
         self.events.clone()
     }
