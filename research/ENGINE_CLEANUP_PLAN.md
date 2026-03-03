@@ -135,7 +135,7 @@ DirtyFlags consts, tile.rs AKA constants missing `///` docs.
 
 ---
 
-### H4: Break up remaining mega-functions (32 over 100 lines)
+### H4: Break up remaining mega-functions (32 over 100 lines) -- DONE (3p handlers extracted)
 
 **Problem**: 32 functions exceed 100 lines. Worst offenders:
 step() 911 lines (3p), apply_log_action 465 lines,
