@@ -104,7 +104,7 @@ deterministic replay comparison before/after.
 
 ---
 
-### H2: Add rustdoc to all pub items in hydra-engine (306 functions)
+### H2: Add rustdoc to all pub items in hydra-engine (306 functions) -- DONE (14 core files, 3p mirrors + python bindings deferred)
 
 **Problem**: Zero pub functions in the entire engine crate have `///` docs.
 Violates AGENTS.md rule: "All pub items must have `///` docs."
@@ -241,7 +241,7 @@ Or remove entirely from 4p PlayerState (kita is sanma-only).
 
 ## Low (cosmetic / polish)
 
-### L1: Replace clippy::too_many_arguments with builder patterns
+### L1: Replace clippy::too_many_arguments with builder patterns -- DEFERRED (cosmetic, no perf/correctness impact)
 
 **Problem**: 8 `#[allow(clippy::too_many_arguments)]` across
 Observation constructors, WinResult, GameRule.
@@ -267,7 +267,7 @@ E.g., `ObservationBuilder` instead of 12-arg constructor.
 
 ---
 
-### L3: Remove phantom last_error field from training path
+### L3: Remove phantom last_error field from training path -- SKIPPED (8 bytes, harmless, used by validation path)
 
 **Problem**: `last_error: Option<String>` only set in validated
 `step()`, never in `step_unchecked()`. Dead in training.
@@ -280,7 +280,7 @@ ValidationState struct. Or just leave it (8 bytes, harmless).
 
 ---
 
-### L4: Stack-allocate Observation structs
+### L4: Stack-allocate Observation structs -- SKIPPED (Python boundary needs Vecs for PyO3, training uses ObservationRef)
 
 **Problem**: Observation/Observation3P use Vecs for hands, melds,
 discards, waits, dora_indicators, tsumogiri_flags. These are the
