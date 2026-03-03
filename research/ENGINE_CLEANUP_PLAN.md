@@ -120,7 +120,7 @@ then extended description. Group by module, delegate per-file.
 
 ---
 
-### H3: Add rustdoc to missing pub items in hydra-core (28 items)
+### H3: Add rustdoc to missing pub items in hydra-core (28 items) -- DONE
 
 **Problem**: action.rs constants (16-30), HydraAction methods,
 DirtyFlags consts, tile.rs AKA constants missing `///` docs.
@@ -155,7 +155,7 @@ _handle_wait_response 417 lines, calculate_yaku 328 lines.
 
 ## Medium (known tech debt)
 
-### M1: Remove dead_code allows (4 items)
+### M1: Remove dead_code allows (4 items) -- DONE
 
 **Problem**: push_active_player (4p+3p), set_claims_from_vec (4p),
 ID_NUKIDORA constant. Left from refactor.
@@ -169,7 +169,7 @@ If needed later, re-add.
 
 ---
 
-### M2: Resolve TODO comments (2 items)
+### M2: Resolve TODO comments (2 items) -- DONE
 
 **Problem**:
 - mjsoul_replay.rs:213 -- "TODO: Parse header for rule"
@@ -182,7 +182,7 @@ If needed later, re-add.
 
 ---
 
-### M3: Document batch_encoder as future infrastructure
+### M3: Document batch_encoder as future infrastructure -- DONE (already had docs)
 
 **Problem**: batch_encoder module is never imported. Looks like dead code
 but is actually infrastructure for hydra-train.
@@ -225,7 +225,7 @@ yaku.rs, score.rs, hand_evaluator.rs, observation/ files.
 
 ---
 
-### M6: Convert 4p PlayerState.kita_tiles to fixed array
+### M6: Convert 4p PlayerState.kita_tiles to fixed array -- DONE (removed entirely)
 
 **Problem**: `kita_tiles: Vec<u8>` in 4p PlayerState is dead code.
 Never written to in 4-player games. 3p already uses `[u8; 4]`.
@@ -255,7 +255,7 @@ E.g., `ObservationBuilder` instead of 12-arg constructor.
 
 ---
 
-### L2: Remove phantom round_end_scores field
+### L2: Remove phantom round_end_scores field -- DONE
 
 **Problem**: `round_end_scores: Option<Vec<i32>>` is never set to
 `Some(...)` in 4p. Dead field.
