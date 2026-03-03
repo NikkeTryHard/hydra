@@ -617,7 +617,11 @@ impl ObservationEncoder {
     /// - Ch 65-67: genbutsu_tedashi (per opponent)
     /// - Ch 68-70: genbutsu_riichi_era (per opponent)
     /// - Ch 71-73: suji (per opponent, float 0.0-1.0)
-    /// - Ch 74-79: reserved suji context (zeros)
+    /// - Ch 74-76: half-suji indicator (per opponent)
+    /// - Ch 77-79: matagi-suji danger (per opponent)
+    /// - Ch 80: kabe
+    /// - Ch 81: one-chance
+    /// - Ch 82-84: tenpai hints (riichi status per opponent)
     /// - Ch 80: kabe
     /// - Ch 81: one-chance
     /// - Ch 82-84: reserved tenpai hints (zeros)
@@ -639,13 +643,39 @@ impl ObservationEncoder {
                     self.set(CH_SAFETY + 3 * NUM_OPPS + opp, tile, suji);
                 }
             }
+
         }
+
+        // Ch 74-76: half-suji indicator per opponent
+        for opp in 0..NUM_OPPS {
+            for_each_set_bit(safety.half_suji[opp], |tile| {
+                self.set(CH_SAFETY + 12 + opp, tile, 1.0);
+            });
+        }
+
+        // Ch 77-79: matagi-suji danger per opponent
+        for opp in 0..NUM_OPPS {
+            for tile in 0..NUM_TILES {
+                let m = safety.matagi[opp][tile];
+                if m != 0.0 {
+                    self.set(CH_SAFETY + 15 + opp, tile, m);
+                }
+            }
+        }
+
         for_each_set_bit(safety.kabe, |tile| {
             self.set(CH_SAFETY + 18, tile, 1.0);
         });
         for_each_set_bit(safety.one_chance, |tile| {
             self.set(CH_SAFETY + 19, tile, 1.0);
         });
+
+        // Ch 82-84: tenpai hints per opponent (riichi status for now)
+        for opp in 0..NUM_OPPS {
+            if safety.opponent_riichi[opp] {
+                self.fill_channel(CH_SAFETY + 20 + opp, 1.0);
+            }
+        }
     }
 }
 

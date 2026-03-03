@@ -520,12 +520,68 @@ fn golden_safety_kabe_one_chance() {
     assert_eq!(get(&enc, 80, 0), 0.0, "ch80 kabe 1m off");
     assert_eq!(get(&enc, 81, 20), 1.0, "ch81 one-chance 3s");
     assert_eq!(get(&enc, 81, 0), 0.0, "ch81 one-chance 1m off");
-    // Reserved channels 82-84 stay zero
+    // Channels 82-84 (tenpai hints) zero when no riichi
     for ch in 82..=84 {
         for t in 0..34 {
-            assert_eq!(get(&enc, ch, t), 0.0, "reserved ch{ch} zero");
+            assert_eq!(get(&enc, ch, t), 0.0, "tenpai hint ch{ch} zero (no riichi)");
         }
     }
+}
+
+#[test]
+fn golden_safety_half_suji() {
+    let mut enc = ObservationEncoder::new();
+    let mut si = SafetyInfo::new();
+    // Discard 1m (tile 0) as opp0 -> 4m (tile 3) gets half-suji
+    si.on_discard(0, 0, false);
+    enc.encode_safety(&si);
+    // Ch 74 (62+12): half-suji opp0
+    assert_eq!(get(&enc, 74, 3), 1.0, "ch74 opp0 half-suji 4m");
+    assert_eq!(get(&enc, 74, 0), 0.0, "ch74 opp0 1m not half-suji");
+    // Suji channel should show 0.5 for center tile 4m
+    assert_close(get(&enc, 71, 3), 0.5, "ch71 opp0 suji 4m half value");
+    // Edge tile 1m gets full 1.0 suji (only has 1 partner)
+    assert_close(get(&enc, 71, 0), 0.0, "ch71 opp0 suji 1m (not a suji target)");
+}
+
+#[test]
+fn golden_safety_half_suji_both_partners() {
+    let mut enc = ObservationEncoder::new();
+    let mut si = SafetyInfo::new();
+    // Discard both 1m and 7m -> 4m gets full suji, no half-suji
+    si.on_discard(0, 0, false);
+    si.on_discard(6, 0, false);
+    enc.encode_safety(&si);
+    assert_eq!(get(&enc, 74, 3), 0.0, "ch74 opp0 4m not half (both partners)");
+    assert_close(get(&enc, 71, 3), 1.0, "ch71 opp0 suji 4m full");
+}
+
+#[test]
+fn golden_safety_matagi() {
+    let mut enc = ObservationEncoder::new();
+    let mut si = SafetyInfo::new();
+    // Tedashi discard of 5m (tile 4) by opp1 -> matagi on 4m and 6m
+    si.on_discard(4, 1, true);
+    enc.encode_safety(&si);
+    // Ch 78 (62+15+1): matagi opp1
+    assert_close(get(&enc, 78, 3), 1.0, "ch78 opp1 matagi 4m");
+    assert_close(get(&enc, 78, 5), 1.0, "ch78 opp1 matagi 6m");
+    assert_eq!(get(&enc, 78, 4), 0.0, "ch78 opp1 5m no matagi");
+    assert_eq!(get(&enc, 77, 3), 0.0, "ch77 opp0 no matagi");
+}
+
+#[test]
+fn golden_safety_tenpai_hint_riichi() {
+    let mut enc = ObservationEncoder::new();
+    let mut si = SafetyInfo::new();
+    si.on_riichi(1); // opponent 1 riichi
+    enc.encode_safety(&si);
+    // Ch 83 (62+20+1): tenpai hint opp1 filled with 1.0
+    assert_eq!(get(&enc, 83, 0), 1.0, "ch83 opp1 tenpai hint");
+    assert_eq!(get(&enc, 83, 33), 1.0, "ch83 opp1 tenpai filled");
+    // Other opponents should be zero
+    assert_eq!(get(&enc, 82, 0), 0.0, "ch82 opp0 no tenpai hint");
+    assert_eq!(get(&enc, 84, 0), 0.0, "ch84 opp2 no tenpai hint");
 }
 
 // =========================================================================
