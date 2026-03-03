@@ -25,12 +25,6 @@ use wall::WallState;
 
 const NP: usize = 4;
 
-/// Insert `tile` into a sorted hand Vec, maintaining sort order.
-#[inline]
-fn sorted_insert(hand: &mut Vec<u8>, tile: u8) {
-    let pos = hand.partition_point(|&t| t < tile);
-    hand.insert(pos, tile);
-}
 
 /// Insert `tile` into a sorted fixed-size hand array, maintaining sort order.
 #[inline]
@@ -43,6 +37,18 @@ fn sorted_insert_arr(arr: &mut [u8; 14], len: &mut u8, val: u8) {
     }
     arr[pos] = val;
     *len += 1;
+}
+
+/// Copy a tile slice into a `[u8; 5]` buffer, sorted-insert one extra tile, return (buf, len).
+#[inline]
+fn copy_and_sorted_insert(src: &[u8], extra: u8) -> ([u8; 5], usize) {
+    let mut buf = [0u8; 5];
+    let n = src.len().min(4);
+    buf[..n].copy_from_slice(&src[..n]);
+    let pos = buf[..n].partition_point(|&x| x < extra);
+    for i in (pos..n).rev() { buf[i + 1] = buf[i]; }
+    buf[pos] = extra;
+    (buf, n + 1)
 }
 
 #[cfg_attr(feature = "python", pyo3::pyclass)]
@@ -593,7 +599,8 @@ impl GameState {
                     ActionType::Ankan => {
                         // Ankan Logic
                         let tile = act.tile.or(act.consume_slice().first().copied()).unwrap_or(0);
-                        let mut chankan_ronners = Vec::new();
+                        let mut chankan_count: usize = 0;
+                        let mut chankan_ronners = [0u8; 3];
                         if self.rule.allows_ron_on_ankan_for_kokushi_musou {
                             for i in 0..np as u8 {
                                 if i == pid {
@@ -635,16 +642,16 @@ impl GameState {
                                 // 42=Kokushi, 49=Kokushi13
                                 if res.is_win && (res.yaku.contains(&42) || res.yaku.contains(&49))
                                 {
-                                    chankan_ronners.push(i);
+                                    chankan_ronners[chankan_count] = i; chankan_count += 1;
                                     self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
                                 }
                             }
                         }
 
-                        if !chankan_ronners.is_empty() {
+                        if chankan_count > 0 {
                             self.pending_kan = Some((pid, act));
                             self.phase = Phase::WaitResponse;
-                            self.set_active_players_from_slice(&chankan_ronners);
+                            self.set_active_players_from_slice(&chankan_ronners[..chankan_count]);
                             self.last_discard = Some((pid, tile));
                         } else {
                             self._resolve_kan(pid, act);
@@ -694,7 +701,8 @@ impl GameState {
                         // Kakan Logic
                         // Check Chankan
                         let tile = act.tile.or(act.consume_slice().first().copied()).unwrap_or(0);
-                        let mut chankan_ronners = Vec::new();
+                        let mut chankan_ronners = [0u8; 3];
+                        let mut chankan_count: usize = 0;
                         for i in 0..np as u8 {
                             if i == pid {
                                 continue;
@@ -766,15 +774,15 @@ impl GameState {
 
                             if res.is_win && (res.yakuman || res.han >= 1) {
                                 // Add Ron action offer
-                                chankan_ronners.push(i);
+                                chankan_ronners[chankan_count] = i; chankan_count += 1;
                                 self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
                             }
                         }
 
-                        if !chankan_ronners.is_empty() {
+                        if chankan_count > 0 {
                             self.pending_kan = Some((pid, act));
                             self.phase = Phase::WaitResponse;
-                            self.set_active_players_from_slice(&chankan_ronners);
+                            self.set_active_players_from_slice(&chankan_ronners[..chankan_count]);
                             self.last_discard = Some((pid, tile)); // Treat Kakan tile as discard for Ron targeting
                         } else {
                             self._resolve_kan(pid, act);
@@ -843,7 +851,7 @@ impl GameState {
                         }
 
                         if res.is_win {
-                            let mut deltas = vec![0i32; np];
+                            let mut deltas = [0i32; NP];
                             let mut total_win = 0;
 
                             // Check Pao
@@ -1018,13 +1026,14 @@ impl GameState {
                 }
             }
 
-            let mut ron_claims = Vec::new();
+            let mut ron_claims = [0u8; 3];
+            let mut ron_count: usize = 0;
             let mut call_claim: Option<(u8, Action)> = None;
 
             for &pid in self.active_player_slice() {
                 if let Some(act) = actions[pid as usize] {
                     if act.action_type == ActionType::Ron {
-                        ron_claims.push(pid);
+                        ron_claims[ron_count] = pid; ron_count += 1;
                     } else if act.action_type == ActionType::Pon
                         || act.action_type == ActionType::Daiminkan
                         || act.action_type == ActionType::Chi
@@ -1044,25 +1053,25 @@ impl GameState {
                 }
             }
 
-            if !ron_claims.is_empty() {
+            if ron_count > 0 {
                 // Sanchaho: all non-discarders ron → abortive draw
-                if ron_claims.len() >= NP - 1 && self.rule.sanchaho_is_draw {
+                if ron_count >= NP - 1 && self.rule.sanchaho_is_draw {
                     self._trigger_ryukyoku("sanchaho");
                     return;
                 }
 
                 let (target_pid, win_tile) = self.last_discard.unwrap_or((self.current_player, 0));
 
-                ron_claims.sort_by_key(|&pid| (pid + np as u8 - target_pid) % np as u8);
+                ron_claims[..ron_count].sort_by_key(|&pid| (pid + np as u8 - target_pid) % np as u8);
 
-                let winners = ron_claims;
+                let winners = &ron_claims[..ron_count];
 
                 let mut total_deltas = [0i32; NP];
                 let mut oya_won = false;
                 let mut deposit_taken = false;
                 let mut honba_taken = false;
 
-                for &w_pid in &winners {
+                for &w_pid in winners {
                     let hand = self.players[w_pid as usize].hand_slice();
                     let melds = self.players[w_pid as usize].melds_slice();
                     let p_wind = (w_pid + np as u8 - self.oya) % np as u8;
@@ -1182,7 +1191,7 @@ impl GameState {
                             }
                         }
 
-                        let mut this_deltas = vec![0i32; np];
+                        let mut this_deltas = [0i32; NP];
                         this_deltas[w_pid as usize] += score;
                         this_deltas[pao_payer as usize] -= pao_amt;
                         this_deltas[target_pid as usize] -= score - pao_amt;
@@ -1277,8 +1286,7 @@ impl GameState {
                     }
                 }
                 let (discarder, tile) = self.last_discard.unwrap();
-                let mut tiles = action.consume_slice().to_vec();
-                sorted_insert(&mut tiles, tile);
+                let (tiles_buf, tiles_len) = copy_and_sorted_insert(action.consume_slice(), tile);
                 let meld_type = match action.action_type {
                     ActionType::Pon => MeldType::Pon,
                     ActionType::Chi => MeldType::Chi,
@@ -1286,7 +1294,7 @@ impl GameState {
                 };
                 self.players[claimer as usize].push_meld(Meld::new(
                     meld_type,
-                    &tiles,
+                    &tiles_buf[..tiles_len],
                     true,
                     discarder as i8,
                     Some(tile),
@@ -1370,8 +1378,8 @@ impl GameState {
                 } else if action.action_type == ActionType::Chi {
                     self.players[claimer as usize].push_forbidden(tile);
                     let t34 = tile / 4;
-                    let mut consumed_34: Vec<u8> =
-                        action.consume_slice().iter().map(|&x| x / 4).collect();
+                    let cs = action.consume_slice();
+                    let mut consumed_34 = [cs[0] / 4, cs[1] / 4];
                     consumed_34.sort();
                     if consumed_34[0] == t34 + 1 && consumed_34[1] == t34 + 2 {
                         if t34 % 9 <= 5 {
@@ -1519,7 +1527,8 @@ impl GameState {
         self.clear_claims();
         self.clear_active_players();
         let mut has_claims = false;
-        let mut claim_active = Vec::new();
+        let mut claim_active = [0u8; 3];
+        let mut claim_count: usize = 0;
 
         // Loop players for claim actions
         let np = NP;
@@ -1533,14 +1542,14 @@ impl GameState {
             }
             if !legals.is_empty() {
                 has_claims = true;
-                claim_active.push(i);
+                claim_active[claim_count] = i; claim_count += 1;
                 self.set_claims_from_vec(i as usize, &legals);
             }
         }
 
         if has_claims {
             self.phase = Phase::WaitResponse;
-            self.set_active_players_from_slice(&claim_active);
+            self.set_active_players_from_slice(&claim_active[..claim_count]);
         } else {
             if let Some(_rp) = self.riichi_pending_acceptance {
                 self._accept_riichi();
@@ -1568,17 +1577,20 @@ impl GameState {
                     self.players[p_idx].remove_hand(pos);
                 }
             }
-            let (m_type, tiles, from_who, ct) = if action.action_type == ActionType::Ankan {
-                (MeldType::Ankan, action.consume_slice().to_vec(), -1i8, None)
+            let (m_type, tiles_buf, tiles_len, from_who, ct) = if action.action_type == ActionType::Ankan {
+                let src = action.consume_slice();
+                let mut buf = [0u8; 5];
+                let n = src.len().min(5);
+                buf[..n].copy_from_slice(&src[..n]);
+                (MeldType::Ankan, buf, n, -1i8, None)
             } else {
                 let (discarder, tile) = self.last_discard.unwrap();
-                let mut t_vec = action.consume_slice().to_vec();
-                sorted_insert(&mut t_vec, tile);
-                (MeldType::Daiminkan, t_vec, discarder as i8, Some(tile))
+                let (buf, n) = copy_and_sorted_insert(action.consume_slice(), tile);
+                (MeldType::Daiminkan, buf, n, discarder as i8, Some(tile))
             };
             self.players[p_idx].push_meld(Meld::new(
                 m_type,
-                &tiles,
+                &tiles_buf[..tiles_len],
                 m_type == MeldType::Daiminkan,
                 from_who,
                 ct,
