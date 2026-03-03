@@ -210,7 +210,8 @@ impl MjSoulReplay {
                 // assume Paifu struct { header, data }
                 let rounds: Vec<Vec<RawAction>> = serde_json::from_value(data.clone())
                     .map_err(|e| PyValueError::new_err(format!("Failed to parse rounds: {}", e)))?;
-                // TODO: Parse header for rule if converting from Paifu
+                // NOTE: Paifu header rules are not parsed. Falls back to GameRule::default_mjsoul().
+                // If non-default rules are needed, parse the header.rule_id field here.
                 (rounds, crate::rule::GameRule::default_mjsoul())
             } else {
                 // maybe just dict of rounds? Unlikely given usage.

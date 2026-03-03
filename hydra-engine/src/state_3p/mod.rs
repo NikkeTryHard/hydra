@@ -59,7 +59,6 @@ pub struct GameState3P {
 
     pub win_results: HashMap<u8, WinResult>,
     pub last_win_results: HashMap<u8, WinResult>,
-    pub round_end_scores: Option<Vec<i32>>,
 
     pub mjai_log: Vec<String>,
     pub player_event_counts: [usize; NP],
@@ -86,14 +85,6 @@ impl GameState3P {
     #[inline]
     pub fn active_player_slice(&self) -> &[u8] {
         &self.active_players[..self.active_player_count as usize]
-    }
-
-    /// Appends a player to the active players list.
-    #[allow(dead_code)]
-    #[inline]
-    fn push_active_player(&mut self, pid: u8) {
-        self.active_players[self.active_player_count as usize] = pid;
-        self.active_player_count += 1;
     }
 
     /// Clears the active players list.
@@ -184,7 +175,6 @@ impl GameState3P {
             drawn_tile: None,
             win_results: HashMap::new(),
             last_win_results: HashMap::new(),
-            round_end_scores: None,
             mjai_log: Vec::new(),
             player_event_counts: [0; NP],
             mjai_log_per_player: Default::default(),
@@ -1671,7 +1661,6 @@ impl GameState3P {
         self.last_discard = None;
         self.win_results.clear();
         self.last_win_results.clear();
-        self.round_end_scores = None;
         self.riichi_sutehais = [None; NP];
         self.last_tedashis = [None; NP];
 
