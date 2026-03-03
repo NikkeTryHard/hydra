@@ -43,11 +43,12 @@ Six engines built, compiled, and benchmarked on the same machine.
 
 | Engine | Language | Per-Game Time | Games/sec | Cores | Notes |
 |--------|----------|--------------|-----------|-------|-------|
-| **hydra-engine** | Rust | 397us | 2,519 | 1 | Criterion, FirstActionSelector |
-| **hydra-engine** (seq batch) | Rust | 44.9ms / 100 games | 2,228 | 1 | Sequential, RAYON_NUM_THREADS=1 |
-| **hydra-engine** (par batch) | Rust | 3.5ms / 100 games | 28,986 | 4 | rayon parallel |
-| **riichienv-core 0.3.4** | Rust | 627us | 1,595 | 1 | Criterion, same game loop |
-| **riichienv-core 0.3.4** (seq) | Rust | 73.8ms / 100 games | 1,355 | 1 | Sequential, no rayon |
+| **hydra-engine** | Rust | 396us | 2,525 | 1 | Criterion, FirstActionSelector |
+| **hydra-engine** (seq batch) | Rust | 45.1ms / 100 games | 2,217 | 1 | Sequential, RAYON_NUM_THREADS=1 |
+| **hydra-engine** (par batch) | Rust | 3.5ms / 100 games | 28,986 | 4 | rayon parallel, map_init |
+| **riichienv-core 0.3.4** | Rust | 933us | 1,072 | 1 | Criterion, get_observation loop |
+| **riichienv-core 0.3.4** (seq) | Rust | 94.1ms / 100 games | 1,063 | 1 | Sequential |
+| **riichienv-core 0.3.4** (par) | Rust | 28.0ms / 100 games | 3,571 | 4 | rayon naive (no buffer reuse) |
 | **mahjax** | JAX/Python | 873us | 1,145 | 1 | CPU only, JIT compiled |
 | **Mjx** | C++ | 17,498us | 57 | 1 | RuleBased agent, gRPC/protobuf overhead |
 | **Mjai** | Ruby | 86,883us | 12 | 1 | TsumogiriPlayer, pure Ruby |
@@ -56,7 +57,7 @@ Additional measurement:
 
 | Benchmark | hydra-engine | libriichi |
 |-----------|-------------|-----------|
-| Observation encode | **421ns** | **806us** (not apples-to-apples) |
+| Observation encode | **422ns** | **806us** (not apples-to-apples) |
 
 ### Notes on the table
 
@@ -88,17 +89,18 @@ comparison: same language, same machine, same compiler flags, same agent pattern
 
 | | riichienv-core 0.3.4 | hydra-engine | Delta |
 |---|---|---|---|
-| Single game | 627us (1,595/sec) | 417us (2,398/sec) | **1.50x faster** |
-| Batch 100 (sequential) | 73.8ms (1,355/sec) | n/a | n/a |
-| Batch 100 (rayon, 4 cores) | n/a (no rayon) | 12.2ms (8,170/sec) | **6.0x faster** |
+| Single game | 933us (1,072/sec) | 396us (2,525/sec) | **2.36x faster** |
+| Batch 100 (sequential) | 94.1ms (1,063/sec) | 45.1ms (2,217/sec) | **2.09x faster** |
+| Batch 100 (rayon, 4 cores) | 28.0ms (3,571/sec) | 3.5ms (28,986/sec) | **8.1x faster** |
 
-The single-game improvement comes from stack-allocated `Action` (`[u8; 4]`
-instead of heap `Vec<u8>`), extracted `_execute_step`, and changed calling
-conventions in `HandEvaluator`. These changes eliminate allocator contention
-under parallel load.
+The single-game improvement comes from zero-alloc game step (all Vec/HashMap
+eliminated, fixed-size arrays throughout), stack-allocated Action/Meld (Copy),
+extracted handler methods, buffer-reuse legal action generation, and bitset
+safety tracking. The 4-core batch improvement additionally benefits from
+rayon::map_init for per-thread state reuse and zero-alloc claim resolution.
 
-The batch number is what matters for training. 8,170 games/sec from 4 cores
-means ~29M games/hour of self-play data. Scales further with more cores.
+The batch number is what matters for training. 28,986 games/sec from 4 cores
+means ~104M games/hour of self-play data. Scales further with more cores.
 
 ### Hydra vs libriichi (Mortal)
 
@@ -118,7 +120,7 @@ is likely 10-50x, not the 1,990x the headline numbers suggest.
 
 | | mahjax (CPU) | hydra-engine | Delta |
 |---|---|---|---|
-| Single game | 873us (1,145/sec) | 417us (2,398/sec) | **2.09x faster** |
+| Single game | 873us (1,145/sec) | 396us (2,525/sec) | **2.20x faster** |
 
 This comparison is deliberately unfair to mahjax. The engine is designed
 for GPU vectorization. Running it on CPU, single-threaded, with JIT but
@@ -136,7 +138,7 @@ Both measured on the same machine. This is our own measurement, not published nu
 
 | | Mjx | hydra-engine | Delta |
 |---|---|---|---|
-| Single game | 17,498us (57/sec) | 417us (2,398/sec) | **42x faster** |
+| Single game | 17,498us (57/sec) | 396us (2,525/sec) | **44x faster** |
 
 The gap is architectural. Mjx routes every action through protobuf serialization
 and gRPC dispatch, even when the agent is running in the same process. This design
@@ -165,7 +167,7 @@ a missing `#include <cstdint>` for GCC 13+ compatibility. Compiled with
 
 | | Mjai | hydra-engine | Delta |
 |---|---|---|---|
-| Single game | 86,883us (12/sec) | 417us (2,398/sec) | **208x faster** |
+| Single game | 86,883us (12/sec) | 396us (2,525/sec) | **219x faster** |
 
 Mjai is the original Riichi Mahjong simulator by gimite. It's pure Ruby with
 no native extensions. The 86.9ms per game is dominated by Ruby interpreter
@@ -257,9 +259,9 @@ overhead, not agent computation.
 ### Hydra's batch advantage is the training-relevant number
 
 Single-game latency matters for debugging and interactive play.
-Batch throughput (8,170 games/sec on 4 cores) is what determines
+Batch throughput (28,986 games/sec on 4 cores) is what determines
 how fast the training pipeline generates experience. That's the
-number to watch. Scales further with more cores.
+number to watch. Scales further with more cores (~104M games/hour on 4 cores).
 
 ### We haven't proven training works yet
 
@@ -276,7 +278,7 @@ All "measured" numbers: benchmarks on Intel Core Ultra 7 265KF,
 Rust engines use Criterion; Mjx and Mjai use wall-clock timing.
 
 - **hydra-engine**: `cargo bench` in perf-optimizations worktree, `RAYON_NUM_THREADS=4`
-- **riichienv-core 0.3.4**: `cargo bench` at `/tmp/riichienv-bench/`, crates.io release
+- **riichienv-core 0.3.4**: custom Criterion bench with rayon in upstream checkout, `RUSTFLAGS="-C target-cpu=native"`
 - **libriichi**: `cargo bench --no-default-features --bench bench` (encode_obs only), built from source (AGPL-3.0, benchmark only)
 - **mahjax**: `pip install -e .` then custom benchmark script, CPU only, 1000 games
 - **Mjx (measured)**: Built from source (github.com/mjx-project/mjx), `g++ -O3 -std=c++17`, 100 games wall-clock, RuleBased agent

@@ -26,11 +26,19 @@ Changes from upstream `riichienv-core`, all targeting training throughput:
 | Action type | `consume_tiles`: `Vec<u8>` -> `[u8; 4]` | `Action` is now `Copy`, zero heap allocation |
 | HandEvaluator | `new()` takes `&[u8]` + `&[Meld]` (borrows) | Eliminates 30+ `clone()` calls per step |
 | GameState | `step_unchecked()` | Skips redundant validation in self-play loops |
+| GameState | `_execute_step` deleted | Single step impl via `_execute_step_array`, -905 lines |
+| GameState | Extracted handler methods | `_handle_discard/riichi/ankan/kakan/tsumo/wait_response` |
 | GameState | `observe()` -> `ObservationRef` | Zero-copy state access, no `Vec` allocations |
-| GameState | `get_legal_actions()` | Legal actions without full `Observation` construction |
-| Hand maintenance | `sorted_insert()` | O(n) insert vs O(n log n) sort after every draw |
-| Player data | `HashMap` -> `[Option<T>; 4]` | Direct array indexing for 4-player data |
-| MJAI logging | `MjaiEvent` typed enum + `mjai_event!` macro | Zero-cost when disabled, stack-allocated when enabled |
+| GameState | `get_legal_actions_into()` | Buffer-reuse legal actions, zero alloc per step |
+| GameState | `_get_claim_actions_into_claims()` | Zero-alloc claim resolution, writes directly to array |
+| Hand maintenance | `sorted_insert_arr()` | Fixed-array sorted insert for stack-allocated hands |
+| Player data | All fields stack-allocated | hand/melds/discards/pao/forbidden as fixed arrays |
+| Wall data | `[u8; 136]` + cursor | Fixed array wall, O(1) draw via cursor index |
+| Meld type | `[u8; 4]` + `tile_count` | Meld is Copy, zero heap allocation |
+| Action type | `[u8; 4]` + `consume_count` | Action is Copy, zero heap allocation |
+| HandEvaluator | `[Meld; 4]` + `get_waits_u8_into()` | Stack melds, buffer-reuse waits |
+| Safety tracking | `u64` bitfields | Genbutsu/kabe/one-chance as bitsets, not bool arrays |
+| MJAI logging | Gated by `skip_mjai_logging` | Zero-cost when disabled |
 | Shanten tables | Made `pub` for batch shanten | Enables hierarchical hash caching in `hydra-core` |
 
 ## Module Reference
@@ -72,17 +80,17 @@ in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARKS.md).
 
 | Benchmark | hydra-engine | riichienv-core 0.3.4 | Delta |
 |-----------|-------------|---------------------|-------|
-| Single game (1 core) | 397us | 627us | **1.58x faster** |
-| Batch 100 (1 core, seq) | 44.9ms (2,228/sec) | 73.8ms (1,355/sec) | **1.64x faster** |
-| Batch 100 (4 cores, rayon) | 3.5ms (28,986/sec) | n/a (no rayon) | -- |
-| Observation encode | 421ns | n/a | -- |
+| Single game (1 core) | 396us | 933us | **2.36x faster** |
+| Batch 100 (1 core, seq) | 45.1ms (2,217/sec) | 94.1ms (1,063/sec) | **2.09x faster** |
+| Batch 100 (4 cores, rayon) | 3.5ms (28,986/sec) | 28.0ms (3,571/sec) | **8.0x faster** |
+| Observation encode | 422ns | n/a | -- |
 
 Cross-engine comparison (single-threaded, first-action agent unless noted):
 
 | Engine | Language | Per-Game | Games/sec |
 |--------|----------|----------|-----------|
-| hydra-engine | Rust | 397us | 2,519 |
-| riichienv-core | Rust | 627us | 1,595 |
+| hydra-engine | Rust | 396us | 2,525 |
+| riichienv-core | Rust | 933us | 1,072 |
 | mahjax | JAX/Python | 873us | 1,145 |
 | Mjx | C++ | 17,498us | 57 |
 | Mjai | Ruby | 86,883us | 12 |
