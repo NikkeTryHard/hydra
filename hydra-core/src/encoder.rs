@@ -662,15 +662,25 @@ impl ObservationEncoder {
 pub struct DirtyFlags(pub u16);
 
 impl DirtyFlags {
+    /// Closed hand channels (0-3) need re-encoding.
     pub const HAND: Self = Self(1 << 0); // Ch 0-3
+    /// Open meld hand channels (4-7) need re-encoding.
     pub const OPEN_MELD: Self = Self(1 << 1); // Ch 4-7
+    /// Drawn tile channel (8) needs re-encoding.
     pub const DRAWN: Self = Self(1 << 2); // Ch 8
+    /// Shanten mask channels (9-10) need re-encoding.
     pub const SHANTEN: Self = Self(1 << 3); // Ch 9-10
+    /// Discard channels (11-22) need re-encoding.
     pub const DISCARDS: Self = Self(1 << 4); // Ch 11-22
+    /// Meld channels (23-34) need re-encoding.
     pub const MELDS: Self = Self(1 << 5); // Ch 23-34
+    /// Dora channels (35-42) need re-encoding.
     pub const DORA: Self = Self(1 << 6); // Ch 35-42
+    /// Game metadata channels (43-61) need re-encoding.
     pub const META: Self = Self(1 << 7); // Ch 43-61
+    /// Safety channels (62-84) need re-encoding.
     pub const SAFETY: Self = Self(1 << 8); // Ch 62-84
+    /// All channels need re-encoding.
     pub const ALL: Self = Self(0x1FF);
 
     /// After a draw: hand, drawn tile, shanten, metadata.
@@ -699,10 +709,12 @@ impl DirtyFlags {
     pub const NEW_ROUND: Self = Self::ALL;
 
     #[inline]
+    /// Check whether all flags in `other` are set in `self`.
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
     #[inline]
+    /// Return a new `DirtyFlags` with all bits from both `self` and `other`.
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }

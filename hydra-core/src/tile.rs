@@ -47,7 +47,9 @@ pub const AKA_SOUZU_136: u8 = 88;
 
 /// Extended tile type indices for aka-dora (used in action encoding).
 pub const AKA_MANZU_TYPE: u8 = 34;
+/// Extended tile type index for red five of pinzu (aka 5p).
 pub const AKA_PINZU_TYPE: u8 = 35;
+/// Extended tile type index for red five of souzu (aka 5s).
 pub const AKA_SOUZU_TYPE: u8 = 36;
 
 // ---------------------------------------------------------------------------
