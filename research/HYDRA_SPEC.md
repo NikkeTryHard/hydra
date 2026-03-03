@@ -1,6 +1,6 @@
 # Hydra Architecture Specification
 
-A Riichi Mahjong AI designed to rival LuckyJ (Tencent AI Lab, 10.68 stable dan) through a combination of proven techniques, novel opponent-aware features, and inference-time search. Intermediate milestone: surpass Mortal, Suphx, and NAGA.
+A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through a combination of proven techniques, novel opponent-aware features, and inference-time search. Intermediate milestone: surpass Mortal, Suphx, and NAGA.
 
 ---
 

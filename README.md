@@ -1,6 +1,6 @@
 # Hydra
 
-Open-source Riichi Mahjong AI. The goal is to build an AI that rivals [LuckyJ](https://haobofu.github.io/) (Tencent AI Lab, 10.68 stable dan on Tenhou) with open weights.
+Open-source Riichi Mahjong AI. The goal is to build an AI that rivals [LuckyJ](https://haobofu.github.io/) (Tencent, 10.68 stable dan on Tenhou) with open weights.
 
 ## Goal
 
