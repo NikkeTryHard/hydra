@@ -7,12 +7,18 @@ use crate::yaku;
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
+/// Evaluate a mahjong hand for agari, tenpai, waits, and scoring.
 #[cfg_attr(feature = "python", pyclass)]
 pub struct HandEvaluator {
-    pub hand: Hand,      // Normalised for agari detection
-    pub full_hand: Hand, // Full counts for dora/yaku
+    /// Normalised tile counts for agari detection (melds reduced).
+    pub hand: Hand,
+    /// Full tile counts including meld tiles, used for dora and yaku lookup.
+    pub full_hand: Hand,
+    /// Fixed-size array of declared melds (up to 4).
     pub melds: [Meld; 4],
+    /// Number of active melds in the `melds` array.
     pub meld_count: u8,
+    /// Count of aka-dora (red five) tiles in hand and melds.
     pub aka_dora_count: u8,
 }
 
@@ -23,11 +29,13 @@ impl HandEvaluator {
         &self.melds[..self.meld_count as usize]
     }
 
+    /// Parse an MPSZ text string into a `HandEvaluator`.
     pub fn hand_from_text(text: &str) -> RiichiResult<Self> {
         let (tiles, melds) = crate::parser::parse_hand_internal(text)?;
         Ok(Self::new(&tiles, &melds))
     }
 
+    /// Create a new evaluator from 136-format tiles and declared melds.
     pub fn new(tiles_136: &[u8], melds: &[Meld]) -> Self {
         let mut aka_dora_count = 0;
 
@@ -82,6 +90,7 @@ impl HandEvaluator {
         }
     }
 
+    /// Calculate the win result for the given winning tile and conditions.
     #[inline]
     pub fn calc(
         &self,
@@ -182,6 +191,7 @@ impl HandEvaluator {
         }
     }
 
+    /// Return `true` if the hand is tenpai (one tile away from winning).
     #[inline]
     pub fn is_tenpai(&self) -> bool {
         let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.meld_count * 3);
@@ -201,6 +211,7 @@ impl HandEvaluator {
         false
     }
 
+    /// Return the list of winning tile types (34-format) as a `Vec<u8>`.
     #[inline]
     pub fn get_waits_u8(&self) -> Vec<u8> {
         let mut waits = Vec::new();
@@ -244,6 +255,7 @@ impl HandEvaluator {
         count
     }
 
+    /// Return the list of winning tile types as `Vec<u32>`.
     pub fn get_waits(&self) -> Vec<u32> {
         self.get_waits_u8().iter().map(|&x| x as u32).collect()
     }
@@ -292,6 +304,7 @@ impl HandEvaluator {
     }
 }
 
+/// Return the 136-format tiles that can be discarded to reach tenpai.
 pub fn check_riichi_candidates(tiles_136: Vec<u8>) -> Vec<u32> {
     let mut candidates = Vec::new();
     // Convert to 34-tile hand

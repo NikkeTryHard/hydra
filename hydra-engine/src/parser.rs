@@ -40,6 +40,7 @@ impl TileManager {
     }
 }
 
+/// Parse an MPSZ hand string into 136-format tile IDs and melds.
 pub fn parse_hand_internal(text: &str) -> RiichiResult<(Vec<u8>, Vec<Meld>)> {
     let mut tm = TileManager::new();
     let mut tiles_136 = Vec::new();
@@ -96,6 +97,7 @@ pub fn parse_hand_internal(text: &str) -> RiichiResult<(Vec<u8>, Vec<Meld>)> {
     Ok((tiles_136, melds))
 }
 
+/// Parse an MPSZ hand string into 32-bit tile IDs and melds.
 pub fn parse_hand(text: &str) -> RiichiResult<(Vec<u32>, Vec<Meld>)> {
     let (tiles, melds) = parse_hand_internal(text)?;
     Ok((tiles.iter().map(|&x| x as u32).collect(), melds))
@@ -108,6 +110,7 @@ pub fn parse_hand_py(text: &str) -> PyResult<(Vec<u32>, Vec<Meld>)> {
     parse_hand(text).map_err(Into::into)
 }
 
+/// Parse a single tile from an MPSZ string and return its 136-format ID.
 pub fn parse_tile(text: &str) -> RiichiResult<u8> {
     let (tiles, melds) = parse_hand_internal(text)?;
     if !melds.is_empty() {
@@ -298,6 +301,7 @@ fn parse_meld(chars: &mut Peekable<Chars>, tm: &mut TileManager) -> RiichiResult
     }
 }
 
+/// Convert a 136-format tile ID to its MJAI string representation.
 pub fn tid_to_mjai(tid: u8) -> String {
     // Check Red 5s
     if tid == 16 {
@@ -333,6 +337,7 @@ pub fn tid_to_mjai(tid: u8) -> String {
     }
 }
 
+/// Convert an MJAI tile string to its 136-format tile ID.
 pub fn mjai_to_tid(mjai: &str) -> Option<u8> {
     // Honors
     let honors = ["E", "S", "W", "N", "P", "F", "C"];

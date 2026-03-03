@@ -3,13 +3,19 @@ use pyo3::prelude::*;
 
 #[cfg_attr(feature = "python", pyclass(get_all))]
 #[derive(Debug, Clone)]
+/// Score breakdown for a winning hand.
 pub struct Score {
+    /// Total points awarded to the winner.
     pub total: u32,
+    /// Points paid by the discarder on a ron win.
     pub pay_ron: u32,
+    /// Points paid by the dealer on a tsumo win (non-dealer winner).
     pub pay_tsumo_oya: u32,
+    /// Points paid by each non-dealer on a tsumo win.
     pub pay_tsumo_ko: u32,
 }
 
+/// Calculate the score from han, fu, seating, and honba.
 pub fn calculate_score(
     han: u8,
     fu: u8,
