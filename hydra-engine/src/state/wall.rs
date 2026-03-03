@@ -5,21 +5,32 @@ use sha2::{Digest, Sha256};
 /// Wall state for 4-player mahjong (136 tiles).
 #[derive(Debug, Clone)]
 pub struct WallState {
+    /// Fixed-size array holding all 136 wall tiles.
     pub tiles: [u8; 136],
+    /// Number of tiles currently in the wall.
     pub tile_count: u8,
+    /// Revealed dora indicator tiles (up to 5).
     pub dora_indicators: [u8; 5],
+    /// Number of revealed dora indicators.
     pub dora_indicator_count: u8,
+    /// Number of rinshan (replacement) tiles drawn so far.
     pub rinshan_draw_count: u8,
+    /// Number of kan dora reveals deferred until after discard.
     pub pending_kan_dora_count: u8,
+    /// SHA-256 digest of the shuffled wall for verification.
     pub wall_digest: String,
+    /// Random salt used in the wall digest computation.
     pub salt: String,
+    /// Optional deterministic seed for reproducible shuffles.
     pub seed: Option<u64>,
+    /// Monotonic hand counter used for per-hand seed derivation.
     pub hand_index: u64,
     /// Cursor for rinshan draws from the front of the wall.
     pub draw_cursor: usize,
 }
 
 impl WallState {
+    /// Create a new empty wall state with the given seed.
     pub fn new(seed: Option<u64>) -> Self {
         Self {
             tiles: [0; 136],
@@ -36,6 +47,7 @@ impl WallState {
         }
     }
 
+    /// Shuffle the wall tiles and initialize dora indicators.
     pub fn shuffle(&mut self, skip_digest: bool) {
         for i in 0..136u8 {
             self.tiles[i as usize] = i;
@@ -87,6 +99,7 @@ impl WallState {
         t
     }
 
+    /// Load a pre-built wall from a tile vector, replacing the current wall.
     pub fn load_wall(&mut self, tiles: Vec<u8>) {
         let len = tiles.len().min(136);
         self.tiles[..len].copy_from_slice(&tiles[..len]);

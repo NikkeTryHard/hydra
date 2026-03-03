@@ -16,6 +16,7 @@ pub enum YakuPossibility {
 }
 
 impl YakuPossibility {
+    /// Convert to a float mask (1.0 if possible/unknown, 0.0 if impossible).
     pub fn to_f32(self) -> f32 {
         match self {
             YakuPossibility::Possible | YakuPossibility::Unknown => 1.0,
