@@ -754,3 +754,303 @@ impl GameStateLegalActions for GameState {
         (legals, missed_agari)
     }
 }
+
+impl GameState {
+    /// Get claim actions for a player, writing directly into current_claims.
+    /// Returns (action_count, missed_agari).
+    pub fn _get_claim_actions_into_claims(&mut self, i: u8, pid: u8, tile: u8) -> (usize, bool) {
+        self.current_claim_counts[i as usize] = 0;
+        let mut missed_agari = false;
+        let i_us = i as usize;
+
+        // Copy player data into local buffers to avoid borrow conflicts with &mut self
+        let hand_buf = self.players[i_us].hand;
+        let hand_len = self.players[i_us].hand_len as usize;
+        let hand = &hand_buf[..hand_len];
+        let melds_buf = self.players[i_us].melds;
+        let meld_count = self.players[i_us].meld_count as usize;
+        let melds = &melds_buf[..meld_count];
+        let discards_buf = self.players[i_us].discards;
+        let discard_len = self.players[i_us].discard_len as usize;
+        let riichi_declared = self.players[i_us].riichi_declared;
+        let double_riichi_declared = self.players[i_us].double_riichi_declared;
+        let ippatsu_cycle = self.players[i_us].ippatsu_cycle;
+        let missed_agari_doujun = self.players[i_us].missed_agari_doujun;
+        let missed_agari_riichi = self.players[i_us].missed_agari_riichi;
+        let kuikae_forbidden = self.rule.kuikae_forbidden;
+
+        // 1. Ron
+        let tile_class = tile / 4;
+        let in_discards = discards_buf[..discard_len].iter()
+            .any(|&d| d / 4 == tile_class);
+        let in_missed = missed_agari_doujun
+            || (riichi_declared && missed_agari_riichi);
+
+        if !in_discards && !in_missed {
+            let calc = crate::hand_evaluator::HandEvaluator::new(hand, melds);
+            let p_wind = (i + 4 - self.oya) % 4;
+            let cond = Conditions {
+                tsumo: false,
+                riichi: riichi_declared,
+                double_riichi: double_riichi_declared,
+                ippatsu: ippatsu_cycle,
+                player_wind: Wind::from(p_wind),
+                round_wind: Wind::from(self.round_wind),
+                chankan: false,
+                haitei: false,
+                houtei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
+                rinshan: false,
+                tsumo_first_turn: false,
+                riichi_sticks: self.riichi_sticks,
+                honba: self.honba as u32,
+                ..Default::default()
+            };
+
+            let mut is_furiten = false;
+            let mut waits_buf = [0u8; 34];
+            let waits_count = calc.get_waits_u8_into(&mut waits_buf);
+            let waits = &waits_buf[..waits_count as usize];
+            let mut discard_set = [false; 34];
+            for &d in &discards_buf[..discard_len] {
+                discard_set[(d / 4) as usize] = true;
+            }
+            for &w in waits {
+                if discard_set[w as usize] {
+                    is_furiten = true;
+                    break;
+                }
+            }
+            if missed_agari_riichi || missed_agari_doujun {
+                is_furiten = true;
+            }
+
+            if !is_furiten {
+                let res = calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
+                if res.is_win {
+                    self.push_claim(i_us, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
+                } else if res.has_win_shape {
+                    missed_agari = true;
+                }
+            }
+        }
+
+        // 2. Pon / Kan
+        if !riichi_declared && self.wall.remaining() > 14 {
+            let count = hand.iter().filter(|&&t| t / 4 == tile / 4).count();
+            if count >= 2 && hand.len() >= 3 {
+                let check_pon_kuikae = |consumes: &[u8]| -> bool {
+                    let forbidden_tile: Option<u8> = if kuikae_forbidden {
+                        Some(tile / 4)
+                    } else {
+                        None
+                    };
+                    let (mut used_0, mut used_1) = (false, false);
+                    for &t in hand.iter() {
+                        let mut consumed_this = false;
+                        if !used_0 && consumes[0] == t {
+                            used_0 = true;
+                            consumed_this = true;
+                        } else if !used_1 && consumes[1] == t {
+                            used_1 = true;
+                            consumed_this = true;
+                        }
+                        if consumed_this {
+                            continue;
+                        }
+                        if forbidden_tile != Some(t / 4) {
+                            return true;
+                        }
+                    }
+                    false
+                };
+
+                let mut matching = [0u8; 3];
+                let mut matching_len = 0u8;
+                for &t in hand.iter() {
+                    if t / 4 == tile / 4 {
+                        matching[matching_len as usize] = t;
+                        matching_len += 1;
+                    }
+                }
+                let mut seen_pairs = [(0u8, 0u8); 3];
+                let mut seen_len = 0u8;
+                for a in 0..matching_len as usize {
+                    for b in (a + 1)..matching_len as usize {
+                        let pair = (matching[a], matching[b]);
+                        if !seen_pairs[..seen_len as usize].contains(&pair) {
+                            seen_pairs[seen_len as usize] = pair;
+                            seen_len += 1;
+                            let consumes = [pair.0, pair.1];
+                            if check_pon_kuikae(&consumes) {
+                                self.push_claim(i_us, Action::new(
+                                    ActionType::Pon,
+                                    Some(tile),
+                                    &consumes,
+                                    Some(i),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            if count >= 3 {
+                let mut consumes = [0u8; 3];
+                let mut ci = 0usize;
+                for &t in hand.iter() {
+                    if t / 4 == tile / 4 {
+                        consumes[ci] = t;
+                        ci += 1;
+                        if ci == 3 {
+                            break;
+                        }
+                    }
+                }
+                self.push_claim(i_us, Action::new(
+                    ActionType::Daiminkan,
+                    Some(tile),
+                    &consumes,
+                    Some(i),
+                ));
+            }
+        }
+
+        // 3. Chi
+        let is_shimocha = i == (pid + 1) % 4;
+        if !riichi_declared
+            && self.wall.remaining() > 14
+            && is_shimocha
+            && hand.len() >= 3
+        {
+            let t_val = tile / 4;
+            if t_val < 27 {
+                let check_chi_kuikae = |c1: u8, c2: u8| -> bool {
+                    let mut chi_forbidden = [0u8; 2];
+                    let mut chi_forbidden_len = 0u8;
+                    if kuikae_forbidden {
+                        chi_forbidden[chi_forbidden_len as usize] = t_val;
+                        chi_forbidden_len += 1;
+                        let mut cons_34 = [c1 / 4, c2 / 4];
+                        cons_34.sort();
+                        if cons_34[0] == t_val + 1 && cons_34[1] == t_val + 2 {
+                            if t_val % 9 <= 5 {
+                                chi_forbidden[chi_forbidden_len as usize] = t_val + 3;
+                                chi_forbidden_len += 1;
+                            }
+                        } else if t_val >= 2
+                            && cons_34[1] == t_val - 1
+                            && cons_34[0] == t_val - 2
+                            && t_val % 9 >= 3
+                        {
+                            chi_forbidden[chi_forbidden_len as usize] = t_val - 3;
+                            chi_forbidden_len += 1;
+                        }
+                    }
+                    let mut used_c1 = false;
+                    let mut used_c2 = false;
+                    for &t in hand.iter() {
+                        if !used_c1 && t == c1 {
+                            used_c1 = true;
+                            continue;
+                        }
+                        if !used_c2 && t == c2 {
+                            used_c2 = true;
+                            continue;
+                        }
+                        if !chi_forbidden[..chi_forbidden_len as usize].contains(&(t / 4)) {
+                            return true;
+                        }
+                    }
+                    false
+                };
+
+                // Pattern 1: t-2, t-1, t
+                if t_val % 9 >= 2 {
+                    let mut c1_opts = [0u8; 4];
+                    let mut c1_len = 0u8;
+                    let mut c2_opts = [0u8; 4];
+                    let mut c2_len = 0u8;
+                    for &t in hand.iter() {
+                        if t / 4 == t_val - 2 {
+                            c1_opts[c1_len as usize] = t;
+                            c1_len += 1;
+                        } else if t / 4 == t_val - 1 {
+                            c2_opts[c2_len as usize] = t;
+                            c2_len += 1;
+                        }
+                    }
+                    for &c1 in &c1_opts[..c1_len as usize] {
+                        for &c2 in &c2_opts[..c2_len as usize] {
+                            if check_chi_kuikae(c1, c2) {
+                                self.push_claim(i_us, Action::new(
+                                    ActionType::Chi,
+                                    Some(tile),
+                                    &[c1, c2],
+                                    Some(i),
+                                ));
+                            }
+                        }
+                    }
+                }
+                // Pattern 2: t-1, t, t+1
+                if t_val % 9 >= 1 && t_val % 9 <= 7 {
+                    let mut c1_opts = [0u8; 4];
+                    let mut c1_len = 0u8;
+                    let mut c2_opts = [0u8; 4];
+                    let mut c2_len = 0u8;
+                    for &t in hand.iter() {
+                        if t / 4 == t_val - 1 {
+                            c1_opts[c1_len as usize] = t;
+                            c1_len += 1;
+                        } else if t / 4 == t_val + 1 {
+                            c2_opts[c2_len as usize] = t;
+                            c2_len += 1;
+                        }
+                    }
+                    for &c1 in &c1_opts[..c1_len as usize] {
+                        for &c2 in &c2_opts[..c2_len as usize] {
+                            if check_chi_kuikae(c1, c2) {
+                                self.push_claim(i_us, Action::new(
+                                    ActionType::Chi,
+                                    Some(tile),
+                                    &[c1, c2],
+                                    Some(i),
+                                ));
+                            }
+                        }
+                    }
+                }
+                // Pattern 3: t, t+1, t+2
+                if t_val % 9 <= 6 {
+                    let mut c1_opts = [0u8; 4];
+                    let mut c1_len = 0u8;
+                    let mut c2_opts = [0u8; 4];
+                    let mut c2_len = 0u8;
+                    for &t in hand.iter() {
+                        if t / 4 == t_val + 1 {
+                            c1_opts[c1_len as usize] = t;
+                            c1_len += 1;
+                        } else if t / 4 == t_val + 2 {
+                            c2_opts[c2_len as usize] = t;
+                            c2_len += 1;
+                        }
+                    }
+                    for &c1 in &c1_opts[..c1_len as usize] {
+                        for &c2 in &c2_opts[..c2_len as usize] {
+                            if check_chi_kuikae(c1, c2) {
+                                self.push_claim(i_us, Action::new(
+                                    ActionType::Chi,
+                                    Some(tile),
+                                    &[c1, c2],
+                                    Some(i),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        (self.current_claim_counts[i_us] as usize, missed_agari)
+    }
+}

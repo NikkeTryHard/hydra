@@ -152,6 +152,7 @@ impl GameState {
 
     /// Sets claims for a player from a Vec.
     #[inline]
+    #[allow(dead_code)]
     fn set_claims_from_vec(&mut self, pid: usize, legals: &[Action]) {
         let count = legals.len().min(54);
         self.current_claims[pid][..count].copy_from_slice(&legals[..count]);
@@ -1567,14 +1568,14 @@ impl GameState {
             if i == pid {
                 continue;
             }
-            let (legals, missed_agari) = self._get_claim_actions_for_player(i, pid, tile);
+            let (count, missed_agari) = self._get_claim_actions_into_claims(i, pid, tile);
             if missed_agari {
                 self.players[i as usize].missed_agari_doujun = true;
             }
-            if !legals.is_empty() {
+            if count > 0 {
                 has_claims = true;
                 claim_active[claim_count] = i; claim_count += 1;
-                self.set_claims_from_vec(i as usize, &legals);
+                // claims already set directly by _get_claim_actions_into_claims
             }
         }
 

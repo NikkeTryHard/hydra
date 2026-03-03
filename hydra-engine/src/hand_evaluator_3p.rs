@@ -235,6 +235,29 @@ impl HandEvaluator3P {
         waits
     }
 
+    /// Get winning tile types into a caller-provided buffer.
+    /// Returns the number of waits written.
+    #[inline]
+    pub fn get_waits_u8_into(&self, buf: &mut [u8; 34]) -> u8 {
+        let current_total: u8 = self.hand.counts.iter().sum::<u8>() + (self.meld_count * 3);
+        if current_total != 13 {
+            return 0;
+        }
+        let mut count = 0u8;
+        let mut hand_14 = self.hand.clone();
+        for i in 0..crate::types::TILE_MAX {
+            if hand_14.counts[i] < 4 {
+                hand_14.add(i as u8);
+                if crate::agari::is_agari(&mut hand_14) {
+                    buf[count as usize] = i as u8;
+                    count += 1;
+                }
+                hand_14.remove(i as u8);
+            }
+        }
+        count
+    }
+
     pub fn get_waits(&self) -> Vec<u32> {
         self.get_waits_u8().iter().map(|&x| x as u32).collect()
     }
