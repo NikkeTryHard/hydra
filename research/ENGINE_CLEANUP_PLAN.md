@@ -61,7 +61,7 @@ permanently zero. 10.6% of input tensor is wasted.
 
 ---
 
-### C4: Eliminate unwrap() in hydra-engine lib code (57 calls)
+### C4: Eliminate unwrap() in hydra-engine lib code (57 calls) -- DONE
 
 **Problem**: 57 unwrap()/expect() calls in non-test library code.
 Crash risk in production. Mostly serde_json serialization in MJAI
