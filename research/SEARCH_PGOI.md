@@ -14,6 +14,8 @@ An inference-time search module that reuses Hydra's Phase 2 oracle teacher to im
 
 ---
 
+> **Naming note:** PGOI is oracle consultation with belief sampling, NOT OLSS subgame solving. See RESEARCH_LOG.md entry 5.
+
 ## 1. Motivation
 
 ### The Oracle Gap
@@ -357,6 +359,15 @@ All modules fit within budget. No conflicts.
 | Pessimistic (poor Sinkhorn or severe strategy fusion) | +0.0 to +0.2 dan | PGOI contributes negligibly, student dominates via blending |
 
 The pessimistic scenario costs nothing -- PGOI with beta=0 is identical to student-only play. There is no downside risk to implementing it.
+
+> **Independent evaluation note (2026-03-03):** Four independent research judges with tool access to this spec and the broader Hydra research docs consistently estimated the central case at the **moderate** range (+0.3-0.7 dan), not the optimistic range. Key concerns:
+> - Suphx's measured oracle-student gap was ~0.6 dan total (TRAINING.md line 197). PGOI approximates the oracle with sampled (not true) hidden states, so gains are bounded below this gap.
+> - Strategy fusion (Frank & Basin 1998) is worst on push/fold decisions (bimodal payoffs of 0 vs -12000 points), which are exactly the high-entropy decisions PGOI targets.
+> - Variant A (marginal-only) sampling misses inter-opponent tile correlations. Variant B (learned PBN) may close this gap but is flagged as a future upgrade.
+> - The frozen oracle was trained on true hidden states. Querying with sampled states introduces distributional shift whose impact is unknown.
+> The optimistic range (+1.0-1.5) requires: Sinkhorn MAE < 0.3 AND Variant B sampler AND mild strategy fusion. The moderate range (+0.3-0.7) is the expected central case with Variant A.
+>
+> See RESEARCH_LOG.md entry 3 for full details.
 
 ---
 

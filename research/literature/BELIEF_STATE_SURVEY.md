@@ -179,6 +179,8 @@ Suphx does NOT explicitly predict opponent hands. Instead it uses:
 #### Key Insight
 Suphx's pMCPA is essentially **determinization + policy adaptation**. It samples random opponent hands and adapts, rather than trying to infer the exact distribution.
 
+> **Deprecated (2026-03-03):** pMCPA removed from inference plans. Requires ~100K trajectories per round, infeasible in real-time even with 90s idle. See RESEARCH_LOG.md entry 4.
+
 ### 4b. Mortal (Equim-chan, Open Source)
 
 **Repo**: https://github.com/Equim-chan/Mortal

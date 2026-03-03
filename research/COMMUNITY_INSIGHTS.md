@@ -175,6 +175,8 @@ From [note.com analysis](https://note.com/comtefurapote/n/ne7c3668b6e09) and [do
 | **Training data** | Human expert logs | Human logs + self-play RL | **Pure self-play, zero human data** |
 | **Method** | Imitation learning | Imitation → RL | Game-theoretic RL (ACH) |
 | **Search** | None | Monte Carlo Policy Adaptation | **OLSS (subgame solving)** |
+
+> **Deprecated (2026-03-03):** pMCPA (Monte Carlo Policy Adaptation) removed from inference plans. Requires ~100K trajectories per round, infeasible in real-time even with 90s idle. See RESEARCH_LOG.md entry 4.
 | **Theory** | None (pattern matching) | Partial (oracle guiding) | **Nash Equilibrium convergence** |
 | **Games to 10-dan** | 26,598 | 5,373 | **1,321** |
 | **Stable dan** | ~9.0 (current v2) | 8.74 | **10.68** |
