@@ -8,7 +8,9 @@ use serde_json::Value;
 use crate::errors::{RiichiError, RiichiResult};
 use crate::parser::tid_to_mjai;
 
+/// The number of distinct actions in the 4-player action space.
 pub const ACTION_SPACE_4P: usize = 82;
+/// The number of distinct actions in the 3-player (sanma) action space.
 pub const ACTION_SPACE_3P: usize = 60;
 
 const TILE34_TO_COMPACT: [u8; 34] = [
@@ -21,6 +23,7 @@ const TILE34_TO_COMPACT: [u8; 34] = [
     24, 25, 26, // type 31-33: PFC
 ];
 
+/// The current phase of the game turn.
 #[cfg_attr(
     feature = "python",
     pyclass(module = "riichienv._riichienv", eq, eq_int)
@@ -28,7 +31,9 @@ const TILE34_TO_COMPACT: [u8; 34] = [
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Phase {
+    /// Waiting for the active player to choose an action (discard, riichi, kan, tsumo).
     WaitAct = 0,
+    /// Waiting for other players to respond to a discard (chi, pon, kan, ron, pass).
     WaitResponse = 1,
 }
 
@@ -40,6 +45,7 @@ impl Phase {
     }
 }
 
+/// The type of action a player can take during a mahjong game.
 #[cfg_attr(
     feature = "python",
     pyclass(module = "riichienv._riichienv", eq, eq_int)
@@ -47,17 +53,29 @@ impl Phase {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ActionType {
+    /// Discard a tile from hand.
     Discard = 0,
+    /// Claim a sequence (chi) from the left player's discard.
     Chi = 1,
+    /// Claim a triplet (pon) from any player's discard.
     Pon = 2,
+    /// Claim an open quad (daiminkan) from any player's discard.
     Daiminkan = 3,
+    /// Declare a win on another player's discard.
     Ron = 4,
+    /// Declare riichi (ready hand) before discarding.
     Riichi = 5,
+    /// Declare a win by self-draw.
     Tsumo = 6,
+    /// Pass on a claim opportunity.
     Pass = 7,
+    /// Declare a concealed quad (ankan) from four identical tiles in hand.
     Ankan = 8,
+    /// Upgrade a pon to a quad (kakan) with the fourth tile.
     Kakan = 9,
+    /// Abort the round with nine different terminals/honors on the first turn.
     KyushuKyuhai = 10,
+    /// Declare kita (north tile set-aside) in three-player mode.
     Kita = 11,
 }
 
@@ -69,13 +87,19 @@ impl ActionType {
     }
 }
 
+/// A player action in a mahjong game (discard, meld, win declaration, etc.).
 #[cfg_attr(feature = "python", pyclass(module = "riichienv._riichienv"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Action {
+    /// The type of action being performed.
     pub action_type: ActionType,
+    /// The primary tile ID (136-format) involved in this action, if any.
     pub tile: Option<u8>,
+    /// Tiles consumed from hand for this action (sorted, padded with zeros).
     pub consume_tiles: [u8; 4],
+    /// The number of active entries in `consume_tiles`.
     pub consume_count: u8,
+    /// The player index who performed this action, if known.
     pub actor: Option<u8>,
 }
 
@@ -118,6 +142,7 @@ impl<'de> Deserialize<'de> for Action {
 }
 
 impl Action {
+    /// Creates a new action with the given type, tile, consumed tiles, and actor.
     pub fn new(
         r#type: ActionType,
         tile: Option<u8>,
@@ -143,6 +168,7 @@ impl Action {
         &self.consume_tiles[..self.consume_count as usize]
     }
 
+    /// Converts this action to an MJAI protocol JSON string.
     pub fn to_mjai(&self) -> String {
         let type_str = match self.action_type {
             ActionType::Discard => "dahai",
@@ -186,6 +212,7 @@ impl Action {
         Value::Object(data).to_string()
     }
 
+    /// Returns a debug-friendly string representation of this action.
     pub fn repr(&self) -> String {
         format!(
             "Action(action_type={:?}, tile={:?}, consume_tiles={:?}, actor={:?})",
@@ -193,6 +220,7 @@ impl Action {
         )
     }
 
+    /// Encodes this action as a 4-player action space index (0-81).
     pub fn encode(&self) -> RiichiResult<i32> {
         match self.action_type {
             ActionType::Discard => {
@@ -271,11 +299,14 @@ impl Action {
 /// For 3P compact encoding (60 IDs), use `ActionEncoder::ThreePlayer`.
 #[derive(Debug, Clone, Copy)]
 pub enum ActionEncoder {
+    /// Encoder for the standard 4-player action space (82 IDs).
     FourPlayer,
+    /// Encoder for the 3-player (sanma) compact action space (60 IDs).
     ThreePlayer,
 }
 
 impl ActionEncoder {
+    /// Creates an encoder appropriate for the given player count.
     pub fn from_num_players(n: u8) -> Self {
         match n {
             3 => Self::ThreePlayer,
@@ -283,6 +314,7 @@ impl ActionEncoder {
         }
     }
 
+    /// Returns the total number of actions in this encoder's action space.
     pub fn action_space_size(&self) -> usize {
         match self {
             Self::FourPlayer => ACTION_SPACE_4P,
@@ -290,6 +322,7 @@ impl ActionEncoder {
         }
     }
 
+    /// Encodes an action into this encoder's action space index.
     pub fn encode(&self, action: &Action) -> RiichiResult<i32> {
         match self {
             Self::FourPlayer => action.encode(),
