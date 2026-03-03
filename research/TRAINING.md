@@ -17,7 +17,7 @@
 
 Hydra training combines three proven techniques:
 1. **Oracle Distillation** (from Suphx) — Train with perfect information, distill to blind agent.
-2. **PPO with Stability Enhancements** (from Mortal-Policy fork) — On-policy learning avoids DQN catastrophic forgetting.
+2. **PPO with Stability Enhancements** (from Mortal-Policy fork) -- On-policy learning avoids DQN catastrophic forgetting (see ACH Loss section below for the primary replacement).
 3. **League Training** (from AlphaStar) — Robust generalization via diverse opponents.
 
 ```mermaid
@@ -425,6 +425,28 @@ Where:
 - $D_{\text{KL}}$: KL divergence from Teacher policy (Phase 2 only, $\lambda_{\text{KL}}$ varies per schedule)
 - $H(\pi)$: Policy entropy bonus for exploration ($\beta$ = 0.01 → 0.005, decaying)
 
+### ACH Loss (Primary -- replaces PPO clipped surrogate)
+
+Actor-Critic Hedge (Fu et al., ICLR 2022) is a drop-in replacement for PPO's policy gradient loss. All other training infrastructure (GAE, value loss, entropy, actor-learner architecture) remains identical. ACH uses regret-weighted policy updates via the Hedge algorithm instead of ratio-clipped returns.
+
+**ACH policy gradient (replaces PPO clipped surrogate):**
+```
+centered_logit = new_logit_a - mean(new_logits)
+c = clip_mask(ratio, centered_logit, advantage, eps=0.5, threshold=6.0)
+L_policy = -c * centered_logit / old_prob_a * advantage
+```
+
+Key hyperparameters (from ACH paper's Mahjong experiments):
+- eta = 1.0 (Hedge learning rate)
+- logits_threshold = 6.0 (prevents logit explosion)
+- clip_coef = 0.5 (ratio clipping, wider than PPO's 0.2)
+- entropy_coef = 0.01 (MANDATORY, not optional)
+
+Reference implementations: Liuweiming/ACH_poker (official, C++), sbl1996/ygo-agent (JAX, ~20 lines).
+
+**Rationale:** ACH provides O(T^{-1/2}) Nash convergence in 2-player zero-sum games. While this guarantee does not extend to 4-player, the regret-weighted updates focus training on high-leverage decisions empirically. PPO remains as a fallback if ACH proves unstable.
+
+**Change log:** Added 2026-03-03 based on research loop findings. See RESEARCH_LOG.md entry 1.
 ### Auxiliary Losses
 
 | Loss | Formula | Weight | Purpose |
@@ -624,6 +646,14 @@ This is mathematically equivalent to the Lagrangian formulation in log-probabili
 - Validate accuracy targets (72% discard, 85% call, 80% riichi)
 
 **Phase 1 → Phase 2 gate:** See [INFRASTRUCTURE.md § Phase 1](INFRASTRUCTURE.md#phase-1-behavioral-cloning-supervised) for the full readiness gate (discard accuracy ≥65%, SL loss plateaued, test play placement ≤2.55, deal-in ≤15%).
+
+> **Sinkhorn Validation Gate (go/no-go for PGOI):**
+> After Phase 1 BC completes, measure Sinkhorn tile allocation head quality on held-out games:
+> - MAE < 0.3: PGOI is viable. Proceed with full inference search plan.
+> - MAE 0.3-0.5: PGOI may work with increased samples (128+). Test before committing.
+> - MAE > 0.5: Skip PGOI at inference. Reallocate saved compute to longer self-play.
+> Cost: ~0 additional A100-hrs (uses existing Phase 1 checkpoint on held-out data).
+> See RESEARCH_LOG.md entry 6.
 
 ### Milestone 4: Phase 2 Training
 
