@@ -355,7 +355,7 @@ graph TB
 
         subgraph "Safety Channels [62-84]"
             GEN["Genbutsu<br/>Ch 62-70"]
-            SUJI["Suji<br/>Ch 71-79"]
+            SUJI["Suji<br/>Ch 71-73 (active) + 74-79 (reserved)"]
             KABE["Kabe/OneChance<br/>Ch 80-81"]
             HINT["Tenpai Hints<br/>Ch 82-84"]
         end
@@ -457,7 +457,7 @@ Suji (筋) defense logic — tiles sharing a numerical relationship with an oppo
 | 2-5-8 | If 5 discarded, 2 and 8 are safer |
 | 3-6-9 | If 6 discarded, 3 and 9 are safer |
 
-Three channels per opponent (9 total). Float value: suji safety score from 0.0 to 1.0.
+Three active channels (Ch 71-73), one per opponent. Float value: suji safety score from 0.0 to 1.0. Channels 74-79 are reserved for future suji context features (half-suji, no-chance-suji, matagi-suji).
 
 #### Kabe and One-Chance (Channels 80–81)
 
