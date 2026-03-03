@@ -161,7 +161,6 @@ pub const ID_IPPATSU: u32 = 30;
 pub const ID_DORA: u32 = 31;
 pub const ID_AKADORA: u32 = 32;
 pub const ID_URADORA: u32 = 33;
-#[allow(dead_code)]
 pub const ID_NUKIDORA: u32 = 34;
 pub const ID_TENHO: u32 = 35;
 pub const ID_CHIHO: u32 = 36;

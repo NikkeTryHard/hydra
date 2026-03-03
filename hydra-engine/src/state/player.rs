@@ -24,7 +24,6 @@ pub struct PlayerState {
     pub forbidden_discards: [u8; 6],
     pub forbidden_discard_count: u8,
     pub mjai_log: Vec<String>,
-    pub kita_tiles: Vec<u8>,
 }
 
 impl PlayerState {
@@ -53,7 +52,6 @@ impl PlayerState {
             forbidden_discards: [0; 6],
             forbidden_discard_count: 0,
             mjai_log: Vec::new(),
-            kita_tiles: Vec::new(),
         }
     }
 
@@ -135,7 +133,6 @@ impl PlayerState {
         self.ippatsu_cycle = false;
         self.clear_forbidden();
         self.mjai_log.clear();
-        self.kita_tiles.clear();
         self.pao_clear();
     }
 

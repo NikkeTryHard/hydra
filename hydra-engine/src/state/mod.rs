@@ -86,7 +86,6 @@ pub struct GameState {
 
     pub win_results: [Option<WinResult>; NP],
     pub last_win_results: [Option<WinResult>; NP],
-    pub round_end_scores: Option<Vec<i32>>,
 
     pub mjai_log: Vec<String>,
     pub mjai_events: Vec<crate::mjai_event::MjaiEvent>,
@@ -116,14 +115,6 @@ impl GameState {
         &self.active_players[..self.active_player_count as usize]
     }
 
-    /// Appends a player to the active players list.
-    #[allow(dead_code)]
-    #[inline]
-    fn push_active_player(&mut self, pid: u8) {
-        self.active_players[self.active_player_count as usize] = pid;
-        self.active_player_count += 1;
-    }
-
     /// Clears the active players list.
     #[inline]
     fn clear_active_players(&mut self) {
@@ -148,15 +139,6 @@ impl GameState {
     #[inline]
     fn clear_claims(&mut self) {
         self.current_claim_counts = [0; NP];
-    }
-
-    /// Sets claims for a player from a Vec.
-    #[inline]
-    #[allow(dead_code)]
-    fn set_claims_from_vec(&mut self, pid: usize, legals: &[Action]) {
-        let count = legals.len().min(54);
-        self.current_claims[pid][..count].copy_from_slice(&legals[..count]);
-        self.current_claim_counts[pid] = count as u8;
     }
 
     /// Sets active players to a single player.
@@ -213,7 +195,6 @@ impl GameState {
             drawn_tile: None,
             win_results: Default::default(),
             last_win_results: Default::default(),
-            round_end_scores: None,
             mjai_log: if skip_mjai_logging { Vec::new() } else { Vec::with_capacity(300) },
             mjai_events: if skip_mjai_logging { Vec::new() } else { Vec::with_capacity(300) },
             player_event_counts: [0; NP],
@@ -1813,7 +1794,6 @@ impl GameState {
 
         match self.game_mode {
             1 | 4 => {
-                // TODO: Delete 4, 5, 3
                 let max_score = self.players.iter().map(|p| p.score).max().unwrap_or(0);
                 if next_round_wind >= 1 && (max_score >= 30000 || next_round_wind > 1) {
                     self._process_end_game();
@@ -1893,7 +1873,6 @@ impl GameState {
         self.last_discard = None;
         self.win_results = Default::default();
         self.last_win_results = Default::default();
-        self.round_end_scores = None;
         self.riichi_sutehais = [None; NP];
         self.last_tedashis = [None; NP];
 
