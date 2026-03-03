@@ -39,6 +39,14 @@ pub struct SafetyInfo {
     /// e.g., if 4m is genbutsu, then 1m and 7m get suji safety.
     pub suji: [[f32; NUM_TILES]; NUM_OPPONENTS],
 
+    /// Half-suji: tile has exactly 1 of 2 suji partners genbutsu (center tiles only).
+    /// Only meaningful for center tiles (4,5,6 of each suit).
+    pub half_suji: [u64; NUM_OPPONENTS],
+
+    /// Matagi-suji: tedashi straddle signal.
+    /// When opponent discards tile T from hand, tiles T-1 and T+1 get matagi danger.
+    pub matagi: [[f32; NUM_TILES]; NUM_OPPONENTS],
+
     /// Kabe (wall block): all 4 copies visible.
     pub kabe: u64,
 
@@ -61,6 +69,8 @@ impl SafetyInfo {
             genbutsu_tedashi: [0; NUM_OPPONENTS],
             genbutsu_riichi_era: [0; NUM_OPPONENTS],
             suji: [[0.0; NUM_TILES]; NUM_OPPONENTS],
+            half_suji: [0; NUM_OPPONENTS],
+            matagi: [[0.0; NUM_TILES]; NUM_OPPONENTS],
             kabe: 0,
             one_chance: 0,
             visible_counts: [0; NUM_TILES],
@@ -109,6 +119,19 @@ impl SafetyInfo {
 
         // Update suji for this opponent
         self.update_suji(opponent_idx, t);
+
+        // Update matagi-suji: tedashi straddle signal
+        // When opponent discards tile T from hand, tiles T-1 and T+1 get matagi danger.
+        // Only applies to suited tiles (0-26).
+        if is_tedashi && t < 27 {
+            let suit_pos = t % 9;
+            if suit_pos > 0 {
+                self.matagi[opponent_idx][t - 1] = 1.0;
+            }
+            if suit_pos < 8 {
+                self.matagi[opponent_idx][t + 1] = 1.0;
+            }
+        }
     }
 }
 
@@ -138,6 +161,43 @@ impl SafetyInfo {
             let suji_tile = suit_offset + number + 3;
             self.suji[opponent_idx][suji_tile] =
                 self.suji[opponent_idx][suji_tile].max(1.0);
+        }
+
+        // Now fix center tiles (4,5,6 of each suit) for half-suji.
+        // Center tiles have TWO suji partners. If only one partner is genbutsu,
+        // suji should be 0.5 (half-suji), not 1.0.
+        // Also update the half_suji bitfield.
+        self.recompute_center_suji(opponent_idx);
+    }
+
+    /// Recompute suji values for center tiles (4,5,6 of each suit) for one opponent.
+    ///
+    /// Center tiles have two suji partners. Edge tiles (1-3, 7-9) have only one.
+    /// For center tiles: 1 of 2 partners safe -> 0.5 (half-suji), 2 of 2 -> 1.0.
+    #[inline]
+    fn recompute_center_suji(&mut self, opp: usize) {
+        // Center tile indices in 34-format: 3,4,5 (man), 12,13,14 (pin), 21,22,23 (sou)
+        const CENTER_TILES: [usize; 9] = [3, 4, 5, 12, 13, 14, 21, 22, 23];
+        for &tile in &CENTER_TILES {
+            let partner_low = tile - 3;  // e.g. 4m(3) -> 1m(0)
+            let partner_high = tile + 3; // e.g. 4m(3) -> 7m(6)
+            let p_low = bit_test(self.genbutsu_all[opp], partner_low);
+            let p_high = bit_test(self.genbutsu_all[opp], partner_high);
+            match (p_low, p_high) {
+                (true, true) => {
+                    self.suji[opp][tile] = 1.0;
+                    // Clear half_suji bit
+                    self.half_suji[opp] &= !(1u64 << tile);
+                }
+                (true, false) | (false, true) => {
+                    self.suji[opp][tile] = 0.5;
+                    bit_set(&mut self.half_suji[opp], tile);
+                }
+                (false, false) => {
+                    self.suji[opp][tile] = 0.0;
+                    self.half_suji[opp] &= !(1u64 << tile);
+                }
+            }
         }
     }
 
@@ -200,6 +260,8 @@ mod tests {
             assert_eq!(si.genbutsu_riichi_era[opp], 0);
             assert!(si.suji[opp].iter().all(|&v| v == 0.0));
             assert!(!si.opponent_riichi[opp]);
+            assert_eq!(si.half_suji[opp], 0);
+            assert!(si.matagi[opp].iter().all(|&v| v == 0.0));
         }
         assert_eq!(si.kabe, 0);
         assert_eq!(si.one_chance, 0);
@@ -302,5 +364,76 @@ mod tests {
         si.on_discard(0, 3, false);  // opponent out of bounds
         si.on_dora_revealed(255);     // way out of bounds
         si.on_call(&[35, 100]);       // tiles out of bounds
+    }
+
+    #[test]
+    fn half_suji_center_tile_one_partner() {
+        // Discard 1m (index 0) -> 4m (index 3) gets suji.
+        // 4m is center tile with partners 1m(0) and 7m(6).
+        // Only 1m is genbutsu -> half suji (0.5).
+        let mut si = SafetyInfo::new();
+        si.on_discard(0, 0, false); // 1m genbutsu
+        assert_eq!(si.suji[0][3], 0.5); // 4m half suji
+        assert!(bit_test(si.half_suji[0], 3));
+    }
+
+    #[test]
+    fn half_suji_center_tile_both_partners() {
+        // Discard both 1m and 7m -> 4m gets full suji.
+        let mut si = SafetyInfo::new();
+        si.on_discard(0, 0, false); // 1m genbutsu
+        si.on_discard(6, 0, false); // 7m genbutsu
+        assert_eq!(si.suji[0][3], 1.0); // 4m full suji
+        assert!(!bit_test(si.half_suji[0], 3)); // not half
+    }
+
+    #[test]
+    fn half_suji_edge_tile_unaffected() {
+        // 1m (index 0) is edge tile, only partner is 4m.
+        // Discarding 4m -> 1m gets full 1.0, not half.
+        let mut si = SafetyInfo::new();
+        si.on_discard(3, 0, false); // 4m genbutsu
+        assert_eq!(si.suji[0][0], 1.0); // 1m full suji
+        assert!(!bit_test(si.half_suji[0], 0)); // edge tile never half
+    }
+
+    #[test]
+    fn matagi_from_tedashi() {
+        // Tedashi discard of 5m (index 4) marks 4m and 6m as matagi.
+        let mut si = SafetyInfo::new();
+        si.on_discard(4, 1, true); // 5m tedashi by opp1
+        assert_eq!(si.matagi[1][3], 1.0); // 4m matagi
+        assert_eq!(si.matagi[1][5], 1.0); // 6m matagi
+        assert_eq!(si.matagi[1][4], 0.0); // 5m itself no matagi
+    }
+
+    #[test]
+    fn matagi_not_from_tsumogiri() {
+        // Tsumogiri should NOT set matagi.
+        let mut si = SafetyInfo::new();
+        si.on_discard(4, 0, false); // 5m tsumogiri
+        assert_eq!(si.matagi[0][3], 0.0);
+        assert_eq!(si.matagi[0][5], 0.0);
+    }
+
+    #[test]
+    fn matagi_edge_tiles() {
+        // 1m (index 0) tedashi -> only 2m (index 1) gets matagi (no -1).
+        let mut si = SafetyInfo::new();
+        si.on_discard(0, 0, true); // 1m tedashi
+        assert_eq!(si.matagi[0][1], 1.0); // 2m matagi
+        // 9m (index 8) tedashi -> only 8m (index 7) gets matagi (no +1).
+        si.on_discard(8, 0, true); // 9m tedashi
+        assert_eq!(si.matagi[0][7], 1.0); // 8m matagi
+    }
+
+    #[test]
+    fn matagi_honors_ignored() {
+        // Honor tile tedashi should NOT produce matagi.
+        let mut si = SafetyInfo::new();
+        si.on_discard(27, 0, true); // East wind tedashi
+        for i in 0..NUM_TILES {
+            assert_eq!(si.matagi[0][i], 0.0);
+        }
     }
 }
