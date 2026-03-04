@@ -85,9 +85,17 @@ Under purely random dealing, $X_t$ is multivariate hypergeometric; under strateg
 
 These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + scoring engine) using belief-weighted remaining tile counts from CT-SMC. Zero GPU cost -- CPU pre-computes during game step processing. Suphx reported these look-ahead features as their single biggest practical improvement (Li et al. 2020).
 
-### 4.2 Backbone
+### 4.2 Three-network architecture
 
-40-block SE-ResNet with GroupNorm(32) and Mish activation. ~16.5M parameters. bf16 precision. Inference: single forward pass ~0.5ms on RTX 5000.
+A monolithic 40-block model is too big for 2000 GPU hours (risk of undertraining). Instead, use a 3-tier architecture:
+
+| Network | Blocks | Params | Role | GPU |
+|---------|-------:|-------:|------|-----|
+| **ActorNet** | 12 | ~5M | Self-play data generation + shallow AFBS/SaF features | GPU 2 |
+| **LearnerNet** | 24 | ~10M | Main training target (ACH/ExIt loss) | GPU 0-1 |
+| **TeacherNet** | 40 | ~16.5M | Deep AFBS on hard positions, best ExIt labels | GPU 3 |
+
+All use SE-ResNet with GroupNorm(32) and Mish. bf16 precision. **Continuous distillation**: Teacher -> Learner (on hard-mined states), Learner -> Actor (every few minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms.
 
 ### 4.3 Heads (multi-task)
 
@@ -131,7 +139,7 @@ The hidden allocation $X_t \in \mathbb{Z}_{\ge 0}^{34\times 4}$ is a **fixed-mar
 
 $$Z_k(\mathbf{c}) = \sum_{x \in \mathcal{X}_k(\mathbf{c})} \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x), \quad Z_{35}(\mathbf{0})=1$$
 
-where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. State count: $\le \prod_j (s_t(j)+1) \le 15^4 = 50{,}625$. Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 50K \times 35 \approx 60M$ ops -- **trivial in Rust+SIMD, <1ms**.
+where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. Key insight: $c_W = R_k - (c_1+c_2+c_3)$ is **derived**, so the DP state is 3D: $(c_1,c_2,c_3)$. State count: $\le (14)^3 = 2{,}744$. Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 2744 \times 35 \approx 3.3M$ ops -- **trivially sub-millisecond in Rust**. Use log-space DP for numerical stability.
 
 **Exact backward sampling:** $p(x_k = x \mid \mathbf{c}) = \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x) / Z_k(\mathbf{c})$. This gives **exact samples with correct correlations** from the conservation-constrained distribution -- not mean-field approximations.
 
@@ -218,7 +226,7 @@ $V_{\text{rob}}=\min_{q\in \mathcal{Q}_\varepsilon(p)} \sum_a q(a) Q(a)$. Soluti
 
 For each legal action $a$, AFBS returns: $\Delta Q(a)$, deal-in risk estimates (Boole/Hunter/robust), epistemic terms (entropy drop), robust stress ($\tau$), uncertainty (variance, ESS).
 
-**Logit-residual policy:** $\ell_{\text{final}}(a)=\ell_\theta(a) + \alpha_{\text{SaF}}\cdot g_\psi(f(a))\cdot m(a)$ where $m(a)\in\{0,1\}$ indicates features present.
+**Logit-residual policy:** $\ell_{\text{final}}(a)=\ell_\theta(a) + \alpha_{\text{SaF}}\cdot g_\psi(f(a))\cdot m(a)$ where $m(a)\in\{0,1\}$ indicates features present. $g_\psi$ is a tiny shared MLP (hidden dim 32-64). **SaF-dropout**: during training, randomly zero $m$ even when features are available ($p_{\text{drop}}=0.3$) to prevent over-reliance. Train $g_\psi$ first via supervised regression on $\delta(a)=\log\pi_{\text{search}}(a)-\log\pi_{\text{base}}(a)$, then switch to joint end-to-end.
 
 ---
 
