@@ -134,7 +134,7 @@ During each opponent turn, the pondering thread:
 1. Runs PUCT search directly: expand top-K=5 actions, simulate opponent responses from the oracle policy (which knows all hands). Evaluate resulting states with the **oracle teacher** on GPU 3 using perfect information. Depth 2, ~100 leaf evaluations (~1ms batched).
 2. Produces $Q^{\text{oracle}}(I, a)$ -- strictly better than blind evaluation. The oracle model on GPU 3 shares the same backbone as the blind student but with extra input channels for opponent hands + wall (same architecture as Phase 1.5 oracle guiding). It is continuously updated alongside the student via weight sync. This is CTDE: centralized evaluation for training, decentralized execution at deployment.
 
-**During deployment** (Tenhou, evaluation): Sinkhorn belief inference (10-30 iterations, ~2ms) computes opponent hand marginals. Hands are sampled for PIMC-style search. The blind student evaluates leaves. Slower but works without full game state access.
+**During deployment** (Tenhou, evaluation): Sinkhorn belief inference (10-30 iterations, ~2ms) computes opponent hand marginals. Hands are sampled for PIMC-style search. The blind student evaluates leaves. Note: PIMC is subject to strategy fusion bias (over-committing to actions that require hidden knowledge). Mitigated by averaging over many hand samples. Future: consider EPIMC (Ackermann et al. 2024) for postponed resolution.
 
 ### 6.2 ExIt target generation
 
