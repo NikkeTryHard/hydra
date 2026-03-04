@@ -15,11 +15,12 @@ HYDRA-OMEGA is built around one central engine:
 
 The system couples this engine with:
 
-1. **Belief correctness with constraints**: SIB / Mixture-SIB (Sinkhorn KL projection onto conservation constraints) + particle posterior (SMC + rejuvenation) for correlation-critical regimes.
-2. **Anytime Factored-Belief Search (AFBS)**: top-k pruning, heavy caching, incremental reuse, and predictive pondering.
+1. **Belief correctness with constraints**: SIB / Mixture-SIB (Sinkhorn KL projection) + **CT-SMC exact contingency-table sampler** exploiting Mahjong's small row counts ($r \le 4$) for correlation-faithful beliefs via a 50K-state DP (<1ms in Rust).
+2. **Anytime Factored-Belief Search (AFBS)**: top-k pruning, heavy caching, incremental reuse, predictive pondering, and **endgame exactification** (exact chance enumeration when wall $\le 10$).
 3. **Robust opponent modeling inside search**: opponent nodes solved as distributionally robust soft-min within a KL uncertainty set around the learned opponent policy.
 4. **Conservative safety math that is tight enough to matter**: Negative dependence / Strongly Rayleigh + Hunter/Kounias union tightening + bounded-error Monte Carlo intersections.
-5. **Stable multiagent training**: DRDA (multiplayer POSGs) as the stability backbone, with PPO as a pragmatic high-throughput option.
+5. **Hand-EV oracle features**: CPU-precomputed per-discard tenpai probability, win probability, expected score, and ukeire -- proven by Suphx as their biggest practical win.
+6. **Stable multiagent training**: DRDA (multiplayer POSGs) as the stability backbone, with PPO as a pragmatic high-throughput option.
 
 Goal: **maximize expected Tenhou stable rank**; LuckyJ's 10.68 stable dan is the current public benchmark.
 
@@ -75,6 +76,14 @@ Under purely random dealing, $X_t$ is multivariate hypergeometric; under strateg
 
 **Group C -- Search and belief features (dynamic, ~60-200 planes):** Belief marginals $B_t(k,z)$, mixture weights/entropy/ESS, AFBS action deltas $\Delta Q(a)$, risk estimates, robust opponent stress indicators. Zeroed with presence mask when unavailable.
 
+**Group D -- Hand-EV oracle features (~34-68 planes, CPU-precomputed):** For each discard candidate $a$ (34 tile types), pre-compute exact look-ahead analysis:
+- $P_{\text{tenpai}}^{(d)}(a)$: probability of reaching tenpai within $d \in \{1,2,3\}$ self-draws.
+- $P_{\text{win}}^{(d)}(a)$: probability of winning within $d$ draws (tsumo + simplified ron model).
+- $\mathbb{E}[\text{score} \mid \text{win}, a]$: expected hand value (han/fu/score) if we win after discarding $a$.
+- Ukeire vector: 34-element effective tile acceptance weighted by remaining counts.
+
+These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + scoring engine) using belief-weighted remaining tile counts from CT-SMC. Zero GPU cost -- CPU pre-computes during game step processing. Suphx reported these look-ahead features as their single biggest practical improvement (Li et al. 2020).
+
 ### 4.2 Backbone
 
 40-block SE-ResNet with GroupNorm(32) and Mish activation. ~16.5M parameters. bf16 precision. Inference: single forward pass ~0.5ms on RTX 5000.
@@ -113,6 +122,26 @@ Particles $\{X_t^{(p)},\alpha_t^{(p)}\}_{p=1}^P$ targeting $p(X_t\mid I_t)$. Pro
 
 $|\rho_{ij}|=K_i K_j / ((H-K_i)(H-K_j))^{1/2}$. At $H=50$: $|\rho|=0.087$; at $H=25$: $|\rho|=0.191$. Late-game correlations motivate Mixture-SIB + particles over first-moment alone.
 
+### 5.5 CT-SMC: Exact contingency-table sampling (replaces generic particle proposals)
+
+The hidden allocation $X_t \in \mathbb{Z}_{\ge 0}^{34\times 4}$ is a **fixed-margin contingency table**. Key Mahjong insight: each row sum $r_t(k) \le 4$, so per-row compositions are tiny ($\binom{r+3}{3} \le 35$).
+
+**Exact DP partition function.** Order tile types $k=1,\dots,34$. Let residual capacities be $\mathbf{c}=(c_1,c_2,c_3,c_W)$. Define:
+
+$$Z_k(\mathbf{c}) = \sum_{x \in \mathcal{X}_k(\mathbf{c})} \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x), \quad Z_{35}(\mathbf{0})=1$$
+
+where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. State count: $\le \prod_j (s_t(j)+1) \le 15^4 = 50{,}625$. Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 50K \times 35 \approx 60M$ ops -- **trivial in Rust+SIMD, <1ms**.
+
+**Exact backward sampling:** $p(x_k = x \mid \mathbf{c}) = \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x) / Z_k(\mathbf{c})$. This gives **exact samples with correct correlations** from the conservation-constrained distribution -- not mean-field approximations.
+
+**SMC integration.** The full posterior is $p(X \mid \mathcal{O}_{1:t}) \propto p_0(X) \cdot L(X)$ where $L(X)$ is the opponent action likelihood. Sample $X^{(n)} \sim p_0$ via CT-DP (fast, correlation-correct), weight $w^{(n)} \leftarrow L(X^{(n)})$, normalize and resample. The proposal already respects the hardest constraint (tile conservation) exactly, so ESS stays high.
+
+**What CT-SMC replaces:** The generic particle proposal from Section 5.3. Mixture-SIB is KEPT as the fast amortized belief head for network input; CT-SMC is the search-grade belief for AFBS and safety queries.
+
+**Validation gates:**
+- **Gate A (posterior log-likelihood):** At end of hand, evaluate $\log p(X^* \mid \mathcal{O}_{1:t})$ under CT-SMC vs generic CMPS. CT-SMC must win.
+- **Gate B (pairwise MI calibration):** Compare estimated $I(\mathbf{1}\{A \in H_z\}; \mathbf{1}\{B \in H_z\})$ vs empirical. Must capture correlations generic CMPS misses.
+
 ---
 
 ## 6. Conservative safety estimates without over-folding
@@ -133,19 +162,6 @@ Analytic formulas for simple events; particle estimates with Hoeffding CIs other
 
 ## 7. Anytime Factored Belief Search (AFBS)
 
-### 7.0 AFBS vs LuckyJ's OLSS
-
-| | LuckyJ OLSS | HYDRA AFBS |
-|---|---|---|
-| When | Runtime only | Training (pondering) + Runtime |
-| Sims/decision | 1000 | 100-1000 (adaptive playout cap) |
-| Belief model | Simple hand sampling | Mixture-SIB + particles (constraint-correct) |
-| Opponent model | Fixed N=1-4 strategies | Robust KL soft-min (worst-case aware) |
-| Results fed back to network? | No | **Yes (SaF)** -- novel |
-| Used during training? | No | **Yes (oracle pondering ExIt)** -- novel |
-| Network size | 3 ResBlocks (tiny) | 40 SE-ResBlocks (13x larger) |
-| Oracle info during training? | No | Yes (CTDE: perfect-info leaf eval) |
-
 ### 7.1 Tree structure
 
 Node state: $(I, \mathcal{B}, \mathcal{P})$ -- info state, Mixture-SIB summary, particle set handle.
@@ -164,6 +180,22 @@ Transposition table (public hash + belief signature), neural eval cache (batched
 ### 7.4 Incremental reuse across turns
 
 On event: lookup predicted child key; if match, shift root and keep statistics; else reuse TT/NN cache and rebuild shallow frontier.
+
+### 7.5 Endgame exactification (wall-small solver)
+
+**Trigger:** Activate when remaining wall $\le W^* = 10$ tiles AND at least one threatening signal (riichi, open tenpai, high-tempo opponent).
+
+**Exact chance enumeration.** For each CT-SMC particle $X^{(n)}$ (which determines wall composition), enumerate ALL possible draw sequences exactly via DP over the remaining $W$ turns. Hypergeometric draw probabilities are exact given the particle's wall multiset.
+
+$$Q(a) = \mathbb{E}_{X \sim p(X)} \left[ \text{ExactChanceValue}(a \mid X) \right]$$
+
+The inner value is exact over wall draws; opponent actions remain modeled by the robust policy (KL ball). This removes chance uncertainty variance at the most sensitive game phase (oorasu placement swings).
+
+**Caching.** Late-game states repeat structurally across particles. Cache by: our hand canonicalization + remaining wall multiset signature (34-count vector) + riichi state + turn index. DP results reused heavily.
+
+**Why this matters:** Late-game decisions are disproportionately high-EV. A single wrong fold or push in oorasu can flip placement from 1st to 4th (~90,000 point swing in uma). Exact computation eliminates the approximation error precisely where it's most costly.
+
+**Validation gate:** Collect 50K endgame positions (last 10 draws). Compare deal-in rate, win conversion rate, and placement swings between standard AFBS vs endgame-exact mode. Endgame mode must improve all three.
 
 ---
 
@@ -264,7 +296,7 @@ Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kap
 
 **From the all-out plan:** Mixture-SIB, anytime FBS, SaF, Hunter/Kounias tightening, ExIt+Pondering centrality, SR concentration.
 
-**OMEGA additions:** Particle posterior as first-class object, robust opponent nodes (KL-uncertainty soft-min), explicit calibration gates for every high-uncertainty link.
+**OMEGA additions:** CT-SMC exact contingency-table belief sampler, robust opponent nodes (KL-uncertainty soft-min), hand-EV oracle features, endgame exactification, explicit calibration gates for every high-uncertainty link.
 
 ---
 
@@ -297,3 +329,5 @@ Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kap
 16. Boney et al. "Learning to Play IIGs by Imitating an Oracle Planner." *IEEE Trans. Games*, 2021.
 17. Abbasi-Yadkori et al. "POLITEX." *ICML*, 2019.
 18. Cuturi. "Sinkhorn Distances." *NeurIPS*, 2013.
+19. Chen, Diaconis, Holmes, Liu. "Sequential Monte Carlo Methods for Statistical Analysis of Tables." *JASA*, 2005.
+20. Patefield. "Algorithm AS 159: An Efficient Method of Generating R x C Tables with Given Row and Column Totals." *Applied Statistics*, 1981.
