@@ -20,7 +20,8 @@ The system couples this engine with:
 3. **Robust opponent modeling inside search**: opponent nodes solved as distributionally robust soft-min within a KL uncertainty set around the learned opponent policy.
 4. **Conservative safety math that is tight enough to matter**: Negative dependence / Strongly Rayleigh + Hunter/Kounias union tightening + bounded-error Monte Carlo intersections.
 5. **Hand-EV oracle features**: CPU-precomputed per-discard tenpai probability, win probability, expected score, and ukeire -- proven by Suphx as their biggest practical win.
-6. **Stable multiagent training**: DRDA (multiplayer POSGs) as the stability backbone, with PPO as a pragmatic high-throughput option.
+6. **ACH training** (Actor-Critic Hedge, LuckyJ's algorithm): +0.4 fan over PPO via Hedge-derived conservative clipping. Compatible with oracle guiding via CTDE. DRDA/PPO as fallback.
+7. **Distilled rollout net** for AFBS: small 3-6 block model optimized for fast search rollouts (LuckyJ's "environmental model" concept).
 
 Goal: **maximize expected Tenhou stable rank**; LuckyJ's 10.68 stable dan is the current public benchmark.
 
@@ -245,14 +246,24 @@ BC on large expert corpora with suit permutation x seat rotation augmentation. T
 ### Phase 1: Oracle-visible supervision (CTDE)
 Self-play with full hidden state access. Supervised labels for belief likelihood, danger calibration, opponent action model. Inspired by Suphx oracle guiding (Li et al. 2020).
 
-### Phase 2: Stable multiplayer self-play (DRDA)
-DRDA (ICLR 2025) as base multiplayer learning dynamic for stability in POSGs.
+### Phase 2: ACH self-play (primary) or DRDA/PPO (fallback)
+
+**ACH (Actor-Critic Hedge)** is LuckyJ's training algorithm and the single biggest known technique gap (+0.4 fan / ~1.5 dan over PPO). ACH update (Fu et al., ICLR 2022, Eq. 29):
+
+$$L_\pi(s) = -c \cdot \eta(s) \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|s)} \cdot A(s,a)$$
+
+where $c \in \{0,1\}$ is a gate that clips more conservatively than PPO: it zeroes the update when EITHER the probability ratio exceeds $1 \pm \epsilon$ (PPO-style) OR the logit $y(a)$ exceeds $\bar{y}(s) \pm l_{\text{th}}$ (logit threshold). This prevents extreme policy shifts in either direction. Recommended: $\epsilon=0.5$, $l_{\text{th}}=8$, $\beta_{\text{ent}}=5 \times 10^{-4}$, LR $2.5 \times 10^{-4}$.
+
+ACH is implementable in standard autodiff (same training loop as PPO, different loss). It adds 0ms inference latency (training-only). ACH + oracle guiding coexist via CTDE: oracle critic provides advantages, actor policy conditions only on public info.
+
+**Fallback:** If ACH proves unstable in our setup, fall back to DRDA (ICLR 2025) or PPO with entropy 0.05-0.1.
+
+### Phase 2b: Distill rollout net for AFBS
+
+Train a **small rollout net** (3-6 blocks, ~2M params) distilled from the main learner. This is LuckyJ's "environmental model" -- a fast, calibrated opponent action predictor optimized for search rollouts, not for playing. Used inside AFBS for fast leaf evaluation and opponent response simulation. Distill every 50 GPU hours from the current big net.
 
 ### Phase 3: ExIt + AFBS + Pondering (main run)
-Actors run AFBS continuously. Store visited and pondered state labels. Distill $\pi^{\text{ExIt}}$ and $V^{\text{ExIt}}$ + RL fine-tuning.
-
-### Phase 3b: PPO accelerator (optional)
-Tuned PPO competitive in IIGs per Rudolph et al. 2025. Support DRDA-primary or DRDA-then-PPO modes. Entropy coeff 0.05-0.1 (critical for IIGs).
+Actors run AFBS using the **rollout net** for fast leaf evaluation. Store visited and pondered state labels. Distill $\pi^{\text{ExIt}}$ and $V^{\text{ExIt}}$ into the main 40-block learner.
 
 ### Population training
 League: latest policy, trailing checkpoints, human-style anchors, adversarial exploiters.
@@ -331,3 +342,5 @@ Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kap
 18. Cuturi. "Sinkhorn Distances." *NeurIPS*, 2013.
 19. Chen, Diaconis, Holmes, Liu. "Sequential Monte Carlo Methods for Statistical Analysis of Tables." *JASA*, 2005.
 20. Patefield. "Algorithm AS 159: An Efficient Method of Generating R x C Tables with Given Row and Column Totals." *Applied Statistics*, 1981.
+21. Fu et al. "Actor-Critic Hedge for Imperfect-Information Games (ACH)." *ICLR*, 2022.
+22. Liu et al. "OLSS: Opponent-Limited Online Search for Imperfect-Information Games." *ICML*, 2023.
