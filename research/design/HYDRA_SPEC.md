@@ -1,5 +1,7 @@
 # Hydra Architecture Specification
 
+> **OUTDATED**: This document describes an earlier design iteration with 5 output heads and inference-time search. The current design (9 heads, no inference-time search, pondering ExIt) is in **HYDRA_FINAL.md**, which is the single source of truth. This spec will be updated during implementation.
+
 A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through a combination of proven techniques, novel opponent-aware features, and inference-time search. Intermediate milestone: surpass Mortal, Suphx, and NAGA.
 
 ---

@@ -1,5 +1,7 @@
 # Hydra All-Out Plan: Beat LuckyJ
 
+> **OUTDATED**: This document describes the 22-technique "kitchen sink" approach. It was replaced by the compute-constrained 9-technique design in **HYDRA_FINAL.md** after 5/5 expert judges unanimously preferred the simpler system at our 2000 GPU-hour budget.
+
 ## The Core Engine: ExIt + Pondering Virtuous Cycle
 
 Everything else is secondary to this. This is what made AlphaZero dominate Go/Chess/Shogi, and we're applying the exact same principle to imperfect-info Mahjong.
