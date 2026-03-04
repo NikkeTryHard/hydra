@@ -20,8 +20,8 @@ The system couples this engine with:
 3. **Robust opponent modeling inside search**: opponent nodes solved as distributionally robust soft-min within a KL uncertainty set around the learned opponent policy.
 4. **Conservative safety math that is tight enough to matter**: Negative dependence / Strongly Rayleigh + Hunter/Kounias union tightening + bounded-error Monte Carlo intersections.
 5. **Hand-EV oracle features**: CPU-precomputed per-discard tenpai probability, win probability, expected score, and ukeire -- proven by Suphx as their biggest practical win.
-6. **ACH training** (Actor-Critic Hedge, LuckyJ's algorithm): +0.4 fan over PPO via Hedge-derived conservative clipping. Compatible with oracle guiding via CTDE. DRDA/PPO as fallback.
-7. **Distilled rollout net** for AFBS: small 3-6 block model optimized for fast search rollouts (LuckyJ's "environmental model" concept).
+6. **ACH training** (Actor-Critic Hedge, LuckyJ's algorithm): +0.4 fan over PPO via Hedge-derived conservative clipping. Global $\eta$, per-(s,a) gating, standard GAE, one epoch per batch. Compatible with oracle guiding via CTDE.
+7. **Three-tier network** (12-block actor / 24-block learner / 40-block teacher): mathematically justified by samples-per-parameter analysis (40-block monolithic gets 0.37x Mortal's data ratio). Continuous distillation between tiers.
 
 Goal: **maximize expected Tenhou stable rank**; LuckyJ's 10.68 stable dan is the current public benchmark.
 
@@ -87,7 +87,15 @@ These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + 
 
 ### 4.2 Three-network architecture
 
-A monolithic 40-block model is too big for 2000 GPU hours (risk of undertraining). Instead, use a 3-tier architecture:
+**Why not monolithic 40-block?** At 2000 GPU hours, self-play generates ~3.15B decisions. Samples-per-parameter ratio:
+
+| Config | Params | Samples/param | vs Mortal (514) | Verdict |
+|--------|-------:|-------------:|----------------:|---------|
+| 40-block mono | 16.5M | 191 | 0.37x | Undertrained by 2.7x |
+| 24-block learner | 10M | 315 | 0.61x | Viable with ExIt quality |
+| 12-block actor | 5M | 630 | 1.2x | Well-trained |
+
+Mortal reaches 7 dan at 514 samples/param. A monolithic 40-block gets only 37% of that ratio. Even ExIt's ~3-5x quality multiplier (KataGo precedent) only raises effective ratio to ~287-478 since ExIt activates in Phase 3 (~50% of budget). **Three-tier architecture is mathematically justified:**
 
 | Network | Blocks | Params | Role | GPU |
 |---------|-------:|-------:|------|-----|
@@ -194,7 +202,7 @@ On event: lookup predicted child key; if match, shift root and keep statistics; 
 
 **Trigger:** Activate when remaining wall $\le W^* = 10$ tiles AND at least one threatening signal (riichi, open tenpai, high-tempo opponent).
 
-**Exact chance enumeration.** For each CT-SMC particle $X^{(n)}$ (which determines wall composition), enumerate ALL possible draw sequences exactly via DP over the remaining $W$ turns. Hypergeometric draw probabilities are exact given the particle's wall multiset.
+**Multiset DP (not sequence enumeration).** For each CT-SMC particle $X^{(n)}$ (which determines wall composition as a multiset), the DP state is the remaining wall multiset. With wall=10 and all tiles distinct: $2^{10} = 1024$ states. Typical case (1-2 duplicates): 512-1024 states. Exact draw probabilities are hypergeometric given the multiset. **Exact draws + approximate actions**: opponent responses modeled by RolloutNet policy, our node is $\max_a$ or expectation under policy.
 
 $$Q(a) = \mathbb{E}_{X \sim p(X)} \left[ \text{ExactChanceValue}(a \mid X) \right]$$
 
@@ -248,33 +256,52 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 
 ## 11. Training pipeline
 
-### Phase 0: BC warm start
-BC on large expert corpora with suit permutation x seat rotation augmentation. Train all heads.
+### Compute budget (2000 GPU hours on 4x RTX 5000 Ada)
 
-### Phase 1: Oracle-visible supervision (CTDE)
-Self-play with full hidden state access. Supervised labels for belief likelihood, danger calibration, opponent action model. Inspired by Suphx oracle guiding (Li et al. 2020).
+| Phase | GPU-hrs | Nets trained | Games | Key output |
+|-------|--------:|-------------|------:|-----------|
+| Phase 0: BC | 50 | LearnerNet (24-block) | N/A (5-6M expert) | Initialize from human data |
+| Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
+| Phase 2: ACH self-play | 750 | LearnerNet via ACH | ~20M | Game-theoretic base policy |
+| Phase 3: ExIt + Pondering | 1000 | LearnerNet + TeacherNet | ~15M | Search-informed ExIt targets |
+| **Total** | **2000** | | **~40M** | |
 
-### Phase 2: ACH self-play (primary) or DRDA/PPO (fallback)
+GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering/teacher (TeacherNet). Distillation: Learner -> Actor continuously (IMPALA-style), Teacher -> Learner on hard-mined positions.
 
-**ACH (Actor-Critic Hedge)** is LuckyJ's training algorithm and the single biggest known technique gap (+0.4 fan / ~1.5 dan over PPO). ACH update (Fu et al., ICLR 2022, Eq. 29):
+### Phase 0: BC warm start (50 GPU hours)
+Train LearnerNet (24-block) on 5-6M expert games (Tenhou Houou + Majsoul). 24x augmentation (6 suit perms x 4 seat rotations). All heads supervised. Distill to ActorNet (12-block) at end.
 
-$$L_\pi(s) = -c \cdot \eta(s) \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|s)} \cdot A(s,a)$$
+### Phase 1: Oracle-visible supervision (200 GPU hours)
+Self-play with full hidden state access. Train oracle critic (zero-sum constraint $\sum_i V_i = 0$) and belief likelihood model. Suphx-style Bernoulli dropout $\gamma_t: 1 \to 0$. Post-oracle stability: LR decay $\times 0.1$ + importance weight rejection when $\gamma_t$ reaches 0.
 
-where $c \in \{0,1\}$ is a gate that clips more conservatively than PPO: it zeroes the update when EITHER the probability ratio exceeds $1 \pm \epsilon$ (PPO-style) OR the logit $y(a)$ exceeds $\bar{y}(s) \pm l_{\text{th}}$ (logit threshold). This prevents extreme policy shifts in either direction. Recommended: $\epsilon=0.5$, $l_{\text{th}}=8$, $\beta_{\text{ent}}=5 \times 10^{-4}$, LR $2.5 \times 10^{-4}$.
+### Phase 2: ACH self-play (750 GPU hours)
 
-ACH is implementable in standard autodiff (same training loop as PPO, different loss). It adds 0ms inference latency (training-only). ACH + oracle guiding coexist via CTDE: oracle critic provides advantages, actor policy conditions only on public info.
+**ACH (Actor-Critic Hedge)** -- LuckyJ's algorithm, +0.4 fan over PPO. Proven implementable: same training loop as PPO, different loss function (confirmed by critique agent analysis of ICLR 2022 Algorithm 2).
 
-**Fallback:** If ACH proves unstable in our setup, fall back to DRDA (ICLR 2025) or PPO with entropy 0.05-0.1.
+ACH update (per-(s,a) sample):
+$$L_\pi(s,a) = -c(s,a) \cdot \eta \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|s)} \cdot A(s,a)$$
 
-### Phase 2b: Distill rollout net for AFBS
+- $\eta$: global scalar hyperparameter (try $\eta \in \{1,2,3\}$), NOT state-dependent in practice
+- $c(s,a) \in \{0,1\}$: per-sample gate zeroing update when ratio exceeds $1\pm\epsilon$ OR centered logit exceeds $\pm l_{\text{th}}$
+- Uses **logits** $y(a)$ (not log-probs), centered by $\bar{y}(s)$ and clamped to $[-l_{\text{th}}, l_{\text{th}}]$
+- Standard GAE for advantages (per-player $V_i$, $\lambda=0.95$, $\gamma=0.995$)
+- **One update epoch per batch** (not PPO's 3-10 epochs)
+- Recommended: $\epsilon=0.5$, $l_{\text{th}}=8$, $\beta_{\text{ent}}=5\times10^{-4}$, LR $2.5\times10^{-4}$
 
-Train a **small rollout net** (3-6 blocks, ~2M params) distilled from the main learner. This is LuckyJ's "environmental model" -- a fast, calibrated opponent action predictor optimized for search rollouts, not for playing. Used inside AFBS for fast leaf evaluation and opponent response simulation. Distill every 50 GPU hours from the current big net.
+Oracle critic provides advantages via CTDE: actor conditions on public info only. Normalize advantages per-minibatch for scale stability.
 
-### Phase 3: ExIt + AFBS + Pondering (main run)
-Actors run AFBS using the **rollout net** for fast leaf evaluation. Store visited and pondered state labels. Distill $\pi^{\text{ExIt}}$ and $V^{\text{ExIt}}$ into the main 40-block learner.
+**Fallback:** DRDA (ICLR 2025) or PPO with entropy 0.05-0.1 if ACH proves unstable.
+
+### Phase 2 (continuous): Distill rollout net
+
+**RolloutNet** (ActorNet-sized, 12 blocks): LuckyJ's "environmental model" concept. Policy + value for fast AFBS rollouts. Distilled from LearnerNet **continuously** (not every 50h -- confirmed too stale). Same input encoding. Run distillation worker on spare GPU cycles.
+
+### Phase 3: ExIt + AFBS + Pondering (1000 GPU hours)
+
+TeacherNet (40-block) activated on **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS). Runs deep AFBS to generate best ExIt labels. LearnerNet trains on: ACH loss + ExIt distillation from TeacherNet + SaF auxiliary regression. ActorNet updated from LearnerNet continuously.
 
 ### Population training
-League: latest policy, trailing checkpoints, human-style anchors, adversarial exploiters.
+League: latest ActorNet, trailing checkpoints, human-style anchors (BC-heavy), adversarial exploiters.
 
 ---
 
