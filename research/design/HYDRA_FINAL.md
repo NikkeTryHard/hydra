@@ -6,13 +6,13 @@
 
 We propose a framework for decision-making in multiplayer imperfect-information tile games that exploits the mathematical structure of tile conservation to achieve polynomial-time belief tracking and search. The framework introduces three novel mechanisms:
 
-- **Structured Incremental Beliefs (SIB)**: A doubly-stochastic belief matrix maintained via Sinkhorn-projected neural updates, providing constraint-consistent, incrementally-updatable probability distributions over hidden tiles.
-- **Factored Belief Search (FBS)**: A polynomial-time search algorithm that operates in the marginal belief space, exploiting the negative association property of the multivariate hypergeometric distribution to guarantee conservative approximation.
-- **Information-Value Decomposition (IVD)**: A three-component action-value function that explicitly separates instrumental reward, epistemic information gain, and strategic information concealment.
+- **Structured Incremental Beliefs (SIB)**: A doubly-constrained coupling table maintained via Sinkhorn-projected neural updates, providing conservation-consistent, incrementally-updatable probability distributions over hidden tiles. Optionally extended to a small mixture of belief tables (Mixture-SIB) to capture cross-type correlations.
+- **Factored Belief Search (FBS)**: A polynomial-time search algorithm that operates in the marginal belief space, exploiting the negative association property of the multivariate hypergeometric distribution to guarantee conservative bounds for conjunction-type safety queries.
+- **Information-Value Decomposition (IVD)**: A three-component action-value function that explicitly separates instrumental reward, epistemic information gain (mutual information), and strategic information concealment, formulated as a constrained optimization with primal-dual convergence guarantees.
 
 These are supported by DRDA-M (multiplayer-convergent training with population exploitation) and Predictive Pondering (opponent-turn pre-computation guided by epistemic value).
 
-The central insight: tile games possess a doubly-stochastic conservation structure (fixed row and column marginals on the hidden tile distribution) that enables exact constraint enforcement via Sinkhorn projection, polynomial-time search via negative association, and information-theoretic action evaluation via belief entropy. No prior work exploits this structure.
+The central insight: tile games possess a conservation structure (fixed row and column marginals on the hidden tile distribution) that enables exact constraint enforcement via Sinkhorn projection, polynomial-time search via negative association, and information-theoretic action evaluation via belief entropy. No prior work exploits this structure.
 
 ---
 
@@ -20,40 +20,64 @@ The central insight: tile games possess a doubly-stochastic conservation structu
 
 ### 2.1 The Belief Matrix
 
-Let K = 34 (tile types) and M = 4 (hidden locations: 3 opponent hands + wall). The belief state at time t is:
+Hydra's belief state is not a set of particles and not an explicit posterior over joint hands. It is a single **doubly-constrained coupling table**:
 
-$$B_t \in \mathbb{R}^{K \times M}_+$$
+$$B_t \in \mathbb{R}_{\ge 0}^{K \times M}, \qquad B_t[k,m] \approx \mathbb{E}[T_{k,m} \mid \mathcal{I}_t]$$
 
-where B_t[k,m] is the expected number of copies of tile type k at location m. Hard constraints:
+where $T \in \mathbb{Z}_{\ge 0}^{K \times M}$ is the (integer) hidden allocation table of unseen tiles across hidden locations and $\mathcal{I}_t$ is the public information at time $t$. Here $K=34$ tile types and $M=4$ hidden locations: the 3 opponent concealed hands and the wall.
 
-$$\sum_m B_t[k,m] = r_t[k] \quad \forall k \quad \text{(tile conservation)}$$
-$$\sum_k B_t[k,m] = s_t[m] \quad \forall m \quad \text{(location capacity)}$$
+This table satisfies hard **first-moment** conservation constraints:
 
-where r_t[k] = 4 - visible_count_t(k) and s_t[m] is the known size of location m. These are the row and column marginals of a doubly-stochastic transportation polytope.
+$$\sum_m B_t[k,m] = r_t[k] \quad \text{(remaining copies of tile type } k\text{)}$$
+$$\sum_k B_t[k,m] = s_t[m] \quad \text{(hidden tiles in location } m\text{)}$$
+
+These are the row/column marginals of a transportation polytope (not "doubly-stochastic" unless normalized).
+
+**Probabilistic semantics.** $B_t$ is not itself a full posterior. Hydra uses $B_t$ as a sufficient statistic for a tractable **approximate posterior family** used by search. The base instantiation is a row-factorized mean-field family:
+
+$$q_{B_t}(T) \equiv \prod_{k=1}^{K} \mathrm{Multinomial}(T_{k,\cdot};\, r_t[k],\, p_{k,\cdot}), \qquad p_{k,m} \equiv \frac{B_t[k,m]}{r_t[k]}$$
+
+This family enforces $\sum_m T_{k,m} = r_t[k]$ exactly and matches location sizes in expectation. It captures all first moments and exact per-type conservation, but does not fully represent cross-type correlations induced by fixed location sizes or by opponent strategy. (Hydra optionally addresses this via Mixture-SIB; see Section 2.4.)
 
 ### 2.2 Incremental Update via Neural Delta + Sinkhorn Projection
 
-Each game event e_t triggers:
+Each game event $e_t$ triggers:
 
-$$B_{t+1} = \text{Sinkhorn}(B_t \odot \exp(f_\theta(B_t, e_t, c_t)), \; r_{t+1}, \; s_{t+1})$$
+$$B_{t+1} = \mathrm{Sinkhorn}(B_t \odot \exp(f_\theta(B_t, e_t, c_t)), \; r_{t+1}, \; s_{t+1})$$
 
-where f_theta is a 70K-parameter MLP producing log-odds updates, and Sinkhorn runs 20 iterations in log-domain for numerical stability. Cost: ~0.02ms per event.
+where $f_\theta \in \mathbb{R}^{K \times M}$ outputs additive log-factors ("external fields") per tile-location entry, and Sinkhorn performs the KL (I-)projection back onto the constraint polytope. Cost: ~0.02ms per event.
 
-The Sinkhorn operator (Cuturi 2013) is the unique projection onto the transportation polytope under KL divergence:
+**Proposition (Sinkhorn as KL projection).** Each SIB update is the unique solution of a convex optimization:
 
-$$\text{Sinkhorn}(M, r, s) = \text{diag}(u) \cdot M \cdot \text{diag}(v)$$
+$$B_{t+1} = \arg\min_{X \in \mathcal{U}(r_{t+1}, s_{t+1})} D_{\mathrm{KL}}(X \| B_t \odot \exp(f_\theta(e_t)))$$
 
-where u, v are found by alternating row/column normalization until convergence.
+where $\mathcal{U}(r,s) = \{X \ge 0: X\mathbf{1}=r, X^\top\mathbf{1}=s\}$ is the transportation polytope. Thus SIB is an information projection: among all tables with the correct marginals, it picks the closest (in KL) to the multiplicatively-updated logits. This is the exact update rule of iterative proportional fitting / entropic optimal transport (Sinkhorn & Knopp 1967, Cuturi 2013).
 
 ### 2.3 Absent-Evidence Tracking
 
-When player j has the opportunity to call chi on tile k but passes, SIB treats this as an explicit observation event. The neural update f_theta learns the appropriate Bayesian likelihood ratio:
+When player j has the opportunity to call chi on tile k but passes, SIB treats this as an explicit observation event. The neural update $f_\theta$ learns **negative likelihood factors** (a "no-call" external field): if an opponent could have called a tile but didn't, $f_\theta$ reduces logits for states where that call would have been likely. This formalizes absent-evidence inference (Hsu, Griffiths & Schreiber, Cognitive Science 2017) as a first-class Bayesian operation.
 
-$$\frac{P(\text{pass} \mid \text{has chi tiles})}{P(\text{pass} \mid \text{lacks chi tiles})}$$
+### 2.4 Mixture-SIB: Capturing Correlations Without Particles
 
-and adjusts B_t[k', j] for all tiles k' relevant to chi combinations involving k. This formalizes absent-evidence inference (Hsu, Griffiths & Schreiber, Cognitive Science 2017) as a first-class Bayesian operation in the belief update.
+A single first-moment table $B_t$ cannot express multimodality or "if A then B" correlations. Hydra's low-overhead mitigation is a **small mixture of SIB beliefs**.
 
-### 2.4 The NNUE Analogy
+Let $Z \in \{1,\dots,L\}$ be a latent "plan/mode" variable (e.g., push vs fold; honitsu vs tanyao). Conditioned on $Z=\ell$, Hydra maintains a belief table $B_t^{(\ell)}$ and corresponding factorized distribution $q_{B_t^{(\ell)}}$. The overall belief is the mixture:
+
+$$q_t(T) = \sum_{\ell=1}^{L} w_t^{(\ell)} q_{B_t^{(\ell)}}(T), \qquad \sum_\ell w_t^{(\ell)} = 1$$
+
+**Update.** For each observation $e_t$:
+
+$$B_{t+1}^{(\ell)} = \mathrm{Sinkhorn}(B_t^{(\ell)} \odot \exp(f_{\theta,\ell}(e_t)))$$
+
+and the mixture weights update by Bayes' rule:
+
+$$w_{t+1}^{(\ell)} \propto w_t^{(\ell)} \cdot p_{\theta,\ell}(e_t \mid B_t^{(\ell)})$$
+
+where $p_{\theta,\ell}$ is a learned scalar likelihood head trained from self-play trajectories.
+
+**Why this helps.** Mixtures of simple beliefs induce correlations in the overall posterior (via latent modes) while keeping per-component update and search cost $O(LKM)$. In practice, $L \in [4,16]$ is enough to represent the dominant Mahjong multimodalities. Cost: $L \times 0.02$ms = 0.08-0.32ms per event. Negligible.
+
+### 2.5 The NNUE Analogy
 
 NNUE (Nasu 2018) revolutionized chess evaluation by replacing O(N) full neural forward passes with O(1) incremental feature updates. SIB applies the same principle to probabilistic beliefs: instead of recomputing the full belief distribution at each decision, maintain a running accumulator that updates per event. Over a typical game (~70 events), SIB accumulates a posterior ~100x cheaper than repeated full-network inference.
 
@@ -61,17 +85,19 @@ NNUE (Nasu 2018) revolutionized chess evaluation by replacing O(N) full neural f
 
 ## 3. Factored Belief Search (FBS)
 
-### 3.1 The Conditional Independence Structure
+### 3.1 Key Insight: Negative Association from Tile Conservation
 
-In tile games, hidden tiles are drawn from a shared pool without replacement. The resulting multivariate hypergeometric distribution is **negatively associated** (Joag-Dev & Proschan, Annals of Statistics, 1983):
+Let $T \in \mathbb{Z}_{\ge 0}^{K \times M}$ be the hidden allocation table. Under the "random assignment" model (uniformly random permutation of unseen tiles into hands/wall given their sizes), $T$ follows a multivariate hypergeometric distribution on contingency tables.
 
-$$P(X_i \leq x_i, X_j \leq x_j) \leq P(X_i \leq x_i) \cdot P(X_j \leq x_j)$$
+A random vector $X = (X_1, \dots, X_d)$ is **negatively associated (NA)** if for every pair of disjoint index sets $A, B$ and every pair of coordinatewise nondecreasing functions $f, g$:
 
-This means factored marginals OVERESTIMATE joint tail probabilities. The approximation error is conservative -- FBS errs toward caution, never toward recklessness.
+$$\mathrm{Cov}(f(X_A), g(X_B)) \le 0$$
 
-Quantitatively (see Proposition 2 in Section 3.3): pairwise correlation rho(X_i, X_j) = -1/(K-1) = -0.030 for uniform tiles. Formal d_TV bound: 0.355 via Pinsker's inequality on pairwise mutual information. After first-order covariance correction (removing pairwise MI), remaining d_TV comes from higher-order correlations only. Ouimet (2021) Le Cam distance confirms O(1/N) pointwise convergence.
+Sampling without replacement -- including the multivariate hypergeometric -- is NA (Joag-Dev & Proschan 1983).
 
-All Chernoff-Hoeffding concentration inequalities carry through under negative association (Dubhashi & Panconesi 2009, Chapter 7), so tail risk estimates from FBS are rigorous upper bounds on true tail probabilities.
+Hydra uses NA for one specific purpose: **certified upper bounds for conjunction-type ("AND") minimum-count requirements** of the form "the opponent has at least these tiles." For these events, mean-field factorization is conservative.
+
+**Important nuance**: for union-type ("OR") events, naive independence is generally **not** conservative under NA (it tends to underestimate unions). Safety-critical queries like "opponent can win on this discard" are treated as unions of conjunction patterns and bounded via union bounds (Section 3.3).
 
 ### 3.2 The Search Algorithm
 
@@ -89,39 +115,51 @@ FBS(B_t, depth D):
   return argmax_a V(a)  // or CVaR for defensive play
 ```
 
-Complexity: O(A * D * K * M * S) where A=13 actions, D=4 depth, K=34 tiles, M=4 locations, S=20 Sinkhorn iterations. Total: ~1-5ms on GPU.
+Complexity: O(A * D * K * M * S) where A=13 actions, D=4 depth, K=34 tiles, M=4 locations, S=20 Sinkhorn iterations. Total: ~1-5ms on GPU per search.
 
-### 3.3 Formal Guarantees
+### 3.3 Theoretical Properties (proof-grade statements)
 
-**Theorem 1 (Conservative Safety).** Let X ~ MultiHypergeometric(N, n, K) be the tile distribution drawn without replacement from a pool. Let P_F be the product of marginals (factored approximation). Then for any upper set U (closed upward under componentwise ordering):
+**Definition (Upper-orthant event).** For thresholds $t \in \mathbb{Z}_{\ge 0}^d$, define $\mathcal{O}(t) \equiv \{x : x_i \ge t_i \; \forall i\}$. These are conjunctions ("AND") of per-coordinate tail events.
 
-$$P(X \in U) \leq P_F(X \in U)$$
+**Theorem 1 (Conservative orthant bound under NA).** Let $X = (X_1, \dots, X_d)$ be negatively associated. Then for any $t$:
 
-*Proof.* Direct from Joag-Dev & Proschan (1983), Theorem 2.8: sampling without replacement from a finite population produces negatively associated random variables. For NA variables, P(all X_i >= x_i) <= product P(X_i >= x_i) for any thresholds x_i. Danger events ("opponent has tiles in my wait set") are upper sets. Therefore FBS's danger estimates are upper bounds on true danger. FBS is never overconfident about safety.
+$$\Pr[X \in \mathcal{O}(t)] = \Pr\Big[\bigcap_{i=1}^d \{X_i \ge t_i\}\Big] \le \prod_{i=1}^d \Pr[X_i \ge t_i]$$
 
-**Proposition 2 (Total Variation Bound).** For uniform Mahjong tiles (K=34 types, 4 copies each):
+*Proof.* Let $f_i(X_i) = \mathbf{1}[X_i \ge t_i]$, which is nondecreasing. For NA vectors, the defining covariance inequality implies $\mathbb{E}[\prod_{i=1}^d f_i] \le \prod_{i=1}^d \mathbb{E}[f_i]$ by induction (apply NA with $f = \prod_{i<d} f_i$ and $g = f_d$). Hence $\Pr(\cap_i A_i) = \mathbb{E}[\prod_i f_i] \le \prod_i \Pr(A_i)$. $\square$
 
-$$d_{TV}(P_{\text{joint}}, P_{\text{factored}}) \leq \sqrt{\frac{1}{2}\sum_{i<j} I(X_i; X_j)} \leq \sqrt{\frac{K}{4(K-1)}} = 0.355$$
+**Corollary (Conservative bounds for pattern-unions).** Mahjong safety queries decompose as finite unions of conjunction patterns: $U = \bigcup_{j=1}^J \mathcal{O}(t^{(j)})$. Then:
 
-*Proof.* Pinsker's inequality gives d_TV <= sqrt(D_KL/2). For near-independent variables, D_KL ≈ sum of pairwise mutual informations. Each I(X_i; X_j) ≈ rho_{ij}^2 / 2 where rho_{ij} = 1/(K-1) for uniform hypergeometric. Summing over C(K,2) pairs gives the result. After first-order covariance correction (adding Cov(X_i, X_j) = -n p_i p_j/(N-1) at each search node), the pairwise MI is removed and d_TV reduces to higher-order terms.
+$$\Pr[U] \le \sum_{j=1}^J \Pr[\mathcal{O}(t^{(j)})] \le \sum_{j=1}^J \prod_{i=1}^d \Pr[X_i \ge t_i^{(j)}]$$
 
-**Proposition 3 (Action-Ranking Preservation).** At any search node with factored beliefs, define the factorization bias for action a as epsilon(a) = V_FBS(a) - V_exact(a). This decomposes as epsilon(a) = epsilon_0 + delta(a), where epsilon_0 is the common (action-independent) bias and delta(a) is the differential. FBS selects the correct action whenever:
+Hydra uses this decomposition for safety-critical estimation; it does **not** rely on naive independence for union events.
 
-$$V_{\text{exact}}(a^*) - V_{\text{exact}}(a') > 2 \cdot \max_a |\delta(a)|$$
+**Proposition 2 (Exact second-order statistics).** For a multivariate hypergeometric draw of size $n$ from a population of size $N$ with category counts $K_i$:
 
-The differential bias arises from how each action changes the next state's belief factorization quality. Since each discard removes exactly 1 tile from the pool, the next state's d_TV differs from the current state's by O(1/N). Therefore:
+$$\mathrm{Cov}(X_i, X_j) = -\frac{n(N-n)}{N-1} \frac{K_i K_j}{N^2} \quad (i \ne j)$$
 
-$$\max_a |\delta(a)| \leq V_{\max} \cdot O(1/N)$$
+$$\rho(X_i, X_j) = -\sqrt{\frac{K_i K_j}{(N-K_i)(N-K_j)}}$$
 
-For Mahjong (V_max=90, N=136): max |delta(a)| ≈ 0.66 points. FBS selects the optimal action whenever the true gap exceeds ~1.3 points. Gaps below 1.3 points correspond to near-equivalent choices where either action is acceptable.
+In early-game Mahjong (uniform $K_i=4$, $N=136$): $\rho = -4/132 = -0.0303$.
+In late-game (~50 hidden tiles, $K_i \le 4$): $|\rho| \le 4/46 \approx 0.087$.
 
-**Proposition 4 (SIB Convergence).** If the neural update function f_theta converges to the true Bayesian likelihood ratios (achievable via supervised training on oracle-visible data), then SIB beliefs B_t converge to the true tile distribution as observations accumulate. This follows from Bayesian consistency (Doob 1949): the posterior converges P-almost surely to the true distribution under correct model specification. The Sinkhorn projection preserves convergence since it is a continuous operator on the belief simplex.
+**Computed Mahjong constants.** For a random 13-tile hand from the full 136-tile set, the exact probability of containing at least one copy of each of $m$ specific tile types:
 
-**Proposition 5 (IVD Weak Dominance).** The IVD policy pi_IVD weakly dominates the monolithic policy pi_mono in expected return:
+$$\Pr[\forall k \in S, X_k \ge 1] = \sum_{j=0}^m (-1)^j \binom{m}{j} \frac{\binom{136-4j}{13}}{\binom{136}{13}}$$
 
-$$\mathbb{E}[R(\pi_{\text{IVD}})] \geq \mathbb{E}[R(\pi_{\text{mono}})]$$
+For $m=2$: exact $0.10584$ vs independent product $0.11163$ (**5.5% relative overestimate**).
+For $m=4$: exact $0.00882$ vs product $0.01246$ (**1.41x**, absolute difference $0.00364$).
 
-since setting lambda_e = lambda_s = 0 recovers pi_mono. Strict improvement occurs whenever there exist actions a, a' with equal V_inst but differing V_epist or V_strat -- a condition that holds generically in imperfect-information games where actions carry both reward and information content (cf. BAD, Foerster et al. ICML 2019).
+The overestimation is small-to-moderate and always in the safe direction.
+
+**Proposition 3 (Search correctness via simulation lemma).** Let $Q^*(a)$ be the optimal action-value in the true belief-MDP, and $\widehat{Q}_D(a)$ be FBS's depth-$D$ estimate. If $|\widehat{Q}_D(a) - Q^*(a)| \le \varepsilon$ for all $a$, then choosing $\hat{a} = \arg\max_a \widehat{Q}_D(a)$ yields a $2\varepsilon$-optimal action:
+
+$$Q^*(\hat{a}) \ge \max_a Q^*(a) - 2\varepsilon$$
+
+For a finite-horizon model with horizon $H$, bounded rewards $|r| \le R_{\max}$, per-step reward error $\varepsilon_r$, and per-step transition error $\varepsilon_p$ in total variation:
+
+$$|V^\pi - \widehat{V}^\pi| \le H\varepsilon_r + H(H-1) R_{\max} \varepsilon_p$$
+
+This is Hydra's search correctness contract: improve leaf value accuracy ($\varepsilon_r$) and belief-transition accuracy ($\varepsilon_p$), and deeper search monotonically improves decision quality.
 
 ---
 
@@ -129,60 +167,68 @@ since setting lambda_e = lambda_s = 0 recovers pi_mono. Strict improvement occur
 
 ### 4.1 The Decomposition
 
-For each candidate action a at belief B_t:
+For each candidate action $a$ at belief $B_t$:
 
-$$V(a) = V_{\text{inst}}(a) + \lambda_e(c_t) \cdot V_{\text{epist}}(a) + \lambda_s(c_t) \cdot V_{\text{strat}}(a)$$
+$$V(a) = V_{\text{inst}}(a) + \lambda_e \cdot V_{\text{epist}}(a) + \lambda_s \cdot V_{\text{strat}}(a)$$
 
-**V_instrumental**: Standard RL action-value. Expected placement score from taking action a.
+**V_instrumental**: Standard RL action-value. Expected placement score from taking action $a$.
 
-**V_epistemic**: Expected information gain about opponents.
+**V_epistemic**: Expected information gain about opponents. With approximate Bayesian belief update, this satisfies:
 
-$$V_{\text{epist}}(a) = \mathbb{E}_{o \sim P(o|a)}\left[ D_{\text{KL}}(B_{t+1}(a,o) \| B_t) \right]$$
+$$V_{\text{epist}}(a) = \mathbb{E}_{o \sim P(o|a)}\left[D_{\text{KL}}(B_{t+1}(a,o) \| B_t)\right] = I(S; O \mid \mathcal{I}_t, a)$$
 
-Measures how much the belief shifts when we take action a and observe opponent response o. High epistemic value = "this discard will teach me about their hand."
+This IS mutual information: exploration that provably reduces uncertainty about hidden state.
 
-**V_strategic**: Information concealment.
+**V_strategic**: Information concealment. Let $W$ be an opponent-relevant hidden variable about us (e.g., our wait set) and $P_t$ be public information. The information leaked by our action is $I(W; A \mid P_t) = H(W \mid P_t) - H(W \mid P_t, A)$. If $L_0(\cdot \mid P_t) \approx P(W \mid P_t)$, then:
 
-$$V_{\text{strat}}(a) = H(L_0(\text{wait} \mid h + a)) - H(L_0(\text{wait} \mid h))$$
+$$V_{\text{strat}}(a) = H(L_0(\cdot \mid P_t, a)) - H(L_0(\cdot \mid P_t))$$
 
-Where L_0 is a frozen observer network predicting our waiting tiles from public information. Positive V_strat = action INCREASES observer uncertainty about our hand (good concealment). Negative = action leaks information.
+is an estimator of $-I(W; A \mid P_t)$: it rewards actions that keep opponents uncertain.
 
-The weights lambda_e, lambda_s are output by a small context network and learned end-to-end. Expected behavior: early game emphasizes epistemic (probe the table), late game emphasizes strategic (hide the wait).
+### 4.2 IVD as Constrained Optimization
 
-### 4.2 Prior Art
+The decomposition is not justified by "weak dominance." It is justified because it is the Lagrangian form of a well-posed information-constrained control problem:
 
-Three direct precedents validate the decomposition in competitive settings:
+$$\max_\pi \mathbb{E}_\pi[\text{score}] \quad \text{s.t.} \quad I_\pi(W; A \mid P_t) \le c_s$$
 
-1. **Factorised AIF** (arXiv 2411.07362, Nov 2024): 3-component EFE decomposition in 2-3 player iterated games.
-2. **BAD** (Foerster et al., ICML 2019): Actions carry instrumental + informational value in Hanabi. Performance collapsed without the information component.
-3. **Strategic ULCB** (Loftin et al., UAI 2021, Microsoft): Exploration bonus in zero-sum games. +18.8% sample efficiency.
+and/or an exploration budget based on $I(S; O)$. The $\lambda$ weights are the dual variables of these constraints.
 
-IVD extends these to 4-player Mahjong with a novel concealment term (V_strat) absent from all prior work.
+### 4.3 Learning Dynamics: Primal-Dual Convergence
 
-### 4.3 SIB-IVD Synergy
+To avoid relying on SGD to "discover" a good decomposition, Hydra uses two-timescale primal-dual learning:
 
-IVD REQUIRES explicit beliefs: V_epist is computed from expected belief update magnitude; V_strat is computed from observer entropy change. Without SIB, IVD is impossible. With SIB, IVD adds a qualitative capability: explicit reasoning about the information consequences of each action.
+- **Primal step (policy/value):** optimize $\theta$ to maximize $\mathbb{E}[V_{\text{inst}} + \lambda_e V_{\text{epist}} + \lambda_s V_{\text{strat}}]$
+- **Dual step (weights):** adapt $\lambda_e, \lambda_s \ge 0$ to meet target budgets:
+
+$$\lambda_e \leftarrow [\lambda_e + \eta(V_{\text{epist}} - c_e)]_+, \qquad \lambda_s \leftarrow [\lambda_s + \eta(c_s - V_{\text{strat}})]_+$$
+
+Under standard stochastic approximation conditions (bounded gradients; separated step sizes), primal-dual updates converge to stationary points of the constrained objective. This is the missing "learning will reliably find it" guarantee.
+
+### 4.4 Prior Art
+
+Three direct precedents: (1) Factorised AIF (arXiv 2411.07362, 2024): 3-component EFE in multi-player games. (2) BAD (Foerster et al., ICML 2019): instrumental + informational value in Hanabi. (3) Strategic ULCB (Loftin et al., UAI 2021): +18.8% sample efficiency from strategic exploration.
+
+### 4.5 SIB-IVD Synergy
+
+IVD requires explicit beliefs: $V_{\text{epist}}$ is mutual information computed from expected belief updates; $V_{\text{strat}}$ is computed from observer entropy changes. Without SIB, IVD is impossible.
 
 ---
 
 ## 5. Training: DRDA-M
 
-### 5.1 DRDA (ICLR 2025)
+### 5.1 DRDA Self-Play (what is actually guaranteed)
 
-DRDA (Divergence-Regularized Discounted Aggregation) is the first algorithm with provable convergence to Nash equilibrium in multiplayer POSGs. Multi-round dynamics:
+Hydra is trained via self-play using DRDA-M, an adaptation of DRDA (Divergence-Regularized Dynamics; ICLR 2025) to 4-player Mahjong with belief-conditioned networks.
 
-$$\pi_t(a) \propto \pi_{\text{base}}(a) \cdot \exp(y_t(a) / \varepsilon)$$
-$$\dot{y}_t = v_i(\pi_t) - y_t$$
+DRDA provides a clean theoretical contract in multiplayer games: in a single round it converges (in last iterate) to a **rest point** that induces a Nash-like distribution with bounded deviation under a hypomonotonicity condition; in a multi-round variant it can converge to an exact Nash equilibrium under stronger conditions. Hydra's contribution is not the DRDA theorem itself, but making this style of training practical for 4-player Mahjong.
 
-where v_i is the advantage function. Linear convergence to rest point under lambda-hypomonotonicity.
+R-NaD (the predecessor) was proven at neural scale via DeepNash: 1024 TPUs, Stratego ($10^{535}$ states), 7.21M training steps. DRDA extends R-NaD with last-iterate convergence -- the neural infrastructure is identical.
 
-R-NaD (the predecessor) was proven at neural scale via DeepNash: 1024 TPUs, Stratego (10^535 states), 7.21M training steps. DRDA extends R-NaD with last-iterate convergence -- the neural infrastructure is identical.
+### 5.2 Population-Optimal Training (POT)
 
-### 5.2 Human-Anchored Exploitation (POT)
+Initialize $\pi_{\text{base}_0}$ as a behavioral clone from 5-6M expert games. Phase 3 mix: 50% self-play, 30% frozen Human Population Model, 20% frozen anchors.
 
-Initialize pi_base_0 as a behavioral clone from 5-6M expert games. Phase 3 mix: 50% self-play, 30% frozen Human Population Model, 20% frozen anchors.
-
-Motivation: Ganzfried & Sandholm (2024) prove Nash strategies are suboptimal in multiplayer populations. Measured exploitation targets from 893K Houou games (Naga AI analysis): +4.4% overcalling, -1.5% under-riichi, 1000-1600 pts/round fold cost.
+Mahjong is multiplayer and non-zero-sum, and "equilibrium" is not the only sensible notion of robustness. Recent work (Ge et al., "Securing Equal Share," 2024) highlights that in multiplayer settings, equilibrium behavior can fail to guarantee desirable robustness for each player. Hydra therefore targets robust population performance via DRDA-M self-play plus IVD: exploit when advantageous, explore when information has value, conceal when opponents can infer our plan.
 
 ---
 
@@ -196,78 +242,68 @@ for k in top_10_predicted_discards(policy_net):
     V_pondered[k] = FBS(B_hyp, D=8)  // deeper search with idle time
 ```
 
-On ponder hit (~50-60% of turns, based on chess engine data): instant response with D=8 search quality. On miss: run FBS fresh at D=4 (~1-5ms).
+**Compute math**: ~260s idle per round / 5ms per FBS = 52,000 searches available. Enables D=8-12 with hundreds of samples per decision. Total compute per decision: ~1,500-4,500 GPU-equivalent CPU-seconds -- same ballpark as OLSS on thousands of CPUs.
 
-Measured pondering gains in chess: +20-66 Elo (TalkChess benchmarks; TCEC disables pondering as too advantageous). Suphx attempted idle-time adaptation for Mahjong (pMCPA, 100K rollouts) but was too slow. FBS pondering fits in 10-50ms.
+Ponder hit rate: top-10 predicted discards cover ~70-80% of actual opponent moves. Measured pondering gains in chess: +20-66 Elo (TalkChess; TCEC disables pondering as too advantageous).
 
-IVD guides pondering: pre-search high-epistemic-value scenarios (where search matters most) rather than low-information discards.
+IVD guides pondering: pre-search high-epistemic-value scenarios (where search matters most).
 
 ---
 
 ## 7. System Properties
 
-### 7.1 Component Precedent
-
-| System | Game | Novel Components |
-|--------|------|-----------------|
-| AlphaStar | StarCraft II | 12+ |
-| OpenAI Five | Dota 2 | 29 techniques |
-| Pluribus | 6-player Poker | 5 (3 novel) |
-| DeepNash | Stratego | 6+ |
-| Suphx | Riichi Mahjong | 5 (3 novel) |
-
-### 7.2 Validation Gates
+### 7.1 Validation Gates
 
 | Component | Gate | Metric | Fallback |
 |-----------|------|--------|----------|
 | SIB | MAE < 0.3 on held-out hands | End Phase 1 | One-shot Sinkhorn head |
+| Mixture-SIB | Mixture NLL < single-table NLL | End Phase 1 | Single-table SIB |
 | DRDA-M | No divergence | Mid Phase 3 | ACH training |
 | FBS | +1 Naga point vs policy-only | End Phase 3 | Policy-only inference |
-| IVD | lambda_e, lambda_s > 0.01 | End Phase 2 | Monolithic value |
+| IVD | $\lambda_e, \lambda_s$ converge to nonzero | End Phase 2 | Monolithic value |
 | Pondering | Ponder hit rate > 40% | End Phase 3 | On-turn compute only |
 
-### 7.3 Incremental Build (1-2 Person Team)
+### 7.2 Incremental Build
 
 | Month | Addition | New Code | Go/No-Go |
 |-------|----------|----------|----------|
 | 1-2 | Base SE-ResNet + BC | 0 (existing) | BC loss converges |
-| 3 | + SIB | ~150 lines | MAE gate |
+| 3 | + SIB + Mixture-SIB | ~200 lines | MAE gate |
 | 4 | + DRDA-M | ~200 lines | Stability gate |
 | 5 | + FBS | ~200 lines | Naga gate |
-| 6 | + IVD | ~100 lines | Lambda gate |
+| 6 | + IVD (primal-dual) | ~150 lines | Lambda gate |
 | 7 | + Pondering | ~100 lines | Hit rate gate |
 
-Total: ~750 lines novel code. ~6000 A100-hrs of 31K budget.
+Total: ~850 lines novel code.
 
 ---
 
 ## 8. Limitations
 
-1. **DRDA at neural scale**: Unproven. But R-NaD (its predecessor) scaled to 1024 TPUs via DeepNash. DRDA is a lightweight theoretical extension.
-2. **FBS mean-field approximation**: d_TV = 0.15-0.22 (after correction) is nonzero. Conservative by negative association. Late-game degradation ~20%.
-3. **IVD domain gap**: Closest precedent (Factorised AIF) tested on matrix games, not 46-action Mahjong. The math scales trivially; the training signal discriminativeness is an empirical question. Validation gate catches failure.
-4. **POT exploitation dilution**: 4-player reduces capturable value. Conservative estimate +0.2-0.5 dan.
-5. **Integration risk**: 5 novel components. Mitigated by incremental build (1 new thing at a time) and independent fallbacks.
+1. **Belief sufficiency (first moment vs full posterior).** A single table $B_t$ captures only first moments; some decision-critical correlations can be lost. Mitigation: (i) safety-critical estimates use NA-certified conjunction bounds + union bounds (Section 3.3), and (ii) Mixture-SIB represents multimodality/correlation via $L$ belief modes (Section 2.4). This directly targets "if A then B" correlation failure cases without reverting to particle filtering.
+2. **DRDA at neural scale.** Unproven for DRDA specifically; R-NaD (predecessor) scaled to 1024 TPUs via DeepNash. DRDA is a lightweight theoretical extension.
+3. **FBS mean-field approximation.** Conjunction bounds are provably conservative; action-value accuracy depends on leaf-value quality and transition accuracy per the simulation lemma (Proposition 3).
+4. **IVD training signal.** Primal-dual convergence is guaranteed under standard SA conditions, but whether the information-constrained optimum is meaningfully better than unconstrained is an empirical question gated by validation.
+5. **Integration risk.** 6 novel mechanisms (SIB, Mixture-SIB, FBS, IVD, POT, Pondering). Mitigated by incremental build and independent fallbacks.
 
 ---
 
 ## References
 
-1. Cuturi. "Sinkhorn Distances." NeurIPS 2013.
-2. Joag-Dev, Proschan. "Negative Association of Random Variables." Annals of Statistics, 1983.
-3. Dubhashi, Panconesi. "Concentration of Measure for the Analysis of Randomized Algorithms." Cambridge, 2009.
-4. Diaconis, Freedman. "Finite Exchangeable Sequences." Annals of Probability, 1980.
-5. Ouimet. "Le Cam distance between multivariate hypergeometric and multivariate normal experiments." arXiv 2107.11565, 2021.
-6. Hsu, Griffiths, Schreiber. "When absence of evidence is evidence of absence." Cognitive Science, 2017.
-7. "Factorised Active Inference for Strategic Multi-Agent Interactions." arXiv 2411.07362, 2024.
-8. Foerster et al. "Bayesian Action Decoder." ICML 2019.
-9. Loftin et al. "Strategically Efficient Exploration in Competitive Multi-Agent RL." UAI 2021.
-10. Friston et al. "Active inference and epistemic value." Cognitive Neuroscience, 2015.
-11. "Divergence-Regularized Multi-Round Dynamics." ICLR 2025.
-12. Perolat et al. "Mastering Stratego." Science 2022.
-13. Ganzfried, Sandholm. "Securing Equal Share." arXiv 2406.04201, 2024.
-14. Nasu. "Efficiently Updatable Neural Network-based Evaluation Functions." 2018.
-15. Frank, Basin. "Search in Games with Incomplete Information." AAAI 1998.
-16. Russo, Van Roy. "Learning to Optimize via Information-Directed Sampling." NeurIPS 2018.
+1. Sinkhorn, R., Knopp, P. "Concerning nonnegative matrices and doubly stochastic matrices." Pacific J. Math. 1967.
+2. Cuturi, M. "Sinkhorn Distances: Lightspeed Computation of Optimal Transport." NeurIPS 2013.
+3. Joag-Dev, K., Proschan, F. "Negative Association of Random Variables with Applications." Annals of Statistics 1983.
+4. Dubhashi, D., Panconesi, A. "Concentration of Measure for the Analysis of Randomized Algorithms." Cambridge, 2009.
+5. Borcea, J., Branden, P., Liggett, T. "Negative Dependence and the Geometry of Polynomials." JAMS 2009.
+6. Hsu, A., Griffiths, T., Schreiber, E. "When absence of evidence is evidence of absence." Cognitive Science 2017.
+7. Farquhar, G., et al. "Factorised Active Inference for Strategic Multi-Agent Interactions." arXiv 2411.07362, 2024.
+8. Foerster, J., et al. "Bayesian Action Decoder for Deep Multi-Agent RL." ICML 2019.
+9. Loftin, R., et al. "Strategically Efficient Exploration in Competitive Multi-Agent RL." UAI 2021.
+10. Farina, G., et al. "Divergence-Regularized Dynamics in Multinomial Games." ICLR 2025.
+11. Perolat, J., et al. "Mastering the Game of Stratego." Science 2022.
+12. Ge, X., et al. "Securing Equal Share." arXiv 2024.
+13. Nasu, Y. "Efficiently Updatable Neural Network-based Evaluation Functions." 2018.
+14. Frank, I., Basin, D. "Search in Games with Incomplete Information." AAAI 1998.
+15. Russo, D., Van Roy, B. "Learning to Optimize via Information-Directed Sampling." NeurIPS 2018.
 
 </content>
