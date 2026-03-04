@@ -133,6 +133,19 @@ Analytic formulas for simple events; particle estimates with Hoeffding CIs other
 
 ## 7. Anytime Factored Belief Search (AFBS)
 
+### 7.0 AFBS vs LuckyJ's OLSS
+
+| | LuckyJ OLSS | HYDRA AFBS |
+|---|---|---|
+| When | Runtime only | Training (pondering) + Runtime |
+| Sims/decision | 1000 | 100-1000 (adaptive playout cap) |
+| Belief model | Simple hand sampling | Mixture-SIB + particles (constraint-correct) |
+| Opponent model | Fixed N=1-4 strategies | Robust KL soft-min (worst-case aware) |
+| Results fed back to network? | No | **Yes (SaF)** -- novel |
+| Used during training? | No | **Yes (oracle pondering ExIt)** -- novel |
+| Network size | 3 ResBlocks (tiny) | 40 SE-ResBlocks (13x larger) |
+| Oracle info during training? | No | Yes (CTDE: perfect-info leaf eval) |
+
 ### 7.1 Tree structure
 
 Node state: $(I, \mathcal{B}, \mathcal{P})$ -- info state, Mixture-SIB summary, particle set handle.
