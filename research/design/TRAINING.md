@@ -1,5 +1,7 @@
 # Hydra Training Pipeline
 
+> **OUTDATED**: This document describes an earlier training pipeline (oracle distillation + league play). The current pipeline (BC -> Oracle Guiding -> PPO -> Pondering ExIt within 2000 GPU hours) is in **HYDRA_FINAL.md**, which is the single source of truth.
+
 > Training pipeline specification for the Hydra Mahjong AI. Covers supervised warm start, oracle distillation, league self-play, loss functions, and hyperparameters.
 
 ## Related Documents

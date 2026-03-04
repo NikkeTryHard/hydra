@@ -9,3 +9,4 @@ AGENTS.md
 target/
 Cargo.lock
 .sisyphus/
+research/papers/
