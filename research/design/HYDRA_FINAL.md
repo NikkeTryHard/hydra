@@ -228,6 +228,13 @@ $V_{\text{rob}}=\min_{q\in \mathcal{Q}_\varepsilon(p)} \sum_a q(a) Q(a)$. Soluti
 
 **Contract.** For any opponent policy $q$ in the KL ball, AFBS's robust backup gives a lower bound on expected value against $q$.
 
+### 8.3 OLSS-style opponent strategy set
+
+In addition to continuous KL robustness, maintain $N$ discrete opponent archetypes $\{\sigma_1,\dots,\sigma_N\}$ (e.g., aggressive/defensive/speed/value, $N=4$). At opponent nodes, evaluate:
+$$Q(a) = -\tau \log \sum_{i=1}^N w_i \exp(-Q^{\sigma_i}(a)/\tau)$$
+
+This soft-min over archetypes directly mirrors LuckyJ's OLSS-II approach (Liu et al., ICML 2023) and hardens against "wrong opponent model" -- a dominant failure mode in multiplayer search. Archetypes are trained as lightweight shared-backbone adapters during population training.
+
 ---
 
 ## 9. Search-as-Feature (SaF)
@@ -263,8 +270,8 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 | Phase 0: BC | 50 | LearnerNet (24-block) | N/A (5-6M expert) | Initialize from human data |
 | Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
 | Phase 2: DRDA-wrapped ACH | 800 | LearnerNet via ACH+DRDA | ~18M | Game-theoretic base policy + early ExIt |
-| Phase 3: ExIt + Pondering | 750 | LearnerNet + TeacherNet | ~12M | Deep search ExIt targets + endgame solver |
-| **Total** | **2000** | | **~35M** | |
+| Phase 3: ExIt + Pondering | 950 | LearnerNet + TeacherNet | ~14M | Deep search ExIt targets + endgame solver |
+| **Total** | **2000** | | **~37M** | |
 
 GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering/teacher (TeacherNet). Distillation: Learner -> Actor continuously (IMPALA-style), Teacher -> Learner on hard-mined positions.
 
@@ -344,7 +351,9 @@ Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kap
 
 **From the all-out plan:** Mixture-SIB, anytime FBS, SaF, Hunter/Kounias tightening, ExIt+Pondering centrality, SR concentration.
 
-**OMEGA additions:** CT-SMC exact contingency-table belief sampler, robust opponent nodes (KL-uncertainty soft-min), hand-EV oracle features, endgame exactification, explicit calibration gates for every high-uncertainty link.
+**OMEGA additions:** CT-SMC exact contingency-table belief sampler, robust opponent nodes (KL-uncertainty soft-min + OLSS-style archetype set), hand-EV oracle features, endgame exactification, DRDA-wrapped ACH training, 3-tier network architecture (12/24/40), early ExIt from mid-Phase 2, explicit calibration gates.
+
+**Verified ablation data (Suphx Figure 8):** SL baseline ~7.65 dan, +RL basic +0.41, +GRP +0.18, +oracle guiding +0.12. Oracle guiding alone is modest; the stack is what matters.
 
 ---
 
