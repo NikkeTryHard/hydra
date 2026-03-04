@@ -137,7 +137,7 @@ Particles $\{X_t^{(p)},\alpha_t^{(p)}\}_{p=1}^P$ targeting $p(X_t\mid I_t)$. Pro
 
 ### 5.4 Correlation scale diagnostic
 
-$|\rho_{ij}|=K_i K_j / ((H-K_i)(H-K_j))^{1/2}$. At $H=50$: $|\rho|=0.087$; at $H=25$: $|\rho|=0.191$. Late-game correlations motivate Mixture-SIB + particles over first-moment alone.
+$|\rho_{ij}|=\sqrt{K_i K_j} / \sqrt{(H-K_i)(H-K_j)}$. At $H=50$, $K=4$: $|\rho|=4/46=0.087$; at $H=25$: $|\rho|=0.191$. Late-game correlations motivate Mixture-SIB + particles over first-moment alone.
 
 ### 5.5 CT-SMC: Exact contingency-table sampling (replaces generic particle proposals)
 
@@ -147,7 +147,7 @@ The hidden allocation $X_t \in \mathbb{Z}_{\ge 0}^{34\times 4}$ is a **fixed-mar
 
 $$Z_k(\mathbf{c}) = \sum_{x \in \mathcal{X}_k(\mathbf{c})} \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x), \quad Z_{35}(\mathbf{0})=1$$
 
-where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. Key insight: $c_W = R_k - (c_1+c_2+c_3)$ is **derived**, so the DP state is 3D: $(c_1,c_2,c_3)$. State count: $\le (14)^3 = 2{,}744$. Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 2744 \times 35 \approx 3.3M$ ops -- **trivially sub-millisecond in Rust**. Use log-space DP for numerical stability.
+where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. Key insight: $c_W = R_k - (c_1+c_2+c_3)$ is **derived**, so the DP state is 3D: $(c_1,c_2,c_3)$. State count: $\le (15)^3 = 3{,}375$ (max 14 tiles after draw, before discard). Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 3375 \times 35 \approx 4.0M$ ops -- **trivially sub-millisecond in Rust**. Use log-space DP for numerical stability.
 
 **Exact backward sampling:** $p(x_k = x \mid \mathbf{c}) = \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x) / Z_k(\mathbf{c})$. This gives **exact samples with correct correlations** from the conservation-constrained distribution -- not mean-field approximations.
 
@@ -262,9 +262,9 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 |-------|--------:|-------------|------:|-----------|
 | Phase 0: BC | 50 | LearnerNet (24-block) | N/A (5-6M expert) | Initialize from human data |
 | Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
-| Phase 2: ACH self-play | 750 | LearnerNet via ACH | ~20M | Game-theoretic base policy |
+| Phase 2: ACH self-play | 750 | LearnerNet via ACH | ~17M | Game-theoretic base policy |
 | Phase 3: ExIt + Pondering | 1000 | LearnerNet + TeacherNet | ~15M | Search-informed ExIt targets |
-| **Total** | **2000** | | **~40M** | |
+| **Total** | **2000** | | **~37M** | |
 
 GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering/teacher (TeacherNet). Distillation: Learner -> Actor continuously (IMPALA-style), Teacher -> Learner on hard-mined positions.
 
