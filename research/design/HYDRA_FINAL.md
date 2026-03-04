@@ -262,9 +262,9 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 |-------|--------:|-------------|------:|-----------|
 | Phase 0: BC | 50 | LearnerNet (24-block) | N/A (5-6M expert) | Initialize from human data |
 | Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
-| Phase 2: ACH self-play | 750 | LearnerNet via ACH | ~17M | Game-theoretic base policy |
-| Phase 3: ExIt + Pondering | 1000 | LearnerNet + TeacherNet | ~15M | Search-informed ExIt targets |
-| **Total** | **2000** | | **~37M** | |
+| Phase 2: DRDA-wrapped ACH | 800 | LearnerNet via ACH+DRDA | ~18M | Game-theoretic base policy + early ExIt |
+| Phase 3: ExIt + Pondering | 750 | LearnerNet + TeacherNet | ~12M | Deep search ExIt targets + endgame solver |
+| **Total** | **2000** | | **~35M** | |
 
 GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering/teacher (TeacherNet). Distillation: Learner -> Actor continuously (IMPALA-style), Teacher -> Learner on hard-mined positions.
 
@@ -274,9 +274,9 @@ Train LearnerNet (24-block) on 5-6M expert games (Tenhou Houou + Majsoul). 24x a
 ### Phase 1: Oracle-visible supervision (200 GPU hours)
 Self-play with full hidden state access. Train oracle critic (zero-sum constraint $\sum_i V_i = 0$) and belief likelihood model. Suphx-style Bernoulli dropout $\gamma_t: 1 \to 0$. Post-oracle stability: LR decay $\times 0.1$ + importance weight rejection when $\gamma_t$ reaches 0.
 
-### Phase 2: ACH self-play (750 GPU hours)
+### Phase 2: DRDA-wrapped ACH self-play (800 GPU hours)
 
-**ACH (Actor-Critic Hedge)** -- LuckyJ's algorithm, +0.4 fan over PPO. Proven implementable: same training loop as PPO, different loss function (confirmed by critique agent analysis of ICLR 2022 Algorithm 2).
+**DRDA-wrapped ACH**: ACH is LuckyJ's inner optimizer (+0.4 fan over PPO) but its theory covers only 2-player zero-sum. For 4-player stability, wrap in DRDA's multi-round structure (ICLR 2025). Policy: $\pi_\theta(a|x) = \mathrm{softmax}(\ell_{\text{base}}(x,a) + y_\theta(x,a)/\epsilon)$ where $\ell_{\text{base}}$ is a frozen checkpoint (updated every 25-50 GPU hours) and $y_\theta$ is a trainable residual.
 
 ACH update (per-(s,a) sample):
 $$L_\pi(s,a) = -c(s,a) \cdot \eta \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|s)} \cdot A(s,a)$$
@@ -290,7 +290,9 @@ $$L_\pi(s,a) = -c(s,a) \cdot \eta \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|
 
 Oracle critic provides advantages via CTDE: actor conditions on public info only. Normalize advantages per-minibatch for scale stability.
 
-**Fallback:** DRDA (ICLR 2025) or PPO with entropy 0.05-0.1 if ACH proves unstable.
+**Start cheap ExIt mid-Phase 2**: From ~400 GPU hours, run shallow AFBS (depth 3-4, P=64) on 20% of states. Don't wait for Phase 3 to begin amortizing search into the learner.
+
+**Fallback:** If DRDA-wrapped ACH proves unstable, fall back to PPO with entropy 0.05-0.1.
 
 ### Phase 2 (continuous): Distill rollout net
 
