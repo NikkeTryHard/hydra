@@ -5,6 +5,11 @@ Ordered by dependency -- each task builds on the previous.
 
 ## Phase 0: Model Architecture (hydra-train)
 
+### Reference Implementations
+- PPO in Burn: `yunjhongwu/burn-rl-examples` (GitHub) -- CartPole PPO, adaptable to Mahjong
+- Mortal training: `Equim-chan/Mortal` -- DQN in PyTorch, oracle support (AGPL, reference only)
+- KataGo training: `lightvector/KataGo` -- ExIt + MCTS in C++/Python
+
 ### Burn API Notes
 - Custom training loop: `loss.backward()` -> `GradientsParams::from_grads()` -> `optim.step()`
 - PPO requires manual loop (not `SupervisedTraining` / `Learner`)
