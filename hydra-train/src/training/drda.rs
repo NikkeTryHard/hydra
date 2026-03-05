@@ -136,6 +136,14 @@ pub fn compute_rebase_kl<B: Backend>(
     verify_rebase_preserves_pi(pi_before, pi_after)
 }
 
+pub fn compute_new_base_logits<B: Backend>(
+    base_logits: Tensor<B, 2>,
+    residual_logits: Tensor<B, 2>,
+    tau_drda: f32,
+) -> Tensor<B, 2> {
+    base_logits + residual_logits / tau_drda
+}
+
 pub fn policy_head_is_zeroed<B: Backend>(logits: Tensor<B, 2>) -> bool {
     let max_abs: f32 = logits.abs().max().into_scalar().elem();
     max_abs < 1e-6

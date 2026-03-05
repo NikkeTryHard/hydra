@@ -181,6 +181,11 @@ impl HydraModelConfig {
 }
 
 impl<B: Backend> HydraModel<B> {
+    pub fn policy_logits_for(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
+        let (_, pooled) = self.backbone.forward(x);
+        self.policy.forward(pooled)
+    }
+
     pub fn forward(&self, x: Tensor<B, 3>) -> HydraOutput<B> {
         let (spatial, pooled) = self.backbone.forward(x);
         HydraOutput {
