@@ -14,6 +14,13 @@ pub struct CtSmcConfig {
 }
 
 impl CtSmcConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "ct_smc(P={}, ess_th={:.1})",
+            self.num_particles, self.ess_threshold
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.num_particles == 0 {
             return Err("num_particles must be > 0");
