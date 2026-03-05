@@ -8,6 +8,14 @@ use burn::tensor::backend::AutodiffBackend;
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::losses::{HydraLoss, HydraTargets};
 
+pub fn cosine_annealing_lr(step: usize, total_steps: usize, lr_max: f64, lr_min: f64) -> f64 {
+    if total_steps == 0 {
+        return lr_max;
+    }
+    let t = (step as f64 / total_steps as f64).min(1.0);
+    lr_min + 0.5 * (lr_max - lr_min) * (1.0 + (std::f64::consts::PI * t).cos())
+}
+
 #[derive(Config, Debug)]
 pub struct BCTrainerConfig {
     pub model_config: HydraModelConfig,
