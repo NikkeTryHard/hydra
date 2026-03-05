@@ -69,6 +69,32 @@ impl BCTrainerConfig {
     }
 }
 
+pub fn train_epoch<B: AutodiffBackend>(
+    model: HydraModel<B>,
+    batches: &[(Tensor<B, 3>, HydraTargets<B>)],
+    loss_fn: &HydraLoss<B>,
+    lr: f64,
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+) -> (HydraModel<B>, EpochStats) {
+    let mut m = model;
+    let mut total_loss = 0.0;
+    for (obs, targets) in batches {
+        let (updated, loss) = bc_train_step(m, obs.clone(), targets, loss_fn, lr, optimizer);
+        m = updated;
+        total_loss += loss;
+    }
+    let stats = EpochStats {
+        avg_loss: if batches.is_empty() {
+            0.0
+        } else {
+            total_loss / batches.len() as f64
+        },
+        policy_agreement: 0.0,
+        num_batches: batches.len(),
+    };
+    (m, stats)
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct CheckpointMeta {
     pub epoch: u32,
