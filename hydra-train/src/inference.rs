@@ -262,4 +262,15 @@ mod tests {
         assert!(probs[0] > probs[5]);
         assert!(probs[5] > probs[10]);
     }
+
+    #[test]
+    fn sample_from_policy_respects_distribution() {
+        let mut probs = [0.0f32; HYDRA_ACTION_SPACE];
+        probs[0] = 0.7;
+        probs[1] = 0.3;
+        let a0 = sample_from_policy(&probs, 0.0);
+        assert_eq!(a0, 0);
+        let a1 = sample_from_policy(&probs, 0.8);
+        assert_eq!(a1, 1);
+    }
 }
