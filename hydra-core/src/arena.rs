@@ -222,6 +222,15 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn utilization(&self) -> String {
+        format!(
+            "{}/{} ({:.0}%)",
+            self.num_buffered(),
+            self.max_capacity(),
+            self.fill_ratio() * 100.0
+        )
+    }
+
     pub fn fill_ratio(&self) -> f32 {
         if self.config.max_trajectory_buffer == 0 {
             return 0.0;
