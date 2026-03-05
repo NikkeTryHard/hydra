@@ -50,6 +50,21 @@ impl League {
         self.agents.len()
     }
 
+    pub fn standard_roster(&mut self, current_path: PathBuf, checkpoints: &[PathBuf]) {
+        self.add_agent(LeagueAgent {
+            weights_path: current_path,
+            agent_type: AgentType::Current,
+            elo: 1500.0,
+        });
+        for (i, path) in checkpoints.iter().enumerate() {
+            self.add_agent(LeagueAgent {
+                weights_path: path.clone(),
+                agent_type: AgentType::Checkpoint(i as u32),
+                elo: 1500.0,
+            });
+        }
+    }
+
     pub fn best_agent_by_elo(&self) -> Option<usize> {
         self.agents
             .iter()
