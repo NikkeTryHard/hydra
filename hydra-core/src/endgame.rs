@@ -50,6 +50,29 @@ pub fn top_mass_particles(particles: &[Particle], threshold: f32) -> Vec<usize> 
     result
 }
 
+pub fn pimc_endgame_q_topk(
+    particles: &[Particle],
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+    eval_fn: &dyn Fn(&Particle, u8) -> f32,
+    mass_threshold: f32,
+) -> [f32; HYDRA_ACTION_SPACE] {
+    let indices = top_mass_particles(particles, mass_threshold);
+    if indices.is_empty() {
+        return [0.0f32; HYDRA_ACTION_SPACE];
+    }
+    let selected: Vec<&Particle> = indices.iter().map(|&i| &particles[i]).collect();
+    let n = selected.len() as f32;
+    let mut q = [0.0f32; HYDRA_ACTION_SPACE];
+    for a in 0..HYDRA_ACTION_SPACE {
+        if !legal_mask[a] {
+            continue;
+        }
+        let total: f32 = selected.iter().map(|p| eval_fn(p, a as u8)).sum();
+        q[a] = total / n;
+    }
+    q
+}
+
 pub fn pimc_endgame_q(
     particles: &[Particle],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
