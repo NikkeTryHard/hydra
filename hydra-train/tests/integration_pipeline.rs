@@ -128,6 +128,12 @@ fn full_pipeline_integration() {
         tree.nodes[root as usize].visit_count >= 8,
         "AFBS visit_count < 8"
     );
+    let search_exit = tree.root_exit_policy(root, 1.0);
+    let search_sum: f32 = search_exit.iter().sum();
+    assert!(
+        (search_sum - 1.0).abs() < 0.01,
+        "search exit policy sum: {search_sum}"
+    );
 
     let exit_q = vec![1.0, 3.0, 2.0, 0.5];
     let exit_pi = exit::exit_policy_from_q(&exit_q, 1.0);
