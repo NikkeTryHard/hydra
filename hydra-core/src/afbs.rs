@@ -148,6 +148,14 @@ impl AfbsTree {
         policy
     }
 
+    pub fn best_action(&self, root_idx: NodeIdx) -> Option<u8> {
+        let root = &self.nodes[root_idx as usize];
+        root.children
+            .iter()
+            .max_by_key(|(_, idx)| self.nodes[*idx as usize].visit_count)
+            .map(|(action, _)| *action)
+    }
+
     pub fn tree_size(&self) -> usize {
         self.nodes.len()
     }
