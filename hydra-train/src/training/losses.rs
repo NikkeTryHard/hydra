@@ -216,7 +216,7 @@ impl<B: Backend> HydraLoss<B> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::model::HydraModelConfig;
     use burn::backend::NdArray;
@@ -311,7 +311,7 @@ mod tests {
         Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, c1, c2])
     }
 
-    fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
+    pub fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
         HydraTargets {
             policy_target: onehot2d(device, batch, 46, 0),
             legal_mask: Tensor::ones([batch, 46], device),
