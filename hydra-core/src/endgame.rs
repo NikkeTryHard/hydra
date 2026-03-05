@@ -36,6 +36,15 @@ impl EndgameSolver {
             mass_threshold,
         }
     }
+    pub fn with_mass_threshold(mut self, t: f32) -> Self {
+        self.mass_threshold = t;
+        self
+    }
+    pub fn with_max_wall(mut self, w: u8) -> Self {
+        self.max_wall = w;
+        self
+    }
+
     pub fn is_active_wall(&self, wall: u8) -> bool {
         wall <= self.max_wall
     }
