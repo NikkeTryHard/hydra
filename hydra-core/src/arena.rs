@@ -234,6 +234,14 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn player_reward_sum(&self, player_id: u8) -> f32 {
+        self.steps
+            .iter()
+            .filter(|s| s.player_id == player_id)
+            .map(|s| s.reward)
+            .sum()
+    }
+
     pub fn total_reward(&self) -> f32 {
         self.steps.iter().map(|s| s.reward).sum()
     }
