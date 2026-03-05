@@ -43,6 +43,37 @@ pub struct Trajectory {
     pub seed: u64,
 }
 
+pub struct Arena {
+    pub config: ArenaConfig,
+    pub trajectory_buffer: Vec<Trajectory>,
+    pub games_completed: u64,
+}
+
+impl Arena {
+    pub fn new(config: ArenaConfig) -> Self {
+        Self {
+            config,
+            trajectory_buffer: Vec::new(),
+            games_completed: 0,
+        }
+    }
+
+    pub fn add_trajectory(&mut self, traj: Trajectory) {
+        if self.trajectory_buffer.len() < self.config.max_trajectory_buffer {
+            self.trajectory_buffer.push(traj);
+        }
+        self.games_completed += 1;
+    }
+
+    pub fn total_steps(&self) -> usize {
+        self.trajectory_buffer.iter().map(|t| t.steps.len()).sum()
+    }
+
+    pub fn drain_trajectories(&mut self) -> Vec<Trajectory> {
+        std::mem::take(&mut self.trajectory_buffer)
+    }
+}
+
 impl Trajectory {
     pub fn new(game_id: u32, seed: u64) -> Self {
         Self {
