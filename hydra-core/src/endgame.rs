@@ -17,6 +17,33 @@ impl Default for EndgameSolver {
     }
 }
 
+pub fn top_mass_particles(particles: &[Particle], threshold: f32) -> Vec<usize> {
+    if particles.is_empty() {
+        return Vec::new();
+    }
+    let max_w = particles
+        .iter()
+        .map(|p| p.log_weight)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut indexed: Vec<(usize, f64)> = particles
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i, (p.log_weight - max_w).exp()))
+        .collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let total: f64 = indexed.iter().map(|(_, w)| w).sum();
+    let mut cumsum = 0.0;
+    let mut result = Vec::new();
+    for (i, w) in &indexed {
+        cumsum += w;
+        result.push(*i);
+        if (cumsum / total) as f32 >= threshold {
+            break;
+        }
+    }
+    result
+}
+
 pub fn pimc_endgame_q(
     particles: &[Particle],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
@@ -62,5 +89,29 @@ mod tests {
         assert!(q[1].is_finite());
         assert!((q[0] - 0.0).abs() < 1e-5);
         assert!((q[1] - 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn top_mass_selects_heavy_particles() {
+        let particles = vec![
+            Particle {
+                allocation: [[0; 4]; 34],
+                log_weight: 0.0,
+            },
+            Particle {
+                allocation: [[0; 4]; 34],
+                log_weight: -10.0,
+            },
+            Particle {
+                allocation: [[0; 4]; 34],
+                log_weight: -0.1,
+            },
+        ];
+        let selected = top_mass_particles(&particles, 0.95);
+        assert!(selected.len() <= 3);
+        assert!(
+            selected.contains(&0),
+            "highest weight particle should be selected"
+        );
     }
 }
