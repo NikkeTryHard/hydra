@@ -116,8 +116,10 @@ pub fn verify_rebase_preserves_pi<B: Backend>(
     pi_after: Tensor<B, 2>,
 ) -> f32 {
     let eps = 1e-8f32;
-    let log_ratio = (pi_before.clone() / (pi_after + eps)).log();
-    let kl = (pi_before * log_ratio).sum_dim(1).mean();
+    let p = pi_before.clamp(eps, 1.0);
+    let q = pi_after.clamp(eps, 1.0);
+    let log_ratio = (p.clone() / q).log();
+    let kl = (p * log_ratio).sum_dim(1).mean();
     kl.into_scalar().elem::<f32>()
 }
 

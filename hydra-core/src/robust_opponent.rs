@@ -169,14 +169,14 @@ pub fn find_robust_tau(p: &[f32], q_values: &[f32], epsilon: f32, iters: u8) -> 
         let mut q_tau = vec![0.0f32; n];
         let mut max_val = f32::NEG_INFINITY;
         for i in 0..n {
-            let v = p[i].ln() - q_values[i] / tau;
+            let v = p[i].max(1e-8).ln() - q_values[i] / tau;
             if v > max_val {
                 max_val = v;
             }
         }
         let mut z = 0.0f32;
         for i in 0..n {
-            q_tau[i] = (p[i].ln() - q_values[i] / tau - max_val).exp();
+            q_tau[i] = (p[i].max(1e-8).ln() - q_values[i] / tau - max_val).exp();
             z += q_tau[i];
         }
         for v in &mut q_tau {
@@ -210,16 +210,16 @@ pub fn archetype_softmin(q_per_arch: &[Vec<f32>], weights: &[f32], tau_arch: f32
     for a in 0..n_actions {
         let mut max_v = f32::NEG_INFINITY;
         for (i, qs) in q_per_arch.iter().enumerate() {
-            let v = weights[i].ln() - qs[a] / tau_arch;
+            let v = weights[i].max(1e-8).ln() - qs[a] / tau_arch;
             if v > max_v {
                 max_v = v;
             }
         }
         let mut sum = 0.0f32;
         for (i, qs) in q_per_arch.iter().enumerate() {
-            sum += (weights[i].ln() - qs[a] / tau_arch - max_v).exp();
+            sum += (weights[i].max(1e-8).ln() - qs[a] / tau_arch - max_v).exp();
         }
-        result[a] = -tau_arch * (max_v + sum.ln());
+        result[a] = -tau_arch * (max_v + sum.max(1e-8).ln());
     }
     result
 }

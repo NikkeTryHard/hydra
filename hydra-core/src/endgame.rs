@@ -107,7 +107,7 @@ pub fn top_mass_particles(particles: &[Particle], threshold: f32) -> Vec<usize> 
     for (i, w) in &indexed {
         cumsum += w;
         result.push(*i);
-        if (cumsum / total) as f32 >= threshold {
+        if total <= 0.0 || (cumsum / total) as f32 >= threshold {
             break;
         }
     }
