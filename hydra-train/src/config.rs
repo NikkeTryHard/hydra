@@ -123,6 +123,13 @@ pub struct OracleGuidingConfig {
 }
 
 impl OracleGuidingConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "oracle(drop={:.1}->{:.1}, decay={:.2})",
+            self.dropout_start, self.dropout_end, self.lr_decay_factor
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.dropout_start < 0.0 || self.dropout_start > 1.0 {
             return Err("dropout_start in [0,1]");
