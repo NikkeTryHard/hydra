@@ -8,6 +8,22 @@ use burn::tensor::backend::AutodiffBackend;
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::losses::{HydraLoss, HydraTargets};
 
+pub fn phase_learning_rate(
+    phase: crate::config::TrainingPhase,
+    step: usize,
+    total_steps: usize,
+) -> f64 {
+    use crate::config::TrainingPhase;
+    let (lr_max, lr_min) = match phase {
+        TrainingPhase::BcWarmStart => (2.5e-4, 1e-6),
+        TrainingPhase::OracleGuiding => (1e-4, 1e-6),
+        TrainingPhase::DrdaAchSelfPlay => (2.5e-4, 2.5e-5),
+        TrainingPhase::ExitPondering => (1e-4, 1e-5),
+        TrainingPhase::BenchmarkGates => (2.5e-4, 2.5e-4),
+    };
+    cosine_annealing_lr(step, total_steps, lr_max, lr_min)
+}
+
 pub fn cosine_annealing_lr(step: usize, total_steps: usize, lr_max: f64, lr_min: f64) -> f64 {
     if total_steps == 0 {
         return lr_max;
