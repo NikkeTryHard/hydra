@@ -234,6 +234,10 @@ impl PonderCache {
         self.entries.len()
     }
 
+    pub fn contains(&self, hash: u64) -> bool {
+        self.entries.contains_key(&hash)
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
     }
