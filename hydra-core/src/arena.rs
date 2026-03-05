@@ -222,6 +222,10 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn oldest_game_id(&self) -> Option<u32> {
+        self.trajectory_buffer.first().map(|t| t.game_id)
+    }
+
     pub fn utilization(&self) -> String {
         format!(
             "{}/{} ({:.0}%)",
