@@ -14,6 +14,14 @@ pub const SCORE_BINS: usize = 64;
 pub const NUM_OPPONENTS: usize = 3;
 pub const GRP_CLASSES: usize = 24;
 
+pub fn is_discard_action(action: u8) -> bool {
+    action <= 36
+}
+
+pub fn is_call_action(action: u8) -> bool {
+    (38..=45).contains(&action)
+}
+
 pub const GAE_GAMMA: f32 = 0.995;
 pub const GAE_LAMBDA: f32 = 0.95;
 pub const BC_LR: f64 = 2.5e-4;
