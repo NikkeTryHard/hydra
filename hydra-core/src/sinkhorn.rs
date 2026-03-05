@@ -122,6 +122,12 @@ impl MixtureSib {
         result
     }
 
+    pub fn reproject(&mut self, kernels: &[[f64; 136]], row_sums: &[f64; 34], col_sums: &[f64; 4]) {
+        for (comp, kernel) in self.components.iter_mut().zip(kernels.iter()) {
+            comp.belief = sinkhorn_project(kernel, row_sums, col_sums, 50, 1e-8);
+        }
+    }
+
     pub fn ess(&self) -> f64 {
         let w = self.weights();
         let sum: f64 = w.iter().sum();
