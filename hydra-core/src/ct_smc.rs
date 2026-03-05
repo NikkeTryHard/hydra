@@ -307,4 +307,31 @@ mod tests {
         assert_eq!(compositions(3).len(), 20);
         assert_eq!(compositions(4).len(), 35);
     }
+
+    #[test]
+    fn uniform_omega_marginals() {
+        let mut rng = ChaCha8Rng::seed_from_u64(999);
+        let mut row_sums = [0u8; 34];
+        row_sums[0] = 1;
+        row_sums[1] = 1;
+        let col_sums = [1, 1, 0, 0];
+        let log_omega = [[0.0f64; 4]; 34];
+        let cfg = CtSmcConfig {
+            num_particles: 1000,
+            ess_threshold: 0.4,
+        };
+        let mut smc = CtSmc::new(cfg);
+        smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
+        let mut count_tile0_col0 = 0usize;
+        for p in &smc.particles {
+            if p.allocation[0][0] == 1 {
+                count_tile0_col0 += 1;
+            }
+        }
+        let freq = count_tile0_col0 as f64 / 1000.0;
+        assert!(
+            (freq - 0.5).abs() < 0.1,
+            "uniform marginal should be ~0.5, got {freq}"
+        );
+    }
 }
