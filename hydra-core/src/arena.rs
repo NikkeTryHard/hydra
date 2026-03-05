@@ -426,6 +426,14 @@ pub fn softmax_temperature(
     probs
 }
 
+pub fn total_score_sum(scores: &[[i32; 4]]) -> i64 {
+    scores
+        .iter()
+        .flat_map(|s| s.iter())
+        .map(|&s| s as i64)
+        .sum()
+}
+
 pub fn score_std(scores: &[[i32; 4]], player: u8) -> f32 {
     let mean = avg_score(scores, player);
     if scores.is_empty() {
