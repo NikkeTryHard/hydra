@@ -107,6 +107,11 @@ impl RobustOpponentConfig {
 }
 
 impl RobustOpponentConfig {
+    pub fn with_tau_iters(mut self, iters: u8) -> Self {
+        self.tau_search_iters = iters;
+        self
+    }
+
     pub fn with_tau_arch(mut self, tau: f32) -> Self {
         self.tau_arch = tau;
         self
