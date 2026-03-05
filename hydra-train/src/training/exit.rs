@@ -32,6 +32,10 @@ impl ExitConfig {
         visit_count >= self.min_visits
     }
 
+    pub fn effective_weight(&self, phase: u8, progress: f32) -> f32 {
+        anneal_exit_weight(self.exit_weight, phase, progress)
+    }
+
     pub fn should_apply_exit(&self, visit_count: u32) -> bool {
         visit_count >= self.min_visits
     }
