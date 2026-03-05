@@ -10,6 +10,15 @@ pub struct MjaiGame {
     pub final_scores: [i32; 4],
 }
 
+impl MjaiGame {
+    pub fn num_samples(&self) -> usize {
+        self.samples.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+}
+
 pub struct MjaiDataset {
     pub games: Vec<MjaiGame>,
     pub train_fraction: f32,
