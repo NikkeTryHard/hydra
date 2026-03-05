@@ -308,6 +308,10 @@ impl CtSmc {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.particles.is_empty()
+    }
+
     pub fn summary(&self) -> String {
         format!("smc(P={}, ess={:.1})", self.num_particles(), self.ess())
     }
