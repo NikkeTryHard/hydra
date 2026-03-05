@@ -41,6 +41,29 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn best_discard_by_ukeire(
+    hand: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    shanten_fn: &dyn Fn(&[u8; NUM_TILE_TYPES]) -> i8,
+) -> Option<u8> {
+    let mut best = None;
+    let mut best_acc = -1.0f32;
+    for t in 0..NUM_TILE_TYPES {
+        if hand[t] == 0 {
+            continue;
+        }
+        let mut after = *hand;
+        after[t] -= 1;
+        let uke = compute_ukeire(&after, remaining, shanten_fn);
+        let acc: f32 = uke.iter().sum();
+        if acc > best_acc {
+            best_acc = acc;
+            best = Some(t as u8);
+        }
+    }
+    best
+}
+
 pub fn compute_hand_ev(
     hand: &[u8; NUM_TILE_TYPES],
     remaining: &[f32; NUM_TILE_TYPES],
