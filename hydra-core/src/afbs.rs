@@ -314,4 +314,26 @@ mod tests {
         let (action, _) = tree.puct_select(root).expect("select");
         assert_eq!(action, 1, "should explore less-visited child");
     }
+
+    #[test]
+    fn exit_policy_sums_to_one() {
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(0, 1.0, false);
+        let c0 = tree.add_node(1, 0.5, false);
+        let c1 = tree.add_node(2, 0.3, false);
+        let c2 = tree.add_node(3, 0.2, false);
+        tree.nodes[root as usize].children = vec![(0, c0), (5, c1), (10, c2)];
+        tree.nodes[c0 as usize].visit_count = 10;
+        tree.nodes[c0 as usize].total_value = 5.0;
+        tree.nodes[c1 as usize].visit_count = 5;
+        tree.nodes[c1 as usize].total_value = 3.0;
+        tree.nodes[c2 as usize].visit_count = 3;
+        tree.nodes[c2 as usize].total_value = 0.9;
+        let policy = tree.root_exit_policy(root, 1.0);
+        let sum: f32 = policy.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "exit policy sum: {sum}");
+        assert!(policy[0] > 0.0);
+        assert!(policy[5] > 0.0);
+        assert!(policy[10] > 0.0);
+    }
 }
