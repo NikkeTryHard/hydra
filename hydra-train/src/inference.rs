@@ -34,10 +34,10 @@ pub fn infer_action<B: Backend>(
     let masked = policy_logits + neg_inf;
     let probs = activation::softmax(masked, 1);
     let probs_data = probs.to_data();
-    let probs_slice = probs_data.as_slice::<f32>().expect("f32");
-
     let mut policy = [0.0f32; HYDRA_ACTION_SPACE];
-    policy.copy_from_slice(&probs_slice[..HYDRA_ACTION_SPACE]);
+    if let Ok(probs_slice) = probs_data.as_slice::<f32>() {
+        policy.copy_from_slice(&probs_slice[..HYDRA_ACTION_SPACE]);
+    }
 
     let mut best_action = 0u8;
     let mut best_prob = f32::NEG_INFINITY;
