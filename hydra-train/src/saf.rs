@@ -32,6 +32,33 @@ impl SafFeatures {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafTrainingMode {
+    SupervisedRegression,
+    JointEndToEnd,
+}
+
+pub fn saf_dropout_mask(batch_size: usize, drop_prob: f32, rng_vals: &[f32]) -> Vec<f32> {
+    (0..batch_size)
+        .map(|i| {
+            if rng_vals.get(i).copied().unwrap_or(1.0) < drop_prob {
+                0.0
+            } else {
+                1.0
+            }
+        })
+        .collect()
+}
+
+pub fn apply_saf_logit<B: Backend>(
+    base_logits: Tensor<B, 2>,
+    saf_output: Tensor<B, 2>,
+    mask: Tensor<B, 2>,
+    alpha: f32,
+) -> Tensor<B, 2> {
+    base_logits + saf_output * mask * alpha
+}
+
 #[derive(Config, Debug)]
 pub struct SafConfig {
     #[config(default = "1.0")]
@@ -62,33 +89,6 @@ impl<B: Backend> SafMlp<B> {
         let h = activation::mish(self.fc1.forward(features));
         self.fc2.forward(h)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SafTrainingMode {
-    SupervisedRegression,
-    JointEndToEnd,
-}
-
-pub fn saf_dropout_mask(batch_size: usize, drop_prob: f32, rng_vals: &[f32]) -> Vec<f32> {
-    (0..batch_size)
-        .map(|i| {
-            if rng_vals.get(i).copied().unwrap_or(1.0) < drop_prob {
-                0.0
-            } else {
-                1.0
-            }
-        })
-        .collect()
-}
-
-pub fn apply_saf_logit<B: Backend>(
-    base_logits: Tensor<B, 2>,
-    saf_output: Tensor<B, 2>,
-    mask: Tensor<B, 2>,
-    alpha: f32,
-) -> Tensor<B, 2> {
-    base_logits + saf_output * mask * alpha
 }
 
 #[cfg(test)]
