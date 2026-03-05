@@ -30,6 +30,10 @@ impl AfbsNode {
         self.children.is_empty()
     }
 
+    pub fn is_expanded(&self) -> bool {
+        !self.children.is_empty()
+    }
+
     pub fn q_value(&self) -> f32 {
         if self.visit_count == 0 {
             return 0.0;
