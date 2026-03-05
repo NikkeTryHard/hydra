@@ -261,4 +261,16 @@ mod tests {
         );
         assert_eq!(tracker.total_rebases, 1);
     }
+
+    #[test]
+    fn test_compute_new_base_logits() {
+        let device = Default::default();
+        let base = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
+        let residual = Tensor::<B, 2>::from_floats([[4.0, 0.0, -4.0]], &device);
+        let new_base = compute_new_base_logits(base, residual, 4.0);
+        let data: Vec<f32> = new_base.to_data().as_slice::<f32>().unwrap().to_vec();
+        assert!((data[0] - 2.0).abs() < 1e-5, "1.0 + 4.0/4.0 = 2.0");
+        assert!((data[1] - 2.0).abs() < 1e-5, "2.0 + 0.0/4.0 = 2.0");
+        assert!((data[2] - 2.0).abs() < 1e-5, "3.0 + -4.0/4.0 = 2.0");
+    }
 }
