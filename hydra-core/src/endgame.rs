@@ -18,6 +18,12 @@ impl Default for EndgameSolver {
 }
 
 impl EndgameSolver {
+    pub fn new(max_wall: u8, mass_threshold: f32) -> Self {
+        Self {
+            max_wall,
+            mass_threshold,
+        }
+    }
     pub fn should_activate(&self, wall_remaining: u8, has_threat: bool) -> bool {
         wall_remaining <= self.max_wall && has_threat
     }
