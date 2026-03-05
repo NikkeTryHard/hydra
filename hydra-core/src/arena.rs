@@ -11,6 +11,24 @@ pub struct ArenaConfig {
     pub max_trajectory_buffer: usize,
 }
 
+impl ArenaConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.num_parallel_games == 0 {
+            return Err("num_parallel_games > 0");
+        }
+        if self.max_trajectory_buffer == 0 {
+            return Err("max_trajectory_buffer > 0");
+        }
+        if self.temperature_range.0 <= 0.0 {
+            return Err("temperature range start > 0");
+        }
+        if self.temperature_range.1 < self.temperature_range.0 {
+            return Err("temperature range end >= start");
+        }
+        Ok(())
+    }
+}
+
 impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
