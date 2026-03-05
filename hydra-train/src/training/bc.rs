@@ -1,6 +1,7 @@
 //! Behavioral cloning training loop (Phase 0).
 
-use burn::optim::GradientsParams;
+use burn::grad_clipping::GradientClippingConfig;
+use burn::optim::{AdamConfig, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
@@ -51,6 +52,13 @@ pub fn bc_train_step<B: AutodiffBackend>(
     let grads = GradientsParams::from_grads(grads, &model);
     let model = optimizer.step(lr, model, grads);
     (model, loss_val)
+}
+
+impl BCTrainerConfig {
+    pub fn optimizer_config(&self) -> AdamConfig {
+        AdamConfig::new()
+            .with_grad_clipping(Some(GradientClippingConfig::Norm(self.grad_clip_norm)))
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
