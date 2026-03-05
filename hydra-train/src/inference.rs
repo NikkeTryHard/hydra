@@ -4,6 +4,22 @@ use burn::prelude::*;
 use burn::tensor::activation;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 
+pub struct InferenceConfig {
+    pub on_turn_budget_ms: u64,
+    pub call_reaction_budget_ms: u64,
+    pub agari_guard: bool,
+}
+
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            on_turn_budget_ms: 150,
+            call_reaction_budget_ms: 50,
+            agari_guard: true,
+        }
+    }
+}
+
 pub fn infer_action<B: Backend>(
     policy_logits: Tensor<B, 2>,
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
