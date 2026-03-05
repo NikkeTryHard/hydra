@@ -11,6 +11,8 @@ use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub const MAX_RL_BATCH_SIZE: usize = 512;
 pub const ONE_EPOCH_ONLY: bool = true;
+pub const DEFAULT_EXIT_WEIGHT: f32 = 0.5;
+pub const DEFAULT_AUX_WEIGHT: f32 = 0.1;
 
 pub struct RlBatch<B: Backend> {
     pub obs: Tensor<B, 3>,
