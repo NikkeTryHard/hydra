@@ -17,13 +17,14 @@ Ordered by dependency -- each task builds on the previous.
 - bf16: `set_default_dtypes_unchecked(&device, FloatDType::BF16, IntDType::I32)`
 - Conv1d, GroupNorm, Linear all available in `burn::nn`
 
-### T0.1: SE-ResNet in Burn
-- Implement 40-block SE-ResNet with GroupNorm(32) + Mish
+### T0.1: SE-ResNet in Burn (2-tier architecture)
+- LearnerNet: 24-block SE-ResNet with GroupNorm(32) + Mish (trains on GPU, deep AFBS)
+- ActorNet: 12-block SE-ResNet with GroupNorm(32) + Mish (runs self-play, distilled from LearnerNet)
 - Input: Tensor<B, 2> shape [batch, 85*34] -> reshape to [batch, 85, 34]
 - Stem: Conv1d(85, 256, k=3, pad=1)
 - Block: Conv1d(256,256,k=3) -> GN -> Mish -> Conv1d(256,256,k=3) -> GN + SE + skip
 - Output: feature map [batch, 256, 34] + pooled [batch, 256]
-- Verify: forward pass compiles, bf16 works on burn-tch
+- Verify: forward pass compiles for both sizes, bf16 works on burn-tch
 
 ### T0.2: 9 Output Heads
 - Policy: Linear(256*34, 46) with legal action masking
@@ -105,9 +106,9 @@ Ordered by dependency -- each task builds on the previous.
 ## Phase 4: Pondering ExIt
 
 ### T4.1: Oracle Pondering (training mode)
-- Oracle teacher model loaded on GPU 3
+- LearnerNet (24-block) with oracle features, running deep AFBS on GPU 3
 - PUCT search with K=5, oracle policy for opponent responses
-- Oracle evaluates leaves with perfect information (full game state)
+- LearnerNet evaluates leaves with perfect information (full game state)
 - No Sinkhorn needed -- oracle bypasses belief inference
 - ~1ms per pondered state, ~70-80% completion rate
 
