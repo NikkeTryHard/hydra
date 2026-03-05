@@ -103,6 +103,11 @@ impl RobustOpponentConfig {
 }
 
 impl RobustOpponentConfig {
+    pub fn with_tau_arch(mut self, tau: f32) -> Self {
+        self.tau_arch = tau;
+        self
+    }
+
     pub fn with_archetypes(mut self, n: usize) -> Self {
         self.num_archetypes = n;
         self
