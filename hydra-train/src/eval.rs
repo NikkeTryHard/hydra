@@ -145,6 +145,10 @@ pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
 
+pub fn avg_stable_dan(placements: &[u8]) -> f32 {
+    compute_stable_dan(compute_mean_placement(placements))
+}
+
 pub fn placement_histogram(placements: &[u8]) -> [f32; 4] {
     let n = placements.len().max(1) as f32;
     let mut hist = [0.0f32; 4];
