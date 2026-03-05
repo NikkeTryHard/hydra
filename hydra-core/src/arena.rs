@@ -212,6 +212,37 @@ impl Trajectory {
     }
 }
 
+pub fn softmax_temperature(
+    logits: &[f32; HYDRA_ACTION_SPACE],
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+    temperature: f32,
+) -> [f32; HYDRA_ACTION_SPACE] {
+    let mut adjusted = [f32::NEG_INFINITY; HYDRA_ACTION_SPACE];
+    let mut max_val = f32::NEG_INFINITY;
+    for i in 0..HYDRA_ACTION_SPACE {
+        if legal_mask[i] {
+            adjusted[i] = logits[i] / temperature;
+            if adjusted[i] > max_val {
+                max_val = adjusted[i];
+            }
+        }
+    }
+    let mut probs = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut total = 0.0f32;
+    for i in 0..HYDRA_ACTION_SPACE {
+        if legal_mask[i] {
+            probs[i] = (adjusted[i] - max_val).exp();
+            total += probs[i];
+        }
+    }
+    if total > 0.0 {
+        for p in &mut probs {
+            *p /= total;
+        }
+    }
+    probs
+}
+
 pub fn greedy_action(
     logits: &[f32; HYDRA_ACTION_SPACE],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
