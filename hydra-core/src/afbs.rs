@@ -147,93 +147,25 @@ impl AfbsTree {
         }
         policy
     }
-}
 
-pub struct SearchBudget {
-    pub max_playouts: u32,
-    pub max_depth: u8,
-    pub particles: usize,
-    pub time_budget_ms: u64,
-}
+    pub fn tree_size(&self) -> usize {
+        self.nodes.len()
+    }
 
-impl SearchBudget {
-    pub fn on_turn() -> Self {
-        Self {
-            max_playouts: 64,
-            max_depth: 4,
-            particles: 128,
-            time_budget_ms: 150,
+    pub fn max_depth(&self, root: NodeIdx) -> u8 {
+        let node = &self.nodes[root as usize];
+        if node.children.is_empty() {
+            return 0;
         }
-    }
-
-    pub fn ponder() -> Self {
-        Self {
-            max_playouts: 256,
-            max_depth: 10,
-            particles: 1024,
-            time_budget_ms: 5000,
+        let mut max_d = 0u8;
+        for &(_, child) in &node.children {
+            let d = self.max_depth(child);
+            if d > max_d {
+                max_d = d;
+            }
         }
+        max_d + 1
     }
-}
-
-pub fn top_k_actions(
-    logits: &[f32; HYDRA_ACTION_SPACE],
-    legal_mask: &[bool; HYDRA_ACTION_SPACE],
-    k: usize,
-) -> Vec<(u8, f32)> {
-    let mut scored: Vec<(u8, f32)> = (0..HYDRA_ACTION_SPACE as u8)
-        .filter(|&a| legal_mask[a as usize])
-        .map(|a| (a, logits[a as usize]))
-        .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(k);
-    scored
-}
-
-pub fn playout_cap(
-    base_playouts: u32,
-    policy: &[f32; HYDRA_ACTION_SPACE],
-    danger_risk: f32,
-    ess: f32,
-    ess_threshold: f32,
-) -> u32 {
-    let mut sorted: Vec<f32> = policy.iter().copied().filter(|&p| p > 0.001).collect();
-    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let top2_gap = if sorted.len() >= 2 {
-        sorted[0] - sorted[1]
-    } else {
-        1.0
-    };
-    let mut multiplier = 1.0f32;
-    if top2_gap < 0.1 {
-        multiplier *= 2.0;
-    }
-    if danger_risk > 0.5 {
-        multiplier *= 1.5;
-    }
-    if ess < ess_threshold {
-        multiplier *= 1.5;
-    }
-    (base_playouts as f32 * multiplier) as u32
-}
-
-pub fn pondering_priority_score(
-    policy: &[f32; HYDRA_ACTION_SPACE],
-    danger_risk: f32,
-    ess: f32,
-    ess_threshold: f32,
-) -> f32 {
-    let mut sorted: Vec<f32> = policy.iter().copied().filter(|&p| p > 0.001).collect();
-    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let top2_gap = if sorted.len() >= 2 {
-        sorted[0] - sorted[1]
-    } else {
-        1.0
-    };
-    let uncertainty = if top2_gap < 0.1 { 2.0 } else { 0.5 };
-    let risk_boost = danger_risk.min(1.0);
-    let ess_penalty = if ess < ess_threshold { 1.5 } else { 0.5 };
-    uncertainty + risk_boost + ess_penalty
 }
 
 impl Default for AfbsTree {
