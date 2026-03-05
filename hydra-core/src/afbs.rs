@@ -176,6 +176,10 @@ impl AfbsTree {
         self.nodes.clear();
     }
 
+    pub fn node_q_value(&self, node: NodeIdx) -> f32 {
+        self.nodes.get(node as usize).map_or(0.0, |n| n.q_value())
+    }
+
     pub fn num_children(&self, node: NodeIdx) -> usize {
         self.nodes
             .get(node as usize)
