@@ -31,6 +31,22 @@ pub fn legal_mask_to_tensor<B: Backend>(
     Tensor::<B, 1>::from_floats(&f32_mask[..], device).unsqueeze_dim::<2>(0)
 }
 
+pub fn batch_legal_masks_to_tensor<B: Backend>(
+    masks: &[[bool; HYDRA_ACTION_SPACE]],
+    device: &B::Device,
+) -> Tensor<B, 2> {
+    let batch = masks.len();
+    let mut flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
+    for (i, mask) in masks.iter().enumerate() {
+        for (j, &m) in mask.iter().enumerate() {
+            if m {
+                flat[i * HYDRA_ACTION_SPACE + j] = 1.0;
+            }
+        }
+    }
+    Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
+}
+
 pub fn infer_action<B: Backend>(
     policy_logits: Tensor<B, 2>,
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
