@@ -479,4 +479,30 @@ mod tests {
             assert!((probs[33] - 1.0).abs() < 1e-5);
         }
     }
+
+    #[test]
+    fn greedy_picks_highest_legal() {
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits[10] = 100.0;
+        logits[20] = 50.0;
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[20] = true;
+        mask[30] = true;
+        let action = greedy_action(&logits, &mask);
+        assert_eq!(action, 20, "should pick highest LEGAL action");
+    }
+
+    #[test]
+    fn softmax_temperature_sums_to_one() {
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits[0] = 3.0;
+        logits[5] = 1.0;
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[0] = true;
+        mask[5] = true;
+        mask[10] = true;
+        let probs = softmax_temperature(&logits, &mask, 1.0);
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "sum: {sum}");
+    }
 }
