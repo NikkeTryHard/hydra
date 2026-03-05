@@ -72,6 +72,14 @@ impl Arena {
     pub fn drain_trajectories(&mut self) -> Vec<Trajectory> {
         std::mem::take(&mut self.trajectory_buffer)
     }
+
+    pub fn collect_player_steps(&self, player_id: u8) -> Vec<&TrajectoryStep> {
+        self.trajectory_buffer
+            .iter()
+            .flat_map(|t| t.steps.iter())
+            .filter(|s| s.player_id == player_id)
+            .collect()
+    }
 }
 
 impl Trajectory {
