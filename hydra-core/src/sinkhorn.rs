@@ -179,4 +179,30 @@ mod tests {
             "component 1 should have higher weight than 2"
         );
     }
+
+    #[test]
+    fn sinkhorn_nonuniform_kernel() {
+        let mut kernel = [1.0f64; 136];
+        for i in 0..10 {
+            kernel[i * 4] = 2.0;
+        }
+        let row_sums = [4.0f64; 34];
+        let col_sums = [34.0; 4];
+        let b = sinkhorn_project(&kernel, &row_sums, &col_sums, 500, 1e-6);
+        for i in 0..34 {
+            let s: f64 = (0..4).map(|j| b[i * 4 + j]).sum();
+            assert!((s - 4.0).abs() < 0.5, "nonuniform row {i} sum = {s}");
+        }
+    }
+
+    #[test]
+    fn mixture_marginal_sums_to_total() {
+        let kernel = [1.0f64; 136];
+        let row_sums = [4.0f64; 34];
+        let col_sums = [34.0; 4];
+        let mix = MixtureSib::new(4, &kernel, &row_sums, &col_sums);
+        let marginal = mix.marginal_belief();
+        let total: f64 = marginal.iter().sum();
+        assert!((total - 136.0).abs() < 1.0, "marginal sum = {total}");
+    }
 }
