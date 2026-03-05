@@ -75,6 +75,10 @@ pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     h
 }
 
+pub fn num_legal_actions(mask: &[bool; HYDRA_ACTION_SPACE]) -> usize {
+    mask.iter().filter(|&&m| m).count()
+}
+
 pub fn argmax_legal(probs: &[f32; HYDRA_ACTION_SPACE], mask: &[bool; HYDRA_ACTION_SPACE]) -> u8 {
     let mut best = 0u8;
     let mut best_p = f32::NEG_INFINITY;
