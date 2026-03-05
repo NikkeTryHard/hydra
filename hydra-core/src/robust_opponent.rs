@@ -253,12 +253,11 @@ mod tests {
         let w = vec![0.25; 4];
         let result = archetype_softmin(&qs, &w, 1.0);
         assert_eq!(result.len(), 3);
-        for i in 0..3 {
+        for (i, &val) in result.iter().enumerate().take(3) {
+            let expected = i as f32 + 1.0;
             assert!(
-                (result[i] - (i as f32 + 1.0)).abs() < 0.1,
-                "expected ~{}, got {}",
-                i as f32 + 1.0,
-                result[i]
+                (val - expected).abs() < 0.1,
+                "expected ~{expected}, got {val}",
             );
         }
     }

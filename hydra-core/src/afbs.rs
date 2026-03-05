@@ -380,8 +380,8 @@ mod tests {
         logits[4] = 1.0;
         logits[5] = 0.5;
         let mut mask = [false; HYDRA_ACTION_SPACE];
-        for i in 0..10 {
-            mask[i] = true;
+        for val in mask.iter_mut().take(10) {
+            *val = true;
         }
         tree.expand_node(root, &logits, &mask, false);
         assert_eq!(tree.nodes[root as usize].children.len(), TOP_K);

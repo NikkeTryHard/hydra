@@ -161,13 +161,6 @@ pub fn forward_dp(
                     if val != f64::NEG_INFINITY {
                         dp[k].insert((c0, c1, c2), val);
                     }
-
-                    #[test]
-                    fn compute_ess_from_log_weights_uniform() {
-                        let w = vec![0.0; 100];
-                        let ess = compute_ess_from_log_weights(&w);
-                        assert!((ess - 100.0).abs() < 0.01, "uniform -> ESS=N: {ess}");
-                    }
                 }
             }
         }
@@ -452,6 +445,13 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+
+    #[test]
+    fn compute_ess_from_log_weights_uniform() {
+        let w = vec![0.0; 100];
+        let ess = compute_ess_from_log_weights(&w);
+        assert!((ess - 100.0).abs() < 0.01, "uniform -> ESS=N: {ess}");
+    }
 
     #[test]
     fn particles_satisfy_constraints() {
