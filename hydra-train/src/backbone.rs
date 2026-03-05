@@ -197,4 +197,28 @@ mod tests {
             "residual output should differ from input: diff={d}"
         );
     }
+
+    #[test]
+    fn se_block_channel_attention() {
+        let device = Default::default();
+        let se = SEBlockConfig::new(4, 2).init::<B>(&device);
+        let x = Tensor::<B, 3>::random(
+            [1, 4, 8],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let out = se.forward(x.clone());
+        assert_eq!(out.dims(), [1, 4, 8]);
+        let x_data = x.to_data();
+        let o_data = out.to_data();
+        let xv = x_data.as_slice::<f32>().expect("f32");
+        let ov = o_data.as_slice::<f32>().expect("f32");
+        let mut any_diff = false;
+        for i in 0..32 {
+            if (xv[i] - ov[i]).abs() > 1e-6 {
+                any_diff = true;
+            }
+        }
+        assert!(any_diff, "SE should modulate channels");
+    }
 }
