@@ -53,6 +53,22 @@ pub fn exit_loss<B: Backend>(
     ce * weight
 }
 
+pub fn make_exit_target(
+    q_values: &[f32],
+    base_pi: &[f32],
+    tau_exit: f32,
+    min_visits: u32,
+    visit_count: u32,
+    max_kl: f32,
+) -> Option<Vec<f32>> {
+    let exit_pi = exit_policy_from_q(q_values, tau_exit);
+    if safety_valve_check(base_pi, &exit_pi, max_kl, min_visits, visit_count) {
+        Some(exit_pi)
+    } else {
+        None
+    }
+}
+
 pub fn safety_valve_check(
     base_pi: &[f32],
     exit_pi: &[f32],
