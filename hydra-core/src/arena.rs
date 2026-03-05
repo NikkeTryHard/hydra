@@ -187,6 +187,10 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn total_reward(&self) -> f32 {
+        self.steps.iter().map(|s| s.reward).sum()
+    }
+
     pub fn is_complete(&self) -> bool {
         self.steps.last().is_some_and(|s| s.done)
     }
