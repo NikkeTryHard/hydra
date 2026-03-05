@@ -41,6 +41,15 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn most_dangerous_tile(danger_scores: &[f32; NUM_TILE_TYPES]) -> u8 {
+    danger_scores
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i as u8)
+        .unwrap_or(0)
+}
+
 pub fn safest_discard(
     hand: &[u8; NUM_TILE_TYPES],
     danger_scores: &[f32; NUM_TILE_TYPES],
