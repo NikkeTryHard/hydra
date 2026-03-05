@@ -93,6 +93,18 @@ pub struct HydraModelConfig {
 }
 
 impl HydraModelConfig {
+    pub fn summary(&self) -> String {
+        let kind = if self.num_blocks <= 12 {
+            "actor"
+        } else {
+            "learner"
+        };
+        format!(
+            "{}(blocks={}, ch={})",
+            kind, self.num_blocks, self.hidden_channels
+        )
+    }
+
     pub fn is_actor(&self) -> bool {
         self.num_blocks == 12
     }
