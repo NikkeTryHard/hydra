@@ -124,7 +124,9 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
         mask_flat[i * HYDRA_ACTION_SPACE..(i + 1) * HYDRA_ACTION_SPACE]
             .copy_from_slice(&s.legal_mask);
         values[i] = score_delta_to_value(s.score_delta);
-        grp_flat[i * 24 + s.grp_label as usize] = 1.0;
+        if (s.grp_label as usize) < 24 {
+            grp_flat[i * 24 + s.grp_label as usize] = 1.0;
+        }
         tenpai_flat[i * 3..(i + 1) * 3].copy_from_slice(&s.tenpai);
         danger_flat[i * 102..(i + 1) * 102].copy_from_slice(&s.danger);
         dmask_flat[i * 102..(i + 1) * 102].copy_from_slice(&s.danger_mask);
