@@ -111,6 +111,7 @@ pub fn rl_step<B: AutodiffBackend>(
         let exit_loss = crate::training::exit::exit_loss(
             output.policy_logits,
             exit_target.clone(),
+            batch.targets.legal_mask.clone(),
             cfg.exit_weight,
         );
         total = total + exit_loss;

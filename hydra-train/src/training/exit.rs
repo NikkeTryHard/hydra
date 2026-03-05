@@ -71,14 +71,22 @@ pub fn is_hard_state(policy: &[f32], threshold: f32) -> bool {
     sorted[0] - sorted[1] < threshold
 }
 
-pub fn exit_policy_from_q(q_values: &[f32], tau: f32) -> Vec<f32> {
+pub fn exit_policy_from_q(q_values: &[f32], tau: f32, legal_mask: Option<&[bool]>) -> Vec<f32> {
     let n = q_values.len();
-    let max_q = q_values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let max_q = q_values
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| legal_mask.is_none_or(|m| *i < m.len() && m[*i]))
+        .map(|(_, &v)| v)
+        .fold(f32::NEG_INFINITY, f32::max);
     let mut probs = vec![0.0f32; n];
     let mut total = 0.0f32;
     for i in 0..n {
-        probs[i] = ((q_values[i] - max_q) / tau).exp();
-        total += probs[i];
+        let is_legal = legal_mask.is_none_or(|m| i < m.len() && m[i]);
+        if is_legal {
+            probs[i] = ((q_values[i] - max_q) / tau).exp();
+            total += probs[i];
+        }
     }
     if total > 0.0 {
         for p in &mut probs {
@@ -91,9 +99,11 @@ pub fn exit_policy_from_q(q_values: &[f32], tau: f32) -> Vec<f32> {
 pub fn exit_loss<B: Backend>(
     model_logits: Tensor<B, 2>,
     exit_target: Tensor<B, 2>,
+    legal_mask: Tensor<B, 2>,
     weight: f32,
 ) -> Tensor<B, 1> {
-    let log_pi = activation::log_softmax(model_logits, 1);
+    let neg_inf = (legal_mask.ones_like() - legal_mask) * (-1e9f32);
+    let log_pi = activation::log_softmax(model_logits + neg_inf, 1);
     let ce = (exit_target * log_pi).sum_dim(1).neg().mean();
     ce * weight
 }
@@ -106,7 +116,7 @@ pub fn make_exit_target(
     visit_count: u32,
     max_kl: f32,
 ) -> Option<Vec<f32>> {
-    let exit_pi = exit_policy_from_q(q_values, tau_exit);
+    let exit_pi = exit_policy_from_q(q_values, tau_exit, None);
     if safety_valve_check(base_pi, &exit_pi, max_kl, min_visits, visit_count) {
         Some(exit_pi)
     } else {
@@ -153,7 +163,7 @@ mod tests {
     #[test]
     fn exit_policy_sums_to_one() {
         let q = vec![1.0, 2.0, 0.5, 3.0];
-        let pi = exit_policy_from_q(&q, 1.0);
+        let pi = exit_policy_from_q(&q, 1.0, None);
         let sum: f32 = pi.iter().sum();
         assert!((sum - 1.0).abs() < 1e-5, "should sum to 1, got {sum}");
     }
@@ -168,7 +178,7 @@ mod tests {
     #[test]
     fn exit_policy_concentrates_on_best() {
         let q = vec![10.0, 0.0, 0.0, 0.0];
-        let pi = exit_policy_from_q(&q, 0.1);
+        let pi = exit_policy_from_q(&q, 0.1, None);
         assert!(
             pi[0] > 0.99,
             "low tau should concentrate on best action: {}",

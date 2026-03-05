@@ -42,12 +42,15 @@ pub fn distill_loss<B: Backend>(
     actor_logits: Tensor<B, 2>,
     learner_value: Tensor<B, 2>,
     actor_value: Tensor<B, 2>,
+    legal_mask: Tensor<B, 2>,
     kd_kl_weight: f32,
     kd_mse_weight: f32,
 ) -> Tensor<B, 1> {
-    let teacher_pi = activation::softmax(learner_logits, 1);
-    let student_log_pi = activation::log_softmax(actor_logits, 1);
-    let kl = (teacher_pi.clone() * (teacher_pi.log() - student_log_pi))
+    let neg_inf = (legal_mask.ones_like() - legal_mask) * (-1e9f32);
+    let teacher_pi = activation::softmax(learner_logits + neg_inf.clone(), 1);
+    let student_log_pi = activation::log_softmax(actor_logits + neg_inf, 1);
+    let teacher_log_pi = teacher_pi.clone().clamp(1e-8, 1.0).log();
+    let kl = (teacher_pi * (teacher_log_pi - student_log_pi))
         .sum_dim(1)
         .mean();
 
@@ -139,7 +142,8 @@ mod tests {
         let device = Default::default();
         let logits = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
         let value = Tensor::<B, 2>::from_floats([[0.5]], &device);
-        let loss = distill_loss(logits.clone(), logits, value.clone(), value, 1.0, 0.5);
+        let mask = Tensor::<B, 2>::ones([1, 3], &device);
+        let loss = distill_loss(logits.clone(), logits, value.clone(), value, mask, 1.0, 0.5);
         let val = loss.into_scalar().elem::<f32>();
         assert!(val.abs() < 1e-5, "identical should give ~0 loss, got {val}");
     }
@@ -151,7 +155,8 @@ mod tests {
         let student = Tensor::<B, 2>::from_floats([[0.0, 0.0, 5.0]], &device);
         let t_val = Tensor::<B, 2>::from_floats([[0.8]], &device);
         let s_val = Tensor::<B, 2>::from_floats([[-0.3]], &device);
-        let loss = distill_loss(teacher, student, t_val, s_val, 1.0, 0.5);
+        let mask = Tensor::<B, 2>::ones([1, 3], &device);
+        let loss = distill_loss(teacher, student, t_val, s_val, mask, 1.0, 0.5);
         let val = loss.into_scalar().elem::<f32>();
         assert!(
             val > 0.1,
