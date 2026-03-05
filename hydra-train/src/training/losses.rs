@@ -157,6 +157,11 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn masked_log_softmax<B: Backend>(logits: Tensor<B, 2>, mask: Tensor<B, 2>) -> Tensor<B, 2> {
+    let neg_inf = (mask.ones_like() - mask) * (-1e9f32);
+    burn::tensor::activation::log_softmax(logits + neg_inf, 1)
+}
+
 pub fn cross_entropy_soft<B: Backend>(
     log_probs: Tensor<B, 2>,
     target: Tensor<B, 2>,
