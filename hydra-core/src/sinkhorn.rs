@@ -107,6 +107,10 @@ impl MixtureSib {
         }
     }
 
+    pub fn num_components(&self) -> usize {
+        self.components.len()
+    }
+
     pub fn weights(&self) -> Vec<f64> {
         self.components.iter().map(|c| c.log_weight.exp()).collect()
     }
