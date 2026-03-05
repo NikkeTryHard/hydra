@@ -202,6 +202,11 @@ impl PipelineState {
         (self.gpu_hours_used / budget).min(1.0)
     }
 
+    pub fn record_game(&mut self, num_samples: usize) {
+        self.total_games += 1;
+        self.total_samples += num_samples as u64;
+    }
+
     pub fn tick_gpu_hours(&mut self, hours: f32) {
         self.gpu_hours_used += hours;
     }
