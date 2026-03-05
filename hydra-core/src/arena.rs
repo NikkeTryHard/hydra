@@ -222,6 +222,13 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn win_count(&self, player_id: u8) -> usize {
+        self.trajectory_buffer
+            .iter()
+            .filter(|t| t.winner() == player_id)
+            .count()
+    }
+
     pub fn oldest_game_id(&self) -> Option<u32> {
         self.trajectory_buffer.first().map(|t| t.game_id)
     }
