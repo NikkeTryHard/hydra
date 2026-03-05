@@ -10,6 +10,7 @@ use crate::training::drda;
 use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub const MAX_RL_BATCH_SIZE: usize = 512;
+pub const ONE_EPOCH_ONLY: bool = true;
 
 pub struct RlBatch<B: Backend> {
     pub obs: Tensor<B, 3>,
