@@ -41,6 +41,13 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn tiles_held(hand: &[u8; NUM_TILE_TYPES]) -> Vec<u8> {
+    (0..NUM_TILE_TYPES)
+        .filter(|&t| hand[t] > 0)
+        .map(|t| t as u8)
+        .collect()
+}
+
 pub fn hand_tile_count(hand: &[u8; NUM_TILE_TYPES]) -> u8 {
     hand.iter().sum()
 }
