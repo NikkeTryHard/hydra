@@ -254,6 +254,11 @@ impl CtSmc {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.particles.clear();
+        self.dp_cache = None;
+    }
+
     pub fn num_particles(&self) -> usize {
         self.particles.len()
     }
