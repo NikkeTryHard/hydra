@@ -14,6 +14,7 @@ pub mod bridge;
 pub mod game_loop;
 pub mod shanten_batch;
 pub mod afbs;
+pub mod arena;
 pub mod batch_encoder;
 pub mod ct_smc;
 pub mod robust_opponent;
