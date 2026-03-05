@@ -170,6 +170,7 @@ pub fn backward_sample<R: Rng>(
 pub struct CtSmc {
     pub config: CtSmcConfig,
     pub particles: Vec<Particle>,
+    dp_cache: Option<DpTable>,
 }
 
 impl CtSmc {
@@ -177,6 +178,7 @@ impl CtSmc {
         Self {
             config,
             particles: Vec::new(),
+            dp_cache: None,
         }
     }
 
@@ -194,6 +196,27 @@ impl CtSmc {
                 log_weight: 0.0,
             })
             .collect();
+        self.dp_cache = Some(dp);
+    }
+
+    pub fn resample_from_cache<R: Rng>(
+        &mut self,
+        row_sums: &[u8; 34],
+        col_sums: &[usize; 4],
+        log_omega: &[[f64; 4]; 34],
+        rng: &mut R,
+    ) -> bool {
+        if let Some(ref dp) = self.dp_cache {
+            self.particles = (0..self.config.num_particles)
+                .map(|_| Particle {
+                    allocation: backward_sample(dp, row_sums, col_sums, log_omega, rng),
+                    log_weight: 0.0,
+                })
+                .collect();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn update<R: Rng>(
