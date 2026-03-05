@@ -296,6 +296,11 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn score_delta(&self, player: u8) -> i32 {
+        let mean = self.final_scores.iter().sum::<i32>() / 4;
+        self.score_for(player) - mean
+    }
+
     pub fn score_for(&self, player: u8) -> i32 {
         self.final_scores.get(player as usize).copied().unwrap_or(0)
     }
