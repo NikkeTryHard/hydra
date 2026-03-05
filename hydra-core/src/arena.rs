@@ -270,6 +270,18 @@ impl Arena {
         self.trajectory_buffer.last().map(|t| t.game_id)
     }
 
+    pub fn mean_placement_for(&self, player_id: u8) -> f32 {
+        if self.trajectory_buffer.is_empty() {
+            return 2.5;
+        }
+        let sum: f32 = self
+            .trajectory_buffer
+            .iter()
+            .map(|t| t.placement_for(player_id) as f32 + 1.0)
+            .sum();
+        sum / self.trajectory_buffer.len() as f32
+    }
+
     pub fn fourth_place_count(&self, player_id: u8) -> usize {
         self.trajectory_buffer
             .iter()
