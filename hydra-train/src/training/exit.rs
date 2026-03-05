@@ -208,4 +208,20 @@ mod tests {
             pi[0]
         );
     }
+
+    #[test]
+    fn anneal_exit_weight_phases() {
+        assert!((anneal_exit_weight(0.5, 0, 0.5) - 0.0).abs() < 1e-6);
+        assert!((anneal_exit_weight(0.5, 1, 0.5) - 0.0).abs() < 1e-6);
+        assert!((anneal_exit_weight(0.5, 2, 0.5) - 0.25).abs() < 1e-6);
+        assert!((anneal_exit_weight(0.5, 2, 1.0) - 0.5).abs() < 1e-6);
+        assert!((anneal_exit_weight(0.5, 3, 0.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn is_hard_state_close_gap() {
+        assert!(is_hard_state(&[0.45, 0.44, 0.11], 0.1));
+        assert!(!is_hard_state(&[0.8, 0.1, 0.1], 0.1));
+        assert!(!is_hard_state(&[1.0], 0.1));
+    }
 }
