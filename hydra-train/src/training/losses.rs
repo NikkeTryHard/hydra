@@ -120,22 +120,25 @@ pub fn score_cdf_bce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> 
     loss.mean_dim(1).squeeze_dim::<1>(1)
 }
 
-pub fn compute_cvar(cdf: &[f32], alpha: f32) -> f32 {
-    let n = cdf.len();
+pub fn compute_cvar(pdf: &[f32], alpha: f32) -> f32 {
+    let n = pdf.len();
     if n == 0 || alpha <= 0.0 {
         return 0.0;
     }
-    let mut sum = 0.0f32;
-    let mut count = 0.0f32;
+    let mut cumsum = 0.0f32;
+    let mut weighted_sum = 0.0f32;
     let bin_width = 1.0 / n as f32;
-    for (i, &c) in cdf.iter().enumerate() {
-        if c <= alpha {
-            sum += (i as f32 + 0.5) * bin_width;
-            count += bin_width;
+    for (i, &p) in pdf.iter().enumerate() {
+        let next_cum = cumsum + p;
+        if cumsum < alpha {
+            let contrib = p.min(alpha - cumsum);
+            let bin_center = (i as f32 + 0.5) * bin_width;
+            weighted_sum += contrib * bin_center;
         }
+        cumsum = next_cum;
     }
-    if count > 0.0 {
-        sum / count
+    if alpha > 0.0 {
+        weighted_sum / alpha
     } else {
         0.0
     }
@@ -481,9 +484,11 @@ pub mod tests {
 
     #[test]
     fn test_compute_cvar() {
-        let cdf = [0.0f32, 0.1, 0.2, 0.5, 0.8, 0.9, 0.95, 1.0];
-        let cvar = compute_cvar(&cdf, 0.3);
-        assert!(cvar > 0.0 && cvar < 1.0, "CVaR should be in (0,1): {cvar}");
+        let pdf = [0.1f32, 0.1, 0.1, 0.2, 0.2, 0.1, 0.1, 0.1];
+        let cvar = compute_cvar(&pdf, 0.3);
+        assert!(cvar >= 0.0 && cvar.is_finite(), "CVaR: {cvar}");
+        let cvar_full = compute_cvar(&pdf, 1.0);
+        assert!(cvar <= cvar_full, "CVaR(0.3) <= CVaR(1.0)");
     }
 
     pub fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
