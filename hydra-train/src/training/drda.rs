@@ -39,7 +39,7 @@ impl RebaseTracker {
     pub fn new(interval_hours: f32) -> Self {
         Self {
             gpu_hours_since_rebase: 0.0,
-            rebase_interval_hours: interval_hours,
+            rebase_interval_hours: interval_hours.max(MIN_REBASE_INTERVAL_HOURS),
             total_rebases: 0,
         }
     }
