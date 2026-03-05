@@ -190,6 +190,17 @@ pub struct CheckpointMeta {
     pub hidden_channels: usize,
 }
 
+impl CheckpointMeta {
+    pub fn summary(&self) -> String {
+        format!(
+            "epoch={} loss={:.4} agree={:.2}%",
+            self.epoch,
+            self.train_loss,
+            self.eval_agreement * 100.0
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
