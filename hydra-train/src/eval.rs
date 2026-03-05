@@ -31,6 +31,32 @@ impl Default for EvalResult {
     }
 }
 
+pub struct TrainingMetrics {
+    pub epoch: u32,
+    pub total_loss: f64,
+    pub policy_agreement: f64,
+    pub value_mse: f64,
+    pub games_completed: u64,
+    pub arena_mean_score: f32,
+    pub distill_kl: f32,
+    pub elo: f32,
+}
+
+impl Default for TrainingMetrics {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            total_loss: 0.0,
+            policy_agreement: 0.0,
+            value_mse: 0.0,
+            games_completed: 0,
+            arena_mean_score: 0.0,
+            distill_kl: 0.0,
+            elo: 1500.0,
+        }
+    }
+}
+
 pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
