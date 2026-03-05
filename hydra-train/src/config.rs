@@ -169,6 +169,14 @@ impl PipelineState {
         2000.0 - self.gpu_hours_used
     }
 
+    pub fn phase_progress(&self) -> f32 {
+        let budget = self.phase.gpu_hours_budget() as f32;
+        if budget == 0.0 {
+            return 0.0;
+        }
+        (self.gpu_hours_used / budget).min(1.0)
+    }
+
     pub fn tick_gpu_hours(&mut self, hours: f32) {
         self.gpu_hours_used += hours;
     }
