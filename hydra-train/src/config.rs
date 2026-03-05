@@ -14,6 +14,18 @@ pub const SCORE_BINS: usize = 64;
 pub const NUM_OPPONENTS: usize = 3;
 pub const GRP_CLASSES: usize = 24;
 
+pub const GAE_GAMMA: f32 = 0.995;
+pub const GAE_LAMBDA: f32 = 0.95;
+pub const BC_LR: f64 = 2.5e-4;
+pub const BC_LR_MIN: f64 = 1e-6;
+pub const ACH_LR: f64 = 2.5e-4;
+pub const GRAD_CLIP_NORM: f32 = 1.0;
+pub const TAU_DRDA: f32 = 4.0;
+pub const TAU_EXIT: f32 = 1.0;
+pub const C_PUCT: f32 = 2.5;
+pub const AFBS_TOP_K: usize = 5;
+pub const CT_SMC_PARTICLES: usize = 128;
+
 #[cfg(test)]
 mod tests {
     use super::*;
