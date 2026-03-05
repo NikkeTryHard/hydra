@@ -149,6 +149,22 @@ mod tests {
     }
 
     #[test]
+    fn distill_loss_with_partial_mask_no_nan() {
+        let device = Default::default();
+        let teacher = Tensor::<B, 2>::from_floats([[2.0, -1.0, 3.0]], &device);
+        let student = Tensor::<B, 2>::from_floats([[0.5, 0.5, 0.5]], &device);
+        let t_val = Tensor::<B, 2>::from_floats([[0.5]], &device);
+        let s_val = Tensor::<B, 2>::from_floats([[0.3]], &device);
+        let mask = Tensor::<B, 2>::from_floats([[1.0, 0.0, 0.0]], &device);
+        let loss = distill_loss(teacher, student, t_val, s_val, mask, 1.0, 0.5);
+        let val = loss.into_scalar().elem::<f32>();
+        assert!(
+            val.is_finite(),
+            "partial mask (1 of 3 legal) should not produce NaN/Inf: {val}"
+        );
+    }
+
+    #[test]
     fn distill_loss_positive_when_different() {
         let device = Default::default();
         let teacher = Tensor::<B, 2>::from_floats([[5.0, 1.0, 0.0]], &device);

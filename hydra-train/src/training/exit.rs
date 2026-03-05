@@ -169,6 +169,28 @@ mod tests {
     }
 
     #[test]
+    fn exit_policy_from_q_with_mask() {
+        let q = vec![1.0, 2.0, 0.5, 3.0];
+        let mask = vec![true, false, true, false];
+        let pi = exit_policy_from_q(&q, 1.0, Some(&mask));
+        assert!(
+            pi[1].abs() < 1e-10,
+            "illegal action 1 should get 0.0 prob, got {}",
+            pi[1]
+        );
+        assert!(
+            pi[3].abs() < 1e-10,
+            "illegal action 3 should get 0.0 prob, got {}",
+            pi[3]
+        );
+        let legal_sum: f32 = pi[0] + pi[2];
+        assert!(
+            (legal_sum - 1.0).abs() < 1e-5,
+            "legal actions should sum to 1, got {legal_sum}"
+        );
+    }
+
+    #[test]
     fn exit_safety_valve_rejects_high_kl() {
         let base = vec![0.9, 0.05, 0.05];
         let exit = vec![0.05, 0.05, 0.9];

@@ -315,6 +315,27 @@ mod tests {
     }
 
     #[test]
+    fn bayesian_update_collapsed_no_nan() {
+        let kernel = [1.0f64; 136];
+        let row_sums = [4.0f64; 34];
+        let col_sums = [34.0; 4];
+        let mut mix = MixtureSib::new(4, &kernel, &row_sums, &col_sums);
+        mix.bayesian_update(&[-1000.0, -1000.0, -1000.0, 0.0]);
+        let w = mix.weights();
+        for (i, &wi) in w.iter().enumerate() {
+            assert!(
+                wi.is_finite(),
+                "weight[{i}] should be finite after collapsed update, got {wi}"
+            );
+        }
+        let sum: f64 = w.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "weights should sum to 1, got {sum}"
+        );
+    }
+
+    #[test]
     fn mixture_ess_decreases_after_biased_update() {
         let kernel = [1.0f64; 136];
         let row_sums = [4.0f64; 34];

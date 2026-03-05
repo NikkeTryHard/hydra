@@ -97,12 +97,17 @@ pub fn rl_step<B: AutodiffBackend>(
         output.policy_logits.clone(),
         cfg.tau_drda,
     );
+    let adv = batch.advantages.clone();
+    let adv_mean = adv.clone().mean();
+    let adv_var = (adv.clone() - adv_mean.clone()).powf_scalar(2.0).mean();
+    let adv_std = (adv_var + 1e-8).sqrt();
+    let advantages_normed = (adv - adv_mean) / adv_std;
     let ach_loss = ach_policy_loss(
         combined,
         batch.targets.legal_mask.clone(),
         batch.actions.clone(),
         batch.pi_old.clone(),
-        batch.advantages.clone(),
+        advantages_normed,
         &cfg.ach_cfg,
     );
     let aux = loss_fn.total_loss(&output, &batch.targets);

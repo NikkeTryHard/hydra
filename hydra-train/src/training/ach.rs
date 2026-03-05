@@ -170,6 +170,23 @@ mod tests {
     }
 
     #[test]
+    fn ach_loss_zero_pi_old_no_nan() {
+        let device = Default::default();
+        let logits = Tensor::<B, 2>::from_floats([[0.0, 1.0, -1.0]], &device);
+        let mask = Tensor::<B, 2>::ones([1, 3], &device);
+        let actions = Tensor::<B, 1, Int>::from_ints(&[1i32][..], &device);
+        let pi_old = Tensor::<B, 1>::from_floats([0.0], &device);
+        let advantages = Tensor::<B, 1>::from_floats([1.0], &device);
+        let cfg = AchConfig::new();
+        let loss = ach_policy_loss(logits, mask, actions, pi_old, advantages, &cfg);
+        let val = loss.into_scalar().elem::<f32>();
+        assert!(
+            val.is_finite(),
+            "pi_old=0 should not produce NaN/Inf: {val}"
+        );
+    }
+
+    #[test]
     fn test_ach_batch_of_8() {
         let device = Default::default();
         let logits = Tensor::<B, 2>::random(
