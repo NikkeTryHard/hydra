@@ -388,6 +388,29 @@ pub mod tests {
         assert!(num_grads > 0, "backward should produce gradients");
     }
 
+    #[test]
+    fn test_default_weights_match_roadmap() {
+        let cfg = HydraLossConfig::new();
+        assert!((cfg.w_pi - 1.0).abs() < 1e-6);
+        assert!((cfg.w_v - 0.5).abs() < 1e-6);
+        assert!((cfg.w_grp - 0.2).abs() < 1e-6);
+        assert!((cfg.w_tenpai - 0.1).abs() < 1e-6);
+        assert!((cfg.w_danger - 0.1).abs() < 1e-6);
+        assert!((cfg.w_opp - 0.1).abs() < 1e-6);
+        assert!((cfg.w_score - 0.025).abs() < 1e-6);
+        let total_weight = cfg.w_pi
+            + cfg.w_v
+            + cfg.w_grp
+            + cfg.w_tenpai
+            + cfg.w_danger
+            + cfg.w_opp
+            + cfg.w_score * 2.0;
+        assert!(
+            (total_weight - 2.05).abs() < 1e-4,
+            "total weight = {total_weight}"
+        );
+    }
+
     pub fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
         HydraTargets {
             policy_target: onehot2d(device, batch, 46, 0),
