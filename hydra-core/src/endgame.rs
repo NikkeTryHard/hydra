@@ -36,6 +36,14 @@ impl EndgameSolver {
             mass_threshold,
         }
     }
+    pub fn summary(&self) -> String {
+        format!(
+            "endgame(wall<={}, mass>{:.0}%)",
+            self.max_wall,
+            self.mass_threshold * 100.0
+        )
+    }
+
     pub fn wall_threshold(&self) -> u8 {
         self.max_wall
     }
