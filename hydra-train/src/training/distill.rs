@@ -15,6 +15,8 @@ pub struct DistillConfig {
     pub distill_batch_size: usize,
     #[config(default = "60")]
     pub update_interval_secs: u64,
+    #[config(default = "0.999")]
+    pub ema_decay: f32,
 }
 
 pub fn distill_loss<B: Backend>(

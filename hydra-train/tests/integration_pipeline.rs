@@ -78,6 +78,7 @@ fn full_pipeline_integration() {
     let cfg = CtSmcConfig {
         num_particles: 32,
         ess_threshold: 0.4,
+        rng_seed: 42,
     };
     let mut smc = CtSmc::new(cfg);
     smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
@@ -125,6 +126,7 @@ fn edge_case_smoke_test() {
     let cfg = CtSmcConfig {
         num_particles: 32,
         ess_threshold: 0.4,
+        rng_seed: 42,
     };
     let mut smc = CtSmc::new(cfg);
     smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
