@@ -31,6 +31,14 @@ impl<B: Backend> HydraOutput<B> {
             .map(|s| s.to_vec())
     }
 
+    pub fn value_scalar(&self) -> Option<f32> {
+        self.value
+            .to_data()
+            .as_slice::<f32>()
+            .ok()
+            .and_then(|s| s.first().copied())
+    }
+
     pub fn is_finite(&self) -> bool {
         let check = |t: &Tensor<B, 2>| -> bool {
             if let Ok(s) = t.to_data().as_slice::<f32>() {
