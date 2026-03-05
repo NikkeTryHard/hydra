@@ -26,6 +26,27 @@ pub fn compute_gae(
     (advantages, returns)
 }
 
+pub fn compute_per_player_gae(
+    player_rewards: &[[f32; 4]],
+    player_values: &[[f32; 4]],
+    dones: &[bool],
+    gamma: f32,
+    lambda: f32,
+) -> Vec<[f32; 4]> {
+    let t = player_rewards.len();
+    assert_eq!(player_values.len(), t + 1);
+    let mut advantages = vec![[0.0f32; 4]; t];
+    for p in 0..4 {
+        let r: Vec<f32> = player_rewards.iter().map(|r| r[p]).collect();
+        let v: Vec<f32> = player_values.iter().map(|v| v[p]).collect();
+        let (adv, _) = compute_gae(&r, &v, dones, gamma, lambda);
+        for (i, a) in adv.into_iter().enumerate() {
+            advantages[i][p] = a;
+        }
+    }
+    advantages
+}
+
 pub fn normalize_advantages(advantages: &mut [f32]) {
     if advantages.is_empty() {
         return;
