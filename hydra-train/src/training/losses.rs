@@ -479,6 +479,13 @@ pub mod tests {
         );
     }
 
+    #[test]
+    fn test_compute_cvar() {
+        let cdf = [0.0f32, 0.1, 0.2, 0.5, 0.8, 0.9, 0.95, 1.0];
+        let cvar = compute_cvar(&cdf, 0.3);
+        assert!(cvar > 0.0 && cvar < 1.0, "CVaR should be in (0,1): {cvar}");
+    }
+
     pub fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
         HydraTargets {
             policy_target: onehot2d(device, batch, 46, 0),
