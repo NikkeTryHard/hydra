@@ -106,6 +106,20 @@ impl AfbsTree {
         }
     }
 
+    pub fn run_search_iterations(
+        &mut self,
+        root_idx: NodeIdx,
+        num_iters: u32,
+        eval_fn: &dyn Fn(NodeIdx) -> f32,
+    ) {
+        for _ in 0..num_iters {
+            if let Some((_, child_idx)) = self.puct_select(root_idx) {
+                let value = eval_fn(child_idx);
+                self.backpropagate(&[root_idx, child_idx], value);
+            }
+        }
+    }
+
     pub fn root_exit_policy(&self, root_idx: NodeIdx, tau: f32) -> [f32; HYDRA_ACTION_SPACE] {
         let root = &self.nodes[root_idx as usize];
         let mut policy = [0.0f32; HYDRA_ACTION_SPACE];
