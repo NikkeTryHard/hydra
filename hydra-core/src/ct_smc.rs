@@ -334,6 +334,10 @@ impl CtSmc {
         self.particles.is_empty()
     }
 
+    pub fn needs_resample(&self) -> bool {
+        self.ess() < self.config.ess_threshold * self.particles.len() as f32
+    }
+
     pub fn ess_ratio(&self) -> f32 {
         if self.particles.is_empty() {
             return 0.0;
