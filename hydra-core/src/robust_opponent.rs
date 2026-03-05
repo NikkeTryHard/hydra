@@ -289,6 +289,22 @@ mod tests {
     }
 
     #[test]
+    fn robust_tau_zero_prior_no_nan() {
+        let p = vec![0.0, 0.5, 0.0, 0.5];
+        let q = vec![1.0, 2.0, 3.0, 4.0];
+        let (tau, q_tau) = find_robust_tau(&p, &q, 0.1, 20);
+        assert!(
+            tau.is_finite(),
+            "tau should be finite with zero priors: {tau}"
+        );
+        for (i, &v) in q_tau.iter().enumerate() {
+            assert!(v.is_finite(), "q_tau[{i}] should be finite, got {v}");
+        }
+        let sum: f32 = q_tau.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "q_tau should sum to 1, got {sum}");
+    }
+
+    #[test]
     fn robust_tau_identical_q_stays_close_to_prior() {
         let p = vec![0.3, 0.5, 0.2];
         let q = vec![1.0, 1.0, 1.0];
