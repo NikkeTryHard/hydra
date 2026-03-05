@@ -202,6 +202,13 @@ impl PipelineState {
         (self.gpu_hours_used / budget).min(1.0)
     }
 
+    pub fn increment_learner_version(&mut self) {
+        self.learner_version += 1;
+    }
+    pub fn increment_actor_version(&mut self) {
+        self.actor_version += 1;
+    }
+
     pub fn record_game(&mut self, num_samples: usize) {
         self.total_games += 1;
         self.total_samples += num_samples as u64;
