@@ -84,6 +84,13 @@ impl RobustOpponentConfig {
 }
 
 impl RobustOpponentConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "robust(eps={:.2}, arch={}, tau={:.1})",
+            self.epsilon, self.num_archetypes, self.tau_arch
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.epsilon <= 0.0 {
             return Err("epsilon must be positive");
