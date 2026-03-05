@@ -356,6 +356,27 @@ pub mod tests {
         Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, c1, c2])
     }
 
+    #[test]
+    fn test_total_loss_backward() {
+        use burn::backend::Autodiff;
+        use burn::optim::GradientsParams;
+        type AB = Autodiff<NdArray<f32>>;
+
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<AB>(&device);
+        let x = Tensor::<AB, 3>::zeros([2, 85, 34], &device);
+        let out = model.forward(x);
+        let targets = make_dummy_targets::<AB>(&device, 2);
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let bd = loss_fn.total_loss(&out, &targets);
+        let total_val: f32 = bd.total.clone().into_scalar().elem();
+        assert!(total_val > 0.0, "total should be > 0");
+        let grads = bd.total.backward();
+        let grads = GradientsParams::from_grads(grads, &model);
+        let num_grads = grads.len();
+        assert!(num_grads > 0, "backward should produce gradients");
+    }
+
     pub fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
         HydraTargets {
             policy_target: onehot2d(device, batch, 46, 0),
