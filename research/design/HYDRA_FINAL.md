@@ -87,7 +87,7 @@ These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + 
 
 ### 4.2 Three-network architecture
 
-**Why not monolithic 40-block?** At 2000 GPU hours, self-play generates ~3.15B decisions. Samples-per-parameter ratio:
+**Why not monolithic 40-block?** At 2000 GPU hours, self-play generates ~2.45B decisions (35M games). Samples-per-parameter ratio:
 
 | Config | Params | Samples/param | vs Mortal (514) | Verdict |
 |--------|-------:|-------------:|----------------:|---------|
