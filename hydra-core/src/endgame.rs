@@ -45,6 +45,10 @@ impl EndgameSolver {
         self
     }
 
+    pub fn tiles_remaining(&self, wall: u8) -> u8 {
+        wall.min(self.max_wall)
+    }
+
     pub fn is_active_wall(&self, wall: u8) -> bool {
         wall <= self.max_wall
     }
