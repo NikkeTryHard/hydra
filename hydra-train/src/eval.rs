@@ -137,6 +137,10 @@ impl BenchmarkGates {
 }
 
 impl TrainingMetrics {
+    pub fn is_improving(&self, prev_loss: f64) -> bool {
+        self.total_loss < prev_loss
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "epoch={} loss={:.4} agree={:.2}% games={} elo={:.0}",
