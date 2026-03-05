@@ -93,4 +93,26 @@ mod tests {
             assert!(idx < 5);
         }
     }
+
+    #[test]
+    fn league_matchmaking_covers_all_agents() {
+        let mut league = League::new();
+        for i in 0..4 {
+            league.add_agent(LeagueAgent {
+                weights_path: PathBuf::from(format!("{i}.bin")),
+                agent_type: AgentType::Checkpoint(i),
+                elo: 1500.0,
+            });
+        }
+        let mut seen = [false; 4];
+        for r in 0..400 {
+            let opps = league.select_opponents(1, r as f32 / 400.0);
+            seen[opps[0]] = true;
+        }
+        let coverage = seen.iter().filter(|&&s| s).count();
+        assert!(
+            coverage >= 3,
+            "should cover most agents, covered {coverage}/4"
+        );
+    }
 }
