@@ -31,6 +31,10 @@ pub fn legal_mask_to_tensor<B: Backend>(
     Tensor::<B, 1>::from_floats(&f32_mask[..], device).unsqueeze_dim::<2>(0)
 }
 
+pub fn validate_legal_mask(mask: &[bool; HYDRA_ACTION_SPACE]) -> bool {
+    mask.iter().any(|&m| m)
+}
+
 pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     let mut h = 0.0f32;
     for &p in probs {
