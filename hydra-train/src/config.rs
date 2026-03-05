@@ -94,6 +94,16 @@ impl TrainingPhase {
         }
     }
 
+    pub fn next(self) -> Option<Self> {
+        match self {
+            Self::BenchmarkGates => Some(Self::BcWarmStart),
+            Self::BcWarmStart => Some(Self::OracleGuiding),
+            Self::OracleGuiding => Some(Self::DrdaAchSelfPlay),
+            Self::DrdaAchSelfPlay => Some(Self::ExitPondering),
+            Self::ExitPondering => None,
+        }
+    }
+
     pub fn uses_exit(self) -> bool {
         matches!(self, Self::DrdaAchSelfPlay | Self::ExitPondering)
     }
