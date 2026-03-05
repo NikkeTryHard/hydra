@@ -113,6 +113,10 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn total_elo(&self) -> f32 {
+        self.agents.iter().map(|a| a.elo).sum()
+    }
+
     pub fn elo_of(&self, idx: usize) -> f32 {
         self.agents.get(idx).map_or(1500.0, |a| a.elo)
     }
