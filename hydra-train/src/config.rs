@@ -191,4 +191,20 @@ mod tests {
         assert_eq!(AFBS_TOP_K, 5);
         assert_eq!(CT_SMC_PARTICLES, 128);
     }
+
+    #[test]
+    fn pipeline_state_defaults() {
+        let state = PipelineState::default();
+        assert_eq!(state.phase, TrainingPhase::BenchmarkGates);
+        assert!((state.remaining_budget() - 2000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn phase_advancement() {
+        let mut state = PipelineState::default();
+        state.advance_phase();
+        assert_eq!(state.phase, TrainingPhase::BcWarmStart);
+        state.advance_phase();
+        assert_eq!(state.phase, TrainingPhase::OracleGuiding);
+    }
 }
