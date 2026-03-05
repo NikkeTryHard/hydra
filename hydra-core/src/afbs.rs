@@ -5,6 +5,10 @@ use crate::action::HYDRA_ACTION_SPACE;
 pub const C_PUCT: f32 = 2.5;
 pub const TOP_K: usize = 5;
 
+pub fn has_any_legal_action(mask: &[bool; HYDRA_ACTION_SPACE]) -> bool {
+    mask.iter().any(|&m| m)
+}
+
 pub fn legal_action_count(mask: &[bool; HYDRA_ACTION_SPACE]) -> usize {
     mask.iter().filter(|&&m| m).count()
 }
