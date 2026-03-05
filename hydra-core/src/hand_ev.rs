@@ -48,6 +48,10 @@ pub fn suit_counts(hand: &[u8; NUM_TILE_TYPES]) -> [u8; 3] {
     [m, p, s]
 }
 
+pub fn honor_count(hand: &[u8; NUM_TILE_TYPES]) -> u8 {
+    hand[27..].iter().sum()
+}
+
 pub fn has_triplet(hand: &[u8; NUM_TILE_TYPES]) -> bool {
     hand.iter().any(|&c| c >= 3)
 }
