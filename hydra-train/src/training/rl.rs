@@ -90,4 +90,37 @@ mod tests {
         let (_, loss) = rl_step(model, &batch, &cfg, &loss_fn, &mut optimizer);
         assert!(loss.is_finite(), "RL step loss should be finite: {loss}");
     }
+
+    #[test]
+    fn test_rl_two_steps_change_loss() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let batch = RlBatch {
+            obs: Tensor::<AB, 3>::random(
+                [2, 85, 34],
+                burn::tensor::Distribution::Normal(0.0, 0.1),
+                &device,
+            ),
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 2),
+        };
+        let cfg = RlConfig {
+            tau_drda: 4.0,
+            ach_cfg: AchConfig::new(),
+            lr: 1e-3,
+        };
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let mut opt = AdamConfig::new().init();
+        let (m1, l1) = rl_step(model, &batch, &cfg, &loss_fn, &mut opt);
+        let (_, l2) = rl_step(m1, &batch, &cfg, &loss_fn, &mut opt);
+        assert!(l1.is_finite() && l2.is_finite());
+        assert!((l1 - l2).abs() > 1e-8, "two steps should change loss");
+    }
 }
