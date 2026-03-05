@@ -130,6 +130,10 @@ impl MixtureSib {
         }
     }
 
+    pub fn summary(&self) -> String {
+        format!("sib(L={}, ess={:.1})", self.num_components(), self.ess())
+    }
+
     pub fn reset_weights(&mut self) {
         let n = self.components.len();
         let w = -(n as f64).ln();
