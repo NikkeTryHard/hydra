@@ -35,6 +35,16 @@ impl EvalResult {
     }
 }
 
+impl EvalResult {
+    pub fn from_mean_placement(mean_placement: f32) -> Self {
+        Self {
+            mean_placement,
+            stable_dan: compute_stable_dan(mean_placement),
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for EvalResult {
     fn default() -> Self {
         Self {
