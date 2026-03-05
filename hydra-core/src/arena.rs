@@ -419,6 +419,25 @@ impl Trajectory {
             seed,
         }
     }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.steps.is_empty() {
+            return Err("trajectory has no steps".into());
+        }
+        for (i, step) in self.steps.iter().enumerate() {
+            if step.player_id >= 4 {
+                return Err(format!("step {i}: invalid player_id {}", step.player_id));
+            }
+            if step.action as usize >= HYDRA_ACTION_SPACE {
+                return Err(format!("step {i}: invalid action {}", step.action));
+            }
+            let pi_sum: f32 = step.pi_old.iter().sum();
+            if pi_sum > 0.0 && (pi_sum - 1.0).abs() > 0.05 {
+                return Err(format!("step {i}: pi_old sums to {pi_sum}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn softmax_temperature(
@@ -759,6 +778,48 @@ mod tests {
         mask[30] = true;
         let action = greedy_action(&logits, &mask);
         assert_eq!(action, 20, "should pick highest LEGAL action");
+    }
+
+    #[test]
+    fn trajectory_validate_catches_bad_player() {
+        let mut traj = Trajectory::new(0, 0);
+        traj.steps.push(TrajectoryStep {
+            obs: [0.0; OBS_SIZE],
+            action: 0,
+            pi_old: {
+                let mut p = [0.0; HYDRA_ACTION_SPACE];
+                p[0] = 1.0;
+                p
+            },
+            reward: 0.0,
+            done: true,
+            player_id: 5,
+            game_id: 0,
+            turn: 0,
+            temperature: 1.0,
+        });
+        assert!(traj.validate().is_err());
+    }
+
+    #[test]
+    fn trajectory_validate_passes_good_data() {
+        let mut traj = Trajectory::new(0, 0);
+        traj.steps.push(TrajectoryStep {
+            obs: [0.0; OBS_SIZE],
+            action: 3,
+            pi_old: {
+                let mut p = [0.0; HYDRA_ACTION_SPACE];
+                p[3] = 1.0;
+                p
+            },
+            reward: 0.0,
+            done: true,
+            player_id: 0,
+            game_id: 0,
+            turn: 0,
+            temperature: 1.0,
+        });
+        assert!(traj.validate().is_ok());
     }
 
     #[test]
