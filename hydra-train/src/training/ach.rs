@@ -16,6 +16,13 @@ pub struct AchConfig {
 }
 
 impl AchConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "ach(eta={:.1}, eps={:.1}, l_th={:.0}, ent={:.1e})",
+            self.eta, self.eps, self.l_th, self.beta_ent
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.eta <= 0.0 {
             return Err("eta must be positive");

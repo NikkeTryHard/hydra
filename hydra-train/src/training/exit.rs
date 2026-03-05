@@ -18,6 +18,13 @@ pub struct ExitConfig {
 }
 
 impl ExitConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "exit(tau={:.1}, w={:.1}, visits>={}, kl<{:.1})",
+            self.tau_exit, self.exit_weight, self.min_visits, self.safety_valve_max_kl
+        )
+    }
+
     pub fn default_phase3() -> Self {
         Self::new().with_exit_weight(1.0).with_min_visits(32)
     }
