@@ -26,6 +26,37 @@ pub const C_PUCT: f32 = 2.5;
 pub const AFBS_TOP_K: usize = 5;
 pub const CT_SMC_PARTICLES: usize = 128;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrainingPhase {
+    BenchmarkGates,
+    BcWarmStart,
+    OracleGuiding,
+    DrdaAchSelfPlay,
+    ExitPondering,
+}
+
+impl TrainingPhase {
+    pub fn gpu_hours_budget(self) -> u32 {
+        match self {
+            Self::BenchmarkGates => 150,
+            Self::BcWarmStart => 50,
+            Self::OracleGuiding => 200,
+            Self::DrdaAchSelfPlay => 800,
+            Self::ExitPondering => 800,
+        }
+    }
+
+    pub fn phase_index(self) -> u8 {
+        match self {
+            Self::BenchmarkGates => 0,
+            Self::BcWarmStart => 1,
+            Self::OracleGuiding => 2,
+            Self::DrdaAchSelfPlay => 3,
+            Self::ExitPondering => 4,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
