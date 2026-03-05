@@ -273,6 +273,10 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn score_for(&self, player: u8) -> i32 {
+        self.final_scores.get(player as usize).copied().unwrap_or(0)
+    }
+
     pub fn placement_for(&self, player: u8) -> u8 {
         compute_placements(self.final_scores)[player as usize]
     }
