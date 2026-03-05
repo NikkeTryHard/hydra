@@ -89,6 +89,15 @@ mod tests {
     }
 
     #[test]
+    fn test_ach_defaults_match_roadmap() {
+        let cfg = AchConfig::new();
+        assert!((cfg.eta - 1.0).abs() < 1e-6);
+        assert!((cfg.eps - 0.5).abs() < 1e-6);
+        assert!((cfg.l_th - 8.0).abs() < 1e-6);
+        assert!((cfg.beta_ent - 5e-4).abs() < 1e-8);
+    }
+
+    #[test]
     fn test_ach_gate_positive_adv() {
         let device = Default::default();
         let (logits, mask, actions, pi_old, advantages) = make_ach_inputs(&device);

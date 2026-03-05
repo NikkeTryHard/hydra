@@ -72,6 +72,12 @@ mod tests {
     type B = NdArray<f32>;
 
     #[test]
+    fn test_drda_defaults_match_roadmap() {
+        let cfg = DrdaConfig::new();
+        assert!((cfg.tau_drda - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_drda_combined_logits() {
         let device = Default::default();
         let base = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
