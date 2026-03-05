@@ -196,4 +196,21 @@ mod tests {
         );
         assert!(policy[2] > 0.01, "legal action 2 should have some prob");
     }
+
+    #[test]
+    fn normalize_policy_cpu_sums_to_one() {
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits[0] = 5.0;
+        logits[5] = 3.0;
+        logits[10] = 1.0;
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[0] = true;
+        mask[5] = true;
+        mask[10] = true;
+        let probs = normalize_policy_cpu(&logits, &mask);
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "sum: {sum}");
+        assert!(probs[0] > probs[5]);
+        assert!(probs[5] > probs[10]);
+    }
 }
