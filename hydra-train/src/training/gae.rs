@@ -153,4 +153,34 @@ mod tests {
         assert!((adv[0] - 4.0).abs() < 1e-4, "terminal: adv={}", adv[0]);
         assert!((ret[0] - 5.0).abs() < 1e-4, "terminal: ret={}", ret[0]);
     }
+
+    #[test]
+    fn test_rewards_from_scores() {
+        let scores = [50000, -10000, 30000, -70000];
+        let steps = [10, 10, 10, 10];
+        let rewards = rewards_from_final_scores(scores, &steps);
+        assert_eq!(rewards.len(), 10);
+        assert!(
+            (rewards[0][0] - 0.05).abs() < 1e-4,
+            "player 0 reward per step"
+        );
+        assert!(
+            (rewards[0][3] - (-0.07)).abs() < 1e-4,
+            "player 3 reward per step"
+        );
+    }
+
+    #[test]
+    fn test_per_player_gae_shape() {
+        let rewards = vec![[1.0, -1.0, 0.5, -0.5]; 5];
+        let values = vec![[0.0; 4]; 6];
+        let dones = vec![false, false, false, false, true];
+        let adv = compute_per_player_gae(&rewards, &values, &dones, 0.99, 0.95);
+        assert_eq!(adv.len(), 5);
+        for a in &adv {
+            for &v in a {
+                assert!(v.is_finite());
+            }
+        }
+    }
 }
