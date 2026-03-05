@@ -43,6 +43,10 @@ impl RebaseTracker {
         }
     }
 
+    pub fn is_overdue(&self, factor: f32) -> bool {
+        self.gpu_hours_since_rebase >= self.rebase_interval_hours * factor
+    }
+
     pub fn should_rebase(&self) -> bool {
         self.gpu_hours_since_rebase >= self.rebase_interval_hours
     }
