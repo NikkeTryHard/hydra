@@ -41,6 +41,24 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn safest_discard(
+    hand: &[u8; NUM_TILE_TYPES],
+    danger_scores: &[f32; NUM_TILE_TYPES],
+) -> Option<u8> {
+    let mut safest = None;
+    let mut min_danger = f32::INFINITY;
+    for t in 0..NUM_TILE_TYPES {
+        if hand[t] == 0 {
+            continue;
+        }
+        if danger_scores[t] < min_danger {
+            min_danger = danger_scores[t];
+            safest = Some(t as u8);
+        }
+    }
+    safest
+}
+
 pub fn shanten_improvement_count(
     hand: &[u8; NUM_TILE_TYPES],
     remaining: &[f32; NUM_TILE_TYPES],
