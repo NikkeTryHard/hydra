@@ -64,6 +64,55 @@ pub fn sinkhorn_project(
     b
 }
 
+pub struct SibComponent {
+    pub belief: [f64; 136],
+    pub log_weight: f64,
+}
+
+pub struct MixtureSib {
+    pub components: Vec<SibComponent>,
+}
+
+impl MixtureSib {
+    pub fn new(
+        num_components: u8,
+        kernel: &[f64; 136],
+        row_sums: &[f64; 34],
+        col_sums: &[f64; 4],
+    ) -> Self {
+        let belief = sinkhorn_project(kernel, row_sums, col_sums, 50, 1e-8);
+        let components = (0..num_components)
+            .map(|_| SibComponent {
+                belief,
+                log_weight: -(num_components as f64).ln(),
+            })
+            .collect();
+        Self { components }
+    }
+
+    pub fn bayesian_update(&mut self, event_log_likelihoods: &[f64]) {
+        assert_eq!(event_log_likelihoods.len(), self.components.len());
+        for (comp, &ll) in self.components.iter_mut().zip(event_log_likelihoods) {
+            comp.log_weight += ll;
+        }
+        let log_sum: f64 =
+            self.components
+                .iter()
+                .map(|c| c.log_weight)
+                .fold(f64::NEG_INFINITY, |a, b| {
+                    let mx = a.max(b);
+                    mx + ((a - mx).exp() + (b - mx).exp()).ln()
+                });
+        for comp in &mut self.components {
+            comp.log_weight -= log_sum;
+        }
+    }
+
+    pub fn weights(&self) -> Vec<f64> {
+        self.components.iter().map(|c| c.log_weight.exp()).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +131,31 @@ mod tests {
             let s: f64 = (0..34).map(|i| b[i * 4 + j]).sum();
             assert!((s - 34.0).abs() < 0.01, "col {j} sum = {s}");
         }
+    }
+
+    #[test]
+    fn mixture_weight_update_is_bayesian() {
+        let kernel = [1.0f64; 136];
+        let row_sums = [4.0f64; 34];
+        let col_sums = [34.0; 4];
+        let mut mix = MixtureSib::new(3, &kernel, &row_sums, &col_sums);
+        let w_before = mix.weights();
+        let sum_before: f64 = w_before.iter().sum();
+        assert!((sum_before - 1.0).abs() < 0.01);
+        mix.bayesian_update(&[0.0, -1.0, -2.0]);
+        let w_after = mix.weights();
+        let sum_after: f64 = w_after.iter().sum();
+        assert!(
+            (sum_after - 1.0).abs() < 0.01,
+            "weights should sum to 1 after update"
+        );
+        assert!(
+            w_after[0] > w_after[1],
+            "component 0 should have higher weight"
+        );
+        assert!(
+            w_after[1] > w_after[2],
+            "component 1 should have higher weight than 2"
+        );
     }
 }
