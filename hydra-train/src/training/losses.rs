@@ -39,6 +39,13 @@ pub struct HydraLossConfig {
 }
 
 impl HydraLossConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "loss(pi={:.1}, v={:.1}, grp={:.1})",
+            self.w_pi, self.w_v, self.w_grp
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.w_pi < 0.0 || self.w_v < 0.0 || self.w_grp < 0.0 {
             return Err("loss weights must be non-negative");
