@@ -28,6 +28,10 @@ impl ExitConfig {
     pub fn default_phase3() -> Self {
         Self::new().with_exit_weight(1.0).with_min_visits(32)
     }
+    pub fn should_apply_exit(&self, visit_count: u32) -> bool {
+        visit_count >= self.min_visits
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.tau_exit <= 0.0 {
             return Err("tau_exit must be positive");
