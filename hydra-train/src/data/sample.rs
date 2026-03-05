@@ -380,4 +380,11 @@ mod tests {
         assert!((vals[1] - 1.0).abs() < 1e-5);
         assert!((vals[2] - 0.0).abs() < 1e-5);
     }
+
+    #[test]
+    fn test_score_to_placement() {
+        assert_eq!(score_to_placement([40000, 30000, 20000, 10000], 0), 0);
+        assert_eq!(score_to_placement([40000, 30000, 20000, 10000], 3), 3);
+        assert_eq!(score_to_placement([25000, 25000, 25000, 25000], 0), 0);
+    }
 }
