@@ -440,6 +440,10 @@ pub fn softmax_temperature(
     probs
 }
 
+pub fn games_played(scores: &[[i32; 4]]) -> usize {
+    scores.len()
+}
+
 pub fn total_score_sum(scores: &[[i32; 4]]) -> i64 {
     scores
         .iter()
