@@ -226,6 +226,33 @@ mod tests {
     }
 
     #[test]
+    fn test_score_pdf_is_one_hot() {
+        let pdf = score_delta_to_pdf(5000);
+        let sum: f32 = pdf.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "pdf should sum to 1");
+        let nonzero = pdf.iter().filter(|&&v| v > 0.0).count();
+        assert_eq!(nonzero, 1, "pdf should be one-hot");
+    }
+
+    #[test]
+    fn test_score_cdf_monotonic() {
+        let cdf = score_delta_to_cdf(5000);
+        for i in 1..64 {
+            assert!(cdf[i] >= cdf[i - 1], "cdf not monotonic at {i}");
+        }
+        assert!((cdf[63] - 1.0).abs() < 1e-5, "cdf should end at 1");
+    }
+
+    #[test]
+    fn test_value_target_range() {
+        assert!((score_delta_to_value(0) - 0.0).abs() < 1e-5);
+        assert!((score_delta_to_value(100_000) - 1.0).abs() < 1e-5);
+        assert!((score_delta_to_value(-100_000) - (-1.0)).abs() < 1e-5);
+        let mid = score_delta_to_value(50_000);
+        assert!(mid > 0.0 && mid < 1.0);
+    }
+
+    #[test]
     fn test_legal_mask_valid() {
         let device = Default::default();
         let samples: Vec<_> = (0..4).map(|_| dummy_sample(0, 0)).collect();
