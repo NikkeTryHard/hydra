@@ -17,4 +17,7 @@ pub mod afbs;
 pub mod arena;
 pub mod batch_encoder;
 pub mod ct_smc;
+pub mod endgame;
+pub mod hand_ev;
 pub mod robust_opponent;
+pub mod sinkhorn;
