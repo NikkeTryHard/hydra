@@ -138,6 +138,20 @@ pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
 
+pub fn placement_histogram(placements: &[u8]) -> [f32; 4] {
+    let n = placements.len().max(1) as f32;
+    let mut hist = [0.0f32; 4];
+    for &p in placements {
+        if (p as usize) < 4 {
+            hist[p as usize] += 1.0;
+        }
+    }
+    for h in &mut hist {
+        *h /= n;
+    }
+    hist
+}
+
 pub fn compute_top2_rate(placements: &[u8]) -> f32 {
     if placements.is_empty() {
         return 0.0;
