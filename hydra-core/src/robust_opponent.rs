@@ -1,5 +1,17 @@
 //! Robust opponent modeling: KL-ball uncertainty + archetype soft-min.
 
+pub fn log_sum_exp_f32(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        return f32::NEG_INFINITY;
+    }
+    let max_v = values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    if max_v == f32::NEG_INFINITY {
+        return f32::NEG_INFINITY;
+    }
+    let sum: f32 = values.iter().map(|v| (v - max_v).exp()).sum();
+    max_v + sum.ln()
+}
+
 pub struct RobustOpponentConfig {
     pub epsilon: f32,
     pub tau_search_iters: u8,
