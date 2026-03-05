@@ -91,4 +91,35 @@ mod tests {
         let kl = verify_rebase_preserves_pi(pi.clone(), pi);
         assert!(kl.abs() < 1e-6, "KL should be ~0, got {kl}");
     }
+
+    #[test]
+    fn test_drda_zero_residual_equals_base() {
+        let device = Default::default();
+        let base = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
+        let zero = Tensor::<B, 2>::zeros([1, 3], &device);
+        let out = combined_logits(base.clone(), zero, 4.0);
+        let b_data = base.to_data();
+        let o_data = out.to_data();
+        let b = b_data.as_slice::<f32>().expect("f32");
+        let o = o_data.as_slice::<f32>().expect("f32");
+        for i in 0..3 {
+            assert!(
+                (b[i] - o[i]).abs() < 1e-6,
+                "zero residual should equal base at {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_drda_wrapper_method() {
+        let device = Default::default();
+        let wrapper = DrdaWrapper::<B>::new(4.0);
+        let base = Tensor::<B, 2>::from_floats([[1.0, 2.0]], &device);
+        let res = Tensor::<B, 2>::from_floats([[8.0, 4.0]], &device);
+        let out = wrapper.combined_logits(base, res);
+        let data = out.to_data();
+        let vals = data.as_slice::<f32>().expect("f32");
+        assert!((vals[0] - 3.0).abs() < 1e-5);
+        assert!((vals[1] - 3.0).abs() < 1e-5);
+    }
 }
