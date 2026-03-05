@@ -86,6 +86,16 @@ pub fn compute_per_player_gae(
     advantages
 }
 
+pub fn advantage_std(advantages: &[f32]) -> f32 {
+    let n = advantages.len() as f32;
+    if n == 0.0 {
+        return 0.0;
+    }
+    let mean = advantages.iter().sum::<f32>() / n;
+    let var = advantages.iter().map(|a| (a - mean).powi(2)).sum::<f32>() / n;
+    (var + 1e-8).sqrt()
+}
+
 pub fn mean_advantage(advantages: &[f32]) -> f32 {
     if advantages.is_empty() {
         return 0.0;
