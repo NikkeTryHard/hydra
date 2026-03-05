@@ -327,6 +327,25 @@ pub struct LossBreakdown<B: Backend> {
     pub total: Tensor<B, 1>,
 }
 
+impl<B: Backend> LossBreakdown<B> {
+    pub fn all_finite(&self) -> bool {
+        let s = |t: &Tensor<B, 1>| -> f32 { t.clone().into_scalar().elem() };
+        [
+            s(&self.policy),
+            s(&self.value),
+            s(&self.grp),
+            s(&self.tenpai),
+            s(&self.danger),
+            s(&self.opp_next),
+            s(&self.score_pdf),
+            s(&self.score_cdf),
+            s(&self.total),
+        ]
+        .iter()
+        .all(|v| v.is_finite())
+    }
+}
+
 impl<B: Backend> HydraLoss<B> {
     pub fn total_loss(
         &self,
