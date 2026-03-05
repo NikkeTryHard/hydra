@@ -10,6 +10,10 @@ impl GaeConfig {
         self.gamma = gamma;
         self
     }
+    pub fn mahjong_defaults() -> Self {
+        Self::default()
+    }
+
     pub fn summary(&self) -> String {
         format!("gae(gamma={:.3}, lambda={:.2})", self.gamma, self.lambda)
     }
