@@ -5,6 +5,7 @@
 
 pub mod backbone;
 pub mod config;
+pub mod data;
 pub mod heads;
 pub mod model;
 pub mod training;
