@@ -113,6 +113,20 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn elo_range(&self) -> (f32, f32) {
+        let max = self
+            .agents
+            .iter()
+            .map(|a| a.elo)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min = self
+            .agents
+            .iter()
+            .map(|a| a.elo)
+            .fold(f32::INFINITY, f32::min);
+        (min, max)
+    }
+
     pub fn top_k_agents(&self, k: usize) -> Vec<usize> {
         let mut indexed: Vec<(usize, f32)> = self
             .agents
