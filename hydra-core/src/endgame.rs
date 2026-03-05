@@ -256,9 +256,9 @@ mod tests {
         mask[2] = true;
         let eval = |p: &Particle, a: u8| p.allocation[a as usize][0] as f32;
         let q = pimc_endgame_q(&particles, &mask, &eval);
-        for i in 0..3 {
-            assert!(q[i].is_finite(), "q[{i}] should be finite");
-            assert!(q[i] > 0.0, "q[{i}] should be positive: {}", q[i]);
+        for (i, &qi) in q.iter().enumerate().take(3) {
+            assert!(qi.is_finite(), "q[{i}] should be finite");
+            assert!(qi > 0.0, "q[{i}] should be positive: {qi}");
         }
     }
 }
