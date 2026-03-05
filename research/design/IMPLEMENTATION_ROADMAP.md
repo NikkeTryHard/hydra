@@ -60,6 +60,8 @@ hydra-train/
 
 `lib.rs` exports: `pub mod backbone; pub mod config; pub mod heads; pub mod model;`
 
+**Note**: Search/belief code goes in `hydra-core` (pure Rust, no Burn dep): `ct_smc.rs`, `afbs.rs`, `robust_opponent.rs`, `endgame.rs`, `sinkhorn.rs`, `hand_ev.rs`, `arena.rs`. Training code goes in `hydra-train` (depends on Burn): `ach.rs`, `drda.rs`, `gae.rs`, `bc.rs`, `exit.rs`, `distill.rs`, `saf.rs`, `league.rs`, `eval.rs`, `inference.rs`.
+
 ### 1.4 Constants (in `config.rs`)
 
 These are the EXACT defaults from HYDRA_FINAL Section 4:
