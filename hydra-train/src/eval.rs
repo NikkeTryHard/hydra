@@ -92,6 +92,16 @@ pub struct BenchmarkGates {
 }
 
 impl BenchmarkGates {
+    pub fn summary(&self) -> String {
+        format!(
+            "afbs={:.0}ms smc={:.2}ms endgame={:.0}ms play={:.0}g/s kl={:.3}",
+            self.afbs_on_turn_ms,
+            self.ct_smc_dp_ms,
+            self.endgame_ms,
+            self.self_play_games_per_sec,
+            self.distill_kl_drift
+        )
+    }
     pub fn passes(&self) -> bool {
         self.afbs_on_turn_ms < 150.0
             && self.ct_smc_dp_ms < 1.0
