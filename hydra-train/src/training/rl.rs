@@ -43,6 +43,15 @@ impl RlConfig {
         }
     }
 
+    pub fn with_lr(mut self, lr: f64) -> Self {
+        self.lr = lr;
+        self
+    }
+    pub fn with_exit_weight(mut self, w: f32) -> Self {
+        self.exit_weight = w;
+        self
+    }
+
     pub fn default_phase3() -> Self {
         Self {
             tau_drda: 4.0,
