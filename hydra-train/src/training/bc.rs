@@ -113,6 +113,10 @@ pub fn bc_train_step<B: AutodiffBackend>(
 }
 
 impl BCTrainerConfig {
+    pub fn effective_lr(&self, step: usize, total_steps: usize) -> f64 {
+        warmup_then_cosine_lr(step, self.warmup_steps, total_steps, self.lr, 1e-6)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.lr <= 0.0 {
             return Err("lr must be positive");
