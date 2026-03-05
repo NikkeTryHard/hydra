@@ -39,6 +39,16 @@ pub struct HydraLossConfig {
 }
 
 impl HydraLossConfig {
+    pub fn total_weight(&self) -> f32 {
+        self.w_pi
+            + self.w_v
+            + self.w_grp
+            + self.w_tenpai
+            + self.w_danger
+            + self.w_opp
+            + self.w_score * 2.0
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "loss(pi={:.1}, v={:.1}, grp={:.1})",
