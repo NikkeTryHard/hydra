@@ -33,6 +33,10 @@ pub struct EvalResult {
 }
 
 impl EvalResult {
+    pub fn meets_target(&self, target_dan: f32) -> bool {
+        self.stable_dan >= target_dan
+    }
+
     pub fn is_mortal_level(&self) -> bool {
         self.stable_dan >= 8.0
     }
