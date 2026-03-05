@@ -93,6 +93,18 @@ pub struct SEResNetConfig {
     pub se_bottleneck: usize,
 }
 
+impl SEResNetConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.num_blocks == 0 {
+            return Err("num_blocks > 0");
+        }
+        if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
+            return Err("hidden_channels % num_groups != 0");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Module, Debug)]
 pub struct SEResNet<B: Backend> {
     input_conv: Conv1d<B>,
