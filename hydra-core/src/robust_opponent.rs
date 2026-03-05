@@ -99,6 +99,14 @@ mod tests {
         assert!(tau > 0.0);
         let sum: f32 = q_tau.iter().sum();
         assert!((sum - 1.0).abs() < 0.01, "q_tau should sum to 1");
+        let mut kl = 0.0f32;
+        for i in 0..3 {
+            if q_tau[i] > 1e-10 && p[i] > 1e-10 {
+                kl += q_tau[i] * (q_tau[i] / p[i]).ln();
+            }
+        }
+        let kl_error = (kl - eps).abs() / eps;
+        assert!(kl_error < 0.05, "KL={kl} should be within 5% of eps={eps}");
     }
 
     #[test]

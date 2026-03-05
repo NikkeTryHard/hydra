@@ -59,6 +59,8 @@ pub struct CheckpointMeta {
     pub train_loss: f64,
     pub eval_agreement: f64,
     pub timestamp: u64,
+    pub num_blocks: usize,
+    pub hidden_channels: usize,
 }
 
 #[cfg(test)]
