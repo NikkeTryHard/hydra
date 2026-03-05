@@ -20,6 +20,10 @@ pub fn is_discard_action(action: u8) -> bool {
     action <= 36
 }
 
+pub fn is_riichi_action(action: u8) -> bool {
+    action == RIICHI_ACTION
+}
+
 pub fn is_call_action(action: u8) -> bool {
     (38..=45).contains(&action)
 }
