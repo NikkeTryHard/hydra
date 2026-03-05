@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hydra-core", "hydra-engine"]
+members = ["hydra-core", "hydra-engine", "hydra-train"]
 
 [profile.release]
 opt-level = 3
