@@ -89,6 +89,23 @@ fn full_pipeline_integration() {
         }
     }
 
+    use hydra_train::training::distill;
+    let learner = HydraModelConfig::learner().init::<InferBackend>(&device);
+    let actor_for_distill = HydraModelConfig::actor().init::<InferBackend>(&device);
+    let x_distill = Tensor::<InferBackend, 3>::zeros([2, 85, 34], &device);
+    let l_out = learner.forward(x_distill.clone());
+    let a_out = actor_for_distill.forward(x_distill);
+    let d_loss = distill::distill_loss(
+        l_out.policy_logits,
+        a_out.policy_logits,
+        l_out.value,
+        a_out.value,
+        1.0,
+        0.5,
+    );
+    let d_val: f32 = d_loss.into_scalar().elem();
+    assert!(d_val.is_finite(), "distill loss not finite: {d_val}");
+
     let exit_q = vec![1.0, 3.0, 2.0, 0.5];
     let exit_pi = exit::exit_policy_from_q(&exit_q, 1.0);
     let sum: f32 = exit_pi.iter().sum();
