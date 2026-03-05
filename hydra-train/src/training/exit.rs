@@ -87,4 +87,22 @@ mod tests {
         let sum: f32 = pi.iter().sum();
         assert!((sum - 1.0).abs() < 1e-5, "should sum to 1, got {sum}");
     }
+
+    #[test]
+    fn exit_safety_valve_rejects_high_kl() {
+        let base = vec![0.9, 0.05, 0.05];
+        let exit = vec![0.05, 0.05, 0.9];
+        assert!(!safety_valve_check(&base, &exit, 0.5, 64, 100));
+    }
+
+    #[test]
+    fn exit_policy_concentrates_on_best() {
+        let q = vec![10.0, 0.0, 0.0, 0.0];
+        let pi = exit_policy_from_q(&q, 0.1);
+        assert!(
+            pi[0] > 0.99,
+            "low tau should concentrate on best action: {}",
+            pi[0]
+        );
+    }
 }
