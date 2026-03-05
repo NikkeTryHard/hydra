@@ -51,7 +51,7 @@ impl<B: Backend> DrdaWrapper<B> {
     pub fn new(tau_drda: f32) -> Self {
         Self {
             base_logits_fn: None,
-            tau_drda,
+            tau_drda: tau_drda.max(MIN_TAU_DRDA),
         }
     }
 
