@@ -117,6 +117,11 @@ impl MixtureSib {
         }
     }
 
+    pub fn is_converged(&self, tol: f64) -> bool {
+        let w = self.weights();
+        w.iter().all(|&w| w.is_finite() && w >= 0.0) && (w.iter().sum::<f64>() - 1.0).abs() < tol
+    }
+
     pub fn num_components(&self) -> usize {
         self.components.len()
     }
