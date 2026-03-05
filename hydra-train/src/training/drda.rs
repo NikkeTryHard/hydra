@@ -9,6 +9,35 @@ pub struct DrdaConfig {
     pub tau_drda: f32,
 }
 
+pub struct RebaseTracker {
+    pub gpu_hours_since_rebase: f32,
+    pub rebase_interval_hours: f32,
+    pub total_rebases: u32,
+}
+
+impl RebaseTracker {
+    pub fn new(interval_hours: f32) -> Self {
+        Self {
+            gpu_hours_since_rebase: 0.0,
+            rebase_interval_hours: interval_hours,
+            total_rebases: 0,
+        }
+    }
+
+    pub fn should_rebase(&self) -> bool {
+        self.gpu_hours_since_rebase >= self.rebase_interval_hours
+    }
+
+    pub fn record_rebase(&mut self) {
+        self.total_rebases += 1;
+        self.gpu_hours_since_rebase = 0.0;
+    }
+
+    pub fn tick(&mut self, hours: f32) {
+        self.gpu_hours_since_rebase += hours;
+    }
+}
+
 type BaseLogitsFn<B> = Box<dyn Fn(Tensor<B, 3>) -> Tensor<B, 2>>;
 
 pub struct DrdaWrapper<B: Backend> {
