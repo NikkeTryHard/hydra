@@ -1,5 +1,19 @@
 //! Generalized Advantage Estimation (gamma=0.995, lambda=0.95).
 
+pub struct GaeConfig {
+    pub gamma: f32,
+    pub lambda: f32,
+}
+
+impl Default for GaeConfig {
+    fn default() -> Self {
+        Self {
+            gamma: 0.995,
+            lambda: 0.95,
+        }
+    }
+}
+
 pub fn compute_gae(
     rewards: &[f32],
     values: &[f32],
