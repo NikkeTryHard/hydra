@@ -20,16 +20,23 @@ impl Default for InferenceConfig {
     }
 }
 
+pub fn legal_mask_to_tensor<B: Backend>(
+    mask: &[bool; HYDRA_ACTION_SPACE],
+    device: &B::Device,
+) -> Tensor<B, 2> {
+    let mut f32_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    for (i, &m) in mask.iter().enumerate() {
+        f32_mask[i] = if m { 1.0 } else { 0.0 };
+    }
+    Tensor::<B, 1>::from_floats(&f32_mask[..], device).unsqueeze_dim::<2>(0)
+}
+
 pub fn infer_action<B: Backend>(
     policy_logits: Tensor<B, 2>,
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
 ) -> (u8, [f32; HYDRA_ACTION_SPACE]) {
-    let mut mask_f32 = [0.0f32; HYDRA_ACTION_SPACE];
-    for (i, &m) in legal_mask.iter().enumerate() {
-        mask_f32[i] = if m { 1.0 } else { 0.0 };
-    }
     let device = policy_logits.device();
-    let mask_tensor = Tensor::<B, 1>::from_floats(&mask_f32[..], &device).unsqueeze_dim::<2>(0);
+    let mask_tensor = legal_mask_to_tensor(legal_mask, &device);
     let neg_inf = (mask_tensor.ones_like() - mask_tensor) * (-1e9f32);
     let masked = policy_logits + neg_inf;
     let probs = activation::softmax(masked, 1);
