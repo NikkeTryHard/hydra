@@ -21,7 +21,7 @@ const SCORE_BIN_MIN: f32 = -50000.0;
 const SCORE_BIN_MAX: f32 = 60000.0;
 const SCORE_BINS: usize = 64;
 
-pub fn scores_to_grp_index(scores: [i32; 4]) -> u8 {
+pub fn scores_to_grp_index(scores: [i32; 4]) -> Result<u8, &'static str> {
     let mut indexed: [(i32, u8); 4] = [
         (scores[0], 0),
         (scores[1], 1),
@@ -33,7 +33,8 @@ pub fn scores_to_grp_index(scores: [i32; 4]) -> u8 {
     GRP_PERM_TABLE
         .iter()
         .position(|p| *p == ranking)
-        .expect("valid permutation") as u8
+        .map(|i| i as u8)
+        .ok_or("invalid ranking permutation")
 }
 
 pub const GRP_PERM_TABLE: [[u8; 4]; 24] = generate_perm_table();
@@ -187,12 +188,15 @@ mod tests {
 
     #[test]
     fn test_grp_index_sorted() {
-        assert_eq!(scores_to_grp_index([40000, 30000, 20000, 10000]), 0);
+        assert_eq!(
+            scores_to_grp_index([40000, 30000, 20000, 10000]).unwrap(),
+            0
+        );
     }
 
     #[test]
     fn test_grp_index_reversed() {
-        let idx = scores_to_grp_index([10000, 20000, 30000, 40000]);
+        let idx = scores_to_grp_index([10000, 20000, 30000, 40000]).unwrap();
         assert_ne!(idx, 0);
         assert!(idx < 24);
     }
