@@ -146,6 +146,17 @@ impl MixtureSib {
         format!("sib(L={}, ess={:.1})", self.num_components(), self.ess())
     }
 
+    pub fn weight_entropy(&self) -> f64 {
+        let w = self.weights();
+        let mut h = 0.0f64;
+        for &wi in &w {
+            if wi > 1e-15 {
+                h -= wi * wi.ln();
+            }
+        }
+        h
+    }
+
     pub fn min_weight(&self) -> f64 {
         self.weights().into_iter().fold(f64::INFINITY, f64::min)
     }
