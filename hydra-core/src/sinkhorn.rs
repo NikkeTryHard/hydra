@@ -205,4 +205,29 @@ mod tests {
         let total: f64 = marginal.iter().sum();
         assert!((total - 136.0).abs() < 1.0, "marginal sum = {total}");
     }
+
+    #[test]
+    fn mixture_ess_equals_num_components_uniform() {
+        let kernel = [1.0f64; 136];
+        let row_sums = [4.0f64; 34];
+        let col_sums = [34.0; 4];
+        let mix = MixtureSib::new(4, &kernel, &row_sums, &col_sums);
+        let ess = mix.ess();
+        assert!(
+            (ess - 4.0).abs() < 0.01,
+            "uniform weights -> ESS=N, got {ess}"
+        );
+    }
+
+    #[test]
+    fn mixture_ess_decreases_after_biased_update() {
+        let kernel = [1.0f64; 136];
+        let row_sums = [4.0f64; 34];
+        let col_sums = [34.0; 4];
+        let mut mix = MixtureSib::new(4, &kernel, &row_sums, &col_sums);
+        let ess_before = mix.ess();
+        mix.bayesian_update(&[0.0, -5.0, -10.0, -15.0]);
+        let ess_after = mix.ess();
+        assert!(ess_after < ess_before, "biased update should reduce ESS");
+    }
 }
