@@ -120,6 +120,27 @@ pub fn score_cdf_bce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> 
     loss.mean_dim(1).squeeze_dim::<1>(1)
 }
 
+pub fn compute_cvar(cdf: &[f32], alpha: f32) -> f32 {
+    let n = cdf.len();
+    if n == 0 || alpha <= 0.0 {
+        return 0.0;
+    }
+    let mut sum = 0.0f32;
+    let mut count = 0.0f32;
+    let bin_width = 1.0 / n as f32;
+    for (i, &c) in cdf.iter().enumerate() {
+        if c <= alpha {
+            sum += (i as f32 + 0.5) * bin_width;
+            count += bin_width;
+        }
+    }
+    if count > 0.0 {
+        sum / count
+    } else {
+        0.0
+    }
+}
+
 pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight: f32) -> f32 {
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
