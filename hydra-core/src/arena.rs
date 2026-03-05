@@ -23,6 +23,24 @@ impl Default for ArenaConfig {
     }
 }
 
+pub struct SelfPlayConfig {
+    pub arena: ArenaConfig,
+    pub gae_gamma: f32,
+    pub gae_lambda: f32,
+    pub rebase_interval_hours: f32,
+}
+
+impl Default for SelfPlayConfig {
+    fn default() -> Self {
+        Self {
+            arena: ArenaConfig::default(),
+            gae_gamma: 0.995,
+            gae_lambda: 0.95,
+            rebase_interval_hours: 37.5,
+        }
+    }
+}
+
 #[repr(C)]
 pub struct TrajectoryStep {
     pub obs: [f32; OBS_SIZE],
