@@ -148,6 +148,13 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn cross_entropy_soft<B: Backend>(
+    log_probs: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    (target * log_probs).sum_dim(1).neg().squeeze_dim::<1>(1)
+}
+
 pub fn entropy<B: Backend>(probs: Tensor<B, 2>) -> Tensor<B, 1> {
     let eps = 1e-8f32;
     let safe = probs.clone().clamp(eps, 1.0);
