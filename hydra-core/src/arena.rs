@@ -73,6 +73,23 @@ impl Arena {
         std::mem::take(&mut self.trajectory_buffer)
     }
 
+    pub fn mean_scores(&self) -> [f32; 4] {
+        if self.trajectory_buffer.is_empty() {
+            return [0.0; 4];
+        }
+        let n = self.trajectory_buffer.len() as f32;
+        let mut sums = [0.0f32; 4];
+        for t in &self.trajectory_buffer {
+            for (i, &s) in t.final_scores.iter().enumerate() {
+                sums[i] += s as f32;
+            }
+        }
+        for s in &mut sums {
+            *s /= n;
+        }
+        sums
+    }
+
     pub fn collect_player_steps(&self, player_id: u8) -> Vec<&TrajectoryStep> {
         self.trajectory_buffer
             .iter()
