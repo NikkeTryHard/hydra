@@ -212,6 +212,21 @@ impl Trajectory {
     }
 }
 
+pub fn greedy_action(
+    logits: &[f32; HYDRA_ACTION_SPACE],
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+) -> u8 {
+    let mut best = 0u8;
+    let mut best_val = f32::NEG_INFINITY;
+    for (i, (&l, &m)) in logits.iter().zip(legal_mask.iter()).enumerate() {
+        if m && l > best_val {
+            best_val = l;
+            best = i as u8;
+        }
+    }
+    best
+}
+
 pub fn sample_action_with_temperature(
     logits: &[f32; HYDRA_ACTION_SPACE],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
