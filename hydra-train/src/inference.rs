@@ -75,6 +75,14 @@ pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     h
 }
 
+pub fn compute_entropy_from_logits(
+    logits: &[f32; HYDRA_ACTION_SPACE],
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+) -> f32 {
+    let probs = normalize_policy_cpu(logits, legal_mask);
+    policy_entropy(&probs)
+}
+
 pub fn policy_top2_gap(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     let mut first = 0.0f32;
     let mut second = 0.0f32;
