@@ -203,6 +203,13 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn fill_ratio(&self) -> f32 {
+        if self.config.max_trajectory_buffer == 0 {
+            return 0.0;
+        }
+        self.trajectory_buffer.len() as f32 / self.config.max_trajectory_buffer as f32
+    }
+
     pub fn avg_trajectory_length(&self) -> f32 {
         if self.trajectory_buffer.is_empty() {
             return 0.0;
