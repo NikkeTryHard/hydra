@@ -1,0 +1,329 @@
+//! Loss functions for all 9 heads + total weighted loss.
+
+use burn::prelude::*;
+use burn::tensor::activation;
+use std::marker::PhantomData;
+
+use crate::model::HydraOutput;
+
+pub struct HydraTargets<B: Backend> {
+    pub policy_target: Tensor<B, 2>,
+    pub legal_mask: Tensor<B, 2>,
+    pub value_target: Tensor<B, 1>,
+    pub grp_target: Tensor<B, 2>,
+    pub tenpai_target: Tensor<B, 2>,
+    pub danger_target: Tensor<B, 3>,
+    pub danger_mask: Tensor<B, 3>,
+    pub opp_next_target: Tensor<B, 3>,
+    pub score_pdf_target: Tensor<B, 2>,
+    pub score_cdf_target: Tensor<B, 2>,
+    pub oracle_target: Option<Tensor<B, 2>>,
+}
+
+#[derive(Config, Debug)]
+pub struct HydraLossConfig {
+    #[config(default = "1.0")]
+    pub w_pi: f32,
+    #[config(default = "0.5")]
+    pub w_v: f32,
+    #[config(default = "0.2")]
+    pub w_grp: f32,
+    #[config(default = "0.1")]
+    pub w_tenpai: f32,
+    #[config(default = "0.1")]
+    pub w_danger: f32,
+    #[config(default = "0.1")]
+    pub w_opp: f32,
+    #[config(default = "0.025")]
+    pub w_score: f32,
+}
+
+pub struct HydraLoss<B: Backend> {
+    pub config: HydraLossConfig,
+    _backend: PhantomData<B>,
+}
+
+impl<B: Backend> HydraLoss<B> {
+    pub fn new(config: HydraLossConfig) -> Self {
+        Self {
+            config,
+            _backend: PhantomData,
+        }
+    }
+}
+
+const NEG_INF: f32 = -1e9;
+
+pub fn policy_ce<B: Backend>(
+    logits: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+    mask: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    let masked = logits + (mask.ones_like() - mask) * NEG_INF;
+    let log_probs = activation::log_softmax(masked, 1);
+    (target * log_probs).sum_dim(1).neg().squeeze_dim::<1>(1)
+}
+
+pub fn value_mse<B: Backend>(pred: Tensor<B, 1>, target: Tensor<B, 1>) -> Tensor<B, 1> {
+    let diff = pred - target;
+    diff.clone() * diff * 0.5
+}
+
+pub fn grp_ce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+    let log_probs = activation::log_softmax(logits, 1);
+    (target * log_probs).sum_dim(1).neg().squeeze_dim::<1>(1)
+}
+
+pub fn tenpai_bce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+    let loss = bce_with_logits(logits, target);
+    loss.mean_dim(1).squeeze_dim::<1>(1)
+}
+
+pub fn danger_focal_bce<B: Backend>(
+    logits: Tensor<B, 3>,
+    target: Tensor<B, 3>,
+    mask: Tensor<B, 3>,
+) -> Tensor<B, 1> {
+    let alpha = 0.25f32;
+    let gamma = 2.0f32;
+    let p = activation::sigmoid(logits);
+    let bce = bce_with_logits_elementwise(p.clone(), target.clone());
+    let p_t = target.clone() * p.clone() + (target.ones_like() - target) * (p.ones_like() - p);
+    let focal_weight = (p_t.ones_like() - p_t).powf_scalar(gamma) * alpha;
+    let focal = focal_weight * bce * mask;
+    let sum_per_sample = focal.sum_dim(2).sum_dim(1);
+    sum_per_sample.squeeze_dim::<2>(2).squeeze_dim::<1>(1)
+}
+
+pub fn opp_next_ce<B: Backend>(logits: Tensor<B, 3>, target: Tensor<B, 3>) -> Tensor<B, 1> {
+    let [batch, opps, tiles] = logits.dims();
+    let logits_flat = logits.reshape([batch * opps, tiles]);
+    let target_flat = target.reshape([batch * opps, tiles]);
+    let log_probs = activation::log_softmax(logits_flat, 1);
+    let per_sample = (target_flat * log_probs)
+        .sum_dim(1)
+        .neg()
+        .squeeze_dim::<1>(1);
+    per_sample
+        .reshape([batch, opps])
+        .mean_dim(1)
+        .squeeze_dim::<1>(1)
+}
+
+pub fn score_pdf_ce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+    let log_probs = activation::log_softmax(logits, 1);
+    (target * log_probs).sum_dim(1).neg().squeeze_dim::<1>(1)
+}
+
+pub fn score_cdf_bce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+    let loss = bce_with_logits(logits, target);
+    loss.mean_dim(1).squeeze_dim::<1>(1)
+}
+
+pub fn oracle_critic_loss<B: Backend>(
+    v_oracle: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    let v_norm = v_oracle.clone() - v_oracle.clone().mean_dim(1);
+    let diff = v_norm - target;
+    let mse = (diff.clone() * diff).mean_dim(1).squeeze_dim::<1>(1) * 0.5;
+    let zero_sum_penalty = v_oracle.sum_dim(1).squeeze_dim::<1>(1);
+    let zero_sum_penalty = zero_sum_penalty.clone() * zero_sum_penalty * 10.0;
+    (mse + zero_sum_penalty).mean()
+}
+
+fn bce_with_logits<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 2> {
+    let max_val = logits.clone().clamp_min(0.0);
+    let neg_abs = logits.clone().abs().neg();
+    max_val - logits * target + neg_abs.exp().add_scalar(1.0).log()
+}
+
+fn bce_with_logits_elementwise<B: Backend>(p: Tensor<B, 3>, target: Tensor<B, 3>) -> Tensor<B, 3> {
+    let eps = 1e-7f32;
+    let p_clamped = p.clamp(eps, 1.0 - eps);
+    let log_p = p_clamped.clone().log();
+    let log_1mp = (p_clamped.ones_like() - p_clamped).log();
+    (target.clone() * log_p + (target.ones_like() - target) * log_1mp).neg()
+}
+
+pub struct LossBreakdown<B: Backend> {
+    pub policy: Tensor<B, 1>,
+    pub value: Tensor<B, 1>,
+    pub grp: Tensor<B, 1>,
+    pub tenpai: Tensor<B, 1>,
+    pub danger: Tensor<B, 1>,
+    pub opp_next: Tensor<B, 1>,
+    pub score_pdf: Tensor<B, 1>,
+    pub score_cdf: Tensor<B, 1>,
+    pub total: Tensor<B, 1>,
+}
+
+impl<B: Backend> HydraLoss<B> {
+    pub fn total_loss(
+        &self,
+        outputs: &HydraOutput<B>,
+        targets: &HydraTargets<B>,
+    ) -> LossBreakdown<B> {
+        let l_pi = policy_ce(
+            outputs.policy_logits.clone(),
+            targets.policy_target.clone(),
+            targets.legal_mask.clone(),
+        )
+        .mean();
+        let l_v = value_mse(
+            outputs.value.clone().squeeze_dim::<1>(1),
+            targets.value_target.clone(),
+        )
+        .mean();
+        let l_grp = grp_ce(outputs.grp.clone(), targets.grp_target.clone()).mean();
+        let l_tenpai = tenpai_bce(outputs.opp_tenpai.clone(), targets.tenpai_target.clone()).mean();
+        let l_danger = danger_focal_bce(
+            outputs.danger.clone(),
+            targets.danger_target.clone(),
+            targets.danger_mask.clone(),
+        )
+        .mean();
+        let l_opp = opp_next_ce(
+            outputs.opp_next_discard.clone(),
+            targets.opp_next_target.clone(),
+        )
+        .mean();
+        let l_pdf =
+            score_pdf_ce(outputs.score_pdf.clone(), targets.score_pdf_target.clone()).mean();
+        let l_cdf =
+            score_cdf_bce(outputs.score_cdf.clone(), targets.score_cdf_target.clone()).mean();
+        let c = &self.config;
+        let total = l_pi.clone() * c.w_pi
+            + l_v.clone() * c.w_v
+            + l_grp.clone() * c.w_grp
+            + l_tenpai.clone() * c.w_tenpai
+            + l_danger.clone() * c.w_danger
+            + l_opp.clone() * c.w_opp
+            + l_pdf.clone() * c.w_score
+            + l_cdf.clone() * c.w_score;
+        LossBreakdown {
+            policy: l_pi,
+            value: l_v,
+            grp: l_grp,
+            tenpai: l_tenpai,
+            danger: l_danger,
+            opp_next: l_opp,
+            score_pdf: l_pdf,
+            score_cdf: l_cdf,
+            total,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::HydraModelConfig;
+    use burn::backend::NdArray;
+
+    type B = NdArray<f32>;
+
+    #[test]
+    fn test_policy_ce_with_mask() {
+        let device = Default::default();
+        let logits = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0, -1.0]], &device);
+        let mut mask_data = [1.0f32; 4];
+        mask_data[3] = 0.0;
+        let mask = Tensor::<B, 2>::from_floats([mask_data], &device);
+        let target = Tensor::<B, 2>::from_floats([[0.0, 0.0, 1.0, 0.0]], &device);
+        let loss = policy_ce(logits, target, mask);
+        let val = loss.to_data().as_slice::<f32>().expect("f32")[0];
+        assert!(val > 0.0, "policy CE should be positive, got {val}");
+        assert!(val < 5.0, "policy CE too large: {val}");
+    }
+
+    #[test]
+    fn test_soft_target_differs_from_hard() {
+        let device = Default::default();
+        let logits = Tensor::<B, 2>::from_floats([[1.0, 2.0, 0.5]], &device);
+        let mask = Tensor::<B, 2>::ones([1, 3], &device);
+        let hard = Tensor::<B, 2>::from_floats([[0.0, 1.0, 0.0]], &device);
+        let soft = Tensor::<B, 2>::from_floats([[0.3, 0.7, 0.0]], &device);
+        let l_hard = policy_ce(logits.clone(), hard, mask.clone());
+        let l_soft = policy_ce(logits, soft, mask);
+        let h = l_hard.to_data().as_slice::<f32>().expect("f32")[0];
+        let s = l_soft.to_data().as_slice::<f32>().expect("f32")[0];
+        assert!(
+            (h - s).abs() > 0.01,
+            "soft vs hard should differ: {h} vs {s}"
+        );
+    }
+
+    #[test]
+    fn test_oracle_critic_zero_sum() {
+        let device = Default::default();
+        let v = Tensor::<B, 2>::from_floats([[1.0, -1.0, 2.0, -2.0]], &device);
+        let target = Tensor::<B, 2>::from_floats([[1.0, -1.0, 2.0, -2.0]], &device);
+        let loss = oracle_critic_loss(v, target);
+        let val = loss.to_data().as_slice::<f32>().expect("f32")[0];
+        assert!(
+            val.abs() < 1e-4,
+            "zero-sum input should give near-zero loss, got {val}"
+        );
+    }
+
+    #[test]
+    fn test_total_loss_positive() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::random(
+            [4, 85, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let out = model.forward(x);
+        let targets = make_dummy_targets::<B>(&device, 4);
+        let hydra_loss = HydraLoss::<B>::new(HydraLossConfig::new());
+        let breakdown = hydra_loss.total_loss(&out, &targets);
+        let total = breakdown.total.to_data().as_slice::<f32>().expect("f32")[0];
+        assert!(total > 0.0, "total loss should be positive, got {total}");
+        assert!(total.is_finite(), "total loss should be finite");
+    }
+
+    fn onehot2d<B: Backend>(
+        device: &B::Device,
+        batch: usize,
+        classes: usize,
+        idx: usize,
+    ) -> Tensor<B, 2> {
+        let mut d = vec![0.0f32; batch * classes];
+        for i in 0..batch {
+            d[i * classes + idx] = 1.0;
+        }
+        Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, classes])
+    }
+
+    fn onehot3d<B: Backend>(
+        device: &B::Device,
+        batch: usize,
+        c1: usize,
+        c2: usize,
+    ) -> Tensor<B, 3> {
+        let mut d = vec![0.0f32; batch * c1 * c2];
+        for i in 0..(batch * c1) {
+            d[i * c2] = 1.0;
+        }
+        Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, c1, c2])
+    }
+
+    fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
+        HydraTargets {
+            policy_target: onehot2d(device, batch, 46, 0),
+            legal_mask: Tensor::ones([batch, 46], device),
+            value_target: Tensor::zeros([batch], device),
+            grp_target: onehot2d(device, batch, 24, 0),
+            tenpai_target: Tensor::zeros([batch, 3], device),
+            danger_target: Tensor::zeros([batch, 3, 34], device),
+            danger_mask: Tensor::ones([batch, 3, 34], device),
+            opp_next_target: onehot3d(device, batch, 3, 34),
+            score_pdf_target: onehot2d(device, batch, 64, 32),
+            score_cdf_target: Tensor::zeros([batch, 64], device),
+            oracle_target: None,
+        }
+    }
+}

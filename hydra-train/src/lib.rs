@@ -7,3 +7,4 @@ pub mod backbone;
 pub mod config;
 pub mod heads;
 pub mod model;
+pub mod training;
