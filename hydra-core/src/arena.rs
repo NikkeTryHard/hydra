@@ -222,6 +222,18 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn mean_game_length(&self) -> f32 {
+        if self.trajectory_buffer.is_empty() {
+            return 0.0;
+        }
+        let total_turns: u32 = self
+            .trajectory_buffer
+            .iter()
+            .map(|t| t.max_turn() as u32)
+            .sum();
+        total_turns as f32 / self.trajectory_buffer.len() as f32
+    }
+
     pub fn latest_game_id(&self) -> Option<u32> {
         self.trajectory_buffer.last().map(|t| t.game_id)
     }
