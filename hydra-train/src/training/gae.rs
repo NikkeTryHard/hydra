@@ -5,6 +5,17 @@ pub struct GaeConfig {
     pub lambda: f32,
 }
 
+impl GaeConfig {
+    pub fn with_gamma(mut self, gamma: f32) -> Self {
+        self.gamma = gamma;
+        self
+    }
+    pub fn with_lambda(mut self, lambda: f32) -> Self {
+        self.lambda = lambda;
+        self
+    }
+}
+
 impl Default for GaeConfig {
     fn default() -> Self {
         Self {
