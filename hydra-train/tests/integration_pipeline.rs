@@ -328,6 +328,41 @@ fn exit_rl_step_with_target() {
     assert!(loss.is_finite(), "exit rl_step loss not finite: {loss}");
 }
 
+#[test]
+fn ctsmc_to_endgame_to_exit_pipeline() {
+    use hydra_core::ct_smc::{CtSmc, CtSmcConfig, Particle};
+    use hydra_core::endgame;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    let mut rng = ChaCha8Rng::seed_from_u64(99);
+    let mut row_sums = [0u8; 34];
+    row_sums[0] = 3;
+    row_sums[1] = 2;
+    let col_sums = [2, 1, 1, 1];
+    let log_omega = [[0.0f64; 4]; 34];
+    let cfg = CtSmcConfig {
+        num_particles: 64,
+        ess_threshold: 0.4,
+        rng_seed: 99,
+    };
+    let mut smc = CtSmc::new(cfg);
+    smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
+    assert!(!smc.particles.is_empty(), "should have particles");
+
+    let mut mask = [false; HYDRA_ACTION_SPACE];
+    mask[0] = true;
+    mask[1] = true;
+    let eval_fn = |p: &Particle, a: u8| p.allocation[a as usize][0] as f32;
+    let q = endgame::pimc_endgame_q(&smc.particles, &mask, &eval_fn);
+    let legal = [true, true, false, false];
+    let exit_pi = exit::exit_policy_from_q(&q[..4], 1.0, Some(&legal));
+    let sum: f32 = exit_pi.iter().sum();
+    assert!((sum - 1.0).abs() < 0.01, "exit policy sum: {sum}");
+    assert!(exit_pi[2] == 0.0, "illegal action should have 0 prob");
+    assert!(exit_pi[3] == 0.0, "illegal action should have 0 prob");
+}
+
 fn make_test_targets_infer(
     device: &<TestBackend as Backend>::Device,
     batch: usize,
