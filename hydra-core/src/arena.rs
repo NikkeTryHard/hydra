@@ -255,4 +255,16 @@ mod tests {
             probs_high[0]
         );
     }
+
+    #[test]
+    fn single_legal_action_always_selected() {
+        let logits = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[33] = true;
+        for rng in [0.0, 0.5, 0.99] {
+            let (action, probs) = sample_action_with_temperature(&logits, &mask, 1.0, rng);
+            assert_eq!(action, 33);
+            assert!((probs[33] - 1.0).abs() < 1e-5);
+        }
+    }
 }
