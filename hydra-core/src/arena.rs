@@ -231,4 +231,24 @@ mod tests {
         assert_eq!(drained.len(), 3);
         assert!(arena.trajectory_buffer.is_empty());
     }
+
+    #[test]
+    fn temperature_affects_distribution() {
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits[0] = 3.0;
+        logits[1] = 1.0;
+        logits[2] = 0.0;
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[0] = true;
+        mask[1] = true;
+        mask[2] = true;
+        let (_, probs_low) = sample_action_with_temperature(&logits, &mask, 0.1, 0.0);
+        let (_, probs_high) = sample_action_with_temperature(&logits, &mask, 10.0, 0.0);
+        assert!(
+            probs_low[0] > probs_high[0],
+            "low temp should concentrate: {:.3} vs {:.3}",
+            probs_low[0],
+            probs_high[0]
+        );
+    }
 }
