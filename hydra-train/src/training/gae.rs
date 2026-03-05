@@ -10,6 +10,10 @@ impl GaeConfig {
         self.gamma = gamma;
         self
     }
+    pub fn summary(&self) -> String {
+        format!("gae(gamma={:.3}, lambda={:.2})", self.gamma, self.lambda)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.gamma <= 0.0 || self.gamma >= 1.0 {
             return Err("gamma in (0,1)");
