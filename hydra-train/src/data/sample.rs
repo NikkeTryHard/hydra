@@ -285,6 +285,21 @@ mod tests {
     }
 
     #[test]
+    fn test_opp_next_255_is_zero() {
+        let device = Default::default();
+        let samples = vec![dummy_sample(0, 0)];
+        let batch = collate_batch::<B>(&samples, &device);
+        let data = batch.opp_next_target.to_data();
+        let slice = data.as_slice::<f32>().expect("f32");
+        let opp2_start = 2 * 34;
+        let opp2_sum: f32 = slice[opp2_start..opp2_start + 34].iter().sum();
+        assert!(
+            opp2_sum.abs() < 1e-5,
+            "opp_next=255 should be all zero, sum={opp2_sum}"
+        );
+    }
+
+    #[test]
     fn test_single_sample_batch() {
         let device = Default::default();
         let samples = vec![dummy_sample(5, 12000)];
