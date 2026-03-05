@@ -17,13 +17,33 @@ pub struct LeagueAgent {
     pub elo: f32,
 }
 
+pub struct LeagueSnapshot {
+    pub agents: Vec<(String, f32)>,
+    pub total_games: u64,
+}
+
 pub struct League {
     pub agents: Vec<LeagueAgent>,
+    pub total_matches: u64,
 }
 
 impl League {
     pub fn new() -> Self {
-        Self { agents: Vec::new() }
+        Self {
+            agents: Vec::new(),
+            total_matches: 0,
+        }
+    }
+
+    pub fn snapshot(&self) -> LeagueSnapshot {
+        LeagueSnapshot {
+            agents: self
+                .agents
+                .iter()
+                .map(|a| (a.weights_path.display().to_string(), a.elo))
+                .collect(),
+            total_games: self.total_matches,
+        }
     }
 
     pub fn num_agents(&self) -> usize {
