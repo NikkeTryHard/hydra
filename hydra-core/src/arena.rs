@@ -122,6 +122,13 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn steps_for_player(&self, player_id: u8) -> Vec<&TrajectoryStep> {
+        self.steps
+            .iter()
+            .filter(|s| s.player_id == player_id)
+            .collect()
+    }
+
     pub fn new(game_id: u32, seed: u64) -> Self {
         Self {
             steps: Vec::new(),
