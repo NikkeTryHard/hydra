@@ -161,6 +161,33 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     }
 }
 
+pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
+    use crate::data::augment::{augment_action_suit, augment_mask_suit, augment_obs_suit};
+    use hydra_core::tile::ALL_PERMUTATIONS;
+
+    let mut augmented = Vec::with_capacity(samples.len() * 6);
+    for sample in samples {
+        for perm in &ALL_PERMUTATIONS {
+            let obs = augment_obs_suit(&sample.obs, perm);
+            let action = augment_action_suit(sample.action, perm);
+            let legal_mask = augment_mask_suit(&sample.legal_mask, perm);
+            augmented.push(MjaiSample {
+                obs,
+                action,
+                legal_mask,
+                placement: sample.placement,
+                score_delta: sample.score_delta,
+                grp_label: sample.grp_label,
+                tenpai: sample.tenpai,
+                opp_next: sample.opp_next,
+                danger: sample.danger,
+                danger_mask: sample.danger_mask,
+            });
+        }
+    }
+    augmented
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
