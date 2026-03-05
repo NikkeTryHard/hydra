@@ -174,6 +174,10 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn total_loss_scalar<B: Backend>(breakdown: &LossBreakdown<B>) -> f32 {
+    breakdown.total.clone().into_scalar().elem::<f32>()
+}
+
 pub fn batch_kl_from_target<B: Backend>(
     logits: Tensor<B, 2>,
     mask: Tensor<B, 2>,
