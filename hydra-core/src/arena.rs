@@ -222,6 +222,18 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn mean_score_for(&self, player: u8) -> f32 {
+        if self.trajectory_buffer.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = self
+            .trajectory_buffer
+            .iter()
+            .map(|t| t.score_for(player) as f32)
+            .sum();
+        sum / self.trajectory_buffer.len() as f32
+    }
+
     pub fn score_variance(&self) -> f32 {
         if self.trajectory_buffer.is_empty() {
             return 0.0;
