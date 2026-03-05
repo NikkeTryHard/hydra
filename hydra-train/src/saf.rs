@@ -4,7 +4,33 @@ use burn::nn::{Linear, LinearConfig};
 use burn::prelude::*;
 use burn::tensor::activation;
 
-const SAF_INPUT_DIM: usize = 8;
+pub const SAF_INPUT_DIM: usize = 8;
+
+pub struct SafFeatures {
+    pub delta_q: f32,
+    pub boole_risk: f32,
+    pub hunter_risk: f32,
+    pub robust_risk: f32,
+    pub entropy_drop: f32,
+    pub tau_robust: f32,
+    pub variance: f32,
+    pub ess: f32,
+}
+
+impl SafFeatures {
+    pub fn to_array(&self) -> [f32; SAF_INPUT_DIM] {
+        [
+            self.delta_q,
+            self.boole_risk,
+            self.hunter_risk,
+            self.robust_risk,
+            self.entropy_drop,
+            self.tau_robust,
+            self.variance,
+            self.ess,
+        ]
+    }
+}
 
 #[derive(Config, Debug)]
 pub struct SafConfig {
