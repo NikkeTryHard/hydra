@@ -270,6 +270,13 @@ impl Arena {
         self.trajectory_buffer.last().map(|t| t.game_id)
     }
 
+    pub fn fourth_place_count(&self, player_id: u8) -> usize {
+        self.trajectory_buffer
+            .iter()
+            .filter(|t| t.placement_for(player_id) == 3)
+            .count()
+    }
+
     pub fn win_rate_for(&self, player_id: u8) -> f32 {
         if self.trajectory_buffer.is_empty() {
             return 0.0;
