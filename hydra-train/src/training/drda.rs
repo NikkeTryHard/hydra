@@ -136,6 +136,11 @@ pub fn compute_rebase_kl<B: Backend>(
     verify_rebase_preserves_pi(pi_before, pi_after)
 }
 
+pub fn policy_head_is_zeroed<B: Backend>(logits: Tensor<B, 2>) -> bool {
+    let max_abs: f32 = logits.abs().max().into_scalar().elem();
+    max_abs < 1e-6
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
