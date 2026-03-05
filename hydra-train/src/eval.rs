@@ -23,6 +23,16 @@ impl EvalResult {
     pub fn is_tendan_plus(&self) -> bool {
         self.stable_dan >= 10.0
     }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "placement={:.2} dan={:.1} win={:.1}% deal_in={:.1}%",
+            self.mean_placement,
+            self.stable_dan,
+            self.win_rate * 100.0,
+            self.deal_in_rate * 100.0
+        )
+    }
 }
 
 impl Default for EvalResult {
