@@ -118,6 +118,40 @@ pub struct PonderResult {
     pub visit_count: u32,
 }
 
+pub const MIN_BATCH: usize = 32;
+
+pub struct LeafBatch {
+    pub obs_buffer: Vec<f32>,
+    pub node_indices: Vec<NodeIdx>,
+    pub batch_size: usize,
+}
+
+impl LeafBatch {
+    pub fn new() -> Self {
+        Self {
+            obs_buffer: Vec::new(),
+            node_indices: Vec::new(),
+            batch_size: 0,
+        }
+    }
+
+    pub fn add(&mut self, obs: &[f32], node_idx: NodeIdx) {
+        self.obs_buffer.extend_from_slice(obs);
+        self.node_indices.push(node_idx);
+        self.batch_size += 1;
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.batch_size >= MIN_BATCH
+    }
+}
+
+impl Default for LeafBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +196,18 @@ mod tests {
         assert_eq!(tree.nodes[n0 as usize].visit_count, 1);
         assert_eq!(tree.nodes[n1 as usize].visit_count, 1);
         assert!((tree.nodes[n1 as usize].q_value() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn batched_eval_correct_size() {
+        let mut batch = LeafBatch::new();
+        let obs = [0.0f32; 85 * 34];
+        for i in 0..32 {
+            batch.add(&obs, i);
+        }
+        assert_eq!(batch.batch_size, 32);
+        assert!(batch.is_ready());
+        assert_eq!(batch.node_indices.len(), 32);
+        assert_eq!(batch.obs_buffer.len(), 32 * 85 * 34);
     }
 }
