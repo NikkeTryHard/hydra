@@ -75,6 +75,44 @@ impl TrainingPhase {
     }
 }
 
+pub struct PipelineState {
+    pub phase: TrainingPhase,
+    pub gpu_hours_used: f32,
+    pub total_games: u64,
+    pub total_samples: u64,
+    pub learner_version: u32,
+    pub actor_version: u32,
+}
+
+impl Default for PipelineState {
+    fn default() -> Self {
+        Self {
+            phase: TrainingPhase::BenchmarkGates,
+            gpu_hours_used: 0.0,
+            total_games: 0,
+            total_samples: 0,
+            learner_version: 0,
+            actor_version: 0,
+        }
+    }
+}
+
+impl PipelineState {
+    pub fn advance_phase(&mut self) {
+        self.phase = match self.phase {
+            TrainingPhase::BenchmarkGates => TrainingPhase::BcWarmStart,
+            TrainingPhase::BcWarmStart => TrainingPhase::OracleGuiding,
+            TrainingPhase::OracleGuiding => TrainingPhase::DrdaAchSelfPlay,
+            TrainingPhase::DrdaAchSelfPlay => TrainingPhase::ExitPondering,
+            TrainingPhase::ExitPondering => TrainingPhase::ExitPondering,
+        };
+    }
+
+    pub fn remaining_budget(&self) -> f32 {
+        2000.0 - self.gpu_hours_used
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
