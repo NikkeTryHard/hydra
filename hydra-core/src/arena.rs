@@ -98,6 +98,10 @@ impl Arena {
         self.trajectory_buffer.iter().map(|t| t.steps.len()).sum()
     }
 
+    pub fn num_buffered(&self) -> usize {
+        self.trajectory_buffer.len()
+    }
+
     pub fn drain_trajectories(&mut self) -> Vec<Trajectory> {
         std::mem::take(&mut self.trajectory_buffer)
     }
