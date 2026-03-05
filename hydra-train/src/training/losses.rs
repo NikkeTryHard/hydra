@@ -38,6 +38,15 @@ pub struct HydraLossConfig {
     pub w_score: f32,
 }
 
+impl HydraLossConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.w_pi < 0.0 || self.w_v < 0.0 || self.w_grp < 0.0 {
+            return Err("loss weights must be non-negative");
+        }
+        Ok(())
+    }
+}
+
 pub struct HydraLoss<B: Backend> {
     pub config: HydraLossConfig,
     _backend: PhantomData<B>,
