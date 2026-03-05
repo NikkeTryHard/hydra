@@ -185,6 +185,11 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn label_smoothing<B: Backend>(target: Tensor<B, 2>, alpha: f32) -> Tensor<B, 2> {
+    let n = target.dims()[1] as f32;
+    target * (1.0 - alpha) + (alpha / n)
+}
+
 pub fn policy_ce_with_temperature<B: Backend>(
     logits: Tensor<B, 2>,
     target: Tensor<B, 2>,
