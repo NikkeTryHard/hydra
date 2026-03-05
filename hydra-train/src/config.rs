@@ -22,6 +22,9 @@ pub fn is_discard_action(action: u8) -> bool {
 
 pub const PASS_ACTION: u8 = 45;
 
+pub const AGARI_ACTION: u8 = 43;
+pub const KAN_ACTION: u8 = 44;
+
 pub fn is_agari_action(action: u8) -> bool {
     action == 43
 }
