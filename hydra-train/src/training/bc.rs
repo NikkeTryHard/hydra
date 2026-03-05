@@ -102,6 +102,13 @@ pub fn bc_train_step<B: AutodiffBackend>(
 }
 
 impl BCTrainerConfig {
+    pub fn total_batches(&self, num_samples: usize) -> usize {
+        if self.batch_size == 0 {
+            return 0;
+        }
+        num_samples / self.batch_size
+    }
+
     pub fn optimizer_config(&self) -> AdamConfig {
         AdamConfig::new()
             .with_weight_decay(Some(burn::optim::decay::WeightDecayConfig::new(
