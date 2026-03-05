@@ -1,11 +1,36 @@
 //! DRDA wrapper: Dilated Regularized Dual Averaging (Farina et al., ICLR 2025).
 
 use burn::prelude::*;
+use burn::tensor::activation;
 
 #[derive(Config, Debug)]
 pub struct DrdaConfig {
     #[config(default = "4.0")]
     pub tau_drda: f32,
+}
+
+type BaseLogitsFn<B> = Box<dyn Fn(Tensor<B, 3>) -> Tensor<B, 2>>;
+
+pub struct DrdaWrapper<B: Backend> {
+    pub base_logits_fn: Option<BaseLogitsFn<B>>,
+    pub tau_drda: f32,
+}
+
+impl<B: Backend> DrdaWrapper<B> {
+    pub fn new(tau_drda: f32) -> Self {
+        Self {
+            base_logits_fn: None,
+            tau_drda,
+        }
+    }
+
+    pub fn combined_logits(
+        &self,
+        base_logits: Tensor<B, 2>,
+        residual_logits: Tensor<B, 2>,
+    ) -> Tensor<B, 2> {
+        base_logits + residual_logits / self.tau_drda
+    }
 }
 
 pub fn combined_logits<B: Backend>(
@@ -24,6 +49,19 @@ pub fn verify_rebase_preserves_pi<B: Backend>(
     let log_ratio = (pi_before.clone() / (pi_after + eps)).log();
     let kl = (pi_before * log_ratio).sum_dim(1).mean();
     kl.into_scalar().elem::<f32>()
+}
+
+pub fn compute_rebase_kl<B: Backend>(
+    base_logits: Tensor<B, 2>,
+    residual_logits: Tensor<B, 2>,
+    tau_drda: f32,
+    legal_mask: Tensor<B, 2>,
+) -> f32 {
+    let combined = combined_logits(base_logits.clone(), residual_logits, tau_drda);
+    let neg_inf = (legal_mask.clone().ones_like() - legal_mask) * (-1e9f32);
+    let pi_before = activation::softmax(combined + neg_inf.clone(), 1);
+    let pi_after = activation::softmax(base_logits + neg_inf, 1);
+    verify_rebase_preserves_pi(pi_before, pi_after)
 }
 
 #[cfg(test)]
