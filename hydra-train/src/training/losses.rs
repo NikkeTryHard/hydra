@@ -236,6 +236,17 @@ pub mod tests {
     }
 
     #[test]
+    fn test_policy_ce_illegal_action_zero_gradient() {
+        let device = Default::default();
+        let logits = Tensor::<B, 2>::from_floats([[10.0, -10.0, 0.0]], &device);
+        let mask = Tensor::<B, 2>::from_floats([[1.0, 0.0, 1.0]], &device);
+        let target = Tensor::<B, 2>::from_floats([[0.5, 0.0, 0.5]], &device);
+        let loss = policy_ce(logits.clone(), target, mask);
+        let val = loss.to_data().as_slice::<f32>().expect("f32")[0];
+        assert!(val.is_finite(), "masked loss should be finite: {val}");
+    }
+
+    #[test]
     fn test_soft_target_differs_from_hard() {
         let device = Default::default();
         let logits = Tensor::<B, 2>::from_floats([[1.0, 2.0, 0.5]], &device);
