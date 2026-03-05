@@ -86,6 +86,14 @@ pub fn compute_per_player_gae(
     advantages
 }
 
+pub fn max_advantage(advantages: &[f32]) -> f32 {
+    advantages.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+}
+
+pub fn min_advantage(advantages: &[f32]) -> f32 {
+    advantages.iter().cloned().fold(f32::INFINITY, f32::min)
+}
+
 pub fn advantage_std(advantages: &[f32]) -> f32 {
     let n = advantages.len() as f32;
     if n == 0.0 {

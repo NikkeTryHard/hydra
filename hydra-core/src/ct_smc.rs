@@ -48,6 +48,13 @@ pub struct Particle {
 }
 
 impl Particle {
+    pub fn row_sum(&self, row: usize) -> u8 {
+        if row >= 34 {
+            return 0;
+        }
+        self.allocation[row].iter().sum()
+    }
+
     pub fn col_sum(&self, col: usize) -> usize {
         (0..34).map(|k| self.allocation[k][col] as usize).sum()
     }
