@@ -157,6 +157,12 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn batch_policy_entropy<B: Backend>(logits: Tensor<B, 2>, mask: Tensor<B, 2>) -> Tensor<B, 1> {
+    let log_probs = masked_log_softmax(logits, mask.clone());
+    let probs = log_probs.clone().exp();
+    (probs * log_probs * mask).sum_dim(1).neg().mean()
+}
+
 pub fn mean_entropy<B: Backend>(probs: Tensor<B, 2>) -> Tensor<B, 1> {
     entropy(probs).mean()
 }
