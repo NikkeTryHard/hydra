@@ -254,6 +254,10 @@ impl CtSmc {
         }
     }
 
+    pub fn num_particles(&self) -> usize {
+        self.particles.len()
+    }
+
     pub fn ess(&self) -> f32 {
         if self.particles.is_empty() {
             return 0.0;
