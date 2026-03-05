@@ -28,17 +28,26 @@ pub struct Particle {
     pub log_weight: f64,
 }
 
-fn compositions(r: u8) -> Vec<[u8; 4]> {
-    let mut result = Vec::new();
-    for x0 in 0..=r {
-        for x1 in 0..=(r - x0) {
-            for x2 in 0..=(r - x0 - x1) {
-                let x3 = r - x0 - x1 - x2;
-                result.push([x0, x1, x2, x3]);
+use std::sync::LazyLock;
+
+static COMPOSITIONS: LazyLock<[Vec<[u8; 4]>; 5]> = LazyLock::new(|| {
+    std::array::from_fn(|r| {
+        let r = r as u8;
+        let mut result = Vec::new();
+        for x0 in 0..=r {
+            for x1 in 0..=(r - x0) {
+                for x2 in 0..=(r - x0 - x1) {
+                    let x3 = r - x0 - x1 - x2;
+                    result.push([x0, x1, x2, x3]);
+                }
             }
         }
-    }
-    result
+        result
+    })
+});
+
+fn compositions(r: u8) -> &'static Vec<[u8; 4]> {
+    &COMPOSITIONS[r as usize]
 }
 
 fn log_phi(comp: &[u8; 4], log_omega_k: &[f64; 4]) -> f64 {
@@ -79,7 +88,7 @@ pub fn forward_dp(
             for c1 in 0..=max_c1 {
                 for c2 in 0..=max_c2 {
                     let mut val = f64::NEG_INFINITY;
-                    for comp in &comps {
+                    for comp in comps {
                         if comp[0] > c0 || comp[1] > c1 || comp[2] > c2 {
                             continue;
                         }
@@ -119,7 +128,7 @@ pub fn backward_sample<R: Rng>(
         }
         let mut log_probs = Vec::with_capacity(comps.len());
         let mut valid_comps = Vec::with_capacity(comps.len());
-        for comp in &comps {
+        for comp in comps {
             if comp[0] > c.0 || comp[1] > c.1 || comp[2] > c.2 {
                 continue;
             }
