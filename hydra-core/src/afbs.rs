@@ -183,6 +183,10 @@ impl AfbsTree {
         self.nodes.clear();
     }
 
+    pub fn leaf_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.is_leaf()).count()
+    }
+
     pub fn child_actions(&self, node: NodeIdx) -> Vec<u8> {
         self.nodes
             .get(node as usize)
