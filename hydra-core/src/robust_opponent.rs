@@ -23,6 +23,16 @@ impl ArchetypeWeights {
         }
     }
 
+    pub fn entropy(&self) -> f32 {
+        let mut h = 0.0f32;
+        for &w in &self.weights {
+            if w > 1e-8 {
+                h -= w * w.ln();
+            }
+        }
+        h
+    }
+
     pub fn update_posterior(&mut self, log_likelihoods: &[f32]) {
         let max_ll = log_likelihoods
             .iter()
