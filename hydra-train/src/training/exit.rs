@@ -17,6 +17,14 @@ pub struct ExitConfig {
     pub safety_valve_max_kl: f32,
 }
 
+pub fn anneal_exit_weight(base_weight: f32, phase: u8, progress: f32) -> f32 {
+    match phase {
+        0 | 1 => 0.0,
+        2 => base_weight * progress.min(1.0),
+        _ => base_weight,
+    }
+}
+
 pub fn is_hard_state(policy: &[f32], threshold: f32) -> bool {
     if policy.len() < 2 {
         return false;
