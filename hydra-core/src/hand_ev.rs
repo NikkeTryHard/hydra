@@ -41,6 +41,10 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn has_triplet(hand: &[u8; NUM_TILE_TYPES]) -> bool {
+    hand.iter().any(|&c| c >= 3)
+}
+
 pub fn has_pair(hand: &[u8; NUM_TILE_TYPES]) -> bool {
     hand.iter().any(|&c| c >= 2)
 }
