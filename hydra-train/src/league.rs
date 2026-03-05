@@ -113,6 +113,14 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn remove_agent(&mut self, idx: usize) -> Option<LeagueAgent> {
+        if idx < self.agents.len() {
+            Some(self.agents.remove(idx))
+        } else {
+            None
+        }
+    }
+
     pub fn add_agent(&mut self, agent: LeagueAgent) {
         self.agents.push(agent);
     }
