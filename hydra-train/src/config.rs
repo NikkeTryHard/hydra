@@ -123,6 +123,16 @@ pub struct OracleGuidingConfig {
 }
 
 impl OracleGuidingConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.dropout_start < 0.0 || self.dropout_start > 1.0 {
+            return Err("dropout_start in [0,1]");
+        }
+        if self.dropout_end < 0.0 || self.dropout_end > 1.0 {
+            return Err("dropout_end in [0,1]");
+        }
+        Ok(())
+    }
+
     pub fn dropout_at_step(&self, step: usize, total_steps: usize) -> f32 {
         if total_steps == 0 {
             return self.dropout_start;
