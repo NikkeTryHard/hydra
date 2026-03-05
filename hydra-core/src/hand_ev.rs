@@ -41,6 +41,41 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn compute_hand_ev(
+    hand: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    shanten_fn: &dyn Fn(&[u8; NUM_TILE_TYPES]) -> i8,
+) -> HandEvFeatures {
+    let mut features = HandEvFeatures::default();
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return features;
+    }
+
+    for discard in 0..NUM_TILE_TYPES {
+        if hand[discard] == 0 {
+            continue;
+        }
+        let mut after_discard = *hand;
+        after_discard[discard] -= 1;
+        let uke = compute_ukeire(&after_discard, remaining, shanten_fn);
+        features.ukeire[discard] = uke;
+        let shanten_after = shanten_fn(&after_discard);
+        let acceptance: f32 = uke.iter().sum();
+        if total_remaining > 0.0 {
+            let p_draw = acceptance / total_remaining;
+            features.tenpai_prob[discard][0] = if shanten_after <= 0 { 1.0 } else { p_draw };
+            features.tenpai_prob[discard][1] = features.tenpai_prob[discard][0].min(1.0);
+            features.tenpai_prob[discard][2] = features.tenpai_prob[discard][1].min(1.0);
+            features.win_prob[discard][0] = if shanten_after < 0 { 1.0 } else { p_draw * 0.5 };
+            features.win_prob[discard][1] = features.win_prob[discard][0].min(1.0);
+            features.win_prob[discard][2] = features.win_prob[discard][1].min(1.0);
+        }
+        features.expected_score[discard] = acceptance * 1000.0;
+    }
+    features
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +103,44 @@ mod tests {
         let uke = compute_ukeire(&hand, &remaining, &improves_on_tile_0);
         assert!((uke[0] - 4.0).abs() < 1e-5);
         assert!(uke[1..].iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn tenpai_hand_has_high_p_tenpai() {
+        let mut hand = [0u8; NUM_TILE_TYPES];
+        hand[0] = 3;
+        hand[1] = 1;
+        let remaining = [4.0f32; NUM_TILE_TYPES];
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            let total: u8 = h.iter().sum();
+            if total >= 4 {
+                0
+            } else {
+                1
+            }
+        };
+        let features = compute_hand_ev(&hand, &remaining, &shanten_fn);
+        assert!(
+            features.tenpai_prob[1][0] > 0.0,
+            "discarding tile 1 should have positive tenpai prob"
+        );
+    }
+
+    #[test]
+    fn ukeire_sums_match_acceptance() {
+        let mut hand = [0u8; NUM_TILE_TYPES];
+        hand[0] = 2;
+        hand[1] = 1;
+        let remaining = [3.0f32; NUM_TILE_TYPES];
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            if h[0] >= 3 {
+                -1
+            } else {
+                0
+            }
+        };
+        let uke = compute_ukeire(&hand, &remaining, &shanten_fn);
+        let acceptance: f32 = uke.iter().sum();
+        assert!((acceptance - 3.0).abs() < 1e-5, "tile 0 has 3 remaining");
     }
 }
