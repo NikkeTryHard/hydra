@@ -640,10 +640,10 @@ pub mod tests {
     #[test]
     fn test_policy_ce_single_legal_action() {
         let device = Default::default();
-        let mut mask_data = vec![0.0f32; 46];
+        let mut mask_data = [0.0f32; 46];
         mask_data[5] = 1.0;
-        let mask = Tensor::<B, 2>::from_floats([mask_data.as_slice()], &device);
-        let target = Tensor::<B, 2>::from_floats([mask_data.as_slice()], &device);
+        let mask = Tensor::<B, 1>::from_floats(mask_data.as_slice(), &device).reshape([1, 46]);
+        let target = mask.clone();
         let logits = Tensor::<B, 2>::zeros([1, 46], &device);
         let loss = policy_ce(logits, target, mask);
         let v: f32 = loss.into_scalar().elem();
