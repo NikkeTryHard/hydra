@@ -218,6 +218,45 @@ fn edge_case_smoke_test() {
     }
 }
 
+#[test]
+fn determinism_same_seed_same_particles() {
+    use hydra_core::ct_smc::{CtSmc, CtSmcConfig};
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    let mut row_sums = [0u8; 34];
+    row_sums[0] = 2;
+    row_sums[1] = 1;
+    row_sums[2] = 1;
+    let col_sums = [1, 1, 1, 1];
+    let log_omega = [[0.0f64; 4]; 34];
+    let cfg = CtSmcConfig {
+        num_particles: 16,
+        ess_threshold: 0.4,
+        rng_seed: 42,
+    };
+
+    let mut rng1 = ChaCha8Rng::seed_from_u64(42);
+    let mut smc1 = CtSmc::new(cfg);
+    smc1.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng1);
+
+    let cfg2 = CtSmcConfig {
+        num_particles: 16,
+        ess_threshold: 0.4,
+        rng_seed: 42,
+    };
+    let mut rng2 = ChaCha8Rng::seed_from_u64(42);
+    let mut smc2 = CtSmc::new(cfg2);
+    smc2.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng2);
+
+    for i in 0..16 {
+        assert_eq!(
+            smc1.particles[i].allocation, smc2.particles[i].allocation,
+            "particle {i} differs between runs with same seed"
+        );
+    }
+}
+
 fn make_test_targets(
     device: &<TestBackend as Backend>::Device,
     batch: usize,
