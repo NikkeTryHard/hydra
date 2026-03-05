@@ -97,6 +97,19 @@ impl League {
         let e_w = 1.0 / (1.0 + 10.0f32.powf((r_l - r_w) / 400.0));
         self.agents[winner].elo += k * (1.0 - e_w);
         self.agents[loser].elo += k * (0.0 - (1.0 - e_w));
+        self.total_matches += 1;
+    }
+
+    pub fn update_elo_4p(&mut self, placements: [usize; 4], k: f32) {
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                if placements[i] < placements[j] {
+                    self.update_elo(placements[i], placements[j], k / 6.0);
+                } else if placements[j] < placements[i] {
+                    self.update_elo(placements[j], placements[i], k / 6.0);
+                }
+            }
+        }
     }
 }
 
