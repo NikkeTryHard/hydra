@@ -357,4 +357,29 @@ mod tests {
             "uniform marginal should be ~0.5, got {freq}"
         );
     }
+
+    #[test]
+    fn update_with_likelihood_reweights() {
+        let mut rng = ChaCha8Rng::seed_from_u64(77);
+        let mut row_sums = [0u8; 34];
+        row_sums[0] = 1;
+        row_sums[1] = 1;
+        let col_sums = [1, 1, 0, 0];
+        let log_omega = [[0.0f64; 4]; 34];
+        let cfg = CtSmcConfig {
+            rng_seed: 77,
+            num_particles: 64,
+            ess_threshold: 0.4,
+        };
+        let mut smc = CtSmc::new(cfg);
+        let likelihood = |p: &Particle| -> f64 {
+            if p.allocation[0][0] == 1 {
+                0.0
+            } else {
+                -10.0
+            }
+        };
+        smc.update(&row_sums, &col_sums, &log_omega, &likelihood, &mut rng);
+        assert!(!smc.particles.is_empty());
+    }
 }
