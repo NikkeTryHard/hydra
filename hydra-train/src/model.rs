@@ -17,6 +17,13 @@ pub struct HydraOutput<B: Backend> {
     pub oracle_critic: Tensor<B, 2>,
 }
 
+impl<B: Backend> HydraOutput<B> {
+    pub fn masked_policy(&self, legal_mask: Tensor<B, 2>) -> Tensor<B, 2> {
+        let neg_inf = (legal_mask.ones_like() - legal_mask) * (-1e9f32);
+        self.policy_logits.clone() + neg_inf
+    }
+}
+
 #[derive(Module, Debug)]
 pub struct HydraModel<B: Backend> {
     backbone: SEResNet<B>,
