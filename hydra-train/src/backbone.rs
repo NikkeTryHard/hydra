@@ -221,4 +221,24 @@ mod tests {
         }
         assert!(any_diff, "SE should modulate channels");
     }
+
+    #[test]
+    fn se_block_output_bounded_by_input() {
+        let device = Default::default();
+        let se = SEBlockConfig::new(4, 2).init::<B>(&device);
+        let x = Tensor::<B, 3>::random(
+            [2, 4, 8],
+            burn::tensor::Distribution::Normal(0.0, 2.0),
+            &device,
+        );
+        let out = se.forward(x.clone());
+        let x_abs = x.abs().max();
+        let o_abs = out.abs().max();
+        let x_max: f32 = x_abs.into_scalar().elem();
+        let o_max: f32 = o_abs.into_scalar().elem();
+        assert!(
+            o_max <= x_max + 1e-4,
+            "SE output max ({o_max}) should be <= input max ({x_max}) due to sigmoid gate"
+        );
+    }
 }
