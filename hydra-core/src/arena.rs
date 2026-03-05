@@ -137,4 +137,37 @@ mod tests {
         });
         assert!(!traj.steps.is_empty());
     }
+
+    #[test]
+    fn trajectory_roundtrip() {
+        let mut traj = Trajectory::new(42, 12345);
+        traj.final_scores = [25000, 30000, 20000, 25000];
+        traj.steps.push(TrajectoryStep {
+            obs: [0.5; OBS_SIZE],
+            action: 7,
+            pi_old: {
+                let mut p = [0.0; HYDRA_ACTION_SPACE];
+                p[7] = 0.8;
+                p[45] = 0.2;
+                p
+            },
+            reward: 1.5,
+            done: false,
+            player_id: 2,
+            game_id: 42,
+            turn: 10,
+            temperature: 0.8,
+        });
+        let step = &traj.steps[0];
+        assert_eq!(step.action, 7);
+        assert_eq!(step.player_id, 2);
+        assert_eq!(step.turn, 10);
+        assert!((step.reward - 1.5).abs() < 1e-5);
+        assert!((step.temperature - 0.8).abs() < 1e-5);
+        assert_eq!(traj.game_id, 42);
+        assert_eq!(traj.seed, 12345);
+        assert_eq!(traj.final_scores, [25000, 30000, 20000, 25000]);
+        assert!((step.obs[0] - 0.5).abs() < 1e-5);
+        assert!((step.pi_old[7] - 0.8).abs() < 1e-5);
+    }
 }
