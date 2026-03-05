@@ -109,6 +109,17 @@ impl Default for OracleGuidingConfig {
     }
 }
 
+pub fn validate_training_config(
+    model_cfg: &crate::model::HydraModelConfig,
+    ach_cfg: &crate::training::ach::AchConfig,
+    exit_cfg: &crate::training::exit::ExitConfig,
+) -> Result<(), &'static str> {
+    model_cfg.validate()?;
+    ach_cfg.validate()?;
+    exit_cfg.validate()?;
+    Ok(())
+}
+
 pub struct PipelineState {
     pub phase: TrainingPhase,
     pub gpu_hours_used: f32,
