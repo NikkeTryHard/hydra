@@ -26,6 +26,13 @@ pub const C_PUCT: f32 = 2.5;
 pub const AFBS_TOP_K: usize = 5;
 pub const CT_SMC_PARTICLES: usize = 128;
 
+pub const ON_TURN_BEAM_W: usize = 64;
+pub const ON_TURN_DEPTH: u8 = 4;
+pub const ON_TURN_PARTICLES: usize = 128;
+pub const PONDER_BEAM_W: usize = 256;
+pub const PONDER_DEPTH: u8 = 10;
+pub const PONDER_PARTICLES: usize = 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingPhase {
     BenchmarkGates,
