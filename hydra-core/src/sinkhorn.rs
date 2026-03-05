@@ -130,6 +130,14 @@ impl MixtureSib {
         }
     }
 
+    pub fn reset_weights(&mut self) {
+        let n = self.components.len();
+        let w = -(n as f64).ln();
+        for comp in &mut self.components {
+            comp.log_weight = w;
+        }
+    }
+
     pub fn is_converged(&self, tol: f64) -> bool {
         let w = self.weights();
         w.iter().all(|&w| w.is_finite() && w >= 0.0) && (w.iter().sum::<f64>() - 1.0).abs() < tol
