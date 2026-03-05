@@ -201,4 +201,21 @@ mod tests {
             "Elo should be zero-sum: before={total_before}, after={total_after}"
         );
     }
+
+    #[test]
+    fn elo_4p_conserved() {
+        let mut league = League::new();
+        for i in 0..4 {
+            league.add_agent(LeagueAgent {
+                weights_path: PathBuf::from(format!("{i}.bin")),
+                agent_type: AgentType::Checkpoint(i as u32),
+                elo: 1500.0,
+            });
+        }
+        let before: f32 = league.agents.iter().map(|a| a.elo).sum();
+        league.update_elo_4p([0, 1, 2, 3], 32.0);
+        let after: f32 = league.agents.iter().map(|a| a.elo).sum();
+        assert!((before - after).abs() < 0.1, "4p Elo: {before} vs {after}");
+        assert!(league.agents[0].elo > 1500.0, "1st place should gain Elo");
+    }
 }
