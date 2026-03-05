@@ -169,6 +169,10 @@ impl PipelineState {
         2000.0 - self.gpu_hours_used
     }
 
+    pub fn total_budget() -> f32 {
+        2000.0
+    }
+
     pub fn phase_progress(&self) -> f32 {
         let budget = self.phase.gpu_hours_budget() as f32;
         if budget == 0.0 {
