@@ -202,6 +202,21 @@ mod tests {
     }
 
     #[test]
+    fn test_grp_perm_table_has_24_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for perm in &GRP_PERM_TABLE {
+            assert!(seen.insert(*perm), "duplicate perm {perm:?}");
+        }
+        assert_eq!(seen.len(), 24);
+    }
+
+    #[test]
+    fn test_grp_all_tie_scores() {
+        let idx = scores_to_grp_index([25000, 25000, 25000, 25000]).unwrap();
+        assert!(idx < 24);
+    }
+
+    #[test]
     fn test_score_bin_boundaries() {
         assert_eq!(score_delta_to_bin(-50000), 0);
         assert_eq!(score_delta_to_bin(60000), SCORE_BINS - 1);
