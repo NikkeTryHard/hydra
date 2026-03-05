@@ -41,6 +41,17 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn shanten_improvement_count(
+    hand: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    shanten_fn: &dyn Fn(&[u8; NUM_TILE_TYPES]) -> i8,
+) -> usize {
+    compute_ukeire(hand, remaining, shanten_fn)
+        .iter()
+        .filter(|&&v| v > 0.0)
+        .count()
+}
+
 pub fn danger_from_particles(particles: &[crate::ct_smc::Particle], tile: u8, opponent: u8) -> f32 {
     if particles.is_empty() || tile >= 34 || opponent >= 3 {
         return 0.0;
