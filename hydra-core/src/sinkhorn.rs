@@ -6,6 +6,16 @@ pub struct SinkhornConfig {
     pub num_components: u8,
 }
 
+impl SinkhornConfig {
+    pub fn new(max_iters: u16, tol: f64, num_components: u8) -> Self {
+        Self {
+            max_iters,
+            tol,
+            num_components,
+        }
+    }
+}
+
 impl Default for SinkhornConfig {
     fn default() -> Self {
         Self {
