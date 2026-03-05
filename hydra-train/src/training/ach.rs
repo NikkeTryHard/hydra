@@ -91,9 +91,10 @@ pub fn ach_policy_loss<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::NdArray;
+    use burn::backend::{Autodiff, NdArray};
 
     type B = NdArray<f32>;
+    type AB = Autodiff<NdArray<f32>>;
     type AchInputs = (
         Tensor<B, 2>,
         Tensor<B, 2>,
@@ -202,5 +203,52 @@ mod tests {
         let loss = ach_policy_loss(logits, mask, actions, pi_old, adv, &cfg);
         let val = loss.into_scalar().elem::<f32>();
         assert!(val.is_finite(), "batch ACH should be finite: {val}");
+    }
+
+    #[test]
+    fn test_ach_one_epoch_changes_weights() {
+        use crate::model::HydraModelConfig;
+        use crate::training::losses::{tests::make_dummy_targets, HydraLoss, HydraLossConfig};
+        use crate::training::rl::{rl_step, RlBatch, RlConfig};
+        use burn::optim::AdamConfig;
+
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+
+        let obs = Tensor::<AB, 3>::random(
+            [2, 85, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+
+        let out_before = model.forward(obs.clone());
+        let val_before: f32 = out_before.value.clone().mean().into_scalar().elem();
+
+        let batch = RlBatch {
+            obs: obs.clone(),
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 2),
+            exit_target: None,
+        };
+        let cfg = RlConfig::default_phase2().with_lr(1e-3);
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let mut opt = AdamConfig::new().init();
+
+        let (model_after, _) = rl_step(model, &batch, &cfg, &loss_fn, &mut opt);
+
+        let out_after = model_after.forward(obs);
+        let val_after: f32 = out_after.value.clone().mean().into_scalar().elem();
+
+        assert!(
+            (val_before - val_after).abs() > 1e-8,
+            "one ACH epoch must change weights: before={val_before}, after={val_after}"
+        );
     }
 }

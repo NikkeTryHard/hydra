@@ -225,4 +225,31 @@ mod tests {
         let kl = compute_rebase_kl(base, res, 4.0, mask);
         assert!(kl > 0.0, "non-zero residual should give positive KL: {kl}");
     }
+
+    #[test]
+    fn test_drda_tau_below_minimum() {
+        let cfg = DrdaConfig { tau_drda: 1.5 };
+        let result = cfg.validate();
+        assert!(result.is_err(), "tau_drda=1.5 should fail validation");
+        assert_eq!(result.unwrap_err(), "tau_drda below minimum 2.0");
+    }
+
+    #[test]
+    fn test_drda_rebase_tracker_timing() {
+        let mut tracker = RebaseTracker::new(37.5);
+        assert!(!tracker.should_rebase(), "fresh tracker should not rebase");
+
+        tracker.tick(38.0);
+        assert!(
+            tracker.should_rebase(),
+            "after 38h with 37.5h interval, should_rebase must be true"
+        );
+
+        tracker.record_rebase();
+        assert!(
+            !tracker.should_rebase(),
+            "after record_rebase, should_rebase must be false"
+        );
+        assert_eq!(tracker.total_rebases, 1);
+    }
 }

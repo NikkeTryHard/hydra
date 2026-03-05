@@ -99,13 +99,17 @@ pub fn is_confident(probs: &[f32; HYDRA_ACTION_SPACE], threshold: f32) -> bool {
 
 pub fn sample_from_policy(probs: &[f32; HYDRA_ACTION_SPACE], rng_val: f32) -> u8 {
     let mut cumsum = 0.0f32;
+    let mut last_positive = 0u8;
     for (i, &p) in probs.iter().enumerate() {
+        if p > 0.0 {
+            last_positive = i as u8;
+        }
         cumsum += p;
         if rng_val <= cumsum {
             return i as u8;
         }
     }
-    (HYDRA_ACTION_SPACE - 1) as u8
+    last_positive
 }
 
 pub fn num_legal_actions(mask: &[bool; HYDRA_ACTION_SPACE]) -> usize {
