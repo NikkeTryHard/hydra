@@ -84,6 +84,11 @@ pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     h
 }
 
+pub fn action_rank(probs: &[f32; HYDRA_ACTION_SPACE], action: u8) -> usize {
+    let p = probs[action as usize];
+    probs.iter().filter(|&&q| q > p).count()
+}
+
 pub fn needs_search(probs: &[f32; HYDRA_ACTION_SPACE], gap_threshold: f32) -> bool {
     policy_top2_gap(probs) < gap_threshold
 }
