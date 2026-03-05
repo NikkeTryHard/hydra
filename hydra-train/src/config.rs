@@ -545,4 +545,22 @@ mod tests {
         );
         assert!(result.is_ok(), "default configs should pass: {result:?}");
     }
+
+    #[test]
+    fn validate_all_configs_catches_bad_ach() {
+        use crate::model::HydraModelConfig;
+        use crate::training::{ach, distill, drda, exit, gae, losses};
+        let bad_ach = ach::AchConfig::new().with_eta(0.0);
+        let result = validate_all_configs(
+            &HydraModelConfig::learner(),
+            &losses::HydraLossConfig::new(),
+            &bad_ach,
+            &exit::ExitConfig::new(),
+            &drda::DrdaConfig::new(),
+            &gae::GaeConfig::default(),
+            &distill::DistillConfig::new(),
+        );
+        assert!(result.is_err(), "zero eta should fail validation");
+        assert!(result.unwrap_err().contains("ach"));
+    }
 }
