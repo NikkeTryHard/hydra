@@ -77,6 +77,19 @@ pub struct HydraModelConfig {
 }
 
 impl HydraModelConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
+            return Err("hidden_channels must be divisible by num_groups");
+        }
+        if self.num_blocks == 0 {
+            return Err("num_blocks must be > 0");
+        }
+        if self.se_bottleneck == 0 {
+            return Err("se_bottleneck must be > 0");
+        }
+        Ok(())
+    }
+
     pub fn actor() -> Self {
         Self::new(12)
     }
