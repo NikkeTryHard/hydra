@@ -137,6 +137,10 @@ impl PipelineState {
     pub fn remaining_budget(&self) -> f32 {
         2000.0 - self.gpu_hours_used
     }
+
+    pub fn should_advance_phase(&self) -> bool {
+        self.gpu_hours_used >= self.phase.gpu_hours_budget() as f32
+    }
 }
 
 #[cfg(test)]
