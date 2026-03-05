@@ -12,6 +12,10 @@ pub struct DrdaConfig {
 pub const MIN_TAU_DRDA: f32 = 2.0;
 
 impl DrdaConfig {
+    pub fn summary(&self) -> String {
+        format!("drda(tau={:.1})", self.tau_drda)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.tau_drda < MIN_TAU_DRDA {
             return Err("tau_drda below minimum 2.0");
