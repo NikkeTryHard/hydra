@@ -389,6 +389,31 @@ pub mod tests {
     }
 
     #[test]
+    fn test_all_head_losses_positive() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::random(
+            [4, 85, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let out = model.forward(x);
+        let targets = make_dummy_targets::<B>(&device, 4);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new());
+        let bd = loss_fn.total_loss(&out, &targets);
+        let check = |name: &str, t: &Tensor<B, 1>| {
+            let v: f32 = t.clone().into_scalar().elem();
+            assert!(v > 0.0 && v.is_finite(), "{name} loss = {v}");
+        };
+        check("policy", &bd.policy);
+        check("value", &bd.value);
+        check("grp", &bd.grp);
+        check("opp_next", &bd.opp_next);
+        check("score_pdf", &bd.score_pdf);
+        check("score_cdf", &bd.score_cdf);
+    }
+
+    #[test]
     fn test_default_weights_match_roadmap() {
         let cfg = HydraLossConfig::new();
         assert!((cfg.w_pi - 1.0).abs() < 1e-6);
