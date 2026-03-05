@@ -54,6 +54,16 @@ impl RobustOpponentConfig {
     }
 }
 
+impl RobustOpponentConfig {
+    pub fn new(epsilon: f32, num_archetypes: usize) -> Self {
+        Self {
+            epsilon,
+            num_archetypes,
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for RobustOpponentConfig {
     fn default() -> Self {
         Self {
