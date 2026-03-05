@@ -149,6 +149,33 @@ impl AfbsTree {
     }
 }
 
+pub fn playout_cap(
+    base_playouts: u32,
+    policy: &[f32; HYDRA_ACTION_SPACE],
+    danger_risk: f32,
+    ess: f32,
+    ess_threshold: f32,
+) -> u32 {
+    let mut sorted: Vec<f32> = policy.iter().copied().filter(|&p| p > 0.001).collect();
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let top2_gap = if sorted.len() >= 2 {
+        sorted[0] - sorted[1]
+    } else {
+        1.0
+    };
+    let mut multiplier = 1.0f32;
+    if top2_gap < 0.1 {
+        multiplier *= 2.0;
+    }
+    if danger_risk > 0.5 {
+        multiplier *= 1.5;
+    }
+    if ess < ess_threshold {
+        multiplier *= 1.5;
+    }
+    (base_playouts as f32 * multiplier) as u32
+}
+
 pub fn pondering_priority_score(
     policy: &[f32; HYDRA_ACTION_SPACE],
     danger_risk: f32,
