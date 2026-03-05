@@ -324,6 +324,17 @@ pub fn softmax_temperature(
     probs
 }
 
+pub fn mean_placement_from_scores(scores: &[[i32; 4]], player: u8) -> f32 {
+    if scores.is_empty() {
+        return 2.5;
+    }
+    let sum: f32 = scores
+        .iter()
+        .map(|s| compute_placements(*s)[player as usize] as f32 + 1.0)
+        .sum();
+    sum / scores.len() as f32
+}
+
 pub fn compute_placements(scores: [i32; 4]) -> [u8; 4] {
     let mut indexed: [(i32, u8); 4] = [
         (scores[0], 0),
