@@ -23,6 +23,10 @@ impl MjaiDataset {
         }
     }
 
+    pub fn add_game(&mut self, game: MjaiGame) {
+        self.games.push(game);
+    }
+
     pub fn num_samples(&self) -> usize {
         self.games.iter().map(|g| g.samples.len()).sum()
     }
