@@ -23,7 +23,6 @@ pub fn sinkhorn_project(
     max_iters: u16,
     tol: f64,
 ) -> [f64; 136] {
-    let mut b = [1.0f64; 136];
     let mut u = [1.0f64; 34];
     let mut v = [1.0f64; 4];
 
@@ -31,34 +30,34 @@ pub fn sinkhorn_project(
         for i in 0..34 {
             let mut s = 0.0;
             for j in 0..4 {
-                s += kernel[i * 4 + j] * v[j] * b[i * 4 + j];
+                s += kernel[i * 4 + j] * v[j];
             }
             u[i] = if s > 1e-15 { row_sums[i] / s } else { 0.0 };
         }
         for j in 0..4 {
             let mut s = 0.0;
             for i in 0..34 {
-                s += kernel[i * 4 + j] * u[i] * b[i * 4 + j];
+                s += kernel[i * 4 + j] * u[i];
             }
             v[j] = if s > 1e-15 { col_sums[j] / s } else { 0.0 };
-        }
-
-        for i in 0..34 {
-            for j in 0..4 {
-                b[i * 4 + j] = kernel[i * 4 + j] * u[i] * v[j];
-            }
         }
 
         let mut row_err = 0.0f64;
         for i in 0..34 {
             let mut s = 0.0;
             for j in 0..4 {
-                s += b[i * 4 + j];
+                s += kernel[i * 4 + j] * u[i] * v[j];
             }
             row_err += (s - row_sums[i]).abs();
         }
         if row_err < tol {
             break;
+        }
+    }
+    let mut b = [0.0f64; 136];
+    for i in 0..34 {
+        for j in 0..4 {
+            b[i * 4 + j] = kernel[i * 4 + j] * u[i] * v[j];
         }
     }
     b
