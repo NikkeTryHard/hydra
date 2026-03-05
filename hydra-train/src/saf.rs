@@ -114,4 +114,38 @@ mod tests {
         let r = result.to_data().as_slice::<f32>().expect("f32").to_vec();
         assert_eq!(b, r, "zero mask should produce identical logits");
     }
+
+    #[test]
+    fn saf_features_to_array_roundtrip() {
+        let f = SafFeatures {
+            delta_q: 0.1,
+            boole_risk: 0.2,
+            hunter_risk: 0.3,
+            robust_risk: 0.4,
+            entropy_drop: 0.5,
+            tau_robust: 0.6,
+            variance: 0.7,
+            ess: 0.8,
+        };
+        let arr = f.to_array();
+        assert_eq!(arr.len(), SAF_INPUT_DIM);
+        assert!((arr[0] - 0.1).abs() < 1e-6);
+        assert!((arr[7] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn saf_mlp_output_finite() {
+        let device = Default::default();
+        let mlp = SafConfig::new().init::<B>(&device);
+        let x = Tensor::<B, 2>::random(
+            [8, SAF_INPUT_DIM],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let out = mlp.forward(x);
+        let data = out.to_data();
+        for &v in data.as_slice::<f32>().expect("f32") {
+            assert!(v.is_finite(), "SaF output should be finite: {v}");
+        }
+    }
 }
