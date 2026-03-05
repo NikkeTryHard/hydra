@@ -120,6 +120,10 @@ pub fn score_cdf_bce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> 
     loss.mean_dim(1).squeeze_dim::<1>(1)
 }
 
+pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight: f32) -> f32 {
+    (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
+}
+
 pub fn oracle_target_from_scores(final_scores: [i32; 4]) -> [f32; 4] {
     let mean = final_scores.iter().sum::<i32>() as f32 / 4.0;
     let mut target = [0.0f32; 4];
