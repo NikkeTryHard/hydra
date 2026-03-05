@@ -183,6 +183,9 @@ impl AfbsTree {
         self.nodes.clear();
     }
 
+    pub fn expanded_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.is_expanded()).count()
+    }
     pub fn leaf_count(&self) -> usize {
         self.nodes.iter().filter(|n| n.is_leaf()).count()
     }
