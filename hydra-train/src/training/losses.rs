@@ -500,6 +500,18 @@ pub mod tests {
         assert!(cvar <= cvar_full, "CVaR(0.3) <= CVaR(1.0)");
     }
 
+    #[test]
+    fn test_bce_extreme_logits() {
+        let device = Default::default();
+        let logits = Tensor::<B, 2>::from_floats([[100.0, -100.0]], &device);
+        let target = Tensor::<B, 2>::from_floats([[1.0, 0.0]], &device);
+        let loss = bce_with_logits(logits, target);
+        let data = loss.to_data();
+        for &v in data.as_slice::<f32>().expect("f32") {
+            assert!(v.is_finite(), "extreme logits should give finite BCE: {v}");
+        }
+    }
+
     pub fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
         HydraTargets {
             policy_target: onehot2d(device, batch, 46, 0),
