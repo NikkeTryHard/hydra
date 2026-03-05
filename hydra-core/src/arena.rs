@@ -222,6 +222,21 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn score_variance(&self) -> f32 {
+        if self.trajectory_buffer.is_empty() {
+            return 0.0;
+        }
+        let means = self.mean_scores();
+        let n = self.trajectory_buffer.len() as f32;
+        let mut var = 0.0f32;
+        for t in &self.trajectory_buffer {
+            for (i, &s) in t.final_scores.iter().enumerate() {
+                var += (s as f32 - means[i]).powi(2);
+            }
+        }
+        var / (n * 4.0)
+    }
+
     pub fn mean_game_length(&self) -> f32 {
         if self.trajectory_buffer.is_empty() {
             return 0.0;
