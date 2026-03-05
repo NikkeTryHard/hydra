@@ -64,6 +64,18 @@ impl RobustOpponentConfig {
     }
 }
 
+impl RobustOpponentConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.epsilon <= 0.0 {
+            return Err("epsilon must be positive");
+        }
+        if self.num_archetypes == 0 {
+            return Err("need at least 1 archetype");
+        }
+        Ok(())
+    }
+}
+
 impl Default for RobustOpponentConfig {
     fn default() -> Self {
         Self {
