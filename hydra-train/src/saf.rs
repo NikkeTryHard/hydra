@@ -50,6 +50,18 @@ pub fn saf_dropout_mask(batch_size: usize, drop_prob: f32, rng_vals: &[f32]) -> 
         .collect()
 }
 
+impl SafConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.hidden_dim == 0 {
+            return Err("hidden_dim must be > 0");
+        }
+        if self.dropout < 0.0 || self.dropout >= 1.0 {
+            return Err("dropout must be in [0,1)");
+        }
+        Ok(())
+    }
+}
+
 pub fn apply_saf_logit<B: Backend>(
     base_logits: Tensor<B, 2>,
     saf_output: Tensor<B, 2>,
