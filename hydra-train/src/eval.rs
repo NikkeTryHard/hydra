@@ -19,6 +19,12 @@ pub struct EvalResult {
     pub tsumo_rate: f32,
 }
 
+impl EvalResult {
+    pub fn is_tendan_plus(&self) -> bool {
+        self.stable_dan >= 10.0
+    }
+}
+
 impl Default for EvalResult {
     fn default() -> Self {
         Self {
