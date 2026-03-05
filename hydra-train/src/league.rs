@@ -113,6 +113,12 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn current_agent(&self) -> Option<usize> {
+        self.agents
+            .iter()
+            .position(|a| a.agent_type == AgentType::Current)
+    }
+
     pub fn agents_of_type(&self, agent_type: &AgentType) -> Vec<usize> {
         self.agents
             .iter()
