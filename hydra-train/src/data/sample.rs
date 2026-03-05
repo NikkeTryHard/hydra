@@ -283,4 +283,31 @@ mod tests {
             assert!(sum > 0.0, "all-zero mask found");
         }
     }
+
+    #[test]
+    fn test_single_sample_batch() {
+        let device = Default::default();
+        let samples = vec![dummy_sample(5, 12000)];
+        let batch = collate_batch::<B>(&samples, &device);
+        assert_eq!(batch.obs.dims(), [1, 85, 34]);
+        assert_eq!(batch.actions.dims(), [1]);
+        let action_data = batch.actions.to_data();
+        assert_eq!(action_data.as_slice::<i64>().expect("i64")[0], 5);
+    }
+
+    #[test]
+    fn test_extreme_score_deltas() {
+        let device = Default::default();
+        let samples = vec![
+            dummy_sample(0, -100_000),
+            dummy_sample(1, 100_000),
+            dummy_sample(2, 0),
+        ];
+        let batch = collate_batch::<B>(&samples, &device);
+        let val_data = batch.value_target.to_data();
+        let vals = val_data.as_slice::<f32>().expect("f32");
+        assert!((vals[0] - (-1.0)).abs() < 1e-5);
+        assert!((vals[1] - 1.0).abs() < 1e-5);
+        assert!((vals[2] - 0.0).abs() < 1e-5);
+    }
 }
