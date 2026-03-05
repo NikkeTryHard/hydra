@@ -20,6 +20,15 @@ impl Default for InferenceConfig {
     }
 }
 
+impl InferenceConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "infer(turn={}ms, call={}ms, guard={})",
+            self.on_turn_budget_ms, self.call_reaction_budget_ms, self.agari_guard
+        )
+    }
+}
+
 pub fn legal_mask_to_tensor<B: Backend>(
     mask: &[bool; HYDRA_ACTION_SPACE],
     device: &B::Device,
