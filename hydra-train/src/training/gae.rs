@@ -115,6 +115,13 @@ pub fn mean_advantage(advantages: &[f32]) -> f32 {
     advantages.iter().sum::<f32>() / advantages.len() as f32
 }
 
+pub fn clipped_advantages(advantages: &[f32], max_abs: f32) -> Vec<f32> {
+    advantages
+        .iter()
+        .map(|&a| a.clamp(-max_abs, max_abs))
+        .collect()
+}
+
 pub fn advantage_range(advantages: &[f32]) -> (f32, f32) {
     (min_advantage(advantages), max_advantage(advantages))
 }
