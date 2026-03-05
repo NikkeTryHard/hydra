@@ -24,6 +24,21 @@ pub struct RlBatch<B: Backend> {
     pub exit_target: Option<Tensor<B, 2>>,
 }
 
+impl<B: Backend> RlBatch<B> {
+    pub fn batch_size(&self) -> usize {
+        self.obs.dims()[0]
+    }
+
+    pub fn shapes_consistent(&self) -> bool {
+        let b = self.batch_size();
+        self.actions.dims()[0] == b
+            && self.pi_old.dims()[0] == b
+            && self.advantages.dims()[0] == b
+            && self.base_logits.dims()[0] == b
+            && self.targets.legal_mask.dims()[0] == b
+    }
+}
+
 pub struct RlConfig {
     pub tau_drda: f32,
     pub ach_cfg: AchConfig,
