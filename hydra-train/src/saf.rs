@@ -51,6 +51,13 @@ pub fn saf_dropout_mask(batch_size: usize, drop_prob: f32, rng_vals: &[f32]) -> 
 }
 
 impl SafConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "saf(alpha={:.1}, drop={:.1}, dim={})",
+            self.alpha, self.dropout, self.hidden_dim
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.hidden_dim == 0 {
             return Err("hidden_dim must be > 0");
