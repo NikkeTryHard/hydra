@@ -149,6 +149,33 @@ impl AfbsTree {
     }
 }
 
+pub struct SearchBudget {
+    pub max_playouts: u32,
+    pub max_depth: u8,
+    pub particles: usize,
+    pub time_budget_ms: u64,
+}
+
+impl SearchBudget {
+    pub fn on_turn() -> Self {
+        Self {
+            max_playouts: 64,
+            max_depth: 4,
+            particles: 128,
+            time_budget_ms: 150,
+        }
+    }
+
+    pub fn ponder() -> Self {
+        Self {
+            max_playouts: 256,
+            max_depth: 10,
+            particles: 1024,
+            time_budget_ms: 5000,
+        }
+    }
+}
+
 pub fn top_k_actions(
     logits: &[f32; HYDRA_ACTION_SPACE],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
