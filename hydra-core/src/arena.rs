@@ -12,6 +12,16 @@ pub struct ArenaConfig {
 }
 
 impl ArenaConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "arena(games={}, temp={:.1}-{:.1}, buf={})",
+            self.num_parallel_games,
+            self.temperature_range.0,
+            self.temperature_range.1,
+            self.max_trajectory_buffer
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.num_parallel_games == 0 {
             return Err("num_parallel_games > 0");
