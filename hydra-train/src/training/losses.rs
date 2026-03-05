@@ -174,6 +174,10 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn grad_norm_approx<B: Backend>(loss: Tensor<B, 1>) -> f32 {
+    loss.abs().into_scalar().elem::<f32>()
+}
+
 pub fn batch_value_variance<B: Backend>(values: Tensor<B, 2>) -> Tensor<B, 1> {
     let mean = values.clone().mean_dim(0);
     let diff = values - mean;
