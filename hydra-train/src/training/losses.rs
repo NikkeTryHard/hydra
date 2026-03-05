@@ -185,6 +185,11 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn loss_is_finite<B: Backend>(loss: &Tensor<B, 1>) -> bool {
+    let v: f32 = loss.clone().into_scalar().elem();
+    v.is_finite()
+}
+
 pub fn total_loss_scalar<B: Backend>(breakdown: &LossBreakdown<B>) -> f32 {
     breakdown.total.clone().into_scalar().elem::<f32>()
 }
