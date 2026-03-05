@@ -311,6 +311,16 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn active_players(&self) -> Vec<u8> {
+        let mut seen = [false; 4];
+        for s in &self.steps {
+            if (s.player_id as usize) < 4 {
+                seen[s.player_id as usize] = true;
+            }
+        }
+        (0..4).filter(|&i| seen[i as usize]).collect()
+    }
+
     pub fn score_delta(&self, player: u8) -> i32 {
         let mean = self.final_scores.iter().sum::<i32>() / 4;
         self.score_for(player) - mean
