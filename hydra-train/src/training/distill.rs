@@ -20,6 +20,12 @@ pub struct DistillConfig {
 }
 
 impl DistillConfig {
+    pub fn fast_distill() -> Self {
+        Self::new()
+            .with_update_interval_secs(30)
+            .with_ema_decay(0.995)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.distill_lr <= 0.0 {
             return Err("distill_lr must be positive");
