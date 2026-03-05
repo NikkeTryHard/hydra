@@ -9,6 +9,13 @@ pub struct EvalConfig {
 }
 
 impl EvalConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.num_games == 0 {
+            return Err("num_games must be > 0");
+        }
+        Ok(())
+    }
+
     pub fn summary(&self) -> String {
         format!("eval(games={}, seed={})", self.num_games, self.seed)
     }
