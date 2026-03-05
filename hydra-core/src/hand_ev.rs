@@ -41,6 +41,17 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn safe_tiles(
+    hand: &[u8; NUM_TILE_TYPES],
+    danger_scores: &[f32; NUM_TILE_TYPES],
+    threshold: f32,
+) -> Vec<u8> {
+    (0..NUM_TILE_TYPES)
+        .filter(|&t| hand[t] > 0 && danger_scores[t] < threshold)
+        .map(|t| t as u8)
+        .collect()
+}
+
 pub fn most_dangerous_tile(danger_scores: &[f32; NUM_TILE_TYPES]) -> u8 {
     danger_scores
         .iter()
