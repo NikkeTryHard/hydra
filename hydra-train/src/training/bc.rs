@@ -124,6 +124,13 @@ impl BCTrainerConfig {
         Self::new(crate::model::HydraModelConfig::actor())
     }
 
+    pub fn estimated_training_time_hours(&self, num_samples: usize, samples_per_sec: f32) -> f32 {
+        if samples_per_sec <= 0.0 {
+            return 0.0;
+        }
+        num_samples as f32 / samples_per_sec / 3600.0
+    }
+
     pub fn num_epochs_for(&self, num_samples: usize) -> usize {
         let batches = self.total_batches(num_samples);
         if batches == 0 {
