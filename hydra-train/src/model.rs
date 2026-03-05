@@ -23,6 +23,14 @@ impl<B: Backend> HydraOutput<B> {
         self.policy_logits.clone() + neg_inf
     }
 
+    pub fn policy_logits_cpu(&self) -> Option<Vec<f32>> {
+        self.policy_logits
+            .to_data()
+            .as_slice::<f32>()
+            .ok()
+            .map(|s| s.to_vec())
+    }
+
     pub fn is_finite(&self) -> bool {
         let check = |t: &Tensor<B, 2>| -> bool {
             if let Ok(s) = t.to_data().as_slice::<f32>() {
