@@ -34,6 +34,13 @@ impl AfbsNode {
         !self.children.is_empty()
     }
 
+    pub fn ucb_score(&self, parent_visits: u32, c_puct: f32) -> f32 {
+        let q = self.q_value();
+        let u =
+            c_puct * self.prior * (parent_visits as f32).sqrt() / (1.0 + self.visit_count as f32);
+        q + u
+    }
+
     pub fn q_value(&self) -> f32 {
         if self.visit_count == 0 {
             return 0.0;
