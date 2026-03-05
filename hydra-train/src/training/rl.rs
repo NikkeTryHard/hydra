@@ -16,6 +16,7 @@ pub struct RlBatch<B: Backend> {
     pub advantages: Tensor<B, 1>,
     pub base_logits: Tensor<B, 2>,
     pub targets: HydraTargets<B>,
+    pub exit_target: Option<Tensor<B, 2>>,
 }
 
 pub struct RlConfig {
@@ -48,7 +49,15 @@ pub fn rl_step<B: AutodiffBackend>(
         &cfg.ach_cfg,
     );
     let aux = loss_fn.total_loss(&output, &batch.targets);
-    let total = ach_loss + aux.total * cfg.aux_weight;
+    let mut total = ach_loss + aux.total * cfg.aux_weight;
+    if let Some(ref exit_target) = batch.exit_target {
+        let exit_loss = crate::training::exit::exit_loss(
+            output.policy_logits,
+            exit_target.clone(),
+            cfg.exit_weight,
+        );
+        total = total + exit_loss;
+    }
     let loss_val = total.clone().into_scalar().elem::<f64>();
     let grads = total.backward();
     let grads = GradientsParams::from_grads(grads, &model);
@@ -81,6 +90,7 @@ mod tests {
             advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
             base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
             targets: make_dummy_targets::<AB>(&device, 2),
+            exit_target: None,
         };
         let cfg = RlConfig {
             tau_drda: 4.0,
@@ -114,6 +124,7 @@ mod tests {
             advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
             base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
             targets: make_dummy_targets::<AB>(&device, 2),
+            exit_target: None,
         };
         let cfg = RlConfig {
             tau_drda: 4.0,
