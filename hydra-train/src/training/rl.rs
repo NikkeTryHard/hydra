@@ -1,0 +1,93 @@
+//! Full RL training step: DRDA-wrapped ACH with auxiliary losses.
+
+use burn::optim::GradientsParams;
+use burn::prelude::*;
+use burn::tensor::backend::AutodiffBackend;
+
+use crate::model::HydraModel;
+use crate::training::ach::{ach_policy_loss, AchConfig};
+use crate::training::drda;
+use crate::training::losses::{HydraLoss, HydraTargets};
+
+pub struct RlBatch<B: Backend> {
+    pub obs: Tensor<B, 3>,
+    pub actions: Tensor<B, 1, Int>,
+    pub pi_old: Tensor<B, 1>,
+    pub advantages: Tensor<B, 1>,
+    pub base_logits: Tensor<B, 2>,
+    pub targets: HydraTargets<B>,
+}
+
+pub struct RlConfig {
+    pub tau_drda: f32,
+    pub ach_cfg: AchConfig,
+    pub lr: f64,
+}
+
+pub fn rl_step<B: AutodiffBackend>(
+    model: HydraModel<B>,
+    batch: &RlBatch<B>,
+    cfg: &RlConfig,
+    loss_fn: &HydraLoss<B>,
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+) -> (HydraModel<B>, f64) {
+    let output = model.forward(batch.obs.clone());
+    let combined = drda::combined_logits(
+        batch.base_logits.clone(),
+        output.policy_logits.clone(),
+        cfg.tau_drda,
+    );
+    let ach_loss = ach_policy_loss(
+        combined,
+        batch.targets.legal_mask.clone(),
+        batch.actions.clone(),
+        batch.pi_old.clone(),
+        batch.advantages.clone(),
+        &cfg.ach_cfg,
+    );
+    let aux = loss_fn.total_loss(&output, &batch.targets);
+    let total = ach_loss + aux.total * 0.1;
+    let loss_val = total.clone().into_scalar().elem::<f64>();
+    let grads = total.backward();
+    let grads = GradientsParams::from_grads(grads, &model);
+    let model = optimizer.step(cfg.lr, model, grads);
+    (model, loss_val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::HydraModelConfig;
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use burn::backend::{Autodiff, NdArray};
+    use burn::optim::AdamConfig;
+
+    type AB = Autodiff<NdArray<f32>>;
+
+    #[test]
+    fn test_rl_step_finite() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let batch = RlBatch {
+            obs: Tensor::<AB, 3>::zeros([2, 85, 34], &device),
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 2),
+        };
+        let cfg = RlConfig {
+            tau_drda: 4.0,
+            ach_cfg: AchConfig::new(),
+            lr: 1e-4,
+        };
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let mut optimizer = AdamConfig::new().init();
+        let (_, loss) = rl_step(model, &batch, &cfg, &loss_fn, &mut optimizer);
+        assert!(loss.is_finite(), "RL step loss should be finite: {loss}");
+    }
+}
