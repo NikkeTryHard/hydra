@@ -17,6 +17,15 @@ pub struct ExitConfig {
     pub safety_valve_max_kl: f32,
 }
 
+pub fn is_hard_state(policy: &[f32], threshold: f32) -> bool {
+    if policy.len() < 2 {
+        return false;
+    }
+    let mut sorted: Vec<f32> = policy.to_vec();
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    sorted[0] - sorted[1] < threshold
+}
+
 pub fn exit_policy_from_q(q_values: &[f32], tau: f32) -> Vec<f32> {
     let n = q_values.len();
     let max_q = q_values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
