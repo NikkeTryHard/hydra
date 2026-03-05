@@ -75,6 +75,10 @@ impl Arena {
 }
 
 impl Trajectory {
+    pub fn num_steps(&self) -> usize {
+        self.steps.len()
+    }
+
     pub fn new(game_id: u32, seed: u64) -> Self {
         Self {
             steps: Vec::new(),
