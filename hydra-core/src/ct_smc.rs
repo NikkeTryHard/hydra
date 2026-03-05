@@ -325,6 +325,27 @@ impl CtSmc {
         self.particles.is_empty()
     }
 
+    pub fn mean_allocation(&self) -> [[f32; 4]; 34] {
+        let mut result = [[0.0f32; 4]; 34];
+        if self.particles.is_empty() {
+            return result;
+        }
+        let n = self.particles.len() as f32;
+        for p in &self.particles {
+            for (res_row, alloc_row) in result.iter_mut().zip(p.allocation.iter()) {
+                for (v, &a) in res_row.iter_mut().zip(alloc_row.iter()) {
+                    *v += a as f32;
+                }
+            }
+        }
+        for row in &mut result {
+            for v in row {
+                *v /= n;
+            }
+        }
+        result
+    }
+
     pub fn summary(&self) -> String {
         format!("smc(P={}, ess={:.1})", self.num_particles(), self.ess())
     }
