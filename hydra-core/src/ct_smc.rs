@@ -60,6 +60,10 @@ impl Particle {
         self.allocation[row].iter().sum()
     }
 
+    pub fn total_tiles(&self) -> usize {
+        (0..34).map(|k| self.row_sum(k) as usize).sum()
+    }
+
     pub fn col_sum(&self, col: usize) -> usize {
         (0..34).map(|k| self.allocation[k][col] as usize).sum()
     }
