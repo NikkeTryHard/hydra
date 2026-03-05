@@ -111,6 +111,27 @@ impl MixtureSib {
     pub fn weights(&self) -> Vec<f64> {
         self.components.iter().map(|c| c.log_weight.exp()).collect()
     }
+
+    pub fn marginal_belief(&self) -> [f64; 136] {
+        let w = self.weights();
+        let mut result = [0.0f64; 136];
+        for (comp, &weight) in self.components.iter().zip(w.iter()) {
+            for (r, &b) in result.iter_mut().zip(comp.belief.iter()) {
+                *r += weight * b;
+            }
+        }
+        result
+    }
+
+    pub fn ess(&self) -> f64 {
+        let w = self.weights();
+        let sum: f64 = w.iter().sum();
+        let sum_sq: f64 = w.iter().map(|x| x * x).sum();
+        if sum_sq == 0.0 {
+            return 0.0;
+        }
+        (sum * sum) / sum_sq
+    }
 }
 
 #[cfg(test)]
