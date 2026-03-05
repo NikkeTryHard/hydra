@@ -271,6 +271,29 @@ impl CtSmc {
         self.dp_cache = None;
     }
 
+    pub fn weighted_mean_tile_count(&self, tile: u8, col: u8) -> f32 {
+        if self.particles.is_empty() || tile >= 34 || col >= 4 {
+            return 0.0;
+        }
+        let max_w = self
+            .particles
+            .iter()
+            .map(|p| p.log_weight)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut sum = 0.0f64;
+        let mut w_sum = 0.0f64;
+        for p in &self.particles {
+            let w = (p.log_weight - max_w).exp();
+            sum += w * p.allocation[tile as usize][col as usize] as f64;
+            w_sum += w;
+        }
+        if w_sum > 0.0 {
+            (sum / w_sum) as f32
+        } else {
+            0.0
+        }
+    }
+
     pub fn has_dp_cache(&self) -> bool {
         self.dp_cache.is_some()
     }
