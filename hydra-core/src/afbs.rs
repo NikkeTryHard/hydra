@@ -399,4 +399,13 @@ mod tests {
         assert!(policy[5] > 0.0);
         assert!(policy[10] > 0.0);
     }
+
+    #[test]
+    fn has_any_legal_action_checks() {
+        let empty = [false; HYDRA_ACTION_SPACE];
+        assert!(!has_any_legal_action(&empty));
+        let mut one = [false; HYDRA_ACTION_SPACE];
+        one[45] = true;
+        assert!(has_any_legal_action(&one));
+    }
 }
