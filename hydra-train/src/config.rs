@@ -43,4 +43,15 @@ mod tests {
         assert_eq!(HIDDEN_CHANNELS / NUM_GROUPS, 8);
         assert_eq!(INPUT_CHANNELS * TILE_DIM, 2890);
     }
+
+    #[test]
+    fn hyperparameters_match_spec() {
+        assert!((GAE_GAMMA - 0.995).abs() < 1e-6);
+        assert!((GAE_LAMBDA - 0.95).abs() < 1e-6);
+        assert!((BC_LR - 2.5e-4).abs() < 1e-10);
+        assert!((TAU_DRDA - 4.0).abs() < 1e-6);
+        assert!((C_PUCT - 2.5).abs() < 1e-6);
+        assert_eq!(AFBS_TOP_K, 5);
+        assert_eq!(CT_SMC_PARTICLES, 128);
+    }
 }
