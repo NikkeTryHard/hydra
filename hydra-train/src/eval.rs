@@ -35,6 +35,22 @@ pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
 
+pub fn evaluate_from_placements(placements: &[u8]) -> EvalResult {
+    if placements.is_empty() {
+        return EvalResult::default();
+    }
+    let n = placements.len() as f32;
+    let mean_placement = placements.iter().map(|&p| p as f32 + 1.0).sum::<f32>() / n;
+    let wins = placements.iter().filter(|&&p| p == 0).count() as f32;
+    EvalResult {
+        mean_placement,
+        stable_dan: compute_stable_dan(mean_placement),
+        win_rate: wins / n,
+        deal_in_rate: 0.0,
+        tsumo_rate: 0.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,5 +67,23 @@ mod tests {
     fn eval_result_defaults() {
         let result = EvalResult::default();
         assert!((result.mean_placement - 2.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn eval_deterministic_with_seed() {
+        let placements = vec![0, 1, 2, 3, 0, 1, 2, 3];
+        let r1 = evaluate_from_placements(&placements);
+        let r2 = evaluate_from_placements(&placements);
+        assert!((r1.mean_placement - r2.mean_placement).abs() < 1e-6);
+        assert!((r1.win_rate - r2.win_rate).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eval_reports_all_metrics() {
+        let placements = vec![0, 0, 1, 2, 3, 1];
+        let result = evaluate_from_placements(&placements);
+        assert!(result.mean_placement > 1.0 && result.mean_placement < 4.0);
+        assert!(result.stable_dan >= 0.0);
+        assert!(result.win_rate > 0.0);
     }
 }
