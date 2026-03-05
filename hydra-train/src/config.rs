@@ -46,6 +46,17 @@ impl TrainingPhase {
         }
     }
 
+    pub fn uses_exit(self) -> bool {
+        matches!(self, Self::DrdaAchSelfPlay | Self::ExitPondering)
+    }
+
+    pub fn uses_oracle(self) -> bool {
+        matches!(
+            self,
+            Self::OracleGuiding | Self::DrdaAchSelfPlay | Self::ExitPondering
+        )
+    }
+
     pub fn phase_index(self) -> u8 {
         match self {
             Self::BenchmarkGates => 0,
