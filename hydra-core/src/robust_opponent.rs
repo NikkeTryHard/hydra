@@ -23,6 +23,15 @@ impl ArchetypeWeights {
         }
     }
 
+    pub fn most_likely(&self) -> usize {
+        self.weights
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+
     pub fn entropy(&self) -> f32 {
         let mut h = 0.0f32;
         for &w in &self.weights {
