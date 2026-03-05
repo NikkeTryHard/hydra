@@ -64,6 +64,12 @@ impl<B: Backend> SafMlp<B> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafTrainingMode {
+    SupervisedRegression,
+    JointEndToEnd,
+}
+
 pub fn saf_dropout_mask(batch_size: usize, drop_prob: f32, rng_vals: &[f32]) -> Vec<f32> {
     (0..batch_size)
         .map(|i| {
