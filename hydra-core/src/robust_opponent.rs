@@ -124,4 +124,30 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn archetype_softmin_different_q_shifts() {
+        let qs = vec![
+            vec![1.0, 5.0, 3.0],
+            vec![5.0, 1.0, 3.0],
+            vec![3.0, 3.0, 1.0],
+            vec![3.0, 3.0, 5.0],
+        ];
+        let w = vec![0.25; 4];
+        let result = archetype_softmin(&qs, &w, 1.0);
+        assert_eq!(result.len(), 3);
+        for v in &result {
+            assert!(v.is_finite());
+        }
+    }
+
+    #[test]
+    fn robust_tau_uniform_policy() {
+        let p = vec![0.25, 0.25, 0.25, 0.25];
+        let q = vec![1.0, 2.0, 3.0, 4.0];
+        let (tau, q_tau) = find_robust_tau(&p, &q, 0.05, 20);
+        assert!(tau > 0.0);
+        let sum: f32 = q_tau.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01);
+    }
 }
