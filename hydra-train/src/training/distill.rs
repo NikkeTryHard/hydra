@@ -66,6 +66,10 @@ impl DistillState {
         }
     }
 
+    pub fn elapsed_steps(&self) -> u64 {
+        self.total_distill_steps
+    }
+
     pub fn should_distill(&self, config: &DistillConfig, elapsed_secs: u64) -> bool {
         elapsed_secs >= config.update_interval_secs
     }
