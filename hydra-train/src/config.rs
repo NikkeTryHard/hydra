@@ -22,6 +22,22 @@ pub fn is_discard_action(action: u8) -> bool {
 
 pub const PASS_ACTION: u8 = 45;
 
+pub fn is_agari_action(action: u8) -> bool {
+    action == 43
+}
+
+pub fn action_type_name(action: u8) -> &'static str {
+    match action {
+        0..=36 => "discard",
+        37 => "riichi",
+        38..=42 => "call",
+        43 => "agari",
+        44 => "kan",
+        45 => "pass",
+        _ => "unknown",
+    }
+}
+
 pub fn is_pass_action(action: u8) -> bool {
     action == PASS_ACTION
 }
