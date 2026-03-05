@@ -26,6 +26,22 @@ impl League {
         Self { agents: Vec::new() }
     }
 
+    pub fn num_agents(&self) -> usize {
+        self.agents.len()
+    }
+
+    pub fn best_agent_by_elo(&self) -> Option<usize> {
+        self.agents
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                a.elo
+                    .partial_cmp(&b.elo)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+    }
+
     pub fn add_agent(&mut self, agent: LeagueAgent) {
         self.agents.push(agent);
     }
