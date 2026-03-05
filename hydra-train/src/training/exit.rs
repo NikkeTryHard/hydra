@@ -17,6 +17,21 @@ pub struct ExitConfig {
     pub safety_valve_max_kl: f32,
 }
 
+impl ExitConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.tau_exit <= 0.0 {
+            return Err("tau_exit must be positive");
+        }
+        if self.exit_weight < 0.0 {
+            return Err("exit_weight must be non-negative");
+        }
+        if self.safety_valve_max_kl <= 0.0 {
+            return Err("max_kl must be positive");
+        }
+        Ok(())
+    }
+}
+
 pub fn anneal_exit_weight(base_weight: f32, phase: u8, progress: f32) -> f32 {
     match phase {
         0 | 1 => 0.0,
