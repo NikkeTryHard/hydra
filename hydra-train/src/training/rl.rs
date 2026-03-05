@@ -29,6 +29,19 @@ pub struct RlConfig {
     pub aux_weight: f32,
 }
 
+impl RlConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.tau_drda < crate::training::drda::MIN_TAU_DRDA {
+            return Err("tau_drda below minimum");
+        }
+        self.ach_cfg.validate()?;
+        if self.lr <= 0.0 {
+            return Err("lr must be positive");
+        }
+        Ok(())
+    }
+}
+
 pub fn rl_step<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch: &RlBatch<B>,
