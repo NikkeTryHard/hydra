@@ -161,6 +161,14 @@ impl Arena {
         self.trajectory_buffer.len()
     }
 
+    pub fn validate_all(&self) -> Result<(), String> {
+        for (i, traj) in self.trajectory_buffer.iter().enumerate() {
+            traj.validate()
+                .map_err(|e| format!("trajectory {i}: {e}"))?;
+        }
+        Ok(())
+    }
+
     pub fn drain_trajectories(&mut self) -> Vec<Trajectory> {
         std::mem::take(&mut self.trajectory_buffer)
     }

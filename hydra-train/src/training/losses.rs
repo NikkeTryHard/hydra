@@ -637,6 +637,52 @@ pub mod tests {
         }
     }
 
+    #[test]
+    fn test_policy_ce_single_legal_action() {
+        let device = Default::default();
+        let mut mask_data = vec![0.0f32; 46];
+        mask_data[5] = 1.0;
+        let mask = Tensor::<B, 2>::from_floats([mask_data.as_slice()], &device);
+        let target = Tensor::<B, 2>::from_floats([mask_data.as_slice()], &device);
+        let logits = Tensor::<B, 2>::zeros([1, 46], &device);
+        let loss = policy_ce(logits, target, mask);
+        let v: f32 = loss.into_scalar().elem();
+        assert!(v < 0.01, "single legal action loss should be ~0, got {v}");
+    }
+
+    #[test]
+    fn test_value_mse_extreme_values() {
+        let device = Default::default();
+        let pred = Tensor::<B, 1>::from_floats([0.99, -0.99], &device);
+        let target = Tensor::<B, 1>::from_floats([1.0, -1.0], &device);
+        let loss = value_mse(pred, target);
+        let data = loss.to_data();
+        for &v in data.as_slice::<f32>().expect("f32") {
+            assert!(v.is_finite(), "extreme value MSE should be finite, got {v}");
+            assert!(v < 0.01, "near-boundary MSE should be small, got {v}");
+        }
+    }
+
+    #[test]
+    fn test_oracle_target_from_scores_zero_sum() {
+        let target = oracle_target_from_scores([25000, 25000, 25000, 25000]);
+        for (i, &v) in target.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-6,
+                "equal scores should give zero delta, player {i} got {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_kl_divergence_identical_distributions() {
+        let device = Default::default();
+        let p = Tensor::<B, 2>::from_floats([[0.3, 0.5, 0.2]], &device);
+        let kl = kl_divergence(p.clone(), p);
+        let v: f32 = kl.into_scalar().elem();
+        assert!(v.abs() < 1e-6, "KL(p, p) should be ~0, got {v}");
+    }
+
     pub fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
         HydraTargets {
             policy_target: onehot2d(device, batch, 46, 0),
