@@ -294,6 +294,13 @@ impl CtSmc {
         }
     }
 
+    pub fn max_log_weight(&self) -> f64 {
+        self.particles
+            .iter()
+            .map(|p| p.log_weight)
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
     pub fn has_dp_cache(&self) -> bool {
         self.dp_cache.is_some()
     }
