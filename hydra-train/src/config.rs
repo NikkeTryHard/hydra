@@ -81,6 +81,16 @@ pub struct OracleGuidingConfig {
     pub lr_decay_factor: f32,
 }
 
+impl OracleGuidingConfig {
+    pub fn dropout_at_step(&self, step: usize, total_steps: usize) -> f32 {
+        if total_steps == 0 {
+            return self.dropout_start;
+        }
+        let t = (step as f32 / total_steps as f32).min(1.0);
+        self.dropout_start + (self.dropout_end - self.dropout_start) * t
+    }
+}
+
 impl Default for OracleGuidingConfig {
     fn default() -> Self {
         Self {
