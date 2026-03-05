@@ -142,4 +142,30 @@ mod tests {
         assert!(q[0] == 0.0, "illegal action should have Q=0");
         assert!(q[4] == 0.0, "illegal action should have Q=0");
     }
+
+    #[test]
+    fn endgame_with_weighted_particles() {
+        let particles = vec![
+            Particle {
+                allocation: [[1; 4]; 34],
+                log_weight: 0.0,
+            },
+            Particle {
+                allocation: [[2; 4]; 34],
+                log_weight: -5.0,
+            },
+        ];
+        let selected = top_mass_particles(&particles, 0.95);
+        assert!(selected.contains(&0));
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[0] = true;
+        mask[1] = true;
+        mask[2] = true;
+        let eval = |p: &Particle, a: u8| p.allocation[a as usize][0] as f32;
+        let q = pimc_endgame_q(&particles, &mask, &eval);
+        for i in 0..3 {
+            assert!(q[i].is_finite(), "q[{i}] should be finite");
+            assert!(q[i] > 0.0, "q[{i}] should be positive: {}", q[i]);
+        }
+    }
 }
