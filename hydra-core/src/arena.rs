@@ -150,6 +150,19 @@ impl Arena {
         dist
     }
 
+    pub fn compute_rewards(&self, player_id: u8) -> Vec<Vec<f32>> {
+        self.trajectory_buffer
+            .iter()
+            .map(|t| {
+                t.steps
+                    .iter()
+                    .filter(|s| s.player_id == player_id)
+                    .map(|s| s.reward)
+                    .collect()
+            })
+            .collect()
+    }
+
     pub fn collect_player_steps(&self, player_id: u8) -> Vec<&TrajectoryStep> {
         self.trajectory_buffer
             .iter()
