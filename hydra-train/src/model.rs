@@ -64,6 +64,24 @@ impl HydraModelConfig {
         Self::new(12)
     }
 
+    pub fn estimated_params(&self) -> usize {
+        let h = self.hidden_channels;
+        let se_b = self.se_bottleneck;
+        let input_conv = self.input_channels * h * 3 + h;
+        let gn = h * 2;
+        let block = (h * h * 3 + h) * 2 + gn * 2 + (h * se_b + se_b) + (se_b * h + h);
+        let backbone = input_conv + gn + block * self.num_blocks + gn;
+        let policy = h * self.action_space + self.action_space;
+        let value = h + 1;
+        let score = (h * self.score_bins + self.score_bins) * 2;
+        let tenpai = h * self.num_opponents + self.num_opponents;
+        let grp = h * self.grp_classes + self.grp_classes;
+        let opp_next = h * self.num_opponents + self.num_opponents;
+        let danger = h * self.num_opponents + self.num_opponents;
+        let oracle = h * 4 + 4;
+        backbone + policy + value + score + tenpai + grp + opp_next + danger + oracle
+    }
+
     pub fn learner() -> Self {
         Self::new(24)
     }
