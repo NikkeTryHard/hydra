@@ -31,6 +31,12 @@ pub struct RlConfig {
 }
 
 impl RlConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "rl(tau={:.1}, lr={:.1e}, exit_w={:.2}, aux_w={:.2})",
+            self.tau_drda, self.lr, self.exit_weight, self.aux_weight
+        )
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.tau_drda < crate::training::drda::MIN_TAU_DRDA {
             return Err("tau_drda below minimum");
