@@ -24,6 +24,25 @@ pub fn phase_learning_rate(
     cosine_annealing_lr(step, total_steps, lr_max, lr_min)
 }
 
+pub fn warmup_then_cosine_lr(
+    step: usize,
+    warmup_steps: usize,
+    total_steps: usize,
+    lr_max: f64,
+    lr_min: f64,
+) -> f64 {
+    if step < warmup_steps {
+        lr_max * (step as f64 / warmup_steps as f64)
+    } else {
+        cosine_annealing_lr(
+            step - warmup_steps,
+            total_steps - warmup_steps,
+            lr_max,
+            lr_min,
+        )
+    }
+}
+
 pub fn cosine_annealing_lr(step: usize, total_steps: usize, lr_max: f64, lr_min: f64) -> f64 {
     if total_steps == 0 {
         return lr_max;
