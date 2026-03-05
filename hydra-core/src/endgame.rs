@@ -8,6 +8,18 @@ pub struct EndgameSolver {
     pub mass_threshold: f32,
 }
 
+impl EndgameSolver {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.max_wall == 0 {
+            return Err("max_wall must be > 0");
+        }
+        if self.mass_threshold <= 0.0 || self.mass_threshold > 1.0 {
+            return Err("mass_threshold must be in (0, 1]");
+        }
+        Ok(())
+    }
+}
+
 impl Default for EndgameSolver {
     fn default() -> Self {
         Self {
