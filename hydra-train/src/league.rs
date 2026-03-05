@@ -113,6 +113,15 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn agents_of_type(&self, agent_type: &AgentType) -> Vec<usize> {
+        self.agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| &a.agent_type == agent_type)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     pub fn remove_agent(&mut self, idx: usize) -> Option<LeagueAgent> {
         if idx < self.agents.len() {
             Some(self.agents.remove(idx))
