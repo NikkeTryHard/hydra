@@ -28,6 +28,10 @@ impl ExitConfig {
     pub fn default_phase3() -> Self {
         Self::new().with_exit_weight(1.0).with_min_visits(32)
     }
+    pub fn min_visits_reached(&self, visit_count: u32) -> bool {
+        visit_count >= self.min_visits
+    }
+
     pub fn should_apply_exit(&self, visit_count: u32) -> bool {
         visit_count >= self.min_visits
     }
