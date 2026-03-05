@@ -93,6 +93,13 @@ pub struct HydraModelConfig {
 }
 
 impl HydraModelConfig {
+    pub fn is_actor(&self) -> bool {
+        self.num_blocks == 12
+    }
+    pub fn is_learner(&self) -> bool {
+        self.num_blocks == 24
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
             return Err("hidden_channels must be divisible by num_groups");
