@@ -496,6 +496,14 @@ mod tests {
     }
 
     #[test]
+    fn compute_placements_correct() {
+        let p = compute_placements([40000, 30000, 20000, 10000]);
+        assert_eq!(p, [0, 1, 2, 3]);
+        let p2 = compute_placements([10000, 40000, 20000, 30000]);
+        assert_eq!(p2, [3, 0, 2, 1]);
+    }
+
+    #[test]
     fn greedy_picks_highest_legal() {
         let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
         logits[10] = 100.0;
