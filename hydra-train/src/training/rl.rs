@@ -33,6 +33,26 @@ pub struct RlConfig {
 }
 
 impl RlConfig {
+    pub fn default_phase2() -> Self {
+        Self {
+            tau_drda: 4.0,
+            ach_cfg: AchConfig::new(),
+            lr: 2.5e-4,
+            exit_weight: 0.0,
+            aux_weight: 0.1,
+        }
+    }
+
+    pub fn default_phase3() -> Self {
+        Self {
+            tau_drda: 4.0,
+            ach_cfg: AchConfig::new(),
+            lr: 1e-4,
+            exit_weight: 0.5,
+            aux_weight: 0.1,
+        }
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "rl(tau={:.1}, lr={:.1e}, exit_w={:.2}, aux_w={:.2})",
