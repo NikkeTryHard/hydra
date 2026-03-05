@@ -41,6 +41,17 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn danger_from_particles(particles: &[crate::ct_smc::Particle], tile: u8, opponent: u8) -> f32 {
+    if particles.is_empty() || tile >= 34 || opponent >= 3 {
+        return 0.0;
+    }
+    let count: usize = particles
+        .iter()
+        .filter(|p| p.allocation[tile as usize][opponent as usize] > 0)
+        .count();
+    count as f32 / particles.len() as f32
+}
+
 pub fn best_discard_by_ukeire(
     hand: &[u8; NUM_TILE_TYPES],
     remaining: &[f32; NUM_TILE_TYPES],
