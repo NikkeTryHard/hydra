@@ -48,7 +48,7 @@ pub fn ach_policy_loss<B: Backend>(
     let neg_inf_mask = (legal_mask.clone().ones_like() - legal_mask.clone()) * (-1e9f32);
     let masked_logits = logits + neg_inf_mask;
 
-    let legal_sum = legal_mask.clone().sum_dim(1);
+    let legal_sum = legal_mask.clone().sum_dim(1).clamp_min(1.0);
     let legal_mean = (masked_logits.clone() * legal_mask.clone()).sum_dim(1) / legal_sum;
     let centered = masked_logits - legal_mean;
     let clamped = centered.clamp(-cfg.l_th, cfg.l_th);
