@@ -115,6 +115,13 @@ pub fn mean_advantage(advantages: &[f32]) -> f32 {
     advantages.iter().sum::<f32>() / advantages.len() as f32
 }
 
+pub fn reward_mean(rewards: &[f32]) -> f32 {
+    if rewards.is_empty() {
+        return 0.0;
+    }
+    rewards.iter().sum::<f32>() / rewards.len() as f32
+}
+
 pub fn total_return(rewards: &[f32]) -> f32 {
     rewards.iter().sum()
 }
