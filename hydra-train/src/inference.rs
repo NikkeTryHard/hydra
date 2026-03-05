@@ -75,6 +75,20 @@ pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     h
 }
 
+pub fn policy_top2_gap(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
+    let mut first = 0.0f32;
+    let mut second = 0.0f32;
+    for &p in probs {
+        if p > first {
+            second = first;
+            first = p;
+        } else if p > second {
+            second = p;
+        }
+    }
+    first - second
+}
+
 pub fn policy_top1_confidence(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     probs.iter().cloned().fold(0.0f32, f32::max)
 }
