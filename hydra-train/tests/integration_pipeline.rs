@@ -259,6 +259,45 @@ fn determinism_same_seed_same_particles() {
     }
 }
 
+#[test]
+fn ach_rl_step_integration() {
+    use hydra_train::training::rl::{RlBatch, RlConfig};
+
+    let device = Default::default();
+    let batch = 2;
+
+    let model = HydraModelConfig::actor().init::<TestBackend>(&device);
+    let targets = make_test_targets_infer(&device, batch);
+    let obs = Tensor::<TestBackend, 3>::zeros([batch, 85, 34], &device);
+    let base_logits = Tensor::<TestBackend, 2>::zeros([batch, 46], &device);
+    let actions = Tensor::<TestBackend, 1, Int>::from_ints(&[1i32, 2][..], &device);
+    let pi_old = Tensor::<TestBackend, 1>::from_floats([0.5, 0.3], &device);
+    let advantages = Tensor::<TestBackend, 1>::from_floats([1.0, -0.5], &device);
+
+    let rl_batch = RlBatch {
+        obs,
+        targets,
+        base_logits,
+        actions,
+        pi_old,
+        advantages,
+        exit_target: None,
+    };
+    let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
+    let cfg = RlConfig::default_phase2();
+    let mut optim = AdamConfig::new().init();
+    let (_, loss) =
+        hydra_train::training::rl::rl_step(model, &rl_batch, &cfg, &loss_fn, &mut optim);
+    assert!(loss.is_finite(), "rl_step loss not finite: {loss}");
+}
+
+fn make_test_targets_infer(
+    device: &<TestBackend as Backend>::Device,
+    batch: usize,
+) -> HydraTargets<TestBackend> {
+    make_test_targets(device, batch)
+}
+
 fn make_test_targets(
     device: &<TestBackend as Backend>::Device,
     batch: usize,
