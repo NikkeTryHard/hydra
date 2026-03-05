@@ -168,6 +168,12 @@ impl AfbsTree {
         self.nodes.clear();
     }
 
+    pub fn num_children(&self, node: NodeIdx) -> usize {
+        self.nodes
+            .get(node as usize)
+            .map_or(0, |n| n.children.len())
+    }
+
     pub fn summary(&self, root: NodeIdx) -> String {
         format!(
             "afbs(nodes={}, visits={}, depth={})",
