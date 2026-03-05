@@ -113,6 +113,17 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn top_k_agents(&self, k: usize) -> Vec<usize> {
+        let mut indexed: Vec<(usize, f32)> = self
+            .agents
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (i, a.elo))
+            .collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        indexed.into_iter().take(k).map(|(i, _)| i).collect()
+    }
+
     pub fn total_elo(&self) -> f32 {
         self.agents.iter().map(|a| a.elo).sum()
     }
