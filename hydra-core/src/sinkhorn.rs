@@ -14,6 +14,19 @@ impl SinkhornConfig {
             num_components,
         }
     }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.max_iters == 0 {
+            return Err("max_iters must be > 0");
+        }
+        if self.tol <= 0.0 {
+            return Err("tol must be positive");
+        }
+        if self.num_components == 0 {
+            return Err("num_components must be > 0");
+        }
+        Ok(())
+    }
 }
 
 impl Default for SinkhornConfig {
