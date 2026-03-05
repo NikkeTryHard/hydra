@@ -39,6 +39,38 @@ pub fn distill_loss<B: Backend>(
     kl * kd_kl_weight + mse * kd_mse_weight
 }
 
+pub struct DistillState {
+    pub steps_since_update: u64,
+    pub total_distill_steps: u64,
+    pub last_kl_drift: f32,
+}
+
+impl DistillState {
+    pub fn new() -> Self {
+        Self {
+            steps_since_update: 0,
+            total_distill_steps: 0,
+            last_kl_drift: 0.0,
+        }
+    }
+
+    pub fn should_distill(&self, config: &DistillConfig, elapsed_secs: u64) -> bool {
+        elapsed_secs >= config.update_interval_secs
+    }
+
+    pub fn record_step(&mut self, kl_drift: f32) {
+        self.total_distill_steps += 1;
+        self.steps_since_update = 0;
+        self.last_kl_drift = kl_drift;
+    }
+}
+
+impl Default for DistillState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
