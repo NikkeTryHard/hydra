@@ -95,11 +95,13 @@ fn full_pipeline_integration() {
     let x_distill = Tensor::<InferBackend, 3>::zeros([2, 85, 34], &device);
     let l_out = learner.forward(x_distill.clone());
     let a_out = actor_for_distill.forward(x_distill);
+    let mask = Tensor::<InferBackend, 2>::ones([2, 46], &device);
     let d_loss = distill::distill_loss(
         l_out.policy_logits,
         a_out.policy_logits,
         l_out.value,
         a_out.value,
+        mask,
         1.0,
         0.5,
     );
@@ -164,7 +166,7 @@ fn full_pipeline_integration() {
     );
 
     let exit_q = vec![1.0, 3.0, 2.0, 0.5];
-    let exit_pi = exit::exit_policy_from_q(&exit_q, 1.0);
+    let exit_pi = exit::exit_policy_from_q(&exit_q, 1.0, None);
     let sum: f32 = exit_pi.iter().sum();
     assert!((sum - 1.0).abs() < 0.01, "exit policy sum: {sum}");
 
