@@ -143,4 +143,27 @@ mod tests {
         let acceptance: f32 = uke.iter().sum();
         assert!((acceptance - 3.0).abs() < 1e-5, "tile 0 has 3 remaining");
     }
+
+    #[test]
+    fn compute_hand_ev_empty_hand_returns_defaults() {
+        let hand = [0u8; NUM_TILE_TYPES];
+        let remaining = [4.0f32; NUM_TILE_TYPES];
+        let shanten_fn = |_: &[u8; NUM_TILE_TYPES]| -> i8 { 8 };
+        let features = compute_hand_ev(&hand, &remaining, &shanten_fn);
+        assert!(features
+            .tenpai_prob
+            .iter()
+            .all(|p| p.iter().all(|&v| v == 0.0)));
+        assert!(features.expected_score.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn compute_hand_ev_no_remaining_returns_defaults() {
+        let mut hand = [0u8; NUM_TILE_TYPES];
+        hand[0] = 3;
+        let remaining = [0.0f32; NUM_TILE_TYPES];
+        let shanten_fn = |_: &[u8; NUM_TILE_TYPES]| -> i8 { 0 };
+        let features = compute_hand_ev(&hand, &remaining, &shanten_fn);
+        assert!(features.expected_score[0] == 0.0);
+    }
 }
