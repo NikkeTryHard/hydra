@@ -9,6 +9,8 @@ pub struct DrdaConfig {
     pub tau_drda: f32,
 }
 
+pub const MIN_TAU_DRDA: f32 = 2.0;
+
 pub struct RebaseTracker {
     pub gpu_hours_since_rebase: f32,
     pub rebase_interval_hours: f32,
