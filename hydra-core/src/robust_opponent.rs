@@ -27,6 +27,14 @@ impl ArchetypeWeights {
         self.weights.len()
     }
 
+    pub fn reset(&mut self) {
+        let n = self.weights.len();
+        let w = 1.0 / n as f32;
+        for v in &mut self.weights {
+            *v = w;
+        }
+    }
+
     pub fn is_confident(&self, threshold: f32) -> bool {
         self.weights.iter().any(|&w| w >= threshold)
     }
