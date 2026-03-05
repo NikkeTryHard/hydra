@@ -179,4 +179,22 @@ mod tests {
         assert_eq!(spatial.dims(), [2, 256, 34]);
         assert_eq!(pooled.dims(), [2, 256]);
     }
+
+    #[test]
+    fn residual_block_output_differs_from_input() {
+        let device = Default::default();
+        let block = SEResBlockConfig::new(256, 32, 64).init::<B>(&device);
+        let x = Tensor::<B, 3>::random(
+            [1, 256, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let out = block.forward(x.clone());
+        let diff = (out - x).abs().mean();
+        let d = diff.into_scalar().elem::<f32>();
+        assert!(
+            d > 1e-6,
+            "residual output should differ from input: diff={d}"
+        );
+    }
 }
