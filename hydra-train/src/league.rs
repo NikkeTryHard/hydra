@@ -142,6 +142,17 @@ impl League {
     }
 }
 
+impl League {
+    pub fn summary(&self) -> String {
+        format!(
+            "agents={} matches={} spread={:.0}",
+            self.num_agents(),
+            self.total_matches,
+            self.elo_spread()
+        )
+    }
+}
+
 impl Default for League {
     fn default() -> Self {
         Self::new()
