@@ -27,6 +27,10 @@ impl MjaiDataset {
         self.games.iter().map(|g| g.samples.len()).sum()
     }
 
+    pub fn num_games(&self) -> usize {
+        self.games.len()
+    }
+
     pub fn train_split(&self) -> (&[MjaiGame], &[MjaiGame]) {
         let n = (self.games.len() as f32 * self.train_fraction) as usize;
         (&self.games[..n], &self.games[n..])
