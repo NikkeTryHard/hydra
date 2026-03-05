@@ -141,6 +141,15 @@ impl MixtureSib {
         format!("sib(L={}, ess={:.1})", self.num_components(), self.ess())
     }
 
+    pub fn dominant_component(&self) -> usize {
+        let w = self.weights();
+        w.iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+
     pub fn reset_weights(&mut self) {
         let n = self.components.len();
         let w = -(n as f64).ln();
