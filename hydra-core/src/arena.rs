@@ -270,6 +270,13 @@ impl Arena {
         self.trajectory_buffer.last().map(|t| t.game_id)
     }
 
+    pub fn win_rate_for(&self, player_id: u8) -> f32 {
+        if self.trajectory_buffer.is_empty() {
+            return 0.0;
+        }
+        self.win_count(player_id) as f32 / self.trajectory_buffer.len() as f32
+    }
+
     pub fn win_count(&self, player_id: u8) -> usize {
         self.trajectory_buffer
             .iter()
