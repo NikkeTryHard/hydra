@@ -68,6 +68,16 @@ impl Default for RobustOpponentConfig {
     }
 }
 
+pub fn calibrate_epsilon(observed_kl_samples: &[f32], quantile: f32) -> f32 {
+    if observed_kl_samples.is_empty() {
+        return 0.2;
+    }
+    let mut sorted = observed_kl_samples.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((quantile * sorted.len() as f32) as usize).min(sorted.len() - 1);
+    sorted[idx]
+}
+
 pub fn find_robust_tau(p: &[f32], q_values: &[f32], epsilon: f32, iters: u8) -> (f32, Vec<f32>) {
     assert_eq!(p.len(), q_values.len());
     let n = p.len();
