@@ -43,6 +43,13 @@ impl RebaseTracker {
         }
     }
 
+    pub fn progress(&self) -> f32 {
+        if self.rebase_interval_hours <= 0.0 {
+            return 0.0;
+        }
+        (self.gpu_hours_since_rebase / self.rebase_interval_hours).min(1.0)
+    }
+
     pub fn hours_until_next(&self) -> f32 {
         (self.rebase_interval_hours - self.gpu_hours_since_rebase).max(0.0)
     }
