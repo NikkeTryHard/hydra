@@ -82,6 +82,16 @@ pub fn compute_per_player_gae(
     advantages
 }
 
+pub fn discount_returns(rewards: &[f32], gamma: f32) -> Vec<f32> {
+    let mut returns = vec![0.0f32; rewards.len()];
+    let mut g = 0.0f32;
+    for i in (0..rewards.len()).rev() {
+        g = rewards[i] + gamma * g;
+        returns[i] = g;
+    }
+    returns
+}
+
 pub fn rewards_from_final_scores(final_scores: [i32; 4], num_steps: &[usize; 4]) -> Vec<[f32; 4]> {
     let total_steps: usize = num_steps.iter().sum();
     if total_steps == 0 {
