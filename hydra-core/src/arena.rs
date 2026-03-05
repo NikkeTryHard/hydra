@@ -114,6 +114,10 @@ impl Arena {
         self.games_completed += 1;
     }
 
+    pub fn max_capacity(&self) -> usize {
+        self.config.max_trajectory_buffer
+    }
+
     pub fn is_full(&self) -> bool {
         self.trajectory_buffer.len() >= self.config.max_trajectory_buffer
     }
