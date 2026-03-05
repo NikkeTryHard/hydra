@@ -20,8 +20,10 @@ pub fn is_discard_action(action: u8) -> bool {
     action <= 36
 }
 
+pub const PASS_ACTION: u8 = 45;
+
 pub fn is_pass_action(action: u8) -> bool {
-    action == 45
+    action == PASS_ACTION
 }
 
 pub fn is_riichi_action(action: u8) -> bool {
