@@ -84,6 +84,10 @@ pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     h
 }
 
+pub fn is_confident(probs: &[f32; HYDRA_ACTION_SPACE], threshold: f32) -> bool {
+    policy_top1_confidence(probs) >= threshold
+}
+
 pub fn sample_from_policy(probs: &[f32; HYDRA_ACTION_SPACE], rng_val: f32) -> u8 {
     let mut cumsum = 0.0f32;
     for (i, &p) in probs.iter().enumerate() {
