@@ -67,9 +67,16 @@ mod tests {
     use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
+    use burn::grad_clipping::GradientClippingConfig;
     use burn::optim::AdamConfig;
 
     type TestBackend = Autodiff<NdArray<f32>>;
+
+    fn bc_optimizer() -> impl burn::optim::Optimizer<HydraModel<TestBackend>, TestBackend> {
+        AdamConfig::new()
+            .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
+            .init()
+    }
 
     #[test]
     fn test_bc_one_step() {
@@ -78,7 +85,7 @@ mod tests {
         let obs = Tensor::<TestBackend, 3>::zeros([4, 85, 34], &device);
         let targets = make_dummy_targets::<TestBackend>(&device, 4);
         let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
-        let mut optimizer = AdamConfig::new().init();
+        let mut optimizer = bc_optimizer();
         let (_, loss1) = bc_train_step(model, obs, &targets, &loss_fn, 1e-3, &mut optimizer);
         assert!(loss1.is_finite(), "loss should be finite: {loss1}");
         assert!(loss1 > 0.0, "loss should be positive: {loss1}");
@@ -99,7 +106,7 @@ mod tests {
         );
         let targets = make_dummy_targets::<TestBackend>(&device, 10);
         let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
-        let mut optimizer = AdamConfig::new().init();
+        let mut optimizer = bc_optimizer();
         let mut last_loss = f64::MAX;
         for _ in 0..50 {
             let (m, loss) =
