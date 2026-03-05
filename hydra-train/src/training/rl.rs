@@ -22,6 +22,8 @@ pub struct RlConfig {
     pub tau_drda: f32,
     pub ach_cfg: AchConfig,
     pub lr: f64,
+    pub exit_weight: f32,
+    pub aux_weight: f32,
 }
 
 pub fn rl_step<B: AutodiffBackend>(
@@ -46,7 +48,7 @@ pub fn rl_step<B: AutodiffBackend>(
         &cfg.ach_cfg,
     );
     let aux = loss_fn.total_loss(&output, &batch.targets);
-    let total = ach_loss + aux.total * 0.1;
+    let total = ach_loss + aux.total * cfg.aux_weight;
     let loss_val = total.clone().into_scalar().elem::<f64>();
     let grads = total.backward();
     let grads = GradientsParams::from_grads(grads, &model);
@@ -84,6 +86,8 @@ mod tests {
             tau_drda: 4.0,
             ach_cfg: AchConfig::new(),
             lr: 1e-4,
+            exit_weight: 0.5,
+            aux_weight: 0.1,
         };
         let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
         let mut optimizer = AdamConfig::new().init();
@@ -115,6 +119,8 @@ mod tests {
             tau_drda: 4.0,
             ach_cfg: AchConfig::new(),
             lr: 1e-3,
+            exit_weight: 0.5,
+            aux_weight: 0.1,
         };
         let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
         let mut opt = AdamConfig::new().init();
