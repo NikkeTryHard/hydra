@@ -181,6 +181,11 @@ impl Arena {
             .collect()
     }
 
+    pub fn reset(&mut self) {
+        self.trajectory_buffer.clear();
+        self.games_completed = 0;
+    }
+
     pub fn stats_summary(&self) -> String {
         format!(
             "games={} steps={} buffered={} complete={}",
