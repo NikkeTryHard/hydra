@@ -185,6 +185,17 @@ pub fn infer_action_timed<B: Backend>(
     (action, policy, within_budget)
 }
 
+/// Returns the fraction of batch elements where argmax picks an illegal action.
+pub fn illegal_action_rate<B: Backend>(logits: Tensor<B, 2>, legal_mask: Tensor<B, 2>) -> f32 {
+    let neg_inf = (legal_mask.clone().ones_like() - legal_mask.clone()) * (-1e9f32);
+    let raw_predicted = logits.clone().argmax(1);
+    let masked = logits + neg_inf;
+    let predicted = masked.argmax(1);
+    let same = predicted.equal(raw_predicted).int().sum();
+    let batch = legal_mask.dims()[0] as f32;
+    1.0 - same.into_scalar().elem::<f32>() / batch
+}
+
 /// Runs masked softmax inference, returns (best_action, policy_probs).
 pub fn infer_action<B: Backend>(
     policy_logits: Tensor<B, 2>,
