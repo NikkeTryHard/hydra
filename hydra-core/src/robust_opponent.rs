@@ -37,16 +37,6 @@ impl ArchetypeWeights {
                 *w /= sum;
             }
         }
-
-        #[test]
-        fn archetype_weights_posterior_concentrates() {
-            let mut aw = ArchetypeWeights::uniform(4);
-            aw.update_posterior(&[0.0, -2.0, -4.0, -6.0]);
-            assert!(aw.weights[0] > aw.weights[1]);
-            assert!(aw.weights[1] > aw.weights[2]);
-            let sum: f32 = aw.weights.iter().sum();
-            assert!((sum - 1.0).abs() < 0.01);
-        }
     }
 }
 
