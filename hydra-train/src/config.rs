@@ -180,6 +180,28 @@ pub fn validate_training_config(
     Ok(())
 }
 
+/// Validate all training configs at pipeline startup.
+pub fn validate_all_configs(
+    model_cfg: &crate::model::HydraModelConfig,
+    loss_cfg: &crate::training::losses::HydraLossConfig,
+    ach_cfg: &crate::training::ach::AchConfig,
+    exit_cfg: &crate::training::exit::ExitConfig,
+    drda_cfg: &crate::training::drda::DrdaConfig,
+    gae_cfg: &crate::training::gae::GaeConfig,
+    distill_cfg: &crate::training::distill::DistillConfig,
+) -> Result<(), String> {
+    model_cfg.validate().map_err(|e| format!("model: {e}"))?;
+    loss_cfg.validate().map_err(|e| format!("loss: {e}"))?;
+    ach_cfg.validate().map_err(|e| format!("ach: {e}"))?;
+    exit_cfg.validate().map_err(|e| format!("exit: {e}"))?;
+    drda_cfg.validate().map_err(|e| format!("drda: {e}"))?;
+    gae_cfg.validate().map_err(|e| format!("gae: {e}"))?;
+    distill_cfg
+        .validate()
+        .map_err(|e| format!("distill: {e}"))?;
+    Ok(())
+}
+
 pub struct PipelineState {
     pub phase: TrainingPhase,
     pub gpu_hours_used: f32,
@@ -330,5 +352,21 @@ mod tests {
         assert!(TrainingPhase::ExitPondering.uses_exit());
         assert!(!TrainingPhase::BcWarmStart.uses_oracle());
         assert!(TrainingPhase::OracleGuiding.uses_oracle());
+    }
+
+    #[test]
+    fn validate_all_configs_defaults_pass() {
+        use crate::model::HydraModelConfig;
+        use crate::training::{ach, distill, drda, exit, gae, losses};
+        let result = validate_all_configs(
+            &HydraModelConfig::learner(),
+            &losses::HydraLossConfig::new(),
+            &ach::AchConfig::new(),
+            &exit::ExitConfig::new(),
+            &drda::DrdaConfig::new(),
+            &gae::GaeConfig::default(),
+            &distill::DistillConfig::new(),
+        );
+        assert!(result.is_ok(), "default configs should pass: {result:?}");
     }
 }
