@@ -202,7 +202,7 @@ mod tests {
         let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
         let mut optimizer = bc_optimizer();
         let mut last_loss = f64::MAX;
-        for _ in 0..50 {
+        for _ in 0..100 {
             let (m, loss) =
                 bc_train_step(model, obs.clone(), &targets, &loss_fn, 1e-3, &mut optimizer);
             model = m;
