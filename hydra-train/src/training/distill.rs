@@ -83,6 +83,15 @@ impl DistillState {
     }
 }
 
+impl DistillState {
+    pub fn summary(&self) -> String {
+        format!(
+            "distill_steps={} kl={:.4}",
+            self.total_distill_steps, self.last_kl_drift
+        )
+    }
+}
+
 impl Default for DistillState {
     fn default() -> Self {
         Self::new()
