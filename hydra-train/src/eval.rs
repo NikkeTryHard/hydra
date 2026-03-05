@@ -75,6 +75,19 @@ impl BenchmarkGates {
     }
 }
 
+impl TrainingMetrics {
+    pub fn summary(&self) -> String {
+        format!(
+            "epoch={} loss={:.4} agree={:.2}% games={} elo={:.0}",
+            self.epoch,
+            self.total_loss,
+            self.policy_agreement * 100.0,
+            self.games_completed,
+            self.elo
+        )
+    }
+}
+
 pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
