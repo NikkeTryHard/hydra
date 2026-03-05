@@ -99,4 +99,28 @@ mod tests {
         let out = augment_obs_suit(&obs, identity);
         assert_eq!(obs, out);
     }
+
+    #[test]
+    fn augment_mask_preserves_non_discard_entries() {
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        mask[37] = 1.0;
+        mask[43] = 1.0;
+        mask[45] = 1.0;
+        for perm in &ALL_PERMUTATIONS {
+            let out = augment_mask_suit(&mask, perm);
+            assert_eq!(out[37], 1.0, "riichi unchanged");
+            assert_eq!(out[43], 1.0, "agari unchanged");
+            assert_eq!(out[45], 1.0, "pass unchanged");
+        }
+    }
+
+    #[test]
+    fn augment_action_roundtrip_for_swaps() {
+        let swap_mp = &ALL_PERMUTATIONS[2];
+        for a in 0..37u8 {
+            let permuted = augment_action_suit(a, swap_mp);
+            let back = augment_action_suit(permuted, swap_mp);
+            assert_eq!(a, back, "double-swap should be identity for action {a}");
+        }
+    }
 }
