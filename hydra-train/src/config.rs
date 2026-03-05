@@ -75,6 +75,22 @@ impl TrainingPhase {
     }
 }
 
+pub struct OracleGuidingConfig {
+    pub dropout_start: f32,
+    pub dropout_end: f32,
+    pub lr_decay_factor: f32,
+}
+
+impl Default for OracleGuidingConfig {
+    fn default() -> Self {
+        Self {
+            dropout_start: 1.0,
+            dropout_end: 0.0,
+            lr_decay_factor: 0.1,
+        }
+    }
+}
+
 pub struct PipelineState {
     pub phase: TrainingPhase,
     pub gpu_hours_used: f32,
