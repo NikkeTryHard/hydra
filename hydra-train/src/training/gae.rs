@@ -115,6 +115,10 @@ pub fn mean_advantage(advantages: &[f32]) -> f32 {
     advantages.iter().sum::<f32>() / advantages.len() as f32
 }
 
+pub fn total_return(rewards: &[f32]) -> f32 {
+    rewards.iter().sum()
+}
+
 pub fn explained_variance(returns: &[f32], predictions: &[f32]) -> f32 {
     if returns.is_empty() {
         return 0.0;
