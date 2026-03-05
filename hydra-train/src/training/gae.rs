@@ -47,6 +47,24 @@ pub fn compute_per_player_gae(
     advantages
 }
 
+pub fn rewards_from_final_scores(final_scores: [i32; 4], num_steps: &[usize; 4]) -> Vec<[f32; 4]> {
+    let total_steps: usize = num_steps.iter().sum();
+    if total_steps == 0 {
+        return Vec::new();
+    }
+    let max_steps = *num_steps.iter().max().unwrap_or(&0);
+    let mut rewards = vec![[0.0f32; 4]; max_steps];
+    for p in 0..4 {
+        if num_steps[p] > 0 {
+            let per_step = final_scores[p] as f32 / num_steps[p] as f32 / 100_000.0;
+            for r in rewards.iter_mut().take(num_steps[p]) {
+                r[p] = per_step;
+            }
+        }
+    }
+    rewards
+}
+
 pub fn normalize_advantages(advantages: &mut [f32]) {
     if advantages.is_empty() {
         return;
