@@ -120,6 +120,14 @@ impl BCTrainerConfig {
         )
     }
 
+    pub fn default_actor() -> Self {
+        Self::new(crate::model::HydraModelConfig::actor())
+    }
+
+    pub fn default_learner() -> Self {
+        Self::new(crate::model::HydraModelConfig::learner())
+    }
+
     pub fn is_warmup(&self, step: usize) -> bool {
         step < self.warmup_steps
     }
