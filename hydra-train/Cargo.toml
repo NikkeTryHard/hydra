@@ -16,3 +16,5 @@ serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 burn = { version = "0.20", features = ["ndarray"] }
+rand = "0.9"
+rand_chacha = "0.9"

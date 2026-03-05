@@ -86,8 +86,8 @@ pub fn danger_focal_bce<B: Backend>(
 ) -> Tensor<B, 1> {
     let alpha = 0.25f32;
     let gamma = 2.0f32;
-    let p = activation::sigmoid(logits);
-    let bce = bce_with_logits_elementwise(p.clone(), target.clone());
+    let p = activation::sigmoid(logits.clone());
+    let bce = bce_with_logits_3d(logits, target.clone());
     let p_t = target.clone() * p.clone() + (target.ones_like() - target) * (p.ones_like() - p);
     let focal_weight = (p_t.ones_like() - p_t).powf_scalar(gamma) * alpha;
     let focal = focal_weight * bce * mask;
@@ -138,12 +138,10 @@ fn bce_with_logits<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Te
     max_val - logits * target + neg_abs.exp().add_scalar(1.0).log()
 }
 
-fn bce_with_logits_elementwise<B: Backend>(p: Tensor<B, 3>, target: Tensor<B, 3>) -> Tensor<B, 3> {
-    let eps = 1e-7f32;
-    let p_clamped = p.clamp(eps, 1.0 - eps);
-    let log_p = p_clamped.clone().log();
-    let log_1mp = (p_clamped.ones_like() - p_clamped).log();
-    (target.clone() * log_p + (target.ones_like() - target) * log_1mp).neg()
+fn bce_with_logits_3d<B: Backend>(logits: Tensor<B, 3>, target: Tensor<B, 3>) -> Tensor<B, 3> {
+    let max_val = logits.clone().clamp_min(0.0);
+    let neg_abs = logits.clone().abs().neg();
+    max_val - logits * target + neg_abs.exp().add_scalar(1.0).log()
 }
 
 pub struct LossBreakdown<B: Backend> {
@@ -283,6 +281,53 @@ pub mod tests {
         let total = breakdown.total.to_data().as_slice::<f32>().expect("f32")[0];
         assert!(total > 0.0, "total loss should be positive, got {total}");
         assert!(total.is_finite(), "total loss should be finite");
+    }
+
+    #[test]
+    fn test_loss_weights_configurable() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::random(
+            [4, 85, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let out = model.forward(x);
+        let targets = make_dummy_targets::<B>(&device, 4);
+        let loss1 = HydraLoss::<B>::new(HydraLossConfig::new());
+        let loss2 = HydraLoss::<B>::new(HydraLossConfig::new().with_w_pi(2.0));
+        let t1 = loss1
+            .total_loss(&out, &targets)
+            .total
+            .into_scalar()
+            .elem::<f32>();
+        let t2 = loss2
+            .total_loss(&out, &targets)
+            .total
+            .into_scalar()
+            .elem::<f32>();
+        assert!((t1 - t2).abs() > 0.001, "different weights should differ");
+    }
+
+    #[test]
+    fn test_focal_bce_vs_standard_bce() {
+        let device = Default::default();
+        let logits = Tensor::<B, 3>::from_floats([[[3.0; 34]; 3]], &device);
+        let target = Tensor::<B, 3>::ones([1, 3, 34], &device);
+        let mask = Tensor::<B, 3>::ones([1, 3, 34], &device);
+        let focal = danger_focal_bce(logits.clone(), target.clone(), mask.clone());
+        let standard = bce_with_logits_3d(logits, target);
+        let standard_sum = (standard * mask)
+            .sum_dim(2)
+            .sum_dim(1)
+            .squeeze_dim::<2>(2)
+            .squeeze_dim::<1>(1);
+        let f = focal.into_scalar().elem::<f32>();
+        let s = standard_sum.into_scalar().elem::<f32>();
+        assert!(
+            f < s,
+            "focal ({f}) should be < standard ({s}) for high-confidence correct"
+        );
     }
 
     fn onehot2d<B: Backend>(

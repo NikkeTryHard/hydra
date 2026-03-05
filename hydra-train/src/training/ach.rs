@@ -122,4 +122,18 @@ mod tests {
         let val = loss.into_scalar().elem::<f32>();
         assert!(val.is_finite());
     }
+
+    #[test]
+    fn test_ach_gate_clips_logit() {
+        let device = Default::default();
+        let logits = Tensor::<B, 2>::from_floats([[0.0, 20.0, -20.0]], &device);
+        let mask = Tensor::<B, 2>::ones([1, 3], &device);
+        let actions = Tensor::<B, 1, Int>::from_ints(&[1i32][..], &device);
+        let pi_old = Tensor::<B, 1>::from_floats([0.5], &device);
+        let adv = Tensor::<B, 1>::from_floats([1.0], &device);
+        let cfg = AchConfig::new();
+        let loss = ach_policy_loss(logits, mask, actions, pi_old, adv, &cfg);
+        let val = loss.into_scalar().elem::<f32>();
+        assert!(val.is_finite(), "clipped logit should produce finite loss");
+    }
 }
