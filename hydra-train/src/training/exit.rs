@@ -115,8 +115,9 @@ pub fn make_exit_target(
     min_visits: u32,
     visit_count: u32,
     max_kl: f32,
+    legal_mask: Option<&[bool]>,
 ) -> Option<Vec<f32>> {
-    let exit_pi = exit_policy_from_q(q_values, tau_exit, None);
+    let exit_pi = exit_policy_from_q(q_values, tau_exit, legal_mask);
     if safety_valve_check(base_pi, &exit_pi, max_kl, min_visits, visit_count) {
         Some(exit_pi)
     } else {
