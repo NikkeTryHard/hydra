@@ -52,6 +52,14 @@ pub fn danger_from_particles(particles: &[crate::ct_smc::Particle], tile: u8, op
     count as f32 / particles.len() as f32
 }
 
+pub fn total_ukeire(
+    hand: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    shanten_fn: &dyn Fn(&[u8; NUM_TILE_TYPES]) -> i8,
+) -> f32 {
+    compute_ukeire(hand, remaining, shanten_fn).iter().sum()
+}
+
 pub fn best_discard_by_ukeire(
     hand: &[u8; NUM_TILE_TYPES],
     remaining: &[f32; NUM_TILE_TYPES],
