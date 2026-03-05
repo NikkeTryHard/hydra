@@ -41,6 +41,13 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn suit_counts(hand: &[u8; NUM_TILE_TYPES]) -> [u8; 3] {
+    let m: u8 = hand[..9].iter().sum();
+    let p: u8 = hand[9..18].iter().sum();
+    let s: u8 = hand[18..27].iter().sum();
+    [m, p, s]
+}
+
 pub fn has_triplet(hand: &[u8; NUM_TILE_TYPES]) -> bool {
     hand.iter().any(|&c| c >= 3)
 }
