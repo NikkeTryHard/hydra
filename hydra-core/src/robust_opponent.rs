@@ -27,6 +27,10 @@ impl ArchetypeWeights {
         self.weights.len()
     }
 
+    pub fn is_confident(&self, threshold: f32) -> bool {
+        self.weights.iter().any(|&w| w >= threshold)
+    }
+
     pub fn most_likely(&self) -> usize {
         self.weights
             .iter()
