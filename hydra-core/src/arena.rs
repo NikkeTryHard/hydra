@@ -286,6 +286,21 @@ pub fn softmax_temperature(
     probs
 }
 
+pub fn compute_placements(scores: [i32; 4]) -> [u8; 4] {
+    let mut indexed: [(i32, u8); 4] = [
+        (scores[0], 0),
+        (scores[1], 1),
+        (scores[2], 2),
+        (scores[3], 3),
+    ];
+    indexed.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut placements = [0u8; 4];
+    for (rank, &(_, player)) in indexed.iter().enumerate() {
+        placements[player as usize] = rank as u8;
+    }
+    placements
+}
+
 pub fn greedy_action(
     logits: &[f32; HYDRA_ACTION_SPACE],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
