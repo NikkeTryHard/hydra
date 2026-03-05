@@ -9,6 +9,8 @@ use crate::training::ach::{ach_policy_loss, AchConfig};
 use crate::training::drda;
 use crate::training::losses::{HydraLoss, HydraTargets};
 
+pub const MAX_RL_BATCH_SIZE: usize = 512;
+
 pub struct RlBatch<B: Backend> {
     pub obs: Tensor<B, 3>,
     pub actions: Tensor<B, 1, Int>,
