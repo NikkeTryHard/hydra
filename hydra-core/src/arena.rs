@@ -72,6 +72,11 @@ impl SelfPlayConfig {
 }
 
 impl SelfPlayConfig {
+    pub fn with_games(mut self, n: usize) -> Self {
+        self.arena.num_parallel_games = n;
+        self
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "selfplay(games={}, gamma={:.3}, rebase={:.0}h)",
