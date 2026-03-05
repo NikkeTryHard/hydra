@@ -163,6 +163,16 @@ impl Arena {
             .collect()
     }
 
+    pub fn stats_summary(&self) -> String {
+        format!(
+            "games={} steps={} buffered={} complete={}",
+            self.games_completed,
+            self.total_steps(),
+            self.num_buffered(),
+            self.completed_trajectories()
+        )
+    }
+
     pub fn collect_player_steps(&self, player_id: u8) -> Vec<&TrajectoryStep> {
         self.trajectory_buffer
             .iter()
