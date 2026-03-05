@@ -125,4 +125,40 @@ mod tests {
         let acc = policy_agreement(output.policy_logits, mask, targets);
         assert!((0.0..=1.0).contains(&acc), "agreement {acc} out of [0,1]");
     }
+
+    #[test]
+    fn test_checkpoint_save_load() {
+        use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<NdArray<f32>>(&device);
+        let x = Tensor::<NdArray<f32>, 3>::random(
+            [2, 85, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let out1 = model.forward(x.clone());
+        let path = "/tmp/hydra_test_ckpt";
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+        model.save_file(path, &recorder).expect("save failed");
+        let loaded = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<NdArray<f32>>(&device)
+            .load_file(path, &recorder, &device)
+            .expect("load failed");
+        let out2 = loaded.forward(x);
+        let d1 = out1.policy_logits.to_data();
+        let d2 = out2.policy_logits.to_data();
+        let s1 = d1.as_slice::<f32>().expect("f32");
+        let s2 = d2.as_slice::<f32>().expect("f32");
+        for (i, (&a, &b)) in s1.iter().zip(s2.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-6, "mismatch at {i}: {a} vs {b}");
+        }
+        std::fs::remove_file(format!("{path}.mpk")).ok();
+    }
 }
