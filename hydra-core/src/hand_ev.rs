@@ -41,6 +41,10 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn has_pair(hand: &[u8; NUM_TILE_TYPES]) -> bool {
+    hand.iter().any(|&c| c >= 2)
+}
+
 pub fn max_tile_count(hand: &[u8; NUM_TILE_TYPES]) -> u8 {
     hand.iter().copied().max().unwrap_or(0)
 }
