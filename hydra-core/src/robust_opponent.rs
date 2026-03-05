@@ -76,6 +76,13 @@ impl RobustOpponentConfig {
     }
 }
 
+impl RobustOpponentConfig {
+    pub fn with_archetypes(mut self, n: usize) -> Self {
+        self.num_archetypes = n;
+        self
+    }
+}
+
 impl Default for RobustOpponentConfig {
     fn default() -> Self {
         Self {
