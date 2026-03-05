@@ -186,6 +186,13 @@ impl Arena {
         self.games_completed = 0;
     }
 
+    pub fn avg_trajectory_length(&self) -> f32 {
+        if self.trajectory_buffer.is_empty() {
+            return 0.0;
+        }
+        self.total_steps() as f32 / self.trajectory_buffer.len() as f32
+    }
+
     pub fn stats_summary(&self) -> String {
         format!(
             "games={} steps={} buffered={} complete={}",
