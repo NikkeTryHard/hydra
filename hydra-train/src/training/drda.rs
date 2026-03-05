@@ -128,4 +128,24 @@ mod tests {
         assert!((vals[0] - 3.0).abs() < 1e-5);
         assert!((vals[1] - 3.0).abs() < 1e-5);
     }
+
+    #[test]
+    fn test_compute_rebase_kl_zero_residual() {
+        let device = Default::default();
+        let base = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
+        let zero_res = Tensor::<B, 2>::zeros([1, 3], &device);
+        let mask = Tensor::<B, 2>::ones([1, 3], &device);
+        let kl = compute_rebase_kl(base, zero_res, 4.0, mask);
+        assert!(kl.abs() < 1e-5, "zero residual should give KL~0: {kl}");
+    }
+
+    #[test]
+    fn test_compute_rebase_kl_nonzero_residual() {
+        let device = Default::default();
+        let base = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
+        let res = Tensor::<B, 2>::from_floats([[5.0, -5.0, 0.0]], &device);
+        let mask = Tensor::<B, 2>::ones([1, 3], &device);
+        let kl = compute_rebase_kl(base, res, 4.0, mask);
+        assert!(kl > 0.0, "non-zero residual should give positive KL: {kl}");
+    }
 }
