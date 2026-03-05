@@ -249,6 +249,10 @@ impl PonderCache {
         self.entries.len()
     }
 
+    pub fn remove(&mut self, hash: u64) -> Option<PonderResult> {
+        self.entries.remove(&hash)
+    }
+
     pub fn contains(&self, hash: u64) -> bool {
         self.entries.contains_key(&hash)
     }
