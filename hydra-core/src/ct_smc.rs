@@ -10,6 +10,7 @@ use std::collections::HashMap;
 pub struct CtSmcConfig {
     pub num_particles: usize,
     pub ess_threshold: f32,
+    pub rng_seed: u64,
 }
 
 impl Default for CtSmcConfig {
@@ -17,6 +18,7 @@ impl Default for CtSmcConfig {
         Self {
             num_particles: 128,
             ess_threshold: 0.4,
+            rng_seed: 42,
         }
     }
 }
@@ -185,6 +187,24 @@ impl CtSmc {
             .collect();
     }
 
+    pub fn update<R: Rng>(
+        &mut self,
+        row_sums: &[u8; 34],
+        col_sums: &[usize; 4],
+        log_omega: &[[f64; 4]; 34],
+        likelihood_fn: &dyn Fn(&Particle) -> f64,
+        rng: &mut R,
+    ) {
+        self.sample_particles(row_sums, col_sums, log_omega, rng);
+        for p in &mut self.particles {
+            p.log_weight = likelihood_fn(p);
+        }
+        let ess = self.ess();
+        if ess < self.config.ess_threshold * self.config.num_particles as f32 {
+            self.systematic_resample(rng);
+        }
+    }
+
     pub fn ess(&self) -> f32 {
         if self.particles.is_empty() {
             return 0.0;
@@ -263,6 +283,7 @@ mod tests {
         let col_sums = [1, 1, 1, 1];
         let log_omega = [[0.0f64; 4]; 34];
         let cfg = CtSmcConfig {
+            rng_seed: 42,
             num_particles: 32,
             ess_threshold: 0.4,
         };
@@ -290,6 +311,7 @@ mod tests {
         let col_sums = [1, 1, 0, 0];
         let log_omega = [[0.0f64; 4]; 34];
         let cfg = CtSmcConfig {
+            rng_seed: 42,
             num_particles: 64,
             ess_threshold: 0.4,
         };
@@ -317,6 +339,7 @@ mod tests {
         let col_sums = [1, 1, 0, 0];
         let log_omega = [[0.0f64; 4]; 34];
         let cfg = CtSmcConfig {
+            rng_seed: 42,
             num_particles: 1000,
             ess_threshold: 0.4,
         };

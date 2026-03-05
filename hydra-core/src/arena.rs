@@ -5,7 +5,9 @@ use crate::encoder::OBS_SIZE;
 
 pub struct ArenaConfig {
     pub num_parallel_games: usize,
+    pub game_mode: u8,
     pub temperature_range: (f32, f32),
+    pub exit_fraction: f32,
     pub max_trajectory_buffer: usize,
 }
 
@@ -13,12 +15,15 @@ impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
             num_parallel_games: 500,
+            game_mode: 0,
             temperature_range: (0.5, 1.5),
+            exit_fraction: 0.2,
             max_trajectory_buffer: 100_000,
         }
     }
 }
 
+#[repr(C)]
 pub struct TrajectoryStep {
     pub obs: [f32; OBS_SIZE],
     pub action: u8,

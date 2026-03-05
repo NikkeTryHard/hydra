@@ -14,6 +14,7 @@ pub struct AfbsNode {
     pub prior: f32,
     pub children: Vec<(u8, NodeIdx)>,
     pub is_opponent: bool,
+    pub particle_handle: Option<u32>,
 }
 
 impl AfbsNode {
@@ -43,6 +44,7 @@ impl AfbsTree {
             prior,
             children: Vec::new(),
             is_opponent,
+            particle_handle: None,
         });
         idx
     }
@@ -116,6 +118,46 @@ pub struct PonderResult {
     pub value: f32,
     pub search_depth: u8,
     pub visit_count: u32,
+    pub timestamp_ns: u64,
+}
+
+pub struct PonderTask {
+    pub info_state_hash: u64,
+    pub priority_score: f32,
+}
+
+pub struct PonderCache {
+    entries: std::collections::HashMap<u64, PonderResult>,
+}
+
+impl PonderCache {
+    pub fn new() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn get(&self, hash: u64) -> Option<&PonderResult> {
+        self.entries.get(&hash)
+    }
+
+    pub fn insert(&mut self, hash: u64, result: PonderResult) {
+        self.entries.insert(hash, result);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Default for PonderCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub const MIN_BATCH: usize = 32;
@@ -209,5 +251,23 @@ mod tests {
         assert!(batch.is_ready());
         assert_eq!(batch.node_indices.len(), 32);
         assert_eq!(batch.obs_buffer.len(), 32 * 85 * 34);
+    }
+
+    #[test]
+    fn ponder_cache_hit_reuses_search() {
+        let mut cache = PonderCache::new();
+        let result = PonderResult {
+            exit_policy: [0.0; HYDRA_ACTION_SPACE],
+            value: 0.5,
+            search_depth: 4,
+            visit_count: 100,
+            timestamp_ns: 12345,
+        };
+        cache.insert(42, result);
+        assert_eq!(cache.len(), 1);
+        let hit = cache.get(42).expect("should find cached result");
+        assert_eq!(hit.visit_count, 100);
+        assert!((hit.value - 0.5).abs() < 1e-5);
+        assert!(cache.get(99).is_none(), "miss should return None");
     }
 }
