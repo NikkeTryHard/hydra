@@ -41,6 +41,10 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn unique_tile_count(hand: &[u8; NUM_TILE_TYPES]) -> usize {
+    hand.iter().filter(|&&c| c > 0).count()
+}
+
 pub fn tiles_held(hand: &[u8; NUM_TILE_TYPES]) -> Vec<u8> {
     (0..NUM_TILE_TYPES)
         .filter(|&t| hand[t] > 0)

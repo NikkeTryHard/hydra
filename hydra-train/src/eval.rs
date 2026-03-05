@@ -138,6 +138,20 @@ pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
 
+pub fn compute_top2_rate(placements: &[u8]) -> f32 {
+    if placements.is_empty() {
+        return 0.0;
+    }
+    placements.iter().filter(|&&p| p <= 1).count() as f32 / placements.len() as f32
+}
+
+pub fn compute_4th_rate(placements: &[u8]) -> f32 {
+    if placements.is_empty() {
+        return 0.0;
+    }
+    placements.iter().filter(|&&p| p == 3).count() as f32 / placements.len() as f32
+}
+
 pub fn compute_mean_placement(placements: &[u8]) -> f32 {
     if placements.is_empty() {
         return 2.5;
