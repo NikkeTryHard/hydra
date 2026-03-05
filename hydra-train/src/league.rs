@@ -161,6 +161,12 @@ impl League {
             .collect()
     }
 
+    pub fn replace_weakest(&mut self, new_agent: LeagueAgent) {
+        if let Some(idx) = self.worst_agent_by_elo() {
+            self.agents[idx] = new_agent;
+        }
+    }
+
     pub fn remove_agent(&mut self, idx: usize) -> Option<LeagueAgent> {
         if idx < self.agents.len() {
             Some(self.agents.remove(idx))
