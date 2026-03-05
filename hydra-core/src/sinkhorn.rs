@@ -146,6 +146,10 @@ impl MixtureSib {
         format!("sib(L={}, ess={:.1})", self.num_components(), self.ess())
     }
 
+    pub fn min_weight(&self) -> f64 {
+        self.weights().into_iter().fold(f64::INFINITY, f64::min)
+    }
+
     pub fn max_weight(&self) -> f64 {
         self.weights().into_iter().fold(0.0f64, f64::max)
     }
