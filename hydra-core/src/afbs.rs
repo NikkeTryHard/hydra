@@ -156,6 +156,10 @@ impl AfbsTree {
             .map(|(action, _)| *action)
     }
 
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+    }
+
     pub fn tree_size(&self) -> usize {
         self.nodes.len()
     }
