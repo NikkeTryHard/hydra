@@ -105,6 +105,34 @@ impl AfbsTree {
             node.total_value += value as f64;
         }
     }
+
+    pub fn root_exit_policy(&self, root_idx: NodeIdx, tau: f32) -> [f32; HYDRA_ACTION_SPACE] {
+        let root = &self.nodes[root_idx as usize];
+        let mut policy = [0.0f32; HYDRA_ACTION_SPACE];
+        if root.children.is_empty() {
+            return policy;
+        }
+        let mut max_q = f32::NEG_INFINITY;
+        for &(_, child_idx) in &root.children {
+            let q = self.nodes[child_idx as usize].q_value();
+            if q > max_q {
+                max_q = q;
+            }
+        }
+        let mut total = 0.0f32;
+        for &(action, child_idx) in &root.children {
+            let q = self.nodes[child_idx as usize].q_value();
+            let exp_q = ((q - max_q) / tau).exp();
+            policy[action as usize] = exp_q;
+            total += exp_q;
+        }
+        if total > 0.0 {
+            for p in &mut policy {
+                *p /= total;
+            }
+        }
+        policy
+    }
 }
 
 impl Default for AfbsTree {
