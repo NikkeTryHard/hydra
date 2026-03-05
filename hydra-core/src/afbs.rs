@@ -149,6 +149,25 @@ impl AfbsTree {
     }
 }
 
+pub fn pondering_priority_score(
+    policy: &[f32; HYDRA_ACTION_SPACE],
+    danger_risk: f32,
+    ess: f32,
+    ess_threshold: f32,
+) -> f32 {
+    let mut sorted: Vec<f32> = policy.iter().copied().filter(|&p| p > 0.001).collect();
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let top2_gap = if sorted.len() >= 2 {
+        sorted[0] - sorted[1]
+    } else {
+        1.0
+    };
+    let uncertainty = if top2_gap < 0.1 { 2.0 } else { 0.5 };
+    let risk_boost = danger_risk.min(1.0);
+    let ess_penalty = if ess < ess_threshold { 1.5 } else { 0.5 };
+    uncertainty + risk_boost + ess_penalty
+}
+
 impl Default for AfbsTree {
     fn default() -> Self {
         Self::new()
