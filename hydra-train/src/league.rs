@@ -77,6 +77,23 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn elo_spread(&self) -> f32 {
+        if self.agents.is_empty() {
+            return 0.0;
+        }
+        let max = self
+            .agents
+            .iter()
+            .map(|a| a.elo)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min = self
+            .agents
+            .iter()
+            .map(|a| a.elo)
+            .fold(f32::INFINITY, f32::min);
+        max - min
+    }
+
     pub fn worst_agent_by_elo(&self) -> Option<usize> {
         self.agents
             .iter()
