@@ -106,6 +106,29 @@ fn full_pipeline_integration() {
     let d_val: f32 = d_loss.into_scalar().elem();
     assert!(d_val.is_finite(), "distill loss not finite: {d_val}");
 
+    use hydra_core::afbs::{AfbsTree, TOP_K};
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(0, 1.0, false);
+    let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+    for (i, v) in logits[..10].iter_mut().enumerate() {
+        *v = (10 - i) as f32;
+    }
+    let mut mask = [false; HYDRA_ACTION_SPACE];
+    for v in &mut mask[..10] {
+        *v = true;
+    }
+    tree.expand_node(root, &logits, &mask, false);
+    assert_eq!(tree.nodes[root as usize].children.len(), TOP_K);
+    for _ in 0..8 {
+        if let Some((_, child)) = tree.puct_select(root) {
+            tree.backpropagate(&[root, child], 0.5);
+        }
+    }
+    assert!(
+        tree.nodes[root as usize].visit_count >= 8,
+        "AFBS visit_count < 8"
+    );
+
     let exit_q = vec![1.0, 3.0, 2.0, 0.5];
     let exit_pi = exit::exit_policy_from_q(&exit_q, 1.0);
     let sum: f32 = exit_pi.iter().sum();
