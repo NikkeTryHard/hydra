@@ -163,6 +163,16 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     }
 }
 
+pub fn score_to_placement(scores: [i32; 4], player: u8) -> u8 {
+    let mut indexed: Vec<(i32, u8)> = scores
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (s, i as u8))
+        .collect();
+    indexed.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    indexed.iter().position(|(_, p)| *p == player).unwrap_or(3) as u8
+}
+
 pub fn one_hot_action(action: u8, num_classes: usize) -> Vec<f32> {
     let mut v = vec![0.0f32; num_classes];
     if (action as usize) < num_classes {
