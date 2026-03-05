@@ -148,6 +148,15 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn kl_divergence<B: Backend>(p: Tensor<B, 2>, q: Tensor<B, 2>) -> Tensor<B, 1> {
+    let eps = 1e-8f32;
+    let p_safe = p.clone().clamp(eps, 1.0);
+    let q_safe = q.clamp(eps, 1.0);
+    (p * (p_safe.log() - q_safe.log()))
+        .sum_dim(1)
+        .squeeze_dim::<1>(1)
+}
+
 pub fn oracle_target_from_scores(final_scores: [i32; 4]) -> [f32; 4] {
     let mean = final_scores.iter().sum::<i32>() as f32 / 4.0;
     let mut target = [0.0f32; 4];
