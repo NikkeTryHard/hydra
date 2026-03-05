@@ -91,9 +91,9 @@ These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + 
 
 | Config | Params | Samples/param | vs Mortal (514) | Verdict |
 |--------|-------:|-------------:|----------------:|---------|
-| 40-block mono | 16.5M | 191 | 0.37x | Undertrained by 2.7x |
-| 24-block learner | 10M | 315 | 0.61x | Viable with ExIt quality |
-| 12-block actor | 5M | 630 | 1.2x | Well-trained |
+| 40-block mono | 16.5M | 157 | 0.31x | Risk of undertraining; also too slow for AFBS rollouts |
+| 24-block learner | 10M | 259 | 0.50x | Viable with ExIt quality boost |
+| 12-block actor | 5M | 518 | 1.0x | Well-trained, fast inference for AFBS |
 
 Mortal reaches 7 dan at 514 samples/param. A monolithic 40-block gets only 37% of that ratio. Even ExIt's ~3-5x quality multiplier (KataGo precedent) only raises effective ratio to ~287-478 since ExIt activates in Phase 3 (~50% of budget). **Three-tier architecture is mathematically justified:**
 
@@ -137,7 +137,7 @@ Particles $\{X_t^{(p)},\alpha_t^{(p)}\}_{p=1}^P$ targeting $p(X_t\mid I_t)$. Pro
 
 ### 5.4 Correlation scale diagnostic
 
-$|\rho_{ij}|=\sqrt{K_i K_j} / \sqrt{(H-K_i)(H-K_j)}$. At $H=50$, $K=4$: $|\rho|=4/46=0.087$; at $H=25$: $|\rho|=0.191$. Late-game correlations motivate Mixture-SIB + particles over first-moment alone.
+$|\rho_{ij}|=\sqrt{K_i K_j} / \sqrt{(H-K_i)(H-K_j)}$. At $H=50$, $K=4$: $|\rho|=4/46=0.087$; at $H=25$: $|\rho|=0.190$. Late-game correlations motivate Mixture-SIB + particles over first-moment alone.
 
 ### 5.5 CT-SMC: Exact contingency-table sampling (replaces generic particle proposals)
 
@@ -202,7 +202,7 @@ On event: lookup predicted child key; if match, shift root and keep statistics; 
 
 **Trigger:** Activate when remaining wall $\le W^* = 10$ tiles AND at least one threatening signal (riichi, open tenpai, high-tempo opponent).
 
-**Multiset DP (not sequence enumeration).** For each CT-SMC particle $X^{(n)}$ (which determines wall composition as a multiset), the DP state is the remaining wall multiset. With wall=10 and all tiles distinct: $2^{10} = 1024$ states. Typical case (1-2 duplicates): 512-1024 states. Exact draw probabilities are hypergeometric given the multiset. **Exact draws + approximate actions**: opponent responses modeled by RolloutNet policy, our node is $\max_a$ or expectation under policy.
+**Monte Carlo Expectimax (not multiset-merging DP).** A pure multiset DP violates the Markov property: RolloutNet conditions on full game state (including discard history), so states with same wall multiset but different histories can't be merged. Instead, use **exact draw probabilities + sampled opponent actions**: at our draw nodes, enumerate all possible tiles with hypergeometric weights (exact); at opponent/decision nodes, sample actions from RolloutNet (approximate). This is standard PIMC-Expectimax applied to the endgame. With wall=10 and top-mass particle reduction (keep 95%), the branching is tractable within ~50-100ms per decision.
 
 $$Q(a) = \mathbb{E}_{X \sim p(X)} \left[ \text{ExactChanceValue}(a \mid X) \right]$$
 
@@ -267,13 +267,22 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 
 | Phase | GPU-hrs | Nets trained | Games | Key output |
 |-------|--------:|-------------|------:|-----------|
+| Phase -1: Benchmarks | 150 | All nets | N/A | Latency/throughput/distill gates |
 | Phase 0: BC | 50 | LearnerNet (24-block) | N/A (5-6M expert) | Initialize from human data |
 | Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
-| Phase 2: DRDA-wrapped ACH | 800 | LearnerNet via ACH+DRDA | ~18M | Game-theoretic base policy + early ExIt |
-| Phase 3: ExIt + Pondering | 950 | LearnerNet + TeacherNet | ~14M | Deep search ExIt targets + endgame solver |
-| **Total** | **2000** | | **~37M** | |
+| Phase 2: DRDA-wrapped ACH | 800 | LearnerNet via ACH+DRDA | ~18M | Game-theoretic base + early ExIt |
+| Phase 3: ExIt + Pondering | 800 | LearnerNet + TeacherNet | ~12M | Deep search ExIt + endgame |
+| **Total** | **2000** | | **~35M** | |
 
 GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering/teacher (TeacherNet). Distillation: Learner -> Actor continuously (IMPALA-style), Teacher -> Learner on hard-mined positions.
+
+### Phase -1: Hard reality benchmarks (150 GPU hours reserve)
+Unlocked BEFORE committing the full budget. Must pass:
+- **Latency gate**: AFBS on-turn < 150ms, CT-SMC DP < 1ms, endgame solver < 100ms
+- **Throughput gate**: ActorNet self-play > 20 games/sec sustained
+- **Distillation gate**: Teacher->Learner->Actor KL drift < threshold over 100 updates
+- **Hyperparameter sweep**: ACH eta, DRDA tau_drda, beam W, depth D, particles P
+If gates fail, shrink AFBS/teacher usage and reallocate to more self-play.
 
 ### Phase 0: BC warm start (50 GPU hours)
 Train LearnerNet (24-block) on 5-6M expert games (Tenhou Houou + Majsoul). 24x augmentation (6 suit perms x 4 seat rotations). All heads supervised. Distill to ActorNet (12-block) at end.
@@ -283,7 +292,7 @@ Self-play with full hidden state access. Train oracle critic (zero-sum constrain
 
 ### Phase 2: DRDA-wrapped ACH self-play (800 GPU hours)
 
-**DRDA-wrapped ACH**: ACH is LuckyJ's inner optimizer (+0.4 fan over PPO) but its theory covers only 2-player zero-sum. For 4-player stability, wrap in DRDA's multi-round structure (ICLR 2025). Policy: $\pi_\theta(a|x) = \mathrm{softmax}(\ell_{\text{base}}(x,a) + y_\theta(x,a)/\epsilon)$ where $\ell_{\text{base}}$ is a frozen checkpoint (updated every 25-50 GPU hours) and $y_\theta$ is a trainable residual.
+**DRDA-wrapped ACH**: ACH is LuckyJ's inner optimizer (+0.4 fan over PPO) but its theory covers only 2-player zero-sum. For 4-player stability, wrap in DRDA's multi-round structure (ICLR 2025). Policy: $\pi_\theta(a|x) = \mathrm{softmax}(\ell_{\text{base}}(x,a) + y_\theta(x,a)/\tau_{\text{drda}})$ where $\ell_{\text{base}}$ is a frozen checkpoint (updated every 25-50 GPU hours), $y_\theta$ is a trainable residual, and $\tau_{\text{drda}}$ is the DRDA temperature (distinct from ACH's clip ratio $\epsilon$).
 
 ACH update (per-(s,a) sample):
 $$L_\pi(s,a) = -c(s,a) \cdot \eta \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|s)} \cdot A(s,a)$$
