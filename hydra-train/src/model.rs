@@ -268,4 +268,21 @@ mod tests {
         check(&out.grp, "grp");
         check(&out.oracle_critic, "oracle_critic");
     }
+
+    #[test]
+    fn model_config_actor_learner_defaults() {
+        let actor = HydraModelConfig::actor();
+        assert_eq!(actor.num_blocks, 12);
+        assert_eq!(actor.hidden_channels, 256);
+        assert_eq!(actor.num_groups, 32);
+        let learner = HydraModelConfig::learner();
+        assert_eq!(learner.num_blocks, 24);
+        assert_eq!(learner.hidden_channels, 256);
+    }
+
+    #[test]
+    fn validate_passes_for_standard_configs() {
+        assert!(HydraModelConfig::actor().validate().is_ok());
+        assert!(HydraModelConfig::learner().validate().is_ok());
+    }
 }
