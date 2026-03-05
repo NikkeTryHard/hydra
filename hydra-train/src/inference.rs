@@ -101,4 +101,28 @@ mod tests {
         assert_eq!(cfg.call_reaction_budget_ms, 50);
         assert!(cfg.agari_guard);
     }
+
+    #[test]
+    fn illegal_actions_get_zero_probability() {
+        let device = Default::default();
+        let mut logits_data = [0.0f32; HYDRA_ACTION_SPACE];
+        logits_data[0] = 5.0;
+        logits_data[1] = 3.0;
+        logits_data[2] = 1.0;
+        let logits = Tensor::<B, 1>::from_floats(&logits_data[..], &device).unsqueeze_dim::<2>(0);
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[0] = true;
+        mask[2] = true;
+        let (_, policy) = infer_action(logits, &mask);
+        assert!(
+            policy[1] < 1e-6,
+            "illegal action 1 should have ~0 prob: {}",
+            policy[1]
+        );
+        assert!(
+            policy[0] > 0.1,
+            "legal action 0 should have significant prob"
+        );
+        assert!(policy[2] > 0.01, "legal action 2 should have some prob");
+    }
 }
