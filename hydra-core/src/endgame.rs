@@ -45,6 +45,14 @@ impl EndgameSolver {
         self
     }
 
+    pub fn urgency(&self, wall: u8, danger: f32) -> f32 {
+        if wall > self.max_wall {
+            return 0.0;
+        }
+        let proximity = 1.0 - (wall as f32 / self.max_wall as f32);
+        proximity * danger
+    }
+
     pub fn tiles_remaining(&self, wall: u8) -> u8 {
         wall.min(self.max_wall)
     }
