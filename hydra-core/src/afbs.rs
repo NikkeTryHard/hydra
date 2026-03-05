@@ -149,6 +149,20 @@ impl AfbsTree {
     }
 }
 
+pub fn top_k_actions(
+    logits: &[f32; HYDRA_ACTION_SPACE],
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+    k: usize,
+) -> Vec<(u8, f32)> {
+    let mut scored: Vec<(u8, f32)> = (0..HYDRA_ACTION_SPACE as u8)
+        .filter(|&a| legal_mask[a as usize])
+        .map(|a| (a, logits[a as usize]))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(k);
+    scored
+}
+
 pub fn playout_cap(
     base_playouts: u32,
     policy: &[f32; HYDRA_ACTION_SPACE],
