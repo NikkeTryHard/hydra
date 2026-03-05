@@ -114,4 +114,32 @@ mod tests {
             "highest weight particle should be selected"
         );
     }
+
+    #[test]
+    fn endgame_empty_particles() {
+        let mask = [true; HYDRA_ACTION_SPACE];
+        let eval = |_: &Particle, _: u8| 1.0f32;
+        let q = pimc_endgame_q(&[], &mask, &eval);
+        assert!(q.iter().all(|&v| v == 0.0), "empty particles -> zero Q");
+    }
+
+    #[test]
+    fn top_mass_empty_returns_empty() {
+        assert!(top_mass_particles(&[], 0.95).is_empty());
+    }
+
+    #[test]
+    fn endgame_respects_legal_mask() {
+        let particles = vec![Particle {
+            allocation: [[0; 4]; 34],
+            log_weight: 0.0,
+        }];
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[5] = true;
+        let eval = |_: &Particle, a: u8| a as f32;
+        let q = pimc_endgame_q(&particles, &mask, &eval);
+        assert!((q[5] - 5.0).abs() < 1e-5);
+        assert!(q[0] == 0.0, "illegal action should have Q=0");
+        assert!(q[4] == 0.0, "illegal action should have Q=0");
+    }
 }
