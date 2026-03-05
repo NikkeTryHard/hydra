@@ -22,6 +22,23 @@ impl<B: Backend> HydraOutput<B> {
         let neg_inf = (legal_mask.ones_like() - legal_mask) * (-1e9f32);
         self.policy_logits.clone() + neg_inf
     }
+
+    pub fn is_finite(&self) -> bool {
+        let check = |t: &Tensor<B, 2>| -> bool {
+            if let Ok(s) = t.to_data().as_slice::<f32>() {
+                s.iter().all(|v| v.is_finite())
+            } else {
+                false
+            }
+        };
+        check(&self.policy_logits)
+            && check(&self.value)
+            && check(&self.score_pdf)
+            && check(&self.score_cdf)
+            && check(&self.opp_tenpai)
+            && check(&self.grp)
+            && check(&self.oracle_critic)
+    }
 }
 
 #[derive(Module, Debug)]
