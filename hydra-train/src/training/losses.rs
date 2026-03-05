@@ -49,6 +49,17 @@ impl HydraLossConfig {
             + self.w_score * 2.0
     }
 
+    pub fn scale_all(&self, factor: f32) -> Self {
+        Self::new()
+            .with_w_pi(self.w_pi * factor)
+            .with_w_v(self.w_v * factor)
+            .with_w_grp(self.w_grp * factor)
+            .with_w_tenpai(self.w_tenpai * factor)
+            .with_w_danger(self.w_danger * factor)
+            .with_w_opp(self.w_opp * factor)
+            .with_w_score(self.w_score * factor)
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "loss(pi={:.1}, v={:.1}, grp={:.1})",
