@@ -13,3 +13,22 @@ pub const ACTION_SPACE: usize = HYDRA_ACTION_SPACE;
 pub const SCORE_BINS: usize = 64;
 pub const NUM_OPPONENTS: usize = 3;
 pub const GRP_CLASSES: usize = 24;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constants_match_hydra_core() {
+        assert_eq!(INPUT_CHANNELS, 85);
+        assert_eq!(TILE_DIM, 34);
+        assert_eq!(ACTION_SPACE, 46);
+    }
+
+    #[test]
+    fn derived_constants_correct() {
+        assert_eq!(SE_BOTTLENECK, 64);
+        assert_eq!(HIDDEN_CHANNELS / NUM_GROUPS, 8);
+        assert_eq!(INPUT_CHANNELS * TILE_DIM, 2890);
+    }
+}
