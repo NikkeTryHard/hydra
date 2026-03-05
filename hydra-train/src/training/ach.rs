@@ -136,4 +136,22 @@ mod tests {
         let val = loss.into_scalar().elem::<f32>();
         assert!(val.is_finite(), "clipped logit should produce finite loss");
     }
+
+    #[test]
+    fn test_ach_batch_of_8() {
+        let device = Default::default();
+        let logits = Tensor::<B, 2>::random(
+            [8, 46],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let mask = Tensor::<B, 2>::ones([8, 46], &device);
+        let actions = Tensor::<B, 1, Int>::from_ints(&[0i32, 1, 2, 3, 4, 5, 6, 7][..], &device);
+        let pi_old = Tensor::<B, 1>::from_floats([0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1, 0.2], &device);
+        let adv = Tensor::<B, 1>::from_floats([1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 0.0, 0.1], &device);
+        let cfg = AchConfig::new();
+        let loss = ach_policy_loss(logits, mask, actions, pi_old, adv, &cfg);
+        let val = loss.into_scalar().elem::<f32>();
+        assert!(val.is_finite(), "batch ACH should be finite: {val}");
+    }
 }

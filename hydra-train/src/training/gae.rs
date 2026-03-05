@@ -81,4 +81,37 @@ mod tests {
         let var: f32 = adv.iter().map(|a| a.powi(2)).sum::<f32>() / adv.len() as f32;
         assert!((var - 1.0).abs() < 0.1, "variance should be ~1, got {var}");
     }
+
+    #[test]
+    fn test_gae_hand_computed() {
+        let gamma = 0.99f32;
+        let lambda = 0.95f32;
+        let rewards = [1.0, 2.0];
+        let values = [0.5, 0.8, 0.3];
+        let dones = [false, false];
+        let (adv, _) = compute_gae(&rewards, &values, &dones, gamma, lambda);
+        let delta1 = rewards[1] + gamma * values[2] - values[1];
+        let gae1 = delta1;
+        let delta0 = rewards[0] + gamma * values[1] - values[0];
+        let gae0 = delta0 + gamma * lambda * gae1;
+        assert!(
+            (adv[0] - gae0).abs() < 1e-4,
+            "adv[0]: {} vs {}",
+            adv[0],
+            gae0
+        );
+        assert!(
+            (adv[1] - gae1).abs() < 1e-4,
+            "adv[1]: {} vs {}",
+            adv[1],
+            gae1
+        );
+    }
+
+    #[test]
+    fn test_gae_single_step_terminal() {
+        let (adv, ret) = compute_gae(&[5.0], &[1.0, 0.0], &[true], 0.99, 0.95);
+        assert!((adv[0] - 4.0).abs() < 1e-4, "terminal: adv={}", adv[0]);
+        assert!((ret[0] - 5.0).abs() < 1e-4, "terminal: ret={}", ret[0]);
+    }
 }
