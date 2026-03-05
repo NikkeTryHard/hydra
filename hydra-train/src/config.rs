@@ -24,6 +24,8 @@ pub const PASS_ACTION: u8 = 45;
 
 pub const AGARI_ACTION: u8 = 43;
 pub const KAN_ACTION: u8 = 44;
+pub const FIRST_CALL_ACTION: u8 = 38;
+pub const LAST_CALL_ACTION: u8 = 42;
 
 pub fn is_agari_action(action: u8) -> bool {
     action == 43
