@@ -113,6 +113,19 @@ pub fn bc_train_step<B: AutodiffBackend>(
 }
 
 impl BCTrainerConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.lr <= 0.0 {
+            return Err("lr must be positive");
+        }
+        if self.batch_size == 0 {
+            return Err("batch_size must be > 0");
+        }
+        if self.grad_clip_norm <= 0.0 {
+            return Err("grad_clip_norm must be positive");
+        }
+        Ok(())
+    }
+
     pub fn total_batches(&self, num_samples: usize) -> usize {
         if self.batch_size == 0 {
             return 0;
