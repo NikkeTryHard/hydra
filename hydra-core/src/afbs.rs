@@ -218,6 +218,10 @@ impl PonderCache {
         self.entries.len()
     }
 
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
