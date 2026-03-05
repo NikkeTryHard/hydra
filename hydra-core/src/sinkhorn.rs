@@ -15,6 +15,11 @@ impl SinkhornConfig {
         }
     }
 
+    pub fn with_tol(mut self, tol: f64) -> Self {
+        self.tol = tol;
+        self
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "sinkhorn(iters={}, tol={:.1e}, L={})",
