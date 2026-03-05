@@ -270,4 +270,20 @@ mod tests {
         assert!((hit.value - 0.5).abs() < 1e-5);
         assert!(cache.get(99).is_none(), "miss should return None");
     }
+
+    #[test]
+    fn puct_balances_exploration_exploitation() {
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(0, 1.0, false);
+        let c0 = tree.add_node(1, 0.5, false);
+        let c1 = tree.add_node(2, 0.5, false);
+        tree.nodes[root as usize].children = vec![(0, c0), (1, c1)];
+        tree.nodes[root as usize].visit_count = 10;
+        tree.nodes[c0 as usize].visit_count = 8;
+        tree.nodes[c0 as usize].total_value = 4.0;
+        tree.nodes[c1 as usize].visit_count = 2;
+        tree.nodes[c1 as usize].total_value = 1.5;
+        let (action, _) = tree.puct_select(root).expect("select");
+        assert_eq!(action, 1, "should explore less-visited child");
+    }
 }
