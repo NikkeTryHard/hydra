@@ -273,6 +273,10 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn max_turn(&self) -> u16 {
+        self.steps.last().map_or(0, |s| s.turn)
+    }
+
     pub fn player_reward_sum(&self, player_id: u8) -> f32 {
         self.steps
             .iter()
