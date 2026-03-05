@@ -12,6 +12,34 @@ pub fn log_sum_exp_f32(values: &[f32]) -> f32 {
     max_v + sum.ln()
 }
 
+pub struct ArchetypeWeights {
+    pub weights: Vec<f32>,
+}
+
+impl ArchetypeWeights {
+    pub fn uniform(n: usize) -> Self {
+        Self {
+            weights: vec![1.0 / n as f32; n],
+        }
+    }
+
+    pub fn update_posterior(&mut self, log_likelihoods: &[f32]) {
+        let max_ll = log_likelihoods
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        for (w, &ll) in self.weights.iter_mut().zip(log_likelihoods) {
+            *w *= (ll - max_ll).exp();
+        }
+        let sum: f32 = self.weights.iter().sum();
+        if sum > 0.0 {
+            for w in &mut self.weights {
+                *w /= sum;
+            }
+        }
+    }
+}
+
 pub struct RobustOpponentConfig {
     pub epsilon: f32,
     pub tau_search_iters: u8,
