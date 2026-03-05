@@ -1,0 +1,166 @@
+//! Anytime Factored-Belief Search (AFBS) with PUCT selection.
+
+use crate::action::HYDRA_ACTION_SPACE;
+
+pub const C_PUCT: f32 = 2.5;
+pub const TOP_K: usize = 5;
+
+pub type NodeIdx = u32;
+
+pub struct AfbsNode {
+    pub info_state_hash: u64,
+    pub visit_count: u32,
+    pub total_value: f64,
+    pub prior: f32,
+    pub children: Vec<(u8, NodeIdx)>,
+    pub is_opponent: bool,
+}
+
+impl AfbsNode {
+    pub fn q_value(&self) -> f32 {
+        if self.visit_count == 0 {
+            return 0.0;
+        }
+        (self.total_value / self.visit_count as f64) as f32
+    }
+}
+
+pub struct AfbsTree {
+    pub nodes: Vec<AfbsNode>,
+}
+
+impl AfbsTree {
+    pub fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+
+    pub fn add_node(&mut self, hash: u64, prior: f32, is_opponent: bool) -> NodeIdx {
+        let idx = self.nodes.len() as NodeIdx;
+        self.nodes.push(AfbsNode {
+            info_state_hash: hash,
+            visit_count: 0,
+            total_value: 0.0,
+            prior,
+            children: Vec::new(),
+            is_opponent,
+        });
+        idx
+    }
+
+    pub fn puct_select(&self, parent_idx: NodeIdx) -> Option<(u8, NodeIdx)> {
+        let parent = &self.nodes[parent_idx as usize];
+        if parent.children.is_empty() {
+            return None;
+        }
+        let sqrt_n = (parent.visit_count as f32).sqrt();
+        let mut best_ucb = f32::NEG_INFINITY;
+        let mut best = None;
+        for &(action, child_idx) in &parent.children {
+            let child = &self.nodes[child_idx as usize];
+            let q = child.q_value();
+            let u = C_PUCT * child.prior * sqrt_n / (1.0 + child.visit_count as f32);
+            let ucb = q + u;
+            if ucb > best_ucb {
+                best_ucb = ucb;
+                best = Some((action, child_idx));
+            }
+        }
+        best
+    }
+
+    pub fn expand_node(
+        &mut self,
+        parent_idx: NodeIdx,
+        policy_logits: &[f32; HYDRA_ACTION_SPACE],
+        legal_mask: &[bool; HYDRA_ACTION_SPACE],
+        is_opponent: bool,
+    ) {
+        let mut scored: Vec<(u8, f32)> = (0..HYDRA_ACTION_SPACE as u8)
+            .filter(|&a| legal_mask[a as usize])
+            .map(|a| (a, policy_logits[a as usize]))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(TOP_K);
+
+        let max_logit = scored.first().map(|s| s.1).unwrap_or(0.0);
+        let exp_sum: f32 = scored.iter().map(|s| (s.1 - max_logit).exp()).sum();
+
+        let parent_hash = self.nodes[parent_idx as usize].info_state_hash;
+        for (action, logit) in &scored {
+            let prior = (logit - max_logit).exp() / exp_sum;
+            let child_hash = parent_hash ^ (*action as u64).wrapping_mul(0x9e3779b97f4a7c15);
+            let child_idx = self.add_node(child_hash, prior, is_opponent);
+            self.nodes[parent_idx as usize]
+                .children
+                .push((*action, child_idx));
+        }
+    }
+
+    pub fn backpropagate(&mut self, path: &[NodeIdx], value: f32) {
+        for &idx in path {
+            let node = &mut self.nodes[idx as usize];
+            node.visit_count += 1;
+            node.total_value += value as f64;
+        }
+    }
+}
+
+impl Default for AfbsTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct PonderResult {
+    pub exit_policy: [f32; HYDRA_ACTION_SPACE],
+    pub value: f32,
+    pub search_depth: u8,
+    pub visit_count: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn puct_selects_high_prior_unvisited() {
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(0, 1.0, false);
+        let c1 = tree.add_node(1, 0.8, false);
+        let c2 = tree.add_node(2, 0.2, false);
+        tree.nodes[root as usize].children = vec![(0, c1), (1, c2)];
+        tree.nodes[root as usize].visit_count = 1;
+        let (action, _) = tree.puct_select(root).expect("should select");
+        assert_eq!(action, 0, "should select high-prior child");
+    }
+
+    #[test]
+    fn expand_creates_top_k_children() {
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(0, 1.0, false);
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits[0] = 5.0;
+        logits[1] = 4.0;
+        logits[2] = 3.0;
+        logits[3] = 2.0;
+        logits[4] = 1.0;
+        logits[5] = 0.5;
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        for i in 0..10 {
+            mask[i] = true;
+        }
+        tree.expand_node(root, &logits, &mask, false);
+        assert_eq!(tree.nodes[root as usize].children.len(), TOP_K);
+    }
+
+    #[test]
+    fn backprop_updates_visits() {
+        let mut tree = AfbsTree::new();
+        let n0 = tree.add_node(0, 1.0, false);
+        let n1 = tree.add_node(1, 0.5, false);
+        tree.backpropagate(&[n0, n1], 1.0);
+        assert_eq!(tree.nodes[n0 as usize].visit_count, 1);
+        assert_eq!(tree.nodes[n1 as usize].visit_count, 1);
+        assert!((tree.nodes[n1 as usize].q_value() - 1.0).abs() < 1e-5);
+    }
+}
