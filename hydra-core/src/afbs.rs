@@ -250,6 +250,12 @@ impl LeafBatch {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.obs_buffer.clear();
+        self.node_indices.clear();
+        self.batch_size = 0;
+    }
+
     pub fn add(&mut self, obs: &[f32], node_idx: NodeIdx) {
         self.obs_buffer.extend_from_slice(obs);
         self.node_indices.push(node_idx);
