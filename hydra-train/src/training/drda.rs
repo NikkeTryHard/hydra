@@ -18,6 +18,10 @@ pub struct RebaseTracker {
 }
 
 impl RebaseTracker {
+    pub fn default_phase2() -> Self {
+        Self::new(37.5)
+    }
+
     pub fn new(interval_hours: f32) -> Self {
         Self {
             gpu_hours_since_rebase: 0.0,
