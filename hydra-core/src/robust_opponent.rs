@@ -23,6 +23,10 @@ impl ArchetypeWeights {
         }
     }
 
+    pub fn num_archetypes(&self) -> usize {
+        self.weights.len()
+    }
+
     pub fn most_likely(&self) -> usize {
         self.weights
             .iter()
