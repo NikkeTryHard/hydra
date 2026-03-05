@@ -105,6 +105,18 @@ impl<B: Backend> OracleCriticHead<B> {
     }
 }
 
+impl HeadsConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.hidden_channels == 0 {
+            return Err("hidden_channels must be > 0");
+        }
+        if self.action_space == 0 {
+            return Err("action_space must be > 0");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Config, Debug)]
 pub struct HeadsConfig {
     #[config(default = "256")]
