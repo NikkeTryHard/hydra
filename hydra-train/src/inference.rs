@@ -170,6 +170,18 @@ pub fn batch_legal_masks_to_tensor<B: Backend>(
     Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
 }
 
+pub fn infer_action_timed<B: Backend>(
+    policy_logits: Tensor<B, 2>,
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+    budget_ms: u64,
+) -> (u8, [f32; HYDRA_ACTION_SPACE], bool) {
+    let start = std::time::Instant::now();
+    let (action, policy) = infer_action(policy_logits, legal_mask);
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let within_budget = elapsed_ms <= budget_ms;
+    (action, policy, within_budget)
+}
+
 pub fn infer_action<B: Backend>(
     policy_logits: Tensor<B, 2>,
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
