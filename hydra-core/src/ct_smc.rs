@@ -271,6 +271,10 @@ impl CtSmc {
         self.dp_cache = None;
     }
 
+    pub fn has_dp_cache(&self) -> bool {
+        self.dp_cache.is_some()
+    }
+
     pub fn num_particles(&self) -> usize {
         self.particles.len()
     }
