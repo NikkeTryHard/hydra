@@ -159,4 +159,25 @@ mod tests {
             assert!((-1.0..=1.0).contains(&v), "value {v} out of [-1,1]");
         }
     }
+
+    #[test]
+    fn actor_and_learner_param_counts_differ() {
+        let device = Default::default();
+        let actor = HydraModelConfig::actor().init::<B>(&device);
+        let learner = HydraModelConfig::learner().init::<B>(&device);
+        let a_params = actor.num_params();
+        let l_params = learner.num_params();
+        assert!(
+            l_params > a_params,
+            "learner ({l_params}) should have more params than actor ({a_params})"
+        );
+        assert!(
+            a_params > 1_000_000,
+            "actor should have >1M params, got {a_params}"
+        );
+        assert!(
+            l_params > 5_000_000,
+            "learner should have >5M params, got {l_params}"
+        );
+    }
 }
