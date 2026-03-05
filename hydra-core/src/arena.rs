@@ -831,6 +831,41 @@ mod tests {
     }
 
     #[test]
+    fn arena_500_games_completes() {
+        let config = ArenaConfig {
+            num_parallel_games: 500,
+            max_trajectory_buffer: 600,
+            ..Default::default()
+        };
+        let mut arena = Arena::new(config);
+        for g in 0..500u32 {
+            let mut traj = Trajectory::new(g, g as u64);
+            for turn in 0..10u16 {
+                traj.steps.push(TrajectoryStep {
+                    obs: [0.0; OBS_SIZE],
+                    action: (turn % 34) as u8,
+                    pi_old: {
+                        let mut p = [0.0; HYDRA_ACTION_SPACE];
+                        p[(turn % 34) as usize] = 1.0;
+                        p
+                    },
+                    reward: 0.0,
+                    done: turn == 9,
+                    player_id: (turn % 4) as u8,
+                    game_id: g,
+                    turn,
+                    temperature: 1.0,
+                });
+            }
+            traj.final_scores = [25000; 4];
+            arena.add_trajectory(traj);
+        }
+        assert_eq!(arena.games_completed, 500);
+        assert!(arena.total_steps() >= 5000);
+        assert!(arena.validate_all().is_ok());
+    }
+
+    #[test]
     fn softmax_temperature_sums_to_one() {
         let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
         logits[0] = 3.0;
