@@ -61,7 +61,8 @@ pub fn ach_policy_loss<B: Backend>(
     let y_a = clamped.gather(1, actions_2d.clone()).squeeze_dim::<1>(1);
     let pi_a = pi.clone().gather(1, actions_2d).squeeze_dim::<1>(1);
 
-    let ratio = pi_a.clone() / pi_old.clone();
+    let pi_old_safe = pi_old.clone().clamp_min(1e-8);
+    let ratio = pi_a.clone() / pi_old_safe.clone();
 
     let adv_pos = advantages.clone().clamp_min(0.0);
     let adv_neg = advantages.clone().clamp_max(0.0);
@@ -78,7 +79,7 @@ pub fn ach_policy_loss<B: Backend>(
 
     let gate = gate_pos + gate_neg;
 
-    let policy_loss = (gate * y_a / pi_old * advantages).neg().mean();
+    let policy_loss = (gate * y_a / pi_old_safe * advantages).neg().mean();
 
     let log_pi = pi.clone().clamp(1e-8, 1.0).log();
     let entropy = (pi * log_pi * legal_mask).sum_dim(1).neg().mean();

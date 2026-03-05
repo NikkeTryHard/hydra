@@ -134,6 +134,12 @@ impl MixtureSib {
                 .iter()
                 .map(|c| c.log_weight)
                 .fold(f64::NEG_INFINITY, |a, b| {
+                    if a == f64::NEG_INFINITY {
+                        return b;
+                    }
+                    if b == f64::NEG_INFINITY {
+                        return a;
+                    }
                     let mx = a.max(b);
                     mx + ((a - mx).exp() + (b - mx).exp()).ln()
                 });
