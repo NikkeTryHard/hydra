@@ -106,6 +106,34 @@ fn full_pipeline_integration() {
     let d_val: f32 = d_loss.into_scalar().elem();
     assert!(d_val.is_finite(), "distill loss not finite: {d_val}");
 
+    use hydra_core::arena::{Arena, ArenaConfig, Trajectory, TrajectoryStep};
+    use hydra_core::encoder::OBS_SIZE;
+    let mut arena = Arena::new(ArenaConfig::default());
+    for g in 0..10u32 {
+        let mut traj = Trajectory::new(g, g as u64 * 42);
+        for turn in 0..5u16 {
+            traj.steps.push(TrajectoryStep {
+                obs: [0.1; OBS_SIZE],
+                action: (turn % 34) as u8,
+                pi_old: {
+                    let mut p = [0.0; HYDRA_ACTION_SPACE];
+                    p[0] = 1.0;
+                    p
+                },
+                reward: 0.0,
+                done: turn == 4,
+                player_id: (turn % 4) as u8,
+                game_id: g,
+                turn,
+                temperature: 1.0,
+            });
+        }
+        traj.final_scores = [25000; 4];
+        arena.add_trajectory(traj);
+    }
+    assert_eq!(arena.games_completed, 10);
+    assert!(arena.total_steps() >= 50, "should have 50+ steps");
+
     use hydra_core::afbs::{AfbsTree, TOP_K};
     let mut tree = AfbsTree::new();
     let root = tree.add_node(0, 1.0, false);
