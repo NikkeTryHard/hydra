@@ -79,4 +79,26 @@ mod tests {
             "policy should sum to 1, got {sum}"
         );
     }
+
+    #[test]
+    fn agari_guard_prevents_illegal() {
+        let device = Default::default();
+        let mut logits_data = [0.0f32; HYDRA_ACTION_SPACE];
+        logits_data[43] = 100.0;
+        let logits = Tensor::<B, 1>::from_floats(&logits_data[..], &device).unsqueeze_dim::<2>(0);
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[0] = true;
+        mask[45] = true;
+        let (action, _) = infer_action(logits, &mask);
+        assert_ne!(action, 43, "agari (43) is illegal but has highest logit");
+        assert!(mask[action as usize], "must pick legal: got {action}");
+    }
+
+    #[test]
+    fn inference_config_defaults() {
+        let cfg = InferenceConfig::default();
+        assert_eq!(cfg.on_turn_budget_ms, 150);
+        assert_eq!(cfg.call_reaction_budget_ms, 50);
+        assert!(cfg.agari_guard);
+    }
 }
