@@ -57,6 +57,24 @@ impl Default for TrainingMetrics {
     }
 }
 
+pub struct BenchmarkGates {
+    pub afbs_on_turn_ms: f32,
+    pub ct_smc_dp_ms: f32,
+    pub endgame_ms: f32,
+    pub self_play_games_per_sec: f32,
+    pub distill_kl_drift: f32,
+}
+
+impl BenchmarkGates {
+    pub fn passes(&self) -> bool {
+        self.afbs_on_turn_ms < 150.0
+            && self.ct_smc_dp_ms < 1.0
+            && self.endgame_ms < 100.0
+            && self.self_play_games_per_sec > 20.0
+            && self.distill_kl_drift < 0.1
+    }
+}
+
 pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
