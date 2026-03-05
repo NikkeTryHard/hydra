@@ -273,6 +273,10 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn placement_for(&self, player: u8) -> u8 {
+        compute_placements(self.final_scores)[player as usize]
+    }
+
     pub fn winner(&self) -> u8 {
         compute_placements(self.final_scores)
             .iter()
