@@ -41,6 +41,10 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn max_tile_count(hand: &[u8; NUM_TILE_TYPES]) -> u8 {
+    hand.iter().copied().max().unwrap_or(0)
+}
+
 pub fn unique_tile_count(hand: &[u8; NUM_TILE_TYPES]) -> usize {
     hand.iter().filter(|&&c| c > 0).count()
 }
