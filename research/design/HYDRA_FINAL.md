@@ -21,7 +21,7 @@ The system couples this engine with:
 4. **Conservative safety math that is tight enough to matter**: Negative dependence / Strongly Rayleigh + Hunter/Kounias union tightening + bounded-error Monte Carlo intersections.
 5. **Hand-EV oracle features**: CPU-precomputed per-discard tenpai probability, win probability, expected score, and ukeire -- proven by Suphx as their biggest practical win.
 6. **ACH training** (Actor-Critic Hedge, LuckyJ's algorithm): +0.4 fan over PPO via Hedge-derived conservative clipping. Global $\eta$, per-(s,a) gating, standard GAE, one epoch per batch. Compatible with oracle guiding via CTDE.
-7. **Three-tier network** (12-block actor / 24-block learner / 40-block teacher): mathematically justified by samples-per-parameter analysis (40-block monolithic gets 0.37x Mortal's data ratio). Continuous distillation between tiers.
+7. **Two-tier network** (12-block actor / 24-block learner): 40-block teacher data-starved at 7 spp on hard states only. 24-block learner (245 spp) handles both training and deep AFBS. Continuous distillation learner -> actor.
 
 Goal: **maximize expected Tenhou stable rank**; LuckyJ's 10.68 stable dan is the current public benchmark.
 
@@ -91,19 +91,20 @@ These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + 
 
 | Config | Params | Samples/param | vs Mortal (514) | Verdict |
 |--------|-------:|-------------:|----------------:|---------|
-| 40-block mono | 16.5M | 157 | 0.31x | Risk of undertraining; also too slow for AFBS rollouts |
-| 24-block learner | 10M | 259 | 0.50x | Viable with ExIt quality boost |
-| 12-block actor | 5M | 518 | 1.0x | Well-trained, fast inference for AFBS |
+| 40-block mono | 16.5M | 148 | 0.29x | Undertrained AND too slow for rollouts |
+| 24-block | 10M | 245 | 0.48x | Viable with ExIt quality boost |
+| 12-block | 5M | 490 | 0.95x | Well-trained, fast inference |
 
-Mortal reaches 7 dan at 514 samples/param. A monolithic 40-block gets only 37% of that ratio. Even ExIt's ~3-5x quality multiplier (KataGo precedent) only raises effective ratio to ~287-478 since ExIt activates in Phase 3 (~50% of budget). **Three-tier architecture is mathematically justified:**
+(Based on ~35M games * 70 decisions = 2.45B total samples.)
+
+A 40-block teacher trained only on hard states (1-5%) gets just ~7 spp -- catastrophic data starvation. **Two-tier architecture avoids this paradox:**
 
 | Network | Blocks | Params | Role | GPU |
 |---------|-------:|-------:|------|-----|
-| **ActorNet** | 12 | ~5M | Self-play data generation + shallow AFBS/SaF features | GPU 2 |
-| **LearnerNet** | 24 | ~10M | Main training target (ACH/ExIt loss) | GPU 0-1 |
-| **TeacherNet** | 40 | ~16.5M | Deep AFBS on hard positions, best ExIt labels | GPU 3 |
+| **LearnerNet** | 24 | ~10M | Training (ACH/ExIt) + deep AFBS on hard positions | GPU 0-1 (train), GPU 3 (search) |
+| **ActorNet** | 12 | ~5M | Self-play data generation + shallow SaF features | GPU 2 |
 
-All use SE-ResNet with GroupNorm(32) and Mish. bf16 precision. **Continuous distillation**: Teacher -> Learner (on hard-mined states), Learner -> Actor (every few minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms.
+All use SE-ResNet with GroupNorm(32) and Mish. bf16 precision. **Continuous distillation**: Learner -> Actor (every 1-2 minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms. LearnerNet runs deep AFBS on GPU 3 for hard-position ExIt labels.
 
 ### 4.3 Heads (multi-task)
 
@@ -202,7 +203,7 @@ On event: lookup predicted child key; if match, shift root and keep statistics; 
 
 **Trigger:** Activate when remaining wall $\le W^* = 10$ tiles AND at least one threatening signal (riichi, open tenpai, high-tempo opponent).
 
-**Monte Carlo Expectimax (not multiset-merging DP).** A pure multiset DP violates the Markov property: RolloutNet conditions on full game state (including discard history), so states with same wall multiset but different histories can't be merged. Instead, use **exact draw probabilities + sampled opponent actions**: at our draw nodes, enumerate all possible tiles with hypergeometric weights (exact); at opponent/decision nodes, sample actions from RolloutNet (approximate). This is standard PIMC-Expectimax applied to the endgame. With wall=10 and top-mass particle reduction (keep 95%), the branching is tractable within ~50-100ms per decision.
+**PIMC with top-k draw pruning.** Full Expectimax over wall=10 is too slow (~661K paths per particle at 0.1ms each = 66s). Instead, use **Pure PIMC**: for each CT-SMC particle, sample ONE draw sequence (weighted by hypergeometric probabilities) and ONE opponent action sequence (from ActorNet policy). Average over P particles. This reduces to P forward passes per endgame evaluation. With top-mass particle reduction (keep particles covering 95% weight, typically P=50-100): **5-10ms per decision**, well within budget. Top-k draw pruning (branch only on the 2-3 most likely draws at our nodes) provides a middle ground between PIMC and full Expectimax when more precision is needed.
 
 $$Q(a) = \mathbb{E}_{X \sim p(X)} \left[ \text{ExactChanceValue}(a \mid X) \right]$$
 
@@ -292,7 +293,9 @@ Self-play with full hidden state access. Train oracle critic (zero-sum constrain
 
 ### Phase 2: DRDA-wrapped ACH self-play (800 GPU hours)
 
-**DRDA-wrapped ACH**: ACH is LuckyJ's inner optimizer (+0.4 fan over PPO) but its theory covers only 2-player zero-sum. For 4-player stability, wrap in DRDA's multi-round structure (ICLR 2025). Policy: $\pi_\theta(a|x) = \mathrm{softmax}(\ell_{\text{base}}(x,a) + y_\theta(x,a)/\tau_{\text{drda}})$ where $\ell_{\text{base}}$ is a frozen checkpoint (updated every 25-50 GPU hours), $y_\theta$ is a trainable residual, and $\tau_{\text{drda}}$ is the DRDA temperature (distinct from ACH's clip ratio $\epsilon$).
+**DRDA-wrapped ACH**: ACH is LuckyJ's inner optimizer (+0.4 fan over PPO) but its theory covers only 2-player zero-sum. For 4-player stability, wrap in DRDA's multi-round structure (ICLR 2025). Policy: $\pi_\theta(a|x) = \mathrm{softmax}(\ell_{\text{base}}(x,a) + y_\theta(x,a)/\tau_{\text{drda}})$ where $\ell_{\text{base}}$ is a frozen checkpoint, $y_\theta$ is a trainable residual, and $\tau_{\text{drda}} \in \{2, 4, 8\}$ (tune via Phase -1; target median KL to base in $[0.05, 0.20]$).
+
+**Rebase rule (CRITICAL):** Every 25-50 GPU hours: (1) fold residual into base: $\ell_{\text{base}} \leftarrow \ell_{\text{base}} + y_\theta/\tau_{\text{drda}}$, (2) zero $y_\theta$ and reset optimizer moments. This preserves $\pi$ exactly across boundaries and prevents double-counting accumulated regret.
 
 ACH update (per-(s,a) sample):
 $$L_\pi(s,a) = -c(s,a) \cdot \eta \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|s)} \cdot A(s,a)$$
@@ -314,7 +317,7 @@ Oracle critic provides advantages via CTDE: actor conditions on public info only
 
 **RolloutNet** (ActorNet-sized, 12 blocks): LuckyJ's "environmental model" concept. Policy + value for fast AFBS rollouts. Distilled from LearnerNet **continuously** (not every 50h -- confirmed too stale). Same input encoding. Run distillation worker on spare GPU cycles.
 
-### Phase 3: ExIt + AFBS + Pondering (1000 GPU hours)
+### Phase 3: ExIt + AFBS + Pondering (800 GPU hours)
 
 TeacherNet (40-block) activated on **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS). Runs deep AFBS to generate best ExIt labels. LearnerNet trains on: ACH loss + ExIt distillation from TeacherNet + SaF auxiliary regression. ActorNet updated from LearnerNet continuously.
 
@@ -360,7 +363,7 @@ Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kap
 
 **From the all-out plan:** Mixture-SIB, anytime FBS, SaF, Hunter/Kounias tightening, ExIt+Pondering centrality, SR concentration.
 
-**OMEGA additions:** CT-SMC exact contingency-table belief sampler, robust opponent nodes (KL-uncertainty soft-min + OLSS-style archetype set), hand-EV oracle features, endgame exactification, DRDA-wrapped ACH training, 3-tier network architecture (12/24/40), early ExIt from mid-Phase 2, explicit calibration gates.
+**OMEGA additions:** CT-SMC exact contingency-table belief sampler, robust opponent nodes (KL-uncertainty soft-min + OLSS-style archetype set), hand-EV oracle features, endgame exactification, DRDA-wrapped ACH training with explicit rebase rule, 2-tier network (12/24), early ExIt from mid-Phase 2, explicit calibration gates.
 
 **Verified ablation data (Suphx Figure 8):** SL baseline ~7.65 dan, +RL basic +0.41, +GRP +0.18, +oracle guiding +0.12. Oracle guiding alone is modest; the stack is what matters.
 
