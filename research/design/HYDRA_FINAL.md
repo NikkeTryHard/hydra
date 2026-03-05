@@ -15,7 +15,7 @@ HYDRA-OMEGA is built around one central engine:
 
 The system couples this engine with:
 
-1. **Belief correctness with constraints**: SIB / Mixture-SIB (Sinkhorn KL projection) + **CT-SMC exact contingency-table sampler** exploiting Mahjong's small row counts ($r \le 4$) for correlation-faithful beliefs via a 50K-state DP (<1ms in Rust).
+1. **Belief correctness with constraints**: SIB / Mixture-SIB (Sinkhorn KL projection) + **CT-SMC exact contingency-table sampler** exploiting Mahjong's small row counts ($r \le 4$) for correlation-faithful beliefs via a 3,375-state DP (~4M ops, <1ms in Rust).
 2. **Anytime Factored-Belief Search (AFBS)**: top-k pruning, heavy caching, incremental reuse, predictive pondering, and **endgame exactification** (exact chance enumeration when wall $\le 10$).
 3. **Robust opponent modeling inside search**: opponent nodes solved as distributionally robust soft-min within a KL uncertainty set around the learned opponent policy.
 4. **Conservative safety math that is tight enough to matter**: Negative dependence / Strongly Rayleigh + Hunter/Kounias union tightening + bounded-error Monte Carlo intersections.
@@ -30,9 +30,9 @@ Goal: **maximize expected Tenhou stable rank**; LuckyJ's 10.68 stable dan is the
 ## 1. Design principles
 
 ### P1. Ceiling first, then amortize
-If a mechanism raises ceiling but is too slow at inference, it belongs in pondering, teacher search, offline solvers, or distillation targets -- not in the critical inference loop.
+If a mechanism raises ceiling but is too slow at inference, it belongs in pondering, deep search, offline solvers, or distillation targets -- not in the critical inference loop.
 
-### P2. The "teacher" must optimize the information state, not the hidden state
+### P2. Search targets must optimize the information state, not the hidden state
 Any training target used to update the deployable policy must be a function of the public/information state, not privileged knowledge. We allow perfect-information networks for variance reduction and diagnostics, but the improvement operator must respect the information constraints.
 
 ### P3. Every "guarantee-like" claim must be either a theorem (with conditions), a bound (with explicit constants), or an empirical gate with a measurable pass/fail threshold.
@@ -85,7 +85,7 @@ Under purely random dealing, $X_t$ is multivariate hypergeometric; under strateg
 
 These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + scoring engine) using belief-weighted remaining tile counts from CT-SMC. Zero GPU cost -- CPU pre-computes during game step processing. Suphx reported these look-ahead features as their single biggest practical improvement (Li et al. 2020).
 
-### 4.2 Three-network architecture
+### 4.2 Two-tier architecture
 
 **Why not monolithic 40-block?** At 2000 GPU hours, self-play generates ~2.45B decisions (35M games). Samples-per-parameter ratio:
 
@@ -130,7 +130,7 @@ Let $K_\theta(k,z)=\exp(F_\theta(k,z))>0$. The transportation polytope: $\mathca
 
 $L$ components: $q_t(X)=\sum_{\ell=1}^L w_t^{(\ell)} q_t^{(\ell)}(X)$, each $B_t^{(\ell)}=\mathrm{SIB}(\exp(F_\theta^{(\ell)});r_t,s_t)$.
 
-Weight update (Bayes): $w_{t+1}^{(\ell)}\propto w_t^{(\ell)} \cdot p_\phi(e_t\mid I_t, B_t^{(\ell)}, \ell)$. Anti-collapse via entropy regularizer, split-merge on low ESS, diversity penalty between components.
+Weight update (Bayes): $w_{t+1}^{(\ell)}\propto w_t^{(\ell)} \cdot p_\phi(e_t\mid I_t, B_t^{(\ell)}, \ell)$ where $e_t$ is the observed public event (opponent discard, call, riichi, or pass). Anti-collapse via entropy regularizer, split-merge on low ESS, diversity penalty between components.
 
 ### 5.3 Particle posterior (SMC) for joint structure
 
@@ -148,7 +148,7 @@ The hidden allocation $X_t \in \mathbb{Z}_{\ge 0}^{34\times 4}$ is a **fixed-mar
 
 $$Z_k(\mathbf{c}) = \sum_{x \in \mathcal{X}_k(\mathbf{c})} \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x), \quad Z_{35}(\mathbf{0})=1$$
 
-where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. Key insight: $c_W = R_k - (c_1+c_2+c_3)$ is **derived**, so the DP state is 3D: $(c_1,c_2,c_3)$. State count: $\le (15)^3 = 3{,}375$ (max 14 tiles after draw, before discard). Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 3375 \times 35 \approx 4.0M$ ops -- **trivially sub-millisecond in Rust**. Use log-space DP for numerical stability.
+where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. Key insight: $c_W = R_k - (c_1+c_2+c_3)$ is **derived** (where $R_k = \sum_{t \ge k} r_t$ is the remaining hidden tile count at DP step $k$), so the DP state is 3D: $(c_1,c_2,c_3)$. State count: $\le (15)^3 = 3{,}375$ (max 14 tiles after draw, before discard). Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 3375 \times 35 \approx 4.0M$ ops -- **trivially sub-millisecond in Rust**. Use log-space DP for numerical stability.
 
 **Exact backward sampling:** $p(x_k = x \mid \mathbf{c}) = \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x) / Z_k(\mathbf{c})$. This gives **exact samples with correct correlations** from the conservation-constrained distribution -- not mean-field approximations.
 
@@ -205,7 +205,7 @@ On event: lookup predicted child key; if match, shift root and keep statistics; 
 
 **PIMC with top-k draw pruning.** Full Expectimax over wall=10 is too slow (~661K paths per particle at 0.1ms each = 66s). Instead, use **Pure PIMC**: for each CT-SMC particle, sample ONE draw sequence (weighted by hypergeometric probabilities) and ONE opponent action sequence (from ActorNet policy). Average over P particles. This reduces to P forward passes per endgame evaluation. With top-mass particle reduction (keep particles covering 95% weight, typically P=50-100): **5-10ms per decision**, well within budget. Top-k draw pruning (branch only on the 2-3 most likely draws at our nodes) provides a middle ground between PIMC and full Expectimax when more precision is needed.
 
-$$Q(a) = \mathbb{E}_{X \sim p(X)} \left[ \text{ExactChanceValue}(a \mid X) \right]$$
+$$Q(a) \approx \frac{1}{P}\sum_{p=1}^{P} \text{PIMC\_Rollout}(a \mid X^{(p)})$$
 
 The inner value is exact over wall draws; opponent actions remain modeled by the robust policy (KL ball). This removes chance uncertainty variance at the most sensitive game phase (oorasu placement swings).
 
@@ -232,7 +232,9 @@ $V_{\text{rob}}=\min_{q\in \mathcal{Q}_\varepsilon(p)} \sum_a q(a) Q(a)$. Soluti
 ### 8.3 OLSS-style opponent strategy set
 
 In addition to continuous KL robustness, maintain $N$ discrete opponent archetypes $\{\sigma_1,\dots,\sigma_N\}$ (e.g., aggressive/defensive/speed/value, $N=4$). At opponent nodes, evaluate:
-$$Q(a) = -\tau \log \sum_{i=1}^N w_i \exp(-Q^{\sigma_i}(a)/\tau)$$
+$$Q(a) = -\tau_{\text{arch}} \log \sum_{i=1}^N w_i \exp(-Q^{\sigma_i}(a)/\tau_{\text{arch}})$$
+
+where $w_i$ are archetype weights (uniform $1/N$ initially, updated by posterior over opponent type) and $\tau_{\text{arch}}$ is the archetype soft-min temperature (distinct from Section 8.2's $\tau$ found by binary search).
 
 This soft-min over archetypes directly mirrors LuckyJ's OLSS-II approach (Liu et al., ICML 2023) and hardens against "wrong opponent model" -- a dominant failure mode in multiplayer search. Archetypes are trained as lightweight shared-backbone adapters during population training.
 
@@ -272,16 +274,16 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 | Phase 0: BC | 50 | LearnerNet (24-block) | N/A (5-6M expert) | Initialize from human data |
 | Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
 | Phase 2: DRDA-wrapped ACH | 800 | LearnerNet via ACH+DRDA | ~18M | Game-theoretic base + early ExIt |
-| Phase 3: ExIt + Pondering | 800 | LearnerNet + TeacherNet | ~12M | Deep search ExIt + endgame |
+| Phase 3: ExIt + Pondering | 800 | LearnerNet (deep AFBS on GPU 3) | ~12M | Deep search ExIt + endgame |
 | **Total** | **2000** | | **~35M** | |
 
-GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering/teacher (TeacherNet). Distillation: Learner -> Actor continuously (IMPALA-style), Teacher -> Learner on hard-mined positions.
+GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering (LearnerNet inference for deep AFBS). Distillation: Learner -> Actor continuously (IMPALA-style).
 
 ### Phase -1: Hard reality benchmarks (150 GPU hours reserve)
 Unlocked BEFORE committing the full budget. Must pass:
 - **Latency gate**: AFBS on-turn < 150ms, CT-SMC DP < 1ms, endgame solver < 100ms
 - **Throughput gate**: ActorNet self-play > 20 games/sec sustained
-- **Distillation gate**: Teacher->Learner->Actor KL drift < threshold over 100 updates
+- **Distillation gate**: Learner->Actor KL drift < threshold over 100 updates
 - **Hyperparameter sweep**: ACH eta, DRDA tau_drda, beam W, depth D, particles P
 If gates fail, shrink AFBS/teacher usage and reallocate to more self-play.
 
@@ -319,7 +321,7 @@ Oracle critic provides advantages via CTDE: actor conditions on public info only
 
 ### Phase 3: ExIt + AFBS + Pondering (800 GPU hours)
 
-TeacherNet (40-block) activated on **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS). Runs deep AFBS to generate best ExIt labels. LearnerNet trains on: ACH loss + ExIt distillation from TeacherNet + SaF auxiliary regression. ActorNet updated from LearnerNet continuously.
+LearnerNet runs deep AFBS on GPU 3 for **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS). ExIt targets distilled into LearnerNet's own training loss (ACH + ExIt + SaF auxiliary regression). ActorNet updated from LearnerNet continuously.
 
 ### Population training
 League: latest ActorNet, trailing checkpoints, human-style anchors (BC-heavy), adversarial exploiters.
@@ -332,7 +334,7 @@ League: latest ActorNet, trailing checkpoints, human-style anchors (BC-heavy), a
 Score pdf/cdf heads. CVaR for "avoid 4th" objectives.
 
 ### 12.2 Information-Value Decomposition (IVD)
-$Q^{\text{total}}(I,a)=Q^{\text{inst}}(I,a)+\eta Q^{\text{epi}}(I,a)+\xi Q^{\text{str}}(I,a)$ where instrumental = score utility, epistemic = posterior entropy decrease, strategic = concealment/leakage penalty.
+$Q^{\text{total}}(I,a)=Q^{\text{inst}}(I,a)+\beta_{\text{epi}} Q^{\text{epi}}(I,a)+\xi Q^{\text{str}}(I,a)$ where instrumental = score utility, epistemic = posterior entropy decrease, strategic = concealment/leakage penalty. (Note: $\beta_{\text{epi}}$ is the epistemic weight, distinct from ACH's $\eta$.)
 
 ### 12.3 Primal-dual risk constraints
 Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kappa_{\text{leak}}$. Dual updates: $\lambda \leftarrow [\lambda+\alpha(\hat{C}-\kappa)]_+$.
