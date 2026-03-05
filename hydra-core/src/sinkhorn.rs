@@ -141,6 +141,10 @@ impl MixtureSib {
         format!("sib(L={}, ess={:.1})", self.num_components(), self.ess())
     }
 
+    pub fn max_weight(&self) -> f64 {
+        self.weights().into_iter().fold(0.0f64, f64::max)
+    }
+
     pub fn dominant_component(&self) -> usize {
         let w = self.weights();
         w.iter()
