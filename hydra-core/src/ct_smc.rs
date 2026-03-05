@@ -13,6 +13,18 @@ pub struct CtSmcConfig {
     pub rng_seed: u64,
 }
 
+impl CtSmcConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.num_particles == 0 {
+            return Err("num_particles must be > 0");
+        }
+        if self.ess_threshold <= 0.0 || self.ess_threshold >= 1.0 {
+            return Err("ess_threshold in (0,1)");
+        }
+        Ok(())
+    }
+}
+
 impl Default for CtSmcConfig {
     fn default() -> Self {
         Self {
