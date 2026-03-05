@@ -330,6 +330,13 @@ impl CtSmc {
         self.particles.is_empty()
     }
 
+    pub fn ess_ratio(&self) -> f32 {
+        if self.particles.is_empty() {
+            return 0.0;
+        }
+        self.ess() / self.particles.len() as f32
+    }
+
     pub fn mean_allocation(&self) -> [[f32; 4]; 34] {
         let mut result = [[0.0f32; 4]; 34];
         if self.particles.is_empty() {
