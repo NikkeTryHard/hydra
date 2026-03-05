@@ -115,4 +115,26 @@ mod tests {
             "should cover most agents, covered {coverage}/4"
         );
     }
+
+    #[test]
+    fn elo_conserved_after_update() {
+        let mut league = League::new();
+        league.add_agent(LeagueAgent {
+            weights_path: PathBuf::from("a.bin"),
+            agent_type: AgentType::Current,
+            elo: 1500.0,
+        });
+        league.add_agent(LeagueAgent {
+            weights_path: PathBuf::from("b.bin"),
+            agent_type: AgentType::Checkpoint(1),
+            elo: 1500.0,
+        });
+        let total_before: f32 = league.agents.iter().map(|a| a.elo).sum();
+        league.update_elo(0, 1, 32.0);
+        let total_after: f32 = league.agents.iter().map(|a| a.elo).sum();
+        assert!(
+            (total_before - total_after).abs() < 0.01,
+            "Elo should be zero-sum: before={total_before}, after={total_after}"
+        );
+    }
 }
