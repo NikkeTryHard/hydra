@@ -180,4 +180,29 @@ mod tests {
             "learner should have >5M params, got {l_params}"
         );
     }
+
+    #[test]
+    fn all_outputs_finite_for_random_input() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::random(
+            [8, 85, 34],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let out = model.forward(x);
+        let check = |t: &Tensor<B, 2>, name: &str| {
+            let d = t.to_data();
+            for &v in d.as_slice::<f32>().expect("f32") {
+                assert!(v.is_finite(), "{name} has non-finite: {v}");
+            }
+        };
+        check(&out.policy_logits, "policy");
+        check(&out.value, "value");
+        check(&out.score_pdf, "score_pdf");
+        check(&out.score_cdf, "score_cdf");
+        check(&out.opp_tenpai, "opp_tenpai");
+        check(&out.grp, "grp");
+        check(&out.oracle_critic, "oracle_critic");
+    }
 }
