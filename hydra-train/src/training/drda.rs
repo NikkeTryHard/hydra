@@ -39,6 +39,13 @@ impl RebaseTracker {
         self.gpu_hours_since_rebase = 0.0;
     }
 
+    pub fn summary(&self) -> String {
+        format!(
+            "rebases={} hours_since={:.1}",
+            self.total_rebases, self.gpu_hours_since_rebase
+        )
+    }
+
     pub fn tick(&mut self, hours: f32) {
         self.gpu_hours_since_rebase += hours;
     }
