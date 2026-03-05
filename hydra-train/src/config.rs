@@ -163,6 +163,10 @@ impl PipelineState {
         2000.0 - self.gpu_hours_used
     }
 
+    pub fn tick_gpu_hours(&mut self, hours: f32) {
+        self.gpu_hours_used += hours;
+    }
+
     pub fn should_advance_phase(&self) -> bool {
         self.gpu_hours_used >= self.phase.gpu_hours_budget() as f32
     }
