@@ -77,6 +77,13 @@ impl League {
             .map(|(i, _)| i)
     }
 
+    pub fn mean_elo(&self) -> f32 {
+        if self.agents.is_empty() {
+            return 0.0;
+        }
+        self.agents.iter().map(|a| a.elo).sum::<f32>() / self.agents.len() as f32
+    }
+
     pub fn elo_spread(&self) -> f32 {
         if self.agents.is_empty() {
             return 0.0;
