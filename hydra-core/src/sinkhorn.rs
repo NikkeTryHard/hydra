@@ -15,6 +15,13 @@ impl SinkhornConfig {
         }
     }
 
+    pub fn summary(&self) -> String {
+        format!(
+            "sinkhorn(iters={}, tol={:.1e}, L={})",
+            self.max_iters, self.tol, self.num_components
+        )
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.max_iters == 0 {
             return Err("max_iters must be > 0");
