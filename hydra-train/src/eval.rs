@@ -9,6 +9,10 @@ pub struct EvalConfig {
 }
 
 impl EvalConfig {
+    pub fn with_games(self, n: usize) -> Self {
+        Self::new().with_num_games(n).with_seed(self.seed)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.num_games == 0 {
             return Err("num_games must be > 0");
