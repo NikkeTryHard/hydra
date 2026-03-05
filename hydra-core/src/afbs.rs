@@ -176,6 +176,13 @@ impl AfbsTree {
         self.nodes.clear();
     }
 
+    pub fn child_actions(&self, node: NodeIdx) -> Vec<u8> {
+        self.nodes
+            .get(node as usize)
+            .map(|n| n.children.iter().map(|(a, _)| *a).collect())
+            .unwrap_or_default()
+    }
+
     pub fn node_q_value(&self, node: NodeIdx) -> f32 {
         self.nodes.get(node as usize).map_or(0.0, |n| n.q_value())
     }
