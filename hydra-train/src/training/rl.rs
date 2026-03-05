@@ -51,6 +51,10 @@ impl RlConfig {
         self.exit_weight = w;
         self
     }
+    pub fn with_aux_weight(mut self, w: f32) -> Self {
+        self.aux_weight = w;
+        self
+    }
 
     pub fn default_phase3() -> Self {
         Self {
