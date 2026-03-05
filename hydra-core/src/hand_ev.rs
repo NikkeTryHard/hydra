@@ -200,4 +200,25 @@ mod tests {
         let features = compute_hand_ev(&hand, &remaining, &shanten_fn);
         assert!(features.expected_score[0] == 0.0);
     }
+
+    #[test]
+    fn danger_from_particles_basic() {
+        use crate::ct_smc::Particle;
+        let mut p1 = Particle {
+            allocation: [[0; 4]; 34],
+            log_weight: 0.0,
+        };
+        p1.allocation[5][0] = 2;
+        let mut p2 = Particle {
+            allocation: [[0; 4]; 34],
+            log_weight: 0.0,
+        };
+        p2.allocation[5][1] = 1;
+        let particles = vec![p1, p2];
+        let d = danger_from_particles(&particles, 5, 0);
+        assert!(
+            (d - 0.5).abs() < 1e-5,
+            "1/2 particles have tile 5 for opp 0"
+        );
+    }
 }
