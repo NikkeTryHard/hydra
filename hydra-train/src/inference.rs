@@ -75,6 +75,18 @@ pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     h
 }
 
+pub fn argmax_legal(probs: &[f32; HYDRA_ACTION_SPACE], mask: &[bool; HYDRA_ACTION_SPACE]) -> u8 {
+    let mut best = 0u8;
+    let mut best_p = f32::NEG_INFINITY;
+    for (i, (&p, &m)) in probs.iter().zip(mask.iter()).enumerate() {
+        if m && p > best_p {
+            best_p = p;
+            best = i as u8;
+        }
+    }
+    best
+}
+
 pub fn compute_entropy_from_logits(
     logits: &[f32; HYDRA_ACTION_SPACE],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
