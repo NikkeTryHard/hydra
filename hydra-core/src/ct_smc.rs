@@ -47,6 +47,12 @@ pub struct Particle {
     pub log_weight: f64,
 }
 
+impl Particle {
+    pub fn col_sum(&self, col: usize) -> usize {
+        (0..34).map(|k| self.allocation[k][col] as usize).sum()
+    }
+}
+
 use std::sync::LazyLock;
 
 static COMPOSITIONS: LazyLock<[Vec<[u8; 4]>; 5]> = LazyLock::new(|| {
