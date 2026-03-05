@@ -75,6 +75,17 @@ pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
     h
 }
 
+pub fn sample_from_policy(probs: &[f32; HYDRA_ACTION_SPACE], rng_val: f32) -> u8 {
+    let mut cumsum = 0.0f32;
+    for (i, &p) in probs.iter().enumerate() {
+        cumsum += p;
+        if rng_val <= cumsum {
+            return i as u8;
+        }
+    }
+    (HYDRA_ACTION_SPACE - 1) as u8
+}
+
 pub fn num_legal_actions(mask: &[bool; HYDRA_ACTION_SPACE]) -> usize {
     mask.iter().filter(|&&m| m).count()
 }
