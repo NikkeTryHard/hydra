@@ -15,6 +15,21 @@ pub struct AchConfig {
     pub beta_ent: f32,
 }
 
+impl AchConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.eta <= 0.0 {
+            return Err("eta must be positive");
+        }
+        if self.eps <= 0.0 || self.eps >= 1.0 {
+            return Err("eps must be in (0,1)");
+        }
+        if self.l_th <= 0.0 {
+            return Err("l_th must be positive");
+        }
+        Ok(())
+    }
+}
+
 pub fn ach_policy_loss<B: Backend>(
     logits: Tensor<B, 2>,
     legal_mask: Tensor<B, 2>,
