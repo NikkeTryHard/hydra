@@ -72,6 +72,17 @@ pub struct EpochStats {
     pub num_batches: usize,
 }
 
+impl EpochStats {
+    pub fn summary(&self) -> String {
+        format!(
+            "loss={:.4} agree={:.2}% batches={}",
+            self.avg_loss,
+            self.policy_agreement * 100.0,
+            self.num_batches
+        )
+    }
+}
+
 pub fn policy_agreement<B: Backend>(
     logits: Tensor<B, 2>,
     mask: Tensor<B, 2>,
