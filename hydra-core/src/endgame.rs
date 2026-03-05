@@ -21,6 +21,15 @@ impl EndgameSolver {
     pub fn should_activate(&self, wall_remaining: u8, has_threat: bool) -> bool {
         wall_remaining <= self.max_wall && has_threat
     }
+
+    pub fn solve_with_particles(
+        &self,
+        particles: &[Particle],
+        legal_mask: &[bool; HYDRA_ACTION_SPACE],
+        eval_fn: &dyn Fn(&Particle, u8) -> f32,
+    ) -> [f32; HYDRA_ACTION_SPACE] {
+        pimc_endgame_q_topk(particles, legal_mask, eval_fn, self.mass_threshold)
+    }
 }
 
 pub fn top_mass_particles(particles: &[Particle], threshold: f32) -> Vec<usize> {
