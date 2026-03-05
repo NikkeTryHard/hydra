@@ -111,6 +111,7 @@ impl BCTrainerConfig {
 
     pub fn optimizer_config(&self) -> AdamConfig {
         AdamConfig::new()
+            .with_epsilon(1e-8)
             .with_weight_decay(Some(burn::optim::decay::WeightDecayConfig::new(
                 self.weight_decay,
             )))
