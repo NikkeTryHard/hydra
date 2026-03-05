@@ -173,6 +173,16 @@ mod tests {
     }
 
     #[test]
+    fn test_bc_config_defaults() {
+        let cfg = BCTrainerConfig::new(HydraModelConfig::actor());
+        assert!((cfg.lr - 2.5e-4).abs() < 1e-10);
+        assert_eq!(cfg.batch_size, 2048);
+        assert!((cfg.grad_clip_norm - 1.0).abs() < 1e-6);
+        assert!((cfg.weight_decay - 1e-5).abs() < 1e-8);
+        assert_eq!(cfg.warmup_steps, 1000);
+    }
+
+    #[test]
     fn test_bc_one_step() {
         let device = Default::default();
         let model = HydraModelConfig::actor().init::<TestBackend>(&device);
