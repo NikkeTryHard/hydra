@@ -8,6 +8,12 @@ pub struct EvalConfig {
     pub seed: u64,
 }
 
+impl EvalConfig {
+    pub fn summary(&self) -> String {
+        format!("eval(games={}, seed={})", self.num_games, self.seed)
+    }
+}
+
 use burn::prelude::*;
 
 #[derive(Debug, Clone)]
