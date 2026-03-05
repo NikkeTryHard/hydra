@@ -65,6 +65,12 @@ impl DistillState {
     }
 }
 
+impl DistillState {
+    pub fn is_healthy(&self, max_kl_drift: f32) -> bool {
+        self.last_kl_drift <= max_kl_drift
+    }
+}
+
 impl Default for DistillState {
     fn default() -> Self {
         Self::new()
