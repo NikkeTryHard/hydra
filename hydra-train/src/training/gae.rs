@@ -10,6 +10,16 @@ impl GaeConfig {
         self.gamma = gamma;
         self
     }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.gamma <= 0.0 || self.gamma >= 1.0 {
+            return Err("gamma in (0,1)");
+        }
+        if self.lambda <= 0.0 || self.lambda >= 1.0 {
+            return Err("lambda in (0,1)");
+        }
+        Ok(())
+    }
+
     pub fn with_lambda(mut self, lambda: f32) -> Self {
         self.lambda = lambda;
         self
