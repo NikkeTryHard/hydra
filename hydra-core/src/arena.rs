@@ -352,6 +352,17 @@ pub fn softmax_temperature(
     probs
 }
 
+pub fn top_two_rate(scores: &[[i32; 4]], player: u8) -> f32 {
+    if scores.is_empty() {
+        return 0.0;
+    }
+    let top2 = scores
+        .iter()
+        .filter(|s| compute_placements(**s)[player as usize] <= 1)
+        .count();
+    top2 as f32 / scores.len() as f32
+}
+
 pub fn fourth_place_rate(scores: &[[i32; 4]], player: u8) -> f32 {
     if scores.is_empty() {
         return 0.0;
