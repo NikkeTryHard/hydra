@@ -128,6 +128,13 @@ pub fn compute_stable_dan(mean_placement: f32) -> f32 {
     (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
 }
 
+pub fn compute_mean_placement(placements: &[u8]) -> f32 {
+    if placements.is_empty() {
+        return 2.5;
+    }
+    placements.iter().map(|&p| p as f32 + 1.0).sum::<f32>() / placements.len() as f32
+}
+
 pub fn compute_win_rate(placements: &[u8]) -> f32 {
     if placements.is_empty() {
         return 0.0;
