@@ -83,6 +83,13 @@ impl Arena {
         self.games_completed += 1;
     }
 
+    pub fn completed_trajectories(&self) -> usize {
+        self.trajectory_buffer
+            .iter()
+            .filter(|t| t.is_complete())
+            .count()
+    }
+
     pub fn total_steps(&self) -> usize {
         self.trajectory_buffer.iter().map(|t| t.steps.len()).sum()
     }
