@@ -150,4 +150,21 @@ mod tests {
         let sum: f32 = q_tau.iter().sum();
         assert!((sum - 1.0).abs() < 0.01);
     }
+
+    #[test]
+    fn robust_tau_identical_q_stays_close_to_prior() {
+        let p = vec![0.3, 0.5, 0.2];
+        let q = vec![1.0, 1.0, 1.0];
+        let (_, q_tau) = find_robust_tau(&p, &q, 0.1, 20);
+        let sum: f32 = q_tau.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01);
+        for i in 0..3 {
+            assert!(
+                (q_tau[i] - p[i]).abs() < 0.2,
+                "identical Q -> q_tau should be near prior: {} vs {}",
+                q_tau[i],
+                p[i]
+            );
+        }
+    }
 }
