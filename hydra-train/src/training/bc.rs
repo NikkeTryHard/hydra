@@ -120,6 +120,10 @@ impl BCTrainerConfig {
         )
     }
 
+    pub fn is_warmup(&self, step: usize) -> bool {
+        step < self.warmup_steps
+    }
+
     pub fn effective_lr(&self, step: usize, total_steps: usize) -> f64 {
         warmup_then_cosine_lr(step, self.warmup_steps, total_steps, self.lr, 1e-6)
     }
