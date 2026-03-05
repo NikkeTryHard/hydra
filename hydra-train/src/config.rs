@@ -14,6 +14,8 @@ pub const SCORE_BINS: usize = 64;
 pub const NUM_OPPONENTS: usize = 3;
 pub const GRP_CLASSES: usize = 24;
 
+pub const RIICHI_ACTION: u8 = 37;
+
 pub fn is_discard_action(action: u8) -> bool {
     action <= 36
 }
