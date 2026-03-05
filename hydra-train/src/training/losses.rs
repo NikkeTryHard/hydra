@@ -185,6 +185,15 @@ pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
+pub fn policy_ce_with_temperature<B: Backend>(
+    logits: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+    mask: Tensor<B, 2>,
+    temperature: f32,
+) -> Tensor<B, 1> {
+    policy_ce(logits / temperature, target, mask)
+}
+
 pub fn loss_abs<B: Backend>(loss: &Tensor<B, 1>) -> f32 {
     loss.clone().abs().into_scalar().elem::<f32>()
 }
