@@ -124,6 +124,14 @@ impl BCTrainerConfig {
         Self::new(crate::model::HydraModelConfig::actor())
     }
 
+    pub fn num_epochs_for(&self, num_samples: usize) -> usize {
+        let batches = self.total_batches(num_samples);
+        if batches == 0 {
+            return 0;
+        }
+        batches
+    }
+
     pub fn default_learner() -> Self {
         Self::new(crate::model::HydraModelConfig::learner())
     }
