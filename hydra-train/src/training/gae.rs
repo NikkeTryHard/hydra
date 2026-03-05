@@ -197,4 +197,20 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_gae_config_defaults() {
+        let cfg = GaeConfig::default();
+        assert!((cfg.gamma - 0.995).abs() < 1e-6);
+        assert!((cfg.lambda - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_warmup_then_cosine() {
+        use crate::training::bc::warmup_then_cosine_lr;
+        let lr0 = warmup_then_cosine_lr(0, 100, 1000, 1e-3, 1e-6);
+        assert!(lr0 < 1e-5, "step 0 near-zero LR: {lr0}");
+        let peak = warmup_then_cosine_lr(100, 100, 1000, 1e-3, 1e-6);
+        assert!((peak - 1e-3).abs() < 1e-6, "warmup end = lr_max");
+    }
 }
