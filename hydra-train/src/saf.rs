@@ -64,6 +64,18 @@ impl<B: Backend> SafMlp<B> {
     }
 }
 
+pub fn saf_dropout_mask(batch_size: usize, drop_prob: f32, rng_vals: &[f32]) -> Vec<f32> {
+    (0..batch_size)
+        .map(|i| {
+            if rng_vals.get(i).copied().unwrap_or(1.0) < drop_prob {
+                0.0
+            } else {
+                1.0
+            }
+        })
+        .collect()
+}
+
 pub fn apply_saf_logit<B: Backend>(
     base_logits: Tensor<B, 2>,
     saf_output: Tensor<B, 2>,
