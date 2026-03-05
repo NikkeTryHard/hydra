@@ -115,6 +115,25 @@ pub fn mean_advantage(advantages: &[f32]) -> f32 {
     advantages.iter().sum::<f32>() / advantages.len() as f32
 }
 
+pub fn explained_variance(returns: &[f32], predictions: &[f32]) -> f32 {
+    if returns.is_empty() {
+        return 0.0;
+    }
+    let n = returns.len() as f32;
+    let mean_r = returns.iter().sum::<f32>() / n;
+    let var_r = returns.iter().map(|r| (r - mean_r).powi(2)).sum::<f32>() / n;
+    if var_r < 1e-8 {
+        return 1.0;
+    }
+    let var_diff: f32 = returns
+        .iter()
+        .zip(predictions)
+        .map(|(r, p)| (r - p).powi(2))
+        .sum::<f32>()
+        / n;
+    1.0 - var_diff / var_r
+}
+
 pub fn clipped_advantages(advantages: &[f32], max_abs: f32) -> Vec<f32> {
     advantages
         .iter()
