@@ -81,6 +81,10 @@ impl EpochStats {
             self.num_batches
         )
     }
+
+    pub fn is_improving(&self, previous: &EpochStats) -> bool {
+        self.avg_loss < previous.avg_loss
+    }
 }
 
 pub fn policy_agreement<B: Backend>(
