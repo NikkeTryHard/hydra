@@ -43,6 +43,8 @@ pub struct BCTrainerConfig {
     pub grad_clip_norm: f32,
     #[config(default = "1e-5")]
     pub weight_decay: f32,
+    #[config(default = "1000")]
+    pub warmup_steps: usize,
 }
 
 pub struct EpochStats {
