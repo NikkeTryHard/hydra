@@ -168,6 +168,15 @@ impl AfbsTree {
         self.nodes.clear();
     }
 
+    pub fn summary(&self, root: NodeIdx) -> String {
+        format!(
+            "afbs(nodes={}, visits={}, depth={})",
+            self.tree_size(),
+            self.root_visit_count(root),
+            self.max_depth(root)
+        )
+    }
+
     pub fn root_visit_count(&self, root: NodeIdx) -> u32 {
         self.nodes.get(root as usize).map_or(0, |n| n.visit_count)
     }
