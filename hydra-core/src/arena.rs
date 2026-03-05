@@ -48,6 +48,19 @@ pub struct SelfPlayConfig {
     pub rebase_interval_hours: f32,
 }
 
+impl SelfPlayConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.arena.validate()?;
+        if self.gae_gamma <= 0.0 || self.gae_gamma >= 1.0 {
+            return Err("gae_gamma in (0,1)");
+        }
+        if self.gae_lambda <= 0.0 || self.gae_lambda >= 1.0 {
+            return Err("gae_lambda in (0,1)");
+        }
+        Ok(())
+    }
+}
+
 impl Default for SelfPlayConfig {
     fn default() -> Self {
         Self {
