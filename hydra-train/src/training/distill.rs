@@ -19,6 +19,18 @@ pub struct DistillConfig {
     pub ema_decay: f32,
 }
 
+impl DistillConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.distill_lr <= 0.0 {
+            return Err("distill_lr must be positive");
+        }
+        if self.ema_decay <= 0.0 || self.ema_decay >= 1.0 {
+            return Err("ema_decay must be in (0,1)");
+        }
+        Ok(())
+    }
+}
+
 pub fn distill_loss<B: Backend>(
     learner_logits: Tensor<B, 2>,
     actor_logits: Tensor<B, 2>,
