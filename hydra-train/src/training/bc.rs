@@ -25,6 +25,8 @@ pub struct BCTrainerConfig {
     pub batch_size: usize,
     #[config(default = "1.0")]
     pub grad_clip_norm: f32,
+    #[config(default = "1e-5")]
+    pub weight_decay: f32,
 }
 
 pub struct EpochStats {
@@ -65,6 +67,9 @@ pub fn bc_train_step<B: AutodiffBackend>(
 impl BCTrainerConfig {
     pub fn optimizer_config(&self) -> AdamConfig {
         AdamConfig::new()
+            .with_weight_decay(Some(burn::optim::decay::WeightDecayConfig::new(
+                self.weight_decay,
+            )))
             .with_grad_clipping(Some(GradientClippingConfig::Norm(self.grad_clip_norm)))
     }
 }
