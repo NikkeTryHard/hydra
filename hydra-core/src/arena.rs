@@ -119,6 +119,33 @@ impl Arena {
         sums
     }
 
+    pub fn placement_distribution(&self, player_id: u8) -> [f32; 4] {
+        if self.trajectory_buffer.is_empty() {
+            return [0.25; 4];
+        }
+        let mut counts = [0u32; 4];
+        let n = self.trajectory_buffer.len();
+        for t in &self.trajectory_buffer {
+            let mut scores_indexed: Vec<(i32, u8)> = t
+                .final_scores
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| (s, i as u8))
+                .collect();
+            scores_indexed.sort_by(|a, b| b.0.cmp(&a.0));
+            for (rank, (_, idx)) in scores_indexed.iter().enumerate() {
+                if *idx == player_id && rank < 4 {
+                    counts[rank] += 1;
+                }
+            }
+        }
+        let mut dist = [0.0f32; 4];
+        for (i, &c) in counts.iter().enumerate() {
+            dist[i] = c as f32 / n as f32;
+        }
+        dist
+    }
+
     pub fn collect_player_steps(&self, player_id: u8) -> Vec<&TrajectoryStep> {
         self.trajectory_buffer
             .iter()
