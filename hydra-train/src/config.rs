@@ -355,6 +355,182 @@ mod tests {
     }
 
     #[test]
+    fn test_all_defaults_match_roadmap() {
+        use crate::model::HydraModelConfig;
+        use crate::training::{ach, bc, distill, drda, exit, gae, losses};
+
+        // -- Model configs --
+        let learner = HydraModelConfig::learner();
+        assert_eq!(learner.num_blocks, 24, "learner num_blocks should be 24");
+        let actor = HydraModelConfig::actor();
+        assert_eq!(actor.num_blocks, 12, "actor num_blocks should be 12");
+        // Shared model defaults (check on learner, same for actor)
+        assert_eq!(
+            learner.hidden_channels, 256,
+            "hidden_channels should be 256"
+        );
+        assert_eq!(learner.num_groups, 32, "num_groups should be 32");
+        assert_eq!(learner.se_bottleneck, 64, "se_bottleneck should be 64");
+
+        // -- Loss weights --
+        let loss = losses::HydraLossConfig::new();
+        assert!(
+            (loss.w_pi - 1.0).abs() < 1e-6,
+            "w_pi should be 1.0, got {}",
+            loss.w_pi
+        );
+        assert!(
+            (loss.w_v - 0.5).abs() < 1e-6,
+            "w_v should be 0.5, got {}",
+            loss.w_v
+        );
+        assert!(
+            (loss.w_grp - 0.2).abs() < 1e-6,
+            "w_grp should be 0.2, got {}",
+            loss.w_grp
+        );
+        assert!(
+            (loss.w_tenpai - 0.1).abs() < 1e-6,
+            "w_tenpai should be 0.1, got {}",
+            loss.w_tenpai
+        );
+        assert!(
+            (loss.w_danger - 0.1).abs() < 1e-6,
+            "w_danger should be 0.1, got {}",
+            loss.w_danger
+        );
+        assert!(
+            (loss.w_opp - 0.1).abs() < 1e-6,
+            "w_opp should be 0.1, got {}",
+            loss.w_opp
+        );
+        assert!(
+            (loss.w_score - 0.025).abs() < 1e-6,
+            "w_score should be 0.025, got {}",
+            loss.w_score
+        );
+
+        // -- ACH config --
+        let ach = ach::AchConfig::new();
+        assert!(
+            (ach.eta - 1.0).abs() < 1e-6,
+            "ACH eta should be 1.0, got {}",
+            ach.eta
+        );
+        assert!(
+            (ach.eps - 0.5).abs() < 1e-6,
+            "ACH eps should be 0.5, got {}",
+            ach.eps
+        );
+        assert!(
+            (ach.l_th - 8.0).abs() < 1e-6,
+            "ACH l_th should be 8.0, got {}",
+            ach.l_th
+        );
+        assert!(
+            (ach.beta_ent - 5e-4).abs() < 1e-8,
+            "ACH beta_ent should be 5e-4, got {}",
+            ach.beta_ent
+        );
+
+        // -- ExIt config --
+        let ex = exit::ExitConfig::new();
+        assert!(
+            (ex.tau_exit - 1.0).abs() < 1e-6,
+            "tau_exit should be 1.0, got {}",
+            ex.tau_exit
+        );
+        assert!(
+            (ex.exit_weight - 0.5).abs() < 1e-6,
+            "exit_weight should be 0.5, got {}",
+            ex.exit_weight
+        );
+        assert_eq!(
+            ex.min_visits, 64,
+            "min_visits should be 64, got {}",
+            ex.min_visits
+        );
+        assert!(
+            (ex.safety_valve_max_kl - 2.0).abs() < 1e-6,
+            "safety_valve_max_kl should be 2.0, got {}",
+            ex.safety_valve_max_kl
+        );
+
+        // -- DRDA config --
+        let drda = drda::DrdaConfig::new();
+        assert!(
+            (drda.tau_drda - 4.0).abs() < 1e-6,
+            "tau_drda should be 4.0, got {}",
+            drda.tau_drda
+        );
+
+        // -- GAE config --
+        let gae = gae::GaeConfig::default();
+        assert!(
+            (gae.gamma - 0.995).abs() < 1e-6,
+            "GAE gamma should be 0.995, got {}",
+            gae.gamma
+        );
+        assert!(
+            (gae.lambda - 0.95).abs() < 1e-6,
+            "GAE lambda should be 0.95, got {}",
+            gae.lambda
+        );
+
+        // -- BC trainer config --
+        let bc = bc::BCTrainerConfig::new(HydraModelConfig::learner());
+        assert!(
+            (bc.lr - 2.5e-4).abs() < 1e-10,
+            "BC lr should be 2.5e-4, got {}",
+            bc.lr
+        );
+        assert_eq!(
+            bc.batch_size, 2048,
+            "BC batch_size should be 2048, got {}",
+            bc.batch_size
+        );
+        assert!(
+            (bc.grad_clip_norm - 1.0).abs() < 1e-6,
+            "BC grad_clip_norm should be 1.0, got {}",
+            bc.grad_clip_norm
+        );
+        assert!(
+            (bc.weight_decay - 1e-5).abs() < 1e-10,
+            "BC weight_decay should be 1e-5, got {}",
+            bc.weight_decay
+        );
+
+        // -- Distill config --
+        let dist = distill::DistillConfig::new();
+        assert!(
+            (dist.kd_kl_weight - 1.0).abs() < 1e-6,
+            "kd_kl_weight should be 1.0, got {}",
+            dist.kd_kl_weight
+        );
+        assert!(
+            (dist.kd_mse_weight - 0.5).abs() < 1e-6,
+            "kd_mse_weight should be 0.5, got {}",
+            dist.kd_mse_weight
+        );
+        assert!(
+            (dist.ema_decay - 0.999).abs() < 1e-6,
+            "ema_decay should be 0.999, got {}",
+            dist.ema_decay
+        );
+
+        // -- Constants --
+        assert_eq!(ACTION_SPACE, 46, "ACTION_SPACE should be 46");
+        assert_eq!(HIDDEN_CHANNELS, 256, "HIDDEN_CHANNELS should be 256");
+        assert_eq!(NUM_GROUPS, 32, "NUM_GROUPS should be 32");
+        assert_eq!(SE_BOTTLENECK, 64, "SE_BOTTLENECK should be 64");
+        assert_eq!(SCORE_BINS, 64, "SCORE_BINS should be 64");
+        assert_eq!(GRP_CLASSES, 24, "GRP_CLASSES should be 24");
+        assert!((C_PUCT - 2.5).abs() < 1e-6, "C_PUCT should be 2.5");
+        assert_eq!(AFBS_TOP_K, 5, "AFBS_TOP_K should be 5");
+        assert_eq!(CT_SMC_PARTICLES, 128, "CT_SMC_PARTICLES should be 128");
+    }
+
+    #[test]
     fn validate_all_configs_defaults_pass() {
         use crate::model::HydraModelConfig;
         use crate::training::{ach, distill, drda, exit, gae, losses};

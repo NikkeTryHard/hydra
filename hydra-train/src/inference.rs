@@ -29,6 +29,7 @@ impl InferenceConfig {
     }
 }
 
+/// Converts a boolean legal mask to a [1, 46] float tensor.
 pub fn legal_mask_to_tensor<B: Backend>(
     mask: &[bool; HYDRA_ACTION_SPACE],
     device: &B::Device,
@@ -40,6 +41,7 @@ pub fn legal_mask_to_tensor<B: Backend>(
     Tensor::<B, 1>::from_floats(&f32_mask[..], device).unsqueeze_dim::<2>(0)
 }
 
+/// Computes softmax policy on CPU with legal masking and max subtraction.
 pub fn normalize_policy_cpu(
     logits: &[f32; HYDRA_ACTION_SPACE],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
@@ -170,6 +172,7 @@ pub fn batch_legal_masks_to_tensor<B: Backend>(
     Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
 }
 
+/// Runs inference with wall-clock time measurement against a budget.
 pub fn infer_action_timed<B: Backend>(
     policy_logits: Tensor<B, 2>,
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
@@ -182,6 +185,7 @@ pub fn infer_action_timed<B: Backend>(
     (action, policy, within_budget)
 }
 
+/// Runs masked softmax inference, returns (best_action, policy_probs).
 pub fn infer_action<B: Backend>(
     policy_logits: Tensor<B, 2>,
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
