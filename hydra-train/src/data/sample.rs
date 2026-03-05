@@ -171,6 +171,14 @@ pub fn one_hot_action(action: u8, num_classes: usize) -> Vec<f32> {
     v
 }
 
+pub fn collate_batch_augmented<B: Backend>(
+    samples: &[MjaiSample],
+    device: &B::Device,
+) -> MjaiBatch<B> {
+    let augmented = augment_samples_6x(samples);
+    collate_batch(&augmented, device)
+}
+
 pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
     use crate::data::augment::{augment_action_suit, augment_mask_suit, augment_obs_suit};
     use hydra_core::tile::ALL_PERMUTATIONS;
