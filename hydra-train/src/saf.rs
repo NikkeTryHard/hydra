@@ -171,6 +171,16 @@ mod tests {
     }
 
     #[test]
+    fn saf_dropout_zeros_features_at_rate() {
+        let rng_vals: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let mask = saf_dropout_mask(100, 0.3, &rng_vals);
+        let zeros: usize = mask.iter().filter(|&&v| v == 0.0).count();
+        let ones: usize = mask.iter().filter(|&&v| v == 1.0).count();
+        assert_eq!(zeros + ones, 100, "mask should be binary");
+        assert_eq!(zeros, 30, "30% should be dropped with uniform rng_vals");
+    }
+
+    #[test]
     fn saf_mlp_output_finite() {
         let device = Default::default();
         let mlp = SafConfig::new().init::<B>(&device);
