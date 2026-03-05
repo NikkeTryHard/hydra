@@ -294,6 +294,10 @@ impl CtSmc {
         }
     }
 
+    pub fn summary(&self) -> String {
+        format!("smc(P={}, ess={:.1})", self.num_particles(), self.ess())
+    }
+
     pub fn max_log_weight(&self) -> f64 {
         self.particles
             .iter()
