@@ -454,6 +454,34 @@ mod tests {
     }
 
     #[test]
+    fn uniform_omega_matches_hypergeometric() {
+        let mut rng = ChaCha8Rng::seed_from_u64(123);
+        let mut row_sums = [0u8; 34];
+        row_sums[0] = 1;
+        row_sums[1] = 1;
+        let col_sums = [1, 1, 0, 0];
+        let log_omega = [[0.0f64; 4]; 34];
+        let cfg = CtSmcConfig {
+            rng_seed: 123,
+            num_particles: 1000,
+            ess_threshold: 0.4,
+        };
+        let mut smc = CtSmc::new(cfg);
+        smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
+        let mut count_00 = 0u32;
+        for p in &smc.particles {
+            if p.allocation[0][0] == 1 {
+                count_00 += 1;
+            }
+        }
+        let frac = count_00 as f64 / 1000.0;
+        assert!(
+            (frac - 0.5).abs() < 0.1,
+            "uniform omega with r=[1,1] c=[1,1] should give ~50/50: {frac}"
+        );
+    }
+
+    #[test]
     fn particles_satisfy_constraints() {
         let mut rng = ChaCha8Rng::seed_from_u64(42);
         let mut row_sums = [0u8; 34];
