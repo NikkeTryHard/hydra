@@ -71,6 +71,23 @@ fn logsumexp(a: f64, b: f64) -> f64 {
 
 type DpTable = Vec<HashMap<(u8, u8, u8), f64>>;
 
+pub fn compute_ess_from_log_weights(log_weights: &[f64]) -> f32 {
+    if log_weights.is_empty() {
+        return 0.0;
+    }
+    let max_w = log_weights
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let weights: Vec<f64> = log_weights.iter().map(|w| (w - max_w).exp()).collect();
+    let sum: f64 = weights.iter().sum();
+    let sum_sq: f64 = weights.iter().map(|w| w * w).sum();
+    if sum_sq == 0.0 {
+        return 0.0;
+    }
+    ((sum * sum) / sum_sq) as f32
+}
+
 pub fn forward_dp(
     row_sums: &[u8; 34],
     col_sums: &[usize; 4],
