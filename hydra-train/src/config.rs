@@ -149,6 +149,18 @@ impl PipelineState {
     pub fn should_advance_phase(&self) -> bool {
         self.gpu_hours_used >= self.phase.gpu_hours_budget() as f32
     }
+
+    pub fn progress_summary(&self) -> String {
+        format!(
+            "phase={:?} hours={:.1}/{} games={} v{}->v{}",
+            self.phase,
+            self.gpu_hours_used,
+            self.phase.gpu_hours_budget(),
+            self.total_games,
+            self.learner_version,
+            self.actor_version
+        )
+    }
 }
 
 #[cfg(test)]
