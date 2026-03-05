@@ -201,4 +201,34 @@ mod tests {
         assert!((step.obs[0] - 0.5).abs() < 1e-5);
         assert!((step.pi_old[7] - 0.8).abs() < 1e-5);
     }
+
+    #[test]
+    fn arena_trajectory_management() {
+        let config = ArenaConfig {
+            max_trajectory_buffer: 3,
+            ..Default::default()
+        };
+        let mut arena = Arena::new(config);
+        assert_eq!(arena.total_steps(), 0);
+        for i in 0..5u32 {
+            let mut t = Trajectory::new(i, i as u64);
+            t.steps.push(TrajectoryStep {
+                obs: [0.0; OBS_SIZE],
+                action: 0,
+                pi_old: [0.0; HYDRA_ACTION_SPACE],
+                reward: 0.0,
+                done: true,
+                player_id: 0,
+                game_id: i,
+                turn: 0,
+                temperature: 1.0,
+            });
+            arena.add_trajectory(t);
+        }
+        assert_eq!(arena.games_completed, 5);
+        assert_eq!(arena.trajectory_buffer.len(), 3);
+        let drained = arena.drain_trajectories();
+        assert_eq!(drained.len(), 3);
+        assert!(arena.trajectory_buffer.is_empty());
+    }
 }
