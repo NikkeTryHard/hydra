@@ -26,6 +26,10 @@ pub struct EvalResult {
 }
 
 impl EvalResult {
+    pub fn is_mortal_level(&self) -> bool {
+        self.stable_dan >= 8.0
+    }
+
     pub fn is_tendan_plus(&self) -> bool {
         self.stable_dan >= 10.0
     }
