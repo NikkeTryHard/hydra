@@ -1,2 +1,5 @@
 [build]
-jobs = 8
+jobs = 4
+
+[env]
+RAYON_NUM_THREADS = "4"
