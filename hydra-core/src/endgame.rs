@@ -36,6 +36,10 @@ impl EndgameSolver {
             mass_threshold,
         }
     }
+    pub fn wall_threshold(&self) -> u8 {
+        self.max_wall
+    }
+
     pub fn should_activate(&self, wall_remaining: u8, has_threat: bool) -> bool {
         wall_remaining <= self.max_wall && has_threat
     }
