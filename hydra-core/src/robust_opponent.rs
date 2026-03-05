@@ -47,6 +47,13 @@ pub struct RobustOpponentConfig {
     pub tau_arch: f32,
 }
 
+impl RobustOpponentConfig {
+    pub fn with_epsilon(mut self, epsilon: f32) -> Self {
+        self.epsilon = epsilon;
+        self
+    }
+}
+
 impl Default for RobustOpponentConfig {
     fn default() -> Self {
         Self {
