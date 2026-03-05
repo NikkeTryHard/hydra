@@ -26,6 +26,10 @@ pub struct AfbsNode {
 }
 
 impl AfbsNode {
+    pub fn is_leaf(&self) -> bool {
+        self.children.is_empty()
+    }
+
     pub fn q_value(&self) -> f32 {
         if self.visit_count == 0 {
             return 0.0;
