@@ -83,6 +83,15 @@ impl DistillState {
     }
 }
 
+impl DistillConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "distill(lr={:.1e}, ema={:.3}, interval={}s)",
+            self.distill_lr, self.ema_decay, self.update_interval_secs
+        )
+    }
+}
+
 impl DistillState {
     pub fn summary(&self) -> String {
         format!(
