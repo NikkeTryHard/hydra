@@ -55,4 +55,19 @@ mod tests {
         let val = loss.into_scalar().elem::<f32>();
         assert!(val.abs() < 1e-5, "identical should give ~0 loss, got {val}");
     }
+
+    #[test]
+    fn distill_loss_positive_when_different() {
+        let device = Default::default();
+        let teacher = Tensor::<B, 2>::from_floats([[5.0, 1.0, 0.0]], &device);
+        let student = Tensor::<B, 2>::from_floats([[0.0, 0.0, 5.0]], &device);
+        let t_val = Tensor::<B, 2>::from_floats([[0.8]], &device);
+        let s_val = Tensor::<B, 2>::from_floats([[-0.3]], &device);
+        let loss = distill_loss(teacher, student, t_val, s_val, 1.0, 0.5);
+        let val = loss.into_scalar().elem::<f32>();
+        assert!(
+            val > 0.1,
+            "different outputs should give positive loss: {val}"
+        );
+    }
 }
