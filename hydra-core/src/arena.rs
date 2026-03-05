@@ -273,6 +273,13 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn winner(&self) -> u8 {
+        compute_placements(self.final_scores)
+            .iter()
+            .position(|&p| p == 0)
+            .unwrap_or(0) as u8
+    }
+
     pub fn max_turn(&self) -> u16 {
         self.steps.last().map_or(0, |s| s.turn)
     }
