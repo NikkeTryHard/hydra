@@ -341,4 +341,16 @@ mod tests {
         assert!((sum - 1.0).abs() < 0.01, "policy sum: {sum}");
         assert!(within, "5s budget should be plenty for CPU inference");
     }
+
+    #[test]
+    fn test_needs_search_close_gap() {
+        let mut probs = [0.0f32; HYDRA_ACTION_SPACE];
+        probs[0] = 0.35;
+        probs[1] = 0.34;
+        probs[2] = 0.31;
+        assert!(
+            needs_search(&probs, 0.05),
+            "top-2 gap of 0.01 < threshold 0.05 should trigger search"
+        );
+    }
 }

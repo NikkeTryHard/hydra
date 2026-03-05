@@ -878,4 +878,12 @@ mod tests {
         let sum: f32 = probs.iter().sum();
         assert!((sum - 1.0).abs() < 1e-5, "sum: {sum}");
     }
+
+    #[test]
+    fn test_trajectory_empty_fails_validation() {
+        let traj = Trajectory::new(0, 42);
+        assert!(traj.steps.is_empty());
+        let result = traj.validate();
+        assert!(result.is_err(), "empty trajectory should fail validation");
+    }
 }

@@ -328,4 +328,26 @@ mod tests {
         let peak = warmup_then_cosine_lr(100, 100, 1000, 1e-3, 1e-6);
         assert!((peak - 1e-3).abs() < 1e-6, "warmup end = lr_max");
     }
+
+    #[test]
+    fn test_explained_variance_perfect() {
+        let returns = [1.0f32, 2.0, 3.0];
+        let predictions = [1.0f32, 2.0, 3.0];
+        let ev = explained_variance(&returns, &predictions);
+        assert!(
+            (ev - 1.0).abs() < 1e-5,
+            "perfect predictions should give EV ~1.0, got {ev}"
+        );
+    }
+
+    #[test]
+    fn test_reward_std_constant() {
+        let rewards = [5.0f32, 5.0, 5.0];
+        let std = reward_std(&rewards);
+        // Constant rewards: variance is 0, but epsilon 1e-8 is added
+        assert!(
+            std < 1e-3,
+            "constant rewards should give std ~0 (epsilon only), got {std}"
+        );
+    }
 }
