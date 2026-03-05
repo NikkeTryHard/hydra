@@ -382,4 +382,36 @@ mod tests {
         smc.update(&row_sums, &col_sums, &log_omega, &likelihood, &mut rng);
         assert!(!smc.particles.is_empty());
     }
+
+    #[test]
+    fn logsumexp_handles_extreme_values() {
+        assert!((logsumexp(0.0, 0.0) - (2.0f64).ln()).abs() < 1e-10);
+        assert!((logsumexp(f64::NEG_INFINITY, 0.0) - 0.0).abs() < 1e-10);
+        assert!((logsumexp(0.0, f64::NEG_INFINITY) - 0.0).abs() < 1e-10);
+        let big = logsumexp(1000.0, 1000.0);
+        assert!((big - (1000.0 + (2.0f64).ln())).abs() < 1e-10);
+        let small = logsumexp(-1000.0, -1000.0);
+        assert!((small - (-1000.0 + (2.0f64).ln())).abs() < 1e-10);
+    }
+
+    #[test]
+    fn systematic_resample_preserves_count() {
+        let mut rng = ChaCha8Rng::seed_from_u64(55);
+        let mut row_sums = [0u8; 34];
+        row_sums[0] = 1;
+        let col_sums = [1, 0, 0, 0];
+        let log_omega = [[0.0f64; 4]; 34];
+        let cfg = CtSmcConfig {
+            rng_seed: 55,
+            num_particles: 32,
+            ess_threshold: 0.4,
+        };
+        let mut smc = CtSmc::new(cfg);
+        smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
+        for (i, p) in smc.particles.iter_mut().enumerate() {
+            p.log_weight = if i == 0 { 0.0 } else { -100.0 };
+        }
+        smc.systematic_resample(&mut rng);
+        assert_eq!(smc.particles.len(), 32);
+    }
 }
