@@ -290,6 +290,15 @@ pub mod tests {
     }
 
     #[test]
+    fn test_oracle_target_zero_sum() {
+        let target = oracle_target_from_scores([30000, 25000, 25000, 20000]);
+        let sum: f32 = target.iter().sum();
+        assert!(sum.abs() < 1e-5, "oracle target should be zero-sum: {sum}");
+        assert!(target[0] > 0.0, "1st place should be positive");
+        assert!(target[3] < 0.0, "4th place should be negative");
+    }
+
+    #[test]
     fn test_total_loss_positive() {
         let device = Default::default();
         let model = HydraModelConfig::actor().init::<B>(&device);
