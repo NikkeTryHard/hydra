@@ -267,4 +267,25 @@ mod tests {
         state.advance_phase();
         assert_eq!(state.phase, TrainingPhase::OracleGuiding);
     }
+
+    #[test]
+    fn action_type_classification() {
+        assert_eq!(action_type_name(0), "discard");
+        assert_eq!(action_type_name(36), "discard");
+        assert_eq!(action_type_name(RIICHI_ACTION), "riichi");
+        assert_eq!(action_type_name(AGARI_ACTION), "agari");
+        assert_eq!(action_type_name(PASS_ACTION), "pass");
+        assert!(is_discard_action(5));
+        assert!(!is_discard_action(RIICHI_ACTION));
+        assert!(is_call_action(40));
+        assert!(!is_call_action(0));
+    }
+
+    #[test]
+    fn phase_uses_exit_oracle() {
+        assert!(!TrainingPhase::BcWarmStart.uses_exit());
+        assert!(TrainingPhase::ExitPondering.uses_exit());
+        assert!(!TrainingPhase::BcWarmStart.uses_oracle());
+        assert!(TrainingPhase::OracleGuiding.uses_oracle());
+    }
 }
