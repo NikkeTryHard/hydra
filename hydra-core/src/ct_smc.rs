@@ -14,6 +14,11 @@ pub struct CtSmcConfig {
 }
 
 impl CtSmcConfig {
+    pub fn with_particles(mut self, n: usize) -> Self {
+        self.num_particles = n;
+        self
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "ct_smc(P={}, ess_th={:.1})",
