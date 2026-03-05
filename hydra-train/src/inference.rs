@@ -311,4 +311,19 @@ mod tests {
         let a1 = sample_from_policy(&probs, 0.8);
         assert_eq!(a1, 1);
     }
+
+    #[test]
+    fn inference_respects_time_budget() {
+        let device = Default::default();
+        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([1, 85, 34], &device);
+        let out = model.forward(x);
+        let mut mask = [true; HYDRA_ACTION_SPACE];
+        mask[45] = false;
+        let (action, policy, within) = infer_action_timed(out.policy_logits, &mask, 5000);
+        assert!(mask[action as usize], "must pick legal action");
+        let sum: f32 = policy.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "policy sum: {sum}");
+        assert!(within, "5s budget should be plenty for CPU inference");
+    }
 }
