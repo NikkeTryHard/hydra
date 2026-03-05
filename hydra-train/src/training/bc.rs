@@ -113,6 +113,13 @@ pub fn bc_train_step<B: AutodiffBackend>(
 }
 
 impl BCTrainerConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "lr={:.1e} batch={} clip={:.1} wd={:.1e}",
+            self.lr, self.batch_size, self.grad_clip_norm, self.weight_decay
+        )
+    }
+
     pub fn effective_lr(&self, step: usize, total_steps: usize) -> f64 {
         warmup_then_cosine_lr(step, self.warmup_steps, total_steps, self.lr, 1e-6)
     }
