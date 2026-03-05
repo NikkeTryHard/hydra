@@ -31,6 +31,20 @@ pub fn legal_mask_to_tensor<B: Backend>(
     Tensor::<B, 1>::from_floats(&f32_mask[..], device).unsqueeze_dim::<2>(0)
 }
 
+pub fn policy_entropy(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
+    let mut h = 0.0f32;
+    for &p in probs {
+        if p > 1e-8 {
+            h -= p * p.ln();
+        }
+    }
+    h
+}
+
+pub fn policy_top1_confidence(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
+    probs.iter().cloned().fold(0.0f32, f32::max)
+}
+
 pub fn batch_legal_masks_to_tensor<B: Backend>(
     masks: &[[bool; HYDRA_ACTION_SPACE]],
     device: &B::Device,
