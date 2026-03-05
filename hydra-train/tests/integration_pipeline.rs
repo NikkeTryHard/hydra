@@ -108,6 +108,40 @@ fn full_pipeline_integration() {
     assert!((psum - 1.0).abs() < 0.01, "inference policy sum: {psum}");
 }
 
+#[test]
+fn edge_case_smoke_test() {
+    use hydra_core::ct_smc::{CtSmc, CtSmcConfig, Particle};
+    use hydra_core::endgame;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    let mut rng = ChaCha8Rng::seed_from_u64(42);
+    let mut row_sums = [0u8; 34];
+    row_sums[0] = 2;
+    row_sums[1] = 2;
+    row_sums[2] = 1;
+    let col_sums = [2, 2, 1, 0];
+    let log_omega = [[0.0f64; 4]; 34];
+    let cfg = CtSmcConfig {
+        num_particles: 32,
+        ess_threshold: 0.4,
+    };
+    let mut smc = CtSmc::new(cfg);
+    smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
+
+    let mut mask = [false; HYDRA_ACTION_SPACE];
+    mask[0] = true;
+    mask[1] = true;
+    mask[2] = true;
+    let eval_fn = |_: &Particle, a: u8| (a as f32 + 1.0) * 0.1;
+    let q = endgame::pimc_endgame_q(&smc.particles, &mask, &eval_fn);
+    for (i, &v) in q.iter().enumerate() {
+        if mask[i] {
+            assert!(v.is_finite(), "endgame q[{i}] = {v} not finite");
+        }
+    }
+}
+
 fn make_test_targets(
     device: &<TestBackend as Backend>::Device,
     batch: usize,
