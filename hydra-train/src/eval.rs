@@ -238,4 +238,19 @@ mod tests {
         assert!(result.stable_dan >= 0.0);
         assert!(result.win_rate > 0.0);
     }
+
+    #[test]
+    fn placement_histogram_uniform() {
+        let placements = vec![0, 1, 2, 3, 0, 1, 2, 3];
+        let hist = placement_histogram(&placements);
+        for &h in &hist {
+            assert!((h - 0.25).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn compute_mean_placement_correct() {
+        let p = vec![0, 0, 0, 0];
+        assert!((compute_mean_placement(&p) - 1.0).abs() < 0.01);
+    }
 }
