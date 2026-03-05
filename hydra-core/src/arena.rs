@@ -122,6 +122,10 @@ impl Trajectory {
         self.steps.len()
     }
 
+    pub fn is_complete(&self) -> bool {
+        self.steps.last().is_some_and(|s| s.done)
+    }
+
     pub fn steps_for_player(&self, player_id: u8) -> Vec<&TrajectoryStep> {
         self.steps
             .iter()
