@@ -17,6 +17,12 @@ impl Default for EndgameSolver {
     }
 }
 
+impl EndgameSolver {
+    pub fn should_activate(&self, wall_remaining: u8, has_threat: bool) -> bool {
+        wall_remaining <= self.max_wall && has_threat
+    }
+}
+
 pub fn top_mass_particles(particles: &[Particle], threshold: f32) -> Vec<usize> {
     if particles.is_empty() {
         return Vec::new();
