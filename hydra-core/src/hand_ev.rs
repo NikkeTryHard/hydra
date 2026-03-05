@@ -41,6 +41,10 @@ pub fn compute_ukeire(
     ukeire
 }
 
+pub fn hand_tile_count(hand: &[u8; NUM_TILE_TYPES]) -> u8 {
+    hand.iter().sum()
+}
+
 pub fn safe_tiles(
     hand: &[u8; NUM_TILE_TYPES],
     danger_scores: &[f32; NUM_TILE_TYPES],
