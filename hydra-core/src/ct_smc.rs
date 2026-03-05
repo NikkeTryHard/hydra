@@ -414,4 +414,31 @@ mod tests {
         smc.systematic_resample(&mut rng);
         assert_eq!(smc.particles.len(), 32);
     }
+
+    #[test]
+    fn extreme_omega_no_nan_inf() {
+        let mut rng = ChaCha8Rng::seed_from_u64(88);
+        let mut row_sums = [0u8; 34];
+        row_sums[0] = 1;
+        let col_sums = [1, 0, 0, 0];
+        let mut log_omega = [[0.0f64; 4]; 34];
+        log_omega[0] = [100.0, -100.0, -100.0, -100.0];
+        let cfg = CtSmcConfig {
+            rng_seed: 88,
+            num_particles: 16,
+            ess_threshold: 0.4,
+        };
+        let mut smc = CtSmc::new(cfg);
+        smc.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng);
+        for p in &smc.particles {
+            for k in 0..34 {
+                for j in 0..4 {
+                    assert!(
+                        (p.allocation[k][j] as f32).is_finite(),
+                        "allocation should be finite"
+                    );
+                }
+            }
+        }
+    }
 }
