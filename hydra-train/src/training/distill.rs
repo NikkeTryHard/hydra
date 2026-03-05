@@ -105,6 +105,16 @@ impl DistillState {
     }
 }
 
+impl DistillState {
+    pub fn should_warn(&self, max_kl: f32) -> bool {
+        self.last_kl_drift > max_kl
+    }
+
+    pub fn tick(&mut self) {
+        self.steps_since_update += 1;
+    }
+}
+
 impl Default for DistillState {
     fn default() -> Self {
         Self::new()
