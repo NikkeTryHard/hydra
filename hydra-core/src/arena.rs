@@ -61,6 +61,15 @@ impl SelfPlayConfig {
     }
 }
 
+impl SelfPlayConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "selfplay(games={}, gamma={:.3}, rebase={:.0}h)",
+            self.arena.num_parallel_games, self.gae_gamma, self.rebase_interval_hours
+        )
+    }
+}
+
 impl Default for SelfPlayConfig {
     fn default() -> Self {
         Self {
