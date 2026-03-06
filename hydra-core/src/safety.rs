@@ -1,10 +1,13 @@
 //! Safety tile calculations: genbutsu, suji, kabe, one-chance.
 //!
-//! These feed into the 23 safety channels (62-84) of the 85x34 observation tensor.
+//! These feed into the 23 safety channels (62-84) of the fixed-superset observation tensor.
 //! Updated incrementally on each discard/call/kan event.
 
 /// Number of opponents to track safety against.
 pub const NUM_OPPONENTS: usize = 3;
+
+/// Inference-time threshold for activating tenpai hint channels.
+pub const TENPAI_HINT_THRESHOLD: f32 = 0.5;
 
 /// Number of tile types.
 const NUM_TILES: usize = 34;
@@ -58,6 +61,12 @@ pub struct SafetyInfo {
 
     /// Opponent riichi status (for genbutsu_riichi_era tracking).
     pub opponent_riichi: [bool; NUM_OPPONENTS],
+
+    /// Cached tenpai head probabilities from the previous decision step.
+    ///
+    /// These feed channels 82-84 at inference time via
+    /// `max(riichi_status, cached_tenpai_prob > 0.5)`.
+    pub cached_tenpai_prob: [f32; NUM_OPPONENTS],
 }
 
 impl SafetyInfo {
@@ -75,6 +84,7 @@ impl SafetyInfo {
             one_chance: 0,
             visible_counts: [0; NUM_TILES],
             opponent_riichi: [false; NUM_OPPONENTS],
+            cached_tenpai_prob: [0.0; NUM_OPPONENTS],
         }
     }
 
@@ -92,6 +102,30 @@ impl Default for SafetyInfo {
 }
 
 impl SafetyInfo {
+    /// Returns whether the tenpai hint channel should be active for `opponent_idx`.
+    #[inline]
+    pub fn tenpai_hint_active(&self, opponent_idx: usize) -> bool {
+        opponent_idx < NUM_OPPONENTS
+            && (self.opponent_riichi[opponent_idx]
+                || self.cached_tenpai_prob[opponent_idx] > TENPAI_HINT_THRESHOLD)
+    }
+
+    /// Caches a tenpai head probability for use on the next decision step.
+    #[inline]
+    pub fn set_tenpai_prediction(&mut self, opponent_idx: usize, probability: f32) {
+        if opponent_idx < NUM_OPPONENTS {
+            self.cached_tenpai_prob[opponent_idx] = probability.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Replaces all cached tenpai probabilities at once.
+    #[inline]
+    pub fn set_tenpai_predictions(&mut self, probabilities: [f32; NUM_OPPONENTS]) {
+        for (idx, probability) in probabilities.into_iter().enumerate() {
+            self.set_tenpai_prediction(idx, probability);
+        }
+    }
+
     /// Update safety info when a tile is discarded.
     ///
     /// `tile_type`: 0-33 tile type index
@@ -154,13 +188,11 @@ impl SafetyInfo {
         // 1-4-7, 2-5-8, 3-6-9 pattern
         if number >= 3 {
             let suji_tile = suit_offset + number - 3;
-            self.suji[opponent_idx][suji_tile] =
-                self.suji[opponent_idx][suji_tile].max(1.0);
+            self.suji[opponent_idx][suji_tile] = self.suji[opponent_idx][suji_tile].max(1.0);
         }
         if number + 3 < 9 {
             let suji_tile = suit_offset + number + 3;
-            self.suji[opponent_idx][suji_tile] =
-                self.suji[opponent_idx][suji_tile].max(1.0);
+            self.suji[opponent_idx][suji_tile] = self.suji[opponent_idx][suji_tile].max(1.0);
         }
 
         // Now fix center tiles (4,5,6 of each suit) for half-suji.
@@ -179,7 +211,7 @@ impl SafetyInfo {
         // Center tile indices in 34-format: 3,4,5 (man), 12,13,14 (pin), 21,22,23 (sou)
         const CENTER_TILES: [usize; 9] = [3, 4, 5, 12, 13, 14, 21, 22, 23];
         for &tile in &CENTER_TILES {
-            let partner_low = tile - 3;  // e.g. 4m(3) -> 1m(0)
+            let partner_low = tile - 3; // e.g. 4m(3) -> 1m(0)
             let partner_high = tile + 3; // e.g. 4m(3) -> 7m(6)
             let p_low = bit_test(self.genbutsu_all[opp], partner_low);
             let p_high = bit_test(self.genbutsu_all[opp], partner_high);
@@ -260,6 +292,7 @@ mod tests {
             assert_eq!(si.genbutsu_riichi_era[opp], 0);
             assert!(si.suji[opp].iter().all(|&v| v == 0.0));
             assert!(!si.opponent_riichi[opp]);
+            assert_eq!(si.cached_tenpai_prob[opp], 0.0);
             assert_eq!(si.half_suji[opp], 0);
             assert!(si.matagi[opp].iter().all(|&v| v == 0.0));
         }
@@ -348,12 +381,31 @@ mod tests {
         let mut si = SafetyInfo::new();
         si.on_discard(5, 0, true);
         si.on_riichi(1);
+        si.set_tenpai_prediction(2, 0.9);
         si.on_dora_revealed(20);
         si.reset();
         assert!(!bit_test(si.genbutsu_all[0], 5));
         assert!(!bit_test(si.genbutsu_tedashi[0], 5));
         assert!(!si.opponent_riichi[1]);
+        assert_eq!(si.cached_tenpai_prob[2], 0.0);
         assert_eq!(si.visible_counts[20], 0);
+    }
+
+    #[test]
+    fn tenpai_hint_activates_from_cached_prediction() {
+        let mut si = SafetyInfo::new();
+        assert!(!si.tenpai_hint_active(0));
+        si.set_tenpai_prediction(0, 0.6);
+        assert!(si.tenpai_hint_active(0));
+    }
+
+    #[test]
+    fn tenpai_hint_clamps_predictions() {
+        let mut si = SafetyInfo::new();
+        si.set_tenpai_prediction(1, 10.0);
+        si.set_tenpai_prediction(2, -5.0);
+        assert_eq!(si.cached_tenpai_prob[1], 1.0);
+        assert_eq!(si.cached_tenpai_prob[2], 0.0);
     }
 
     #[test]
@@ -361,9 +413,9 @@ mod tests {
         let mut si = SafetyInfo::new();
         // Should not panic
         si.on_discard(34, 0, false); // tile out of bounds
-        si.on_discard(0, 3, false);  // opponent out of bounds
-        si.on_dora_revealed(255);     // way out of bounds
-        si.on_call(&[35, 100]);       // tiles out of bounds
+        si.on_discard(0, 3, false); // opponent out of bounds
+        si.on_dora_revealed(255); // way out of bounds
+        si.on_call(&[35, 100]); // tiles out of bounds
     }
 
     #[test]

@@ -104,7 +104,6 @@ fn extract_final_scores(log: &[String]) -> [i32; 4] {
     base_scores
 }
 
-
 /// Play a game WITHOUT mjai logging (faster, for determinism checks).
 fn play_game_fast(seed: u64) -> [i32; 4] {
     let rule = GameRule::default_tenhou();
@@ -122,7 +121,9 @@ fn play_game_fast(seed: u64) -> [i32; 4] {
             Phase::WaitAct => {
                 let obs = state.get_observation(state.current_player);
                 let legal = obs.legal_actions_method();
-                if legal.is_empty() { break; }
+                if legal.is_empty() {
+                    break;
+                }
                 actions.insert(state.current_player, legal[0]);
             }
             Phase::WaitResponse => {
@@ -131,7 +132,9 @@ fn play_game_fast(seed: u64) -> [i32; 4] {
                 for &pid in &ap[..n] {
                     let obs = state.get_observation(pid);
                     let legal = obs.legal_actions_method();
-                    if legal.is_empty() { continue; }
+                    if legal.is_empty() {
+                        continue;
+                    }
                     actions.insert(pid, legal[0]);
                 }
             }
@@ -163,9 +166,7 @@ fn mjai_log_deserializes_for_10_games() {
         // Every JSON line must parse into a known MjaiEvent variant.
         for (i, line) in state.mjai_log.iter().enumerate() {
             let event: MjaiEvent = serde_json::from_str(line).unwrap_or_else(|e| {
-                panic!(
-                    "seed {seed}, event {i}: failed to parse: {e}\nraw: {line}"
-                )
+                panic!("seed {seed}, event {i}: failed to parse: {e}\nraw: {line}")
             });
             // Ensure we got a real variant, not Other (catch-all).
             assert!(
@@ -215,10 +216,7 @@ fn deterministic_replay_same_seed() {
     for seed in 0..20u64 {
         let scores_a = play_game_fast(seed);
         let scores_b = play_game_fast(seed);
-        assert_eq!(
-            scores_a, scores_b,
-            "seed {seed}: scores not deterministic"
-        );
+        assert_eq!(scores_a, scores_b, "seed {seed}: scores not deterministic");
     }
 }
 

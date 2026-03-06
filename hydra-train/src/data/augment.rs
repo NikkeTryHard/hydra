@@ -4,9 +4,20 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE};
 use hydra_core::tile::{permute_tile_extended, permute_tile_type};
 
+const AKA_CHANNEL_START: usize = 40;
+const AKA_CHANNELS: usize = 3;
+
 pub fn augment_obs_suit(obs: &[f32; OBS_SIZE], perm: &[u8; 3]) -> [f32; OBS_SIZE] {
     let mut out = [0.0f32; OBS_SIZE];
     for ch in 0..NUM_CHANNELS {
+        if (AKA_CHANNEL_START..AKA_CHANNEL_START + AKA_CHANNELS).contains(&ch) {
+            let suit = ch - AKA_CHANNEL_START;
+            let new_ch = AKA_CHANNEL_START + perm[suit] as usize;
+            let src = &obs[ch * NUM_TILES..(ch + 1) * NUM_TILES];
+            let dst = &mut out[new_ch * NUM_TILES..(new_ch + 1) * NUM_TILES];
+            dst.copy_from_slice(src);
+            continue;
+        }
         for tile in 0..NUM_TILES {
             let new_tile = permute_tile_type(tile as u8, perm) as usize;
             out[ch * NUM_TILES + new_tile] = obs[ch * NUM_TILES + tile];
@@ -98,6 +109,20 @@ mod tests {
         }
         let out = augment_obs_suit(&obs, identity);
         assert_eq!(obs, out);
+    }
+
+    #[test]
+    fn augment_obs_moves_aka_planes_between_suits() {
+        let swap_mp = &ALL_PERMUTATIONS[2];
+        let mut obs = [0.0f32; OBS_SIZE];
+        obs[AKA_CHANNEL_START * NUM_TILES] = 1.0;
+        obs[(AKA_CHANNEL_START + 2) * NUM_TILES + 33] = 1.0;
+
+        let out = augment_obs_suit(&obs, swap_mp);
+
+        assert_eq!(out[AKA_CHANNEL_START * NUM_TILES], 0.0);
+        assert_eq!(out[(AKA_CHANNEL_START + 1) * NUM_TILES], 1.0);
+        assert_eq!(out[(AKA_CHANNEL_START + 2) * NUM_TILES + 33], 1.0);
     }
 
     #[test]

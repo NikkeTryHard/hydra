@@ -236,7 +236,8 @@ impl GameState3P {
         let legal_actions = if self.is_done {
             Vec::new()
         } else if (self.phase == Phase::WaitAct && self.current_player == player_id)
-            || (self.phase == Phase::WaitResponse && self.active_player_slice().contains(&player_id))
+            || (self.phase == Phase::WaitResponse
+                && self.active_player_slice().contains(&player_id))
         {
             self._get_legal_actions_internal(player_id)
         } else {
@@ -260,7 +261,8 @@ impl GameState3P {
         let is_tenpai = !waits.is_empty();
 
         let melds: [Vec<Meld>; 3] = std::array::from_fn(|i| self.players[i].melds_slice().to_vec());
-        let discards: [Vec<u8>; 3] = std::array::from_fn(|i| self.players[i].discards_slice().to_vec());
+        let discards: [Vec<u8>; 3] =
+            std::array::from_fn(|i| self.players[i].discards_slice().to_vec());
         let scores: [i32; 3] = std::array::from_fn(|i| self.players[i].score);
         let riichi_declared: [bool; 3] = std::array::from_fn(|i| self.players[i].riichi_declared);
 
@@ -515,8 +517,10 @@ impl GameState3P {
                 if !tsumogiri {
                     self.last_tedashis[pid as usize] = Some(t);
                 }
-                if let Some(idx) =
-                    self.players[pid as usize].hand_slice().iter().position(|&x| x == t)
+                if let Some(idx) = self.players[pid as usize]
+                    .hand_slice()
+                    .iter()
+                    .position(|&x| x == t)
                 {
                     self.players[pid as usize].remove_hand(idx);
                     self.players[pid as usize].hand_slice_mut().sort();
@@ -528,7 +532,10 @@ impl GameState3P {
 
     /// Handles an ankan (closed kan) action during WaitAct phase.
     fn _handle_ankan(&mut self, pid: u8, act: Action) {
-        let tile = act.tile.or(act.consume_slice().first().copied()).unwrap_or(0);
+        let tile = act
+            .tile
+            .or(act.consume_slice().first().copied())
+            .unwrap_or(0);
         let mut chankan_ronners = [0u8; 2];
         let mut chankan_count = 0usize;
         if self.rule.allows_ron_on_ankan_for_kokushi_musou {
@@ -539,7 +546,9 @@ impl GameState3P {
                 let hand = self.players[i as usize].hand_slice();
                 let melds = self.players[i as usize].melds_slice();
                 let tile_class = tile / 4;
-                let in_discards = self.players[i as usize].discards_slice().iter()
+                let in_discards = self.players[i as usize]
+                    .discards_slice()
+                    .iter()
                     .any(|&d| d / 4 == tile_class);
                 if in_discards {
                     continue;
@@ -555,21 +564,16 @@ impl GameState3P {
                     num_players: NP as u8,
                     ..Default::default()
                 };
-                let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(
-                    hand,
-                    melds,
-                );
-                let res = calc.calc(
-                    tile,
-                    self.wall.dora_indicator_slice(),
-                    &[],
-                    Some(cond),
-                );
+                let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(hand, melds);
+                let res = calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
                 if res.is_win && (res.yaku_slice().contains(&42) || res.yaku_slice().contains(&49))
                 {
                     chankan_ronners[chankan_count] = i;
                     chankan_count += 1;
-                    self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
+                    self.push_claim(
+                        i as usize,
+                        Action::new(ActionType::Ron, Some(tile), &[], Some(i)),
+                    );
                 }
             }
         }
@@ -586,10 +590,16 @@ impl GameState3P {
 
     /// Handles a kakan (added kan) action during WaitAct phase.
     fn _handle_kakan(&mut self, pid: u8, act: Action) {
-        let tile = act.tile.or(act.consume_slice().first().copied()).unwrap_or(0);
+        let tile = act
+            .tile
+            .or(act.consume_slice().first().copied())
+            .unwrap_or(0);
         let p_idx = pid as usize;
 
-        if let Some(idx) = self.players[p_idx].hand_slice().iter().position(|&x| x == tile)
+        if let Some(idx) = self.players[p_idx]
+            .hand_slice()
+            .iter()
+            .position(|&x| x == tile)
         {
             self.players[p_idx].remove_hand(idx);
         }
@@ -607,8 +617,11 @@ impl GameState3P {
             ev.insert("type".to_string(), Value::String("kakan".to_string()));
             ev.insert("actor".to_string(), Value::Number(pid.into()));
             ev.insert("pai".to_string(), Value::String(tid_to_mjai(tile)));
-            let cons: Vec<String> =
-                act.consume_slice().iter().map(|&t| tid_to_mjai(t)).collect();
+            let cons: Vec<String> = act
+                .consume_slice()
+                .iter()
+                .map(|&t| tid_to_mjai(t))
+                .collect();
             // SAFETY: serialization of Vec<String> never fails
             ev.insert("consumed".to_string(), serde_json::to_value(cons).unwrap());
             self._push_mjai_event(Value::Object(ev));
@@ -620,7 +633,10 @@ impl GameState3P {
             self._reveal_kan_dora();
         }
 
-        let tile = act.tile.or(act.consume_slice().first().copied()).unwrap_or(0);
+        let tile = act
+            .tile
+            .or(act.consume_slice().first().copied())
+            .unwrap_or(0);
         let mut chankan_ronners = [0u8; 2];
         let mut chankan_count = 0usize;
         for i in 0..NP as u8 {
@@ -648,15 +664,14 @@ impl GameState3P {
                 num_players: NP as u8,
                 ..Default::default()
             };
-            let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(
-                hand,
-                melds,
-            );
+            let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(hand, melds);
 
             let mut is_furiten = false;
             let waits = calc.get_waits_u8();
             for &w in &waits {
-                if self.players[i as usize].discards_slice().iter()
+                if self.players[i as usize]
+                    .discards_slice()
+                    .iter()
                     .any(|&d| d / 4 == w)
                 {
                     is_furiten = true;
@@ -670,20 +685,18 @@ impl GameState3P {
             }
 
             let res = if !is_furiten {
-                calc.calc(
-                    tile,
-                    self.wall.dora_indicator_slice(),
-                    &[],
-                    Some(cond),
-                )
+                calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond))
             } else {
                 WinResult::new(false, false, 0, 0, 0, [0u32; 16], 0, 0, 0, None, false)
             };
 
             if res.is_win && (res.yakuman || res.han >= 1) {
                 chankan_ronners[chankan_count] = i;
-                    chankan_count += 1;
-                self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
+                chankan_count += 1;
+                self.push_claim(
+                    i as usize,
+                    Action::new(ActionType::Ron, Some(tile), &[], Some(i)),
+                );
             }
         }
 
@@ -709,8 +722,7 @@ impl GameState3P {
             ippatsu: self.players[pid as usize].ippatsu_cycle,
             haitei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
             rinshan: self.is_rinshan_flag,
-            tsumo_first_turn: self.is_first_turn
-                && self.players.iter().all(|p| p.meld_count == 0 ),
+            tsumo_first_turn: self.is_first_turn && self.players.iter().all(|p| p.meld_count == 0),
             player_wind: Wind::from(p_wind),
             round_wind: Wind::from(self.round_wind),
             riichi_sticks: self.riichi_sticks,
@@ -720,10 +732,7 @@ impl GameState3P {
             num_players: NP as u8,
             ..Default::default()
         };
-        let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(
-            hand,
-            melds,
-        );
+        let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(hand, melds);
         let win_tile = self.drawn_tile.unwrap_or(0);
         let ura_indicators = if self.players[pid as usize].riichi_declared {
             self._get_ura_indicators()
@@ -783,9 +792,7 @@ impl GameState3P {
                         _ => 1,
                     };
                     total_yakuman_val += val;
-                    if let Some(liable) =
-                        self.players[pid as usize].pao_get(yid as u8)
-                    {
+                    if let Some(liable) = self.players[pid as usize].pao_get(yid as u8) {
                         pao_yakuman_val += val;
                         pao_payer = Some(liable);
                     }
@@ -807,8 +814,7 @@ impl GameState3P {
                     if self.rule.yakuman_pao_is_liability_only {
                         // Majsoul: PAO pays PAO portion only, non-PAO split normally
                         let pao_amt = pao_yakuman_val * unit + honba_total;
-                        let non_pao_yakuman_val =
-                            total_yakuman_val - pao_yakuman_val;
+                        let non_pao_yakuman_val = total_yakuman_val - pao_yakuman_val;
 
                         deltas[pp as usize] -= pao_amt;
                         total_win += pao_amt;
@@ -918,399 +924,397 @@ impl GameState3P {
 
     /// Handles the WaitResponse phase (claims, ron, pon, etc.).
     fn _handle_wait_response(&mut self, actions: &[Option<Action>; NP]) {
-            // Check Missed WinResult
-            for pid in 0..NP {
-                if self.current_claim_counts[pid] == 0 { continue; }
-                let legals = self.claims_slice(pid);
-                let pid = pid as u8;
-                if legals.iter().any(|a| a.action_type == ActionType::Ron) {
-                    let mut roned = false;
-                    if let Some(act) = actions[pid as usize] {
-                        if act.action_type == ActionType::Ron {
-                            roned = true;
-                        }
-                    }
-                    if !roned {
-                        self.players[pid as usize].missed_agari_doujun = true;
-                        if self.players[pid as usize].riichi_declared {
-                            self.players[pid as usize].missed_agari_riichi = true;
-                        }
-                    }
-                }
+        // Check Missed WinResult
+        for pid in 0..NP {
+            if self.current_claim_counts[pid] == 0 {
+                continue;
             }
-
-            let mut ron_claims = [0u8; 2];
-            let mut ron_count = 0usize;
-            let mut call_claim: Option<(u8, Action)> = None;
-
-            for &pid in self.active_player_slice() {
+            let legals = self.claims_slice(pid);
+            let pid = pid as u8;
+            if legals.iter().any(|a| a.action_type == ActionType::Ron) {
+                let mut roned = false;
                 if let Some(act) = actions[pid as usize] {
                     if act.action_type == ActionType::Ron {
-                        ron_claims[ron_count] = pid;
-                        ron_count += 1;
-                    } else if act.action_type == ActionType::Pon
-                        || act.action_type == ActionType::Daiminkan
-                    {
-                        if let Some((_old_pid, old_act)) = &call_claim {
-                            let old_is_pon = old_act.action_type == ActionType::Pon
-                                || old_act.action_type == ActionType::Daiminkan;
-                            let new_is_pon = act.action_type == ActionType::Pon
-                                || act.action_type == ActionType::Daiminkan;
-                            if !old_is_pon && new_is_pon {
-                                call_claim = Some((pid, act));
-                            }
-                        } else {
-                            call_claim = Some((pid, act));
-                        }
+                        roned = true;
+                    }
+                }
+                if !roned {
+                    self.players[pid as usize].missed_agari_doujun = true;
+                    if self.players[pid as usize].riichi_declared {
+                        self.players[pid as usize].missed_agari_riichi = true;
                     }
                 }
             }
+        }
 
-            if ron_count > 0 {
-                let (target_pid, win_tile) = self.last_discard.unwrap_or((self.current_player, 0));
-                ron_claims[..ron_count].sort_by_key(|&pid| (pid + NP as u8 - target_pid) % NP as u8);
+        let mut ron_claims = [0u8; 2];
+        let mut ron_count = 0usize;
+        let mut call_claim: Option<(u8, Action)> = None;
 
-                let winners = &ron_claims[..ron_count];
-
-                let mut total_deltas = [0i32; NP];
-                let mut oya_won = false;
-                let mut deposit_taken = false;
-                let mut honba_taken = false;
-
-                for &w_pid in winners {
-                    let hand = self.players[w_pid as usize].hand_slice();
-                    let melds = self.players[w_pid as usize].melds_slice();
-                    let p_wind = (w_pid + NP as u8 - self.oya) % NP as u8;
-                    // Chankan yaku applies to kakan/ankan, but NOT to kita (BaBei).
-                    // MjSoul allows ron on kita tiles but does not award chankan yaku.
-                    let is_chankan = self
-                        .pending_kan
-                        .as_ref()
-                        .is_some_and(|(_, act)| act.action_type != ActionType::Kita);
-
-                    // Only the first winner (closest to discarder) gets honba
-                    let ron_honba = if !honba_taken {
-                        honba_taken = true;
-                        self.honba as u32
+        for &pid in self.active_player_slice() {
+            if let Some(act) = actions[pid as usize] {
+                if act.action_type == ActionType::Ron {
+                    ron_claims[ron_count] = pid;
+                    ron_count += 1;
+                } else if act.action_type == ActionType::Pon
+                    || act.action_type == ActionType::Daiminkan
+                {
+                    if let Some((_old_pid, old_act)) = &call_claim {
+                        let old_is_pon = old_act.action_type == ActionType::Pon
+                            || old_act.action_type == ActionType::Daiminkan;
+                        let new_is_pon = act.action_type == ActionType::Pon
+                            || act.action_type == ActionType::Daiminkan;
+                        if !old_is_pon && new_is_pon {
+                            call_claim = Some((pid, act));
+                        }
                     } else {
-                        0
-                    };
-
-                    let cond = Conditions {
-                        tsumo: false,
-                        riichi: self.players[w_pid as usize].riichi_declared,
-                        double_riichi: self.players[w_pid as usize].double_riichi_declared,
-                        ippatsu: self.players[w_pid as usize].ippatsu_cycle,
-                        haitei: false,
-                        houtei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
-                        rinshan: false,
-                        chankan: is_chankan,
-                        tsumo_first_turn: false,
-                        player_wind: Wind::from(p_wind),
-                        round_wind: Wind::from(self.round_wind),
-                        riichi_sticks: self.riichi_sticks,
-                        honba: ron_honba,
-                        kita_count: self.players[w_pid as usize].kita_count,
-                        is_sanma: true,
-                        num_players: NP as u8,
-                    };
-
-                    let calc =
-                        crate::hand_evaluator_3p::HandEvaluator3P::new(hand, melds);
-                    let ura_indicators = if self.players[w_pid as usize].riichi_declared {
-                        self._get_ura_indicators()
-                    } else {
-                        vec![]
-                    };
-                    let mut res = calc.calc(
-                        win_tile,
-                        self.wall.dora_indicator_slice(),
-                        &ura_indicators,
-                        Some(cond),
-                    );
-
-                    // Cap double yakuman patterns when not enabled per rule flags
-                    if res.yakuman && res.han > 13 {
-                        let mut cap = 0u32;
-                        for &y in res.yaku_slice() {
-                            match y {
-                                47 if !self.rule.is_junsei_chuurenpoutou_double => cap += 13,
-                                48 if !self.rule.is_suuankou_tanki_double => cap += 13,
-                                49 if !self.rule.is_kokushi_musou_13machi_double => cap += 13,
-                                50 if !self.rule.is_daisuushii_double => cap += 13,
-                                _ => {}
-                            }
-                        }
-                        if cap > 0 {
-                            res.han = res.han.saturating_sub(cap).max(13);
-                            let capped = crate::score::calculate_score(
-                                res.han as u8,
-                                0,
-                                w_pid == self.oya,
-                                false,
-                                ron_honba,
-                                NP as u8,
-                            );
-                            res.ron_agari = capped.pay_ron;
-                            res.tsumo_agari_oya = capped.pay_tsumo_oya;
-                            res.tsumo_agari_ko = capped.pay_tsumo_ko;
-                        }
-                    }
-
-                    if res.is_win {
-                        let score = res.ron_agari as i32;
-                        let mut pao_payer = target_pid;
-                        let mut pao_amt = 0;
-
-                        if res.yakuman {
-                            let mut has_pao = false;
-                            let mut total_yakuman_val = 0i32;
-                            let mut pao_yakuman_val = 0i32;
-                            for &yid in res.yaku_slice() {
-                                let val: i32 = match yid {
-                                    47 if self.rule.is_junsei_chuurenpoutou_double => 2,
-                                    48 if self.rule.is_suuankou_tanki_double => 2,
-                                    49 if self.rule.is_kokushi_musou_13machi_double => 2,
-                                    50 if self.rule.is_daisuushii_double => 2,
-                                    _ => 1,
-                                };
-                                total_yakuman_val += val;
-                                if let Some(liable) =
-                                    self.players[w_pid as usize].pao_get(yid as u8)
-                                {
-                                    has_pao = true;
-                                    pao_payer = liable;
-                                    pao_yakuman_val += val;
-                                }
-                            }
-                            if has_pao {
-                                // Ron with PAO: split between PAO player and deal-in player.
-                                // yakuman_pao_is_liability_only controls the split base:
-                                //   true  (MjSoul): only PAO-triggering yakuman portion split 50/50
-                                //   false (Tenhou): total yakuman split 50/50
-                                let is_oya = w_pid == self.oya;
-                                let unit: i32 = if is_oya { 48000 } else { 32000 };
-                                let honba_ron = ron_honba as i32 * (NP as i32 - 1) * 100;
-                                let split_base = if self.rule.yakuman_pao_is_liability_only {
-                                    pao_yakuman_val * unit
-                                } else {
-                                    total_yakuman_val * unit
-                                };
-                                pao_amt = (split_base / 2 + honba_ron) as usize;
-                            }
-                        }
-
-                        let mut this_deltas = [0i32; NP];
-                        this_deltas[w_pid as usize] += score;
-                        this_deltas[pao_payer as usize] -= pao_amt as i32;
-                        this_deltas[target_pid as usize] -= score - pao_amt as i32;
-
-                        total_deltas[w_pid as usize] += score;
-                        total_deltas[pao_payer as usize] -= pao_amt as i32;
-                        total_deltas[target_pid as usize] -= score - pao_amt as i32;
-
-                        if !deposit_taken {
-                            let stick_pts = (self.riichi_sticks * 1000) as i32;
-                            total_deltas[w_pid as usize] += stick_pts;
-                            this_deltas[w_pid as usize] += stick_pts;
-                            self.riichi_sticks = 0;
-                            deposit_taken = true;
-                        }
-
-                        let mut val = res;
-                        for i in 0..self.players[w_pid as usize].pao_count as usize {
-                            let (yid, liable) = self.players[w_pid as usize].pao[i];
-                            if val.yaku_slice().contains(&(yid as u32)) {
-                                val.pao_payer = Some(liable);
-                                break;
-                            }
-                        }
-                        self.win_results[w_pid as usize] = Some(val);
-
-                        if w_pid == self.oya {
-                            oya_won = true;
-                        }
-
-                        if !self.skip_mjai_logging {
-                            let mut ev = serde_json::Map::new();
-                            ev.insert("type".to_string(), Value::String("hora".to_string()));
-                            ev.insert("actor".to_string(), Value::Number(w_pid.into()));
-                            ev.insert("target".to_string(), Value::Number(target_pid.into()));
-                            ev.insert(
-                                "deltas".to_string(),
-                                // SAFETY: serialization of Vec<i32> never fails
-                                serde_json::to_value(this_deltas).unwrap(),
-                            );
-                            let mut ura_markers = Vec::new();
-                            if self.players[w_pid as usize].riichi_declared {
-                                ura_markers = self._get_ura_markers();
-                            }
-                            ev.insert(
-                                "ura_markers".to_string(),
-                                // SAFETY: serialization of Vec<String> never fails
-                                serde_json::to_value(&ura_markers).unwrap(),
-                            );
-                            self._push_mjai_event(Value::Object(ev));
-                        }
+                        call_claim = Some((pid, act));
                     }
                 }
+            }
+        }
 
-                for (i, p) in self.players.iter_mut().enumerate() {
-                    p.score += total_deltas[i];
-                    p.score_delta = total_deltas[i];
-                }
+        if ron_count > 0 {
+            let (target_pid, win_tile) = self.last_discard.unwrap_or((self.current_player, 0));
+            ron_claims[..ron_count].sort_by_key(|&pid| (pid + NP as u8 - target_pid) % NP as u8);
 
-                self._initialize_next_round(oya_won, false);
-            } else if let Some((claimer, action)) = call_claim {
-                self._accept_riichi();
-                self.is_rinshan_flag = false;
-                self.is_first_turn = false;
-                self.players[claimer as usize].missed_agari_doujun = false;
+            let winners = &ron_claims[..ron_count];
 
-                // Discard was called → discarder loses nagashi eligibility
-                if let Some((discarder_pid, _)) = self.last_discard {
-                    self.players[discarder_pid as usize].nagashi_eligible = false;
-                }
+            let mut total_deltas = [0i32; NP];
+            let mut oya_won = false;
+            let mut deposit_taken = false;
+            let mut honba_taken = false;
 
-                for p in 0..NP {
-                    self.players[p].ippatsu_cycle = false;
-                }
+            for &w_pid in winners {
+                let hand = self.players[w_pid as usize].hand_slice();
+                let melds = self.players[w_pid as usize].melds_slice();
+                let p_wind = (w_pid + NP as u8 - self.oya) % NP as u8;
+                // Chankan yaku applies to kakan/ankan, but NOT to kita (BaBei).
+                // MjSoul allows ron on kita tiles but does not award chankan yaku.
+                let is_chankan = self
+                    .pending_kan
+                    .as_ref()
+                    .is_some_and(|(_, act)| act.action_type != ActionType::Kita);
 
-                if action.action_type == ActionType::Daiminkan {
-                    self.current_player = claimer;
-                    self.set_single_active_player(claimer);
-                    self.players[claimer as usize].clear_forbidden();
-                    self._resolve_kan(claimer, action);
-                    return;
-                }
-
-                for &t in action.consume_slice() {
-                    if let Some(idx) = self.players[claimer as usize]
-                        .hand
-                        .iter()
-                        .position(|&x| x == t)
-                    {
-                        self.players[claimer as usize].remove_hand(idx);
-                    }
-                }
-                // SAFETY: last_discard is always Some when processing claim actions (pon/chi/kan)
-                let (discarder, tile) = self.last_discard.unwrap();
-                let mut tiles = action.consume_slice().to_vec();
-                tiles.push(tile);
-                tiles.sort();
-                let meld_type = match action.action_type {
-                    ActionType::Pon => MeldType::Pon,
-                    _ => MeldType::Pon,
+                // Only the first winner (closest to discarder) gets honba
+                let ron_honba = if !honba_taken {
+                    honba_taken = true;
+                    self.honba as u32
+                } else {
+                    0
                 };
-                self.players[claimer as usize].push_meld(Meld::new(
-                    meld_type,
-                    &tiles,
-                    true,
-                    discarder as i8,
-                    Some(tile),
-                ));
 
-                if !self.skip_mjai_logging {
-                    let type_str = match action.action_type {
-                        ActionType::Pon => Some("pon"),
-                        ActionType::Daiminkan => Some("daiminkan"),
-                        _ => None,
-                    };
-                    if let Some(s) = type_str {
+                let cond = Conditions {
+                    tsumo: false,
+                    riichi: self.players[w_pid as usize].riichi_declared,
+                    double_riichi: self.players[w_pid as usize].double_riichi_declared,
+                    ippatsu: self.players[w_pid as usize].ippatsu_cycle,
+                    haitei: false,
+                    houtei: self.wall.remaining() <= 14 && !self.is_rinshan_flag,
+                    rinshan: false,
+                    chankan: is_chankan,
+                    tsumo_first_turn: false,
+                    player_wind: Wind::from(p_wind),
+                    round_wind: Wind::from(self.round_wind),
+                    riichi_sticks: self.riichi_sticks,
+                    honba: ron_honba,
+                    kita_count: self.players[w_pid as usize].kita_count,
+                    is_sanma: true,
+                    num_players: NP as u8,
+                };
+
+                let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(hand, melds);
+                let ura_indicators = if self.players[w_pid as usize].riichi_declared {
+                    self._get_ura_indicators()
+                } else {
+                    vec![]
+                };
+                let mut res = calc.calc(
+                    win_tile,
+                    self.wall.dora_indicator_slice(),
+                    &ura_indicators,
+                    Some(cond),
+                );
+
+                // Cap double yakuman patterns when not enabled per rule flags
+                if res.yakuman && res.han > 13 {
+                    let mut cap = 0u32;
+                    for &y in res.yaku_slice() {
+                        match y {
+                            47 if !self.rule.is_junsei_chuurenpoutou_double => cap += 13,
+                            48 if !self.rule.is_suuankou_tanki_double => cap += 13,
+                            49 if !self.rule.is_kokushi_musou_13machi_double => cap += 13,
+                            50 if !self.rule.is_daisuushii_double => cap += 13,
+                            _ => {}
+                        }
+                    }
+                    if cap > 0 {
+                        res.han = res.han.saturating_sub(cap).max(13);
+                        let capped = crate::score::calculate_score(
+                            res.han as u8,
+                            0,
+                            w_pid == self.oya,
+                            false,
+                            ron_honba,
+                            NP as u8,
+                        );
+                        res.ron_agari = capped.pay_ron;
+                        res.tsumo_agari_oya = capped.pay_tsumo_oya;
+                        res.tsumo_agari_ko = capped.pay_tsumo_ko;
+                    }
+                }
+
+                if res.is_win {
+                    let score = res.ron_agari as i32;
+                    let mut pao_payer = target_pid;
+                    let mut pao_amt = 0;
+
+                    if res.yakuman {
+                        let mut has_pao = false;
+                        let mut total_yakuman_val = 0i32;
+                        let mut pao_yakuman_val = 0i32;
+                        for &yid in res.yaku_slice() {
+                            let val: i32 = match yid {
+                                47 if self.rule.is_junsei_chuurenpoutou_double => 2,
+                                48 if self.rule.is_suuankou_tanki_double => 2,
+                                49 if self.rule.is_kokushi_musou_13machi_double => 2,
+                                50 if self.rule.is_daisuushii_double => 2,
+                                _ => 1,
+                            };
+                            total_yakuman_val += val;
+                            if let Some(liable) = self.players[w_pid as usize].pao_get(yid as u8) {
+                                has_pao = true;
+                                pao_payer = liable;
+                                pao_yakuman_val += val;
+                            }
+                        }
+                        if has_pao {
+                            // Ron with PAO: split between PAO player and deal-in player.
+                            // yakuman_pao_is_liability_only controls the split base:
+                            //   true  (MjSoul): only PAO-triggering yakuman portion split 50/50
+                            //   false (Tenhou): total yakuman split 50/50
+                            let is_oya = w_pid == self.oya;
+                            let unit: i32 = if is_oya { 48000 } else { 32000 };
+                            let honba_ron = ron_honba as i32 * (NP as i32 - 1) * 100;
+                            let split_base = if self.rule.yakuman_pao_is_liability_only {
+                                pao_yakuman_val * unit
+                            } else {
+                                total_yakuman_val * unit
+                            };
+                            pao_amt = (split_base / 2 + honba_ron) as usize;
+                        }
+                    }
+
+                    let mut this_deltas = [0i32; NP];
+                    this_deltas[w_pid as usize] += score;
+                    this_deltas[pao_payer as usize] -= pao_amt as i32;
+                    this_deltas[target_pid as usize] -= score - pao_amt as i32;
+
+                    total_deltas[w_pid as usize] += score;
+                    total_deltas[pao_payer as usize] -= pao_amt as i32;
+                    total_deltas[target_pid as usize] -= score - pao_amt as i32;
+
+                    if !deposit_taken {
+                        let stick_pts = (self.riichi_sticks * 1000) as i32;
+                        total_deltas[w_pid as usize] += stick_pts;
+                        this_deltas[w_pid as usize] += stick_pts;
+                        self.riichi_sticks = 0;
+                        deposit_taken = true;
+                    }
+
+                    let mut val = res;
+                    for i in 0..self.players[w_pid as usize].pao_count as usize {
+                        let (yid, liable) = self.players[w_pid as usize].pao[i];
+                        if val.yaku_slice().contains(&(yid as u32)) {
+                            val.pao_payer = Some(liable);
+                            break;
+                        }
+                    }
+                    self.win_results[w_pid as usize] = Some(val);
+
+                    if w_pid == self.oya {
+                        oya_won = true;
+                    }
+
+                    if !self.skip_mjai_logging {
                         let mut ev = serde_json::Map::new();
-                        ev.insert("type".to_string(), Value::String(s.to_string()));
-                        ev.insert("actor".to_string(), Value::Number(claimer.into()));
-                        ev.insert("target".to_string(), Value::Number(discarder.into()));
-                        ev.insert("pai".to_string(), Value::String(tid_to_mjai(tile)));
-                        let cons_strs: Vec<String> = action
-                            .consume_slice()
-                            .iter()
-                            .map(|&t| tid_to_mjai(t))
-                            .collect();
+                        ev.insert("type".to_string(), Value::String("hora".to_string()));
+                        ev.insert("actor".to_string(), Value::Number(w_pid.into()));
+                        ev.insert("target".to_string(), Value::Number(target_pid.into()));
                         ev.insert(
-                            "consumed".to_string(),
+                            "deltas".to_string(),
+                            // SAFETY: serialization of Vec<i32> never fails
+                            serde_json::to_value(this_deltas).unwrap(),
+                        );
+                        let mut ura_markers = Vec::new();
+                        if self.players[w_pid as usize].riichi_declared {
+                            ura_markers = self._get_ura_markers();
+                        }
+                        ev.insert(
+                            "ura_markers".to_string(),
                             // SAFETY: serialization of Vec<String> never fails
-                            serde_json::to_value(cons_strs).unwrap(),
+                            serde_json::to_value(&ura_markers).unwrap(),
                         );
                         self._push_mjai_event(Value::Object(ev));
                     }
                 }
+            }
 
-                // PAO implementation
-                if meld_type == MeldType::Pon
-                    || meld_type == MeldType::Daiminkan
-                    || meld_type == MeldType::Kakan
-                {
-                    let tile_val = tile / 4;
-                    if (31..=33).contains(&tile_val) {
-                        let dragon_melds = self.players[claimer as usize]
-                            .melds
-                            .iter()
-                            .filter(|m| {
-                                let t = m.tiles[0] / 4;
-                                (31..=33).contains(&t) && (m.meld_type != MeldType::Chi)
-                            })
-                            .count();
-                        if dragon_melds == 3 {
-                            self.players[claimer as usize].pao_insert(37, discarder);
-                        }
-                    } else if (27..=30).contains(&tile_val) {
-                        let wind_melds = self.players[claimer as usize]
-                            .melds
-                            .iter()
-                            .filter(|m| {
-                                let t = m.tiles[0] / 4;
-                                (27..=30).contains(&t) && (m.meld_type != MeldType::Chi)
-                            })
-                            .count();
-                        if wind_melds == 4 {
-                            self.players[claimer as usize].pao_insert(50, discarder);
-                        }
-                    }
-                }
+            for (i, p) in self.players.iter_mut().enumerate() {
+                p.score += total_deltas[i];
+                p.score_delta = total_deltas[i];
+            }
 
+            self._initialize_next_round(oya_won, false);
+        } else if let Some((claimer, action)) = call_claim {
+            self._accept_riichi();
+            self.is_rinshan_flag = false;
+            self.is_first_turn = false;
+            self.players[claimer as usize].missed_agari_doujun = false;
+
+            // Discard was called → discarder loses nagashi eligibility
+            if let Some((discarder_pid, _)) = self.last_discard {
+                self.players[discarder_pid as usize].nagashi_eligible = false;
+            }
+
+            for p in 0..NP {
+                self.players[p].ippatsu_cycle = false;
+            }
+
+            if action.action_type == ActionType::Daiminkan {
                 self.current_player = claimer;
-                self.phase = Phase::WaitAct;
                 self.set_single_active_player(claimer);
                 self.players[claimer as usize].clear_forbidden();
+                self._resolve_kan(claimer, action);
+                return;
+            }
 
-                if action.action_type == ActionType::Pon {
-                    self.players[claimer as usize].push_forbidden(tile);
+            for &t in action.consume_slice() {
+                if let Some(idx) = self.players[claimer as usize]
+                    .hand
+                    .iter()
+                    .position(|&x| x == t)
+                {
+                    self.players[claimer as usize].remove_hand(idx);
                 }
+            }
+            // SAFETY: last_discard is always Some when processing claim actions (pon/chi/kan)
+            let (discarder, tile) = self.last_discard.unwrap();
+            let mut tiles = action.consume_slice().to_vec();
+            tiles.push(tile);
+            tiles.sort();
+            let meld_type = match action.action_type {
+                ActionType::Pon => MeldType::Pon,
+                _ => MeldType::Pon,
+            };
+            self.players[claimer as usize].push_meld(Meld::new(
+                meld_type,
+                &tiles,
+                true,
+                discarder as i8,
+                Some(tile),
+            ));
 
-                if action.action_type == ActionType::Daiminkan {
-                    self._resolve_kan(claimer, action);
-                } else {
-                    self.needs_tsumo = false;
-                    self.drawn_tile = None;
+            if !self.skip_mjai_logging {
+                let type_str = match action.action_type {
+                    ActionType::Pon => Some("pon"),
+                    ActionType::Daiminkan => Some("daiminkan"),
+                    _ => None,
+                };
+                if let Some(s) = type_str {
+                    let mut ev = serde_json::Map::new();
+                    ev.insert("type".to_string(), Value::String(s.to_string()));
+                    ev.insert("actor".to_string(), Value::Number(claimer.into()));
+                    ev.insert("target".to_string(), Value::Number(discarder.into()));
+                    ev.insert("pai".to_string(), Value::String(tid_to_mjai(tile)));
+                    let cons_strs: Vec<String> = action
+                        .consume_slice()
+                        .iter()
+                        .map(|&t| tid_to_mjai(t))
+                        .collect();
+                    ev.insert(
+                        "consumed".to_string(),
+                        // SAFETY: serialization of Vec<String> never fails
+                        serde_json::to_value(cons_strs).unwrap(),
+                    );
+                    self._push_mjai_event(Value::Object(ev));
                 }
-            } else {
-                // All Pass
-                self.clear_claims();
-                self.clear_active_players();
+            }
 
-                if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
-                    if pk_act.action_type == ActionType::Kita {
-                        // All players passed on kita ron — break ippatsu now
-                        for p in &mut self.players {
-                            p.ippatsu_cycle = false;
-                        }
-                        self.resolve_kita_rinshan(pk_pid);
-                    } else {
-                        self._resolve_kan(pk_pid, pk_act);
+            // PAO implementation
+            if meld_type == MeldType::Pon
+                || meld_type == MeldType::Daiminkan
+                || meld_type == MeldType::Kakan
+            {
+                let tile_val = tile / 4;
+                if (31..=33).contains(&tile_val) {
+                    let dragon_melds = self.players[claimer as usize]
+                        .melds
+                        .iter()
+                        .filter(|m| {
+                            let t = m.tiles[0] / 4;
+                            (31..=33).contains(&t) && (m.meld_type != MeldType::Chi)
+                        })
+                        .count();
+                    if dragon_melds == 3 {
+                        self.players[claimer as usize].pao_insert(37, discarder);
                     }
-                } else {
-                    self._accept_riichi();
-                    self.turn_count += 1;
-                    self.current_player = (self.current_player + 1) % NP as u8;
-                    self._deal_next();
-                    if self.turn_count >= NP as u32 {
-                        self.is_first_turn = false;
+                } else if (27..=30).contains(&tile_val) {
+                    let wind_melds = self.players[claimer as usize]
+                        .melds
+                        .iter()
+                        .filter(|m| {
+                            let t = m.tiles[0] / 4;
+                            (27..=30).contains(&t) && (m.meld_type != MeldType::Chi)
+                        })
+                        .count();
+                    if wind_melds == 4 {
+                        self.players[claimer as usize].pao_insert(50, discarder);
                     }
                 }
             }
-    }
 
+            self.current_player = claimer;
+            self.phase = Phase::WaitAct;
+            self.set_single_active_player(claimer);
+            self.players[claimer as usize].clear_forbidden();
+
+            if action.action_type == ActionType::Pon {
+                self.players[claimer as usize].push_forbidden(tile);
+            }
+
+            if action.action_type == ActionType::Daiminkan {
+                self._resolve_kan(claimer, action);
+            } else {
+                self.needs_tsumo = false;
+                self.drawn_tile = None;
+            }
+        } else {
+            // All Pass
+            self.clear_claims();
+            self.clear_active_players();
+
+            if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
+                if pk_act.action_type == ActionType::Kita {
+                    // All players passed on kita ron — break ippatsu now
+                    for p in &mut self.players {
+                        p.ippatsu_cycle = false;
+                    }
+                    self.resolve_kita_rinshan(pk_pid);
+                } else {
+                    self._resolve_kan(pk_pid, pk_act);
+                }
+            } else {
+                self._accept_riichi();
+                self.turn_count += 1;
+                self.current_player = (self.current_player + 1) % NP as u8;
+                self._deal_next();
+                if self.turn_count >= NP as u32 {
+                    self.is_first_turn = false;
+                }
+            }
+        }
+    }
 
     /// Step with array-indexed actions instead of HashMap.
     ///
@@ -1461,7 +1465,11 @@ impl GameState3P {
             // Already updated in step()
         } else {
             for &t in action.consume_slice() {
-                if let Some(idx) = self.players[p_idx].hand_slice().iter().position(|&x| x == t) {
+                if let Some(idx) = self.players[p_idx]
+                    .hand_slice()
+                    .iter()
+                    .position(|&x| x == t)
+                {
                     self.players[p_idx].remove_hand(idx);
                 }
             }
@@ -1812,7 +1820,8 @@ impl GameState3P {
             );
             let mut tehais = Vec::new();
             for p in &self.players {
-                let hand_strs: Vec<String> = p.hand_slice().iter().map(|&t| tid_to_mjai(t)).collect();
+                let hand_strs: Vec<String> =
+                    p.hand_slice().iter().map(|&t| tid_to_mjai(t)).collect();
                 tehais.push(hand_strs);
             }
             // SAFETY: serialization of Vec<Vec<String>> never fails
@@ -1851,8 +1860,7 @@ impl GameState3P {
 
         if reason == "exhaustive_draw" {
             for (i, p) in self.players.iter().enumerate() {
-                let calc =
-                    crate::hand_evaluator_3p::HandEvaluator3P::new(&p.hand, &p.melds);
+                let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(&p.hand, &p.melds);
                 if calc.is_tenpai() {
                     tenpai[i] = true;
                 }

@@ -26,7 +26,7 @@ impl ExitConfig {
     }
 
     pub fn default_phase3() -> Self {
-        Self::new().with_exit_weight(1.0).with_min_visits(32)
+        Self::new()
     }
     pub fn min_visits_reached(&self, visit_count: u32) -> bool {
         visit_count >= self.min_visits
@@ -57,7 +57,14 @@ impl ExitConfig {
 pub fn anneal_exit_weight(base_weight: f32, phase: u8, progress: f32) -> f32 {
     match phase {
         0 | 1 => 0.0,
-        2 => base_weight * progress.min(1.0),
+        2 => {
+            let progress = progress.clamp(0.0, 1.0);
+            if progress <= 0.5 {
+                0.0
+            } else {
+                base_weight * ((progress - 0.5) / 0.5)
+            }
+        }
         _ => base_weight,
     }
 }
@@ -213,9 +220,17 @@ mod tests {
     fn anneal_exit_weight_phases() {
         assert!((anneal_exit_weight(0.5, 0, 0.5) - 0.0).abs() < 1e-6);
         assert!((anneal_exit_weight(0.5, 1, 0.5) - 0.0).abs() < 1e-6);
-        assert!((anneal_exit_weight(0.5, 2, 0.5) - 0.25).abs() < 1e-6);
+        assert!((anneal_exit_weight(0.5, 2, 0.5) - 0.0).abs() < 1e-6);
+        assert!((anneal_exit_weight(0.5, 2, 0.75) - 0.25).abs() < 1e-6);
         assert!((anneal_exit_weight(0.5, 2, 1.0) - 0.5).abs() < 1e-6);
         assert!((anneal_exit_weight(0.5, 3, 0.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn default_phase3_matches_roadmap_defaults() {
+        let cfg = ExitConfig::default_phase3();
+        assert!((cfg.exit_weight - 0.5).abs() < 1e-6);
+        assert_eq!(cfg.min_visits, 64);
     }
 
     #[test]

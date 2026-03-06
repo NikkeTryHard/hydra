@@ -13,7 +13,11 @@ impl GameState3P {
         let p_idx = pid as usize;
 
         // Remove North tile from hand
-        if let Some(idx) = self.players[p_idx].hand_slice().iter().position(|&t| t == tile) {
+        if let Some(idx) = self.players[p_idx]
+            .hand_slice()
+            .iter()
+            .position(|&t| t == tile)
+        {
             self.players[p_idx].remove_hand(idx);
         }
 
@@ -63,7 +67,9 @@ impl GameState3P {
             let waits = calc.get_waits_u8();
             let mut is_furiten = false;
             for &w in &waits {
-                if self.players[i as usize].discards_slice().iter()
+                if self.players[i as usize]
+                    .discards_slice()
+                    .iter()
                     .any(|&d| d / 4 == w)
                 {
                     is_furiten = true;
@@ -101,7 +107,10 @@ impl GameState3P {
 
             if res.is_win && (res.yakuman || res.han >= 1) {
                 chankan_ronners.push(i);
-                self.push_claim(i as usize, Action::new(ActionType::Ron, Some(tile), &[], Some(i)));
+                self.push_claim(
+                    i as usize,
+                    Action::new(ActionType::Ron, Some(tile), &[], Some(i)),
+                );
             }
         }
 

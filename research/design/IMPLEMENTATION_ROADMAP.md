@@ -64,7 +64,9 @@ hydra-train/
 
 ### 1.4 Constants (in `config.rs`)
 
-These are the EXACT defaults from HYDRA_FINAL Section 4:
+**Canonical SSOT note:** `HYDRA_FINAL.md` is the governing architecture doc. The `85 x 34` tensor described in this roadmap reflects the currently implemented baseline encoder, not the final target encoder. The final target is a **fixed-shape superset** of Groups A/B/C/D from `HYDRA_FINAL`, with zero-filled dynamic features plus presence-mask channels when search/belief/Hand-EV features are unavailable.
+
+These are the EXACT defaults for the **current baseline implementation**:
 
 | Constant | Value | Source |
 |----------|-------|--------|
@@ -128,13 +130,13 @@ Shape trace: `[B,256,34] -> mean(dim=2) -> [B,256,1] -> squeeze -> [B,256] -> fc
 ### 2.3 SEResNet (Full Backbone)
 
 **SEResNet<B: Backend>**: Full backbone.
-- Fields: `input_conv: Conv1d<B>` (85, 256, k=3, pad=Same), `input_gn: GroupNorm<B>` (32, 256), `blocks: Vec<SEResBlock<B>>`, `final_gn: GroupNorm<B>` (32, 256)
-- **SEResNetConfig**: `num_blocks: usize` (12 for ActorNet, 24 for LearnerNet), `input_channels: usize` (85), `hidden_channels: usize` (256), `num_groups: usize` (32), `se_bottleneck: usize` (64)
+- Fields: `input_conv: Conv1d<B>` (`INPUT_CHANNELS`, 256, k=3, pad=Same), `input_gn: GroupNorm<B>` (32, 256), `blocks: Vec<SEResBlock<B>>`, `final_gn: GroupNorm<B>` (32, 256)
+- **SEResNetConfig**: `num_blocks: usize` (12 for ActorNet, 24 for LearnerNet), `input_channels: usize` (baseline 85; final target = fixed superset per `HYDRA_FINAL`), `hidden_channels: usize` (256), `num_groups: usize` (32), `se_bottleneck: usize` (64)
 - `init<B>(&self, device) -> SEResNet<B>`: Create input_conv, input_gn, N residual blocks, final_gn.
-- `forward(&self, x: [B, 85, 34]) -> (spatial: [B, 256, 34], pooled: [B, 256])`:
+- `forward(&self, x: [B, INPUT_CHANNELS, 34]) -> (spatial: [B, 256, 34], pooled: [B, 256])`:
   Input conv -> input_gn -> mish -> N residual blocks -> final_gn -> mish -> (spatial, global_avg_pool).
 
-Shape trace: `[B,85,34] -> Conv1d -> [B,256,34] -> GN -> mish -> N blocks -> [B,256,34] -> final_gn -> mish -> spatial [B,256,34]; mean(dim=2) -> squeeze -> pooled [B,256]`
+Shape trace: `[B,INPUT_CHANNELS,34] -> Conv1d -> [B,256,34] -> GN -> mish -> N blocks -> [B,256,34] -> final_gn -> mish -> spatial [B,256,34]; mean(dim=2) -> squeeze -> pooled [B,256]`
 
 **Returns a TUPLE**: `(spatial, pooled)` because heads need both:
 - `spatial: [B, 256, 34]` -- for per-tile heads (danger, opp_next_discard)
@@ -262,15 +264,15 @@ The model returns ALL head outputs in a single struct, NOT a tuple:
 
 **HydraModelConfig** (`#[derive(Config, Debug)]`):
 - `num_blocks: usize` -- 12 for ActorNet, 24 for LearnerNet (NO default -- must be specified)
-- `input_channels: usize` (default 85), `hidden_channels: usize` (default 256), `num_groups: usize` (default 32), `se_bottleneck: usize` (default 64)
+- `input_channels: usize` (default = current baseline 85; migrate to final fixed-superset channel count from `HYDRA_FINAL`), `hidden_channels: usize` (default 256), `num_groups: usize` (default 32), `se_bottleneck: usize` (default 64)
 - `action_space: usize` (default 46), `score_bins: usize` (default 64), `num_opponents: usize` (default 3), `grp_classes: usize` (default 24)
 - Convenience constructors: `actor() -> Self` (num_blocks=12, ~5M params), `learner() -> Self` (num_blocks=24, ~10M params)
 - Usage: `HydraModelConfig::new(12)` for ActorNet, `HydraModelConfig::new(24)` for LearnerNet
 
 ### 4.4 Init and Forward
 
-- `init<B>(&self, device) -> HydraModel<B>`: Create backbone from SEResNetConfig, create HeadsConfig, init all 9 heads.
-- `forward(&self, x: [B, 85, 34]) -> HydraOutput<B>`: Backbone -> (spatial, pooled) -> feed each head. Clone `pooled` 6 times (7 uses, last is move), clone `spatial` 1 time (2 uses, last is move).
+- `init<B>(&self, device) -> HydraModel<B>`: Create backbone from SEResNetConfig, create HeadsConfig, init all heads.
+- `forward(&self, x: [B, INPUT_CHANNELS, 34]) -> HydraOutput<B>`: Backbone -> (spatial, pooled) -> feed each head. Clone `pooled` 6 times (7 uses, last is move), clone `spatial` 1 time (2 uses, last is move).
 
 **CRITICAL**: The last uses of `pooled` and `spatial` must NOT be cloned (Burn moves on use).
 

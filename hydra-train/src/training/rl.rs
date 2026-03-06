@@ -5,7 +5,7 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::model::HydraModel;
-use crate::training::ach::{ach_policy_loss, AchConfig};
+use crate::training::ach::{AchConfig, ach_policy_loss};
 use crate::training::drda;
 use crate::training::losses::{HydraLoss, HydraTargets};
 
@@ -53,7 +53,7 @@ impl RlConfig {
             tau_drda: 4.0,
             ach_cfg: AchConfig::new(),
             lr: 2.5e-4,
-            exit_weight: 0.0,
+            exit_weight: DEFAULT_EXIT_WEIGHT,
             aux_weight: 0.1,
         }
     }
@@ -87,6 +87,11 @@ impl RlConfig {
             self.tau_drda, self.lr, self.exit_weight, self.aux_weight
         )
     }
+
+    pub fn effective_exit_weight(&self, phase: u8, progress: f32) -> f32 {
+        crate::training::exit::anneal_exit_weight(self.exit_weight, phase, progress)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.tau_drda < crate::training::drda::MIN_TAU_DRDA {
             return Err("tau_drda below minimum");
@@ -103,6 +108,18 @@ pub fn rl_step<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch: &RlBatch<B>,
     cfg: &RlConfig,
+    loss_fn: &HydraLoss<B>,
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+) -> (HydraModel<B>, f64) {
+    rl_step_with_phase_progress(model, batch, cfg, 3, 1.0, loss_fn, optimizer)
+}
+
+pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
+    model: HydraModel<B>,
+    batch: &RlBatch<B>,
+    cfg: &RlConfig,
+    phase: u8,
+    progress: f32,
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
@@ -128,11 +145,12 @@ pub fn rl_step<B: AutodiffBackend>(
     let aux = loss_fn.total_loss(&output, &batch.targets);
     let mut total = ach_loss + aux.total * cfg.aux_weight;
     if let Some(ref exit_target) = batch.exit_target {
+        let exit_weight = cfg.effective_exit_weight(phase, progress);
         let exit_loss = crate::training::exit::exit_loss(
             output.policy_logits,
             exit_target.clone(),
             batch.targets.legal_mask.clone(),
-            cfg.exit_weight,
+            exit_weight,
         );
         total = total + exit_loss;
     }
@@ -147,7 +165,7 @@ pub fn rl_step<B: AutodiffBackend>(
 mod tests {
     use super::*;
     use crate::model::HydraModelConfig;
-    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::{Autodiff, NdArray};
     use burn::optim::AdamConfig;
 
@@ -162,7 +180,7 @@ mod tests {
             .with_num_groups(4)
             .init::<AB>(&device);
         let batch = RlBatch {
-            obs: Tensor::<AB, 3>::zeros([2, 85, 34], &device),
+            obs: Tensor::<AB, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device),
             actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1][..], &device),
             pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3], &device),
             advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
@@ -193,7 +211,7 @@ mod tests {
             .init::<AB>(&device);
         let batch = RlBatch {
             obs: Tensor::<AB, 3>::random(
-                [2, 85, 34],
+                [2, crate::config::INPUT_CHANNELS, 34],
                 burn::tensor::Distribution::Normal(0.0, 0.1),
                 &device,
             ),
@@ -217,5 +235,43 @@ mod tests {
         let (_, l2) = rl_step(m1, &batch, &cfg, &loss_fn, &mut opt);
         assert!(l1.is_finite() && l2.is_finite());
         assert!((l1 - l2).abs() > 1e-8, "two steps should change loss");
+    }
+
+    #[test]
+    fn test_effective_exit_weight_anneals_in_phase2() {
+        let cfg = RlConfig::default_phase2().with_exit_weight(DEFAULT_EXIT_WEIGHT);
+        assert!((cfg.effective_exit_weight(2, 0.0) - 0.0).abs() < 1e-6);
+        assert!((cfg.effective_exit_weight(2, 0.5) - 0.0).abs() < 1e-6);
+        assert!((cfg.effective_exit_weight(2, 0.75) - 0.25).abs() < 1e-6);
+        assert!((cfg.effective_exit_weight(2, 1.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_rl_step_with_phase_progress_accepts_phase2_ramp() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let batch = RlBatch {
+            obs: Tensor::<AB, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device),
+            actions: Tensor::<AB, 1, Int>::zeros([2], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.5], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -1.0], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 2),
+            exit_target: Some(Tensor::<AB, 2>::ones([2, 46], &device) / 46.0),
+        };
+        let cfg = RlConfig::default_phase2()
+            .with_lr(1e-3)
+            .with_exit_weight(DEFAULT_EXIT_WEIGHT);
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let mut optimizer = AdamConfig::new().init();
+
+        let (_, loss) =
+            rl_step_with_phase_progress(model, &batch, &cfg, 2, 0.5, &loss_fn, &mut optimizer);
+        assert!(loss.is_finite());
+        assert!(loss > 0.0);
     }
 }

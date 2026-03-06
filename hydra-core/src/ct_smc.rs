@@ -580,13 +580,8 @@ mod tests {
             ess_threshold: 0.4,
         };
         let mut smc = CtSmc::new(cfg);
-        let likelihood = |p: &Particle| -> f64 {
-            if p.allocation[0][0] == 1 {
-                0.0
-            } else {
-                -10.0
-            }
-        };
+        let likelihood =
+            |p: &Particle| -> f64 { if p.allocation[0][0] == 1 { 0.0 } else { -10.0 } };
         smc.update(&row_sums, &col_sums, &log_omega, &likelihood, &mut rng);
         assert!(!smc.particles.is_empty());
     }

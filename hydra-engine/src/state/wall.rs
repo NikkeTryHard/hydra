@@ -147,7 +147,6 @@ impl WallState {
         self.dora_indicators[0] = tile;
         self.dora_indicator_count = 1;
     }
-
 }
 
 fn splitmix64(x: u64) -> u64 {

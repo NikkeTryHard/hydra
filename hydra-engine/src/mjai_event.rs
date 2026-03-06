@@ -25,11 +25,7 @@ pub enum MjaiEvent {
     /// Player draws a tile.
     Tsumo { actor: u8, pai: u8 },
     /// Player discards a tile.
-    Dahai {
-        actor: u8,
-        pai: u8,
-        tsumogiri: bool,
-    },
+    Dahai { actor: u8, pai: u8, tsumogiri: bool },
     /// Player declares riichi.
     Reach { actor: u8 },
     /// Riichi deposit accepted.

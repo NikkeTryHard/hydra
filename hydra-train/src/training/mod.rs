@@ -7,4 +7,5 @@ pub mod drda;
 pub mod exit;
 pub mod gae;
 pub mod losses;
+pub mod orchestrator;
 pub mod rl;

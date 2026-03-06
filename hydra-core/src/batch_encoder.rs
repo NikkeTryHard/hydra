@@ -3,7 +3,7 @@
 //! Pre-allocates a contiguous buffer for N observations and encodes
 //! directly into slots, avoiding per-observation allocation.
 
-use crate::encoder::{ObservationEncoder, OBS_SIZE};
+use crate::encoder::{OBS_SIZE, ObservationEncoder};
 
 /// Batch encoder that manages a contiguous buffer for multiple observations.
 ///
@@ -42,7 +42,11 @@ impl BatchEncoder {
     /// Panics if `slot >= batch_size`.
     #[inline]
     pub fn copy_from_encoder(&mut self, slot: usize, src: &ObservationEncoder) {
-        assert!(slot < self.batch_size, "slot {slot} >= batch_size {}", self.batch_size);
+        assert!(
+            slot < self.batch_size,
+            "slot {slot} >= batch_size {}",
+            self.batch_size
+        );
         let start = slot * OBS_SIZE;
         self.buffer[start..start + OBS_SIZE].copy_from_slice(src.as_slice());
     }
@@ -56,7 +60,11 @@ impl BatchEncoder {
     /// Panics if `slot >= batch_size`.
     #[inline]
     pub fn slot_mut(&mut self, slot: usize) -> &mut [f32] {
-        assert!(slot < self.batch_size, "slot {slot} >= batch_size {}", self.batch_size);
+        assert!(
+            slot < self.batch_size,
+            "slot {slot} >= batch_size {}",
+            self.batch_size
+        );
         let start = slot * OBS_SIZE;
         &mut self.buffer[start..start + OBS_SIZE]
     }

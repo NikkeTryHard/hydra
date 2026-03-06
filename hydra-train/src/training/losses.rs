@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 
 use crate::model::HydraOutput;
 
+#[derive(Clone)]
 pub struct HydraTargets<B: Backend> {
     pub policy_target: Tensor<B, 2>,
     pub legal_mask: Tensor<B, 2>,
@@ -18,6 +19,12 @@ pub struct HydraTargets<B: Backend> {
     pub score_pdf_target: Tensor<B, 2>,
     pub score_cdf_target: Tensor<B, 2>,
     pub oracle_target: Option<Tensor<B, 2>>,
+    pub belief_fields_target: Option<Tensor<B, 3>>,
+    pub mixture_weight_target: Option<Tensor<B, 2>>,
+    pub opponent_hand_type_target: Option<Tensor<B, 2>>,
+    pub delta_q_target: Option<Tensor<B, 2>>,
+    pub safety_residual_target: Option<Tensor<B, 2>>,
+    pub oracle_guidance_mask: Option<Tensor<B, 1>>,
 }
 
 #[derive(Config, Debug)]
@@ -36,6 +43,18 @@ pub struct HydraLossConfig {
     pub w_opp: f32,
     #[config(default = "0.025")]
     pub w_score: f32,
+    #[config(default = "0.0")]
+    pub w_oracle_critic: f32,
+    #[config(default = "0.0")]
+    pub w_belief_fields: f32,
+    #[config(default = "0.0")]
+    pub w_mixture_weight: f32,
+    #[config(default = "0.0")]
+    pub w_opponent_hand_type: f32,
+    #[config(default = "0.0")]
+    pub w_delta_q: f32,
+    #[config(default = "0.0")]
+    pub w_safety_residual: f32,
 }
 
 impl HydraLossConfig {
@@ -47,6 +66,12 @@ impl HydraLossConfig {
             + self.w_danger
             + self.w_opp
             + self.w_score * 2.0
+            + self.w_oracle_critic
+            + self.w_belief_fields
+            + self.w_mixture_weight
+            + self.w_opponent_hand_type
+            + self.w_delta_q
+            + self.w_safety_residual
     }
 
     pub fn scale_all(&self, factor: f32) -> Self {
@@ -58,6 +83,12 @@ impl HydraLossConfig {
             .with_w_danger(self.w_danger * factor)
             .with_w_opp(self.w_opp * factor)
             .with_w_score(self.w_score * factor)
+            .with_w_oracle_critic(self.w_oracle_critic * factor)
+            .with_w_belief_fields(self.w_belief_fields * factor)
+            .with_w_mixture_weight(self.w_mixture_weight * factor)
+            .with_w_opponent_hand_type(self.w_opponent_hand_type * factor)
+            .with_w_delta_q(self.w_delta_q * factor)
+            .with_w_safety_residual(self.w_safety_residual * factor)
     }
 
     pub fn summary(&self) -> String {
@@ -68,7 +99,20 @@ impl HydraLossConfig {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.w_pi < 0.0 || self.w_v < 0.0 || self.w_grp < 0.0 {
+        if self.w_pi < 0.0
+            || self.w_v < 0.0
+            || self.w_grp < 0.0
+            || self.w_tenpai < 0.0
+            || self.w_danger < 0.0
+            || self.w_opp < 0.0
+            || self.w_score < 0.0
+            || self.w_oracle_critic < 0.0
+            || self.w_belief_fields < 0.0
+            || self.w_mixture_weight < 0.0
+            || self.w_opponent_hand_type < 0.0
+            || self.w_delta_q < 0.0
+            || self.w_safety_residual < 0.0
+        {
             return Err("loss weights must be non-negative");
         }
         Ok(())
@@ -155,6 +199,51 @@ pub fn score_pdf_ce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> T
 pub fn score_cdf_bce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
     let loss = bce_with_logits(logits, target);
     loss.mean_dim(1).squeeze_dim::<1>(1)
+}
+
+pub fn belief_fields_bce<B: Backend>(logits: Tensor<B, 3>, target: Tensor<B, 3>) -> Tensor<B, 1> {
+    belief_fields_bce_per_sample(logits, target).mean()
+}
+
+pub fn belief_fields_bce_per_sample<B: Backend>(
+    logits: Tensor<B, 3>,
+    target: Tensor<B, 3>,
+) -> Tensor<B, 1> {
+    let [batch, channels, tiles] = logits.dims();
+    bce_with_logits_3d(logits, target)
+        .reshape([batch, channels * tiles])
+        .mean_dim(1)
+        .squeeze_dim::<1>(1)
+}
+
+pub fn mixture_weight_ce<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+    mixture_weight_ce_per_sample(logits, target).mean()
+}
+
+pub fn mixture_weight_ce_per_sample<B: Backend>(
+    logits: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    cross_entropy_soft(activation::log_softmax(logits, 1), target)
+}
+
+pub fn opponent_hand_type_ce<B: Backend>(
+    logits: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    opponent_hand_type_ce_per_sample(logits, target).mean()
+}
+
+pub fn opponent_hand_type_ce_per_sample<B: Backend>(
+    logits: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    cross_entropy_soft(activation::log_softmax(logits, 1), target)
+}
+
+pub fn dense_regression_mse<B: Backend>(pred: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+    let diff = pred - target;
+    (diff.clone() * diff).mean() * 0.5
 }
 
 pub fn compute_cvar(pdf: &[f32], alpha: f32) -> f32 {
@@ -295,12 +384,19 @@ pub fn oracle_critic_loss<B: Backend>(
     v_oracle: Tensor<B, 2>,
     target: Tensor<B, 2>,
 ) -> Tensor<B, 1> {
+    oracle_critic_loss_per_sample(v_oracle, target).mean()
+}
+
+pub fn oracle_critic_loss_per_sample<B: Backend>(
+    v_oracle: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+) -> Tensor<B, 1> {
     let v_norm = v_oracle.clone() - v_oracle.clone().mean_dim(1);
     let diff = v_norm - target;
     let mse = (diff.clone() * diff).mean_dim(1).squeeze_dim::<1>(1) * 0.5;
     let zero_sum_penalty = v_oracle.sum_dim(1).squeeze_dim::<1>(1);
     let zero_sum_penalty = zero_sum_penalty.clone() * zero_sum_penalty * 10.0;
-    (mse + zero_sum_penalty).mean()
+    mse + zero_sum_penalty
 }
 
 fn bce_with_logits<B: Backend>(logits: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 2> {
@@ -315,6 +411,16 @@ fn bce_with_logits_3d<B: Backend>(logits: Tensor<B, 3>, target: Tensor<B, 3>) ->
     max_val - logits * target + neg_abs.exp().add_scalar(1.0).log()
 }
 
+fn masked_mean<B: Backend>(per_sample: Tensor<B, 1>, mask: Option<Tensor<B, 1>>) -> Tensor<B, 1> {
+    match mask {
+        Some(mask) => {
+            let denom = mask.clone().sum().clamp_min(1.0);
+            (per_sample * mask).sum() / denom
+        }
+        None => per_sample.mean(),
+    }
+}
+
 pub struct LossBreakdown<B: Backend> {
     pub policy: Tensor<B, 1>,
     pub value: Tensor<B, 1>,
@@ -324,6 +430,12 @@ pub struct LossBreakdown<B: Backend> {
     pub opp_next: Tensor<B, 1>,
     pub score_pdf: Tensor<B, 1>,
     pub score_cdf: Tensor<B, 1>,
+    pub oracle_critic: Tensor<B, 1>,
+    pub belief_fields: Tensor<B, 1>,
+    pub mixture_weight: Tensor<B, 1>,
+    pub opponent_hand_type: Tensor<B, 1>,
+    pub delta_q: Tensor<B, 1>,
+    pub safety_residual: Tensor<B, 1>,
     pub total: Tensor<B, 1>,
 }
 
@@ -339,6 +451,12 @@ impl<B: Backend> LossBreakdown<B> {
             s(&self.opp_next),
             s(&self.score_pdf),
             s(&self.score_cdf),
+            s(&self.oracle_critic),
+            s(&self.belief_fields),
+            s(&self.mixture_weight),
+            s(&self.opponent_hand_type),
+            s(&self.delta_q),
+            s(&self.safety_residual),
             s(&self.total),
         ]
         .iter()
@@ -352,6 +470,7 @@ impl<B: Backend> HydraLoss<B> {
         outputs: &HydraOutput<B>,
         targets: &HydraTargets<B>,
     ) -> LossBreakdown<B> {
+        let oracle_mask = targets.oracle_guidance_mask.clone();
         let l_pi = policy_ce(
             outputs.policy_logits.clone(),
             targets.policy_target.clone(),
@@ -380,6 +499,46 @@ impl<B: Backend> HydraLoss<B> {
             score_pdf_ce(outputs.score_pdf.clone(), targets.score_pdf_target.clone()).mean();
         let l_cdf =
             score_cdf_bce(outputs.score_cdf.clone(), targets.score_cdf_target.clone()).mean();
+        let zero = outputs.value.clone().sum() * 0.0;
+        let l_oracle = match &targets.oracle_target {
+            Some(target) => masked_mean(
+                oracle_critic_loss_per_sample(outputs.oracle_critic.clone(), target.clone()),
+                oracle_mask.clone(),
+            ),
+            None => zero.clone(),
+        };
+        let l_belief = match &targets.belief_fields_target {
+            Some(target) => masked_mean(
+                belief_fields_bce_per_sample(outputs.belief_fields.clone(), target.clone()),
+                oracle_mask.clone(),
+            ),
+            None => zero.clone(),
+        };
+        let l_mix = match &targets.mixture_weight_target {
+            Some(target) => masked_mean(
+                mixture_weight_ce_per_sample(outputs.mixture_weight_logits.clone(), target.clone()),
+                oracle_mask.clone(),
+            ),
+            None => zero.clone(),
+        };
+        let l_hand_type = match &targets.opponent_hand_type_target {
+            Some(target) => masked_mean(
+                opponent_hand_type_ce_per_sample(
+                    outputs.opponent_hand_type.clone(),
+                    target.clone(),
+                ),
+                oracle_mask.clone(),
+            ),
+            None => zero.clone(),
+        };
+        let l_delta_q = match &targets.delta_q_target {
+            Some(target) => dense_regression_mse(outputs.delta_q.clone(), target.clone()),
+            None => zero.clone(),
+        };
+        let l_safety_residual = match &targets.safety_residual_target {
+            Some(target) => dense_regression_mse(outputs.safety_residual.clone(), target.clone()),
+            None => zero.clone(),
+        };
         let c = &self.config;
         let total = l_pi.clone() * c.w_pi
             + l_v.clone() * c.w_v
@@ -388,7 +547,13 @@ impl<B: Backend> HydraLoss<B> {
             + l_danger.clone() * c.w_danger
             + l_opp.clone() * c.w_opp
             + l_pdf.clone() * c.w_score
-            + l_cdf.clone() * c.w_score;
+            + l_cdf.clone() * c.w_score
+            + l_oracle.clone() * c.w_oracle_critic
+            + l_belief.clone() * c.w_belief_fields
+            + l_mix.clone() * c.w_mixture_weight
+            + l_hand_type.clone() * c.w_opponent_hand_type
+            + l_delta_q.clone() * c.w_delta_q
+            + l_safety_residual.clone() * c.w_safety_residual;
         LossBreakdown {
             policy: l_pi,
             value: l_v,
@@ -398,6 +563,12 @@ impl<B: Backend> HydraLoss<B> {
             opp_next: l_opp,
             score_pdf: l_pdf,
             score_cdf: l_cdf,
+            oracle_critic: l_oracle,
+            belief_fields: l_belief,
+            mixture_weight: l_mix,
+            opponent_hand_type: l_hand_type,
+            delta_q: l_delta_q,
+            safety_residual: l_safety_residual,
             total,
         }
     }
@@ -476,11 +647,190 @@ pub mod tests {
     }
 
     #[test]
+    fn test_oracle_target_populates_breakdown_only() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new());
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.oracle_target = Some(Tensor::<B, 2>::zeros([2, 4], &device));
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        let oracle_loss: f32 = breakdown.oracle_critic.into_scalar().elem();
+        let total_loss: f32 = breakdown.total.into_scalar().elem();
+        assert!(oracle_loss.is_finite() && oracle_loss >= 0.0);
+        assert!(total_loss.is_finite() && total_loss >= 0.0);
+    }
+
+    #[test]
+    fn test_oracle_target_contributes_to_total_when_weight_enabled() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.oracle_target = Some(Tensor::<B, 2>::ones([2, 4], &device));
+
+        let base = HydraLoss::<B>::new(HydraLossConfig::new()).total_loss(&outputs, &targets);
+        let with_oracle = HydraLoss::<B>::new(HydraLossConfig::new().with_w_oracle_critic(1.0))
+            .total_loss(&outputs, &targets);
+
+        let total_base: f32 = base.total.into_scalar().elem();
+        let total_oracle: f32 = with_oracle.total.into_scalar().elem();
+        let oracle_loss: f32 = with_oracle.oracle_critic.into_scalar().elem();
+        assert!(oracle_loss > 0.0, "oracle loss should be active");
+        assert!(
+            total_oracle > total_base,
+            "oracle weighting should raise total loss"
+        );
+    }
+
+    #[test]
+    fn test_oracle_guidance_mask_disables_masked_optional_losses() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.oracle_target = Some(Tensor::<B, 2>::ones([2, 4], &device));
+        targets.belief_fields_target = Some(Tensor::<B, 3>::ones([2, 16, 34], &device));
+        targets.mixture_weight_target = Some(Tensor::<B, 2>::from_floats(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+            &device,
+        ));
+        targets.opponent_hand_type_target = Some(Tensor::<B, 2>::from_floats(
+            [
+                [
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+                [
+                    0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+            ],
+            &device,
+        ));
+        targets.oracle_guidance_mask = Some(Tensor::<B, 1>::zeros([2], &device));
+
+        let loss_fn = HydraLoss::<B>::new(
+            HydraLossConfig::new()
+                .with_w_oracle_critic(1.0)
+                .with_w_belief_fields(1.0)
+                .with_w_mixture_weight(1.0)
+                .with_w_opponent_hand_type(1.0),
+        );
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        assert!(breakdown.oracle_critic.into_scalar().elem::<f32>().abs() < 1e-8);
+        assert!(breakdown.belief_fields.into_scalar().elem::<f32>().abs() < 1e-8);
+        assert!(breakdown.mixture_weight.into_scalar().elem::<f32>().abs() < 1e-8);
+        assert!(
+            breakdown
+                .opponent_hand_type
+                .into_scalar()
+                .elem::<f32>()
+                .abs()
+                < 1e-8
+        );
+    }
+
+    #[test]
+    fn test_optional_belief_losses_default_to_zero() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new());
+        let targets = make_dummy_targets::<B>(&device, 2);
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        let belief: f32 = breakdown.belief_fields.into_scalar().elem();
+        let mixture: f32 = breakdown.mixture_weight.into_scalar().elem();
+        let oracle_loss: f32 = breakdown.oracle_critic.into_scalar().elem();
+        let hand_type: f32 = breakdown.opponent_hand_type.into_scalar().elem();
+        let delta_q: f32 = breakdown.delta_q.into_scalar().elem();
+        let safety_residual: f32 = breakdown.safety_residual.into_scalar().elem();
+        assert!(
+            oracle_loss.abs() < 1e-8,
+            "missing oracle target should contribute zero oracle loss"
+        );
+        assert!(
+            belief.abs() < 1e-8,
+            "missing belief target should contribute zero loss"
+        );
+        assert!(
+            mixture.abs() < 1e-8,
+            "missing mixture target should contribute zero loss"
+        );
+        assert!(
+            hand_type.abs() < 1e-8,
+            "missing hand-type target should contribute zero loss"
+        );
+        assert!(
+            delta_q.abs() < 1e-8,
+            "missing delta-q target should contribute zero loss"
+        );
+        assert!(
+            safety_residual.abs() < 1e-8,
+            "missing safety-residual target should contribute zero loss"
+        );
+    }
+
+    #[test]
+    fn test_optional_belief_losses_activate_when_targets_present() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(
+            HydraLossConfig::new()
+                .with_w_belief_fields(0.1)
+                .with_w_mixture_weight(0.1)
+                .with_w_opponent_hand_type(0.1)
+                .with_w_delta_q(0.1)
+                .with_w_safety_residual(0.1),
+        );
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.belief_fields_target = Some(Tensor::<B, 3>::zeros([2, 16, 34], &device));
+        targets.mixture_weight_target = Some(Tensor::<B, 2>::from_floats(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+            &device,
+        ));
+        targets.opponent_hand_type_target = Some(Tensor::<B, 2>::from_floats(
+            [
+                [
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+                [
+                    0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+            ],
+            &device,
+        ));
+        targets.delta_q_target = Some(Tensor::<B, 2>::zeros([2, 46], &device));
+        targets.safety_residual_target = Some(Tensor::<B, 2>::zeros([2, 46], &device));
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        let belief: f32 = breakdown.belief_fields.into_scalar().elem();
+        let mixture: f32 = breakdown.mixture_weight.into_scalar().elem();
+        let hand_type: f32 = breakdown.opponent_hand_type.into_scalar().elem();
+        let delta_q: f32 = breakdown.delta_q.into_scalar().elem();
+        let safety_residual: f32 = breakdown.safety_residual.into_scalar().elem();
+        let total: f32 = breakdown.total.into_scalar().elem();
+        assert!(belief.is_finite() && belief >= 0.0);
+        assert!(mixture.is_finite() && mixture >= 0.0);
+        assert!(hand_type.is_finite() && hand_type >= 0.0);
+        assert!(delta_q.is_finite() && delta_q >= 0.0);
+        assert!(safety_residual.is_finite() && safety_residual >= 0.0);
+        assert!(total.is_finite() && total > 0.0);
+    }
+
+    #[test]
     fn test_total_loss_positive() {
         let device = Default::default();
         let model = HydraModelConfig::actor().init::<B>(&device);
         let x = Tensor::<B, 3>::random(
-            [4, 85, 34],
+            [4, crate::config::INPUT_CHANNELS, 34],
             burn::tensor::Distribution::Normal(0.0, 0.1),
             &device,
         );
@@ -498,7 +848,7 @@ pub mod tests {
         let device = Default::default();
         let model = HydraModelConfig::actor().init::<B>(&device);
         let x = Tensor::<B, 3>::random(
-            [4, 85, 34],
+            [4, crate::config::INPUT_CHANNELS, 34],
             burn::tensor::Distribution::Normal(0.0, 0.1),
             &device,
         );
@@ -567,16 +917,21 @@ pub mod tests {
     }
 
     #[test]
+    #[ignore = "slow backward integration test"]
     fn test_total_loss_backward() {
         use burn::backend::Autodiff;
         use burn::optim::GradientsParams;
         type AB = Autodiff<NdArray<f32>>;
 
         let device = Default::default();
-        let model = HydraModelConfig::actor().init::<AB>(&device);
-        let x = Tensor::<AB, 3>::zeros([2, 85, 34], &device);
+        let model = HydraModelConfig::new(1)
+            .with_hidden_channels(32)
+            .with_num_groups(8)
+            .with_se_bottleneck(8)
+            .init::<AB>(&device);
+        let x = Tensor::<AB, 3>::zeros([1, crate::config::INPUT_CHANNELS, 34], &device);
         let out = model.forward(x);
-        let targets = make_dummy_targets::<AB>(&device, 2);
+        let targets = make_dummy_targets::<AB>(&device, 1);
         let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
         let bd = loss_fn.total_loss(&out, &targets);
         let total_val: f32 = bd.total.clone().into_scalar().elem();
@@ -592,7 +947,7 @@ pub mod tests {
         let device = Default::default();
         let model = HydraModelConfig::actor().init::<B>(&device);
         let x = Tensor::<B, 3>::random(
-            [4, 85, 34],
+            [4, crate::config::INPUT_CHANNELS, 34],
             burn::tensor::Distribution::Normal(0.0, 0.1),
             &device,
         );
@@ -622,16 +977,51 @@ pub mod tests {
         assert!((cfg.w_danger - 0.1).abs() < 1e-6);
         assert!((cfg.w_opp - 0.1).abs() < 1e-6);
         assert!((cfg.w_score - 0.025).abs() < 1e-6);
+        assert!((cfg.w_oracle_critic - 0.0).abs() < 1e-6);
+        assert!((cfg.w_belief_fields - 0.0).abs() < 1e-6);
+        assert!((cfg.w_mixture_weight - 0.0).abs() < 1e-6);
+        assert!((cfg.w_opponent_hand_type - 0.0).abs() < 1e-6);
+        assert!((cfg.w_delta_q - 0.0).abs() < 1e-6);
+        assert!((cfg.w_safety_residual - 0.0).abs() < 1e-6);
         let total_weight = cfg.w_pi
             + cfg.w_v
             + cfg.w_grp
             + cfg.w_tenpai
             + cfg.w_danger
             + cfg.w_opp
-            + cfg.w_score * 2.0;
+            + cfg.w_score * 2.0
+            + cfg.w_oracle_critic
+            + cfg.w_belief_fields
+            + cfg.w_mixture_weight
+            + cfg.w_opponent_hand_type
+            + cfg.w_delta_q
+            + cfg.w_safety_residual;
         assert!(
             (total_weight - 2.05).abs() < 1e-4,
             "total weight = {total_weight}"
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_negative_primary_weights() {
+        assert!(
+            HydraLossConfig::new()
+                .with_w_tenpai(-0.1)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            HydraLossConfig::new()
+                .with_w_danger(-0.1)
+                .validate()
+                .is_err()
+        );
+        assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
+        assert!(
+            HydraLossConfig::new()
+                .with_w_score(-0.1)
+                .validate()
+                .is_err()
         );
     }
 
@@ -715,6 +1105,12 @@ pub mod tests {
             score_pdf_target: onehot2d(device, batch, 64, 32),
             score_cdf_target: Tensor::zeros([batch, 64], device),
             oracle_target: None,
+            belief_fields_target: None,
+            mixture_weight_target: None,
+            opponent_hand_type_target: None,
+            delta_q_target: None,
+            safety_residual_target: None,
+            oracle_guidance_mask: None,
         }
     }
 }

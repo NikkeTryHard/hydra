@@ -148,7 +148,14 @@ impl Meld {
         let mut arr = [0u8; 4];
         let count = tiles.len().min(4);
         arr[..count].copy_from_slice(&tiles[..count]);
-        Self { meld_type, tiles: arr, tile_count: count as u8, opened, from_who, called_tile }
+        Self {
+            meld_type,
+            tiles: arr,
+            tile_count: count as u8,
+            opened,
+            from_who,
+            called_tile,
+        }
     }
 
     /// Get the active tiles as a slice.

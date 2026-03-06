@@ -4,6 +4,7 @@ use burn::prelude::*;
 
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::ct_smc::{CtSmc, CtSmcConfig};
+use hydra_core::encoder::NUM_CHANNELS;
 use hydra_train::inference;
 use hydra_train::model::HydraModelConfig;
 use hydra_train::training::drda;
@@ -28,7 +29,7 @@ fn full_pipeline_integration() {
 
     let actor_model = HydraModelConfig::actor().init::<InferBackend>(&device);
     let x = Tensor::<InferBackend, 3>::random(
-        [4, 85, 34],
+        [4, NUM_CHANNELS, 34],
         burn::tensor::Distribution::Normal(0.0, 0.1),
         &device,
     );
@@ -40,7 +41,7 @@ fn full_pipeline_integration() {
     let targets = make_test_targets(&device, 4);
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
     let breakdown = loss_fn.total_loss(
-        &learner_model.forward(Tensor::zeros([4, 85, 34], &device)),
+        &learner_model.forward(Tensor::zeros([4, NUM_CHANNELS, 34], &device)),
         &targets,
     );
     let loss_val: f64 = breakdown.total.clone().into_scalar().elem();
@@ -92,7 +93,7 @@ fn full_pipeline_integration() {
     use hydra_train::training::distill;
     let learner = HydraModelConfig::learner().init::<InferBackend>(&device);
     let actor_for_distill = HydraModelConfig::actor().init::<InferBackend>(&device);
-    let x_distill = Tensor::<InferBackend, 3>::zeros([2, 85, 34], &device);
+    let x_distill = Tensor::<InferBackend, 3>::zeros([2, NUM_CHANNELS, 34], &device);
     let l_out = learner.forward(x_distill.clone());
     let a_out = actor_for_distill.forward(x_distill);
     let mask = Tensor::<InferBackend, 2>::ones([2, 46], &device);
@@ -172,7 +173,7 @@ fn full_pipeline_integration() {
 
     let actor2 = HydraModelConfig::actor().init::<InferBackend>(&device);
     let x2 = Tensor::<InferBackend, 3>::random(
-        [1, 85, 34],
+        [1, NUM_CHANNELS, 34],
         burn::tensor::Distribution::Normal(0.0, 0.1),
         &device,
     );
@@ -268,7 +269,7 @@ fn ach_rl_step_integration() {
 
     let model = HydraModelConfig::actor().init::<TestBackend>(&device);
     let targets = make_test_targets_infer(&device, batch);
-    let obs = Tensor::<TestBackend, 3>::zeros([batch, 85, 34], &device);
+    let obs = Tensor::<TestBackend, 3>::zeros([batch, NUM_CHANNELS, 34], &device);
     let base_logits = Tensor::<TestBackend, 2>::zeros([batch, 46], &device);
     let actions = Tensor::<TestBackend, 1, Int>::from_ints(&[1i32, 2][..], &device);
     let pi_old = Tensor::<TestBackend, 1>::from_floats([0.5, 0.3], &device);
@@ -300,7 +301,7 @@ fn exit_rl_step_with_target() {
 
     let model = HydraModelConfig::actor().init::<TestBackend>(&device);
     let targets = make_test_targets_infer(&device, batch);
-    let obs = Tensor::<TestBackend, 3>::zeros([batch, 85, 34], &device);
+    let obs = Tensor::<TestBackend, 3>::zeros([batch, NUM_CHANNELS, 34], &device);
     let base_logits = Tensor::<TestBackend, 2>::zeros([batch, 46], &device);
     let actions = Tensor::<TestBackend, 1, Int>::from_ints(&[1i32, 2][..], &device);
     let pi_old = Tensor::<TestBackend, 1>::from_floats([0.5, 0.3], &device);
@@ -406,5 +407,11 @@ fn make_test_targets(
             .reshape([batch, 64]),
         score_cdf_target: Tensor::zeros([batch, 64], device),
         oracle_target: None,
+        belief_fields_target: None,
+        mixture_weight_target: None,
+        opponent_hand_type_target: None,
+        delta_q_target: None,
+        safety_residual_target: None,
+        oracle_guidance_mask: None,
     }
 }

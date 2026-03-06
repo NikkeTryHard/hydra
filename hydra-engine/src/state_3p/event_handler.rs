@@ -40,7 +40,8 @@ impl GameState3PEventHandler for GameState3P {
                     _ => Wind::East as u8,
                 };
                 self.oya = oya;
-                self.wall.set_dora_indicators_single(parse_mjai_tile(&dora_marker));
+                self.wall
+                    .set_dora_indicators_single(parse_mjai_tile(&dora_marker));
 
                 for (i, hand_strs) in tehais.iter().enumerate() {
                     self.players[i].hand_len = 0;
@@ -75,7 +76,11 @@ impl GameState3PEventHandler for GameState3P {
             MjaiEvent::Dahai { actor, pai, .. } => {
                 let tile = parse_mjai_tile(&pai);
                 self.current_player = actor as u8;
-                if let Some(idx) = self.players[actor].hand_slice().iter().position(|&t| t == tile) {
+                if let Some(idx) = self.players[actor]
+                    .hand_slice()
+                    .iter()
+                    .position(|&t| t == tile)
+                {
                     self.players[actor].remove_hand(idx);
                 }
                 self.players[actor].push_discard(tile, false, false);
@@ -100,7 +105,11 @@ impl GameState3PEventHandler for GameState3P {
                 let form_tiles = vec![tile, c1, c2];
 
                 for t in &[c1, c2] {
-                    if let Some(idx) = self.players[actor].hand_slice().iter().position(|&x| x == *t) {
+                    if let Some(idx) = self.players[actor]
+                        .hand_slice()
+                        .iter()
+                        .position(|&x| x == *t)
+                    {
                         self.players[actor].remove_hand(idx);
                     }
                 }
@@ -129,7 +138,11 @@ impl GameState3PEventHandler for GameState3P {
                 let form_tiles = vec![tile, c1, c2];
 
                 for t in &[c1, c2] {
-                    if let Some(idx) = self.players[actor].hand_slice().iter().position(|&x| x == *t) {
+                    if let Some(idx) = self.players[actor]
+                        .hand_slice()
+                        .iter()
+                        .position(|&x| x == *t)
+                    {
                         self.players[actor].remove_hand(idx);
                     }
                 }
@@ -159,7 +172,11 @@ impl GameState3PEventHandler for GameState3P {
 
                 for c in &consumed {
                     let tv = parse_mjai_tile(c);
-                    if let Some(idx) = self.players[actor].hand_slice().iter().position(|&x| x == tv) {
+                    if let Some(idx) = self.players[actor]
+                        .hand_slice()
+                        .iter()
+                        .position(|&x| x == tv)
+                    {
                         self.players[actor].remove_hand(idx);
                     }
                 }
@@ -178,22 +195,24 @@ impl GameState3PEventHandler for GameState3P {
                 for c in &consumed {
                     let t = parse_mjai_tile(c);
                     tiles.push(t);
-                    if let Some(idx) = self.players[actor].hand_slice().iter().position(|&x| x == t) {
+                    if let Some(idx) = self.players[actor]
+                        .hand_slice()
+                        .iter()
+                        .position(|&x| x == t)
+                    {
                         self.players[actor].remove_hand(idx);
                     }
                 }
-                self.players[actor].push_meld(Meld::new(
-                    MeldType::Ankan,
-                    &tiles,
-                    false,
-                    -1,
-                    None,
-                ));
+                self.players[actor].push_meld(Meld::new(MeldType::Ankan, &tiles, false, -1, None));
                 self.needs_tsumo = true;
             }
             MjaiEvent::Kakan { actor, pai } => {
                 let tile = parse_mjai_tile(&pai);
-                if let Some(idx) = self.players[actor].hand_slice().iter().position(|&x| x == tile) {
+                if let Some(idx) = self.players[actor]
+                    .hand_slice()
+                    .iter()
+                    .position(|&x| x == tile)
+                {
                     self.players[actor].remove_hand(idx);
                 }
                 for m in self.players[actor].melds_slice_mut().iter_mut() {
@@ -318,7 +337,11 @@ impl GameState3PEventHandler for GameState3P {
                 }
                 for (i, t) in tiles.iter().enumerate() {
                     if i < froms.len() && froms[i] == *seat {
-                        if let Some(idx) = self.players[*seat].hand_slice().iter().position(|&x| x == *t) {
+                        if let Some(idx) = self.players[*seat]
+                            .hand_slice()
+                            .iter()
+                            .position(|&x| x == *t)
+                        {
                             self.players[*seat].remove_hand(idx);
                         }
                     }
@@ -336,13 +359,7 @@ impl GameState3PEventHandler for GameState3P {
                     .find(|(_, &f)| f != *seat)
                     .map(|(&t, _)| t);
                 let discarder = from_who.max(0) as u8;
-                self.players[*seat].push_meld(Meld::new(
-                    *meld_type,
-                    tiles,
-                    true,
-                    from_who,
-                    ct,
-                ));
+                self.players[*seat].push_meld(Meld::new(*meld_type, tiles, true, from_who, ct));
 
                 // PAO detection: daisangen (3 dragon melds) or daisuushii (4 wind melds)
                 if *meld_type == MeldType::Pon || *meld_type == MeldType::Daiminkan {
@@ -410,16 +427,14 @@ impl GameState3PEventHandler for GameState3P {
                         m_tiles = vec![88, 89, 90, 91];
                     }
 
-                    self.players[*seat].push_meld(Meld::new(
-                        *meld_type,
-                        &m_tiles,
-                        false,
-                        -1,
-                        None,
-                    ));
+                    self.players[*seat].push_meld(Meld::new(*meld_type, &m_tiles, false, -1, None));
                 } else {
                     let tile = tiles[0];
-                    if let Some(idx) = self.players[*seat].hand_slice().iter().position(|&x| x == tile) {
+                    if let Some(idx) = self.players[*seat]
+                        .hand_slice()
+                        .iter()
+                        .position(|&x| x == tile)
+                    {
                         self.players[*seat].remove_hand(idx);
                     }
                     for m in self.players[*seat].melds_slice_mut().iter_mut() {

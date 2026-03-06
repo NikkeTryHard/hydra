@@ -114,6 +114,25 @@ pub fn top_mass_particles(particles: &[Particle], threshold: f32) -> Vec<usize> 
     result
 }
 
+fn normalized_particle_weights(particles: &[&Particle]) -> Vec<f32> {
+    if particles.is_empty() {
+        return Vec::new();
+    }
+    let max_w = particles
+        .iter()
+        .map(|p| p.log_weight)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let weights: Vec<f64> = particles
+        .iter()
+        .map(|p| (p.log_weight - max_w).exp())
+        .collect();
+    let total: f64 = weights.iter().sum();
+    if total <= 0.0 {
+        return vec![0.0; particles.len()];
+    }
+    weights.into_iter().map(|w| (w / total) as f32).collect()
+}
+
 pub fn pimc_endgame_q_topk(
     particles: &[Particle],
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
@@ -125,14 +144,17 @@ pub fn pimc_endgame_q_topk(
         return [0.0f32; HYDRA_ACTION_SPACE];
     }
     let selected: Vec<&Particle> = indices.iter().map(|&i| &particles[i]).collect();
-    let n = selected.len() as f32;
+    let weights = normalized_particle_weights(&selected);
     let mut q = [0.0f32; HYDRA_ACTION_SPACE];
     for a in 0..HYDRA_ACTION_SPACE {
         if !legal_mask[a] {
             continue;
         }
-        let total: f32 = selected.iter().map(|p| eval_fn(p, a as u8)).sum();
-        q[a] = total / n;
+        q[a] = selected
+            .iter()
+            .zip(weights.iter())
+            .map(|(p, &w)| eval_fn(p, a as u8) * w)
+            .sum();
     }
     q
 }
@@ -143,16 +165,20 @@ pub fn pimc_endgame_q(
     eval_fn: &dyn Fn(&Particle, u8) -> f32,
 ) -> [f32; HYDRA_ACTION_SPACE] {
     let mut q = [0.0f32; HYDRA_ACTION_SPACE];
-    let n = particles.len() as f32;
-    if n == 0.0 {
+    if particles.is_empty() {
         return q;
     }
+    let selected: Vec<&Particle> = particles.iter().collect();
+    let weights = normalized_particle_weights(&selected);
     for a in 0..HYDRA_ACTION_SPACE {
         if !legal_mask[a] {
             continue;
         }
-        let total: f32 = particles.iter().map(|p| eval_fn(p, a as u8)).sum();
-        q[a] = total / n;
+        q[a] = selected
+            .iter()
+            .zip(weights.iter())
+            .map(|(p, &w)| eval_fn(p, a as u8) * w)
+            .sum();
     }
     q
 }
@@ -244,7 +270,7 @@ mod tests {
                 log_weight: 0.0,
             },
             Particle {
-                allocation: [[2; 4]; 34],
+                allocation: [[100; 4]; 34],
                 log_weight: -5.0,
             },
         ];
@@ -256,9 +282,36 @@ mod tests {
         mask[2] = true;
         let eval = |p: &Particle, a: u8| p.allocation[a as usize][0] as f32;
         let q = pimc_endgame_q(&particles, &mask, &eval);
+        let expected = ((1.0f32 * 1.0) + 100.0 * (-5.0f32).exp()) / (1.0 + (-5.0f32).exp());
         for (i, &qi) in q.iter().enumerate().take(3) {
             assert!(qi.is_finite(), "q[{i}] should be finite");
-            assert!(qi > 0.0, "q[{i}] should be positive: {qi}");
+            assert!(
+                (qi - expected).abs() < 1e-4,
+                "q[{i}]={qi} expected {expected}"
+            );
         }
+    }
+
+    #[test]
+    fn topk_endgame_preserves_selected_particle_weights() {
+        let particles = vec![
+            Particle {
+                allocation: [[1; 4]; 34],
+                log_weight: 0.0,
+            },
+            Particle {
+                allocation: [[9; 4]; 34],
+                log_weight: -2.0,
+            },
+        ];
+        let mut mask = [false; HYDRA_ACTION_SPACE];
+        mask[0] = true;
+        let eval = |p: &Particle, _: u8| p.allocation[0][0] as f32;
+        let q = pimc_endgame_q_topk(&particles, &mask, &eval, 1.0);
+        let expected = ((1.0f32 * 1.0) + 9.0 * (-2.0f32).exp()) / (1.0 + (-2.0f32).exp());
+        assert!(
+            (q[0] - expected).abs() < 1e-4,
+            "weighted top-k Q should match posterior mass"
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! Maps between Hydra's compact 46-action representation and
 //! riichienv-core's ActionType/Action structs.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use riichienv_core::action::{Action, ActionType};
 
 use crate::tile::{AKA_MANZU_136, AKA_PINZU_136, AKA_SOUZU_136};
@@ -543,6 +543,22 @@ mod tests {
         assert_eq!(action.action_type, ActionType::Chi);
         assert_eq!(action.tile, Some(0));
         assert_eq!(action.consume_slice(), &[4, 8]);
+    }
+
+    #[test]
+    fn chi_left_prefers_first_matching_tiles_when_duplicates_exist() {
+        let mut hand = [0u8; 14];
+        hand[..6].copy_from_slice(&[5, 4, 9, 8, 20, 24]);
+        let ctx = GameContext {
+            last_discard: Some(0),
+            phase: ActionPhase::Normal,
+            hand,
+            hand_len: 6,
+        };
+        let hydra = HydraAction::new(CHI_LEFT).unwrap();
+        let action = hydra_to_riichienv(hydra, &ctx).unwrap();
+        assert_eq!(action.action_type, ActionType::Chi);
+        assert_eq!(action.consume_slice(), &[5, 9]);
     }
 
     #[test]

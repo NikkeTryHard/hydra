@@ -38,11 +38,21 @@ fn assert_close(actual: f32, expected: f32, msg: &str) {
 }
 
 fn empty_discards() -> [PlayerDiscards; 4] {
-    [PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new()]
+    [
+        PlayerDiscards::new(),
+        PlayerDiscards::new(),
+        PlayerDiscards::new(),
+        PlayerDiscards::new(),
+    ]
 }
 
 fn empty_melds() -> [PlayerMelds; 4] {
-    [PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new()]
+    [
+        PlayerMelds::new(),
+        PlayerMelds::new(),
+        PlayerMelds::new(),
+        PlayerMelds::new(),
+    ]
 }
 
 fn default_meta() -> GameMetadata {
@@ -170,18 +180,28 @@ fn golden_shanten_masks() {
     let mut hand = [0u8; 34];
     // Tenpai hand: 1-2-3-4-5-6-7-8m + 1-1-1p + 9-9s (waiting on 9m)
     hand[..8].fill(1); // 1m-8m
-    hand[9] = 3;  // 1p x3
+    hand[9] = 3; // 1p x3
     hand[26] = 2; // 9s x2
     let open_meld_counts = [0u8; 34];
     let discards = empty_discards();
     let melds = empty_melds();
-    let dora = DoraInfo { indicators: [0; 5], indicator_count: 0, aka_flags: [false; 3] };
+    let dora = DoraInfo {
+        indicators: [0; 5],
+        indicator_count: 0,
+        aka_flags: [false; 3],
+    };
     let mut meta = default_meta();
     meta.shanten = 0; // tenpai
     let si = SafetyInfo::new();
     enc.encode(
-        &hand, None, &open_meld_counts, &discards, &melds,
-        &dora, &meta, &si,
+        &hand,
+        None,
+        &open_meld_counts,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &si,
     );
     // With shanten=0 (tenpai), masks should be populated
     // Ch 9: acceptance tiles should be marked
@@ -203,7 +223,9 @@ fn golden_discard_presence_player0() {
     let mut enc = ObservationEncoder::new();
     let mut discards = empty_discards();
     discards[0].push(DiscardEntry {
-        tile: 5, is_tedashi: true, turn: 0,
+        tile: 5,
+        is_tedashi: true,
+        turn: 0,
     });
     enc.encode_discards(&discards);
     // Player 0: ch_base=11, presence=ch11, tedashi=ch12, temporal=ch13
@@ -218,7 +240,9 @@ fn golden_discard_tsumogiri_no_tedashi() {
     let mut enc = ObservationEncoder::new();
     let mut discards = empty_discards();
     discards[1].push(DiscardEntry {
-        tile: 10, is_tedashi: false, turn: 0,
+        tile: 10,
+        is_tedashi: false,
+        turn: 0,
     });
     enc.encode_discards(&discards);
     // Player 1: ch_base=14
@@ -232,10 +256,14 @@ fn golden_discard_temporal_decay() {
     let mut discards = empty_discards();
     // Player 2 discards at turn 0 and turn 5
     discards[2].push(DiscardEntry {
-        tile: 0, is_tedashi: false, turn: 0,
+        tile: 0,
+        is_tedashi: false,
+        turn: 0,
     });
     discards[2].push(DiscardEntry {
-        tile: 1, is_tedashi: false, turn: 5,
+        tile: 1,
+        is_tedashi: false,
+        turn: 5,
     });
     enc.encode_discards(&discards);
     // Player 2: ch_base=17, temporal=ch19
@@ -471,7 +499,7 @@ fn golden_meta_round_honba_kyotaku() {
 fn golden_safety_genbutsu_all() {
     let mut enc = ObservationEncoder::new();
     let mut si = SafetyInfo::new();
-    bit_set(&mut si.genbutsu_all[0], 5);  // 6m safe vs opp0
+    bit_set(&mut si.genbutsu_all[0], 5); // 6m safe vs opp0
     bit_set(&mut si.genbutsu_all[2], 33); // chun safe vs opp2
     enc.encode_safety(&si);
     assert_eq!(get(&enc, 62, 5), 1.0, "ch62 opp0 genbutsu 6m");
@@ -484,8 +512,8 @@ fn golden_safety_genbutsu_all() {
 fn golden_safety_tedashi_and_riichi_era() {
     let mut enc = ObservationEncoder::new();
     let mut si = SafetyInfo::new();
-    bit_set(&mut si.genbutsu_tedashi[1], 10);     // opp1 tedashi 2p
-    bit_set(&mut si.genbutsu_riichi_era[0], 20);  // opp0 riichi-era 3s
+    bit_set(&mut si.genbutsu_tedashi[1], 10); // opp1 tedashi 2p
+    bit_set(&mut si.genbutsu_riichi_era[0], 20); // opp0 riichi-era 3s
     enc.encode_safety(&si);
     // Tedashi: ch65 + opp -> ch66
     assert_eq!(get(&enc, 66, 10), 1.0, "ch66 opp1 tedashi 2p");
@@ -499,8 +527,8 @@ fn golden_safety_tedashi_and_riichi_era() {
 fn golden_safety_suji() {
     let mut enc = ObservationEncoder::new();
     let mut si = SafetyInfo::new();
-    si.suji[0][0] = 1.0;   // 1m suji vs opp0
-    si.suji[2][8] = 0.75;  // 9m partial suji vs opp2
+    si.suji[0][0] = 1.0; // 1m suji vs opp0
+    si.suji[2][8] = 0.75; // 9m partial suji vs opp2
     enc.encode_safety(&si);
     // Suji: ch71 + opp
     assert_close(get(&enc, 71, 0), 1.0, "ch71 opp0 suji 1m");
@@ -512,7 +540,7 @@ fn golden_safety_suji() {
 fn golden_safety_kabe_one_chance() {
     let mut enc = ObservationEncoder::new();
     let mut si = SafetyInfo::new();
-    bit_set(&mut si.kabe, 15);       // 7p kabe
+    bit_set(&mut si.kabe, 15); // 7p kabe
     bit_set(&mut si.one_chance, 20); // 3s one-chance
     enc.encode_safety(&si);
     // Kabe = ch80 (62+18), one-chance = ch81 (62+19)
@@ -541,7 +569,11 @@ fn golden_safety_half_suji() {
     // Suji channel should show 0.5 for center tile 4m
     assert_close(get(&enc, 71, 3), 0.5, "ch71 opp0 suji 4m half value");
     // Edge tile 1m gets full 1.0 suji (only has 1 partner)
-    assert_close(get(&enc, 71, 0), 0.0, "ch71 opp0 suji 1m (not a suji target)");
+    assert_close(
+        get(&enc, 71, 0),
+        0.0,
+        "ch71 opp0 suji 1m (not a suji target)",
+    );
 }
 
 #[test]
@@ -552,7 +584,11 @@ fn golden_safety_half_suji_both_partners() {
     si.on_discard(0, 0, false);
     si.on_discard(6, 0, false);
     enc.encode_safety(&si);
-    assert_eq!(get(&enc, 74, 3), 0.0, "ch74 opp0 4m not half (both partners)");
+    assert_eq!(
+        get(&enc, 74, 3),
+        0.0,
+        "ch74 opp0 4m not half (both partners)"
+    );
     assert_close(get(&enc, 71, 3), 1.0, "ch71 opp0 suji 4m full");
 }
 
@@ -601,7 +637,9 @@ fn golden_full_encode_roundtrip() {
     open_meld_counts[11] = 1;
     let mut discards = empty_discards();
     discards[0].push(DiscardEntry {
-        tile: 3, is_tedashi: true, turn: 0,
+        tile: 3,
+        is_tedashi: true,
+        turn: 0,
     });
     let mut melds = empty_melds();
     melds[1].push(MeldInfo {
@@ -617,8 +655,14 @@ fn golden_full_encode_roundtrip() {
     let meta = default_meta();
     let si = SafetyInfo::new();
     enc.encode(
-        &hand, Some(8), &open_meld_counts, &discards, &melds,
-        &dora, &meta, &si,
+        &hand,
+        Some(8),
+        &open_meld_counts,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &si,
     );
     assert_eq!(enc.as_slice().len(), OBS_SIZE, "buffer size");
 
@@ -650,7 +694,11 @@ fn golden_full_encode_with_safety() {
     let open_meld_counts = [0u8; 34];
     let discards = empty_discards();
     let melds = empty_melds();
-    let dora = DoraInfo { indicators: [0; 5], indicator_count: 0, aka_flags: [false; 3] };
+    let dora = DoraInfo {
+        indicators: [0; 5],
+        indicator_count: 0,
+        aka_flags: [false; 3],
+    };
     let mut meta = default_meta();
     meta.riichi = [false, true, false, false]; // opp1 riichi
     meta.kyoku_index = 4;
@@ -659,8 +707,14 @@ fn golden_full_encode_with_safety() {
     bit_set(&mut si.genbutsu_all[0], 0);
     bit_set(&mut si.kabe, 27);
     enc.encode(
-        &hand, None, &open_meld_counts, &discards, &melds,
-        &dora, &meta, &si,
+        &hand,
+        None,
+        &open_meld_counts,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &si,
     );
     // Verify across sections
     assert_eq!(get(&enc, 44, 0), 1.0, "opp1 riichi");
@@ -680,7 +734,11 @@ fn golden_encode_clears_stale_data() {
     let open_meld_counts = [0u8; 34];
     let discards = empty_discards();
     let melds = empty_melds();
-    let dora = DoraInfo { indicators: [0; 5], indicator_count: 0, aka_flags: [false; 3] };
+    let dora = DoraInfo {
+        indicators: [0; 5],
+        indicator_count: 0,
+        aka_flags: [false; 3],
+    };
     let meta = default_meta();
     let si = SafetyInfo::new();
 
@@ -688,8 +746,14 @@ fn golden_encode_clears_stale_data() {
     let mut hand1 = [0u8; 34];
     hand1[0] = 3;
     enc.encode(
-        &hand1, Some(5), &open_meld_counts, &discards, &melds,
-        &dora, &meta, &si,
+        &hand1,
+        Some(5),
+        &open_meld_counts,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &si,
     );
     assert_eq!(get(&enc, 2, 0), 1.0, "first: ch2 tile0 set");
     assert_eq!(get(&enc, 8, 5), 1.0, "first: drawn 6m");
@@ -697,8 +761,14 @@ fn golden_encode_clears_stale_data() {
     // Second encode: empty hand, no draw
     let hand2 = [0u8; 34];
     enc.encode(
-        &hand2, None, &open_meld_counts, &discards, &melds,
-        &dora, &meta, &si,
+        &hand2,
+        None,
+        &open_meld_counts,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &si,
     );
     assert_eq!(get(&enc, 2, 0), 0.0, "second: ch2 tile0 cleared");
     assert_eq!(get(&enc, 8, 5), 0.0, "second: drawn 6m cleared");

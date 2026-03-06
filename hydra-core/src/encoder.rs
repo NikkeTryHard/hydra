@@ -1,7 +1,14 @@
-//! 85x34 observation tensor encoder for neural network input.
+//! Fixed-superset observation tensor encoder for neural network input.
 //!
-//! Encodes the full game state into a flat `[f32; 85 * 34]` array (row-major)
-//! that serves as input to the Hydra SE-ResNet model. Channels are grouped:
+//! Encodes the full game state into a flat `[f32; NUM_CHANNELS * 34]` array
+//! (row-major) that serves as input to the Hydra SE-ResNet model.
+//!
+//! The currently implemented baseline channels remain intact in the first 85
+//! planes. Additional Group C / Group D planes provide a fixed-shape superset
+//! for search/belief and Hand-EV context, with zero-filled planes plus
+//! presence-mask channels when those dynamic features are unavailable.
+//!
+//! Channels are grouped:
 //!
 //! - 0..3:   closed hand (thresholded tile counts)
 //! - 4..7:   open meld hand counts (thresholded)
@@ -13,6 +20,9 @@
 //! - 40..42: aka dora flags (per suit plane)
 //! - 43..61: game metadata (riichi, scores, gaps, shanten, round, honba, kyotaku)
 //! - 62..84: safety channels (genbutsu, suji, kabe, one-chance, tenpai)
+//! - 85..149: Group C search/belief context + presence masks + reserved slots
+//! - 150..191: Group D Hand-EV context + presence mask
+use crate::hand_ev::HandEvFeatures;
 use crate::safety::SafetyInfo;
 use crate::tile::NUM_TILE_TYPES;
 
@@ -20,14 +30,53 @@ use crate::tile::NUM_TILE_TYPES;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Baseline observation channels (public + safety).
+pub const BASELINE_CHANNELS: usize = 85;
+
+/// Group C search/belief context channels.
+pub const SEARCH_CONTEXT_CHANNELS: usize = 65;
+
+/// Group D Hand-EV channels.
+pub const HAND_EV_CHANNELS: usize = 42;
+
+/// First Group C search/belief channel.
+pub const SEARCH_CHANNEL_START: usize = BASELINE_CHANNELS;
+
+/// First Group C belief-field channel.
+pub const SEARCH_BELIEF_CHANNEL_START: usize = SEARCH_CHANNEL_START;
+
+/// First Group D Hand-EV channel.
+pub const HAND_EV_CHANNEL_START: usize = SEARCH_CHANNEL_START + SEARCH_CONTEXT_CHANNELS;
+
+/// Group C discard-level delta-Q channel.
+pub const SEARCH_DELTA_Q_CHANNEL: usize = SEARCH_CHANNEL_START + 22;
+
+/// Group C mixture-entropy scalar channel.
+pub const SEARCH_MIXTURE_ENTROPY_CHANNEL: usize = SEARCH_CHANNEL_START + 20;
+
+/// Group C mixture-ESS scalar channel.
+pub const SEARCH_MIXTURE_ESS_CHANNEL: usize = SEARCH_CHANNEL_START + 21;
+
+/// First Group C opponent-risk channel.
+pub const SEARCH_RISK_CHANNEL_START: usize = SEARCH_CHANNEL_START + 23;
+
+/// First Group C opponent-stress channel.
+pub const SEARCH_STRESS_CHANNEL_START: usize = SEARCH_CHANNEL_START + 26;
+
+/// First Group C presence-mask channel.
+pub const SEARCH_MASK_CHANNEL_START: usize = SEARCH_CHANNEL_START + 29;
+
+/// Final Group D Hand-EV presence-mask channel.
+pub const HAND_EV_MASK_CHANNEL: usize = HAND_EV_CHANNEL_START + HAND_EV_CHANNELS - 1;
+
 /// Total observation channels.
-pub const NUM_CHANNELS: usize = 85;
+pub const NUM_CHANNELS: usize = BASELINE_CHANNELS + SEARCH_CONTEXT_CHANNELS + HAND_EV_CHANNELS;
 
 /// Tiles per channel (one per tile type).
 pub const NUM_TILES: usize = NUM_TILE_TYPES; // 34
 
 /// Total elements in the flat observation buffer.
-pub const OBS_SIZE: usize = NUM_CHANNELS * NUM_TILES; // 2890
+pub const OBS_SIZE: usize = NUM_CHANNELS * NUM_TILES;
 
 // -- Channel group starts --
 
@@ -41,15 +90,74 @@ const CH_DORA: usize = 35; // 35..39 (5 channels)
 const CH_AKA: usize = 40; // 40..42 (3 channels)
 const CH_META: usize = 43; // 43..61 (19 channels)
 const CH_SAFETY: usize = 62; // 62..84 (23 channels)
+const CH_SEARCH: usize = SEARCH_CHANNEL_START; // 85..149 (65 channels)
+const CH_HAND_EV: usize = HAND_EV_CHANNEL_START; // 150..191 (42 channels)
+
+const SEARCH_BELIEF_CHANNELS: usize = 16;
+const SEARCH_MIXTURE_WEIGHT_CHANNELS: usize = 4;
+const SEARCH_RISK_CHANNELS: usize = 3;
+const SEARCH_STRESS_CHANNELS: usize = 3;
+const SEARCH_MASK_CHANNELS: usize = 4;
+const SEARCH_RESERVED_CHANNELS: usize = 32;
+
+const CH_SEARCH_BELIEF: usize = CH_SEARCH; // 85..100
+const CH_SEARCH_MIXTURE_WEIGHT: usize = CH_SEARCH_BELIEF + SEARCH_BELIEF_CHANNELS; // 101..104
+const CH_SEARCH_MIXTURE_ENTROPY: usize = CH_SEARCH_MIXTURE_WEIGHT + SEARCH_MIXTURE_WEIGHT_CHANNELS; // 105
+const CH_SEARCH_MIXTURE_ESS: usize = CH_SEARCH_MIXTURE_ENTROPY + 1; // 106
+const CH_SEARCH_DELTA_Q: usize = CH_SEARCH_MIXTURE_ESS + 1; // 107
+const CH_SEARCH_RISK: usize = CH_SEARCH_DELTA_Q + 1; // 108..110
+const CH_SEARCH_STRESS: usize = CH_SEARCH_RISK + SEARCH_RISK_CHANNELS; // 111..113
+const CH_SEARCH_MASKS: usize = CH_SEARCH_STRESS + SEARCH_STRESS_CHANNELS; // 114..117
+const CH_SEARCH_RESERVED: usize = CH_SEARCH_MASKS + SEARCH_MASK_CHANNELS; // 118..149
+
+const CH_HAND_EV_TENPAI: usize = CH_HAND_EV; // 150..152
+const CH_HAND_EV_WIN: usize = CH_HAND_EV_TENPAI + 3; // 153..155
+const CH_HAND_EV_SCORE: usize = CH_HAND_EV_WIN + 3; // 156
+const CH_HAND_EV_UKEIRE: usize = CH_HAND_EV_SCORE + 1; // 157..190
+const CH_HAND_EV_MASK: usize = CH_HAND_EV_UKEIRE + NUM_TILES; // 191
 
 /// Number of players at the table.
 const NUM_PLAYERS: usize = 4;
+
+/// Fixed-shape Group C search/belief context planes.
+#[derive(Debug, Clone)]
+pub struct SearchFeaturePlanes {
+    pub belief_fields: [[f32; NUM_TILES]; SEARCH_BELIEF_CHANNELS],
+    pub mixture_weights: [f32; SEARCH_MIXTURE_WEIGHT_CHANNELS],
+    pub mixture_entropy: f32,
+    pub mixture_ess: f32,
+    pub delta_q: [f32; NUM_TILES],
+    pub opponent_risk: [[f32; NUM_TILES]; SEARCH_RISK_CHANNELS],
+    pub opponent_stress: [f32; SEARCH_STRESS_CHANNELS],
+    pub belief_features_present: bool,
+    pub search_features_present: bool,
+    pub robust_features_present: bool,
+    pub context_features_present: bool,
+}
+
+impl Default for SearchFeaturePlanes {
+    fn default() -> Self {
+        Self {
+            belief_fields: [[0.0; NUM_TILES]; SEARCH_BELIEF_CHANNELS],
+            mixture_weights: [0.0; SEARCH_MIXTURE_WEIGHT_CHANNELS],
+            mixture_entropy: 0.0,
+            mixture_ess: 0.0,
+            delta_q: [0.0; NUM_TILES],
+            opponent_risk: [[0.0; NUM_TILES]; SEARCH_RISK_CHANNELS],
+            opponent_stress: [0.0; SEARCH_STRESS_CHANNELS],
+            belief_features_present: false,
+            search_features_present: false,
+            robust_features_present: false,
+            context_features_present: false,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ObservationEncoder
 // ---------------------------------------------------------------------------
 
-/// Pre-allocated encoder buffer for the 85x34 observation tensor.
+/// Pre-allocated encoder buffer for the fixed-superset observation tensor.
 ///
 /// Reuse across turns to avoid per-turn allocation. Call [`clear`] then
 /// the individual `encode_*` methods, or use [`encode`] as the one-shot
@@ -57,7 +165,7 @@ const NUM_PLAYERS: usize = 4;
 #[derive(Clone)]
 #[repr(C)]
 pub struct ObservationEncoder {
-    /// Flat buffer: 85 channels x 34 tiles, row-major.
+    /// Flat buffer: `NUM_CHANNELS` channels x 34 tiles, row-major.
     buffer: [f32; OBS_SIZE],
 }
 
@@ -101,6 +209,12 @@ impl ObservationEncoder {
     fn fill_channel(&mut self, channel: usize, value: f32) {
         let start = channel * NUM_TILES;
         self.buffer[start..start + NUM_TILES].fill(value);
+    }
+
+    #[inline]
+    fn copy_channel(&mut self, channel: usize, values: &[f32; NUM_TILES]) {
+        let start = channel * NUM_TILES;
+        self.buffer[start..start + NUM_TILES].copy_from_slice(values);
     }
 }
 
@@ -240,7 +354,11 @@ impl PlayerDiscards {
     #[inline]
     pub fn new() -> Self {
         Self {
-            discards: [DiscardEntry { tile: 0, is_tedashi: false, turn: 0 }; 30],
+            discards: [DiscardEntry {
+                tile: 0,
+                is_tedashi: false,
+                turn: 0,
+            }; 30],
             len: 0,
         }
     }
@@ -621,10 +739,7 @@ impl ObservationEncoder {
     /// - Ch 77-79: matagi-suji danger (per opponent)
     /// - Ch 80: kabe
     /// - Ch 81: one-chance
-    /// - Ch 82-84: tenpai hints (riichi status per opponent)
-    /// - Ch 80: kabe
-    /// - Ch 81: one-chance
-    /// - Ch 82-84: reserved tenpai hints (zeros)
+    /// - Ch 82-84: tenpai hints (riichi or cached tenpai prediction > 0.5)
     #[inline]
     pub fn encode_safety(&mut self, safety: &SafetyInfo) {
         for opp in 0..NUM_OPPS {
@@ -643,7 +758,6 @@ impl ObservationEncoder {
                     self.set(CH_SAFETY + 3 * NUM_OPPS + opp, tile, suji);
                 }
             }
-
         }
 
         // Ch 74-76: half-suji indicator per opponent
@@ -670,12 +784,115 @@ impl ObservationEncoder {
             self.set(CH_SAFETY + 19, tile, 1.0);
         });
 
-        // Ch 82-84: tenpai hints per opponent (riichi status for now)
+        // Ch 82-84: tenpai hints per opponent.
         for opp in 0..NUM_OPPS {
-            if safety.opponent_riichi[opp] {
+            if safety.tenpai_hint_active(opp) {
                 self.fill_channel(CH_SAFETY + 20 + opp, 1.0);
             }
         }
+    }
+
+    /// Encode fixed-shape Group C search/belief context planes.
+    #[inline]
+    pub fn encode_search_features(&mut self, features: &SearchFeaturePlanes) {
+        self.clear_range(CH_SEARCH, CH_SEARCH + SEARCH_CONTEXT_CHANNELS);
+
+        for (idx, plane) in features.belief_fields.iter().enumerate() {
+            self.copy_channel(CH_SEARCH_BELIEF + idx, plane);
+        }
+        for (idx, &weight) in features.mixture_weights.iter().enumerate() {
+            self.fill_channel(CH_SEARCH_MIXTURE_WEIGHT + idx, weight);
+        }
+        self.fill_channel(CH_SEARCH_MIXTURE_ENTROPY, features.mixture_entropy);
+        self.fill_channel(CH_SEARCH_MIXTURE_ESS, features.mixture_ess);
+        self.copy_channel(CH_SEARCH_DELTA_Q, &features.delta_q);
+        for (idx, plane) in features.opponent_risk.iter().enumerate() {
+            self.copy_channel(CH_SEARCH_RISK + idx, plane);
+        }
+        for (idx, &stress) in features.opponent_stress.iter().enumerate() {
+            self.fill_channel(CH_SEARCH_STRESS + idx, stress);
+        }
+        if features.belief_features_present {
+            self.fill_channel(CH_SEARCH_MASKS, 1.0);
+        }
+        if features.search_features_present {
+            self.fill_channel(CH_SEARCH_MASKS + 1, 1.0);
+        }
+        if features.robust_features_present {
+            self.fill_channel(CH_SEARCH_MASKS + 2, 1.0);
+        }
+        if features.context_features_present {
+            self.fill_channel(CH_SEARCH_MASKS + 3, 1.0);
+        }
+
+        let _ = CH_SEARCH_RESERVED;
+        let _ = SEARCH_RESERVED_CHANNELS;
+    }
+
+    /// Encode fixed-shape Group D Hand-EV context planes.
+    #[inline]
+    pub fn encode_hand_ev_features(&mut self, hand_ev: &HandEvFeatures) {
+        self.clear_range(CH_HAND_EV, CH_HAND_EV + HAND_EV_CHANNELS);
+
+        for discard in 0..NUM_TILES {
+            for horizon in 0..3 {
+                self.set(
+                    CH_HAND_EV_TENPAI + horizon,
+                    discard,
+                    hand_ev.tenpai_prob[discard][horizon],
+                );
+                self.set(
+                    CH_HAND_EV_WIN + horizon,
+                    discard,
+                    hand_ev.win_prob[discard][horizon],
+                );
+            }
+            self.set(CH_HAND_EV_SCORE, discard, hand_ev.expected_score[discard]);
+        }
+        for draw_tile in 0..NUM_TILES {
+            for discard in 0..NUM_TILES {
+                self.set(
+                    CH_HAND_EV_UKEIRE + draw_tile,
+                    discard,
+                    hand_ev.ukeire[discard][draw_tile],
+                );
+            }
+        }
+        self.fill_channel(CH_HAND_EV_MASK, 1.0);
+    }
+
+    /// Encode a complete observation plus optional Group C / Group D context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_with_context(
+        &mut self,
+        hand: &[u8; NUM_TILES],
+        drawn_tile: Option<u8>,
+        open_meld_counts: &[u8; NUM_TILES],
+        discards: &[PlayerDiscards; NUM_PLAYERS],
+        melds: &[PlayerMelds; NUM_PLAYERS],
+        dora: &DoraInfo,
+        meta: &GameMetadata,
+        safety: &SafetyInfo,
+        search_features: Option<&SearchFeaturePlanes>,
+        hand_ev: Option<&HandEvFeatures>,
+    ) -> &[f32; OBS_SIZE] {
+        self.encode(
+            hand,
+            drawn_tile,
+            open_meld_counts,
+            discards,
+            melds,
+            dora,
+            meta,
+            safety,
+        );
+        if let Some(features) = search_features {
+            self.encode_search_features(features);
+        }
+        if let Some(features) = hand_ev {
+            self.encode_hand_ev_features(features);
+        }
+        self.as_slice()
     }
 }
 
@@ -686,7 +903,7 @@ impl ObservationEncoder {
 /// Dirty flags indicating which channel groups need re-encoding.
 ///
 /// Use with [`ObservationEncoder::encode_incremental`] to avoid
-/// recomputing the full 85x34 tensor when only a few groups changed.
+/// recomputing the full observation tensor when only a few groups changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct DirtyFlags(pub u16);
@@ -710,12 +927,22 @@ impl DirtyFlags {
     pub const META: Self = Self(1 << 7); // Ch 43-61
     /// Safety channels (62-84) need re-encoding.
     pub const SAFETY: Self = Self(1 << 8); // Ch 62-84
+    /// Search/belief Group C channels (85-149) need re-encoding.
+    pub const SEARCH: Self = Self(1 << 9);
+    /// Hand-EV Group D channels (150-191) need re-encoding.
+    pub const HAND_EV: Self = Self(1 << 10);
     /// All channels need re-encoding.
-    pub const ALL: Self = Self(0x1FF);
+    pub const ALL: Self = Self(0x7FF);
 
     /// After a draw: hand, drawn tile, shanten, metadata.
-    pub const AFTER_DRAW: Self =
-        Self(Self::HAND.0 | Self::DRAWN.0 | Self::SHANTEN.0 | Self::META.0);
+    pub const AFTER_DRAW: Self = Self(
+        Self::HAND.0
+            | Self::DRAWN.0
+            | Self::SHANTEN.0
+            | Self::META.0
+            | Self::SEARCH.0
+            | Self::HAND_EV.0,
+    );
     /// After a discard: hand, drawn, shanten, discards, metadata, safety.
     pub const AFTER_DISCARD: Self = Self(
         Self::HAND.0
@@ -723,7 +950,9 @@ impl DirtyFlags {
             | Self::SHANTEN.0
             | Self::DISCARDS.0
             | Self::META.0
-            | Self::SAFETY.0,
+            | Self::SAFETY.0
+            | Self::SEARCH.0
+            | Self::HAND_EV.0,
     );
     /// After a call: hand, open melds, shanten, discards, melds, meta, safety.
     pub const AFTER_CALL: Self = Self(
@@ -733,7 +962,9 @@ impl DirtyFlags {
             | Self::DISCARDS.0
             | Self::MELDS.0
             | Self::META.0
-            | Self::SAFETY.0,
+            | Self::SAFETY.0
+            | Self::SEARCH.0
+            | Self::HAND_EV.0,
     );
     /// New round: everything.
     pub const NEW_ROUND: Self = Self::ALL;
@@ -844,6 +1075,48 @@ impl ObservationEncoder {
         if dirty.contains(DirtyFlags::SAFETY) {
             self.clear_range(CH_SAFETY, CH_SAFETY + 23);
             self.encode_safety(safety);
+        }
+        self.as_slice()
+    }
+
+    /// Incrementally re-encode baseline plus optional Group C / Group D context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_incremental_with_context(
+        &mut self,
+        dirty: DirtyFlags,
+        hand: &[u8; NUM_TILES],
+        drawn_tile: Option<u8>,
+        open_meld_counts: &[u8; NUM_TILES],
+        discards: &[PlayerDiscards; NUM_PLAYERS],
+        melds: &[PlayerMelds; NUM_PLAYERS],
+        dora: &DoraInfo,
+        meta: &GameMetadata,
+        safety: &SafetyInfo,
+        search_features: Option<&SearchFeaturePlanes>,
+        hand_ev: Option<&HandEvFeatures>,
+    ) -> &[f32; OBS_SIZE] {
+        self.encode_incremental(
+            dirty,
+            hand,
+            drawn_tile,
+            open_meld_counts,
+            discards,
+            melds,
+            dora,
+            meta,
+            safety,
+        );
+        if dirty.contains(DirtyFlags::SEARCH) {
+            self.clear_range(CH_SEARCH, CH_SEARCH + SEARCH_CONTEXT_CHANNELS);
+            if let Some(features) = search_features {
+                self.encode_search_features(features);
+            }
+        }
+        if dirty.contains(DirtyFlags::HAND_EV) {
+            self.clear_range(CH_HAND_EV, CH_HAND_EV + HAND_EV_CHANNELS);
+            if let Some(features) = hand_ev {
+                self.encode_hand_ev_features(features);
+            }
         }
         self.as_slice()
     }
@@ -972,7 +1245,7 @@ mod tests {
         hand[10] = 1;
         hand[11] = 1; // 1-3p
         hand[18] = 2; // 1s pair
-                      // 14 tiles, len_div3=4, shanten=-1
+        // 14 tiles, len_div3=4, shanten=-1
         enc.encode_shanten_masks(&hand);
         // After discarding any tile, shanten goes from -1 to 0 (worsens).
         // So next-shanten (ch10) should have NO tiles set.
@@ -998,9 +1271,9 @@ mod tests {
         hand[9] = 3; // 1p x3
         hand[10] = 1; // 2p
         hand[22] = 1; // 5s (drawn tile)
-                      // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
-                      // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
-                      // shanten = 0 (tenpai)
+        // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
+        // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
+        // shanten = 0 (tenpai)
         enc.encode_shanten_masks(&hand);
         // Discarding 2p or 5s keeps tenpai (shanten stays 0), so ch9 should be set
         // The exact tiles depend on shanten calc, but at minimum some tiles on ch9
@@ -1014,7 +1287,12 @@ mod tests {
     // -- Discard tests (ch 11-22) --
 
     fn empty_discards() -> [PlayerDiscards; NUM_PLAYERS] {
-        [PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new(), PlayerDiscards::new()]
+        [
+            PlayerDiscards::new(),
+            PlayerDiscards::new(),
+            PlayerDiscards::new(),
+            PlayerDiscards::new(),
+        ]
     }
 
     #[test]
@@ -1064,7 +1342,12 @@ mod tests {
     // -- Meld tests (ch 23-34) --
 
     fn empty_melds() -> [PlayerMelds; NUM_PLAYERS] {
-        [PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new(), PlayerMelds::new()]
+        [
+            PlayerMelds::new(),
+            PlayerMelds::new(),
+            PlayerMelds::new(),
+            PlayerMelds::new(),
+        ]
     }
 
     #[test]
@@ -1289,6 +1572,98 @@ mod tests {
         enc.encode_safety(&si);
         assert_eq!(get(&enc, 80, 15), 1.0);
         assert_eq!(get(&enc, 81, 20), 1.0);
+    }
+
+    #[test]
+    fn safety_tenpai_hint_uses_cached_prediction_threshold() {
+        let mut enc = ObservationEncoder::new();
+        let mut si = SafetyInfo::new();
+        si.set_tenpai_prediction(1, 0.75);
+        si.set_tenpai_prediction(2, 0.5);
+        enc.encode_safety(&si);
+        assert_eq!(get(&enc, 83, 0), 1.0);
+        assert_eq!(get(&enc, 84, 0), 0.0);
+    }
+
+    #[test]
+    fn safety_tenpai_hint_always_respects_riichi_status() {
+        let mut enc = ObservationEncoder::new();
+        let mut si = SafetyInfo::new();
+        si.on_riichi(0);
+        si.set_tenpai_prediction(0, 0.1);
+        enc.encode_safety(&si);
+        assert_eq!(get(&enc, 82, 0), 1.0);
+    }
+
+    #[test]
+    fn baseline_encode_zero_fills_dynamic_groups() {
+        let mut enc = ObservationEncoder::new();
+        let hand = [0u8; NUM_TILES];
+        let open_meld = [0u8; NUM_TILES];
+        let discards = empty_discards();
+        let melds = empty_melds();
+        let dora = DoraInfo {
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 0,
+            aka_flags: [false; 3],
+        };
+        let meta = test_metadata();
+        let safety = SafetyInfo::new();
+        enc.encode(
+            &hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety,
+        );
+        assert!(
+            enc.as_slice()[CH_SEARCH * NUM_TILES..]
+                .iter()
+                .all(|&v| v == 0.0)
+        );
+    }
+
+    #[test]
+    fn search_features_fill_presence_masks_and_planes() {
+        let mut enc = ObservationEncoder::new();
+        let mut search = SearchFeaturePlanes {
+            belief_features_present: true,
+            search_features_present: true,
+            robust_features_present: true,
+            context_features_present: true,
+            ..SearchFeaturePlanes::default()
+        };
+        search.belief_fields[0][5] = 0.75;
+        search.mixture_weights[1] = 0.4;
+        search.mixture_entropy = 0.8;
+        search.mixture_ess = 2.5;
+        search.delta_q[7] = -0.2;
+        search.opponent_risk[2][9] = 0.6;
+        search.opponent_stress[1] = 0.3;
+        enc.encode_search_features(&search);
+        assert!((get(&enc, CH_SEARCH_BELIEF, 5) - 0.75).abs() < 1e-6);
+        assert!((get(&enc, CH_SEARCH_MIXTURE_WEIGHT + 1, 0) - 0.4).abs() < 1e-6);
+        assert!((get(&enc, CH_SEARCH_MIXTURE_ENTROPY, 0) - 0.8).abs() < 1e-6);
+        assert!((get(&enc, CH_SEARCH_MIXTURE_ESS, 0) - 2.5).abs() < 1e-6);
+        assert!((get(&enc, CH_SEARCH_DELTA_Q, 7) + 0.2).abs() < 1e-6);
+        assert!((get(&enc, CH_SEARCH_RISK + 2, 9) - 0.6).abs() < 1e-6);
+        assert!((get(&enc, CH_SEARCH_STRESS + 1, 0) - 0.3).abs() < 1e-6);
+        assert_eq!(get(&enc, CH_SEARCH_MASKS, 0), 1.0);
+        assert_eq!(get(&enc, CH_SEARCH_MASKS + 1, 0), 1.0);
+        assert_eq!(get(&enc, CH_SEARCH_MASKS + 2, 0), 1.0);
+        assert_eq!(get(&enc, CH_SEARCH_MASKS + 3, 0), 1.0);
+    }
+
+    #[test]
+    fn hand_ev_features_fill_expected_planes() {
+        let mut enc = ObservationEncoder::new();
+        let mut hand_ev = HandEvFeatures::default();
+        hand_ev.tenpai_prob[3][0] = 0.2;
+        hand_ev.win_prob[3][2] = 0.5;
+        hand_ev.expected_score[3] = 6400.0;
+        hand_ev.ukeire[3][6] = 2.0;
+        enc.encode_hand_ev_features(&hand_ev);
+        assert!((get(&enc, CH_HAND_EV_TENPAI, 3) - 0.2).abs() < 1e-6);
+        assert!((get(&enc, CH_HAND_EV_WIN + 2, 3) - 0.5).abs() < 1e-6);
+        assert!((get(&enc, CH_HAND_EV_SCORE, 3) - 6400.0).abs() < 1e-6);
+        assert!((get(&enc, CH_HAND_EV_UKEIRE + 6, 3) - 2.0).abs() < 1e-6);
+        assert_eq!(get(&enc, CH_HAND_EV_MASK, 0), 1.0);
     }
 
     // -- Full encode test --

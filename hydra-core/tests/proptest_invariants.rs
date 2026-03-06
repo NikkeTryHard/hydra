@@ -36,7 +36,9 @@ fn step_game(state: &mut GameState, seed: u64, counter: &mut u64) -> bool {
         Phase::WaitAct => {
             let obs = state.get_observation(state.current_player);
             let legal = obs.legal_actions_method();
-            if legal.is_empty() { return false; }
+            if legal.is_empty() {
+                return false;
+            }
             *counter += 1;
             actions.insert(state.current_player, pick_action(seed, *counter, &legal));
         }
@@ -46,7 +48,9 @@ fn step_game(state: &mut GameState, seed: u64, counter: &mut u64) -> bool {
             for &pid in &ap[..n] {
                 let obs = state.get_observation(pid);
                 let legal = obs.legal_actions_method();
-                if legal.is_empty() { continue; }
+                if legal.is_empty() {
+                    continue;
+                }
                 *counter += 1;
                 actions.insert(pid, pick_action(seed, *counter, &legal));
             }

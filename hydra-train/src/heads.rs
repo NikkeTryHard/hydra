@@ -1,8 +1,8 @@
 //! Output heads: 8 inference heads + 1 oracle critic.
 
 use burn::nn::{
-    conv::{Conv1d, Conv1dConfig},
     Linear, LinearConfig,
+    conv::{Conv1d, Conv1dConfig},
 };
 use burn::prelude::*;
 
@@ -105,6 +105,61 @@ impl<B: Backend> OracleCriticHead<B> {
     }
 }
 
+#[derive(Module, Debug)]
+pub struct BeliefFieldHead<B: Backend> {
+    conv: Conv1d<B>,
+}
+
+impl<B: Backend> BeliefFieldHead<B> {
+    pub fn forward(&self, spatial: Tensor<B, 3>) -> Tensor<B, 3> {
+        self.conv.forward(spatial)
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct MixtureWeightHead<B: Backend> {
+    linear: Linear<B>,
+}
+
+impl<B: Backend> MixtureWeightHead<B> {
+    pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
+        self.linear.forward(pooled)
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct OpponentHandTypeHead<B: Backend> {
+    linear: Linear<B>,
+}
+
+impl<B: Backend> OpponentHandTypeHead<B> {
+    pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
+        self.linear.forward(pooled)
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct DeltaQHead<B: Backend> {
+    linear: Linear<B>,
+}
+
+impl<B: Backend> DeltaQHead<B> {
+    pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
+        self.linear.forward(pooled)
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct SafetyResidualHead<B: Backend> {
+    linear: Linear<B>,
+}
+
+impl<B: Backend> SafetyResidualHead<B> {
+    pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
+        self.linear.forward(pooled)
+    }
+}
+
 impl HeadsConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.hidden_channels == 0 {
@@ -112,6 +167,12 @@ impl HeadsConfig {
         }
         if self.action_space == 0 {
             return Err("action_space must be > 0");
+        }
+        if self.num_belief_components == 0 {
+            return Err("num_belief_components must be > 0");
+        }
+        if self.opponent_hand_type_classes == 0 {
+            return Err("opponent_hand_type_classes must be > 0");
         }
         Ok(())
     }
@@ -129,6 +190,10 @@ pub struct HeadsConfig {
     pub num_opponents: usize,
     #[config(default = "24")]
     pub grp_classes: usize,
+    #[config(default = "4")]
+    pub num_belief_components: usize,
+    #[config(default = "8")]
+    pub opponent_hand_type_classes: usize,
 }
 
 impl HeadsConfig {
@@ -183,6 +248,45 @@ impl HeadsConfig {
     pub fn init_oracle_critic<B: Backend>(&self, device: &B::Device) -> OracleCriticHead<B> {
         OracleCriticHead {
             linear: LinearConfig::new(self.hidden_channels, 4).init(device),
+        }
+    }
+
+    pub fn init_belief_field<B: Backend>(&self, device: &B::Device) -> BeliefFieldHead<B> {
+        BeliefFieldHead {
+            conv: Conv1dConfig::new(self.hidden_channels, self.num_belief_components * 4, 1)
+                .init(device),
+        }
+    }
+
+    pub fn init_mixture_weight<B: Backend>(&self, device: &B::Device) -> MixtureWeightHead<B> {
+        MixtureWeightHead {
+            linear: LinearConfig::new(self.hidden_channels, self.num_belief_components)
+                .init(device),
+        }
+    }
+
+    pub fn init_opponent_hand_type<B: Backend>(
+        &self,
+        device: &B::Device,
+    ) -> OpponentHandTypeHead<B> {
+        OpponentHandTypeHead {
+            linear: LinearConfig::new(
+                self.hidden_channels,
+                self.num_opponents * self.opponent_hand_type_classes,
+            )
+            .init(device),
+        }
+    }
+
+    pub fn init_delta_q<B: Backend>(&self, device: &B::Device) -> DeltaQHead<B> {
+        DeltaQHead {
+            linear: LinearConfig::new(self.hidden_channels, self.action_space).init(device),
+        }
+    }
+
+    pub fn init_safety_residual<B: Backend>(&self, device: &B::Device) -> SafetyResidualHead<B> {
+        SafetyResidualHead {
+            linear: LinearConfig::new(self.hidden_channels, self.action_space).init(device),
         }
     }
 }
@@ -277,5 +381,45 @@ mod tests {
         let head = cfg().init_oracle_critic::<B>(&device);
         let x = Tensor::<B, 2>::zeros([4, 256], &device);
         assert_eq!(head.forward(x).dims(), [4, 4]);
+    }
+
+    #[test]
+    fn belief_field_head_shape() {
+        let device = Default::default();
+        let head = cfg().init_belief_field::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([4, 256, 34], &device);
+        assert_eq!(head.forward(x).dims(), [4, 16, 34]);
+    }
+
+    #[test]
+    fn mixture_weight_head_shape() {
+        let device = Default::default();
+        let head = cfg().init_mixture_weight::<B>(&device);
+        let x = Tensor::<B, 2>::zeros([4, 256], &device);
+        assert_eq!(head.forward(x).dims(), [4, 4]);
+    }
+
+    #[test]
+    fn opponent_hand_type_head_shape() {
+        let device = Default::default();
+        let head = cfg().init_opponent_hand_type::<B>(&device);
+        let x = Tensor::<B, 2>::zeros([4, 256], &device);
+        assert_eq!(head.forward(x).dims(), [4, 24]);
+    }
+
+    #[test]
+    fn delta_q_head_shape() {
+        let device = Default::default();
+        let head = cfg().init_delta_q::<B>(&device);
+        let x = Tensor::<B, 2>::zeros([4, 256], &device);
+        assert_eq!(head.forward(x).dims(), [4, 46]);
+    }
+
+    #[test]
+    fn safety_residual_head_shape() {
+        let device = Default::default();
+        let head = cfg().init_safety_residual::<B>(&device);
+        let x = Tensor::<B, 2>::zeros([4, 256], &device);
+        assert_eq!(head.forward(x).dims(), [4, 46]);
     }
 }

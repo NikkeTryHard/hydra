@@ -213,7 +213,9 @@ pub fn check_daisangen(
     // Count how many dragon pons are visible
     for &dragon_type in &dragons {
         let has_pon = melds.iter().any(|m| {
-            m.tile_count as usize >= 3 && !m.tile_count == 0 && (m.tiles[0] / 4) as usize == dragon_type
+            m.tile_count as usize >= 3
+                && !m.tile_count == 0
+                && (m.tiles[0] / 4) as usize == dragon_type
         });
 
         if has_pon {

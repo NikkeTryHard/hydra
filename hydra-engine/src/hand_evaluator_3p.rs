@@ -182,7 +182,6 @@ impl HandEvaluator3P {
                 && id != yaku::ID_NUKIDORA
         });
 
-
         WinResult {
             is_win: (has_yaku || yaku_res.yakuman_count > 0) && yaku_res.han >= 1,
             yakuman: yaku_res.yakuman_count > 0,
