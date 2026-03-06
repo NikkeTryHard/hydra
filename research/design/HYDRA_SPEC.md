@@ -1,6 +1,14 @@
 # Hydra Architecture Specification
 
-> **OUTDATED**: This document describes an earlier design iteration with 5 output heads and inference-time search. The current design (9 heads, no inference-time search, pondering ExIt) is in **HYDRA_FINAL.md**, which is the single source of truth. This spec will be updated during implementation.
+> **HISTORICAL ARCHITECTURE SNAPSHOT — DO NOT IMPLEMENT FROM THIS FILE.**
+>
+> This document preserves an earlier Hydra design iteration with 5 output heads and inference-time search. It remains useful as legacy rationale/reference material, but it is **not** the current implementation authority.
+>
+> Use these docs instead when coding:
+>
+> 1. `research/design/HYDRA_FINAL.md` — target architecture SSOT
+> 2. `research/design/HYDRA_RECONCILIATION.md` — current repo reality, active path, reserve shelf, dropped shelf
+> 3. `docs/GAME_ENGINE.md` and `hydra-core/README.md` — current implemented engine/runtime baseline
 
 A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through a combination of proven techniques, novel opponent-aware features, and inference-time search. Intermediate milestone: surpass Mortal, Suphx, and NAGA.
 
@@ -8,11 +16,20 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through
 
 ## Related Documents
 
-- [TRAINING.md](TRAINING.md) — Training pipeline, loss functions, hyperparameters, roadmap
-- [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, hardware, deployment
+- [HYDRA_FINAL.md](HYDRA_FINAL.md) — target architecture SSOT
+- [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — current repo reality and implementation priorities
+- [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — infrastructure reference (legacy sections clearly marked)
 
 - [MORL_PLACEMENT.md](MORL_PLACEMENT.md) -- Non-convex placement MORL (Phase 3 modification, preference-conditioned training)
 ---
+
+## Use This File Only For
+
+- historical architecture context
+- preserved alternative ideas that may return later
+- rationale comparison against the active HYDRA-OMEGA plan
+
+Do **not** use this file as the current implementation spec for model shape, training loop, or runtime behavior.
 
 ## Executive Summary
 
