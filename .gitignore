@@ -10,3 +10,9 @@ target/
 Cargo.lock
 .sisyphus/
 research/papers/
+
+# Local funding / outreach drafts
+/email_draft_*.txt
+/email_draft_*.md
+/tacc_allocation_*.txt
+/tacc_allocation_*.md
