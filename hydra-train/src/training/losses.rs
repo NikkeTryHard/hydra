@@ -663,6 +663,26 @@ pub mod tests {
     }
 
     #[test]
+    fn test_oracle_absent_with_mask_keeps_oracle_loss_zero() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new().with_w_oracle_critic(1.0));
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.oracle_target = None;
+        targets.oracle_guidance_mask = Some(Tensor::<B, 1>::zeros([2], &device));
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        let oracle_loss: f32 = breakdown.oracle_critic.into_scalar().elem();
+        let total_loss: f32 = breakdown.total.into_scalar().elem();
+        assert!(
+            oracle_loss.abs() < 1e-8,
+            "oracle loss should be zero when target absent"
+        );
+        assert!(total_loss.is_finite() && total_loss >= 0.0);
+    }
+
+    #[test]
     fn test_oracle_target_contributes_to_total_when_weight_enabled() {
         let device = Default::default();
         let model = HydraModelConfig::actor().init::<B>(&device);
@@ -1004,25 +1024,19 @@ pub mod tests {
 
     #[test]
     fn test_validate_rejects_negative_primary_weights() {
-        assert!(
-            HydraLossConfig::new()
-                .with_w_tenpai(-0.1)
-                .validate()
-                .is_err()
-        );
-        assert!(
-            HydraLossConfig::new()
-                .with_w_danger(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_tenpai(-0.1)
+            .validate()
+            .is_err());
+        assert!(HydraLossConfig::new()
+            .with_w_danger(-0.1)
+            .validate()
+            .is_err());
         assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
-        assert!(
-            HydraLossConfig::new()
-                .with_w_score(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_score(-0.1)
+            .validate()
+            .is_err());
     }
 
     #[test]

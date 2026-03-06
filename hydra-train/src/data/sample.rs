@@ -5,6 +5,8 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_core::tile::permute_tile_type;
 
+use crate::training::losses::HydraTargets;
+
 fn permute_tile_vector_34(values: &[f32; 34], perm: &[u8; 3]) -> [f32; 34] {
     let mut out = [0.0f32; 34];
     for (tile, &value) in values.iter().enumerate() {
@@ -43,6 +45,7 @@ pub struct MjaiSample {
     pub placement: u8,
     pub score_delta: i32,
     pub grp_label: u8,
+    pub oracle_target: Option<[f32; 4]>,
     pub tenpai: [f32; 3],
     pub opp_next: [u8; 3],
     pub danger: [f32; 102],
@@ -128,12 +131,74 @@ pub struct MjaiBatch<B: Backend> {
     pub legal_mask: Tensor<B, 2>,
     pub value_target: Tensor<B, 1>,
     pub grp_target: Tensor<B, 2>,
+    pub oracle_target: Option<Tensor<B, 2>>,
+    pub oracle_target_mask: Tensor<B, 1>,
     pub tenpai_target: Tensor<B, 2>,
     pub danger_target: Tensor<B, 3>,
     pub danger_mask: Tensor<B, 3>,
     pub opp_next_target: Tensor<B, 3>,
     pub score_pdf_target: Tensor<B, 2>,
     pub score_cdf_target: Tensor<B, 2>,
+}
+
+impl<B: Backend> MjaiBatch<B> {
+    pub fn into_hydra_targets(self) -> HydraTargets<B> {
+        let batch = self.actions.dims()[0];
+        let policy_target = self
+            .actions
+            .clone()
+            .one_hot::<2>(46)
+            .reshape([batch, 46])
+            .float();
+        HydraTargets {
+            policy_target,
+            legal_mask: self.legal_mask,
+            value_target: self.value_target,
+            grp_target: self.grp_target,
+            tenpai_target: self.tenpai_target,
+            danger_target: self.danger_target,
+            danger_mask: self.danger_mask,
+            opp_next_target: self.opp_next_target,
+            score_pdf_target: self.score_pdf_target,
+            score_cdf_target: self.score_cdf_target,
+            oracle_target: self.oracle_target,
+            belief_fields_target: None,
+            mixture_weight_target: None,
+            opponent_hand_type_target: None,
+            delta_q_target: None,
+            safety_residual_target: None,
+            oracle_guidance_mask: Some(self.oracle_target_mask),
+        }
+    }
+
+    pub fn to_hydra_targets(&self) -> HydraTargets<B> {
+        let batch = self.actions.dims()[0];
+        let policy_target = self
+            .actions
+            .clone()
+            .one_hot::<2>(46)
+            .reshape([batch, 46])
+            .float();
+        HydraTargets {
+            policy_target,
+            legal_mask: self.legal_mask.clone(),
+            value_target: self.value_target.clone(),
+            grp_target: self.grp_target.clone(),
+            tenpai_target: self.tenpai_target.clone(),
+            danger_target: self.danger_target.clone(),
+            danger_mask: self.danger_mask.clone(),
+            opp_next_target: self.opp_next_target.clone(),
+            score_pdf_target: self.score_pdf_target.clone(),
+            score_cdf_target: self.score_cdf_target.clone(),
+            oracle_target: self.oracle_target.clone(),
+            belief_fields_target: None,
+            mixture_weight_target: None,
+            opponent_hand_type_target: None,
+            delta_q_target: None,
+            safety_residual_target: None,
+            oracle_guidance_mask: Some(self.oracle_target_mask.clone()),
+        }
+    }
 }
 
 pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> MjaiBatch<B> {
@@ -143,6 +208,8 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     let mut mask_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
     let mut values = vec![0.0f32; batch];
     let mut grp_flat = vec![0.0f32; batch * 24];
+    let mut oracle_flat = vec![0.0f32; batch * 4];
+    let mut oracle_mask = vec![0.0f32; batch];
     let mut tenpai_flat = vec![0.0f32; batch * 3];
     let mut danger_flat = vec![0.0f32; batch * 102];
     let mut dmask_flat = vec![0.0f32; batch * 102];
@@ -158,6 +225,10 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
         values[i] = score_delta_to_value(s.score_delta);
         if (s.grp_label as usize) < 24 {
             grp_flat[i * 24 + s.grp_label as usize] = 1.0;
+        }
+        if let Some(oracle) = s.oracle_target {
+            oracle_flat[i * 4..(i + 1) * 4].copy_from_slice(&oracle);
+            oracle_mask[i] = 1.0;
         }
         tenpai_flat[i * 3..(i + 1) * 3].copy_from_slice(&s.tenpai);
         danger_flat[i * 102..(i + 1) * 102].copy_from_slice(&s.danger);
@@ -184,6 +255,12 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
             .reshape([batch, HYDRA_ACTION_SPACE]),
         value_target: Tensor::<B, 1>::from_floats(values.as_slice(), device),
         grp_target: Tensor::<B, 1>::from_floats(grp_flat.as_slice(), device).reshape([batch, 24]),
+        oracle_target: if oracle_mask.iter().any(|&v| v > 0.0) {
+            Some(Tensor::<B, 1>::from_floats(oracle_flat.as_slice(), device).reshape([batch, 4]))
+        } else {
+            None
+        },
+        oracle_target_mask: Tensor::<B, 1>::from_floats(oracle_mask.as_slice(), device),
         tenpai_target: Tensor::<B, 1>::from_floats(tenpai_flat.as_slice(), device)
             .reshape([batch, 3]),
         danger_target: Tensor::<B, 1>::from_floats(danger_flat.as_slice(), device)
@@ -242,6 +319,7 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
                 placement: sample.placement,
                 score_delta: sample.score_delta,
                 grp_label: sample.grp_label,
+                oracle_target: sample.oracle_target,
                 tenpai: sample.tenpai,
                 opp_next: permute_opp_next_targets(sample.opp_next, perm),
                 danger: permute_spatial_targets_3x34(sample.danger, perm),
@@ -270,6 +348,7 @@ mod tests {
             placement: 0,
             score_delta,
             grp_label: 0,
+            oracle_target: None,
             tenpai: [0.0; 3],
             opp_next: [0, 1, 255],
             danger: [0.0; 102],
@@ -327,6 +406,8 @@ mod tests {
         assert_eq!(batch.legal_mask.dims(), [32, 46]);
         assert_eq!(batch.value_target.dims(), [32]);
         assert_eq!(batch.grp_target.dims(), [32, 24]);
+        assert!(batch.oracle_target.is_none());
+        assert_eq!(batch.oracle_target_mask.dims(), [32]);
         assert_eq!(batch.tenpai_target.dims(), [32, 3]);
         assert_eq!(batch.danger_target.dims(), [32, 3, 34]);
         assert_eq!(batch.danger_mask.dims(), [32, 3, 34]);
@@ -450,5 +531,66 @@ mod tests {
         assert_eq!(swapped.danger_mask[18], 1.0);
         assert_eq!(swapped.obs[41 * 34], 1.0);
         assert_eq!(swapped.obs[40 * 34], 0.0);
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_carries_oracle_target() {
+        let device = Default::default();
+        let mut sample = dummy_sample(5, 12000);
+        sample.oracle_target = Some([0.1, -0.1, 0.2, -0.2]);
+        let batch = collate_batch::<B>(&[sample], &device);
+        let targets = batch.to_hydra_targets();
+        assert_eq!(targets.policy_target.dims(), [1, 46]);
+        let oracle = targets.oracle_target.expect("oracle target present");
+        assert_eq!(oracle.dims(), [1, 4]);
+        let data = oracle.to_data();
+        let slice = data.as_slice::<f32>().expect("f32");
+        assert!((slice[0] - 0.1).abs() < 1e-6);
+        assert!((slice[1] + 0.1).abs() < 1e-6);
+        assert!((slice[2] - 0.2).abs() < 1e-6);
+        assert!((slice[3] + 0.2).abs() < 1e-6);
+        let mask = targets.oracle_guidance_mask.expect("oracle mask present");
+        let mask_slice = mask.to_data().as_slice::<f32>().expect("f32").to_vec();
+        assert!((mask_slice[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_policy_matches_actions() {
+        let device = Default::default();
+        let samples = vec![dummy_sample(2, 0), dummy_sample(7, 0)];
+        let batch = collate_batch::<B>(&samples, &device);
+        let targets = batch.into_hydra_targets();
+        assert_eq!(targets.policy_target.dims(), [2, 46]);
+        let data = targets.policy_target.to_data();
+        let slice = data.as_slice::<f32>().expect("f32");
+        assert!((slice[2] - 1.0).abs() < 1e-6);
+        assert!((slice[46 + 7] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_keeps_optional_advanced_targets_narrow() {
+        let device = Default::default();
+        let mut sample = dummy_sample(1, 0);
+        sample.oracle_target = Some([0.25, 0.0, -0.25, 0.0]);
+        let batch = collate_batch::<B>(&[sample], &device);
+        let targets = batch.into_hydra_targets();
+        assert!(targets.oracle_target.is_some());
+        assert!(targets.belief_fields_target.is_none());
+        assert!(targets.mixture_weight_target.is_none());
+        assert!(targets.opponent_hand_type_target.is_none());
+        assert!(targets.delta_q_target.is_none());
+        assert!(targets.safety_residual_target.is_none());
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_keeps_oracle_absent_when_missing() {
+        let device = Default::default();
+        let batch = collate_batch::<B>(&[dummy_sample(3, 0)], &device);
+        assert!(batch.oracle_target.is_none());
+        let targets = batch.into_hydra_targets();
+        assert!(targets.oracle_target.is_none());
+        let mask = targets.oracle_guidance_mask.expect("oracle mask present");
+        let mask_slice = mask.to_data().as_slice::<f32>().expect("f32").to_vec();
+        assert!((mask_slice[0] - 0.0).abs() < 1e-6);
     }
 }

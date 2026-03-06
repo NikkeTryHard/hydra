@@ -1,6 +1,7 @@
 //! MJAI `.json` / `.json.gz` loader for behavioral cloning data.
 
 use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
+use crate::training::losses::oracle_target_from_scores;
 use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, build_legal_mask, riichienv_to_hydra};
 use hydra_core::bridge::encode_observation;
 use hydra_core::encoder::ObservationEncoder;
@@ -236,6 +237,7 @@ fn bool_mask_to_f32(mask: [bool; HYDRA_ACTION_SPACE]) -> [f32; HYDRA_ACTION_SPAC
 
 fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     let final_scores = final_scores(&events);
+    let oracle_target = oracle_target_from_scores(final_scores);
     let next_discards = next_discards_after(&events)?;
     let grp_label = scores_to_grp_index(final_scores).map_err(invalid_data)?;
     let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
@@ -290,6 +292,7 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                     placement: score_to_placement(final_scores, actor as u8),
                     score_delta: final_scores[actor] - state.players[actor].score,
                     grp_label,
+                    oracle_target: Some(oracle_target),
                     tenpai,
                     opp_next,
                     danger,
@@ -481,6 +484,20 @@ mod tests {
                 .iter()
                 .all(|sample| sample.legal_mask[sample.action as usize] > 0.0)
         );
+    }
+
+    #[test]
+    fn load_game_from_reader_populates_oracle_targets_from_final_scores() {
+        let (log, final_scores) = play_game_with_mjai_log(7);
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+        let expected = oracle_target_from_scores(final_scores);
+        assert!(!game.samples.is_empty(), "expected replay to produce samples");
+        for sample in game.samples.iter().take(8) {
+            let got_target = sample.oracle_target.expect("oracle target should be present");
+            for (got, want) in got_target.iter().zip(expected.iter()) {
+                assert!((got - want).abs() < 1e-6, "oracle target mismatch: {got} vs {want}");
+            }
+        }
     }
 
     #[test]
