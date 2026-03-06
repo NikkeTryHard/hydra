@@ -11,40 +11,46 @@ Train a mahjong AI that:
 
 ## Architecture
 
-SE-ResNet backbone (40 blocks, 256 channels) with PPO training. Three-phase pipeline: supervised warm start on ~6.6M games (2M Tenhou Houou + 1M Majsoul Throne + 3M Majsoul Jade) -> oracle distillation -> league self-play. 100% Rust stack using [Burn](https://github.com/tracel-ai/burn) framework with burn-tch (libtorch/cuDNN) backend.
+Hydra's target architecture is defined in [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md). The current repository state is a hybrid: `hydra-core` already implements a real engine/encoder baseline plus several advanced modules, while the broader training/search plan is still being reconciled against the newer HYDRA-OMEGA direction.
 
-See [research/HYDRA_SPEC.md](research/HYDRA_SPEC.md) for the architecture specification and [research/TRAINING.md](research/TRAINING.md) for the training pipeline.
+If you are deciding what to build next, read these in order:
+- [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — target architecture SSOT
+- [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — verified repo reality + best next action
+- [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) — current game-engine/runtime baseline
+- [`research/design/IMPLEMENTATION_ROADMAP.md`](research/design/IMPLEMENTATION_ROADMAP.md) — staged implementation plan
+
+`research/design/HYDRA_SPEC.md` is still useful as legacy context, but it is explicitly outdated and should not be treated as the current implementation source of truth.
 
 ## Research
 
 | File | What's In It |
 |------|-------------|
-| [HYDRA_SPEC.md](research/HYDRA_SPEC.md) | Architecture, input encoding, output heads, inference |
-| [TRAINING.md](research/TRAINING.md) | Training pipeline (phases 1-3), loss functions, hyperparameters, roadmap |
+| [HYDRA_FINAL.md](research/design/HYDRA_FINAL.md) | Current target architecture SSOT |
+| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Verified repo reality, resolved conflicts, and next implementation tranche |
+| [HYDRA_SPEC.md](research/design/HYDRA_SPEC.md) | Legacy architecture spec (explicitly outdated) |
 | [MORTAL_ANALYSIS.md](research/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
 | [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Safety planes, 9-head specs (tenpai/danger/FiLM/call-intent/Sinkhorn), RSA deception, CVaR, L0 observer |
-| [INFRASTRUCTURE.md](research/INFRASTRUCTURE.md) | Rust stack, data pipeline, training infra, hardware, deployment |
-| [SEEDING.md](research/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
-| [CHECKPOINTING.md](research/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
-| [ECOSYSTEM.md](research/ECOSYSTEM.md) | Every useful repo, tool, and framework in the mahjong AI space |
-| [REWARD_DESIGN.md](research/REWARD_DESIGN.md) | Hydra's reward function design and RVR variance reduction |
-| [COMMUNITY_INSIGHTS.md](research/COMMUNITY_INSIGHTS.md) | Reddit, blogs, Mortal GitHub discussions — community knowledge |
-| [REFERENCES.md](research/REFERENCES.md) | All citations with why each matters for Hydra |
-| [TESTING.md](research/TESTING.md) | Testing strategy, correctness verification, property-based tests |
-| [ABLATION_PLAN.md](research/ABLATION_PLAN.md) | Structured experiment queue with hypotheses and protocols |
-| [AUDIT_LOG.md](research/AUDIT_LOG.md) | Change history tracking SSOT fixes across all research docs |
-| [RUST_STACK.md](research/RUST_STACK.md) | 100% Rust decision, Burn framework, Python migration, all concerns resolved |
+| [INFRASTRUCTURE.md](research/infrastructure/INFRASTRUCTURE.md) | Rust stack, data pipeline, training infra, hardware, deployment |
+| [SEEDING.md](research/design/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
+| [CHECKPOINTING.md](research/infrastructure/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
+| [ECOSYSTEM.md](research/intel/ECOSYSTEM.md) | Useful repos, tooling, and framework references |
+| [REWARD_DESIGN.md](research/design/REWARD_DESIGN.md) | Reward design and RVR notes |
+| [COMMUNITY_INSIGHTS.md](research/intel/COMMUNITY_INSIGHTS.md) | Community observations and external signals |
+| [REFERENCES.md](research/intel/REFERENCES.md) | Citation index |
+| [TESTING.md](research/design/TESTING.md) | Testing strategy, correctness verification, property-based tests |
+| [RUST_STACK.md](research/infrastructure/RUST_STACK.md) | 100% Rust decision and framework notes |
 
 ### Documentation Ownership (SSOT)
 
-- `MORTAL_ANALYSIS.md`: authoritative Mortal strengths/limitations and architecture evidence
-- `OPPONENT_MODELING.md`: authoritative safety-channel, tenpai-head, and danger-head design rationale
-- `HYDRA_SPEC.md`: high-level architecture/inference summary with cross-references to detail docs
-- `COMMUNITY_INSIGHTS.md`: community observations and hypotheses (non-canonical for hard architectural claims)
+- `research/design/HYDRA_FINAL.md`: target architecture SSOT
+- `research/design/HYDRA_RECONCILIATION.md`: current repo-wide decision memo and best-next-action guide
+- `docs/GAME_ENGINE.md`: current game-engine/runtime baseline
+- `research/design/OPPONENT_MODELING.md`: detailed opponent-modeling rationale
+- `research/design/HYDRA_SPEC.md`: legacy architecture summary only; do not use it as the current implementation SSOT
 
 ## Status
 
-Research phase — documentation and architecture specification complete. Implementation not yet started.
+Active implementation. `hydra-core` is already built out as a real baseline engine/encoder crate, and `hydra-train` contains a substantial training/model scaffold with partial advanced integration. The immediate project need is reconciliation plus closure of the highest-leverage training/search supervision loops, not a restart from scratch.
 
 ## License
 
