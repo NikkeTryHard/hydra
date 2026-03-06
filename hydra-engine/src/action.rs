@@ -137,18 +137,18 @@ impl<'de> Deserialize<'de> for Action {
             actor: Option<u8>,
         }
         let h = ActionHelper::deserialize(deserializer)?;
-        Ok(Action::new(h.action_type, h.tile, &h.consume_tiles, h.actor))
+        Ok(Action::new(
+            h.action_type,
+            h.tile,
+            &h.consume_tiles,
+            h.actor,
+        ))
     }
 }
 
 impl Action {
     /// Creates a new action with the given type, tile, consumed tiles, and actor.
-    pub fn new(
-        r#type: ActionType,
-        tile: Option<u8>,
-        consume: &[u8],
-        actor: Option<u8>,
-    ) -> Self {
+    pub fn new(r#type: ActionType, tile: Option<u8>, consume: &[u8], actor: Option<u8>) -> Self {
         let count = consume.len().min(4);
         let mut tiles = [0u8; 4];
         tiles[..count].copy_from_slice(&consume[..count]);
@@ -204,7 +204,11 @@ impl Action {
         }
 
         if self.consume_count > 0 {
-            let cons: Vec<String> = self.consume_slice().iter().map(|&t| tid_to_mjai(t)).collect();
+            let cons: Vec<String> = self
+                .consume_slice()
+                .iter()
+                .map(|&t| tid_to_mjai(t))
+                .collect();
             // SAFETY: serialization of Vec<String> never fails
             data.insert("consumed".to_string(), serde_json::to_value(cons).unwrap());
         }
@@ -216,7 +220,10 @@ impl Action {
     pub fn repr(&self) -> String {
         format!(
             "Action(action_type={:?}, tile={:?}, consume_tiles={:?}, actor={:?})",
-            self.action_type, self.tile, self.consume_slice(), self.actor
+            self.action_type,
+            self.tile,
+            self.consume_slice(),
+            self.actor
         )
     }
 
@@ -236,8 +243,11 @@ impl Action {
             ActionType::Chi => {
                 if let Some(target) = self.tile {
                     let target_34 = (target as i32) / 4;
-                    let mut tiles_34: Vec<i32> =
-                        self.consume_slice().iter().map(|&x| (x as i32) / 4).collect();
+                    let mut tiles_34: Vec<i32> = self
+                        .consume_slice()
+                        .iter()
+                        .map(|&x| (x as i32) / 4)
+                        .collect();
                     tiles_34.push(target_34);
                     tiles_34.sort();
                     tiles_34.dedup();
@@ -246,7 +256,8 @@ impl Action {
                         return Err(RiichiError::InvalidAction {
                             message: format!(
                                 "Invalid Chi tiles: target={}, consumed={:?}",
-                                target, self.consume_slice()
+                                target,
+                                self.consume_slice()
                             ),
                         });
                     }

@@ -5,6 +5,7 @@ use burn::optim::{AdamConfig, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
+use crate::config::OracleGuidingConfig;
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::losses::{HydraLoss, HydraTargets};
 
@@ -87,6 +88,14 @@ impl EpochStats {
     }
 }
 
+pub struct OracleGuidingStepStats {
+    pub skipped: bool,
+    pub effective_lr: f64,
+    pub oracle_keep_prob: f32,
+    pub kept_oracle_fraction: f32,
+    pub loss: Option<f64>,
+}
+
 pub fn policy_agreement<B: Backend>(
     logits: Tensor<B, 2>,
     mask: Tensor<B, 2>,
@@ -97,6 +106,12 @@ pub fn policy_agreement<B: Backend>(
     let correct = predicted.equal(targets);
     let n = correct.dims()[0] as f64;
     correct.int().sum().into_scalar().elem::<i64>() as f64 / n
+}
+
+pub fn target_actions_from_policy_target<B: Backend>(
+    policy_target: Tensor<B, 2>,
+) -> Tensor<B, 1, Int> {
+    policy_target.argmax(1).squeeze_dim::<1>(1)
 }
 
 pub fn bc_train_step<B: AutodiffBackend>(
@@ -114,6 +129,94 @@ pub fn bc_train_step<B: AutodiffBackend>(
     let grads = GradientsParams::from_grads(grads, &model);
     let model = optimizer.step(lr, model, grads);
     (model, loss_val)
+}
+
+pub fn oracle_guidance_mask_values(
+    batch_size: usize,
+    keep_prob: f32,
+    rng_values: &[f32],
+) -> Vec<f32> {
+    (0..batch_size)
+        .map(|idx| {
+            let sample = rng_values.get(idx).copied().unwrap_or(0.0);
+            if sample < keep_prob { 1.0 } else { 0.0 }
+        })
+        .collect()
+}
+
+pub fn oracle_guidance_mask_tensor<B: Backend>(
+    batch_size: usize,
+    keep_prob: f32,
+    rng_values: &[f32],
+    device: &B::Device,
+) -> Tensor<B, 1> {
+    let mask = oracle_guidance_mask_values(batch_size, keep_prob, rng_values);
+    Tensor::<B, 1>::from_floats(mask.as_slice(), device)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn oracle_guiding_train_step<B: AutodiffBackend>(
+    model: HydraModel<B>,
+    obs: Tensor<B, 3>,
+    targets: &HydraTargets<B>,
+    loss_fn: &HydraLoss<B>,
+    base_lr: f64,
+    oracle_cfg: &OracleGuidingConfig,
+    step: usize,
+    total_steps: usize,
+    importance_weight: f32,
+    max_importance_weight: f32,
+    rng_values: &[f32],
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+) -> (HydraModel<B>, OracleGuidingStepStats) {
+    let oracle_keep_prob = oracle_cfg.dropout_at_step(step, total_steps);
+    let effective_lr = oracle_cfg.effective_learning_rate(base_lr, step, total_steps);
+
+    if oracle_cfg.should_reject_importance_weight(
+        importance_weight,
+        max_importance_weight,
+        step,
+        total_steps,
+    ) {
+        return (
+            model,
+            OracleGuidingStepStats {
+                skipped: true,
+                effective_lr,
+                oracle_keep_prob,
+                kept_oracle_fraction: 0.0,
+                loss: None,
+            },
+        );
+    }
+
+    let batch_size = obs.dims()[0];
+    let device = obs.device();
+    let oracle_mask =
+        oracle_guidance_mask_tensor::<B>(batch_size, oracle_keep_prob, rng_values, &device);
+    let kept_oracle_fraction =
+        oracle_mask.clone().sum().into_scalar().elem::<f32>() / batch_size as f32;
+    let mut masked_targets = targets.clone();
+    masked_targets.oracle_guidance_mask = Some(oracle_mask);
+
+    let (model, loss) = bc_train_step(
+        model,
+        obs,
+        &masked_targets,
+        loss_fn,
+        effective_lr,
+        optimizer,
+    );
+    (
+        model,
+        OracleGuidingStepStats {
+            skipped: false,
+            effective_lr,
+            oracle_keep_prob,
+            kept_oracle_fraction,
+            loss: Some(loss),
+        },
+    )
 }
 
 impl BCTrainerConfig {
@@ -194,9 +297,19 @@ pub fn train_epoch<B: AutodiffBackend>(
 ) -> (HydraModel<B>, EpochStats) {
     let mut m = model;
     let mut total_loss = 0.0;
+    let mut total_agreement = 0.0;
     for (obs, targets) in batches {
-        let (updated, loss) = bc_train_step(m, obs.clone(), targets, loss_fn, lr, optimizer);
-        m = updated;
+        let output = m.forward(obs.clone());
+        total_agreement += policy_agreement(
+            output.policy_logits.clone(),
+            targets.legal_mask.clone(),
+            target_actions_from_policy_target(targets.policy_target.clone()),
+        );
+        let breakdown = loss_fn.total_loss(&output, targets);
+        let loss = breakdown.total.clone().into_scalar().elem::<f64>();
+        let grads = breakdown.total.backward();
+        let grads = GradientsParams::from_grads(grads, &m);
+        m = optimizer.step(lr, m, grads);
         total_loss += loss;
     }
     let stats = EpochStats {
@@ -205,7 +318,11 @@ pub fn train_epoch<B: AutodiffBackend>(
         } else {
             total_loss / batches.len() as f64
         },
-        policy_agreement: 0.0,
+        policy_agreement: if batches.is_empty() {
+            0.0
+        } else {
+            total_agreement / batches.len() as f64
+        },
         num_batches: batches.len(),
     };
     (m, stats)
@@ -222,6 +339,20 @@ pub struct CheckpointMeta {
 }
 
 impl CheckpointMeta {
+    pub fn new(epoch: u32, train_loss: f64, eval_agreement: f64) -> Self {
+        Self {
+            epoch,
+            train_loss,
+            eval_agreement,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            num_blocks: 24,
+            hidden_channels: 256,
+        }
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "epoch={} loss={:.4} agree={:.2}%",
@@ -235,7 +366,7 @@ impl CheckpointMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
@@ -263,7 +394,7 @@ mod tests {
     fn test_bc_one_step() {
         let device = Default::default();
         let model = HydraModelConfig::actor().init::<TestBackend>(&device);
-        let obs = Tensor::<TestBackend, 3>::zeros([4, 85, 34], &device);
+        let obs = Tensor::<TestBackend, 3>::zeros([4, crate::config::INPUT_CHANNELS, 34], &device);
         let targets = make_dummy_targets::<TestBackend>(&device, 4);
         let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
         let mut optimizer = bc_optimizer();
@@ -281,7 +412,7 @@ mod tests {
             .with_num_groups(4)
             .init::<TestBackend>(&device);
         let obs = Tensor::<TestBackend, 3>::random(
-            [10, 85, 34],
+            [10, crate::config::INPUT_CHANNELS, 34],
             burn::tensor::Distribution::Normal(0.0, 0.1),
             &device,
         );
@@ -299,11 +430,94 @@ mod tests {
     }
 
     #[test]
+    fn test_oracle_guidance_mask_values_follow_keep_probability() {
+        let mask = oracle_guidance_mask_values(4, 0.5, &[0.1, 0.7, 0.49, 0.9]);
+        assert_eq!(mask, vec![1.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn test_oracle_guiding_train_step_skips_large_importance_post_dropout() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<TestBackend>(&device);
+        let obs = Tensor::<TestBackend, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let mut targets = make_dummy_targets::<TestBackend>(&device, 2);
+        targets.oracle_target = Some(Tensor::<TestBackend, 2>::ones([2, 4], &device));
+        let loss_fn =
+            HydraLoss::<TestBackend>::new(HydraLossConfig::new().with_w_oracle_critic(1.0));
+        let mut optimizer = bc_optimizer();
+        let oracle_cfg = crate::config::OracleGuidingConfig::default();
+
+        let (_, stats) = oracle_guiding_train_step(
+            model,
+            obs,
+            &targets,
+            &loss_fn,
+            1e-4,
+            &oracle_cfg,
+            100,
+            100,
+            3.0,
+            2.0,
+            &[0.1, 0.9],
+            &mut optimizer,
+        );
+
+        assert!(stats.skipped);
+        assert!(stats.loss.is_none());
+        assert!((stats.effective_lr - 1e-5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_oracle_guiding_train_step_applies_dropout_mask_and_trains() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<TestBackend>(&device);
+        let obs = Tensor::<TestBackend, 3>::random(
+            [2, crate::config::INPUT_CHANNELS, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let mut targets = make_dummy_targets::<TestBackend>(&device, 2);
+        targets.oracle_target = Some(Tensor::<TestBackend, 2>::ones([2, 4], &device));
+        targets.belief_fields_target = Some(Tensor::<TestBackend, 3>::ones([2, 16, 34], &device));
+        let loss_fn = HydraLoss::<TestBackend>::new(
+            HydraLossConfig::new()
+                .with_w_oracle_critic(1.0)
+                .with_w_belief_fields(1.0),
+        );
+        let mut optimizer = bc_optimizer();
+        let oracle_cfg = crate::config::OracleGuidingConfig::default();
+
+        let (_, stats) = oracle_guiding_train_step(
+            model,
+            obs,
+            &targets,
+            &loss_fn,
+            1e-4,
+            &oracle_cfg,
+            50,
+            100,
+            1.0,
+            2.0,
+            &[0.0, 0.9],
+            &mut optimizer,
+        );
+
+        assert!(!stats.skipped);
+        assert!(stats.loss.expect("loss") > 0.0);
+        assert!((stats.oracle_keep_prob - 0.5).abs() < 1e-6);
+        assert!((stats.kept_oracle_fraction - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_policy_agreement_range() {
         let device: <NdArray<f32> as Backend>::Device = Default::default();
         let model = HydraModelConfig::actor().init::<NdArray<f32>>(&device);
         let x = Tensor::<NdArray<f32>, 3>::random(
-            [32, 85, 34],
+            [32, crate::config::INPUT_CHANNELS, 34],
             burn::tensor::Distribution::Normal(0.0, 0.1),
             &device,
         );
@@ -312,6 +526,44 @@ mod tests {
         let targets = Tensor::<NdArray<f32>, 1, Int>::from_ints(&[0i32; 32][..], &device);
         let acc = policy_agreement(output.policy_logits, mask, targets);
         assert!((0.0..=1.0).contains(&acc), "agreement {acc} out of [0,1]");
+    }
+
+    #[test]
+    fn test_train_epoch_reports_policy_agreement() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<TestBackend>(&device);
+        let obs = Tensor::<TestBackend, 3>::random(
+            [4, crate::config::INPUT_CHANNELS, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let output = model.forward(obs.clone());
+        let predicted = output.policy_logits.argmax(1).squeeze_dim::<1>(1).to_data();
+        let predicted = predicted.as_slice::<i64>().expect("i64");
+        let mut policy_target = vec![0.0f32; predicted.len() * 46];
+        for (row, &action) in predicted.iter().enumerate() {
+            policy_target[row * 46 + action as usize] = 1.0;
+        }
+
+        let mut targets = make_dummy_targets::<TestBackend>(&device, predicted.len());
+        targets.policy_target =
+            Tensor::<TestBackend, 1>::from_floats(policy_target.as_slice(), &device)
+                .reshape([predicted.len(), 46]);
+
+        let batches = vec![(obs, targets)];
+        let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
+        let mut optimizer = bc_optimizer();
+        let (_, stats) = train_epoch(model, &batches, &loss_fn, 1e-6, &mut optimizer);
+
+        assert!(
+            (stats.policy_agreement - 1.0).abs() < 1e-6,
+            "agreement should reflect matching targets, got {}",
+            stats.policy_agreement
+        );
     }
 
     #[test]
@@ -324,7 +576,7 @@ mod tests {
             .with_num_groups(4)
             .init::<NdArray<f32>>(&device);
         let x = Tensor::<NdArray<f32>, 3>::random(
-            [2, 85, 34],
+            [2, crate::config::INPUT_CHANNELS, 34],
             burn::tensor::Distribution::Normal(0.0, 0.1),
             &device,
         );

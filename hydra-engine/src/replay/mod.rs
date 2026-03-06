@@ -22,9 +22,11 @@ use crate::types::{Conditions, Meld};
 pub mod mjai_replay;
 pub mod mjsoul_replay;
 
-pub use mjai_replay::MjaiEvent;
 #[cfg(feature = "python")]
 pub use mjai_replay::MjaiReplay;
+pub use mjai_replay::{
+    load_mjai_events_from_path, mjai_event_actor, mjai_event_to_action, read_mjai_events, MjaiEvent,
+};
 #[cfg(feature = "python")]
 pub use mjsoul_replay::MjSoulReplay;
 
@@ -162,20 +164,12 @@ impl KyokuStepIterator {
                     ..
                 } => {
                     let pid = *seat as u8;
-                    let env_action = EnvAction::new(
-                        crate::action::ActionType::Discard,
-                        Some(*tile),
-                        &[],
-                        None,
-                    );
+                    let env_action =
+                        EnvAction::new(crate::action::ActionType::Discard, Some(*tile), &[], None);
 
                     if *is_liqi {
-                        let riichi_action = EnvAction::new(
-                            crate::action::ActionType::Riichi,
-                            None,
-                            &[],
-                            None,
-                        );
+                        let riichi_action =
+                            EnvAction::new(crate::action::ActionType::Riichi, None, &[], None);
 
                         let obs = slf.state.get_observation_for_replay(
                             pid,

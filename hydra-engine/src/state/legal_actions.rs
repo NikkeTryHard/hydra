@@ -52,8 +52,7 @@ impl GameStateLegalActions for GameState {
                         &hand,
                         self.players[pid_us].melds_slice(),
                     );
-                    let res =
-                        calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
+                    let res = calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
                     if res.is_win && (res.yakuman || res.han >= 1) {
                         legals.push(Action::new(ActionType::Tsumo, Some(tile), &[], Some(pid)));
                     }
@@ -203,7 +202,7 @@ impl GameStateLegalActions for GameState {
             // But here we emulate generic rules.
             // Original code: if self.is_first_turn && self.melds.iter().all(|m| m.is_empty()) -> This meant check all players' melds?
             // In original GameState, melds was [Vec<Meld>; 4]. so self.melds.iter().all... checked all 4 vectors.
-            let no_calls = self.players.iter().all(|p| p.meld_count == 0 );
+            let no_calls = self.players.iter().all(|p| p.meld_count == 0);
 
             if self.is_first_turn && no_calls && !self.players[pid_us].riichi_stage {
                 let mut terminal_bits: u64 = 0;
@@ -276,8 +275,7 @@ impl GameStateLegalActions for GameState {
                         &temp[..temp_len],
                         self.players[pid_us].melds_slice(),
                     );
-                    let res =
-                        calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
+                    let res = calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
                     if res.is_win && (res.yakuman || res.han >= 1) {
                         buf.push(Action::new(ActionType::Tsumo, Some(tile), &[], Some(pid)));
                     }
@@ -430,8 +428,10 @@ impl GameStateLegalActions for GameState {
                                 -1,
                                 None,
                             ));
-                            let calc_post =
-                                crate::hand_evaluator::HandEvaluator::new(&post[..post_len], &melds_post);
+                            let calc_post = crate::hand_evaluator::HandEvaluator::new(
+                                &post[..post_len],
+                                &melds_post,
+                            );
                             let mut waits_post = calc_post.get_waits();
                             waits_post.sort();
 
@@ -450,7 +450,7 @@ impl GameStateLegalActions for GameState {
             }
 
             // 4. Kyushu Kyuhai (Abortive Draw)
-            let no_calls = self.players.iter().all(|p| p.meld_count == 0 );
+            let no_calls = self.players.iter().all(|p| p.meld_count == 0);
 
             if self.is_first_turn && no_calls && !self.players[pid_us].riichi_stage {
                 let mut terminal_bits: u64 = 0;
@@ -481,7 +481,9 @@ impl GameStateLegalActions for GameState {
 
         // 1. Ron
         let tile_class = tile / 4;
-        let in_discards = self.players[i_us].discards_slice().iter()
+        let in_discards = self.players[i_us]
+            .discards_slice()
+            .iter()
             .any(|&d| d / 4 == tile_class);
         let in_missed = self.players[i_us].missed_agari_doujun
             || (self.players[i_us].riichi_declared && self.players[i_us].missed_agari_riichi);
@@ -781,10 +783,10 @@ impl GameState {
 
         // 1. Ron
         let tile_class = tile / 4;
-        let in_discards = discards_buf[..discard_len].iter()
+        let in_discards = discards_buf[..discard_len]
+            .iter()
             .any(|&d| d / 4 == tile_class);
-        let in_missed = missed_agari_doujun
-            || (riichi_declared && missed_agari_riichi);
+        let in_missed = missed_agari_doujun || (riichi_declared && missed_agari_riichi);
 
         if !in_discards && !in_missed {
             let calc = crate::hand_evaluator::HandEvaluator::new(hand, melds);
@@ -882,12 +884,10 @@ impl GameState {
                             seen_len += 1;
                             let consumes = [pair.0, pair.1];
                             if check_pon_kuikae(&consumes) {
-                                self.push_claim(i_us, Action::new(
-                                    ActionType::Pon,
-                                    Some(tile),
-                                    &consumes,
-                                    Some(i),
-                                ));
+                                self.push_claim(
+                                    i_us,
+                                    Action::new(ActionType::Pon, Some(tile), &consumes, Some(i)),
+                                );
                             }
                         }
                     }
@@ -905,22 +905,16 @@ impl GameState {
                         }
                     }
                 }
-                self.push_claim(i_us, Action::new(
-                    ActionType::Daiminkan,
-                    Some(tile),
-                    &consumes,
-                    Some(i),
-                ));
+                self.push_claim(
+                    i_us,
+                    Action::new(ActionType::Daiminkan, Some(tile), &consumes, Some(i)),
+                );
             }
         }
 
         // 3. Chi
         let is_shimocha = i == (pid + 1) % 4;
-        if !riichi_declared
-            && self.wall.remaining() > 14
-            && is_shimocha
-            && hand.len() >= 3
-        {
+        if !riichi_declared && self.wall.remaining() > 14 && is_shimocha && hand.len() >= 3 {
             let t_val = tile / 4;
             if t_val < 27 {
                 let check_chi_kuikae = |c1: u8, c2: u8| -> bool {
@@ -981,12 +975,10 @@ impl GameState {
                     for &c1 in &c1_opts[..c1_len as usize] {
                         for &c2 in &c2_opts[..c2_len as usize] {
                             if check_chi_kuikae(c1, c2) {
-                                self.push_claim(i_us, Action::new(
-                                    ActionType::Chi,
-                                    Some(tile),
-                                    &[c1, c2],
-                                    Some(i),
-                                ));
+                                self.push_claim(
+                                    i_us,
+                                    Action::new(ActionType::Chi, Some(tile), &[c1, c2], Some(i)),
+                                );
                             }
                         }
                     }
@@ -1009,12 +1001,10 @@ impl GameState {
                     for &c1 in &c1_opts[..c1_len as usize] {
                         for &c2 in &c2_opts[..c2_len as usize] {
                             if check_chi_kuikae(c1, c2) {
-                                self.push_claim(i_us, Action::new(
-                                    ActionType::Chi,
-                                    Some(tile),
-                                    &[c1, c2],
-                                    Some(i),
-                                ));
+                                self.push_claim(
+                                    i_us,
+                                    Action::new(ActionType::Chi, Some(tile), &[c1, c2], Some(i)),
+                                );
                             }
                         }
                     }
@@ -1037,19 +1027,16 @@ impl GameState {
                     for &c1 in &c1_opts[..c1_len as usize] {
                         for &c2 in &c2_opts[..c2_len as usize] {
                             if check_chi_kuikae(c1, c2) {
-                                self.push_claim(i_us, Action::new(
-                                    ActionType::Chi,
-                                    Some(tile),
-                                    &[c1, c2],
-                                    Some(i),
-                                ));
+                                self.push_claim(
+                                    i_us,
+                                    Action::new(ActionType::Chi, Some(tile), &[c1, c2], Some(i)),
+                                );
                             }
                         }
                     }
                 }
             }
         }
-
 
         (self.current_claim_counts[i_us] as usize, missed_agari)
     }

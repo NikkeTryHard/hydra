@@ -4,7 +4,6 @@
 //! WaitAct/WaitResponse handling, SafetyInfo updates, and
 //! policy-driven action selection.
 
-
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
@@ -131,7 +130,9 @@ impl GameRunner {
             Phase::WaitAct => {
                 let pid = self.state.current_player;
                 self.state.get_legal_actions_into(pid, &mut self.legal_buf);
-                if self.legal_buf.is_empty() { return false; }
+                if self.legal_buf.is_empty() {
+                    return false;
+                }
                 let chosen = selector.select_action(pid, &self.legal_buf);
                 self.track_action(pid, &chosen);
                 self.actions[pid as usize] = Some(chosen);
@@ -142,7 +143,9 @@ impl GameRunner {
                 pids[..n].copy_from_slice(self.state.active_player_slice());
                 for &pid in &pids[..n] {
                     self.state.get_legal_actions_into(pid, &mut self.legal_buf);
-                    if self.legal_buf.is_empty() { continue; }
+                    if self.legal_buf.is_empty() {
+                        continue;
+                    }
                     let chosen = selector.select_action(pid, &self.legal_buf);
                     self.track_action(pid, &chosen);
                     self.actions[pid as usize] = Some(chosen);
@@ -170,7 +173,11 @@ impl GameRunner {
                     let is_tedashi = !is_tsumogiri;
                     // Update safety from each OTHER player's perspective
                     for observer in 0..4u8 {
-                        if observer == actor { continue; }
+                        if observer == actor {
+                            continue;
+                        }
+                        // Relative-opponent slots are ordered as left-to-right opponents
+                        // from the observer's perspective: [observer+1, +2, +3] mod 4.
                         let opp_idx = ((actor + 4 - observer) % 4).wrapping_sub(1) as usize;
                         if opp_idx < 3 {
                             self.safety[observer as usize]
@@ -191,7 +198,9 @@ impl GameRunner {
             }
             ActionType::Riichi => {
                 for observer in 0..4u8 {
-                    if observer == actor { continue; }
+                    if observer == actor {
+                        continue;
+                    }
                     let opp_idx = ((actor + 4 - observer) % 4).wrapping_sub(1) as usize;
                     if opp_idx < 3 {
                         self.safety[observer as usize].on_riichi(opp_idx);
@@ -211,6 +220,8 @@ impl GameRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::safety::bit_test;
+    use riichienv_core::action::{Action, ActionType};
 
     #[test]
     fn game_completes_with_first_action() {
@@ -218,8 +229,11 @@ mod tests {
         let mut selector = FirstActionSelector;
         runner.run_to_completion(&mut selector);
         assert!(runner.is_done());
-        assert!(runner.total_actions() > 20,
-            "expected realistic action count, got {}", runner.total_actions());
+        assert!(
+            runner.total_actions() > 20,
+            "expected realistic action count, got {}",
+            runner.total_actions()
+        );
     }
 
     #[test]
@@ -227,7 +241,9 @@ mod tests {
         let mut runner = GameRunner::new(Some(42), 0);
         let mut selector = FirstActionSelector;
         for _ in 0..20 {
-            if !runner.step_once(&mut selector) { break; }
+            if !runner.step_once(&mut selector) {
+                break;
+            }
         }
         let has_safety_data = (0..4).any(|p| {
             let s = runner.safety(p);
@@ -242,8 +258,11 @@ mod tests {
         let mut selector = FirstActionSelector;
         runner.run_to_completion(&mut selector);
         let sum: i32 = runner.scores().iter().sum();
-        assert!((90_000..=110_000).contains(&sum),
-            "score sum {} outside plausible range", sum);
+        assert!(
+            (90_000..=110_000).contains(&sum),
+            "score sum {} outside plausible range",
+            sum
+        );
     }
 
     #[test]
@@ -272,12 +291,32 @@ mod tests {
         let mut runner = GameRunner::new(Some(42), 0);
         let mut selector = FirstActionSelector;
         for _ in 0..50 {
-            if !runner.step_once(&mut selector) { break; }
+            if !runner.step_once(&mut selector) {
+                break;
+            }
         }
         let has_tedashi = (0..4).any(|p| {
             let s = runner.safety(p);
             s.genbutsu_tedashi.iter().any(|&bits| bits != 0)
         });
-        assert!(has_tedashi, "at least one tedashi should be detected after 50 steps");
+        assert!(
+            has_tedashi,
+            "at least one tedashi should be detected after 50 steps"
+        );
+    }
+
+    #[test]
+    fn track_action_maps_actor_to_relative_opponent_slot() {
+        let mut runner = GameRunner::new(Some(7), 0);
+        runner.state.drawn_tile = None;
+        let discard = Action::new(ActionType::Discard, Some(6 * 4), &[], None);
+
+        runner.track_action(2, &discard);
+
+        assert!(bit_test(runner.safety(0).genbutsu_all[1], 6));
+        assert!(bit_test(runner.safety(1).genbutsu_all[0], 6));
+        assert!(bit_test(runner.safety(3).genbutsu_all[2], 6));
+        assert!(!bit_test(runner.safety(0).genbutsu_all[0], 6));
+        assert!(!bit_test(runner.safety(0).genbutsu_all[2], 6));
     }
 }

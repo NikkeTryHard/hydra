@@ -56,7 +56,11 @@ fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
 }
 
 /// Simulate a single game, reusing the provided legal-action buffer.
-fn simulate_single_game_with_buf(seed: Option<u64>, game_mode: u8, legal_buf: &mut Vec<Action>) -> GameResult {
+fn simulate_single_game_with_buf(
+    seed: Option<u64>,
+    game_mode: u8,
+    legal_buf: &mut Vec<Action>,
+) -> GameResult {
     let rule = GameRule::default_tenhou();
     let mut state = GameState::new(game_mode, true, seed, 0, rule);
     let mut total_actions: u32 = 0;
@@ -67,12 +71,10 @@ fn simulate_single_game_with_buf(seed: Option<u64>, game_mode: u8, legal_buf: &m
 
     let mut actions: [Option<Action>; 4];
 
-
     while !state.is_done && total_actions < MAX_STEPS {
         // When a round ends, step() auto-initializes the next round.
         if state.needs_initialize_next_round {
-state.step_unchecked(&[None;
-4]);
+            state.step_unchecked(&[None; 4]);
             rounds += 1;
             continue;
         }
@@ -185,8 +187,11 @@ mod tests {
         let result = simulate_single_game(Some(42), 0);
         assert!(result.total_actions > 0, "game should have actions");
         assert!(result.rounds_played > 0, "game should have rounds");
-        assert!(result.total_actions > 10,
-            "game had only {} actions, expected more than 10", result.total_actions);
+        assert!(
+            result.total_actions > 10,
+            "game had only {} actions, expected more than 10",
+            result.total_actions
+        );
     }
 
     #[test]
@@ -245,8 +250,10 @@ mod tests {
     fn game_has_realistic_action_count() {
         // A full hanchan with first-legal-action should have 50-500 actions.
         let result = simulate_single_game(Some(42), 0);
-        assert!(result.total_actions > 20,
-            "game had only {} actions, expected realistic count", result.total_actions);
+        assert!(
+            result.total_actions > 20,
+            "game had only {} actions, expected realistic count",
+            result.total_actions
+        );
     }
-
 }

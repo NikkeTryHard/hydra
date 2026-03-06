@@ -2,7 +2,16 @@
 
 use burn::prelude::*;
 use burn::tensor::activation;
-use hydra_core::action::HYDRA_ACTION_SPACE;
+use dashmap::DashMap;
+use hydra_core::action::{AGARI, HYDRA_ACTION_SPACE};
+use hydra_core::afbs::PonderResult;
+use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
+use std::sync::Arc;
+
+use crate::model::ActorNet;
+use crate::saf::{SafConfig, SafMlp, apply_saf_logit, saf_tensor_from_observation};
+
+pub const OBS_FLAT_SIZE: usize = NUM_CHANNELS * NUM_TILES;
 
 pub struct InferenceConfig {
     pub on_turn_budget_ms: u64,
@@ -26,6 +35,156 @@ impl InferenceConfig {
             "infer(turn={}ms, call={}ms, guard={})",
             self.on_turn_budget_ms, self.call_reaction_budget_ms, self.agari_guard
         )
+    }
+}
+
+pub struct InferenceServer<B: Backend> {
+    pub actor: ActorNet<B>,
+    pub ponder_cache: Arc<DashMap<u64, PonderResult>>,
+    pub saf_mlp: SafMlp<B>,
+    pub config: InferenceConfig,
+    saf_alpha: f32,
+    device: B::Device,
+}
+
+impl<B: Backend> InferenceServer<B> {
+    pub fn new(
+        actor: ActorNet<B>,
+        ponder_cache: Arc<DashMap<u64, PonderResult>>,
+        saf_mlp: SafMlp<B>,
+        saf_alpha: f32,
+        config: InferenceConfig,
+        device: B::Device,
+    ) -> Self {
+        Self {
+            actor,
+            ponder_cache,
+            saf_mlp,
+            config,
+            saf_alpha,
+            device,
+        }
+    }
+
+    pub fn from_configs(
+        actor: ActorNet<B>,
+        saf_config: &SafConfig,
+        config: InferenceConfig,
+        device: B::Device,
+    ) -> Self {
+        let saf_alpha = saf_config.alpha;
+        let saf_mlp = saf_config.init(&device);
+        Self::new(
+            actor,
+            Arc::new(DashMap::new()),
+            saf_mlp,
+            saf_alpha,
+            config,
+            device,
+        )
+    }
+
+    pub fn info_state_hash(obs: &[f32; OBS_FLAT_SIZE]) -> u64 {
+        obs.iter().fold(0xcbf29ce484222325, |hash, value| {
+            hash.wrapping_mul(0x100000001b3) ^ value.to_bits() as u64
+        })
+    }
+
+    pub fn cache_ponder_result(&self, info_state_hash: u64, result: PonderResult) {
+        self.ponder_cache.insert(info_state_hash, result);
+    }
+
+    pub fn lookup_ponder(&self, info_state_hash: u64) -> Option<PonderResult> {
+        self.ponder_cache
+            .get(&info_state_hash)
+            .map(|entry| *entry.value())
+    }
+
+    pub fn infer(
+        &self,
+        obs: &[f32; OBS_FLAT_SIZE],
+        legal: &[bool; HYDRA_ACTION_SPACE],
+    ) -> (u8, [f32; HYDRA_ACTION_SPACE]) {
+        let (action, policy, _) = self.infer_timed(obs, legal);
+        (action, policy)
+    }
+
+    pub fn infer_call_reaction(
+        &self,
+        obs: &[f32; OBS_FLAT_SIZE],
+        legal: &[bool; HYDRA_ACTION_SPACE],
+    ) -> (u8, [f32; HYDRA_ACTION_SPACE]) {
+        let (action, policy, _) = self.infer_call_reaction_timed(obs, legal);
+        (action, policy)
+    }
+
+    pub fn infer_timed(
+        &self,
+        obs: &[f32; OBS_FLAT_SIZE],
+        legal: &[bool; HYDRA_ACTION_SPACE],
+    ) -> (u8, [f32; HYDRA_ACTION_SPACE], bool) {
+        self.infer_with_budget(obs, legal, self.config.on_turn_budget_ms)
+    }
+
+    pub fn infer_call_reaction_timed(
+        &self,
+        obs: &[f32; OBS_FLAT_SIZE],
+        legal: &[bool; HYDRA_ACTION_SPACE],
+    ) -> (u8, [f32; HYDRA_ACTION_SPACE], bool) {
+        self.infer_with_budget(obs, legal, self.config.call_reaction_budget_ms)
+    }
+
+    fn infer_with_budget(
+        &self,
+        obs: &[f32; OBS_FLAT_SIZE],
+        legal: &[bool; HYDRA_ACTION_SPACE],
+        budget_ms: u64,
+    ) -> (u8, [f32; HYDRA_ACTION_SPACE], bool) {
+        let start = std::time::Instant::now();
+        let info_state_hash = Self::info_state_hash(obs);
+
+        if let Some(pondered) = self.lookup_ponder(info_state_hash) {
+            let policy = mask_policy_cpu(&pondered.exit_policy, legal);
+            let action = self.guard_action(argmax_legal(&policy, legal), legal);
+            let within = start.elapsed().as_millis() as u64 <= budget_ms;
+            return (action, policy, within);
+        }
+
+        let input = Tensor::<B, 1>::from_floats(obs.as_slice(), &self.device).reshape([
+            1,
+            NUM_CHANNELS,
+            NUM_TILES,
+        ]);
+        let base_logits = self.actor.policy_logits_for(input);
+        let logits = self.apply_saf_fast_path(base_logits, obs, legal);
+        let (action, policy, within) = infer_action_timed(logits, legal, budget_ms);
+        (self.guard_action(action, legal), policy, within)
+    }
+
+    fn apply_saf_fast_path(
+        &self,
+        base_logits: Tensor<B, 2>,
+        obs: &[f32; OBS_FLAT_SIZE],
+        legal: &[bool; HYDRA_ACTION_SPACE],
+    ) -> Tensor<B, 2> {
+        let saf_features = saf_tensor_from_observation::<B>(obs.as_slice(), &self.device);
+        let saf_delta = self
+            .saf_mlp
+            .forward(saf_features)
+            .reshape([1, HYDRA_ACTION_SPACE]);
+        let mask_tensor = legal_mask_to_tensor(legal, &self.device);
+        apply_saf_logit(base_logits, saf_delta, mask_tensor, self.saf_alpha)
+    }
+
+    fn guard_action(&self, action: u8, legal: &[bool; HYDRA_ACTION_SPACE]) -> u8 {
+        if self.config.agari_guard && action == AGARI && !legal[action as usize] {
+            return argmax_legal(&mask_policy_cpu(&[0.0; HYDRA_ACTION_SPACE], legal), legal);
+        }
+        if legal[action as usize] {
+            action
+        } else {
+            argmax_legal(&mask_policy_cpu(&[0.0; HYDRA_ACTION_SPACE], legal), legal)
+        }
     }
 }
 
@@ -70,6 +229,37 @@ pub fn normalize_policy_cpu(
         }
     }
     probs
+}
+
+pub fn mask_policy_cpu(
+    policy: &[f32; HYDRA_ACTION_SPACE],
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+) -> [f32; HYDRA_ACTION_SPACE] {
+    let mut masked = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut total = 0.0f32;
+    for i in 0..HYDRA_ACTION_SPACE {
+        if legal_mask[i] {
+            masked[i] = policy[i].max(0.0);
+            total += masked[i];
+        }
+    }
+    if total > 0.0 {
+        for value in &mut masked {
+            *value /= total;
+        }
+        return masked;
+    }
+
+    let legal_count = legal_mask.iter().filter(|&&m| m).count();
+    if legal_count > 0 {
+        let uniform = 1.0 / legal_count as f32;
+        for (i, value) in masked.iter_mut().enumerate() {
+            if legal_mask[i] {
+                *value = uniform;
+            }
+        }
+    }
+    masked
 }
 
 pub fn validate_legal_mask(mask: &[bool; HYDRA_ACTION_SPACE]) -> bool {
@@ -230,6 +420,16 @@ mod tests {
 
     type B = NdArray<f32>;
 
+    fn make_server(device: &<B as Backend>::Device) -> InferenceServer<B> {
+        let actor = crate::model::HydraModelConfig::actor().init::<B>(device);
+        InferenceServer::from_configs(
+            actor,
+            &SafConfig::new(),
+            InferenceConfig::default(),
+            *device,
+        )
+    }
+
     #[test]
     fn inference_picks_legal_action() {
         let device = Default::default();
@@ -317,6 +517,20 @@ mod tests {
     }
 
     #[test]
+    fn mask_policy_cpu_renormalizes_legal_mass() {
+        let mut policy = [0.0f32; HYDRA_ACTION_SPACE];
+        policy[1] = 0.8;
+        policy[2] = 0.2;
+        let mut legal = [false; HYDRA_ACTION_SPACE];
+        legal[2] = true;
+        legal[3] = true;
+        let masked = mask_policy_cpu(&policy, &legal);
+        assert_eq!(masked[1], 0.0);
+        assert!((masked[2] - 1.0).abs() < 1e-6);
+        assert_eq!(masked[3], 0.0);
+    }
+
+    #[test]
     fn sample_from_policy_respects_distribution() {
         let mut probs = [0.0f32; HYDRA_ACTION_SPACE];
         probs[0] = 0.7;
@@ -331,7 +545,7 @@ mod tests {
     fn inference_respects_time_budget() {
         let device = Default::default();
         let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
-        let x = Tensor::<B, 3>::zeros([1, 85, 34], &device);
+        let x = Tensor::<B, 3>::zeros([1, NUM_CHANNELS, 34], &device);
         let out = model.forward(x);
         let mut mask = [true; HYDRA_ACTION_SPACE];
         mask[45] = false;
@@ -340,6 +554,69 @@ mod tests {
         let sum: f32 = policy.iter().sum();
         assert!((sum - 1.0).abs() < 0.01, "policy sum: {sum}");
         assert!(within, "5s budget should be plenty for CPU inference");
+    }
+
+    #[test]
+    fn inference_server_respects_time_budget() {
+        let device = Default::default();
+        let mut server = make_server(&device);
+        server.config.on_turn_budget_ms = 5_000;
+        let obs = [0.0f32; OBS_FLAT_SIZE];
+        let mut legal = [false; HYDRA_ACTION_SPACE];
+        legal[0] = true;
+        legal[1] = true;
+        let (action, policy, within) = server.infer_timed(&obs, &legal);
+        assert!(legal[action as usize]);
+        assert!(
+            within,
+            "5s budget should be sufficient for fast-path inference"
+        );
+        assert!((policy.iter().sum::<f32>() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn inference_server_reuses_cached_ponder_policy() {
+        let device = Default::default();
+        let server = make_server(&device);
+        let obs = [0.0f32; OBS_FLAT_SIZE];
+        let hash = InferenceServer::<B>::info_state_hash(&obs);
+        let mut exit_policy = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_policy[5] = 0.9;
+        exit_policy[6] = 0.1;
+        server.cache_ponder_result(
+            hash,
+            PonderResult {
+                exit_policy,
+                value: 0.3,
+                search_depth: 5,
+                visit_count: 64,
+                timestamp: std::time::Instant::now(),
+            },
+        );
+        let mut legal = [false; HYDRA_ACTION_SPACE];
+        legal[5] = true;
+        legal[6] = true;
+        let (action, policy) = server.infer(&obs, &legal);
+        assert_eq!(action, 5);
+        assert!(policy[5] > policy[6]);
+    }
+
+    #[test]
+    fn inference_server_uses_call_reaction_budget() {
+        let device = Default::default();
+        let mut server = make_server(&device);
+        server.config.call_reaction_budget_ms = 5_000;
+        let obs = [0.0f32; OBS_FLAT_SIZE];
+        let mut legal = [false; HYDRA_ACTION_SPACE];
+        legal[3] = true;
+        legal[4] = true;
+        let (action, policy, within) = server.infer_call_reaction_timed(&obs, &legal);
+        assert!(legal[action as usize]);
+        assert!(
+            within,
+            "call reaction inference should honor the call budget"
+        );
+        assert!((policy.iter().sum::<f32>() - 1.0).abs() < 0.01);
     }
 
     #[test]

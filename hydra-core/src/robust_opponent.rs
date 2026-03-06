@@ -156,6 +156,17 @@ pub fn calibrate_epsilon(observed_kl_samples: &[f32], quantile: f32) -> f32 {
     sorted[idx]
 }
 
+pub fn kl_divergence(q: &[f32], p: &[f32]) -> f32 {
+    assert_eq!(q.len(), p.len());
+    let mut kl = 0.0f32;
+    for (&qi, &pi) in q.iter().zip(p.iter()) {
+        if qi > 1e-10 && pi > 1e-10 {
+            kl += qi * (qi / pi).ln();
+        }
+    }
+    kl
+}
+
 pub fn find_robust_tau(p: &[f32], q_values: &[f32], epsilon: f32, iters: u8) -> (f32, Vec<f32>) {
     assert_eq!(p.len(), q_values.len());
     let n = p.len();
@@ -199,6 +210,26 @@ pub fn find_robust_tau(p: &[f32], q_values: &[f32], epsilon: f32, iters: u8) -> 
         best_q = q_tau;
     }
     (best_tau, best_q)
+}
+
+pub fn robust_policy(p: &[f32], q_values: &[f32], epsilon: f32, iters: u8) -> Vec<f32> {
+    let (_, q_tau) = find_robust_tau(p, q_values, epsilon, iters);
+    q_tau
+}
+
+pub fn expected_q_value(policy: &[f32], q_values: &[f32]) -> f32 {
+    assert_eq!(policy.len(), q_values.len());
+    policy
+        .iter()
+        .zip(q_values.iter())
+        .map(|(&w, &q)| w * q)
+        .sum()
+}
+
+pub fn robust_backup(p: &[f32], q_values: &[f32], epsilon: f32, iters: u8) -> (f32, f32, Vec<f32>) {
+    let (tau, q_tau) = find_robust_tau(p, q_values, epsilon, iters);
+    let value = expected_q_value(&q_tau, q_values);
+    (tau, value, q_tau)
 }
 
 pub fn archetype_softmin(q_per_arch: &[Vec<f32>], weights: &[f32], tau_arch: f32) -> Vec<f32> {
@@ -318,6 +349,35 @@ mod tests {
                 q_tau[i],
                 p[i]
             );
+        }
+    }
+
+    #[test]
+    fn kl_divergence_zero_for_equal_distributions() {
+        let p = [0.2, 0.3, 0.5];
+        assert!(kl_divergence(&p, &p) < 1e-8);
+    }
+
+    #[test]
+    fn robust_backup_is_not_above_prior_expectation() {
+        let p = vec![0.2, 0.5, 0.3];
+        let q = vec![3.0, 1.0, 2.0];
+        let prior_value = expected_q_value(&p, &q);
+        let (_, robust_value, q_tau) = robust_backup(&p, &q, 0.1, 24);
+        assert!(robust_value <= prior_value + 1e-4);
+        assert!((q_tau.iter().sum::<f32>() - 1.0).abs() < 0.01);
+        assert!(kl_divergence(&q_tau, &p) <= 0.11);
+    }
+
+    #[test]
+    fn robust_policy_matches_backup_policy() {
+        let p = vec![0.25, 0.25, 0.25, 0.25];
+        let q = vec![4.0, 1.0, 3.0, 2.0];
+        let policy = robust_policy(&p, &q, 0.05, 20);
+        let (_, _, backup_policy) = robust_backup(&p, &q, 0.05, 20);
+        assert_eq!(policy.len(), backup_policy.len());
+        for i in 0..policy.len() {
+            assert!((policy[i] - backup_policy[i]).abs() < 1e-6);
         }
     }
 }

@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(TileType::new(8).unwrap().number(), Some(9)); // 9m
         assert_eq!(TileType::new(9).unwrap().number(), Some(1)); // 1p
         assert_eq!(TileType::new(22).unwrap().number(), Some(5)); // 5s
-                                                                  // Honors have no number
+        // Honors have no number
         assert_eq!(TileType::new(27).unwrap().number(), None);
         assert_eq!(TileType::new(33).unwrap().number(), None);
     }
@@ -385,7 +385,7 @@ mod tests {
         assert!(tile136_is_aka(16)); // red 5m
         assert!(tile136_is_aka(52)); // red 5p
         assert!(tile136_is_aka(88)); // red 5s
-                                     // Non-aka copies of the same tile types
+        // Non-aka copies of the same tile types
         assert!(!tile136_is_aka(17)); // normal 5m
         assert!(!tile136_is_aka(18)); // normal 5m
         assert!(!tile136_is_aka(53)); // normal 5p
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(deaka(34), 4); // aka 5m -> 5m
         assert_eq!(deaka(35), 13); // aka 5p -> 5p
         assert_eq!(deaka(36), 22); // aka 5s -> 5s
-                                   // Non-aka pass through
+        // Non-aka pass through
         assert_eq!(deaka(0), 0);
         assert_eq!(deaka(4), 4);
         assert_eq!(deaka(33), 33);
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn permute_tile136_preserves_aka() {
         let perm = &ALL_PERMUTATIONS[2]; // swap man-pin
-                                         // Red 5m (136-idx 16) -> should become red 5p (136-idx 52)
+        // Red 5m (136-idx 16) -> should become red 5p (136-idx 52)
         let result = permute_tile136(AKA_MANZU_136, perm);
         assert_eq!(result, AKA_PINZU_136);
         assert!(tile136_is_aka(result), "aka status should be preserved");

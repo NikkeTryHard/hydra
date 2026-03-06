@@ -174,7 +174,6 @@ impl PlayerState3P {
         self.pao_count = 0;
     }
 
-
     // ---- forbidden_discards helpers ----
 
     /// Returns the current forbidden discards as a slice.
@@ -210,5 +209,4 @@ impl PlayerState3P {
         self.kita_tiles[self.kita_count as usize] = tile;
         self.kita_count += 1;
     }
-
 }

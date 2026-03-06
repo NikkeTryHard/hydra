@@ -2,7 +2,39 @@
 
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
-use hydra_core::encoder::OBS_SIZE;
+use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
+use hydra_core::tile::permute_tile_type;
+
+fn permute_tile_vector_34(values: &[f32; 34], perm: &[u8; 3]) -> [f32; 34] {
+    let mut out = [0.0f32; 34];
+    for (tile, &value) in values.iter().enumerate() {
+        let new_tile = permute_tile_type(tile as u8, perm) as usize;
+        out[new_tile] = value;
+    }
+    out
+}
+
+fn permute_opp_next_targets(opp_next: [u8; 3], perm: &[u8; 3]) -> [u8; 3] {
+    let mut out = opp_next;
+    for tile in &mut out {
+        if *tile < 34 {
+            *tile = permute_tile_type(*tile, perm);
+        }
+    }
+    out
+}
+
+fn permute_spatial_targets_3x34(values: [f32; 102], perm: &[u8; 3]) -> [f32; 102] {
+    let mut out = [0.0f32; 102];
+    for opp in 0..3usize {
+        let start = opp * 34;
+        let mut chunk = [0.0f32; 34];
+        chunk.copy_from_slice(&values[start..start + 34]);
+        let permuted = permute_tile_vector_34(&chunk, perm);
+        out[start..start + 34].copy_from_slice(&permuted);
+    }
+    out
+}
 
 pub struct MjaiSample {
     pub obs: [f32; OBS_SIZE],
@@ -142,7 +174,11 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     }
 
     MjaiBatch {
-        obs: Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([batch, 85, 34]),
+        obs: Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([
+            batch,
+            NUM_CHANNELS,
+            34,
+        ]),
         actions: Tensor::<B, 1, Int>::from_ints(actions.as_slice(), device),
         legal_mask: Tensor::<B, 1>::from_floats(mask_flat.as_slice(), device)
             .reshape([batch, HYDRA_ACTION_SPACE]),
@@ -207,9 +243,9 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
                 score_delta: sample.score_delta,
                 grp_label: sample.grp_label,
                 tenpai: sample.tenpai,
-                opp_next: sample.opp_next,
-                danger: sample.danger,
-                danger_mask: sample.danger_mask,
+                opp_next: permute_opp_next_targets(sample.opp_next, perm),
+                danger: permute_spatial_targets_3x34(sample.danger, perm),
+                danger_mask: permute_spatial_targets_3x34(sample.danger_mask, perm),
             });
         }
     }
@@ -286,7 +322,7 @@ mod tests {
             .map(|i| dummy_sample(i % 34, 1000 * i as i32))
             .collect();
         let batch = collate_batch::<B>(&samples, &device);
-        assert_eq!(batch.obs.dims(), [32, 85, 34]);
+        assert_eq!(batch.obs.dims(), [32, NUM_CHANNELS, 34]);
         assert_eq!(batch.actions.dims(), [32]);
         assert_eq!(batch.legal_mask.dims(), [32, 46]);
         assert_eq!(batch.value_target.dims(), [32]);
@@ -359,7 +395,7 @@ mod tests {
         let device = Default::default();
         let samples = vec![dummy_sample(5, 12000)];
         let batch = collate_batch::<B>(&samples, &device);
-        assert_eq!(batch.obs.dims(), [1, 85, 34]);
+        assert_eq!(batch.obs.dims(), [1, NUM_CHANNELS, 34]);
         assert_eq!(batch.actions.dims(), [1]);
         let action_data = batch.actions.to_data();
         assert_eq!(action_data.as_slice::<i64>().expect("i64")[0], 5);
@@ -386,5 +422,33 @@ mod tests {
         assert_eq!(score_to_placement([40000, 30000, 20000, 10000], 0), 0);
         assert_eq!(score_to_placement([40000, 30000, 20000, 10000], 3), 3);
         assert_eq!(score_to_placement([25000, 25000, 25000, 25000], 0), 0);
+    }
+
+    #[test]
+    fn augment_samples_6x_permutes_aux_tile_targets() {
+        use hydra_core::tile::ALL_PERMUTATIONS;
+
+        let mut sample = dummy_sample(0, 0);
+        sample.obs = [0.0; OBS_SIZE];
+        sample.opp_next = [0, 9, 27];
+        sample.danger[0] = 0.25;
+        sample.danger[34 + 9] = 0.5;
+        sample.danger_mask[18] = 1.0;
+        sample.obs[40 * 34] = 1.0;
+
+        let augmented = augment_samples_6x(&[sample]);
+        let swap_mp = &ALL_PERMUTATIONS[2];
+        let swapped = augmented
+            .iter()
+            .find(|s| s.action == 9)
+            .expect("swap man-pin permutation sample");
+
+        assert_eq!(permute_tile_type(0, swap_mp), 9);
+        assert_eq!(swapped.opp_next, [9, 0, 27]);
+        assert!((swapped.danger[9] - 0.25).abs() < 1e-6);
+        assert!((swapped.danger[34] - 0.5).abs() < 1e-6);
+        assert_eq!(swapped.danger_mask[18], 1.0);
+        assert_eq!(swapped.obs[41 * 34], 1.0);
+        assert_eq!(swapped.obs[40 * 34], 0.0);
     }
 }

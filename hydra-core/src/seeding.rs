@@ -17,8 +17,8 @@
 //! ChaCha8 is ~33% faster than ChaCha12 (StdRng) with the same determinism
 //! guarantees. Both use the same `[u8; 32]` seed format and `SeedableRng`.
 
-use rand_chacha::ChaCha8Rng;
 use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256};
 
 /// Number of tiles in a standard 4-player Riichi Mahjong wall.

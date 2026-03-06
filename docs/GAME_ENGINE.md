@@ -10,7 +10,7 @@ Core responsibilities:
 
 - Tile representation and suit permutation for data augmentation
 - A 46-action space with bidirectional conversion to/from `riichienv` actions
-- An 85-channel x 34-tile observation encoder with incremental dirty-flag updates
+- A currently implemented 85-channel x 34-tile baseline observation encoder, with the final target expanding toward the `HYDRA_FINAL` fixed-superset A/B/C/D design
 - Tile safety analysis (genbutsu, suji, kabe, one-chance)
 - Deterministic seeding via SHA-256 KDF + ChaCha8Rng
 - Parallel batch simulation with `rayon`
@@ -119,9 +119,11 @@ The `build_legal_action_mask` function takes the current riichienv game state an
 
 ### Tensor Shape
 
-Each observation is an `85 x 34` float tensor (2,890 values). The first axis represents 85 channels of information. The second axis represents the 34 tile types. This shape feeds directly into the SE-ResNet model input.
+**Canonical SSOT note:** `research/design/HYDRA_FINAL.md` is the governing architecture doc. The `85 x 34` tensor below describes the **currently implemented baseline encoder**, not the final target encoder. The final target is a **fixed-shape superset** of public, safety, search/belief, and Hand-EV planes, with zero-filled dynamic features and explicit presence-mask channels when those extra features are unavailable.
 
-### Channel Layout
+Each baseline observation is an `85 x 34` float tensor (2,890 values). The first axis represents 85 channels of information. The second axis represents the 34 tile types. This shape feeds directly into the current SE-ResNet model input.
+
+### Baseline Channel Layout
 
 The 85 channels break down into these groups:
 
@@ -161,11 +163,11 @@ The 85 channels break down into these groups:
 | 74-79 | Reserved suji context (zeros) |
 | 80 | Kabe: 1.0 for tiles with all 4 copies visible (global, not per-opponent) |
 | 81 | One-chance: 1.0 for tiles where exactly 3 of 4 copies are visible |
-| 82-84 | Reserved for tenpai hints (zeros until opponent modeling heads are trained) |
+| 82-84 | Tenpai hints | Opponent tenpai hints (implemented baseline use: riichi or cached tenpai prediction threshold) |
 
 ### ObservationEncoder
 
-`ObservationEncoder` is the main struct for building observation tensors. It holds a pre-allocated `[f32; 85 * 34]` buffer marked `#[repr(C)]` for predictable memory layout.
+`ObservationEncoder` is the main struct for building observation tensors. In the current baseline implementation it holds a pre-allocated `[f32; 85 * 34]` buffer marked `#[repr(C)]` for predictable memory layout. This will need to generalize when the fixed-superset `HYDRA_FINAL` Groups C/D planes and presence masks are added.
 
 ```rust
 #[repr(C)]

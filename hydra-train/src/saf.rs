@@ -3,9 +3,17 @@
 use burn::nn::{Linear, LinearConfig};
 use burn::prelude::*;
 use burn::tensor::activation;
+use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::encoder::{
+    NUM_CHANNELS, NUM_TILES, SEARCH_DELTA_Q_CHANNEL, SEARCH_MASK_CHANNEL_START,
+    SEARCH_MIXTURE_ENTROPY_CHANNEL, SEARCH_MIXTURE_ESS_CHANNEL, SEARCH_RISK_CHANNEL_START,
+    SEARCH_STRESS_CHANNEL_START,
+};
 
 pub const SAF_INPUT_DIM: usize = 8;
+const MAX_MIXTURE_ENTROPY: f32 = 1.386_294_4;
 
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SafFeatures {
     pub delta_q: f32,
     pub boole_risk: f32,
@@ -30,6 +38,103 @@ impl SafFeatures {
             self.ess,
         ]
     }
+}
+
+#[inline]
+fn obs_value(obs: &[f32], channel: usize, tile: usize) -> f32 {
+    obs[channel * NUM_TILES + tile]
+}
+
+/// Decode per-action SaF features from the fixed-superset observation tensor.
+///
+/// This lets the fast inference path consume real Group C context instead of
+/// falling back to all-zero SaF features.
+pub fn saf_features_from_observation(obs: &[f32]) -> [SafFeatures; HYDRA_ACTION_SPACE] {
+    assert!(
+        obs.len() >= NUM_CHANNELS * NUM_TILES,
+        "observation length {} shorter than expected {}",
+        obs.len(),
+        NUM_CHANNELS * NUM_TILES
+    );
+
+    let belief_present = obs_value(obs, SEARCH_MASK_CHANNEL_START, 0) > 0.5;
+    let search_present = obs_value(obs, SEARCH_MASK_CHANNEL_START + 1, 0) > 0.5;
+    let robust_present = obs_value(obs, SEARCH_MASK_CHANNEL_START + 2, 0) > 0.5;
+
+    let entropy = if belief_present {
+        obs_value(obs, SEARCH_MIXTURE_ENTROPY_CHANNEL, 0)
+    } else {
+        0.0
+    };
+    let entropy_drop = if belief_present {
+        (1.0 - entropy / MAX_MIXTURE_ENTROPY).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let ess = if belief_present {
+        (obs_value(obs, SEARCH_MIXTURE_ESS_CHANNEL, 0) / 4.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    let mut features = [SafFeatures::default(); HYDRA_ACTION_SPACE];
+    for (action, feature) in features.iter_mut().enumerate().take(NUM_TILES) {
+        let delta_q = if search_present {
+            obs_value(obs, SEARCH_DELTA_Q_CHANNEL, action)
+        } else {
+            0.0
+        };
+
+        let mut risk_values = [0.0f32; 3];
+        let mut stress_values = [0.0f32; 3];
+        if robust_present {
+            for opp in 0..3 {
+                risk_values[opp] = obs_value(obs, SEARCH_RISK_CHANNEL_START + opp, action);
+                stress_values[opp] = obs_value(obs, SEARCH_STRESS_CHANNEL_START + opp, 0);
+            }
+        }
+
+        let boole_risk = risk_values.iter().copied().fold(0.0f32, f32::max);
+        let hunter_risk = (risk_values[0] + risk_values[1] + risk_values[2]) / 3.0;
+        let robust_risk = risk_values
+            .iter()
+            .copied()
+            .zip(stress_values.iter().copied())
+            .map(|(risk, stress)| risk * stress)
+            .fold(0.0f32, f32::max);
+        let tau_robust = stress_values.iter().copied().fold(0.0f32, f32::max);
+        let risk_mean = hunter_risk;
+        let variance = risk_values
+            .iter()
+            .copied()
+            .map(|risk| {
+                let centered = risk - risk_mean;
+                centered * centered
+            })
+            .sum::<f32>()
+            / 3.0;
+
+        *feature = SafFeatures {
+            delta_q,
+            boole_risk,
+            hunter_risk,
+            robust_risk,
+            entropy_drop,
+            tau_robust,
+            variance,
+            ess,
+        };
+    }
+
+    features
+}
+
+/// Convert observation-derived SaF features into a `[46, 8]` tensor.
+pub fn saf_tensor_from_observation<B: Backend>(obs: &[f32], device: &B::Device) -> Tensor<B, 2> {
+    let features = saf_features_from_observation(obs);
+    let flat: Vec<f32> = features.iter().flat_map(|f| f.to_array()).collect();
+    Tensor::<B, 1>::from_floats(flat.as_slice(), device)
+        .reshape([HYDRA_ACTION_SPACE, SAF_INPUT_DIM])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,8 +219,17 @@ impl<B: Backend> SafMlp<B> {
 mod tests {
     use super::*;
     use burn::backend::NdArray;
+    use hydra_core::encoder::{
+        NUM_CHANNELS, NUM_TILES, SEARCH_DELTA_Q_CHANNEL, SEARCH_MASK_CHANNEL_START,
+        SEARCH_MIXTURE_ENTROPY_CHANNEL, SEARCH_MIXTURE_ESS_CHANNEL, SEARCH_RISK_CHANNEL_START,
+        SEARCH_STRESS_CHANNEL_START,
+    };
 
     type B = NdArray<f32>;
+
+    fn set_obs(obs: &mut [f32], channel: usize, tile: usize, value: f32) {
+        obs[channel * NUM_TILES + tile] = value;
+    }
 
     #[test]
     fn saf_mlp_shape() {
@@ -168,6 +282,57 @@ mod tests {
         assert_eq!(arr.len(), SAF_INPUT_DIM);
         assert!((arr[0] - 0.1).abs() < 1e-6);
         assert!((arr[7] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn saf_features_decode_from_observation_planes() {
+        let mut obs = vec![0.0f32; NUM_CHANNELS * NUM_TILES];
+        set_obs(&mut obs, SEARCH_MASK_CHANNEL_START, 0, 1.0);
+        set_obs(&mut obs, SEARCH_MASK_CHANNEL_START + 1, 0, 1.0);
+        set_obs(&mut obs, SEARCH_MASK_CHANNEL_START + 2, 0, 1.0);
+        set_obs(&mut obs, SEARCH_MIXTURE_ENTROPY_CHANNEL, 0, 0.5);
+        set_obs(&mut obs, SEARCH_MIXTURE_ESS_CHANNEL, 0, 2.0);
+        set_obs(&mut obs, SEARCH_DELTA_Q_CHANNEL, 5, 0.25);
+        set_obs(&mut obs, SEARCH_RISK_CHANNEL_START, 5, 0.1);
+        set_obs(&mut obs, SEARCH_RISK_CHANNEL_START + 1, 5, 0.4);
+        set_obs(&mut obs, SEARCH_RISK_CHANNEL_START + 2, 5, 0.2);
+        set_obs(&mut obs, SEARCH_STRESS_CHANNEL_START, 0, 0.3);
+        set_obs(&mut obs, SEARCH_STRESS_CHANNEL_START + 1, 0, 0.8);
+        set_obs(&mut obs, SEARCH_STRESS_CHANNEL_START + 2, 0, 0.1);
+
+        let features = saf_features_from_observation(&obs);
+        let f = features[5];
+        assert!((f.delta_q - 0.25).abs() < 1e-6);
+        assert!((f.boole_risk - 0.4).abs() < 1e-6);
+        assert!((f.hunter_risk - (0.1 + 0.4 + 0.2) / 3.0).abs() < 1e-6);
+        assert!((f.robust_risk - 0.32).abs() < 1e-6);
+        assert!((f.tau_robust - 0.8).abs() < 1e-6);
+        assert!(f.entropy_drop > 0.0 && f.entropy_drop < 1.0);
+        assert!((f.ess - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn saf_features_stay_zero_without_presence_masks() {
+        let obs = vec![0.0f32; NUM_CHANNELS * NUM_TILES];
+        let features = saf_features_from_observation(&obs);
+        assert!(
+            features
+                .iter()
+                .all(|f| f.to_array().iter().all(|&v| v == 0.0))
+        );
+    }
+
+    #[test]
+    fn saf_tensor_from_observation_has_expected_shape() {
+        let device = Default::default();
+        let mut obs = vec![0.0f32; NUM_CHANNELS * NUM_TILES];
+        set_obs(&mut obs, SEARCH_MASK_CHANNEL_START + 1, 0, 1.0);
+        set_obs(&mut obs, SEARCH_DELTA_Q_CHANNEL, 2, 0.5);
+        let tensor = saf_tensor_from_observation::<B>(&obs, &device);
+        assert_eq!(tensor.dims(), [HYDRA_ACTION_SPACE, SAF_INPUT_DIM]);
+        let data = tensor.to_data();
+        let vals = data.as_slice::<f32>().expect("f32");
+        assert!((vals[2 * SAF_INPUT_DIM] - 0.5).abs() < 1e-6);
     }
 
     #[test]

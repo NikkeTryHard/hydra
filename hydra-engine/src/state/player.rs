@@ -194,7 +194,6 @@ impl PlayerState {
         self.pao_count = 0;
     }
 
-
     // ---- forbidden_discards helpers ----
 
     /// Returns the current forbidden discards as a slice.
@@ -215,5 +214,4 @@ impl PlayerState {
     pub fn clear_forbidden(&mut self) {
         self.forbidden_discard_count = 0;
     }
-
 }

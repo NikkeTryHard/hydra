@@ -172,9 +172,10 @@ impl HandEvaluator {
             conditions.honba,
             4, // Always 4 players
         );
-        let has_yaku = yaku_res.yaku_ids_slice().iter()
+        let has_yaku = yaku_res
+            .yaku_ids_slice()
+            .iter()
             .any(|&id| id != yaku::ID_DORA && id != yaku::ID_AKADORA && id != yaku::ID_URADORA);
-
 
         WinResult {
             is_win: (has_yaku || yaku_res.yakuman_count > 0) && yaku_res.han >= 1,

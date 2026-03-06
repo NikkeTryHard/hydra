@@ -1,9 +1,22 @@
-//! MJAI .mjson.gz data loader for behavioral cloning.
-//!
-//! Requires `flate2` and `serde_json` dependencies to be added to Cargo.toml
-//! for actual file parsing. The types and replay logic are defined here.
+//! MJAI `.json` / `.json.gz` loader for behavioral cloning data.
 
-use crate::data::sample::MjaiSample;
+use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
+use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, build_legal_mask, riichienv_to_hydra};
+use hydra_core::bridge::encode_observation;
+use hydra_core::encoder::ObservationEncoder;
+use hydra_core::safety::SafetyInfo;
+use riichienv_core::parser::mjai_to_tid;
+use riichienv_core::replay::{
+    MjaiEvent, load_mjai_events_from_path, mjai_event_actor, mjai_event_to_action, read_mjai_events,
+};
+use riichienv_core::rule::GameRule;
+use riichienv_core::shanten::calc_shanten_from_counts;
+use riichienv_core::state::GameState;
+use std::array;
+use std::io::{self, BufRead};
+use std::path::Path;
+
+const MISSING_TILE_TARGET: u8 = 255;
 
 pub struct MjaiGame {
     pub samples: Vec<MjaiSample>,
@@ -14,6 +27,7 @@ impl MjaiGame {
     pub fn num_samples(&self) -> usize {
         self.samples.len()
     }
+
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
@@ -24,11 +38,304 @@ pub struct MjaiDataset {
     pub train_fraction: f32,
 }
 
+#[inline]
+fn normalized_train_fraction(train_fraction: f32) -> f32 {
+    if train_fraction.is_finite() {
+        train_fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+#[inline]
+fn tile136_to_type(tile136: u8) -> u8 {
+    tile136 / 4
+}
+
+fn mjai_tile(tile: &str) -> io::Result<u8> {
+    mjai_to_tid(tile).ok_or_else(|| invalid_data(format!("invalid mjai tile: {tile}")))
+}
+
+fn mjai_tile_type(tile: &str) -> io::Result<u8> {
+    Ok(tile136_to_type(mjai_tile(tile)?))
+}
+
+fn rel_opp(observer: usize, actor: usize) -> Option<usize> {
+    let idx = ((actor + 4 - observer) % 4).wrapping_sub(1);
+    (idx < 3).then_some(idx)
+}
+
+fn abs_opp(observer: usize, rel: usize) -> usize {
+    (observer + rel + 1) % 4
+}
+
+fn update_safety(safety: &mut [SafetyInfo; 4], event: &MjaiEvent) -> io::Result<()> {
+    match event {
+        MjaiEvent::StartKyoku { dora_marker, .. } => {
+            *safety = array::from_fn(|_| SafetyInfo::default());
+            let dora = mjai_tile_type(dora_marker)?;
+            for info in safety.iter_mut() {
+                info.on_dora_revealed(dora);
+            }
+        }
+        MjaiEvent::Dora { dora_marker } => {
+            let dora = mjai_tile_type(dora_marker)?;
+            for info in safety.iter_mut() {
+                info.on_dora_revealed(dora);
+            }
+        }
+        MjaiEvent::Reach { actor } => {
+            for (observer, info) in safety.iter_mut().enumerate() {
+                if observer != *actor
+                    && let Some(opp) = rel_opp(observer, *actor)
+                {
+                    info.on_riichi(opp);
+                }
+            }
+        }
+        MjaiEvent::Dahai {
+            actor,
+            pai,
+            tsumogiri,
+        } => {
+            let tile = mjai_tile_type(pai)?;
+            for (observer, info) in safety.iter_mut().enumerate() {
+                if observer != *actor
+                    && let Some(opp) = rel_opp(observer, *actor)
+                {
+                    info.on_discard(tile, opp, !*tsumogiri);
+                }
+            }
+        }
+        MjaiEvent::Pon {
+            actor, consumed, ..
+        }
+        | MjaiEvent::Chi {
+            actor, consumed, ..
+        }
+        | MjaiEvent::Kan {
+            actor, consumed, ..
+        }
+        | MjaiEvent::Ankan { actor, consumed } => {
+            let tiles = consumed
+                .iter()
+                .map(|tile| mjai_tile_type(tile))
+                .collect::<io::Result<Vec<_>>>()?;
+            for (observer, info) in safety.iter_mut().enumerate() {
+                if observer != *actor && rel_opp(observer, *actor).is_some() {
+                    info.on_call(&tiles);
+                }
+            }
+        }
+        MjaiEvent::Kakan { actor, pai } => {
+            let tiles = [mjai_tile_type(pai)?];
+            for (observer, info) in safety.iter_mut().enumerate() {
+                if observer != *actor && rel_opp(observer, *actor).is_some() {
+                    info.on_call(&tiles);
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn next_discards_after(events: &[MjaiEvent]) -> io::Result<Vec<[Option<u8>; 4]>> {
+    let mut out = vec![[None; 4]; events.len()];
+    let mut next = [None; 4];
+    for (idx, event) in events.iter().enumerate().rev() {
+        out[idx] = next;
+        if let MjaiEvent::Dahai { actor, pai, .. } = event {
+            next[*actor] = Some(mjai_tile_type(pai)?);
+        }
+    }
+    Ok(out)
+}
+
+fn final_scores(events: &[MjaiEvent]) -> [i32; 4] {
+    let mut scores = [25_000; 4];
+    for event in events {
+        match event {
+            MjaiEvent::StartKyoku { scores: round, .. } => {
+                for (dst, src) in scores.iter_mut().zip(round.iter().copied()) {
+                    *dst = src;
+                }
+            }
+            MjaiEvent::ReachAccepted { actor } => {
+                scores[*actor] -= 1_000;
+            }
+            MjaiEvent::Hora {
+                scores: Some(after),
+                ..
+            }
+            | MjaiEvent::Ryukyoku {
+                scores: Some(after),
+                ..
+            } => {
+                for (dst, src) in scores.iter_mut().zip(after.iter().copied()) {
+                    *dst = src;
+                }
+            }
+            MjaiEvent::Hora {
+                delta: Some(delta), ..
+            }
+            | MjaiEvent::Ryukyoku {
+                delta: Some(delta), ..
+            } => {
+                for (dst, src) in scores.iter_mut().zip(delta.iter().copied()) {
+                    *dst += src;
+                }
+            }
+            _ => {}
+        }
+    }
+    scores
+}
+
+fn exact_waits(state: &GameState, player: usize) -> ([f32; 34], bool) {
+    let mut counts = [0u8; 34];
+    for &tile in state.players[player].hand_slice() {
+        counts[tile136_to_type(tile) as usize] += 1;
+    }
+    let hand_total: u8 = counts.iter().sum();
+    let tenpai = calc_shanten_from_counts(&counts, hand_total / 3) == 0;
+    if !tenpai {
+        return ([0.0; 34], false);
+    }
+
+    let mut waits = [0.0; 34];
+    for tile in 0..34usize {
+        if counts[tile] >= 4 {
+            continue;
+        }
+        if state.players[player]
+            .discards_slice()
+            .iter()
+            .any(|&discard| tile136_to_type(discard) as usize == tile)
+        {
+            continue;
+        }
+        counts[tile] += 1;
+        let complete = calc_shanten_from_counts(&counts, (hand_total + 1) / 3) == -1;
+        counts[tile] -= 1;
+        if complete {
+            waits[tile] = 1.0;
+        }
+    }
+    (waits, true)
+}
+
+fn bool_mask_to_f32(mask: [bool; HYDRA_ACTION_SPACE]) -> [f32; HYDRA_ACTION_SPACE] {
+    mask.map(|is_legal| if is_legal { 1.0 } else { 0.0 })
+}
+
+fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
+    let final_scores = final_scores(&events);
+    let next_discards = next_discards_after(&events)?;
+    let grp_label = scores_to_grp_index(final_scores).map_err(invalid_data)?;
+    let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+    let mut safety = array::from_fn(|_| SafetyInfo::default());
+    let mut encoder = ObservationEncoder::new();
+    let mut samples = Vec::new();
+
+    for (idx, event) in events.iter().enumerate() {
+        let env_action = mjai_event_to_action(event)
+            .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
+        if let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) {
+            let obs = state
+                .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
+                .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
+            let hydra_action = riichienv_to_hydra(&env_action)
+                .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
+            let legal = obs.legal_actions_method();
+            let phase = if matches!(event, MjaiEvent::Dahai { .. })
+                && state.players[actor].riichi_declared
+            {
+                ActionPhase::RiichiSelect
+            } else {
+                ActionPhase::Normal
+            };
+            let legal_mask = bool_mask_to_f32(build_legal_mask(&legal, phase));
+            if legal_mask[hydra_action.id() as usize] > 0.0 {
+                let obs_encoded = encode_observation(
+                    &mut encoder,
+                    &obs,
+                    &safety[actor],
+                    state.drawn_tile.map(tile136_to_type),
+                );
+                let mut tenpai = [0.0; 3];
+                let mut opp_next = [MISSING_TILE_TARGET; 3];
+                let mut danger = [0.0; 102];
+                let mut danger_mask = [0.0; 102];
+                for rel in 0..3usize {
+                    let opp = abs_opp(actor, rel);
+                    let (waits, is_tenpai) = exact_waits(&state, opp);
+                    tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
+                    opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
+                    let start = rel * 34;
+                    danger[start..start + 34].copy_from_slice(&waits);
+                    if is_tenpai {
+                        danger_mask[start..start + 34].fill(1.0);
+                    }
+                }
+                samples.push(MjaiSample {
+                    obs: obs_encoded,
+                    action: hydra_action.id(),
+                    legal_mask,
+                    placement: score_to_placement(final_scores, actor as u8),
+                    score_delta: final_scores[actor] - state.players[actor].score,
+                    grp_label,
+                    tenpai,
+                    opp_next,
+                    danger,
+                    danger_mask,
+                });
+            }
+        }
+
+        update_safety(&mut safety, event)?;
+        state.apply_mjai_event(event.clone());
+    }
+
+    Ok(MjaiGame {
+        samples,
+        final_scores,
+    })
+}
+
+pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
+    let events = read_mjai_events(reader)
+        .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+    load_game_from_events(events)
+}
+
+pub fn load_game_from_path(path: impl AsRef<Path>) -> io::Result<MjaiGame> {
+    let events = load_mjai_events_from_path(path)
+        .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))?;
+    load_game_from_events(events)
+}
+
+pub fn load_dataset_from_paths<P: AsRef<Path>>(
+    paths: &[P],
+    train_fraction: f32,
+) -> io::Result<MjaiDataset> {
+    let mut dataset = MjaiDataset::new(train_fraction);
+    for path in paths {
+        dataset.add_game(load_game_from_path(path)?);
+    }
+    Ok(dataset)
+}
+
 impl MjaiDataset {
     pub fn new(train_fraction: f32) -> Self {
         Self {
             games: Vec::new(),
-            train_fraction,
+            train_fraction: normalized_train_fraction(train_fraction),
         }
     }
 
@@ -37,7 +344,7 @@ impl MjaiDataset {
     }
 
     pub fn num_samples(&self) -> usize {
-        self.games.iter().map(|g| g.samples.len()).sum()
+        self.games.iter().map(MjaiGame::num_samples).sum()
     }
 
     pub fn num_games(&self) -> usize {
@@ -53,7 +360,8 @@ impl MjaiDataset {
     }
 
     pub fn train_split(&self) -> (&[MjaiGame], &[MjaiGame]) {
-        let n = (self.games.len() as f32 * self.train_fraction) as usize;
+        let fraction = normalized_train_fraction(self.train_fraction);
+        let n = (self.games.len() as f32 * fraction) as usize;
         (&self.games[..n], &self.games[n..])
     }
 }
@@ -61,6 +369,62 @@ impl MjaiDataset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use riichienv_core::action::Phase;
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::{Cursor, Write};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn dummy_game() -> MjaiGame {
+        MjaiGame {
+            samples: Vec::new(),
+            final_scores: [25_000; 4],
+        }
+    }
+
+    fn play_game_with_mjai_log(seed: u64) -> (Vec<String>, [i32; 4]) {
+        let mut state = GameState::new(0, false, Some(seed), 0, GameRule::default_tenhou());
+        let mut steps = 0u32;
+        while !state.is_done && steps < 10_000 {
+            if state.needs_initialize_next_round {
+                state.step(&HashMap::new());
+                continue;
+            }
+            let mut actions = HashMap::new();
+            match state.phase {
+                Phase::WaitAct => {
+                    let obs = state.get_observation(state.current_player);
+                    let legal = obs.legal_actions_method();
+                    if let Some(action) = legal.first().cloned() {
+                        actions.insert(state.current_player, action);
+                    }
+                }
+                Phase::WaitResponse => {
+                    let active_players =
+                        state.active_players[..state.active_player_count as usize].to_vec();
+                    for pid in active_players {
+                        let obs = state.get_observation(pid);
+                        if let Some(action) = obs.legal_actions_method().first().cloned() {
+                            actions.insert(pid, action);
+                        }
+                    }
+                }
+            }
+            state.step(&actions);
+            steps += 1;
+        }
+        (
+            state.mjai_log.clone(),
+            [
+                state.players[0].score,
+                state.players[1].score,
+                state.players[2].score,
+                state.players[3].score,
+            ],
+        )
+    }
 
     #[test]
     fn empty_dataset() {
@@ -69,5 +433,78 @@ mod tests {
         let (train, eval) = ds.train_split();
         assert!(train.is_empty());
         assert!(eval.is_empty());
+    }
+
+    #[test]
+    fn train_fraction_is_clamped_in_constructor() {
+        let ds = MjaiDataset::new(1.5);
+        assert_eq!(ds.train_fraction, 1.0);
+        let ds = MjaiDataset::new(-0.25);
+        assert_eq!(ds.train_fraction, 0.0);
+    }
+
+    #[test]
+    fn train_split_clamps_mutated_fraction() {
+        let mut ds = MjaiDataset::new(0.5);
+        ds.add_game(dummy_game());
+        ds.add_game(dummy_game());
+        ds.add_game(dummy_game());
+        ds.train_fraction = 2.0;
+        let (train, eval) = ds.train_split();
+        assert_eq!(train.len(), 3);
+        assert_eq!(eval.len(), 0);
+        ds.train_fraction = -1.0;
+        let (train, eval) = ds.train_split();
+        assert_eq!(train.len(), 0);
+        assert_eq!(eval.len(), 3);
+    }
+
+    #[test]
+    fn train_split_handles_nan_fraction() {
+        let mut ds = MjaiDataset::new(0.5);
+        ds.add_game(dummy_game());
+        ds.add_game(dummy_game());
+        ds.train_fraction = f32::NAN;
+        let (train, eval) = ds.train_split();
+        assert_eq!(train.len(), 0);
+        assert_eq!(eval.len(), 2);
+    }
+
+    #[test]
+    fn load_game_from_reader_extracts_samples() {
+        let (log, final_scores) = play_game_with_mjai_log(0);
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+        assert_eq!(game.final_scores, final_scores);
+        assert!(game.samples.len() > 50, "expected a real replay sample set");
+        assert!(
+            game.samples
+                .iter()
+                .all(|sample| sample.legal_mask[sample.action as usize] > 0.0)
+        );
+    }
+
+    #[test]
+    fn load_game_from_gzip_path_extracts_samples() {
+        let (log, final_scores) = play_game_with_mjai_log(1);
+        let path = std::env::temp_dir().join(format!(
+            "hydra_mjai_loader_{}_{}.json.gz",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let file = File::create(&path).expect("create gzip log");
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder
+            .write_all(log.join("\n").as_bytes())
+            .expect("write gzip log");
+        encoder.finish().expect("finish gzip log");
+
+        let game = load_game_from_path(&path).expect("load gz game");
+        std::fs::remove_file(&path).expect("cleanup temp log");
+
+        assert_eq!(game.final_scores, final_scores);
+        assert!(game.samples.len() > 50);
     }
 }

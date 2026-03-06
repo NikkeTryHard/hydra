@@ -1,8 +1,8 @@
 //! SE-ResNet backbone: SEBlock, SEResBlock, and SEResNet.
 
 use burn::nn::{
-    conv::{Conv1d, Conv1dConfig},
     GroupNorm, GroupNormConfig, Linear, LinearConfig, PaddingConfig1d,
+    conv::{Conv1d, Conv1dConfig},
 };
 use burn::prelude::*;
 use burn::tensor::activation;
@@ -173,9 +173,9 @@ mod tests {
     #[test]
     fn backbone_output_shapes_12_blocks() {
         let device = Default::default();
-        let cfg = SEResNetConfig::new(12, 85, 256, 32, 64);
+        let cfg = SEResNetConfig::new(12, crate::config::INPUT_CHANNELS, 256, 32, 64);
         let net = cfg.init::<B>(&device);
-        let x = Tensor::<B, 3>::zeros([4, 85, 34], &device);
+        let x = Tensor::<B, 3>::zeros([4, crate::config::INPUT_CHANNELS, 34], &device);
         let (spatial, pooled) = net.forward(x);
         assert_eq!(spatial.dims(), [4, 256, 34]);
         assert_eq!(pooled.dims(), [4, 256]);
@@ -184,9 +184,9 @@ mod tests {
     #[test]
     fn backbone_output_shapes_24_blocks() {
         let device = Default::default();
-        let cfg = SEResNetConfig::new(24, 85, 256, 32, 64);
+        let cfg = SEResNetConfig::new(24, crate::config::INPUT_CHANNELS, 256, 32, 64);
         let net = cfg.init::<B>(&device);
-        let x = Tensor::<B, 3>::zeros([2, 85, 34], &device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
         let (spatial, pooled) = net.forward(x);
         assert_eq!(spatial.dims(), [2, 256, 34]);
         assert_eq!(pooled.dims(), [2, 256]);

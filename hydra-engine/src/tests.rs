@@ -251,7 +251,11 @@ mod unit_tests {
 
         // Hand: 4m, 5m, 6m, 6m. (12, 16, 20, 21)
         // 3m is 8.
-        { let tiles: [u8; 4] = [12, 16, 20, 21]; state.players[pid as usize].hand[..4].copy_from_slice(&tiles); state.players[pid as usize].hand_len = 4; }
+        {
+            let tiles: [u8; 4] = [12, 16, 20, 21];
+            state.players[pid as usize].hand[..4].copy_from_slice(&tiles);
+            state.players[pid as usize].hand_len = 4;
+        }
 
         // Setup P3 (Kamicha of P0)
         state.current_player = 3;
@@ -276,7 +280,10 @@ mod unit_tests {
         assert_eq!(state.current_player, 0, "Should be P0's turn");
 
         // Verify current_claims is empty or does not contain 0
-        assert!(state.current_claim_counts[0] == 0, "P0 should have no legal claims");
+        assert!(
+            state.current_claim_counts[0] == 0,
+            "P0 should have no legal claims"
+        );
     }
     #[test]
     fn test_match_84_agari_check() {
@@ -325,7 +332,10 @@ mod unit_tests {
         let res6p = calc.calc(56, &[], &[], Some(cond.clone()));
         println!(
             "6p Result: is_win={}, Shape={}, Han={}, Yaku={:?}",
-            res6p.is_win, res6p.has_win_shape, res6p.han, res6p.yaku_slice()
+            res6p.is_win,
+            res6p.has_win_shape,
+            res6p.han,
+            res6p.yaku_slice()
         );
         assert!(!res6p.is_win, "6p should NOT be a win (No Yaku)");
         assert!(res6p.has_win_shape, "6p should have win shape");
@@ -335,7 +345,9 @@ mod unit_tests {
         let res9p = calc.calc(68, &[], &[], Some(cond));
         println!(
             "9p Result: is_win={}, Han={}, Yaku={:?}",
-            res9p.is_win, res9p.han, res9p.yaku_slice()
+            res9p.is_win,
+            res9p.han,
+            res9p.yaku_slice()
         );
         assert!(res9p.is_win, "9p should be a win");
         assert!(res9p.han >= 3, "9p should be Junchan (>= 3 Han)"); // Junchan (3)
@@ -546,7 +558,11 @@ mod unit_tests {
         // テンパイ形の手牌を構築 (14枚 = 13 + ツモ牌):
         //   123m 456m 789m 12p 11s + ツモ 5sr(88)
         //   5sr を切ると 123456789m 12p 11s → 3p 待ちテンパイ
-        { let tiles: [u8; 14] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 72, 73, 88]; state.players[pid_us].hand[..14].copy_from_slice(&tiles); state.players[pid_us].hand_len = 14; }
+        {
+            let tiles: [u8; 14] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 72, 73, 88];
+            state.players[pid_us].hand[..14].copy_from_slice(&tiles);
+            state.players[pid_us].hand_len = 14;
+        }
         state.players[pid_us].hand_slice_mut().sort();
         state.players[pid_us].meld_count = 0;
         state.players[pid_us].score = 25000;
@@ -565,10 +581,7 @@ mod unit_tests {
 
         // Step 2: 打牌 5sr(88) — リーチ宣言後の捨て牌
         let mut actions2 = HashMap::new();
-        actions2.insert(
-            pid,
-            Action::new(ActionType::Discard, Some(88), &[], None),
-        );
+        actions2.insert(pid, Action::new(ActionType::Discard, Some(88), &[], None));
         state.step(&actions2);
 
         // 他家にクレームがある場合は WaitResponse → 全員パス
@@ -665,8 +678,12 @@ mod unit_tests {
     fn test_sanma_wall_108_tiles() {
         let state = create_sanma_test_state(3);
 
-        let total_tiles =
-            state.wall.tile_count as usize + state.players.iter().map(|p| p.hand_len as usize).sum::<usize>();
+        let total_tiles = state.wall.tile_count as usize
+            + state
+                .players
+                .iter()
+                .map(|p| p.hand_len as usize)
+                .sum::<usize>();
         assert_eq!(total_tiles, 108, "Total tiles should be 108 for sanma");
 
         // Verify no manzu 2-8 tiles (tile types 1-7, tile IDs 4-31)
@@ -698,14 +715,12 @@ mod unit_tests {
 
         assert_eq!(state.players.len(), 3);
         assert_eq!(
-            state.players[0].hand_len as usize,
-            14,
+            state.players[0].hand_len as usize, 14,
             "Oya (player 0) should have 14 tiles after deal"
         );
         for i in 1..3 {
             assert_eq!(
-                state.players[i].hand_len as usize,
-                13,
+                state.players[i].hand_len as usize, 13,
                 "Player {} should have 13 tiles after deal",
                 i
             );
@@ -722,7 +737,11 @@ mod unit_tests {
         state._initialize_round(0, 0, 0, 0, None, None);
 
         // Give player 1 a sequential hand that could chi
-        { let tiles: [u8; 13] = [36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84]; state.players[1].hand[..13].copy_from_slice(&tiles); state.players[1].hand_len = 13; }
+        {
+            let tiles: [u8; 13] = [36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84];
+            state.players[1].hand[..13].copy_from_slice(&tiles);
+            state.players[1].hand_len = 13;
+        }
         state.current_player = 0;
         state.drawn_tile = Some(state.players[0].hand[0]);
         state.phase = Phase::WaitAct;
@@ -762,7 +781,11 @@ mod unit_tests {
         let mut state = create_sanma_test_state(3);
         state._initialize_round(0, 0, 0, 0, None, None);
 
-        { let tiles: [u8; 13] = [0, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 120]; state.players[0].hand[..13].copy_from_slice(&tiles); state.players[0].hand_len = 13; }
+        {
+            let tiles: [u8; 13] = [0, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 120];
+            state.players[0].hand[..13].copy_from_slice(&tiles);
+            state.players[0].hand_len = 13;
+        }
         state.drawn_tile = Some(120);
         state.current_player = 0;
         state.phase = Phase::WaitAct;
@@ -1173,8 +1196,20 @@ mod unit_tests {
 
         // Give player 0 two open dragon pon melds (haku=31, hatsu=32).
         state.players[0].meld_count = 0;
-        state.players[0].push_meld(Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)));
-        state.players[0].push_meld(Meld::new(MeldType::Pon, &[128, 129, 130], true, 2, Some(128)));
+        state.players[0].push_meld(Meld::new(
+            MeldType::Pon,
+            &[124, 125, 126],
+            true,
+            1,
+            Some(124),
+        ));
+        state.players[0].push_meld(Meld::new(
+            MeldType::Pon,
+            &[128, 129, 130],
+            true,
+            2,
+            Some(128),
+        ));
 
         // Player 3 discards chun (33*4=132). Player 0 calls daiminkan.
         let discarder: u8 = 3;
@@ -1220,9 +1255,27 @@ mod unit_tests {
 
         // Give player 0 three open wind pon melds (E=27, S=28, W=29).
         state.players[0].meld_count = 0;
-        state.players[0].push_meld(Meld::new(MeldType::Pon, &[108, 109, 110], true, 1, Some(108)));
-        state.players[0].push_meld(Meld::new(MeldType::Pon, &[112, 113, 114], true, 2, Some(112)));
-        state.players[0].push_meld(Meld::new(MeldType::Pon, &[116, 117, 118], true, 3, Some(116)));
+        state.players[0].push_meld(Meld::new(
+            MeldType::Pon,
+            &[108, 109, 110],
+            true,
+            1,
+            Some(108),
+        ));
+        state.players[0].push_meld(Meld::new(
+            MeldType::Pon,
+            &[112, 113, 114],
+            true,
+            2,
+            Some(112),
+        ));
+        state.players[0].push_meld(Meld::new(
+            MeldType::Pon,
+            &[116, 117, 118],
+            true,
+            3,
+            Some(116),
+        ));
 
         // Player 2 discards N (30*4=120). Player 0 calls daiminkan.
         let discarder: u8 = 2;
@@ -1267,7 +1320,13 @@ mod unit_tests {
 
         // Give player 0 only ONE dragon pon meld (haku=31).
         state.players[0].meld_count = 0;
-        state.players[0].push_meld(Meld::new(MeldType::Pon, &[124, 125, 126], true, 1, Some(124)));
+        state.players[0].push_meld(Meld::new(
+            MeldType::Pon,
+            &[124, 125, 126],
+            true,
+            1,
+            Some(124),
+        ));
 
         // Player 1 discards hatsu (32*4=128). Player 0 calls daiminkan.
         // After this, player 0 has 2 dragon melds — NOT 3, so no PAO.

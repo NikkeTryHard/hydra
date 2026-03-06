@@ -67,7 +67,10 @@ pub fn parse_hand_internal(text: &str) -> RiichiResult<(Vec<u8>, Vec<Meld>)> {
                 _ => unreachable!(),
             };
             for d in &pending_digits {
-                let val = d.to_digit(10).ok_or_else(|| RiichiError::Parse { input: text.to_string(), message: format!("Invalid digit: {}", d) })? as usize;
+                let val = d.to_digit(10).ok_or_else(|| RiichiError::Parse {
+                    input: text.to_string(),
+                    message: format!("Invalid digit: {}", d),
+                })? as usize;
                 let (tile_34, is_red) = if val == 0 {
                     (suit_offset + 4, true)
                 } else {
@@ -188,7 +191,10 @@ fn parse_meld(chars: &mut Peekable<Chars>, tm: &mut TileManager) -> RiichiResult
     let _call_idx = if idx < chars_vec.len() {
         let c = chars_vec[idx];
         if c.is_ascii_digit() {
-            c.to_digit(10).ok_or_else(|| RiichiError::Parse { input: content.clone(), message: format!("Invalid digit: {}", c) })?
+            c.to_digit(10).ok_or_else(|| RiichiError::Parse {
+                input: content.clone(),
+                message: format!("Invalid digit: {}", c),
+            })?
         } else {
             0
         }
@@ -220,7 +226,10 @@ fn parse_meld(chars: &mut Peekable<Chars>, tm: &mut TileManager) -> RiichiResult
             });
         }
         for d in digits {
-            let val = d.to_digit(10).ok_or_else(|| RiichiError::Parse { input: content.clone(), message: format!("Invalid digit: {}", d) })? as usize;
+            let val = d.to_digit(10).ok_or_else(|| RiichiError::Parse {
+                input: content.clone(),
+                message: format!("Invalid digit: {}", d),
+            })? as usize;
             let (tile_34, is_red) = if val == 0 {
                 (suit_offset + 4, true)
             } else {
@@ -237,7 +246,10 @@ fn parse_meld(chars: &mut Peekable<Chars>, tm: &mut TileManager) -> RiichiResult
         tiles_136.sort();
         Ok(Meld::new(MeldType::Chi, &tiles_136, true, -1, None))
     } else {
-        let val_d = digits[0].to_digit(10).ok_or_else(|| RiichiError::Parse { input: content.clone(), message: format!("Invalid digit: {}", digits[0]) })? as usize;
+        let val_d = digits[0].to_digit(10).ok_or_else(|| RiichiError::Parse {
+            input: content.clone(),
+            message: format!("Invalid digit: {}", digits[0]),
+        })? as usize;
         let (base_34, is_red_indicated) = if val_d == 0 {
             (suit_offset + 4, true)
         } else {

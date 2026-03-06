@@ -54,8 +54,7 @@ impl GameState3PLegalActions for GameState3P {
                         &hand,
                         self.players[pid_us].melds_slice(),
                     );
-                    let res =
-                        calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
+                    let res = calc.calc(tile, self.wall.dora_indicator_slice(), &[], Some(cond));
                     if res.is_win && (res.yakuman || res.han >= 1) {
                         legals.push(Action::new(ActionType::Tsumo, Some(tile), &[], Some(pid)));
                     }
@@ -179,7 +178,8 @@ impl GameState3PLegalActions for GameState3P {
                                 None,
                             ));
                             let calc_post = crate::hand_evaluator_3p::HandEvaluator3P::new(
-                                &hand_post, &melds_post,
+                                &hand_post,
+                                &melds_post,
                             );
                             let mut waits_post = calc_post.get_waits();
                             waits_post.sort();
@@ -199,7 +199,7 @@ impl GameState3PLegalActions for GameState3P {
             }
 
             // 4. Kyushu Kyuhai
-            let no_calls = self.players.iter().all(|p| p.meld_count == 0 );
+            let no_calls = self.players.iter().all(|p| p.meld_count == 0);
 
             if self.is_first_turn && no_calls && !self.players[pid_us].riichi_stage {
                 let mut distinct_terminals = std::collections::HashSet::new();
@@ -236,7 +236,9 @@ impl GameState3PLegalActions for GameState3P {
 
         // 1. Ron
         let tile_class = tile / 4;
-        let in_discards = self.players[i_us].discards_slice().iter()
+        let in_discards = self.players[i_us]
+            .discards_slice()
+            .iter()
             .any(|&d| d / 4 == tile_class);
         let in_missed = self.players[i_us].missed_agari_doujun
             || (self.players[i_us].riichi_declared && self.players[i_us].missed_agari_riichi);

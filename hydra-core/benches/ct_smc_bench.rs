@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use hydra_core::ct_smc::{CtSmc, CtSmcConfig};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;

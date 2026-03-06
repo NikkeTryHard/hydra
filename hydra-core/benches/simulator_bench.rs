@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use hydra_core::bridge;
 use hydra_core::encoder::ObservationEncoder;
 use hydra_core::game_loop::{FirstActionSelector, GameRunner};
