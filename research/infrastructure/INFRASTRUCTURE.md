@@ -1,14 +1,23 @@
 # Hydra Infrastructure Specification
 
+> **Reconciliation note:** This document still contains legacy infrastructure planning from the earlier 40-block / PPO-centered Hydra plan. For active architectural direction, treat these as the governing entrypoints in this order:
+>
+> 1. `research/design/HYDRA_FINAL.md` — target architecture SSOT
+> 2. `research/design/HYDRA_RECONCILIATION.md` — current repo reality, active path, reserve shelf, dropped shelf
+> 3. `research/design/IMPLEMENTATION_ROADMAP.md` — staged execution plan
+>
+> Keep this document as implementation/infrastructure reference, not as the top-level architecture authority.
+
 ## Overview
 
 Hydra uses a 100% Rust architecture. Burn framework with burn-tch (libtorch/cuDNN) backend. See [RUST_STACK.md](RUST_STACK.md) for decision rationale. Rust handles the game engine, observation encoding, simulation, neural network training, and experiment tracking. This mirrors Mortal's game engine design but with all original code (no AGPL-derived components) and a fully unified Rust stack.
 
 ## Related Documents
 
-- [HYDRA_SPEC.md](HYDRA_SPEC.md) — Architecture, input encoding, output heads, inference
-- [TRAINING.md](TRAINING.md) — Training pipeline, loss functions, hyperparameters, roadmap
-- [SEEDING.md](SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
+- [../design/HYDRA_FINAL.md](../design/HYDRA_FINAL.md) — target architecture SSOT
+- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — current repo reality and next implementation tranche
+- [../design/HYDRA_SPEC.md](../design/HYDRA_SPEC.md) — legacy architecture spec (explicitly outdated)
+- [../design/SEEDING.md](../design/SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
 - [CHECKPOINTING.md](CHECKPOINTING.md) — Checkpoint format, save protocol, retention policy
 
 ## System Architecture
@@ -97,7 +106,7 @@ The `hydra-core` crate is organized as a flat module layout under `src/`:
 | `lib.rs` | Crate root and public API surface |
 | `tile.rs` | Tile representation (0-33 index), 136-format, aka-dora, suit permutation |
 | `action.rs` | 46-action space mapping (Mortal-compatible), bidirectional riichienv conversion |
-| `encoder.rs` | 85x34 observation tensor encoder with incremental dirty-flag updates |
+| `encoder.rs` | 192x34 fixed-superset observation tensor encoder with incremental dirty-flag updates; first 85 channels preserve the baseline prefix |
 | `safety.rs` | Genbutsu, suji, kabe, one-chance safety calculations for channels 62-84 |
 | `bridge.rs` | Converts riichienv `Observation`/`ObservationRef` into encoder input types |
 | `game_loop.rs` | `GameRunner`, `ActionSelector` trait, phase handling, safety tracking |
@@ -211,12 +220,12 @@ stateDiagram-v2
 
 ### Observation Encoder
 
-The observation encoder produces the 85×34 tensor defined in the input encoding specification. It translates the current game state — hand tiles, discards, melds, dora indicators, and safety information — into a fixed-size numerical representation suitable for neural network input.
+The observation encoder currently produces a **192×34 fixed-superset tensor**. The first 85 channels retain the original public+safety baseline prefix; the remaining channels provide fixed-shape search/belief and Hand-EV context with zero-fill plus presence masks when dynamic features are unavailable. It translates the current game state — hand tiles, discards, melds, dora indicators, safety information, and optional higher-level context — into a fixed-size numerical representation suitable for neural network input.
 
 Key performance considerations:
 
 - **Pre-allocated buffers** — tensor memory is allocated once per environment instance and reused across turns to avoid allocation overhead
-- **Contiguous memory layout** — the 85×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
+- **Contiguous memory layout** — the 192×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
 - **Incremental updates (planned optimization)** — most planes change minimally between turns (hand ±1 tile, discards +1). Delta-based encoding could reduce per-turn work, pending benchmarking to confirm the bookkeeping overhead is worthwhile. Mortal's encoder recomputes the full tensor from scratch each turn.
 
 ### Batch Simulator
@@ -285,7 +294,7 @@ graph LR
 
 **Decision: On-the-fly Rust parsing (default) with optional pre-encoded shards for production.**
 
-The default path stores raw MJAI logs as `.json.gz` files (~70 GB for ~6.6M games). A Rust `GameplayLoader` parses and encodes observations on-the-fly using rayon parallelism. This is Mortal's proven architecture — Mortal processes even larger tensors (1012×34 vs Hydra's 85×34) with the same approach, demonstrating that on-the-fly parsing is not a bottleneck at this scale.
+The default path stores raw MJAI logs as `.json.gz` files (~70 GB for ~6.6M games). A Rust `GameplayLoader` parses and encodes observations on-the-fly using rayon parallelism. This is Mortal's proven architecture — Mortal processes even larger tensors (1012×34 vs Hydra's current 192×34 fixed superset) with the same approach, demonstrating that on-the-fly parsing is not a bottleneck at this scale.
 
 For production runs where maximum GPU utilization is critical, an optional pre-encoding step writes sharded binary files with Blosc+LZ4 compression (~500–800 GB for ~6.6M games compressed at ~7:1 ratio). This path eliminates all CPU parsing overhead but requires re-encoding whenever features change. Pre-encoding is only justified if GPU utilization drops below 80% with on-the-fly parsing.
 
@@ -388,7 +397,7 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 | Component | Size | Notes |
 |-----------|------|-------|
 | Raw MJAI logs (`.json.gz`) | ~70 GB | Source of truth; always retained |
-| Student obs (85×34×f32, uncompressed) | ~4.5 TB | Never stored — generated on-the-fly |
+| Student obs (192×34×f32, uncompressed) | ~10.1 TB | Never stored — generated on-the-fly |
 | Oracle obs (205×34×f32, uncompressed) | ~10.9 TB | Never stored — generated on-the-fly |
 | With 6× suit augmentation (uncompressed) | ~27 TB | Never pre-computed — applied on-the-fly |
 | Pre-encoded shards (Blosc+LZ4, ~7:1) | ~640 GB | Optional production path only |
@@ -399,14 +408,14 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 | Component | Memory | Phase |
 |-----------|--------|-------|
 | Model (~16.5M student / ~16.7M teacher, bf16) | ~33–34 MB | All phases |
-| Batch (2048 × 85×34 × 4B) | ~23 MB | Phase 1 (BC) |
+| Batch (2048 × 192×34 × 4B) | ~53 MB | Phase 1 (BC) |
 | Burn DataLoader workers (8 threads) | ~180 MB | Phase 1 (BC) |
 | Optimizer state (AdamW, bf16) | ~130 MB | All phases |
 | Opponent cache (5 × 33 MB bf16) | ~165 MB | Phase 3 |
 | PPO minibatch (on-GPU) | ~200–400 MB | Phase 2–3 (RL) |
 | **Total VRAM footprint** | **< 1 GB** (BC) / **~3.7 GB** (PPO+opponents) | — |
 
-The PPO rollout buffer is stored in **CPU pinned memory** (12 GB per buffer, 24 GB for double buffer), not VRAM. Derived from: `512 envs x 2048 rollout steps x (85x34x4 bytes obs + 46x4 bytes logits + 4 bytes action + 4 bytes reward + 4 bytes value + 1 byte done)` = ~12 GB per buffer. Only individual minibatches are transferred to GPU via async copies through burn-tch. Phase 1 behavioral cloning is memory-trivial.
+The historical PPO rollout buffer estimate in this document assumes the older 85×34 baseline observation. If this plan is revived against the current 192×34 fixed-superset encoder, the buffer cost scales proportionally upward. Treat the old numeric estimate as legacy planning context, not a current exact sizing guarantee. Only individual minibatches are transferred to GPU via async copies through burn-tch. Phase 1 behavioral cloning remains memory-trivial by comparison.
 
 **Throughput estimates:**
 

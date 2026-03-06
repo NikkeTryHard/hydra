@@ -64,13 +64,13 @@ hydra-train/
 
 ### 1.4 Constants (in `config.rs`)
 
-**Canonical SSOT note:** `HYDRA_FINAL.md` is the governing architecture doc. The `85 x 34` tensor described in this roadmap reflects the currently implemented baseline encoder, not the final target encoder. The final target is a **fixed-shape superset** of Groups A/B/C/D from `HYDRA_FINAL`, with zero-filled dynamic features plus presence-mask channels when search/belief/Hand-EV features are unavailable.
+**Canonical SSOT note:** `HYDRA_FINAL.md` is the governing architecture doc, and `HYDRA_RECONCILIATION.md` is the current repo-wide execution memo. The old `85 x 34` tensor describes the baseline prefix, not the full live encoder. The current code already uses the **fixed-shape 192 x 34 superset** of Groups A/B/C/D from `HYDRA_FINAL`, with zero-filled dynamic features plus presence-mask channels when search/belief/Hand-EV features are unavailable.
 
-These are the EXACT defaults for the **current baseline implementation**:
+These are the exact defaults for the **current live implementation snapshot**, but this roadmap remains subordinate to `HYDRA_FINAL.md` and `HYDRA_RECONCILIATION.md` when they disagree on overall direction or priority:
 
 | Constant | Value | Source |
 |----------|-------|--------|
-| `INPUT_CHANNELS` | 85 | `hydra_core::encoder::NUM_CHANNELS` |
+| `INPUT_CHANNELS` | 192 | `hydra_core::encoder::NUM_CHANNELS` |
 | `TILE_DIM` | 34 | `hydra_core::encoder::NUM_TILES` |
 | `HIDDEN_CHANNELS` | 256 | SE-ResNet channel width |
 | `SE_REDUCTION` | 4 | SE squeeze ratio: 256/4 = 64 |
