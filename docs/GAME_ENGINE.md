@@ -4,13 +4,13 @@ Reference documentation for the `hydra-core` Rust crate, the game engine powerin
 
 ## Overview
 
-`hydra-core` is a Rust library that provides everything the Hydra training pipeline needs from the game side: a complete Riichi Mahjong simulator, observation encoding, safety analysis, and batch execution. It wraps `riichienv-core` as the underlying game engine and layers Hydra-specific encoding, seeding, and orchestration on top.
+`hydra-core` is a Rust library that provides everything the Hydra training pipeline and runtime need from the game side: a complete Riichi Mahjong simulator, observation encoding, safety analysis, search/belief feature bridging, and batch execution. It wraps `riichienv-core` as the underlying game engine and layers Hydra-specific encoding, seeding, and orchestration on top.
 
 Core responsibilities:
 
 - Tile representation and suit permutation for data augmentation
 - A 46-action space with bidirectional conversion to/from `riichienv` actions
-- A currently implemented 85-channel x 34-tile baseline observation encoder, with the final target expanding toward the `HYDRA_FINAL` fixed-superset A/B/C/D design
+- A currently implemented **192-channel x 34-tile fixed-superset observation encoder**, whose first 85 channels preserve the original public+safety baseline while Groups C/D add search/belief and Hand-EV planes
 - Tile safety analysis (genbutsu, suji, kabe, one-chance)
 - Deterministic seeding via SHA-256 KDF + ChaCha8Rng
 - Parallel batch simulation with `rayon`
@@ -40,7 +40,7 @@ Because riichienv-core's correctness is already verified upstream -- smly ran Mo
 |--------|------|-------------|
 | `tile` | `tile.rs` | Tile types (0-33), 136-format representation, aka-dora handling, suit permutation |
 | `action` | `action.rs` | 46-action space, `HydraAction` enum, bidirectional riichienv conversion, legal mask builder |
-| `encoder` | `encoder.rs` | 85x34 observation tensor, `ObservationEncoder`, incremental encoding with `DirtyFlags` |
+| `encoder` | `encoder.rs` | 192x34 fixed-superset observation tensor, `ObservationEncoder`, incremental encoding with `DirtyFlags` |
 | `safety` | `safety.rs` | `SafetyInfo` per-opponent tile safety: genbutsu, suji, kabe, one-chance |
 | `simulator` | `simulator.rs` | `BatchSimulator` with rayon thread pool, `BatchConfig`, `GameResult` collection |
 | `seeding` | `seeding.rs` | SHA-256 KDF, `SessionRng`, deterministic wall generation, Fisher-Yates shuffle |
@@ -119,11 +119,11 @@ The `build_legal_action_mask` function takes the current riichienv game state an
 
 ### Tensor Shape
 
-**Canonical SSOT note:** `research/design/HYDRA_FINAL.md` is the governing architecture doc. The `85 x 34` tensor below describes the **currently implemented baseline encoder**, not the final target encoder. The final target is a **fixed-shape superset** of public, safety, search/belief, and Hand-EV planes, with zero-filled dynamic features and explicit presence-mask channels when those extra features are unavailable.
+**Canonical SSOT note:** `research/design/HYDRA_FINAL.md` is the governing architecture doc, and `research/design/HYDRA_RECONCILIATION.md` is the current repo-wide decision memo. The original `85 x 34` tensor now describes the **baseline prefix** of the live encoder, not the full live encoder. The current implementation is already a **fixed-shape 192 x 34 superset** with Groups C/D plus presence-mask channels.
 
-Each baseline observation is an `85 x 34` float tensor (2,890 values). The first axis represents 85 channels of information. The second axis represents the 34 tile types. This shape feeds directly into the current SE-ResNet model input.
+Each observation is a `192 x 34` float tensor (6,528 values). The first 85 channels retain the baseline public+safety encoding; the remaining channels provide fixed-shape search/belief and Hand-EV context with zero-fill plus explicit presence masks when dynamic features are unavailable. This full shape feeds directly into the current SE-ResNet model input.
 
-### Baseline Channel Layout
+### Baseline Prefix Channel Layout (channels 0-84)
 
 The 85 channels break down into these groups:
 
@@ -167,12 +167,12 @@ The 85 channels break down into these groups:
 
 ### ObservationEncoder
 
-`ObservationEncoder` is the main struct for building observation tensors. In the current baseline implementation it holds a pre-allocated `[f32; 85 * 34]` buffer marked `#[repr(C)]` for predictable memory layout. This will need to generalize when the fixed-superset `HYDRA_FINAL` Groups C/D planes and presence masks are added.
+`ObservationEncoder` is the main struct for building observation tensors. In the current implementation it holds a pre-allocated `[f32; 192 * 34]` buffer marked `#[repr(C)]` for predictable memory layout. The baseline public+safety channels remain intact in the first 85 planes; Groups C/D are already present as fixed-shape extensions.
 
 ```rust
 #[repr(C)]
     pub struct ObservationEncoder {
-    buffer: [f32; 2890],  // 85 channels x 34 tiles, row-major
+    buffer: [f32; 6528],  // 192 channels x 34 tiles, row-major
 }
 ```
 

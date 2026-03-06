@@ -1,10 +1,16 @@
 # hydra-core
 
-Training-layer crate for the Hydra Riichi Mahjong AI. Sits on top of `hydra-engine` and provides everything needed to generate training data: observation encoding, batch simulation, safety analysis, and deterministic seeding.
+Core game/runtime crate for the Hydra Riichi Mahjong AI. It sits on top of `hydra-engine` / `riichienv-core` and provides the engine-side pieces used by both training and inference: observation encoding, safety analysis, search/belief feature bridging, deterministic seeding, and batch simulation.
 
 ## Overview
 
-`hydra-core` transforms raw game states from `hydra-engine` into neural network inputs. The 85x34 observation tensor encodes the full player-visible game state (hand, discards, melds, dora, scores, safety) into the format consumed by Hydra's SE-ResNet model.
+`hydra-core` transforms raw game states into neural network inputs. The current live encoder is a **fixed-superset 192x34 observation tensor**:
+
+- channels `0..84`: baseline public + safety planes
+- channels `85..149`: Group C search/belief context + presence masks + reserved slots
+- channels `150..191`: Group D Hand-EV context + presence mask
+
+The old `85x34` view is still useful as the baseline prefix, but it is no longer the full current encoder reality.
 
 This crate also provides the batch simulation pipeline: run thousands of games in parallel via rayon, encode observations on the fly, and feed them directly into the training loop.
 
@@ -12,7 +18,7 @@ This crate also provides the batch simulation pipeline: run thousands of games i
 
 | Module | Description |
 |--------|-------------|
-| `encoder` | 85x34 observation tensor encoder: hand, discards, melds, dora, metadata, safety channels |
+| `encoder` | 192x34 fixed-superset observation encoder; first 85 channels preserve the baseline public+safety planes |
 | `bridge` | Converts `hydra-engine` `Observation`/`ObservationRef` into encoder input types |
 | `safety` | Genbutsu, suji, kabe, one-chance safety calculations for the 23 safety channels (62-84) |
 | `game_loop` | `GameRunner` with proper phase handling, `ActionSelector` trait, `FirstActionSelector` |
@@ -23,9 +29,9 @@ This crate also provides the batch simulation pipeline: run thousands of games i
 | `tile` | 34-tile type system, aka-dora handling, 136-format conversion, suit permutation for data augmentation |
 | `action` | 46-action space mapping (Mortal-compatible): discard, riichi, chi, pon, kan, pass, tsumo, ron |
 
-## Observation Tensor (85x34)
+## Observation Tensor (192x34 fixed superset)
 
-The encoder produces an `[f32; 85 * 34]` flat array (row-major) with channels grouped:
+The encoder produces an `[f32; 192 * 34]` flat array (row-major) with channels grouped:
 
 | Channels | Content |
 |----------|---------|
@@ -39,6 +45,12 @@ The encoder produces an `[f32; 85 * 34]` flat array (row-major) with channels gr
 | 40-42 | Aka dora flags (per suit plane) |
 | 43-61 | Game metadata (riichi, scores, gaps, shanten, round, honba, kyotaku) |
 | 62-84 | Safety channels (genbutsu, suji, kabe, one-chance, tenpai) |
+| 85-149 | Search/belief context, mixture stats, delta-Q, opponent risk/stress, presence masks, reserved slots |
+| 150-191 | Hand-EV context (tenpai / win / expected score / ukeire) plus presence mask |
+
+If you need the active architecture/plan rather than the crate-local runtime summary, read:
+- `research/design/HYDRA_FINAL.md`
+- `research/design/HYDRA_RECONCILIATION.md`
 
 ## Benchmarks
 
@@ -49,7 +61,7 @@ Full methodology in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARK
 |-----------|------|
 | Single game (FirstActionSelector) | 396us |
 | Batch 100 games (4 cores, rayon) | 3.5ms (28,986 games/sec) |
-| Observation encode (85x34) | 422ns |
+| Observation encode (baseline prefix + fixed superset write) | 422ns |
 
 ## License
 
