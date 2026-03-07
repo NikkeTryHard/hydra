@@ -2,23 +2,41 @@
 
 This directory contains the tracked handoff artifacts for external deep agents.
 
-## Prompt files
+`research/agent_handoffs/combined_all_variants/` is now the SSOT for prompt/answer context artifacts.
 
-- `prompts/PROMPT_1_TECHNICAL_BREAKTHROUGH.md`
-- `prompts/PROMPT_2_REPO_AWARE_NEXT_TRANCHE.md`
-- `prompts/PROMPT_3_STRATEGIC_CUTTER.md`
-- `prompts/PROMPT_4_OUTSIDE_THE_BOX_BUT_GROUNDED.md`
-- `prompts/PROMPT_5_CROSS_FIELD_TRANSFER_HUNTER.md`
-- `prompts/PROMPT_6_NEW_TECHNIQUE_INVENTOR.md`
+See `research/agent_handoffs/RUN_INDEX.md` for the current mapping.
 
-## Prior answer archive
+## SSOT archive
 
-- `prior_answers/ANSWER_1.md`
-- `prior_answers/ANSWER_2.md`
-- `prior_answers/ANSWER_3.md`
-- `prior_answers/ANSWER_1-1.md`
-- `prior_answers/ANSWER_2-1.md`
-- `prior_answers/ANSWER_3-1.md`
+- `combined_all_variants/`
+
+This folder now contains:
+
+- direct prompt/answer combined records
+- revised answer variants
+- diagnostic/context records when needed
+- mixed transcript extracts from `agent_answers/`
+- prompt-pack and prompt-template preservation records
+
+## Older folders now considered redundant once cleanup completes
+
+- `runs/`
+- `combined_runs/`
+- `legacy/`
+- `prior_answers/`
+- `prompts/`
+- `archival_runs_without_preserved_answers/`
+- `prompt_packs/`
+
+## Future archival rule
+
+For every new external-agent artifact:
+
+1. create one self-contained markdown file under `research/agent_handoffs/combined_all_variants/`
+2. place prompt/context at the top
+3. place answer/context note at the bottom
+4. mark provenance clearly
+5. do not create a second archive folder that duplicates the same information
 
 ## Recommended package split
 
@@ -36,8 +54,7 @@ Include:
 - `research/design/AGENT_FOLLOWUP_1.md`
 - `research/design/AGENT_FOLLOWUP_2.md`
 - `research/design/AGENT_FOLLOWUP_3.md`
-- all files under `research/agent_handoffs/prior_answers/`
-- all files under `research/agent_handoffs/prompts/`
+- all files under `research/agent_handoffs/combined_all_variants/`
 
 ### `hydra_breakthrough_thin_source_pack.zip` — thin-source validation pack
 This contains everything in `hydra_breakthrough_docs_pack.zip`, plus:
@@ -53,10 +70,11 @@ This contains everything in `hydra_breakthrough_docs_pack.zip`, plus:
 
 ## Notes
 
-- `agent_answers/` is intentionally local-only and untracked.
+- `combined_all_variants/` is now the canonical tracked home for prompt/answer context artifacts.
+- older sibling folders are redundant staging/compatibility copies once cleanup completes.
 - `.cargo/` is intentionally local-only and untracked.
 - Use raw GitHub links for tracked files when an external agent cannot access the zip attachment.
-- The 4 prompt files are intentionally structured for GPT-5.4-style deep work using explicit output contracts, research-mode passes, grounding/citation rules, and completion criteria.
+- The tracked prompt templates are intentionally structured for GPT-5.4-style deep work using explicit output contracts, research-mode passes, grounding/citation rules, and completion criteria.
 
 ## Prompt-to-package routing
 
