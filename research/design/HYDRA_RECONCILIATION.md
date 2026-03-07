@@ -102,15 +102,15 @@ What is only partially true:
 
 What is outdated, wrong, or overstated in docs:
 
-- `README.md` still says 40-block + PPO and points to `research/TRAINING.md`, which does not exist.
+- `README.md` authority routing has been fixed, but secondary docs still need cleanup discipline to avoid reintroducing stale guidance.
 - `research/design/HYDRA_SPEC.md` is explicitly outdated but still heavily referenced.
 - `research/infrastructure/INFRASTRUCTURE.md` still operationalizes old PPO-era assumptions.
-- `docs/GAME_ENGINE.md` and `hydra-core/README.md` still foreground `85x34` in ways that no longer match the live encoder code.
+- `docs/GAME_ENGINE.md` and `hydra-core/README.md` now correctly describe `85x34` only as the baseline prefix, not the full live encoder.
 
 Doc drift that materially affects decisions:
 
 - target architecture says two-tier 12/24-block + ExIt-centered training
-- top-level docs still imply 40-block + PPO + missing training doc
+- secondary reference docs can still imply older 40-block / PPO / dead-TRAINING assumptions if they are read without authority routing
 - implementation roadmap partially reflects the new world, but supporting docs often do not
 
 ## 3. Ranked next-step recommendations

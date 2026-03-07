@@ -1,5 +1,9 @@
 # Hydra Reward Design
 
+> **Status note:** this is a mixed design/reference document. Current execution authority comes from `README.md` -> `research/design/HYDRA_FINAL.md` -> `research/design/HYDRA_RECONCILIATION.md` -> `docs/GAME_ENGINE.md`.
+>
+> Keep the reward-analysis evidence and reserve ideas here, but do not treat older `TRAINING.md` references as current governing doctrine.
+
 Hydra's reward function design, informed by cross-domain analysis of reward systems in Pluribus, ReBeL, AlphaStar, OpenAI Five, and RVR Mahjong.
 
 > **Background reading:** The full literature survey of reward functions across landmark AI systems is archived in [archive/REWARD_SURVEY.md](archive/REWARD_SURVEY.md).
@@ -93,7 +97,7 @@ Based on cross-domain survey ([archived](archive/REWARD_SURVEY.md)), Mortal sour
 
 ### The Formula
 
-> See [TRAINING.md § Reward Function](TRAINING.md#reward-function) for the authoritative formula, normalization, and implementation priority.
+The exact reward formula and implementation priority should be treated as active only when promoted by the reconciled doctrine. Keep the analysis below as reference/evidence rather than a hidden source of authority.
 
 ### Why This Design
 
@@ -113,7 +117,7 @@ Based on cross-domain survey ([archived](archive/REWARD_SURVEY.md)), Mortal sour
 
 ### Confirmed Anti-Patterns (From Mortal Community)
 
-> See [TRAINING.md § What NOT to Do](TRAINING.md#what-not-to-do-confirmed-failures) for the full list.
+The anti-pattern list below is retained as reference guidance; do not treat dead `TRAINING.md` links as live authority.
 
 ### Platform-Specific Fine-Tuning (Via pts_vector Swap)
 
