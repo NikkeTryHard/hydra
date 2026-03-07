@@ -5,6 +5,8 @@
 
 **End state**: `cargo build --release && cargo test --release && cargo clippy -- -D warnings` all green. Every HYDRA_FINAL component implemented and tested.
 
+> **Current sequencing note:** This roadmap is an implementation-detail reference, not the sole authority on what to build next. For the immediate execution order, `research/design/HYDRA_RECONCILIATION.md` wins when it conflicts with this roadmap's broader full-stack sequencing.
+
 **Dev agent rules**:
 - Every task ends with tests that PASS
 - No `unwrap()` in library code (use `?` or explicit error handling)
@@ -13,7 +15,9 @@
 - Do NOT skip steps or proceed without passing the gate
 - Do NOT invent your own approach -- follow the spec EXACTLY
 
-**Design SSOT**: `research/design/HYDRA_FINAL.md` (406 lines)
+**Design SSOT**: `research/design/HYDRA_FINAL.md`.
+
+**Current execution authority**: `research/design/HYDRA_RECONCILIATION.md` for immediate tranche ordering.
 
 ---
 
