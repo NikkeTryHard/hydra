@@ -1,12 +1,13 @@
 //! MJAI `.json` / `.json.gz` loader for behavioral cloning data.
 
 use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
+use crate::teacher::belief::{StageABeliefConfig, build_stage_a_teacher};
 use crate::training::losses::oracle_target_from_scores;
 use hydra_core::action::{
     AKA_5M, AKA_5P, AKA_5S, ActionPhase, DISCARD_END, HYDRA_ACTION_SPACE, build_legal_mask,
     riichienv_to_hydra,
 };
-use hydra_core::bridge::encode_observation;
+use hydra_core::bridge::{encode_observation, extract_public_remaining_counts};
 use hydra_core::encoder::ObservationEncoder;
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::parser::mjai_to_tid;
@@ -298,6 +299,36 @@ fn build_safety_residual_targets(
     (target, mask)
 }
 
+fn build_stage_a_belief_targets(
+    state: &GameState,
+    actor: usize,
+    obs: &riichienv_core::observation::Observation,
+) -> (Option<[f32; 16 * 34]>, Option<[f32; 4]>, bool, bool) {
+    let hand = hydra_core::bridge::extract_hand(obs);
+    let discards = hydra_core::bridge::extract_discards(obs);
+    let melds = hydra_core::bridge::extract_melds(obs);
+    let dora = hydra_core::bridge::extract_dora(obs);
+    let remaining = extract_public_remaining_counts(&hand, &discards, &melds, &dora);
+    let hidden_tiles = state
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != actor)
+        .map(|(_, p)| p.hand_len as usize)
+        .sum::<usize>()
+        + state.wall.remaining();
+    let target = build_stage_a_teacher(&remaining, hidden_tiles, StageABeliefConfig::default());
+    match target {
+        Some(target) => (
+            Some(target.belief_fields),
+            target.mixture_weights,
+            true,
+            target.mixture_weights.is_some(),
+        ),
+        None => (None, None, false, false),
+    }
+}
+
 fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     let final_scores = final_scores(&events);
     let oracle_target = oracle_target_from_scores(final_scores);
@@ -355,6 +386,8 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                     &safety[actor],
                     &wait_sets,
                 );
+                let (belief_fields, mixture_weights, belief_fields_present, mixture_weights_present) =
+                    build_stage_a_belief_targets(&state, actor, &obs);
                 samples.push(MjaiSample {
                     obs: obs_encoded,
                     action: hydra_action.id(),
@@ -369,8 +402,10 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                     danger_mask,
                     safety_residual: Some(safety_residual),
                     safety_residual_mask: Some(safety_residual_mask),
-                    belief_fields: None,
-                    mixture_weights: None,
+                    belief_fields,
+                    mixture_weights,
+                    belief_fields_present,
+                    mixture_weights_present,
                 });
             }
         }
@@ -446,6 +481,7 @@ impl MjaiDataset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::teacher::belief::StageABeliefAuditSummary;
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use riichienv_core::action::Phase;
@@ -587,6 +623,42 @@ mod tests {
         assert!(masked_discards > 0.0, "expected at least one discard action to be labeled");
         let masked_non_discards: f32 = mask[(DISCARD_END as usize + 1)..].iter().sum();
         assert!(masked_non_discards.abs() < 1e-6, "non-discard actions should be masked out");
+    }
+
+    #[test]
+    fn load_game_from_reader_can_emit_stage_a_belief_targets() {
+        let (log, _) = play_game_with_mjai_log(13);
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+        let sample = game
+            .samples
+            .iter()
+            .find(|s| s.belief_fields.is_some())
+            .expect("expected at least one belief-target sample");
+        let belief = sample.belief_fields.expect("belief fields");
+        assert_eq!(belief.len(), 16 * 34);
+        assert!(sample.belief_fields_present);
+    }
+
+    #[test]
+    fn stage_a_belief_audit_summary_tracks_real_coverage() {
+        let (log, _) = play_game_with_mjai_log(17);
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+        let mut audit = StageABeliefAuditSummary::default();
+        for sample in &game.samples {
+            let target = match (sample.belief_fields, sample.mixture_weights) {
+                (Some(belief_fields), mixture_weights) => Some(crate::teacher::belief::StageABeliefTarget {
+                    belief_fields,
+                    mixture_weights,
+                    trust: 1.0,
+                    ess: 1.0,
+                    entropy: 0.0,
+                }),
+                _ => None,
+            };
+            audit.record(target.as_ref());
+        }
+        assert!(audit.total > 0);
+        assert!(audit.belief_coverage() >= 0.0 && audit.belief_coverage() <= 1.0);
     }
 
     #[test]
