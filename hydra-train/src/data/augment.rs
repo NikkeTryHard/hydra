@@ -47,6 +47,19 @@ pub fn augment_mask_suit(
     out
 }
 
+pub fn augment_action_vector_suit(
+    values: &[f32; HYDRA_ACTION_SPACE],
+    perm: &[u8; 3],
+) -> [f32; HYDRA_ACTION_SPACE] {
+    let mut out = [0.0f32; HYDRA_ACTION_SPACE];
+    for i in 0..37u8 {
+        let new_i = permute_tile_extended(i, perm) as usize;
+        out[new_i] = values[i as usize];
+    }
+    out[37..HYDRA_ACTION_SPACE].copy_from_slice(&values[37..HYDRA_ACTION_SPACE]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +159,20 @@ mod tests {
             let permuted = augment_action_suit(a, swap_mp);
             let back = augment_action_suit(permuted, swap_mp);
             assert_eq!(a, back, "double-swap should be identity for action {a}");
+        }
+    }
+
+    #[test]
+    fn augment_action_vector_preserves_non_discard_entries() {
+        let mut values = [0.0f32; HYDRA_ACTION_SPACE];
+        values[37] = 0.25;
+        values[43] = 0.5;
+        values[45] = 0.75;
+        for perm in &ALL_PERMUTATIONS {
+            let out = augment_action_vector_suit(&values, perm);
+            assert_eq!(out[37], 0.25);
+            assert_eq!(out[43], 0.5);
+            assert_eq!(out[45], 0.75);
         }
     }
 }
