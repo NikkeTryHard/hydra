@@ -11,25 +11,33 @@ Train a mahjong AI that:
 
 ## Architecture
 
-Hydra's target architecture is defined in [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md). The current repository state is a hybrid: `hydra-core` already implements a real engine/encoder baseline plus several advanced modules, while the broader training/search plan is still being reconciled against the newer HYDRA-OMEGA direction.
+Hydra's strongest current doctrine is:
+
+1. [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — target architecture north star
+2. [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — current execution doctrine
+3. [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) — current runtime reality
+
+Everything else should be read as implementation reference, rationale, reserve shelf, or archive material unless one of the three files above explicitly promotes it.
 
 If you are deciding what to build next, read these in order:
 - [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — target architecture SSOT
 - [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — verified repo reality + best next action
 - [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) — current game-engine/runtime baseline
 - [`research/design/IMPLEMENTATION_ROADMAP.md`](research/design/IMPLEMENTATION_ROADMAP.md) — staged implementation plan
+- [`research/design/HYDRA_ARCHIVE.md`](research/design/HYDRA_ARCHIVE.md) — archived / reserve-only planning surfaces
 
-`research/design/HYDRA_SPEC.md` is still useful as legacy context, but it is explicitly outdated and should not be treated as the current implementation source of truth.
+`research/design/HYDRA_SPEC.md` is historical context only.
 
 ## Research
 
 | File | What's In It |
 |------|-------------|
 | [HYDRA_FINAL.md](research/design/HYDRA_FINAL.md) | Current target architecture SSOT |
-| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Verified repo reality, resolved conflicts, and next implementation tranche |
-| [HYDRA_SPEC.md](research/design/HYDRA_SPEC.md) | Legacy architecture spec (explicitly outdated) |
+| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Current execution doctrine and active/reserve split |
+| [HYDRA_ARCHIVE.md](research/design/HYDRA_ARCHIVE.md) | Archived / reserve-only planning surfaces |
+| [HYDRA_SPEC.md](research/design/HYDRA_SPEC.md) | Historical architecture spec only |
 | [MORTAL_ANALYSIS.md](research/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
-| [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Safety planes, 9-head specs (tenpai/danger/FiLM/call-intent/Sinkhorn), RSA deception, CVaR, L0 observer |
+| [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Opponent-modeling rationale; includes both active ideas and reserve/future extensions |
 | [INFRASTRUCTURE.md](research/infrastructure/INFRASTRUCTURE.md) | Rust stack, data pipeline, training infra, hardware, deployment |
 | [SEEDING.md](research/design/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
 | [CHECKPOINTING.md](research/infrastructure/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
@@ -46,7 +54,8 @@ If you are deciding what to build next, read these in order:
 - `research/design/HYDRA_RECONCILIATION.md`: current repo-wide decision memo and best-next-action guide
 - `docs/GAME_ENGINE.md`: current game-engine/runtime baseline
 - `research/design/OPPONENT_MODELING.md`: detailed opponent-modeling rationale
-- `research/design/HYDRA_SPEC.md`: legacy architecture summary only; do not use it as the current implementation SSOT
+- `research/design/HYDRA_ARCHIVE.md`: archive / reserve-only doctrine
+- `research/design/HYDRA_SPEC.md`: historical architecture summary only; do not use it as the current implementation SSOT
 
 ## Status
 

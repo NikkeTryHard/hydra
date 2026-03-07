@@ -1,5 +1,9 @@
 # Hydra Reconciliation
 
+> **Current execution doctrine.**
+>
+> If any implementation/reference doc conflicts with this file on sequencing, tranche priority, or active-vs-reserve status, this file wins.
+
 This memo reconciles the strongest design inputs, the actual repository state, and the best immediate next move.
 
 It is intentionally opinionated:
@@ -54,6 +58,15 @@ Working principle for this memo:
 - **active path** = what the team should optimize for now
 - **reserve shelf** = good ideas kept for later if the active path underdelivers
 - **drop shelf** = ideas that should stop consuming mainline attention for now
+
+## Doctrine routing
+
+| Need | Primary file |
+|---|---|
+| Architecture north star | `HYDRA_FINAL.md` |
+| Current execution doctrine | `HYDRA_RECONCILIATION.md` |
+| Current runtime reality | `docs/GAME_ENGINE.md` |
+| Historical / reserve-only planning surfaces | `HYDRA_ARCHIVE.md` |
 
 ## 2. Verified repo reality
 
@@ -230,6 +243,8 @@ These ideas should stay documented so the team can come back to them if active H
 ### 4.3 Dropped shelf: stop letting these drive current planning
 
 These are not “forbidden forever.” They are just bad uses of mainline attention right now.
+
+For preserved historical context and reserve-only planning surfaces, see `HYDRA_ARCHIVE.md`.
 
 #### Drop from the active path for now
 - **full public-belief search as the immediate project identity**

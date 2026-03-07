@@ -328,7 +328,7 @@ Each `extract_*` function pulls one category of data from the riichienv observat
 
 ### Entry Point
 
-`encode_observation` is the main bridge function. It takes a riichienv `Observation`, calls all `extract_*` functions, and feeds the results into the `ObservationEncoder`. Returns the filled 85x34 float buffer ready for the model.
+`encode_observation` is the main bridge function. It takes a riichienv `Observation`, calls all `extract_*` functions, and feeds the results into the `ObservationEncoder`. Returns the filled 192x34 fixed-superset float buffer ready for the model.
 
 ## Testing
 

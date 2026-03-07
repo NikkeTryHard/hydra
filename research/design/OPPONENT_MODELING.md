@@ -10,6 +10,8 @@ Opponent modeling is Hydra's primary differentiator from existing Mahjong AIs. T
 
 > **Ownership note:** This document is the authoritative source for detailed opponent-modeling rationale (safety encoding logic, tenpai/danger head behavior, and expected effects), but not for final implementation shape when the active SSOT differs. If this file conflicts with `HYDRA_FINAL.md` or `HYDRA_RECONCILIATION.md`, follow those files for current implementation direction and keep this document as rationale/reference.
 
+> **Reserve/future note:** Not everything in this document belongs to the active path right now. Core safety / tenpai / danger rationale is active. Heavier or more speculative extensions (for example wait-set belief heads, call-intent/FiLM conditioning, safety reserve, deception/RSA-style mechanisms, and other future extensions) should be treated as reserve-shelf material unless the reconciled doctrine explicitly promotes them.
+
 Mortal uses `SinglePlayerTables` for EV calculation, assuming no opponent interaction. There are no safety features (suji, kabe, genbutsu) pre-computed, no opponent tenpai estimation, and no aggression or tendency profiling. The network must learn all opponent-relevant patterns implicitly through raw observation channels — and the evidence shows it fails at the hardest cases.
 
 ```mermaid

@@ -6,6 +6,8 @@
 **End state**: `cargo build --release && cargo test --release && cargo clippy -- -D warnings` all green. Every HYDRA_FINAL component implemented and tested.
 
 > **Current sequencing note:** This roadmap is an implementation-detail reference, not the sole authority on what to build next. For the immediate execution order, `research/design/HYDRA_RECONCILIATION.md` wins when it conflicts with this roadmap's broader full-stack sequencing.
+>
+> **Demotion note:** Treat this file as a reference/backlog map, not as the default build order for the strongest current Hydra. Any section that conflicts with reconciliation or current runtime reality should be treated as archived or future-use material, not immediate marching orders.
 
 **Dev agent rules**:
 - Every task ends with tests that PASS
