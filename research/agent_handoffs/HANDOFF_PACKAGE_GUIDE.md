@@ -20,7 +20,7 @@ This directory contains the tracked handoff artifacts for external deep agents.
 
 ## Recommended package split
 
-### Package A — docs-heavy breakthrough pack
+### `hydra_breakthrough_docs_pack.zip` — docs-heavy breakthrough pack
 Include:
 - `research/design/HYDRA_FINAL.md`
 - `research/design/HYDRA_RECONCILIATION.md`
@@ -37,8 +37,8 @@ Include:
 - all files under `research/agent_handoffs/prior_answers/`
 - all files under `research/agent_handoffs/prompts/`
 
-### Package B — thin-source validation pack
-Package A plus:
+### `hydra_breakthrough_thin_source_pack.zip` — thin-source validation pack
+This contains everything in `hydra_breakthrough_docs_pack.zip`, plus:
 - `hydra-core/src/encoder.rs`
 - `hydra-core/src/ct_smc.rs`
 - `hydra-core/src/afbs.rs`
@@ -55,3 +55,15 @@ Package A plus:
 - `.cargo/` is intentionally local-only and untracked.
 - Use raw GitHub links for tracked files when an external agent cannot access the zip attachment.
 - The 4 prompt files are intentionally structured for GPT-5.4-style deep work using explicit output contracts, research-mode passes, grounding/citation rules, and completion criteria.
+
+## Prompt-to-package routing
+
+- `PROMPT_1_TECHNICAL_BREAKTHROUGH.md` -> attach `hydra_breakthrough_docs_pack.zip`
+- `PROMPT_2_REPO_AWARE_NEXT_TRANCHE.md` -> attach `hydra_breakthrough_thin_source_pack.zip`
+- `PROMPT_3_STRATEGIC_CUTTER.md` -> attach `hydra_breakthrough_docs_pack.zip`
+- `PROMPT_4_OUTSIDE_THE_BOX_BUT_GROUNDED.md` -> attach `hydra_breakthrough_docs_pack.zip` and `deep_agent_20_pdfs.zip`
+
+Self-sufficiency rule:
+- `hydra_breakthrough_docs_pack.zip` should be sufficient for prompts 1, 3, and 4.
+- `hydra_breakthrough_thin_source_pack.zip` should be sufficient for prompt 2.
+- Raw GitHub links are fallback-only when the attachment is inaccessible or corrupted.

@@ -9,9 +9,16 @@ Zip structure the model should expect:
 - infra summary under `research/infrastructure/`
 - prior answer archive under `research/agent_handoffs/prior_answers/`
 - prompt files under `research/agent_handoffs/prompts/`
-- thin source validation slice under:
-  - `hydra-core/src/`
-  - `hydra-train/src/`
+- thin source validation slice containing exactly these repo-reality anchors:
+  - `hydra-core/src/encoder.rs`
+  - `hydra-core/src/ct_smc.rs`
+  - `hydra-core/src/afbs.rs`
+  - `hydra-core/src/hand_ev.rs`
+  - `hydra-core/src/endgame.rs`
+  - `hydra-core/src/robust_opponent.rs`
+  - `hydra-train/src/data/sample.rs`
+  - `hydra-train/src/training/losses.rs`
+  - `hydra-train/src/model.rs`
 
 The zip should be sufficient by itself. Use raw links only if the attachment is inaccessible or corrupted.
 
