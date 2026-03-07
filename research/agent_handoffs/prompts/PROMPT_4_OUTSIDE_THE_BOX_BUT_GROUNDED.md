@@ -70,6 +70,19 @@ Primary sources:
 - `research/agent_handoffs/prior_answers/ANSWER_1-1.md`
 - `research/agent_handoffs/prior_answers/ANSWER_3-1.md`
 
+Raw GitHub fallback references:
+- `HYDRA_FINAL.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/design/HYDRA_FINAL.md
+- `HYDRA_RECONCILIATION.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/design/HYDRA_RECONCILIATION.md
+- `ANSWER_1-1.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/prior_answers/ANSWER_1-1.md
+- `ANSWER_3-1.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/prior_answers/ANSWER_3-1.md
+
+Suggested evidence/intel anchors if the zip is unavailable:
+- `research/evidence/multiplayer_search_research.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/evidence/multiplayer_search_research.md
+- `research/evidence/BELIEF_STATE_SURVEY.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/evidence/BELIEF_STATE_SURVEY.md
+- `research/evidence/TRAINING_TECHNIQUES_SURVEY.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/evidence/TRAINING_TECHNIQUES_SURVEY.md
+- `research/intel/CROSS_FIELD_TECHNIQUES.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/intel/CROSS_FIELD_TECHNIQUES.md
+- `research/intel/MAHJONG_TECHNIQUES.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/intel/MAHJONG_TECHNIQUES.md
+
 Your task:
 1. Find the single best unconventional idea that is still plausible for Hydra.
 2. The idea must satisfy all of:
