@@ -20,7 +20,9 @@ pub struct HydraTargets<B: Backend> {
     pub score_cdf_target: Tensor<B, 2>,
     pub oracle_target: Option<Tensor<B, 2>>,
     pub belief_fields_target: Option<Tensor<B, 3>>,
+    pub belief_fields_mask: Option<Tensor<B, 1>>,
     pub mixture_weight_target: Option<Tensor<B, 2>>,
+    pub mixture_weight_mask: Option<Tensor<B, 1>>,
     pub opponent_hand_type_target: Option<Tensor<B, 2>>,
     pub delta_q_target: Option<Tensor<B, 2>>,
     pub safety_residual_target: Option<Tensor<B, 2>>,
@@ -520,19 +522,19 @@ impl<B: Backend> HydraLoss<B> {
             ),
             None => zero.clone(),
         };
-        let l_belief = match &targets.belief_fields_target {
-            Some(target) => masked_mean(
+        let l_belief = match (&targets.belief_fields_target, &targets.belief_fields_mask) {
+            (Some(target), Some(mask)) => masked_mean(
                 belief_fields_bce_per_sample(outputs.belief_fields.clone(), target.clone()),
-                oracle_mask.clone(),
+                Some(mask.clone()),
             ),
-            None => zero.clone(),
+            _ => zero.clone(),
         };
-        let l_mix = match &targets.mixture_weight_target {
-            Some(target) => masked_mean(
+        let l_mix = match (&targets.mixture_weight_target, &targets.mixture_weight_mask) {
+            (Some(target), Some(mask)) => masked_mean(
                 mixture_weight_ce_per_sample(outputs.mixture_weight_logits.clone(), target.clone()),
-                oracle_mask.clone(),
+                Some(mask.clone()),
             ),
-            None => zero.clone(),
+            _ => zero.clone(),
         };
         let l_hand_type = match &targets.opponent_hand_type_target {
             Some(target) => masked_mean(
@@ -1176,7 +1178,9 @@ pub mod tests {
             score_cdf_target: Tensor::zeros([batch, 64], device),
             oracle_target: None,
             belief_fields_target: None,
+            belief_fields_mask: None,
             mixture_weight_target: None,
+            mixture_weight_mask: None,
             opponent_hand_type_target: None,
             delta_q_target: None,
             safety_residual_target: None,
