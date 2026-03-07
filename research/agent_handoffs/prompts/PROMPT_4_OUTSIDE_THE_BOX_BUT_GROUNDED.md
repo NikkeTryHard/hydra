@@ -1,5 +1,21 @@
 # Hydra breakthrough prompt 4 — unconventional but grounded
 
+Attach these files to the model:
+- `hydra_breakthrough_docs_pack.zip`
+- `deep_agent_20_pdfs.zip`
+
+Zip structure the model should expect in `hydra_breakthrough_docs_pack.zip`:
+- core design docs under `research/design/`
+- runtime summary under `docs/`
+- infra summary under `research/infrastructure/`
+- prior answer archive under `research/agent_handoffs/prior_answers/`
+- prompt files under `research/agent_handoffs/prompts/`
+
+Zip structure the model should expect in `deep_agent_20_pdfs.zip`:
+- paper PDFs under `deep_agent_20_pdfs/`
+
+The attached zips should be sufficient by themselves. Use raw links only if the attachments are inaccessible or corrupted.
+
 You are a research advisor trying to find one unconventional but credible idea that could give Hydra an edge over LuckyJ.
 
 This is the only prompt where you are allowed to push beyond the current obvious active path — but you must stay grounded.

@@ -1,5 +1,20 @@
 # Hydra breakthrough prompt 2 — repo-aware next tranche
 
+Attach this zip to the model:
+- `hydra_breakthrough_thin_source_pack.zip`
+
+Zip structure the model should expect:
+- core design docs under `research/design/`
+- runtime summary under `docs/`
+- infra summary under `research/infrastructure/`
+- prior answer archive under `research/agent_handoffs/prior_answers/`
+- prompt files under `research/agent_handoffs/prompts/`
+- thin source validation slice under:
+  - `hydra-core/src/`
+  - `hydra-train/src/`
+
+The zip should be sufficient by itself. Use raw links only if the attachment is inaccessible or corrupted.
+
 You are a research advisor helping Hydra become stronger than LuckyJ.
 
 Your job is to propose the **smallest high-leverage next implementation tranche** that most increases Hydra's chance of reaching that ceiling.
