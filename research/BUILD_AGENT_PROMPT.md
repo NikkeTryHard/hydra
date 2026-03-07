@@ -4,6 +4,8 @@ You are building the training pipeline for HYDRA, a 4-player Riichi Mahjong AI. 
 
 ## THE TWO FILES THAT GOVERN YOUR WORK
 
+> **Status note:** This file is an execution-discipline overlay, not a standalone doctrine source. For what to build next, `HYDRA_RECONCILIATION.md` wins.
+
 1. **Design (WHAT to build)**: `research/design/HYDRA_FINAL.md` -- target architecture SSOT.
 
 2. **Immediate sequencing authority (WHAT TO BUILD NEXT)**: `research/design/HYDRA_RECONCILIATION.md` -- current repo reality, active path, reserve shelf, dropped shelf, and immediate implementation ordering.
@@ -148,7 +150,7 @@ If you're behind schedule, do NOT skip steps. Do fewer tests per step but still 
 
 ## START NOW
 
-1. Read `research/design/HYDRA_FINAL.md` completely
-2. Read `research/design/IMPLEMENTATION_ROADMAP.md` completely
-3. Create worktree: `git worktree add .worktrees/build -b build master`
-4. Begin Step 1: create hydra-train crate
+1. Read `research/design/HYDRA_FINAL.md`
+2. Read `research/design/HYDRA_RECONCILIATION.md`
+3. Read `docs/GAME_ENGINE.md`
+4. Use `research/design/IMPLEMENTATION_ROADMAP.md` only as a reference for the currently selected tranche
