@@ -1,5 +1,9 @@
 # Hydra Testing Strategy
 
+> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. Current truth for tensor shape and runtime structure comes from `README.md` -> `research/design/HYDRA_FINAL.md` -> `research/design/HYDRA_RECONCILIATION.md` -> `docs/GAME_ENGINE.md`.
+>
+> The live encoder/model contract is `192x34`. The old `85x34` view is still useful only as the baseline prefix (`channels 0..84`) and should be tested as such.
+
 ## Overview
 
 Testing is critical for a mahjong AI because engine bugs silently corrupt training data. A single incorrect legal action mask, a mis-scored hand, or a wrong tile encoding feeds the neural network garbage labels for hundreds of thousands of training steps before anyone notices. Unlike a web app where users report bugs, a training pipeline happily trains on wrong data and produces a model that plays "confidently wrong" — the worst possible outcome. Every component that touches training data must be verified against independent ground truth.
@@ -83,9 +87,9 @@ All five abortive draw types from INFRASTRUCTURE.md must be tested:
 
 ## Observation Encoding Correctness
 
-### 85-Channel Verification
+### Baseline-Prefix Verification (Channels 0-84)
 
-Each of the 85 channels must encode exactly what HYDRA_SPEC claims. Build a test harness that constructs known game states and verifies the output tensor element by element.
+Each of the first 85 channels must encode the baseline public+safety prefix exactly as described in `docs/GAME_ENGINE.md`. Build a test harness that constructs known game states and verifies the baseline prefix element by element, while keeping the full live tensor shape at `192x34`.
 
 **Channel-by-channel tests:**
 
@@ -108,7 +112,7 @@ Maintain a set of 20+ hand-crafted game states with pre-computed expected tensor
 
 ### Roundtrip Tests
 
-Construct a game state programmatically → encode to 85x34 tensor → verify expected values. The encoder is one-way (state → tensor), so "roundtrip" means verifying that the tensor faithfully represents the state, not that the state can be recovered from the tensor.
+Construct a game state programmatically → encode to the live `192x34` tensor → verify expected values. The encoder is one-way (state → tensor), so "roundtrip" means verifying that the tensor faithfully represents the state, not that the state can be recovered from the tensor.
 
 ---
 
@@ -227,7 +231,7 @@ Cross-validate Rust scoring against the `mahjong` Python library on 100K randoml
 
 ### Model Smoke Tests
 
-- Forward pass with random input `[1, 85, 34]` produces correct output shapes: policy `[1, 46]`, value `[1, 1]`, GRP `[1, 24]`, tenpai `[1, 3]`, danger `[1, 3, 34]`
+- Forward pass with random input `[1, 192, 34]` produces the output shapes asserted by `hydra-train/src/model.rs` for the current `ActorNet` / `LearnerNet`
 - Legal action masking: masked logits are negative infinity, softmax produces zero probability for illegal actions
 - Inference: run forward pass through burn-tch backend, verify output matches expected within tolerance (atol=1e-5)
 
@@ -240,7 +244,7 @@ Cross-validate Rust scoring against the `mahjong` Python library on 100K randoml
 
 ### Data Pipeline Tests
 
-- Burn DataLoaderBuilder yields batches of correct shape `[2048, 85, 34]`
+- Burn DataLoaderBuilder yields batches of correct shape `[2048, 192, 34]`
 - 3-level shuffle produces different orderings across epochs (statistical test: correlation < 0.1)
 - Suit permutation produces 6 distinct outputs for the same input game
 - Filtering: a game with known bad metadata is excluded from the manifest

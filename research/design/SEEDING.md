@@ -1,12 +1,18 @@
 # Hydra Seeding & Reproducibility
 
 > Seeding strategy and reproducibility guarantees for the Hydra Mahjong AI. Covers RNG hierarchy, per-component seeding, CUDA determinism, and evaluation seed banks.
+>
+> **Status note:** this is a mixed reference doc. Current authority for what Hydra is today comes from `README.md` -> `research/design/HYDRA_FINAL.md` -> `research/design/HYDRA_RECONCILIATION.md` -> `docs/GAME_ENGINE.md`.
+>
+> Keep the seeding hierarchy and deterministic replay principles here. Treat older multi-phase RL/opponent-pool specifics as reserve/legacy planning unless the reconciled doctrine explicitly promotes them.
 
 ## Related Documents
 
-- [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, training infra, hardware, deployment
-- [CHECKPOINTING.md](CHECKPOINTING.md) — Checkpoint format, save protocol, retention policy
-- [TRAINING.md](TRAINING.md) — Training pipeline, loss functions, hyperparameters
+- [../HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — current execution doctrine and active-vs-reserve split
+- [../../docs/GAME_ENGINE.md](../../docs/GAME_ENGINE.md) — current runtime reality
+- [../HYDRA_ARCHIVE.md](HYDRA_ARCHIVE.md) — archive / reserve-only planning surfaces
+- [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — implementation/infrastructure reference
+- [../infrastructure/CHECKPOINTING.md](../infrastructure/CHECKPOINTING.md) — checkpoint format, save protocol, retention policy
 
 ---
 
@@ -39,10 +45,10 @@ Seed derivation uses SHA-256 KDF (matching hydra-core's existing seeding infrast
 | 1 | DataLoader workers | Seeds Burn DataLoader shuffle RNG |
 | 2 | Suit augmentation | Seeds per-worker permutation selection |
 | 3 | Rust game engine | Session seed for self-play game generation |
-| 4 | Opponent pool selection | Seeds opponent category sampling (Phase 3) |
+| 4 | Reserve opponent-pool selection | Seeds opponent category sampling if a future league/pool phase is revived |
 | 5 | Evaluation seed bank | Seeds generation of the fixed evaluation game set |
 
-**Phase-level derivation:** Each training phase derives its own seed via `derive_seed(master_seed, phase_number)` using SHA-256 KDF. This ensures Phase 2 explores different random trajectories than Phase 1 even though both originate from the same master seed.
+**Phase-level derivation:** Each major training stage can derive its own seed via `derive_seed(master_seed, stage_number)` using SHA-256 KDF. This keeps replay/debug isolation clean when Hydra adds or revives later stages.
 
 ```mermaid
 graph TD
@@ -102,25 +108,25 @@ The Rust game engine receives a session seed derived from the hierarchy's game e
 
 Game seeds are determined before dispatch to rayon workers — rayon distributes work, not randomness. Each game instance receives its pre-computed seed as a value parameter; no per-thread RNG is needed for game simulation. The rayon thread pool is a pure compute resource. If per-thread RNG is ever needed for future extensions (e.g., exploration noise during inference), the pattern is a `thread_local` `ChaCha8Rng` seeded from `game_seed XOR thread_index`, ensuring reproducibility regardless of work-stealing order.
 
-**3f. Opponent Pool Selection (Phase 3)**
+**3f. Reserve Opponent-Pool Selection**
 
-Opponent category selection (50% self / 30% random pool / 20% frozen baseline, as specified in the Phase 3 opponent pool table) uses its own derived seed child. Given the same seed and the same pool contents (same checkpoints at the same FIFO positions), the same opponent matchups are produced. This enables controlled ablations where only the training policy changes while the opponent schedule remains fixed.
+If Hydra later revives a league/pool phase, opponent category selection should use its own derived seed child so matchup schedules are reproducible under the same seed and pool contents. Keep this as reserve planning guidance, not as a claim about the current active tranche.
 
 ### GPU Determinism
 
 **Decision: Full determinism available for Phase 1 debugging; relaxed for Phases 2–3 performance.**
 
-| Flag | Phase 1 (BC) | Phases 2–3 (RL) | Effect |
+| Flag | Phase 1 / supervised stages | Later stochastic stages | Effect |
 |------|-------------|-----------------|--------|
 | Burn backend seed | Always | Always | Seeds all backend RNG streams |
-| cuDNN benchmark off | Always | Always | Disables auto-tuning; fixed-size inputs (85x34) make perf cost negligible |
+| cuDNN benchmark off | Always | Always | Disables auto-tuning; fixed-size inputs make determinism simpler, though the live runtime shape is now `192x34` |
 | Deterministic kernels | Optional (debug) | No | Forces deterministic CUDA kernels; ~5–15% overhead |
 
 **Implementation notes:**
 - bf16 matrix multiplications are deterministic given identical inputs; non-determinism in mixed-precision training comes from reduction ordering in multi-stream operations (e.g., gradient all-reduce), not from the matmul itself.
 - GroupNorm (used throughout the model, as specified in the [Model Definition](INFRASTRUCTURE.md#model-definition) section) is fully deterministic — it has no running statistics and no non-deterministic CUDA kernels.
 - Conv1d switches to a deterministic cuDNN kernel when deterministic mode is enabled, with ~5–8% overhead compared to the auto-tuned non-deterministic kernel.
-- **Recommendation:** Enable full determinism for Phase 1 ablation studies and seed-specific debugging. Do not enable for Phases 2–3 — RL exploration and rayon work-stealing already make these phases non-bitwise-reproducible, so the 5–15% overhead buys no additional reproducibility guarantee.
+- **Recommendation:** Enable full determinism for supervised-stage ablation studies and seed-specific debugging. Later stochastic stages will usually remain non-bitwise-reproducible because exploration and parallel scheduling dominate the variance budget.
 
 ### Checkpoint RNG State
 
@@ -138,9 +144,9 @@ Every checkpoint saves the following RNG state alongside model weights and optim
 - **Phase 1:** Enables bitwise-identical training continuation — the resumed run produces the same gradients as if it had never been interrupted.
 - **Phases 2–3:** Enables approximate resumption. Game trajectories will differ due to thread scheduling non-determinism in rayon, but the statistical properties of the training distribution are preserved.
 
-### Phase Transition Seeding
+### Stage Transition Seeding (Reserve / Future Planning)
 
-At each phase boundary, all RNG components are re-seeded from the new phase's derived seed child. This extends the carry/reset table in the [Phase Transitions](INFRASTRUCTURE.md#phase-transitions) section:
+If Hydra uses multiple training stages with materially different data-generation regimes, re-seed all RNG components from a new stage child at each boundary. This is reserve/future planning guidance, not a claim that every later stage is currently active.
 
 | Component | Phase 1 → 2 | Phase 2 → 3 |
 |-----------|-------------|-------------|
@@ -152,7 +158,7 @@ At each phase boundary, all RNG components are re-seeded from the new phase's de
 
 **Rationale:** Re-seeding ensures each phase explores different random trajectories even with the same master seed. Without re-seeding, Phase 2's game engine would replay the same wall shuffles as Phase 1's evaluation games, creating an artificial correlation between training and evaluation data.
 
-### Evaluation Seed Bank
+### Evaluation Seed Bank (Reference Design)
 
 **Decision: Fixed, published seed bank for all evaluation runs.**
 
