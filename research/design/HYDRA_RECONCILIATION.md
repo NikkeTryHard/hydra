@@ -370,6 +370,7 @@ The goal is:
 3. **Keep the rollout narrow**
    - prefer ExIt target + delta-Q + safety-residual activation first
    - bring belief-field / mixture / hand-type targets online only where labels are credible
+   - if belief supervision is activated, supervise projected/public-teacher belief objects or gauge-fixed marginals, not raw Sinkhorn fields and not realized hidden allocations as direct student targets
 4. **Do not expand model surface in this tranche**
    - no new heads
    - no new broad search engine
@@ -418,9 +419,10 @@ Use this as the concrete coding handoff for the first tranche.
   1. add a single, clear activation policy for advanced losses
   2. ensure each optional target contributes loss only when target data exists
   3. ensure breakdowns make missing-target behavior obvious during debugging
-  4. keep default behavior conservative: no accidental activation without valid labels
+4. keep default behavior conservative: no accidental activation without valid labels
 - **Key rule**
   - target presence should control whether an advanced loss exists at all; weight alone should not hide broken plumbing
+  - future belief supervision must target projected belief objects, not raw field regression
 
 #### `hydra-train/src/training/bc.rs`
 - **Current state**
