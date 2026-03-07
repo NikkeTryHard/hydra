@@ -54,3 +54,4 @@ Package A plus:
 - `agent_answers/` is intentionally local-only and untracked.
 - `.cargo/` is intentionally local-only and untracked.
 - Use raw GitHub links for tracked files when an external agent cannot access the zip attachment.
+- The 4 prompt files are intentionally structured for GPT-5.4-style deep work using explicit output contracts, research-mode passes, grounding/citation rules, and completion criteria.
