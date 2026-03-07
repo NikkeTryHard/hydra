@@ -1,13 +1,10 @@
 # Hydra follow-up for agent 5 — compute routing and worst-group robustness
 
-Attach these files to the model:
-- `hydra_breakthrough_docs_pack.zip`
-- `hydra_breakthrough_thin_source_pack.zip`
-- `deep_agent_20_pdfs.zip` if available
+This is the **no-zip, browse-tool-first** version of the prompt.
 
-If `deep_agent_20_pdfs.zip` is not available, proceed anyway using the two Hydra zip packs plus online retrieval.
+Assume you have access to a browse/fetch tool that can read raw GitHub markdown pages directly. Do **not** assume zip attachments are available.
 
-The attached zips should be sufficient for Hydra context, but for the **core architecture docs** you should prefer raw GitHub links with your browse/fetch tool whenever your environment tends to fragment long files. Use the zips for structure, file discovery, and supplemental grounding.
+Your primary project-reading path is the raw GitHub links below.
 
 ## Critical directive — how to read the core Hydra docs
 
@@ -33,11 +30,9 @@ Core docs that must be read holistically first:
 - `research/design/HYDRA_RECONCILIATION.md`
 - `research/design/HYDRA_FINAL.md`
 - `docs/GAME_ENGINE.md`
-- `research/agent_handoffs/prior_answers/ANSWER_1-1.md`
-- `research/agent_handoffs/prior_answers/ANSWER_2-1.md`
-- `research/agent_handoffs/prior_answers/ANSWER_3-1.md`
-
-If the zip attachment is easy for you to read holistically, you may use it. But if your environment tends to fragment large files or only surface narrow line windows, prefer the **raw GitHub links with the browse/fetch tool** for the core docs above.
+- `research/agent_handoffs/combined_all_variants/answer_1-1_combined.md`
+- `research/agent_handoffs/combined_all_variants/answer_2-1_combined.md`
+- `research/agent_handoffs/combined_all_variants/answer_3-1_combined.md`
 
 Only after the core docs are ingested holistically may you narrow in on:
 - code insertion points
@@ -52,94 +47,29 @@ Only after the core docs are ingested holistically may you narrow in on:
 - After holistic reading, you may use targeted search for exact details.
 </holistic_ingestion_rules>
 
-## Attachment strategy for this prompt
+## Reading order — use browse/fetch in this exact sequence
 
-This is a **follow-up** prompt for agent 5, not a fresh-context run.
-
-- If the model already has the earlier Hydra context from the prior prompt-5 run, the minimum good attachment set is:
-  - `hydra_breakthrough_docs_pack.zip`
-  - `deep_agent_20_pdfs.zip`
-- If you want maximum grounding and less guessing about code insertion points, also attach:
-  - `hydra_breakthrough_thin_source_pack.zip`
-
-Recommended for best results: attach all 3 if the UI allows it.
-
-## Zip contents — read this first instead of wandering
-
-### `hydra_breakthrough_docs_pack.zip`
-
-Primary docs and prior-answer tree:
-
-```text
-research/design/
-  HYDRA_FINAL.md
-  HYDRA_RECONCILIATION.md
-  IMPLEMENTATION_ROADMAP.md
-  OPPONENT_MODELING.md
-  TESTING.md
-  SEEDING.md
-  AGENT_FOLLOWUP_1.md
-  AGENT_FOLLOWUP_2.md
-  AGENT_FOLLOWUP_3.md
-research/infrastructure/
-  INFRASTRUCTURE.md
-research/agent_handoffs/
-  HANDOFF_PACKAGE_GUIDE.md
-  prior_answers/
-    ANSWER_1.md
-    ANSWER_1-1.md
-    ANSWER_2.md
-    ANSWER_2-1.md
-    ANSWER_3.md
-    ANSWER_3-1.md
-  prompts/
-    PROMPT_1_TECHNICAL_BREAKTHROUGH.md
-    PROMPT_2_REPO_AWARE_NEXT_TRANCHE.md
-    PROMPT_3_STRATEGIC_CUTTER.md
-    PROMPT_4_OUTSIDE_THE_BOX_BUT_GROUNDED.md
-    PROMPT_5_CROSS_FIELD_TRANSFER_HUNTER.md
-    PROMPT_6_NEW_TECHNIQUE_INVENTOR.md
-research/
-  BUILD_AGENT_PROMPT.md
-docs/
-  GAME_ENGINE.md
-```
-
-Read order inside this zip:
+Holistic core-doc pass:
 1. `research/design/HYDRA_RECONCILIATION.md`
 2. `research/design/HYDRA_FINAL.md`
 3. `docs/GAME_ENGINE.md`
-4. `research/agent_handoffs/prior_answers/ANSWER_1-1.md`
-5. `research/agent_handoffs/prior_answers/ANSWER_2-1.md`
-6. `research/agent_handoffs/prior_answers/ANSWER_3-1.md`
+4. `research/agent_handoffs/combined_all_variants/answer_1-1_combined.md`
+5. `research/agent_handoffs/combined_all_variants/answer_2-1_combined.md`
+6. `research/agent_handoffs/combined_all_variants/answer_3-1_combined.md`
 
-### `hydra_breakthrough_thin_source_pack.zip`
+Then targeted implementation grounding:
+7. `hydra-core/src/afbs.rs`
+8. `hydra-core/src/bridge.rs`
+9. `hydra-core/src/ct_smc.rs`
+10. `hydra-core/src/endgame.rs`
+11. `hydra-core/src/hand_ev.rs`
+12. `hydra-core/src/robust_opponent.rs`
+13. `hydra-train/src/data/sample.rs`
+14. `hydra-train/src/data/mjai_loader.rs`
+15. `hydra-train/src/training/losses.rs`
+16. `hydra-train/src/model.rs`
 
-This includes everything in the docs pack, plus thin code slices:
-
-```text
-hydra-core/src/
-  encoder.rs
-  ct_smc.rs
-  afbs.rs
-  hand_ev.rs
-  endgame.rs
-  robust_opponent.rs
-hydra-train/src/
-  model.rs
-  data/sample.rs
-  data/mjai_loader.rs
-  training/losses.rs
-```
-
-Use this zip mainly for:
-- file/function insertion points
-- checking whether needed signals already exist
-- avoiding fake implementation claims
-
-### `deep_agent_20_pdfs.zip`
-
-Paper/reference bundle. Use it for cross-field evidence and second-order searching, not for discovering Hydra repo structure.
+Only after that should you branch into outside papers and GitHub examples.
 
 ## Raw GitHub fallback links
 
@@ -168,9 +98,9 @@ Thin source slices:
 - `hydra-train/src/model.rs` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/hydra-train/src/model.rs
 
 Prior answer anchors:
-- `research/agent_handoffs/prior_answers/ANSWER_1-1.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/prior_answers/ANSWER_1-1.md
-- `research/agent_handoffs/prior_answers/ANSWER_2-1.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/prior_answers/ANSWER_2-1.md
-- `research/agent_handoffs/prior_answers/ANSWER_3-1.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/prior_answers/ANSWER_3-1.md
+- `research/agent_handoffs/combined_all_variants/answer_1-1_combined.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/combined_all_variants/answer_1-1_combined.md
+- `research/agent_handoffs/combined_all_variants/answer_2-1_combined.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/combined_all_variants/answer_2-1_combined.md
+- `research/agent_handoffs/combined_all_variants/answer_3-1_combined.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/combined_all_variants/answer_3-1_combined.md
 
 Reference links already surfaced as relevant:
 - Static and Dynamic Values of Computation in MCTS — https://proceedings.mlr.press/v124/sezener20a.html
@@ -222,7 +152,7 @@ Do not over-constrain yourself early. Explore broadly first, then converge hard.
 
 <dependency_checks>
 - Before proposing implementation, verify Hydra already has or could cheaply expose the necessary signals, labels, and insertion points.
-- Do not assume a data source, API surface, or training label exists until you verify it from the attachments or retrieved evidence.
+- Do not assume a data source, API surface, or training label exists until you verify it from the raw links or retrieved evidence.
 </dependency_checks>
 
 <completeness_contract>
@@ -236,13 +166,13 @@ Do not over-constrain yourself early. Explore broadly first, then converge hard.
 </empty_result_recovery>
 
 <citation_rules>
-- Cite only sources you actually retrieved in this workflow or sources included in the attachments/raw links.
+- Cite only sources you actually retrieved in this workflow or from the raw links below.
 - Never fabricate references.
 - Attach citations to the exact claims they support.
 </citation_rules>
 
 <grounding_rules>
-- Base repo claims only on attached docs/code or retrieved raw links.
+- Base repo claims only on the raw links below or other evidence you actually retrieved.
 - If a statement is an inference rather than directly supported, label it as an inference.
 - If sources conflict, state the conflict and resolve it explicitly.
 </grounding_rules>
