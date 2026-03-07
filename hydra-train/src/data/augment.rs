@@ -60,6 +60,17 @@ pub fn augment_action_vector_suit(
     out
 }
 
+pub fn augment_belief_fields_suit(values: &[f32; 16 * 34], perm: &[u8; 3]) -> [f32; 16 * 34] {
+    let mut out = [0.0f32; 16 * 34];
+    for channel in 0..16usize {
+        for tile in 0..34usize {
+            let new_tile = permute_tile_type(tile as u8, perm) as usize;
+            out[channel * 34 + new_tile] = values[channel * 34 + tile];
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +185,16 @@ mod tests {
             assert_eq!(out[43], 0.5);
             assert_eq!(out[45], 0.75);
         }
+    }
+
+    #[test]
+    fn augment_belief_fields_permutes_tile_axis_only() {
+        let swap_mp = &ALL_PERMUTATIONS[2];
+        let mut values = [0.0f32; 16 * 34];
+        values[0] = 1.0;
+        values[34 + 9] = 2.0;
+        let out = augment_belief_fields_suit(&values, swap_mp);
+        assert_eq!(out[9], 1.0);
+        assert_eq!(out[34], 2.0);
     }
 }

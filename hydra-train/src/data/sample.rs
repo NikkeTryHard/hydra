@@ -54,6 +54,8 @@ pub struct MjaiSample {
     pub safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
     pub belief_fields: Option<[f32; 16 * 34]>,
     pub mixture_weights: Option<[f32; 4]>,
+    pub belief_fields_present: bool,
+    pub mixture_weights_present: bool,
 }
 
 const SCORE_BIN_MIN: f32 = -50000.0;
@@ -144,6 +146,8 @@ pub struct MjaiBatch<B: Backend> {
     pub safety_residual_mask: Option<Tensor<B, 2>>,
     pub belief_fields_target: Option<Tensor<B, 3>>,
     pub mixture_weight_target: Option<Tensor<B, 2>>,
+    pub belief_fields_mask: Option<Tensor<B, 1>>,
+    pub mixture_weight_mask: Option<Tensor<B, 1>>,
     pub opp_next_target: Tensor<B, 3>,
     pub score_pdf_target: Tensor<B, 2>,
     pub score_cdf_target: Tensor<B, 2>,
@@ -176,6 +180,8 @@ impl<B: Backend> MjaiBatch<B> {
             opponent_hand_type_target: None,
             delta_q_target: None,
             safety_residual_mask: self.safety_residual_mask,
+            belief_fields_mask: self.belief_fields_mask,
+            mixture_weight_mask: self.mixture_weight_mask,
             oracle_guidance_mask: Some(self.oracle_target_mask),
         }
     }
@@ -206,6 +212,8 @@ impl<B: Backend> MjaiBatch<B> {
             opponent_hand_type_target: None,
             delta_q_target: None,
             safety_residual_mask: self.safety_residual_mask.clone(),
+            belief_fields_mask: self.belief_fields_mask.clone(),
+            mixture_weight_mask: self.mixture_weight_mask.clone(),
             oracle_guidance_mask: Some(self.oracle_target_mask.clone()),
         }
     }
@@ -230,6 +238,8 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     let mut mixture_weights_flat = vec![0.0f32; batch * 4];
     let mut any_belief_fields = false;
     let mut any_mixture_weights = false;
+    let mut belief_fields_mask = vec![0.0f32; batch];
+    let mut mixture_weight_mask = vec![0.0f32; batch];
     let mut opp_flat = vec![0.0f32; batch * 102];
     let mut pdf_flat = vec![0.0f32; batch * SCORE_BINS];
     let mut cdf_flat = vec![0.0f32; batch * SCORE_BINS];
@@ -264,8 +274,16 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
             belief_fields_flat[i * 16 * 34..(i + 1) * 16 * 34].copy_from_slice(&values);
             any_belief_fields = true;
         }
+        if s.belief_fields_present {
+            belief_fields_mask[i] = 1.0;
+            any_belief_fields = true;
+        }
         if let Some(values) = s.mixture_weights {
             mixture_weights_flat[i * 4..(i + 1) * 4].copy_from_slice(&values);
+            any_mixture_weights = true;
+        }
+        if s.mixture_weights_present {
+            mixture_weight_mask[i] = 1.0;
             any_mixture_weights = true;
         }
         for opp in 0..3usize {
@@ -334,6 +352,22 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
         } else {
             None
         },
+        belief_fields_mask: if any_belief_fields {
+            Some(Tensor::<B, 1>::from_floats(
+                belief_fields_mask.as_slice(),
+                device,
+            ))
+        } else {
+            None
+        },
+        mixture_weight_mask: if any_mixture_weights {
+            Some(Tensor::<B, 1>::from_floats(
+                mixture_weight_mask.as_slice(),
+                device,
+            ))
+        } else {
+            None
+        },
         opp_next_target: Tensor::<B, 1>::from_floats(opp_flat.as_slice(), device)
             .reshape([batch, 3, 34]),
         score_pdf_target: Tensor::<B, 1>::from_floats(pdf_flat.as_slice(), device)
@@ -370,7 +404,9 @@ pub fn collate_batch_augmented<B: Backend>(
 }
 
 pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
-    use crate::data::augment::{augment_action_suit, augment_mask_suit, augment_obs_suit};
+    use crate::data::augment::{
+        augment_action_suit, augment_belief_fields_suit, augment_mask_suit, augment_obs_suit,
+    };
     use hydra_core::tile::ALL_PERMUTATIONS;
 
     let mut augmented = Vec::with_capacity(samples.len() * 6);
@@ -397,8 +433,12 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
                 safety_residual_mask: sample
                     .safety_residual_mask
                     .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
-                belief_fields: sample.belief_fields,
+                belief_fields: sample
+                    .belief_fields
+                    .map(|values| augment_belief_fields_suit(&values, perm)),
                 mixture_weights: sample.mixture_weights,
+                belief_fields_present: sample.belief_fields_present,
+                mixture_weights_present: sample.mixture_weights_present,
             });
         }
     }
@@ -432,6 +472,8 @@ mod tests {
             safety_residual_mask: None,
             belief_fields: None,
             mixture_weights: None,
+            belief_fields_present: false,
+            mixture_weights_present: false,
         }
     }
 
@@ -725,6 +767,8 @@ mod tests {
         mix[1] = 0.3;
         sample.belief_fields = Some(belief);
         sample.mixture_weights = Some(mix);
+        sample.belief_fields_present = true;
+        sample.mixture_weights_present = true;
         let batch = collate_batch::<B>(&[sample], &device);
         let targets = batch.into_hydra_targets();
         let belief_target = targets
@@ -745,10 +789,24 @@ mod tests {
             .as_slice::<f32>()
             .expect("f32")
             .to_vec();
+        let belief_mask = targets.belief_fields_mask.expect("belief mask");
+        let mixture_mask = targets.mixture_weight_mask.expect("mixture mask");
+        let belief_mask_values = belief_mask
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+            .to_vec();
+        let mixture_mask_values = mixture_mask
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+            .to_vec();
         assert!((belief_values[0] - 0.2).abs() < 1e-6);
         assert!((belief_values[33] - 0.8).abs() < 1e-6);
         assert!((mix_values[0] - 0.7).abs() < 1e-6);
         assert!((mix_values[1] - 0.3).abs() < 1e-6);
+        assert!((belief_mask_values[0] - 1.0).abs() < 1e-6);
+        assert!((mixture_mask_values[0] - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -758,5 +816,34 @@ mod tests {
         let targets = batch.into_hydra_targets();
         assert!(targets.belief_fields_target.is_none());
         assert!(targets.mixture_weight_target.is_none());
+        assert!(targets.belief_fields_mask.is_none());
+        assert!(targets.mixture_weight_mask.is_none());
+    }
+
+    #[test]
+    fn augment_samples_6x_permutes_belief_fields_and_preserves_mixture_weights() {
+        use hydra_core::tile::ALL_PERMUTATIONS;
+
+        let mut sample = dummy_sample(0, 0);
+        let mut belief = [0.0f32; 16 * 34];
+        belief[0] = 1.0;
+        let mut mix = [0.0f32; 4];
+        mix[0] = 0.8;
+        sample.belief_fields = Some(belief);
+        sample.belief_fields_present = true;
+        sample.mixture_weights = Some(mix);
+        sample.mixture_weights_present = true;
+
+        let augmented = augment_samples_6x(&[sample]);
+        let swap_mp = &ALL_PERMUTATIONS[2];
+        let swapped = augmented
+            .iter()
+            .find(|s| s.action == 9)
+            .expect("swap man-pin permutation sample");
+        let swapped_belief = swapped.belief_fields.expect("belief fields");
+        let swapped_mix = swapped.mixture_weights.expect("mixture weights");
+        assert_eq!(permute_tile_type(0, swap_mp), 9);
+        assert!((swapped_belief[9] - 1.0).abs() < 1e-6);
+        assert!((swapped_mix[0] - 0.8).abs() < 1e-6);
     }
 }
