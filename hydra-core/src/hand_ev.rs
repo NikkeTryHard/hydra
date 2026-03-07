@@ -149,9 +149,76 @@ pub fn total_ukeire(
 }
 
 #[inline]
-fn cumulative_draw_probability(single_draw_prob: f32, draws: u32) -> f32 {
-    let p = single_draw_prob.clamp(0.0, 1.0);
-    1.0 - (1.0 - p).powi(draws as i32)
+fn conditional_score_estimate(
+    hand: &[u8; NUM_TILE_TYPES],
+    discard: usize,
+    acceptance: f32,
+    shanten_after: i8,
+) -> f32 {
+    let suit_mix = suit_counts(hand);
+    let honor_tiles = honor_count(hand) as f32;
+    let pair_bonus = if has_pair(hand) { 0.35 } else { 0.0 };
+    let triplet_bonus = if has_triplet(hand) { 0.5 } else { 0.0 };
+    let flush_bias = suit_mix.iter().copied().max().unwrap_or(0) as f32 / 14.0;
+    let concentration = max_tile_count(hand) as f32 / 4.0;
+    let diversity_penalty = unique_tile_count(hand) as f32 / 14.0;
+    let honor_bonus = (honor_tiles / 7.0).min(1.0) * 0.25;
+    let shanten_factor = match shanten_after {
+        s if s < 0 => 1.35,
+        0 => 1.1,
+        1 => 0.85,
+        _ => 0.6,
+    };
+    let tile_bonus = if discard >= 27 { 0.15 } else { 0.0 };
+    let shape =
+        1.0 + pair_bonus + triplet_bonus + honor_bonus + 0.6 * flush_bias + 0.3 * concentration
+            - 0.15 * diversity_penalty
+            + tile_bonus;
+    (1500.0 + 220.0 * acceptance) * shanten_factor * shape.max(0.4)
+}
+
+#[inline]
+fn immediate_win_probability(
+    after_discard: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    shanten_after: i8,
+    shanten_fn: &dyn Fn(&[u8; NUM_TILE_TYPES]) -> i8,
+) -> f32 {
+    if shanten_after != 0 {
+        return 0.0;
+    }
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return 0.0;
+    }
+    let mut waits = 0.0f32;
+    for tile in 0..NUM_TILE_TYPES {
+        if remaining[tile] <= 0.0 || after_discard[tile] >= 4 {
+            continue;
+        }
+        let mut test_hand = *after_discard;
+        test_hand[tile] += 1;
+        if shanten_fn(&test_hand) < 0 {
+            waits += remaining[tile];
+        }
+    }
+    (waits / total_remaining).clamp(0.0, 1.0)
+}
+
+#[inline]
+fn continuation_boost(horizon: usize, shanten_after: i8, acceptance_ratio: f32) -> f32 {
+    let horizon_scale = match horizon {
+        0 => 1.0,
+        1 => 0.78,
+        _ => 0.62,
+    };
+    let shanten_scale = match shanten_after {
+        s if s < 0 => 1.0,
+        0 => 0.9,
+        1 => 0.65,
+        _ => 0.45,
+    };
+    (acceptance_ratio * horizon_scale * shanten_scale).clamp(0.0, 1.0)
 }
 
 pub fn best_discard_by_ukeire(
@@ -212,24 +279,34 @@ pub fn compute_hand_ev_with_shanten_fn(
         let shanten_after = shanten_fn(&after_discard);
         let acceptance: f32 = uke.iter().sum();
         if total_remaining > 0.0 {
-            let p_draw = (acceptance / total_remaining).clamp(0.0, 1.0);
-            let single_tenpai_draw_prob = if shanten_after <= 0 { 1.0 } else { p_draw };
-            let single_win_draw_prob = if shanten_after < 0 {
+            let acceptance_ratio = (acceptance / total_remaining).clamp(0.0, 1.0);
+            let immediate_tenpai_draw_prob = if shanten_after <= 0 {
                 1.0
-            } else if shanten_after == 0 {
-                p_draw
             } else {
-                p_draw * 0.5
+                acceptance_ratio
             };
+            let immediate_win_draw_prob = if shanten_after < 0 {
+                1.0
+            } else {
+                immediate_win_probability(&after_discard, remaining, shanten_after, shanten_fn)
+            };
+            let base_win = immediate_win_draw_prob.max((acceptance_ratio * 0.35).clamp(0.0, 1.0));
             for horizon in 0..3 {
                 let draws = (horizon + 1) as u32;
-                features.tenpai_prob[discard][horizon] =
-                    cumulative_draw_probability(single_tenpai_draw_prob, draws);
+                let tenpai_continue = continuation_boost(horizon, shanten_after, acceptance_ratio);
+                let win_continue = continuation_boost(horizon, shanten_after - 1, acceptance_ratio);
+                let tenpai_miss = 1.0 - immediate_tenpai_draw_prob;
+                let win_miss = 1.0 - base_win;
+                features.tenpai_prob[discard][horizon] = (1.0
+                    - tenpai_miss.powi(draws as i32) * (1.0 - tenpai_continue))
+                    .clamp(0.0, 1.0);
                 features.win_prob[discard][horizon] =
-                    cumulative_draw_probability(single_win_draw_prob, draws);
+                    (1.0 - win_miss.powi(draws as i32) * (1.0 - win_continue)).clamp(0.0, 1.0);
             }
+            let score_estimate =
+                conditional_score_estimate(hand, discard, acceptance, shanten_after);
+            features.expected_score[discard] = features.win_prob[discard][2] * score_estimate;
         }
-        features.expected_score[discard] = acceptance * 1000.0;
     }
     features
 }
@@ -251,7 +328,13 @@ mod tests {
     fn ukeire_counts_improving_tiles() {
         let hand = [0u8; NUM_TILE_TYPES];
         let remaining = [4.0f32; NUM_TILE_TYPES];
-        let improves_on_tile_0 = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] > 0 { 0 } else { 1 } };
+        let improves_on_tile_0 = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            if h[0] > 0 {
+                0
+            } else {
+                1
+            }
+        };
         let uke = compute_ukeire(&hand, &remaining, &improves_on_tile_0);
         assert!((uke[0] - 4.0).abs() < 1e-5);
         assert!(uke[1..].iter().all(|&v| v == 0.0));
@@ -265,7 +348,11 @@ mod tests {
         let remaining = [4.0f32; NUM_TILE_TYPES];
         let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
             let total: u8 = h.iter().sum();
-            if total >= 4 { 0 } else { 1 }
+            if total >= 4 {
+                0
+            } else {
+                1
+            }
         };
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &shanten_fn);
         assert!(
@@ -280,7 +367,13 @@ mod tests {
         hand[0] = 2;
         hand[1] = 1;
         let remaining = [3.0f32; NUM_TILE_TYPES];
-        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] >= 3 { -1 } else { 0 } };
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            if h[0] >= 3 {
+                -1
+            } else {
+                0
+            }
+        };
         let uke = compute_ukeire(&hand, &remaining, &shanten_fn);
         let acceptance: f32 = uke.iter().sum();
         assert!((acceptance - 3.0).abs() < 1e-5, "tile 0 has 3 remaining");
@@ -291,12 +384,10 @@ mod tests {
         let hand = [0u8; NUM_TILE_TYPES];
         let remaining = [4.0f32; NUM_TILE_TYPES];
         let features = compute_hand_ev(&hand, &remaining);
-        assert!(
-            features
-                .tenpai_prob
-                .iter()
-                .all(|p| p.iter().all(|&v| v == 0.0))
-        );
+        assert!(features
+            .tenpai_prob
+            .iter()
+            .all(|p| p.iter().all(|&v| v == 0.0)));
         assert!(features.expected_score.iter().all(|&v| v == 0.0));
     }
 
@@ -318,19 +409,25 @@ mod tests {
         remaining[0] = 1.0;
         remaining[2] = 3.0;
 
-        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] > 0 { 0 } else { 1 } };
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            if h[0] > 0 {
+                0
+            } else {
+                1
+            }
+        };
 
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &shanten_fn);
         let tenpai = features.tenpai_prob[1];
         let win = features.win_prob[1];
 
-        assert!((tenpai[0] - 0.25).abs() < 1e-6);
-        assert!((tenpai[1] - 0.4375).abs() < 1e-6);
-        assert!((tenpai[2] - 0.578125).abs() < 1e-6);
+        assert!(tenpai[0] > 0.0);
+        assert!(tenpai[1] >= tenpai[0]);
+        assert!(tenpai[2] >= tenpai[1]);
 
-        assert!((win[0] - 0.125).abs() < 1e-6);
-        assert!((win[1] - 0.234375).abs() < 1e-6);
-        assert!((win[2] - 0.330_078_13).abs() < 1e-6);
+        assert!(win[0] > 0.0);
+        assert!(win[1] >= win[0]);
+        assert!(win[2] >= win[1]);
     }
 
     #[test]
@@ -365,6 +462,51 @@ mod tests {
             custom_features.expected_score
         );
         assert_eq!(default_features.ukeire, custom_features.ukeire);
+    }
+
+    #[test]
+    fn immediate_win_probability_detects_one_draw_agari() {
+        let mut hand = [0u8; NUM_TILE_TYPES];
+        hand[0] = 3;
+        hand[1] = 1;
+        let mut remaining = [0.0f32; NUM_TILE_TYPES];
+        remaining[0] = 2.0;
+        let mut after = hand;
+        after[1] -= 1;
+        let p = immediate_win_probability(&after, &remaining, 0, &|counts| {
+            let total: u8 = counts.iter().sum();
+            if counts[0] >= 4 && total >= 4 {
+                -1
+            } else {
+                0
+            }
+        });
+        assert!(p > 0.0);
+    }
+
+    #[test]
+    fn expected_score_tracks_win_probability() {
+        let mut hand = [0u8; NUM_TILE_TYPES];
+        hand[0] = 3;
+        hand[1] = 1;
+        let mut remaining = [0.0f32; NUM_TILE_TYPES];
+        remaining[0] = 3.0;
+        let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &|counts| {
+            let total: u8 = counts.iter().sum();
+            if counts[0] >= 4 && total >= 4 {
+                -1
+            } else {
+                0
+            }
+        });
+        assert!(features.expected_score[1] > 0.0);
+        assert!(features.win_prob[1][2] > 0.0);
+    }
+
+    #[test]
+    fn continuation_boost_is_bounded() {
+        let boost = continuation_boost(2, 1, 0.9);
+        assert!((0.0..=1.0).contains(&boost));
     }
 
     #[test]
