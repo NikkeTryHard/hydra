@@ -1,20 +1,22 @@
 # Hydra deep-agent follow-up for ANSWER_3-style agent
 
 I have attached:
-- `hydra_agent_handoff_docs_only.zip` — this is the primary source material
-- `deep_agent_20_pdfs` — the primary paper/reference package
+- `hydra_agent_handoff_docs_only.zip` — the primary docs package
+- `deep_agent_20_pdfs.zip` — the primary paper/reference package
 
-Use the docs zip first. If you cannot access the zip, use the raw GitHub markdown links I provide separately. Do NOT rely on normal GitHub browsing/search or generic web search to reconstruct the project context.
+Use the docs zip first. If you cannot access it, use the raw markdown links I provide separately. Do **not** rely on normal GitHub browsing/search or generic web search to reconstruct the project context.
 
-Your job in this prompt is NOT to inspect source code and NOT to write or integrate code. Your job is to look at Hydra’s CURRENT PLAN and make it:
+Your job in this prompt is **not** to inspect source code and **not** to write or integrate code. Your job is to take Hydra’s **current reconciled plan** and perform a second hard strategic pass that makes it:
 1. stronger,
-2. more coherent,
-3. more likely to produce real breakthroughs in Mahjong AI,
-4. still grounded enough to be implementable by a separate coding agent later.
+2. cleaner,
+3. more likely to produce real Mahjong strength,
+4. and more disciplined about what belongs on the active path versus the reserve shelf.
 
-I do NOT want generic brainstorming. I want a hard, evidence-backed **second pruning / prioritization pass** on the plan *after* several key strategic questions have already been settled.
+I do **not** want generic brainstorming. I want a hard, evidence-backed **post-reconciliation pruning and prioritization pass**.
 
-You should read the docs as a coherent program, especially:
+## Read these first
+
+Treat these as the main input stack:
 - `research/design/HYDRA_FINAL.md`
 - `research/design/HYDRA_RECONCILIATION.md`
 - `research/design/IMPLEMENTATION_ROADMAP.md`
@@ -34,61 +36,62 @@ Do **not** spend time re-arguing these unless you think one is clearly catastrop
 
 - Hydra should **not** restart from scratch.
 - Hydra’s active path is **supervision-first before search-expansion-first**.
-- Use **one unified belief stack**: Mixture-SIB + CT-SMC; no duplicate standalone belief machinery.
+- Hydra should use **one unified belief stack**: Mixture-SIB + CT-SMC; no duplicated standalone belief machinery.
 - **Hand-EV comes before deeper AFBS**.
-- **AFBS is selective/specialist**, not broad default runtime.
+- **AFBS is selective / specialist / hard-state-gated**, not broad default runtime.
 - **DRDA/ACH moves off the critical path** and lives on the reserve shelf.
 - **Oracle guidance should be aligned** so the teacher stays teachable.
 - Broad “search everywhere,” duplicated belief stacks, and early optimizer-theory detours are not on the active path.
 
-External evidence also already supports several pattern-level choices here:
+You should also assume these pattern-level claims are already sufficiently supported by external evidence:
 - unified public-belief-style state abstractions are real, not made-up Hydra weirdness
 - aligned oracle/teacher guidance is more defensible than unconstrained privileged distillation
-- robustness belongs in the core solving/objective layer, though Hydra-specific placement details still require judgment
+- robustness belongs in the core solving/objective layer, even if Hydra-specific placement details still require judgment
 
-You do not need to spend time re-proving those pattern-level claims unless you have a very strong contrary argument.
+Do **not** waste your budget re-proving those pattern-level points unless you have a very strong contrary argument.
 
 ## What I want you to do
 
-I want you to critique the **current reconciled Hydra plan** and make one more hard call on what remains:
+I want one more hard call on the **reconciled Hydra plan**.
 
-### Part 1 — Critique the reconciled active path
-Identify where the reconciled active Hydra path is still:
+### Part 1 — Pressure-test the active path
+Tell me where the reconciled active Hydra plan is still:
 - too fragile,
 - too underspecified,
 - too compute-inefficient,
 - too likely to stall before real strength,
-- or still carrying too much reserve-shelf baggage in disguised form.
+- or still quietly carrying reserve-shelf ideas that should not really be there.
 
-### Part 2 — Re-rank the reserve shelf
-The reconciliation memo keeps several old good ideas on the reserve shelf. I want you to sort them harder:
+### Part 2 — Re-rank the reserve shelf harder
+`HYDRA_RECONCILIATION.md` keeps several ideas alive on the reserve shelf. Sort them more aggressively.
 
-- which reserve ideas are actually strong **phase-next** candidates,
-- which are long-shot but worth preserving,
-- which should probably be demoted even further,
-- and which one or two reserve ideas have the best “if active Hydra underdelivers, try this next” upside.
+For each major reserve idea, decide whether it is:
+- **phase-next**,
+- **worth preserving but not near-term**,
+- **mostly demote**,
+- or **probably not worth the complexity**.
 
 Focus especially on:
 - robust-opponent search backups vs confidence-gated safe exploitation
 - richer latent opponent posterior
 - deeper AFBS semantics
 - stronger endgame exactification
-- incremental/structured belief updates
-- any remaining optimizer/game-theory ideas
+- incremental / structured belief updates
+- any remaining optimizer / game-theory ideas
 
-### Part 3 — Identify the strongest breakthrough bets that still survive the pruning
-Do not just list cool ideas. I want the **best surviving breakthrough bets after the active-path cuts have already happened**.
+### Part 3 — Keep only the best surviving breakthrough bets
+I do **not** want a long list. I want the strongest **3–5 surviving breakthrough bets after pruning**.
 
-For each surviving bet, tell me:
-- why it is still alive after pruning,
-- why it might matter specifically in Mahjong,
+For each one, tell me:
+- why it survives the pruning,
+- why it could matter specifically in Mahjong,
 - what evidence supports it,
 - what assumption it relies on,
 - why it might still fail,
 - and the cheapest meaningful experiment to test it.
 
 ### Part 4 — Fill in the remaining strategic blanks
-For any reserve or breakthrough idea you keep alive, fill in the missing technical details that the docs still leave abstract:
+For any reserve or breakthrough idea you keep alive, fill in the missing technical details that are still too abstract:
 - formulas,
 - objective functions,
 - update rules,
@@ -101,14 +104,14 @@ For any reserve or breakthrough idea you keep alive, fill in the missing technic
 
 ## Constraints
 
-- Do NOT inspect source code.
-- Do NOT pretend you implemented or validated anything.
-- Do NOT give broad generic summaries of Mahjong AI history unless directly relevant.
-- Do NOT recommend things that obviously blow up latency/compute without addressing feasibility.
-- Do NOT rely on AGPL code or implementation borrowing.
+- Do **not** inspect source code.
+- Do **not** pretend you implemented or validated anything.
+- Do **not** give broad generic summaries of Mahjong AI history unless directly relevant.
+- Do **not** recommend things that obviously blow up latency/compute without addressing feasibility.
+- Do **not** rely on AGPL code or implementation borrowing.
 - Keep proposals compatible with a separate coding agent implementing them later.
 
-Assume a separate coding agent will take your response and use it as the strategic decision layer above concrete implementation work.
+Assume a separate coding agent will use your answer as the strategic decision layer above concrete implementation work.
 
 ## How to reason about evidence
 
@@ -124,13 +127,13 @@ When you think something is novel but unproven, separate that from evidence-back
 
 ## Required output format
 
-Give me the answer in this structure:
+Give me the answer in this exact structure:
 
 ### 1. Executive verdict
 - Is the reconciled active Hydra plan strong enough to pursue as the mainline?
 - Where is it strongest?
 - Where is it still most likely to fail?
-- Which reserve-shelf idea is most likely to matter next if mainline underdelivers?
+- Which reserve-shelf idea is the best candidate if the active path underdelivers?
 
 ### 2. Hardest remaining weaknesses in the reconciled active path
 Rank the most important remaining weaknesses or blind spots.
@@ -191,10 +194,10 @@ I want:
 - evidence-backed reasoning,
 - clear separation between proven, plausible, and speculative ideas.
 
-I do NOT want:
+I do **not** want:
 - fluff,
 - generic “future work,”
 - shallow novelty for novelty’s sake,
 - or re-arguing already-settled choices unless you have a genuinely strong reason.
 
-Your goal is to help make Hydra not just more complete, but more formidable and more coherent after the active-path / reserve-shelf split has already been made.
+Your goal is to help make Hydra not just more complete, but more formidable and more coherent **after** the active-path / reserve-shelf split has already been made.
