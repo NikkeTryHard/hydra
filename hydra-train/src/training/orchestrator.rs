@@ -9,7 +9,7 @@ use crate::training::bc::{bc_train_step, oracle_guiding_train_step, phase_learni
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
 use crate::training::losses::{HydraLoss, HydraTargets};
-use crate::training::rl::{RlBatch, RlConfig, rl_step_with_phase_progress};
+use crate::training::rl::{rl_step_with_phase_progress, RlBatch, RlConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchmarkGateMetrics {
@@ -328,6 +328,7 @@ mod tests {
             opponent_hand_type_target: None,
             delta_q_target: None,
             safety_residual_target: None,
+            safety_residual_mask: None,
             oracle_guidance_mask: None,
         }
     }

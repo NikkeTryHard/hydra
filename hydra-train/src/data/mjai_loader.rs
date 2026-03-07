@@ -2,7 +2,10 @@
 
 use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
 use crate::training::losses::oracle_target_from_scores;
-use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, build_legal_mask, riichienv_to_hydra};
+use hydra_core::action::{
+    AKA_5M, AKA_5P, AKA_5S, ActionPhase, DISCARD_END, HYDRA_ACTION_SPACE, build_legal_mask,
+    riichienv_to_hydra,
+};
 use hydra_core::bridge::encode_observation;
 use hydra_core::encoder::ObservationEncoder;
 use hydra_core::safety::SafetyInfo;
@@ -235,6 +238,66 @@ fn bool_mask_to_f32(mask: [bool; HYDRA_ACTION_SPACE]) -> [f32; HYDRA_ACTION_SPAC
     mask.map(|is_legal| if is_legal { 1.0 } else { 0.0 })
 }
 
+fn public_safety_score(safety: &SafetyInfo, tile: u8) -> f32 {
+    let t = tile as usize;
+    let mut score = 0.0f32;
+    for opp in 0..3usize {
+        if hydra_core::safety::bit_test(safety.genbutsu_all[opp], t) {
+            score += 1.0;
+        }
+        score += 0.35 * safety.suji[opp][t];
+        if hydra_core::safety::bit_test(safety.half_suji[opp], t) {
+            score += 0.1;
+        }
+        score -= 0.25 * safety.matagi[opp][t];
+        if safety.opponent_riichi[opp] || safety.cached_tenpai_prob[opp] > 0.5 {
+            score -= 0.1;
+        }
+    }
+    if hydra_core::safety::bit_test(safety.kabe, t) {
+        score += 0.4;
+    }
+    if hydra_core::safety::bit_test(safety.one_chance, t) {
+        score += 0.2;
+    }
+    score.clamp(0.0, 1.0)
+}
+
+fn exact_dealin_risk_from_waits(wait_sets: &[[f32; 34]; 3], tile: u8) -> f32 {
+    let t = tile as usize;
+    if wait_sets.iter().any(|waits| waits[t] > 0.0) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn build_safety_residual_targets(
+    legal_mask: &[f32; HYDRA_ACTION_SPACE],
+    safety: &SafetyInfo,
+    wait_sets: &[[f32; 34]; 3],
+) -> ([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE]) {
+    let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+    for action in 0..=DISCARD_END {
+        let action_idx = action as usize;
+        if legal_mask[action_idx] <= 0.0 {
+            continue;
+        }
+        let tile = match action {
+            AKA_5M => 4,
+            AKA_5P => 13,
+            AKA_5S => 22,
+            _ => action,
+        };
+        let public_score = public_safety_score(safety, tile);
+        let exact_risk = exact_dealin_risk_from_waits(wait_sets, tile);
+        target[action_idx] = (public_score - exact_risk).clamp(0.0, 1.0);
+        mask[action_idx] = 1.0;
+    }
+    (target, mask)
+}
+
 fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     let final_scores = final_scores(&events);
     let oracle_target = oracle_target_from_scores(final_scores);
@@ -274,17 +337,24 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                 let mut opp_next = [MISSING_TILE_TARGET; 3];
                 let mut danger = [0.0; 102];
                 let mut danger_mask = [0.0; 102];
+                let mut wait_sets = [[0.0f32; 34]; 3];
                 for rel in 0..3usize {
                     let opp = abs_opp(actor, rel);
                     let (waits, is_tenpai) = exact_waits(&state, opp);
+                    wait_sets[rel] = waits;
                     tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
                     opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
                     let start = rel * 34;
-                    danger[start..start + 34].copy_from_slice(&waits);
+                    danger[start..start + 34].copy_from_slice(&wait_sets[rel]);
                     if is_tenpai {
                         danger_mask[start..start + 34].fill(1.0);
                     }
                 }
+                let (safety_residual, safety_residual_mask) = build_safety_residual_targets(
+                    &legal_mask,
+                    &safety[actor],
+                    &wait_sets,
+                );
                 samples.push(MjaiSample {
                     obs: obs_encoded,
                     action: hydra_action.id(),
@@ -297,6 +367,8 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                     opp_next,
                     danger,
                     danger_mask,
+                    safety_residual: Some(safety_residual),
+                    safety_residual_mask: Some(safety_residual_mask),
                 });
             }
         }
@@ -498,6 +570,21 @@ mod tests {
                 assert!((got - want).abs() < 1e-6, "oracle target mismatch: {got} vs {want}");
             }
         }
+    }
+
+    #[test]
+    fn load_game_from_reader_populates_safety_residual_for_discards_only() {
+        let (log, _) = play_game_with_mjai_log(11);
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+        let sample = game.samples.iter().find(|s| s.action <= DISCARD_END).expect("discard sample");
+        let target = sample.safety_residual.expect("safety residual target");
+        let mask = sample.safety_residual_mask.expect("safety residual mask");
+        assert_eq!(target.len(), HYDRA_ACTION_SPACE);
+        assert_eq!(mask.len(), HYDRA_ACTION_SPACE);
+        let masked_discards: f32 = mask[..=DISCARD_END as usize].iter().sum();
+        assert!(masked_discards > 0.0, "expected at least one discard action to be labeled");
+        let masked_non_discards: f32 = mask[(DISCARD_END as usize + 1)..].iter().sum();
+        assert!(masked_non_discards.abs() < 1e-6, "non-discard actions should be masked out");
     }
 
     #[test]

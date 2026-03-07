@@ -24,6 +24,7 @@ pub struct HydraTargets<B: Backend> {
     pub opponent_hand_type_target: Option<Tensor<B, 2>>,
     pub delta_q_target: Option<Tensor<B, 2>>,
     pub safety_residual_target: Option<Tensor<B, 2>>,
+    pub safety_residual_mask: Option<Tensor<B, 2>>,
     pub oracle_guidance_mask: Option<Tensor<B, 1>>,
 }
 
@@ -244,6 +245,18 @@ pub fn opponent_hand_type_ce_per_sample<B: Backend>(
 pub fn dense_regression_mse<B: Backend>(pred: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
     let diff = pred - target;
     (diff.clone() * diff).mean() * 0.5
+}
+
+pub fn masked_action_mse<B: Backend>(
+    pred: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+    mask: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    let diff = pred - target;
+    let sq = diff.clone() * diff * 0.5;
+    let masked = sq * mask.clone();
+    let denom = mask.sum().into_scalar().elem::<f32>().max(1.0);
+    masked.sum() / denom
 }
 
 pub fn compute_cvar(pdf: &[f32], alpha: f32) -> f32 {
@@ -535,9 +548,16 @@ impl<B: Backend> HydraLoss<B> {
             Some(target) => dense_regression_mse(outputs.delta_q.clone(), target.clone()),
             None => zero.clone(),
         };
-        let l_safety_residual = match &targets.safety_residual_target {
-            Some(target) => dense_regression_mse(outputs.safety_residual.clone(), target.clone()),
-            None => zero.clone(),
+        let l_safety_residual = match (
+            &targets.safety_residual_target,
+            &targets.safety_residual_mask,
+        ) {
+            (Some(target), Some(mask)) => masked_action_mse(
+                outputs.safety_residual.clone(),
+                target.clone(),
+                mask.clone(),
+            ),
+            _ => zero.clone(),
         };
         let c = &self.config;
         let total = l_pi.clone() * c.w_pi
@@ -830,6 +850,7 @@ pub mod tests {
         ));
         targets.delta_q_target = Some(Tensor::<B, 2>::zeros([2, 46], &device));
         targets.safety_residual_target = Some(Tensor::<B, 2>::zeros([2, 46], &device));
+        targets.safety_residual_mask = Some(Tensor::<B, 2>::ones([2, 46], &device));
         let breakdown = loss_fn.total_loss(&outputs, &targets);
         let belief: f32 = breakdown.belief_fields.into_scalar().elem();
         let mixture: f32 = breakdown.mixture_weight.into_scalar().elem();
@@ -843,6 +864,41 @@ pub mod tests {
         assert!(delta_q.is_finite() && delta_q >= 0.0);
         assert!(safety_residual.is_finite() && safety_residual >= 0.0);
         assert!(total.is_finite() && total > 0.0);
+    }
+
+    #[test]
+    fn test_safety_residual_requires_mask() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new().with_w_safety_residual(1.0));
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.safety_residual_target = Some(Tensor::<B, 2>::ones([2, 46], &device));
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        let safety_residual: f32 = breakdown.safety_residual.into_scalar().elem();
+        assert!(
+            safety_residual.abs() < 1e-8,
+            "missing mask should disable safety residual loss"
+        );
+    }
+
+    #[test]
+    fn test_safety_residual_all_zero_mask_zeroes_loss() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new().with_w_safety_residual(1.0));
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.safety_residual_target = Some(Tensor::<B, 2>::ones([2, 46], &device));
+        targets.safety_residual_mask = Some(Tensor::<B, 2>::zeros([2, 46], &device));
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        let safety_residual: f32 = breakdown.safety_residual.into_scalar().elem();
+        assert!(
+            safety_residual.abs() < 1e-8,
+            "zero mask should disable safety residual loss"
+        );
     }
 
     #[test]
@@ -1124,6 +1180,7 @@ pub mod tests {
             opponent_hand_type_target: None,
             delta_q_target: None,
             safety_residual_target: None,
+            safety_residual_mask: None,
             oracle_guidance_mask: None,
         }
     }

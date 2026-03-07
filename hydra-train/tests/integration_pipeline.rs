@@ -412,6 +412,7 @@ fn make_test_targets(
         opponent_hand_type_target: None,
         delta_q_target: None,
         safety_residual_target: None,
+        safety_residual_mask: None,
         oracle_guidance_mask: None,
     }
 }

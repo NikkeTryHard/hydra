@@ -50,6 +50,8 @@ pub struct MjaiSample {
     pub opp_next: [u8; 3],
     pub danger: [f32; 102],
     pub danger_mask: [f32; 102],
+    pub safety_residual: Option<[f32; HYDRA_ACTION_SPACE]>,
+    pub safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
 }
 
 const SCORE_BIN_MIN: f32 = -50000.0;
@@ -136,6 +138,8 @@ pub struct MjaiBatch<B: Backend> {
     pub tenpai_target: Tensor<B, 2>,
     pub danger_target: Tensor<B, 3>,
     pub danger_mask: Tensor<B, 3>,
+    pub safety_residual_target: Option<Tensor<B, 2>>,
+    pub safety_residual_mask: Option<Tensor<B, 2>>,
     pub opp_next_target: Tensor<B, 3>,
     pub score_pdf_target: Tensor<B, 2>,
     pub score_cdf_target: Tensor<B, 2>,
@@ -158,6 +162,7 @@ impl<B: Backend> MjaiBatch<B> {
             tenpai_target: self.tenpai_target,
             danger_target: self.danger_target,
             danger_mask: self.danger_mask,
+            safety_residual_target: self.safety_residual_target,
             opp_next_target: self.opp_next_target,
             score_pdf_target: self.score_pdf_target,
             score_cdf_target: self.score_cdf_target,
@@ -166,7 +171,7 @@ impl<B: Backend> MjaiBatch<B> {
             mixture_weight_target: None,
             opponent_hand_type_target: None,
             delta_q_target: None,
-            safety_residual_target: None,
+            safety_residual_mask: self.safety_residual_mask,
             oracle_guidance_mask: Some(self.oracle_target_mask),
         }
     }
@@ -187,6 +192,7 @@ impl<B: Backend> MjaiBatch<B> {
             tenpai_target: self.tenpai_target.clone(),
             danger_target: self.danger_target.clone(),
             danger_mask: self.danger_mask.clone(),
+            safety_residual_target: self.safety_residual_target.clone(),
             opp_next_target: self.opp_next_target.clone(),
             score_pdf_target: self.score_pdf_target.clone(),
             score_cdf_target: self.score_cdf_target.clone(),
@@ -195,7 +201,7 @@ impl<B: Backend> MjaiBatch<B> {
             mixture_weight_target: None,
             opponent_hand_type_target: None,
             delta_q_target: None,
-            safety_residual_target: None,
+            safety_residual_mask: self.safety_residual_mask.clone(),
             oracle_guidance_mask: Some(self.oracle_target_mask.clone()),
         }
     }
@@ -213,6 +219,9 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     let mut tenpai_flat = vec![0.0f32; batch * 3];
     let mut danger_flat = vec![0.0f32; batch * 102];
     let mut dmask_flat = vec![0.0f32; batch * 102];
+    let mut safety_residual_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
+    let mut safety_residual_mask_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
+    let mut any_safety_residual = false;
     let mut opp_flat = vec![0.0f32; batch * 102];
     let mut pdf_flat = vec![0.0f32; batch * SCORE_BINS];
     let mut cdf_flat = vec![0.0f32; batch * SCORE_BINS];
@@ -233,6 +242,16 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
         tenpai_flat[i * 3..(i + 1) * 3].copy_from_slice(&s.tenpai);
         danger_flat[i * 102..(i + 1) * 102].copy_from_slice(&s.danger);
         dmask_flat[i * 102..(i + 1) * 102].copy_from_slice(&s.danger_mask);
+        if let Some(values) = s.safety_residual {
+            safety_residual_flat[i * HYDRA_ACTION_SPACE..(i + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+            any_safety_residual = true;
+        }
+        if let Some(values) = s.safety_residual_mask {
+            safety_residual_mask_flat[i * HYDRA_ACTION_SPACE..(i + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+            any_safety_residual = true;
+        }
         for opp in 0..3usize {
             if s.opp_next[opp] < 34 {
                 opp_flat[i * 102 + opp * 34 + s.opp_next[opp] as usize] = 1.0;
@@ -267,6 +286,22 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
             .reshape([batch, 3, 34]),
         danger_mask: Tensor::<B, 1>::from_floats(dmask_flat.as_slice(), device)
             .reshape([batch, 3, 34]),
+        safety_residual_target: if any_safety_residual {
+            Some(
+                Tensor::<B, 1>::from_floats(safety_residual_flat.as_slice(), device)
+                    .reshape([batch, HYDRA_ACTION_SPACE]),
+            )
+        } else {
+            None
+        },
+        safety_residual_mask: if any_safety_residual {
+            Some(
+                Tensor::<B, 1>::from_floats(safety_residual_mask_flat.as_slice(), device)
+                    .reshape([batch, HYDRA_ACTION_SPACE]),
+            )
+        } else {
+            None
+        },
         opp_next_target: Tensor::<B, 1>::from_floats(opp_flat.as_slice(), device)
             .reshape([batch, 3, 34]),
         score_pdf_target: Tensor::<B, 1>::from_floats(pdf_flat.as_slice(), device)
@@ -324,6 +359,12 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
                 opp_next: permute_opp_next_targets(sample.opp_next, perm),
                 danger: permute_spatial_targets_3x34(sample.danger, perm),
                 danger_mask: permute_spatial_targets_3x34(sample.danger_mask, perm),
+                safety_residual: sample
+                    .safety_residual
+                    .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
+                safety_residual_mask: sample
+                    .safety_residual_mask
+                    .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
             });
         }
     }
@@ -353,6 +394,8 @@ mod tests {
             opp_next: [0, 1, 255],
             danger: [0.0; 102],
             danger_mask: [1.0; 102],
+            safety_residual: None,
+            safety_residual_mask: None,
         }
     }
 
@@ -411,6 +454,8 @@ mod tests {
         assert_eq!(batch.tenpai_target.dims(), [32, 3]);
         assert_eq!(batch.danger_target.dims(), [32, 3, 34]);
         assert_eq!(batch.danger_mask.dims(), [32, 3, 34]);
+        assert!(batch.safety_residual_target.is_none());
+        assert!(batch.safety_residual_mask.is_none());
         assert_eq!(batch.opp_next_target.dims(), [32, 3, 34]);
         assert_eq!(batch.score_pdf_target.dims(), [32, 64]);
         assert_eq!(batch.score_cdf_target.dims(), [32, 64]);
@@ -515,6 +560,12 @@ mod tests {
         sample.danger[0] = 0.25;
         sample.danger[34 + 9] = 0.5;
         sample.danger_mask[18] = 1.0;
+        let mut safety_residual = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut safety_residual_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        safety_residual[0] = 0.75;
+        safety_residual_mask[0] = 1.0;
+        sample.safety_residual = Some(safety_residual);
+        sample.safety_residual_mask = Some(safety_residual_mask);
         sample.obs[40 * 34] = 1.0;
 
         let augmented = augment_samples_6x(&[sample]);
@@ -529,6 +580,10 @@ mod tests {
         assert!((swapped.danger[9] - 0.25).abs() < 1e-6);
         assert!((swapped.danger[34] - 0.5).abs() < 1e-6);
         assert_eq!(swapped.danger_mask[18], 1.0);
+        let sr = swapped.safety_residual.expect("safety residual target");
+        let srm = swapped.safety_residual_mask.expect("safety residual mask");
+        assert!((sr[9] - 0.75).abs() < 1e-6);
+        assert!((srm[9] - 1.0).abs() < 1e-6);
         assert_eq!(swapped.obs[41 * 34], 1.0);
         assert_eq!(swapped.obs[40 * 34], 0.0);
     }
@@ -592,5 +647,33 @@ mod tests {
         let mask = targets.oracle_guidance_mask.expect("oracle mask present");
         let mask_slice = mask.to_data().as_slice::<f32>().expect("f32").to_vec();
         assert!((mask_slice[0] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_carries_safety_residual() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[0] = 0.4;
+        target[34] = 0.7;
+        mask[0] = 1.0;
+        mask[34] = 1.0;
+        sample.safety_residual = Some(target);
+        sample.safety_residual_mask = Some(mask);
+        let batch = collate_batch::<B>(&[sample], &device);
+        let targets = batch.into_hydra_targets();
+        let sr = targets
+            .safety_residual_target
+            .expect("safety residual target");
+        let srm = targets.safety_residual_mask.expect("safety residual mask");
+        assert_eq!(sr.dims(), [1, HYDRA_ACTION_SPACE]);
+        assert_eq!(srm.dims(), [1, HYDRA_ACTION_SPACE]);
+        let values = sr.to_data().as_slice::<f32>().expect("f32").to_vec();
+        let mask_values = srm.to_data().as_slice::<f32>().expect("f32").to_vec();
+        assert!((values[0] - 0.4).abs() < 1e-6);
+        assert!((values[34] - 0.7).abs() < 1e-6);
+        assert!((mask_values[0] - 1.0).abs() < 1e-6);
+        assert!((mask_values[34] - 1.0).abs() < 1e-6);
     }
 }
