@@ -2,6 +2,10 @@
 
 > Decision Record: Hydra will use a 100% Rust stack for training, inference,
 > and self-play. No Python dependency at any point in the pipeline.
+>
+> **Status note:** this is primarily a decision-record / rationale doc, not the current implementation SSOT. Current Hydra truth is routed by `README.md` -> `research/design/HYDRA_FINAL.md` -> `research/design/HYDRA_RECONCILIATION.md` -> `docs/GAME_ENGINE.md`.
+>
+> Keep the Rust-stack rationale here. Treat older `85x34`, monolithic-40-block, and PPO-loop-first language as legacy planning unless the active doctrine explicitly promotes it.
 
 ## 1. Executive Summary
 
@@ -20,7 +24,7 @@ in a single Rust binary with zero IPC, zero GIL, and zero interpreter overhead.
 - **3.5-4x less CPU overhead**: Benchmarked: C++ LibTorch trains ResNet18
   3.56x faster than Python PyTorch (same model, same GPU).
   Python's `torch.compile` exists to claw back this overhead. Rust never has it.
-- **Self-play integration**: PPO alternates between game simulation and training.
+- **Self-play integration**: any future self-play stage can run in the same Rust process as simulation and training, without Python IPC overhead.
   In Python, this requires subprocess/IPC. In Rust, same process, same memory.
 - **Single binary**: No pip, no conda, no virtualenv, no dependency hell.
   `cargo build --release` produces one artifact.
@@ -88,22 +92,22 @@ hydra-core delegates game logic to riichienv-core. libriichi is fully self-conta
 | Game state | Delegates to riichienv-core | Own PlayerState (10 files) |
 | Shanten | Delegates to riichienv-core | Own solver with lookup tables |
 | Scoring | Delegates to riichienv-core | Own agari + point calculation |
-| Encoder | **85x34** tensor (own) | **1012x34** tensor (own) |
+| Encoder | **192x34 fixed-superset tensor** (own; first 85 channels preserve the old baseline prefix) | **1012x34** tensor (own) |
 | Safety | **Dedicated module** (23 channels) | Embedded in state |
 | Action space | 46 actions (Mortal-compatible) | 46 actions |
 | Tile encoding | TileType(0-33) + suit permutation | Tile(0-37) incl aka+unknown |
 | Augmentation | **6-way suit permutation** | m/p swap only |
 | Encoding | **Incremental with DirtyFlags** | Full re-encode per turn |
 | Seeding | **SHA-256 KDF + vendored Fisher-Yates** | Standard RNG |
-| Arena | Not yet | Built-in self-play |
-| Dataset | Not yet | mjai log reader + batch pipeline |
-| Inference | Planned (ort/Burn) | tch (libtorch) |
+| Arena | Partial training/runtime scaffolding exists; broad self-play mainline is not the current active tranche | Built-in self-play |
+| Dataset | MJAI log reader + batch pipeline scaffold exists | mjai log reader + batch pipeline |
+| Inference | Burn/runtime path exists; see `docs/GAME_ENGINE.md` and `hydra-train/src/inference.rs` | tch (libtorch) |
 | LoC | ~3,500 | ~15,000+ |
 | License | MIT | AGPL-3.0 |
 
 ### What hydra-core Owns (unique to Hydra)
 
-- 85x34 observation encoding with 23 dedicated safety channels
+- 192x34 fixed-superset observation encoding, with the old 85-channel public+safety view preserved as the baseline prefix
 - Incremental encoding with DirtyFlags (skip unchanged channels)
 - 6-way suit permutation for data augmentation
 - SHA-256 KDF wall generation for cross-version determinism
@@ -169,7 +173,7 @@ These were removed because they require only Rust code, not framework features.
 |---|---|---|
 | 1 | No ONNX export | Use Burn directly for inference. Or save via burn-tch as TorchScript. |
 | 2 | No param groups | Multiple optimizers on different param subsets. |
-| 3 | No PPO impl | Write PPO training loop from scratch. Core Hydra work. |
+| 3 | Legacy RL-loop design gap | Keep as reserve context only; current active work is not “write PPO loop first.” |
 | 4 | Compile times | Pin to stable Burn version. Incremental builds mitigate. |
 | 5 | DDP is new | burn-tch backend's DDP tested. Manual NCCL via cudarc as fallback. |
 | 6 | No W&B | Hit W&B REST API via reqwest. Or use tensorboard-rs. |
@@ -182,7 +186,7 @@ These were removed because they require only Rust code, not framework features.
 | 13 | API stability | Pin Burn version. Upgrade deliberately. |
 | 14 | Ecosystem lock-in | Accepted. Committed to Rust. |
 | 15 | Data pipeline | Burn's MultiThreadDataLoader. Custom Dataset for mjai logs. |
-| 16 | Self-play loop | Bypass Learner, write manual PPO loop. |
+| 16 | Legacy self-play loop plan | Keep as reserve context only; do not treat manual PPO loop work as the current default tranche. |
 | 17 | No no_grad scope | Use non-Autodiff backend for inference during rollout. |
 
 ### Bridged: Framework-Level Concerns (6 concerns)
@@ -202,7 +206,7 @@ These required research to confirm Rust solutions exist.
 
 | # | Concern | Resolution |
 |---|---|---|
-| 1 | Small tensor overhead (85x34 input) | Profile CubeCL JIT latency. Use burn-tch if JIT overhead dominates for small tensors. |
+| 1 | Small tensor overhead (192x34 input) | Profile CubeCL JIT latency. Use burn-tch if JIT overhead dominates for Hydra’s fixed-superset inputs. |
 | 2 | Backend swap mid-training | Validate numerical stability of burn-tch to burn-cuda switch. May need retrain. |
 | 3 | Thread safety of autodiff | Clone model for inference threads. Single model for training. Standard RL pattern. |
 | 4 | Generic compile errors | Rust limitation. Mitigate with type aliases and wrapper types. |
@@ -228,8 +232,7 @@ Start with `burn-tch` backend for all training:
 
 ### Phase 2: Benchmark burn-cuda
 
-Run comparative benchmarks with our exact model (SE-ResNet, 40 blocks,
-256ch, batch=256, bf16):
+Run comparative benchmarks with Hydra’s active model family (12-block actor / 24-block learner, 256ch, batch as deployed, bf16):
 - Forward pass throughput: burn-tch vs burn-cuda
 - Backward pass throughput: burn-tch vs burn-cuda
 - Gradient correctness: cross-backend tensor comparison
@@ -270,7 +273,7 @@ Python: model definition, training loop, data pipeline
 
 ```
 hydra-core/     Rust: game engine, encoder, safety, simulator, seeding
-hydra-train/    Rust: Burn model definition, PPO training loop, self-play arena
+hydra-train/    Rust: Burn model definition, data/loss pipeline, orchestration, inference, and reserve-stage training machinery
 hydra-py/       REMOVED (no Python bindings needed)
 scripts/        Rust: evaluation, export utilities
 ```
@@ -353,12 +356,12 @@ with the 100% Rust decision and must be updated.
 | L587-593: Dependency licenses | Lists PyTorch (BSD), PyO3 | Replace with burn (Apache-2.0/MIT) |
 | L609-628: System Overview diagram | "Python Training" subgraph | Single Rust binary diagram |
 
-### TRAINING.md
+### Historical training-plan note
 
 | Section / Line | Conflict | Rust Replacement |
 |---|---|---|
 | L326: GRP label indexing | "itertools.permutations(range(4))" (Python) | Const array of 24 permutations in Rust |
-| Phase 1/2/3 infra references | Points to INFRASTRUCTURE.md Python sections | Update cross-references to Rust equivalents |
+| Legacy phase-plan infra references | Point to superseded infrastructure sections | Re-anchor to current Rust/runtime docs when revived |
 | Loss function code | Assumes PyTorch API (torch.nn.functional) | Burn tensor ops (equivalent math) |
 
 ### TESTING.md
@@ -435,10 +438,10 @@ pub struct SEResBlock<B: Backend> {
 }
 ```
 
-### Training Loop Pattern (Manual PPO)
+### Reserve Training Loop Pattern (Manual RL / self-play)
 
 ```rust
-// Bypass burn-train Learner for custom PPO loop
+// Reserve-stage example only. Do not treat this snippet as Hydra's current execution doctrine.
 let device = burn_tch::TchDevice::Cuda(0);
 let model = HydraModelConfig::new().init::<Autodiff<TchBackend>>(&device);
 let optim = burn::optim::AdamWConfig::new()
@@ -470,7 +473,7 @@ let optim = burn::optim::AdamWConfig::new()
 |---|---|
 | tch-rs GitHub | https://github.com/LaurentMazare/tch-rs |
 | tch-rs API docs | https://docs.rs/tch/latest/ |
-| tch-rs PPO example | https://github.com/LaurentMazare/tch-rs/blob/main/examples/reinforcement-learning/ppo.rs |
+| tch-rs RL example | https://github.com/LaurentMazare/tch-rs/blob/main/examples/reinforcement-learning/ppo.rs |
 | tch::autocast (bf16) | https://docs.rs/tch/latest/tch/fn.autocast.html |
 
 ### Python-to-Rust Migration Cheat Sheet

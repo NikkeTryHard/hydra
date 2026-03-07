@@ -7,6 +7,8 @@
 > 3. `research/design/IMPLEMENTATION_ROADMAP.md` — staged execution plan
 >
 > Keep this document as implementation/infrastructure reference, not as the top-level architecture authority.
+>
+> **Interpretation rule:** if a later section sounds more specific than the active doctrine but conflicts with the current two-tier / `192x34` / supervision-first Hydra path, treat that later section as legacy planning context unless it matches `HYDRA_RECONCILIATION.md`, `HYDRA_FINAL.md`, and `docs/GAME_ENGINE.md`.
 
 ## Overview
 
@@ -16,7 +18,8 @@ Hydra uses a 100% Rust architecture. Burn framework with burn-tch (libtorch/cuDN
 
 - [../design/HYDRA_FINAL.md](../design/HYDRA_FINAL.md) — target architecture SSOT
 - [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — current repo reality and next implementation tranche
-- [../design/HYDRA_SPEC.md](../design/HYDRA_SPEC.md) — legacy architecture spec (explicitly outdated)
+- [../design/HYDRA_ARCHIVE.md](../design/HYDRA_ARCHIVE.md) — archive / reserve-only planning surfaces
+- [../design/HYDRA_SPEC.md](../design/HYDRA_SPEC.md) — legacy architecture spec (historical only)
 - [../design/SEEDING.md](../design/SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
 - [CHECKPOINTING.md](CHECKPOINTING.md) — Checkpoint format, save protocol, retention policy
 
@@ -37,9 +40,9 @@ graph TB
     subgraph "Rust Training (hydra-train)"
         MODEL[Burn Model]
         LOOP[Burn Training Loop]
-        P1[Phase 1: Behavioral Cloning]
-        P2[Phase 2: Oracle Distillation]
-        P3[Phase 3: League Self-Play]
+        P1[Active supervised / target-generation work]
+        P2[Reserve later-stage training plan]
+        P3[Reserve later-stage self-play plan]
         WANDB[W&B REST API]
     end
 
@@ -157,7 +160,7 @@ Mortal extends the MJAI protocol with a metadata structure attached to bot respo
 
 ### Tile Representation
 
-> See [HYDRA_SPEC.md § Input Encoding](HYDRA_SPEC.md#input-encoding) for the canonical tile index mapping (0–33 across manzu, pinzu, souzu, jihai). The `xiangting` crate uses this same standard 34-tile index.
+Hydra uses the standard 34-tile index mapping (0–33 across manzu, pinzu, souzu, and honors). Keep `HYDRA_SPEC.md` only as historical context if you need to compare older descriptions; do not treat it as the current authority source.
 
 ### Game State Machine
 
@@ -214,7 +217,7 @@ stateDiagram-v2
 | Suufon Renda | 四風連打 | All 4 players discard the same wind on their first turn |
 | Suucha Riichi | 四家立直 | All 4 players declare riichi |
 | Suukaikan | 四開槓 | 4 kans declared by different players (not all by one player) |
-| Sanchahou | 三家和 | Triple ron (3 players win on same discard — abortive per [HYDRA_SPEC § Target Ruleset](HYDRA_SPEC.md#target-ruleset-tenhou-houou-4-player-%E9%B3%B3%E5%87%B0%E5%8D%93-%E5%9B%9B%E4%BA%BA%E6%89%93%E3%81%A1)) |
+| Sanchahou | 三家和 | Triple ron (3 players win on same discard — abortive under the standard ruleset Hydra currently targets) |
 
 > **Nagashi Mangan** is checked at exhaustive draw: if a player's entire discard pile consists of terminals and honors, and none were called by opponents, they receive mangan payment.
 
@@ -226,7 +229,7 @@ Key performance considerations:
 
 - **Pre-allocated buffers** — tensor memory is allocated once per environment instance and reused across turns to avoid allocation overhead
 - **Contiguous memory layout** — the 192×34 tensor is stored as a flat contiguous array for cache efficiency and compatibility with downstream BLAS/NN operations
-- **Incremental updates (planned optimization)** — most planes change minimally between turns (hand ±1 tile, discards +1). Delta-based encoding could reduce per-turn work, pending benchmarking to confirm the bookkeeping overhead is worthwhile. Mortal's encoder recomputes the full tensor from scratch each turn.
+- **Incremental updates (implemented)** — the live encoder already uses dirty-flag-driven incremental encoding; further micro-optimizations are benchmark questions, not a missing baseline capability.
 
 ### Batch Simulator
 
@@ -431,7 +434,7 @@ The historical PPO rollout buffer estimate in this document assumes the older 85
 
 ## Python Bindings
 
-Removed. Hydra uses a 100% Rust stack. See [RUST_STACK.md](RUST_STACK.md) for details.
+Removed. Hydra uses a 100% Rust stack. See `RUST_STACK.md` for the decision rationale and treat the rest of this file as implementation/reference material, not the active training roadmap.
 
 ## Rust Training (hydra-train)
 
@@ -447,9 +450,9 @@ Removed. Hydra uses a 100% Rust stack. See [RUST_STACK.md](RUST_STACK.md) for de
 | indicatif | Progress bars and terminal output |
 | flate2 | Gzip decompression for MJAI log parsing |
 
-### Per-Phase Training Infrastructure
+### Legacy / Reserve Training Infrastructure
 
-Hydra's training proceeds through three distinct phases with different data sources, loss functions, and infrastructure requirements. Each phase builds on the previous, with explicit transition gates ensuring readiness. TRAINING.md defines the algorithms and loss functions; this section specifies the infrastructure that runs them.
+The remainder of this section preserves older detailed training-infrastructure planning. Keep it only as reserve/reference material unless `HYDRA_RECONCILIATION.md` explicitly promotes a given stage back into the active path.
 
 #### Phase 1: Behavioral Cloning (Supervised)
 
@@ -480,7 +483,7 @@ Hydra's training proceeds through three distinct phases with different data sour
 **Loss function:**
 L_IL = CE(π, a_human) + 0.5 × MSE(V, outcome) + 0.1 × L_aux
 
-Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and danger estimation (focal BCE). See [TRAINING.md § Phase 1](TRAINING.md#phase-1-supervised-warm-start) for component definitions and weights.
+Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and danger estimation (focal BCE). Treat the exact weighting details below as legacy planning context unless re-promoted by the reconciled doctrine.
 
 **Training schedule:**
 - 3 epochs over the filtered dataset (~5-6M games, ~300-360M decisions)
@@ -514,7 +517,7 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 - Test play average placement ≤ 2.55 (1v3 vs uniformly random legal actions baseline)
 - Deal-in rate ≤ 15% in test play
 
-#### Phase 2: Oracle Distillation (RL)
+#### Reserve Stage: Oracle Distillation / later-stage training
 
 **Data source:** Self-play trajectories generated by the teacher model (initially) and student model (progressively). No static game logs.
 
@@ -523,13 +526,13 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 | Component | Configuration | VRAM |
 |-----------|--------------|------|
 | Teacher | Frozen, bf16, eval mode; Conv1d(290, 256, 3) stem; ~16.7M params | ~33 MB |
-| Student | fp32 master weights, bf16 autocast for compute; Conv1d(85, 256, 3) stem; ~16.5M params | ~67 MB |
+| Student | fp32 master weights, bf16 autocast for compute; historical row assumes the older 85-channel student stem and should be read as legacy planning only | ~67 MB |
 | Teacher gradients | None (frozen) | 0 MB |
 | Student optimizer (AdamW m+v) | fp32 | ~134 MB |
 | Student gradients | fp32 | ~67 MB |
 | **Total Phase 2 VRAM** | | **~465 MB** |
 
-The teacher and student share identical ResBlock weights (all 40 blocks are architecturally equivalent and weight-transferable). Only the stem Conv1d differs: the teacher's 290-channel input concatenates 85 public + 205 oracle channels before encoding.
+This teacher/student configuration reflects older monolithic planning and should be treated as reserve-only unless the reconciled doctrine revives it.
 
 **Initialization from Phase 1:**
 - Load Phase 1 best checkpoint into all student ResBlocks, policy head, value head, and aux heads
@@ -554,14 +557,14 @@ The teacher and student share identical ResBlock weights (all 40 blocks are arch
 L_distill = L_PPO(π_S) + λ_KL × D_KL(π_S ‖ π_T) + λ_anchor × D_KL(π_S ‖ π_BC)
 
 Where:
-- L_PPO includes policy, value, and entropy components (see [TRAINING.md § Phase 2](TRAINING.md#phase-2-oracle-distillation-rl))
+- the exact RL-loss decomposition below is legacy planning context, not current repo authority
 - λ_KL follows the feature dropout schedule (decays from 1.0 to 0.3)
 - λ_anchor = 0.1, decaying to 0 over Phase 2 (prevents catastrophic forgetting of BC knowledge)
 - D_KL uses temperature τ = 3.0 (fixed, not annealed — annealing changes the meaning of "dark knowledge" mid-training)
 
-**Feature dropout schedule** (group-level deterministic scaling, canonical definition in [TRAINING.md § Feature Dropout Schedule](TRAINING.md#feature-dropout-schedule)):
+**Feature dropout schedule** (legacy reserve design):
 
-Two feature groups are masked independently: Group A (opponent hands, 39ch) scaled by `mask_opp`, and Group B (wall/dead wall, 166ch) scaled by `mask_wall`. Masks decay from 1.0 to 0.0 over training while λ_KL decays from 1.0 to 0.3. See TRAINING.md for the full schedule table.
+Two feature groups are masked independently: Group A (opponent hands, 39ch) scaled by `mask_opp`, and Group B (wall/dead wall, 166ch) scaled by `mask_wall`. Keep this as reserve-stage planning detail rather than live authority.
 
 Post-dropout continuation: LR decayed to 1/10 of current value, importance weight rejection applied to prevent large policy updates on the now-fully-blind student.
 
@@ -575,7 +578,7 @@ Post-dropout continuation: LR decayed to 1/10 of current value, importance weigh
 - Tenpai head AUC ≥ 0.80
 - Win rate plateau for 20M+ steps (no improvement)
 
-#### Phase 3: League Self-Play (PPO)
+#### Reserve Stage: League Self-Play
 
 **Data source:** Live self-play trajectories from concurrent game workers.
 
@@ -612,7 +615,7 @@ graph TB
 - **Game workers:** The Rust game engine runs 512 concurrent hanchans via rayon thread pool. Feature encoding is parallelized within the game batch (Mortal's proven pattern). When a hanchan finishes, a new game immediately spawns with a fresh seed (no sync barrier). The rollout buffer fills from all active games regardless of their lifecycle stage.
 - **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Swap trigger: Buffer A reaches `rollout_steps x num_envs` (2048 x 512 = 1,048,576) transitions. Swap is coordinated via `std::sync::Condvar` -- training thread signals completion, game thread swaps buffer pointers. Both buffers use pre-allocated memory for direct GPU transfer via burn-tch. Binary/count channels (0-10, 23-34) stored as u8; float channels (temporal weights, normalized scores) stored as f32, cast to f32 per-minibatch on GPU.
 
- **Opponent pool** (composition weights defined in [TRAINING.md § Phase 3](TRAINING.md#phase-3-league-training)):
+ **Opponent pool** (legacy reserve design if a later league stage is revived):
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
@@ -628,9 +631,9 @@ graph TB
 
 **Seat rotation:** Every game seed is played in 4 rotations (challenger at East/South/West/North), following Mortal's 1v3 duplicate protocol. This controls for positional advantage (East player has slight edge in Mahjong).
 
- **PPO hyperparameters:**
+ **Legacy RL hyperparameters:**
 
- > See [TRAINING.md § Phase 3](TRAINING.md#phase-3-league-training) for the authoritative PPO hyperparameter table. Implementation-specific additions:
+ > Historical planning only. Do not treat this as current authoritative Hydra execution doctrine.
 
 **Anti-forgetting mechanisms:**
 - KL penalty against Phase 2 policy: λ_KL = 0.05, annealed to 0 over the first 30% of Phase 3 training
@@ -652,13 +655,13 @@ graph TB
 
 #### Phase Transitions
 
-**General principle:** Always reset optimizer and LR scheduler at phase boundaries. Always warmup LR from ~1/20th of the target peak. Evidence: Mortal explicitly discards optimizer state when switching from offline to online training. KataGo warms up from 1/20th of target LR over 8 stages.
+**General principle (reserve planning):** if Hydra later revives multiple major training stages, reset optimizer and LR scheduler at stage boundaries unless the active doctrine says otherwise.
 
 **What carries over vs. resets at each phase boundary:**
 
 | Component | Phase 1 → 2 | Phase 2 → 3 |
 |-----------|-------------|-------------|
-| ResBlock weights (40 blocks) | ✅ Carry | ✅ Carry |
+| ResBlock weights (historical monolithic plan) | ✅ Carry | ✅ Carry |
 | Policy head | ✅ Carry (also freeze copy as KL anchor) | ✅ Carry |
 | Value head | ❌ Reset (orthogonal init, std=1.0; new oracle critic architecture) | ✅ Carry |
 | Aux heads (GRP, tenpai, danger) | ✅ Carry | ✅ Carry |
@@ -691,7 +694,7 @@ graph TB
 
 #### Rating and Evaluation
 
-**Rating system:** OpenSkill PlackettLuce — a patent-free Bayesian ranking system with native 4-player support (Weng & Lin 2011, JMLR). Each checkpoint maintains a skill belief (μ, σ) initialized at μ=25.0, σ=8.333 (library defaults). Conservative rating = μ − 3σ. Ratings updated after each 4-rotation evaluation set (4 games per seed).
+**Rating system:** OpenSkill PlackettLuce remains a strong evaluation choice. Treat the exact numbers and cadence below as reference planning unless promoted by the active doctrine.
 
 **Evaluation protocol:** 1v3 duplicate format following Mortal's established methodology:
 - Challenger (1 copy) vs Champion (3 copies)
@@ -713,7 +716,7 @@ graph TB
 
 #### Distributed Strategy
 
-**Single GPU is sufficient for all three phases.** The model is ~16.7M parameters (~33 MB in fp16/bf16). Total VRAM usage never exceeds 4 GB, even in Phase 3 with 5 cached opponent models and a large rollout buffer. The RTX PRO 6000's 96 GB VRAM is massively overprovisioned — the bottleneck is game generation throughput (CPU-bound), not GPU memory or compute.
+**Single GPU is sufficient for the active supervised / target-generation work.** Later reserve-stage resource estimates below are historical planning context and should not be mistaken for the current mainline.
 
 **No DDP or FSDP is needed.** Distributed data parallelism is designed for models that don't fit on one GPU or for scaling batch size across devices. Neither applies: the model fits 2,900× over in 96 GB, and batch_size=2048-4096 is already sufficient for stable gradients.
 
@@ -729,13 +732,13 @@ graph TB
 
 ### Model Definition
 
-The Burn model implements the SE-ResNet architecture defined in HYDRA_SPEC.md. Key infrastructure considerations:
+The Burn model implements Hydra’s current SE-ResNet family as documented by the active authority stack. Key infrastructure considerations:
 
 - **CubeCL JIT fusion (burn-cuda upgrade path):** Currently using burn-tch (libtorch) backend. Future upgrade to burn-cuda will enable CubeCL kernel fusion for fixed-shape inputs -- particularly beneficial for the InferenceServer where batch size is stable. See [RUST_STACK.md](RUST_STACK.md).
 - **Precision: bf16** (not fp16). Blackwell GPUs have native bf16 tensor core support at full throughput. bf16 has the same dynamic range as fp32 (8 exponent bits), eliminating the need for GradScaler and the risk of gradient overflow/underflow. fp16 (5 exponent bits, max 65504) requires GradScaler and can cause training instabilities early in learning when gradients are large.
 - **Gradient checkpointing** is available but unnecessary at this model scale. The ~16.7M param model's activations occupy ~100-200 MB during forward/backward — negligible on 96 GB. Gradient checkpointing would add ~30% compute overhead for <0.2% memory savings.
 - **GroupNorm(32)** is used throughout instead of BatchNorm. GroupNorm has no running statistics, so it is immune to distribution shift between BC data and self-play data — unlike Mortal's BatchNorm which must be frozen during online RL.
-- **Orthogonal initialization:** std=√2 for hidden layers, 0.01 for policy head, 1.0 for value head (PPO standard from Andrychowicz et al. 2021).
+- **Orthogonal initialization:** the exact RL-era justification text here is legacy context; keep the implementation note, but do not read this line as evidence that PPO-era planning is still the active mainline.
 
 ## Reproducibility and Seeding
 
@@ -807,7 +810,7 @@ Hydra's peak VRAM usage is under 4 GB (Phase 3 with 5 cached opponent models). E
 
 ### Proposal Framing Note
 
-The TACC justification document describes the project as "Learned Abstraction Search (LAS) for Mahjong AI," framing the architecture as a neural abstraction layer (inspired by the LAMIR framework, ICLR 2026) that enables real-time MCCFR search. This is the long-term research direction for Hydra. The current implementation plan (SE-ResNet + PPO + oracle distillation) is the foundation that the allocation compute will be used for. The LAS/MCCFR search capability is a post-Phase-3 extension documented in [SEARCH_PGOI.md](SEARCH_PGOI.md).
+The TACC justification document describes the project as "Learned Abstraction Search (LAS) for Mahjong AI," framing the architecture as a long-term research direction. Keep that as historical/proposal context; do not treat the older `SE-ResNet + PPO + oracle distillation` phrasing here as the current Hydra execution doctrine.
 
 ## Hardware Requirements
 

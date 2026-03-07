@@ -1,12 +1,16 @@
 # Hydra Checkpoint Management
 
 > Checkpoint management specification for the Hydra Mahjong AI. Covers checkpoint format, directory structure, save protocol, retention policies, opponent pool versioning, and integrity verification.
+>
+> **Status note:** this is a mixed reference doc. Current Hydra authority comes from `README.md` -> `research/design/HYDRA_FINAL.md` -> `research/design/HYDRA_RECONCILIATION.md` -> `docs/GAME_ENGINE.md`.
+>
+> Keep the checkpointing mechanics here. Treat older phase-2/phase-3 league details as reserve planning unless the reconciled doctrine explicitly promotes them.
 
 ## Related Documents
 
 - [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, training infra, hardware, deployment
 - [SEEDING.md](SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
-- [TRAINING.md](TRAINING.md) — Training pipeline, phase transitions, loss functions
+- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — current execution doctrine and active-vs-reserve split
 
 ---
 
@@ -51,7 +55,7 @@ Every checkpoint is a single record serialized via Burn's Record system (NamedMp
 
 | Component | Size | Notes |
 |-----------|------|-------|
-| Model weights (bf16) | ~33 MB | SE-ResNet 40-block, 256-channel |
+| Model weights (bf16) | ~33 MB | Historical monolithic estimate; treat as reserve planning context |
 | AdamW momentum buffers (fp32) | ~134 MB | Two fp32 copies of all parameters |
 | Metadata, config, metrics | ~1 MB | Negligible |
 | **Training checkpoint total** | **~170 MB** | Typical Phase 2/3 checkpoint |
@@ -180,7 +184,7 @@ Each training phase has its own checkpoint directory with independent retention 
 
 During Phase 3 league self-play, the training agent plays against a pool of past versions of itself (see the [opponent pool table in Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo)). This subsection specifies how pool models are created, versioned, rated, cached, and pruned.
 
-**Pool composition** (canonical definition in [TRAINING.md § Phase 3](TRAINING.md#phase-3-league-training)):
+**Pool composition** (reserve design if a future league phase is revived):
 
 | Category | Weight | Source |
 |----------|--------|--------|
