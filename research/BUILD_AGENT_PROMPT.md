@@ -4,16 +4,18 @@ You are building the training pipeline for HYDRA, a 4-player Riichi Mahjong AI. 
 
 ## THE TWO FILES THAT GOVERN YOUR WORK
 
-1. **Design (WHAT to build)**: `research/design/HYDRA_FINAL.md` -- 406 lines. The architecture, algorithms, and math. Every design decision is final. Do not question it.
+1. **Design (WHAT to build)**: `research/design/HYDRA_FINAL.md` -- target architecture SSOT.
 
-2. **Build plan (HOW to build it)**: `research/design/IMPLEMENTATION_ROADMAP.md` -- 856 lines. 12 sequential steps with exact signatures, shapes, constants, tests, and MUST NOT rules. Follow it LINE BY LINE.
+2. **Immediate sequencing authority (WHAT TO BUILD NEXT)**: `research/design/HYDRA_RECONCILIATION.md` -- current repo reality, active path, reserve shelf, dropped shelf, and immediate implementation ordering.
 
-**Read BOTH files completely before writing a single line of code.** If you skip this, you will build the wrong thing and waste hours.
+3. **Build plan (HOW to build it)**: `research/design/IMPLEMENTATION_ROADMAP.md` -- implementation detail reference. Use it only where it does not conflict with `HYDRA_RECONCILIATION.md` on current sequencing or tranche priority.
+
+**Read all three before writing code.** If roadmap/build-prompt instructions conflict with reconciliation on what to build next, reconciliation wins.
 
 ## THE RULES (NON-NEGOTIABLE)
 
-### Rule 1: Follow the roadmap step by step
-The roadmap has 12 steps. You do Step 1 first. You pass Gate 1. Then Step 2. Then Gate 2. And so on. You do NOT skip ahead. You do NOT work on Step 5 while Step 3's gate is failing. The steps exist in dependency order -- later steps import earlier steps.
+### Rule 1: Follow the reconciled active path first
+The roadmap remains useful as an implementation reference, but it is **not** the current sequencing authority by itself. Before broad full-stack work, prioritize the immediate reconciled path: narrow supervision closure first, then Hand-EV realism, then selective AFBS/search-derived labels later.
 
 ### Rule 2: Every step ends with passing tests
 Each step in the roadmap lists specific named tests with specific assertions. You write the code, you write the tests, you run the tests, they pass. If they don't pass, you fix your code until they do. You do NOT move to the next step with failing tests.
@@ -46,7 +48,9 @@ All three must pass. If clippy warns, fix it. If tests fail, fix them. If it doe
 
 ## WHAT YOU ARE BUILDING
 
-A Rust crate called `hydra-train` that implements:
+A Rust crate called `hydra-train` plus supporting `hydra-core` interfaces, but do **not** treat this as license to widen the current tranche. The immediate work should stay on the reconciled active path.
+
+Long-range target surface includes:
 - SE-ResNet backbone (24-block LearnerNet + 12-block ActorNet)
 - 8 inference heads + oracle critic
 - All loss functions with exact weights
@@ -77,6 +81,8 @@ All tested. All compiling. All clippy-clean.
 **hydra-train** (Burn-dependent): model, backbone, heads, config, ach, drda, gae, bc, exit, distill, saf, league, eval, inference, losses
 
 ## THE 12 STEPS (summary -- full details in IMPLEMENTATION_ROADMAP.md)
+
+**Immediate tranche note:** do not assume Step 8+ sequencing is current just because it exists in the roadmap. For current execution order, defer to `HYDRA_RECONCILIATION.md`.
 
 1. Create hydra-train crate scaffold
 2. SE-ResNet backbone (SEBlock, SEResBlock, SEResNet)
