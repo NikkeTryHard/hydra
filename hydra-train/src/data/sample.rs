@@ -52,6 +52,8 @@ pub struct MjaiSample {
     pub danger_mask: [f32; 102],
     pub safety_residual: Option<[f32; HYDRA_ACTION_SPACE]>,
     pub safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    pub belief_fields: Option<[f32; 16 * 34]>,
+    pub mixture_weights: Option<[f32; 4]>,
 }
 
 const SCORE_BIN_MIN: f32 = -50000.0;
@@ -140,6 +142,8 @@ pub struct MjaiBatch<B: Backend> {
     pub danger_mask: Tensor<B, 3>,
     pub safety_residual_target: Option<Tensor<B, 2>>,
     pub safety_residual_mask: Option<Tensor<B, 2>>,
+    pub belief_fields_target: Option<Tensor<B, 3>>,
+    pub mixture_weight_target: Option<Tensor<B, 2>>,
     pub opp_next_target: Tensor<B, 3>,
     pub score_pdf_target: Tensor<B, 2>,
     pub score_cdf_target: Tensor<B, 2>,
@@ -167,8 +171,8 @@ impl<B: Backend> MjaiBatch<B> {
             score_pdf_target: self.score_pdf_target,
             score_cdf_target: self.score_cdf_target,
             oracle_target: self.oracle_target,
-            belief_fields_target: None,
-            mixture_weight_target: None,
+            belief_fields_target: self.belief_fields_target,
+            mixture_weight_target: self.mixture_weight_target,
             opponent_hand_type_target: None,
             delta_q_target: None,
             safety_residual_mask: self.safety_residual_mask,
@@ -197,8 +201,8 @@ impl<B: Backend> MjaiBatch<B> {
             score_pdf_target: self.score_pdf_target.clone(),
             score_cdf_target: self.score_cdf_target.clone(),
             oracle_target: self.oracle_target.clone(),
-            belief_fields_target: None,
-            mixture_weight_target: None,
+            belief_fields_target: self.belief_fields_target.clone(),
+            mixture_weight_target: self.mixture_weight_target.clone(),
             opponent_hand_type_target: None,
             delta_q_target: None,
             safety_residual_mask: self.safety_residual_mask.clone(),
@@ -222,6 +226,10 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     let mut safety_residual_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
     let mut safety_residual_mask_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
     let mut any_safety_residual = false;
+    let mut belief_fields_flat = vec![0.0f32; batch * 16 * 34];
+    let mut mixture_weights_flat = vec![0.0f32; batch * 4];
+    let mut any_belief_fields = false;
+    let mut any_mixture_weights = false;
     let mut opp_flat = vec![0.0f32; batch * 102];
     let mut pdf_flat = vec![0.0f32; batch * SCORE_BINS];
     let mut cdf_flat = vec![0.0f32; batch * SCORE_BINS];
@@ -251,6 +259,14 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
             safety_residual_mask_flat[i * HYDRA_ACTION_SPACE..(i + 1) * HYDRA_ACTION_SPACE]
                 .copy_from_slice(&values);
             any_safety_residual = true;
+        }
+        if let Some(values) = s.belief_fields {
+            belief_fields_flat[i * 16 * 34..(i + 1) * 16 * 34].copy_from_slice(&values);
+            any_belief_fields = true;
+        }
+        if let Some(values) = s.mixture_weights {
+            mixture_weights_flat[i * 4..(i + 1) * 4].copy_from_slice(&values);
+            any_mixture_weights = true;
         }
         for opp in 0..3usize {
             if s.opp_next[opp] < 34 {
@@ -298,6 +314,22 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
             Some(
                 Tensor::<B, 1>::from_floats(safety_residual_mask_flat.as_slice(), device)
                     .reshape([batch, HYDRA_ACTION_SPACE]),
+            )
+        } else {
+            None
+        },
+        belief_fields_target: if any_belief_fields {
+            Some(
+                Tensor::<B, 1>::from_floats(belief_fields_flat.as_slice(), device)
+                    .reshape([batch, 16, 34]),
+            )
+        } else {
+            None
+        },
+        mixture_weight_target: if any_mixture_weights {
+            Some(
+                Tensor::<B, 1>::from_floats(mixture_weights_flat.as_slice(), device)
+                    .reshape([batch, 4]),
             )
         } else {
             None
@@ -365,6 +397,8 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
                 safety_residual_mask: sample
                     .safety_residual_mask
                     .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
+                belief_fields: sample.belief_fields,
+                mixture_weights: sample.mixture_weights,
             });
         }
     }
@@ -396,6 +430,8 @@ mod tests {
             danger_mask: [1.0; 102],
             safety_residual: None,
             safety_residual_mask: None,
+            belief_fields: None,
+            mixture_weights: None,
         }
     }
 
@@ -675,5 +711,52 @@ mod tests {
         assert!((values[34] - 0.7).abs() < 1e-6);
         assert!((mask_values[0] - 1.0).abs() < 1e-6);
         assert!((mask_values[34] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_carries_projected_belief_targets() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        let mut belief = [0.0f32; 16 * 34];
+        let mut mix = [0.0f32; 4];
+        belief[0] = 0.2;
+        belief[33] = 0.8;
+        mix[0] = 0.7;
+        mix[1] = 0.3;
+        sample.belief_fields = Some(belief);
+        sample.mixture_weights = Some(mix);
+        let batch = collate_batch::<B>(&[sample], &device);
+        let targets = batch.into_hydra_targets();
+        let belief_target = targets
+            .belief_fields_target
+            .expect("belief field target should be present");
+        let mix_target = targets
+            .mixture_weight_target
+            .expect("mixture weights should be present");
+        assert_eq!(belief_target.dims(), [1, 16, 34]);
+        assert_eq!(mix_target.dims(), [1, 4]);
+        let belief_values = belief_target
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+            .to_vec();
+        let mix_values = mix_target
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+            .to_vec();
+        assert!((belief_values[0] - 0.2).abs() < 1e-6);
+        assert!((belief_values[33] - 0.8).abs() < 1e-6);
+        assert!((mix_values[0] - 0.7).abs() < 1e-6);
+        assert!((mix_values[1] - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_keeps_belief_targets_absent_when_missing() {
+        let device = Default::default();
+        let batch = collate_batch::<B>(&[dummy_sample(0, 0)], &device);
+        let targets = batch.into_hydra_targets();
+        assert!(targets.belief_fields_target.is_none());
+        assert!(targets.mixture_weight_target.is_none());
     }
 }

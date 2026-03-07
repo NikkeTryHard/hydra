@@ -369,6 +369,8 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                     danger_mask,
                     safety_residual: Some(safety_residual),
                     safety_residual_mask: Some(safety_residual_mask),
+                    belief_fields: None,
+                    mixture_weights: None,
                 });
             }
         }
