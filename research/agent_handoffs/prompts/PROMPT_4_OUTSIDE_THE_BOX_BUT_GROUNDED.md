@@ -15,6 +15,7 @@ Zip structure the model should expect in `deep_agent_20_pdfs.zip`:
 - paper PDFs under `deep_agent_20_pdfs/`
 
 The attached zips should be sufficient by themselves. Use raw links only if the attachments are inaccessible or corrupted.
+For this task, do not go looking for the thin-source validation pack unless the docs pack is missing and you have a specific reason to believe source validation is necessary.
 
 You are a research advisor trying to find one unconventional but credible idea that could give Hydra an edge over LuckyJ.
 

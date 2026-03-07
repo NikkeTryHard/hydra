@@ -11,6 +11,7 @@ Zip structure the model should expect:
 - prompt files under `research/agent_handoffs/prompts/`
 
 The zip should be sufficient by itself. Use raw links only if the attachment is inaccessible or corrupted.
+For this task, do not go looking for the thin-source validation pack unless the docs pack is missing and you have a specific reason to believe source validation is necessary.
 
 You are a research advisor for Hydra, a Riichi Mahjong AI project trying to become stronger than LuckyJ.
 
