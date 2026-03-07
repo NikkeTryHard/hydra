@@ -8,6 +8,8 @@ This directory contains the tracked handoff artifacts for external deep agents.
 - `prompts/PROMPT_2_REPO_AWARE_NEXT_TRANCHE.md`
 - `prompts/PROMPT_3_STRATEGIC_CUTTER.md`
 - `prompts/PROMPT_4_OUTSIDE_THE_BOX_BUT_GROUNDED.md`
+- `prompts/PROMPT_5_CROSS_FIELD_TRANSFER_HUNTER.md`
+- `prompts/PROMPT_6_NEW_TECHNIQUE_INVENTOR.md`
 
 ## Prior answer archive
 
@@ -62,8 +64,11 @@ This contains everything in `hydra_breakthrough_docs_pack.zip`, plus:
 - `PROMPT_2_REPO_AWARE_NEXT_TRANCHE.md` -> attach `hydra_breakthrough_thin_source_pack.zip`
 - `PROMPT_3_STRATEGIC_CUTTER.md` -> attach `hydra_breakthrough_docs_pack.zip`
 - `PROMPT_4_OUTSIDE_THE_BOX_BUT_GROUNDED.md` -> attach `hydra_breakthrough_docs_pack.zip` and `deep_agent_20_pdfs.zip`
+- `PROMPT_5_CROSS_FIELD_TRANSFER_HUNTER.md` -> attach `hydra_breakthrough_docs_pack.zip` and `deep_agent_20_pdfs.zip`
+- `PROMPT_6_NEW_TECHNIQUE_INVENTOR.md` -> attach `hydra_breakthrough_docs_pack.zip` and `deep_agent_20_pdfs.zip`
 
 Self-sufficiency rule:
 - `hydra_breakthrough_docs_pack.zip` should be sufficient for prompts 1, 3, and 4.
 - `hydra_breakthrough_thin_source_pack.zip` should be sufficient for prompt 2.
+- `hydra_breakthrough_docs_pack.zip` plus `deep_agent_20_pdfs.zip` should be sufficient for prompts 5 and 6.
 - Raw GitHub links are fallback-only when the attachment is inaccessible or corrupted.
