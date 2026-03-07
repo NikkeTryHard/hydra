@@ -1,5 +1,17 @@
 # Hydra breakthrough prompt 1 — technical ceiling
 
+Attach this zip to the model:
+- `hydra_breakthrough_docs_pack.zip`
+
+Zip structure the model should expect:
+- core design docs under `research/design/`
+- runtime summary under `docs/`
+- infra summary under `research/infrastructure/`
+- prior answer archive under `research/agent_handoffs/prior_answers/`
+- prompt files under `research/agent_handoffs/prompts/`
+
+The zip should be sufficient by itself. Use raw links only if the attachment is inaccessible or corrupted.
+
 You are a research advisor for Hydra, a Riichi Mahjong AI project trying to become stronger than LuckyJ.
 
 Your task is to identify the **single strongest technical breakthrough path** still available inside Hydra's reconciled architecture.
