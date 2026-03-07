@@ -1,714 +1,588 @@
-# Hydra prompt style guide for long-horizon GPT-5.4 Pro sessions
+# Hydra Prompt Style Guide — Artifact-First Batch Prompting Doctrine
 
-This guide captures the prompt-writing patterns that currently work best for Hydra's external deep-work sessions.
+This file is the doctrine for writing Hydra’s new batch prompts.
 
-It combines:
-- OpenAI's GPT-5.4 prompt guidance
-- what has worked in Hydra's long-horizon research and coding prompts
-- what failed in earlier prompt iterations and should be avoided
+It is not a giant prompt dossier.
+It is not where we dump 1000+ lines of code and paper artifacts.
+Those belong inside the actual prompts sent to agents.
 
-Use this guide when writing or revising prompts for:
-- external long-think research agents
-- breakthrough / invention prompts
-- repo-aware implementation prompts
-- follow-up prompts that must converge to code-ready output
+This guide should stay concise enough that an LLM or human can read it quickly and know exactly what to do.
 
-This is not a generic prompt-engineering guide. It is a Hydra-specific style guide for prompts that need strong architectural reading, disciplined retrieval, and coding-oriented synthesis.
+The whole point is simple:
 
----
-
-## 1. Core design goals
-
-Hydra prompts should push the model toward these behaviors:
-
-1. Read the project holistically before narrowing.
-2. Search broadly before converging.
-3. Reject weak ideas instead of preserving them out of politeness.
-4. Ground claims in retrieved evidence and real repo surfaces.
-5. Return output that is exhaustive, high-signal, and ready for action.
-6. End in a form that a coding agent can directly use.
-
-In practice, the best Hydra prompts do **not** try to control every thought. They control:
-- what context must be read first
-- what counts as done
-- what evidence is allowed
-- what output shape is required
+- prompts should be short at the top
+- prompts should be artifact-heavy in the body
+- artifacts should be treated as evidence, not truth
+- the answer should be a blueprint, not a memo
 
 ---
 
-## 2. What the OpenAI guide reinforces
+## 1. Core doctrine
 
-The official GPT-5.4 prompt guidance strongly matches what worked in Hydra.
+### 1.1 The answer must be a blueprint
 
-Highest-value official themes:
+Do not ask for:
 
-- explicit output contracts improve reliability
-- detailed, information-dense output works better than vague brevity when the task is technical
-- tool persistence matters when correctness depends on retrieval
-- dependency checks reduce skipped prerequisite reading
-- long-horizon tasks need explicit completeness rules
-- research prompts work better with staged retrieval and synthesis
-- grounding and citation rules reduce unsupported claims
-- verification loops improve final quality on complex work
+- a memo
+- a broad survey
+- a high-level recommendation note
+- a polished strategy essay
 
-Official source:
-- https://developers.openai.com/api/docs/guides/prompt-guidance/
-- use this together with the GPT-5.4-specific local notes in `/home/nikketryhard/dev/hydra/prompting.md`
+Ask for:
 
-Related Hydra-local source:
-- `/home/nikketryhard/dev/hydra/prompting.md`
+- an implementation-ready blueprint
+- a validation-ready blueprint
+- or a risk-audit blueprint
 
----
+The answer should help the next engineer or reviewer act, not just admire the prose.
 
-## 3. The Hydra prompt voice
+### 1.2 The prompt should carry the starting evidence
 
-Hydra prompts work best when they sound like this:
+Do not make the agent do all the first-mile rediscovery from nothing.
 
-- direct
-- technical
-- disciplined
-- high-standard
-- anti-handwave
-- anti-fluff
-- willing to reject weak ideas
+The prompt should already contain:
 
-### Verbosity default for technical Hydra prompts
+- low-level code excerpts
+- doc excerpts
+- tests
+- structs
+- formulas
+- thresholds
+- comments
+- examples
 
-For deep technical prompts, Hydra should now default to more detail, not less.
+The point is not to pre-solve the task.
+The point is to give the agent a dense starting packet it can critique, validate, and build from.
 
-That means prompts should usually ask for:
+### 1.3 The artifacts are not truth
 
-- multi-paragraph explanations instead of label-only fragments
-- explicit mechanism walkthroughs instead of compressed summaries
-- code snippets, pseudocode, API sketches, and data-structure examples
-- equations when the recommendation depends on scoring, optimization, uncertainty, or probability
-- full references and source links for every serious claim
-- implementation caveats, failure modes, thresholds, assumptions, and tradeoffs
+The prompt must explicitly say the artifacts are only what the current codebase/docs appear to say.
+They may be:
 
-Do not accidentally compress a technically rich answer into a thin executive summary.
+- stale
+- partial
+- inconsistent
+- semantically wrong
+- misleading by omission
 
-If the task is research-heavy, math-heavy, or architecture-heavy, the prompt should bias toward:
+The agent must treat them as evidence to inspect and critique, not truth to inherit.
 
-- verbose reasoning
-- explicit derivations where useful
-- worked examples
-- benchmark detail
-- enough depth that a coding agent can implement without reconstructing missing logic
+### 1.4 Narrowness is good by default
 
-Good phrasing:
+Most prompts should be narrow.
 
-- "Be as detailed and explicit as necessary; do not optimize for brevity."
-- "Return a full technical treatment, not a compressed memo."
-- "Include equations, derivations, and worked examples where they materially improve correctness."
-- "Include code snippets or pseudocode for every major mechanism."
-- "Cite all sources and attach references to concrete claims."
-- "Prefer full technical exposition over compressed summary."
+That is good for:
 
-Bad phrasing:
+- Hand-EV repair
+- target provenance decisions
+- tiny ponder scorers
+- rollout disable policy
+- conservative ExIt and delta-q validation
 
-- "Keep the answer compact" when the task is deep or technical
-- "Be concise" with no guardrails on omitted mechanism
-- "Summarize briefly" when we actually need a prototype-ready answer
-- "High level only" when exact insertion points, formulas, or code shape matter
+Do not loosen a narrow implementation prompt into a broad invention prompt by accident.
 
-Good Hydra-style phrases:
+### 1.5 The model must not stop early
 
-- "Do not give another broad survey."
-- "Read the core docs holistically first."
-- "Do not stop at the first plausible answer."
-- "Reject weak mappings explicitly."
-- "Do not preserve a proposal just because it is interesting."
-- "Ground every serious proposal in exact files/functions/structs likely to change."
-- "Success means a coding agent could start from your answer with minimal guesswork."
+The prompt should explicitly force:
 
-Bad tone patterns:
+- discovery
+- thinking
+- testing
+- validation
+- repeated looping until saturation or blockage
 
-- hypey futurism
-- generic "brainstorm 10 ideas"
-- overly conversational filler
-- soft indecisive ranking with no final recommendation
-- vague "best practices" with no repo grounding
+We use aggressive looping language because the old failure mode was premature finish with weak evidence.
+
+### 1.6 No dump in any logic
+
+The model must not hide important reasoning in black-box conclusions or polished assertions that cannot be reconstructed from the evidence packet or the explicit blueprint it writes.
+
+Every important mechanism, threshold, recommendation, or architecture move should be either:
+
+- directly inferable from the supplied artifacts
+- supported by cited external evidence
+- or made explicit inside the blueprint with enough visible derivation that we can validate and reproduce it ourselves
+
+If the logic cannot be retraced, it should not be presented as settled.
 
 ---
 
-## 4. Required structural blocks
+## 2. Default top-of-prompt shell
 
-For long-horizon Hydra prompts, these blocks are the default backbone.
-
-### Required in most prompts
+Use this shell for most serious Hydra prompts.
 
 ```xml
-<output_contract>
-<verbosity_controls>
-<research_mode>
-<tool_persistence_rules>
-<calculation_validation_rules>
-<dependency_checks>
-<completeness_contract>
-<citation_rules>
-<grounding_rules>
-<verification_loop>
+<role>
+Produce an implementation-ready blueprint.
+Do not give a memo.
+Your answer itself must be the blueprint.
+</role>
+
+<direction>
+Work toward the strongest exact blueprint for [TASK].
+
+We want a detailed answer that makes clear:
+- [decision point 1]
+- [decision point 2]
+- [decision point 3]
+- [what must stay narrow / deferred / rejected]
+- [how to implement or validate the surviving path with minimal guesswork]
+
+Use the artifacts below to derive your conclusions.
+</direction>
+
+<style>
+- no high-level survey
+- no vague answer
+- include reasoning
+- include formulas when needed
+- include code-like detail when helpful (python or rust)
+- include worked examples when helpful
+- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
+- distinguish direct artifact support from your own inference
+- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
+- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
+- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+</style>
+
+<artifact_note>
+The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+</artifact_note>
+
+<artifacts>
+...
+</artifacts>
 ```
 
-### Add when the failure mode is common
-
-```xml
-<empty_result_recovery>
-<dig_deeper_nudge>
-```
-
-### What verbosity controls should do now
-
-For Hydra's serious technical prompts, `<verbosity_controls>` should usually prevent vagueness, not enforce shortness.
-
-Good defaults:
-
-```xml
-<verbosity_controls>
-- Be as detailed and explicit as necessary; do not optimize for brevity.
-- Prefer full technical exposition over compressed summary.
-- Do not omit equations, derivations, thresholds, assumptions, edge cases, or implementation caveats when they matter.
-- Use multi-paragraph explanations when a short paragraph would hide important logic.
-</verbosity_controls>
-```
-
-### Block intent by prompt type
-
-- **follow-up engineering prompt**
-  - stronger dependency checks
-  - stronger code-grounding requirements
-  - explicit file/function insertion-point requirements
-
-- **fresh-context research prompt**
-  - stronger holistic-ingestion rules
-  - stronger narrowing workflow
-  - stronger candidate-pruning and kill-criteria requirements
-
-- **invention prompt**
-  - stronger anti-memo pressure
-  - stronger prototype path / benchmark / kill criteria requirements
+The top shell should stay lean.
+The bulk should be the artifacts.
 
 ---
 
-## 5. The most important Hydra lesson: holistic ingestion first
+## 3. What changed from the old doctrine
 
-This has been one of the biggest real-world wins.
+Old style:
 
-Older agents often behaved like sysadmins reading logs:
-- grep a keyword
-- inspect 40 lines around it
-- jump to a conclusion
+- read-order heavy
+- raw-link heavy
+- meta-heavy
+- lots of output-contract machinery
+- easy to turn into a polished audit memo
 
-That behavior is terrible for Hydra architecture work because the meaning of the design docs is spread across:
-- doctrine sections
-- caveats
-- sequencing notes
-- active-vs-reserve distinctions
-- interactions between runtime/search/training systems
+New style:
 
-So for Hydra prompts, whole-document reading is mandatory for core docs.
-
-### Use this rule explicitly
-
-```xml
-<holistic_ingestion_rules>
-- Read the core docs as whole documents before narrowing.
-- Do not start with keyword search on the core docs.
-- Do not rely on fragmented line-window retrieval for architecture understanding.
-- After holistic reading, you may use targeted search for exact details.
-</holistic_ingestion_rules>
-```
-
-### Best reading order pattern
-
-For most serious Hydra prompts:
-
-1. `research/design/HYDRA_RECONCILIATION.md`
-2. `research/design/HYDRA_FINAL.md`
-3. `docs/GAME_ENGINE.md`
-4. `research/design/OPPONENT_MODELING.md` when relevant
-5. prior answer anchors (`ANSWER_1-1.md`, `ANSWER_2-1.md`, `ANSWER_3-1.md`)
-6. exact code-grounding files
-7. outside papers / GitHub examples
-
-That order matters because it prevents the model from inventing against stale or partial project context.
+- short role / direction / style shell
+- explicit artifact skepticism
+- artifact-heavy body
+- blueprint answer
+- PDF-first paper handling
+- more visible reasoning, less inherited framing
 
 ---
 
-## 6. Browse-first is now better than zip-first for core docs
+## 4. What prompts must force
 
-Hydra originally leaned heavily on zip attachments.
+### 4.1 Blueprint over memo
 
-That still helps in some environments, but for very long docs the better default is now:
+The answer should feel buildable or directly auditable.
 
-- raw GitHub Markdown links for the core architectural docs
-- browse/fetch tool for holistic reading
-- targeted narrowing only after full-document ingestion
+### 4.2 Anti-vagueness
 
-Why:
-- some agents fragment zip/file reading into tiny chunks
-- raw GitHub markdown often works better with browse tools for whole-doc reading
-- the model wastes less effort navigating package structure
+Punish these failure modes:
 
-### Current recommended source-access pattern
+- one-paragraph summaries
+- broad “best practice” talk
+- implementation claims with no mechanism
+- benchmark claims with no metrics
+- reasoning with no formulas where formulas matter
 
-For browse-capable models:
+### 4.3 Evidence buckets
 
-- primary source material = raw GitHub links
-- code grounding = raw GitHub source links
-- outside evidence = official papers / docs / GitHub examples retrieved during the session
+The answer should separate:
 
-Do not write prompts that say:
-- "Use raw links only if the attachment fails"
+- direct artifact support
+- external source support
+- inference
+- proposal
+- blocked / missing surface
 
-For Hydra's current long-horizon prompt style, raw-link browsing is often the better first-class path.
+### 4.4 External paper discipline
 
----
+When papers matter:
 
-## 7. Research workflow that works
+1. find the original paper
+2. inspect the full PDF
+3. use abstracts only for discovery
+4. say when support is direct vs analogy
 
-The best Hydra prompts use a staged workflow.
+### 4.5 Math and calculation rigor
 
-### Recommended pattern
+If the task touches:
 
-```xml
-<research_mode>
-- Work in 3 passes:
-  1. Ingest: read the core Hydra docs holistically first.
-  2. Retrieve: identify the unresolved questions, then search broadly and follow 1-2 strong second-order leads.
-  3. Synthesize: reject weak branches and converge to a small number of serious recommendations.
-- Stop only when more searching is unlikely to materially change the conclusion.
-</research_mode>
-```
+- parameter count
+- compute budget
+- drift thresholds
+- expected value
+- throughput
+- weighting
+- confidence intervals
+- probabilities
 
-### Practical interpretation
+then the prompt should explicitly allow Python in bash for validation.
 
-Pass 1: understand Hydra as it actually exists now  
-Pass 2: search outside fields and repo surfaces  
-Pass 3: produce an answer that can survive contact with coding reality
+### 4.6 Saturation before finish
 
-Do not let the model jump straight from one interesting paper to a final answer.
-
----
-
-## 8. Tool behavior rules that help a lot
-
-These rules matter a lot in long sessions.
-
-### Good defaults
-
-```xml
-<tool_persistence_rules>
-- Use tools whenever they materially improve correctness, completeness, or grounding.
-- Do not stop early when another tool call is likely to materially improve correctness or completeness.
-- Keep calling tools until the task is complete and verification passes.
-- If a tool returns empty or partial results, retry with a different strategy.
-- When the answer depends on non-trivial arithmetic, statistics, simulation, or parameter tradeoffs, use Python from bash to calculate or sanity-check the result instead of relying on mental math.
-- Prefer short Python scripts in bash for complex calculations, quick numerical experiments, equation checks, threshold sweeps, and counterexample hunting.
-</tool_persistence_rules>
-```
-
-```xml
-<calculation_validation_rules>
-- If the answer depends on a complex calculation, use Python in bash to compute or sanity-check it.
-- Use short Python scripts for parameter sweeps, expected-value checks, uncertainty calculations, simulation sanity checks, or numerical comparisons.
-- Report the relevant computed result in the final answer when it materially supports the recommendation.
-- Do not fake arithmetic that could have been verified with a quick script.
-</calculation_validation_rules>
-```
-
-```xml
-<dependency_checks>
-- Before taking an action, check whether prerequisite discovery, lookup, or memory retrieval steps are required.
-- Do not skip prerequisite steps just because the intended final action seems obvious.
-- If the task depends on the output of a prior step, resolve that dependency first.
-</dependency_checks>
-```
-
-### Hydra-specific addition
-
-For architecture-heavy prompts, add this idea explicitly:
-
-- broad reading before narrow search
-- synthesis pause after retrieval
-- then final recommendation
-
-The model should not retrieve forever. It should retrieve hard, then converge.
+The prompt should make it hard for the model to stop after the first plausible answer.
 
 ---
 
-## 9. What counts as a good final answer
+## 5. What prompts must not force
 
-Hydra prompt outputs should usually end in one of these forms:
+Do not over-constrain output structure so hard that the model becomes a bureaucrat.
 
-### A. Engineering brief
+The guide should stay concise, but actual prompts should still constrain output style enough to keep the model focused on a few concrete topics. The goal is not zero structure. The goal is enough structure to keep the answer narrow and useful without turning it into a rigid report generator.
 
-- what Hydra already has
-- what the new idea adds
-- exact mechanism
-- exact file/function insertion points
-- needed labels/signals/logs
-- pseudocode / API sketch
-- code snippets where the mechanism would otherwise stay vague
-- equations or derivations where the recommendation depends on math
-- worked examples or sample calculations where useful
-- full references and exact citations
-- benchmark and kill criteria
+Avoid prompts that require:
 
-### B. Strategic cut
+- twenty named sections in exact order
+- endless claim ledgers for narrow tasks
+- giant “prove you followed the prompt” output rituals
+- template prison instead of actual reasoning
 
-- what to keep
-- what to demote
-- what to archive
-- what to try first
-- why weaker paths lose
+The right balance is:
 
-### C. Invention/prototype recommendation
-
-- 1-3 serious candidates max
-- mechanism, not slogan
-- why it fits Hydra specifically
-- why it clears the separator bar rather than being merely incremental
-- closest known baseline and why it does not reduce to it
-- dependency closure table for required signals, labels, hooks, teacher outputs, and runtime state
-- cheapest prototype path
-- minimum falsifiable prototype
-- what would falsify it quickly
-
-For breakthrough-oriented prompts, also require:
-- a short `Hydra posture reconstruction` before ideas
-- the strongest simpler mainline alternative for each candidate
-- explicit rejected directions, not just surviving finalists
-- an allowed `0 surviving candidates` outcome if nothing really survives
-
-If the output reads like a literature survey, the prompt underperformed.
+- strong role
+- clear direction
+- anti-vagueness rules
+- artifact skepticism
+- artifact-heavy body
+- enough output-style constraint to keep the answer focused on the actual lane
 
 ---
 
-## 10. Always force pruning
+## 6. How much explanation should sit above the artifacts
 
-Hydra prompts get much stronger when they force the model to prune.
+Very little.
 
-Good pruning language:
+Good:
 
-- "Return only 1-3 serious candidates."
-- "Reject weak mappings explicitly."
-- "Do not preserve a proposal just because it is interesting."
-- "End with the single best candidate to try first."
-- "Give the single best cheap benchmark to run first."
-- "If no candidate survives, return 0 surviving candidates and explain why."
+- role
+- direction
+- style
+- artifact note
 
-Without pruning pressure, long-horizon prompts tend to degrade into:
-- sprawling rankings
-- pseudo-comprehensive but weak idea lists
-- no decisive next step
+Sometimes:
+
+- one small scope note
+- one small novelty rule
+
+Bad:
+
+- giant system-context sermons
+- “important truths” sections that pre-solve the task
+- narrative walkthroughs of what the artifacts already say
+
+The prompt should not explain the evidence too much before the model has looked at it.
 
 ---
 
-## 11. Always force grounding
+## 7. Novelty rules
 
-Hydra-specific grounding is non-negotiable.
+The new prompt style is mostly implementation-first and anti-drift.
+That means most prompts should not encourage broad novelty.
 
-Good grounding rules:
+### Good places for novelty clauses
+
+- long-run risk audits
+- architecture reserve-shelf prompts
+- breakthrough prompts
+- prompts explicitly asking whether a stronger adjacent-field formulation exists
+
+### Bad places for novelty clauses
+
+- Hand-EV repair prompt
+- narrow provenance decision prompt
+- tiny ponder scorer prompt
+- rollout disable-policy prompt
+
+### Default novelty clause
+
+Use this when you want bounded adjacent-field exploration:
 
 ```xml
-<citation_rules>
-- Cite only sources actually retrieved in the current workflow.
-- Never fabricate references.
-- Attach citations to the exact claims they support.
-- Include full reference detail and direct source links when possible.
-</citation_rules>
+- after grounding in the artifacts, actively search adjacent fields for stronger alternative formulations of the same problem; keep them only if they survive validation against the artifacts
 ```
 
+### Strong novelty add-on
+
+Use this only when you explicitly want broader cross-field synthesis:
+
 ```xml
-<grounding_rules>
-- Base repo claims only on the repo docs/code or retrieved raw links.
-- If a statement is an inference rather than directly supported, label it as an inference.
-- If sources conflict, state the conflict explicitly.
-</grounding_rules>
+- after grounding in the artifacts, explore many adjacent fields for competing formulations of the same problem, keep searching for interesting fragments worth fusing together, and continue the explore -> think hard -> validate loop until the strongest fused formulation either survives or is killed by the artifact constraints
 ```
 
-Hydra prompts should also usually require:
-- exact file names
-- exact functions or structs if known
-- explicit note when a needed signal or label does not yet exist
-- explicit marking of any unevidenced repo surface as `inference` or `[blocked]`
-- explicit equations or formulas when claims depend on quantitative reasoning
-- explicit code snippets, pseudocode, or API sketches for all major mechanisms
-- enough source detail that a later agent can retrace the evidence without guessing
-- explicit dependency closure when implementation depends on new labels, hooks, trajectories, or teacher outputs
+Do not add novelty clauses everywhere.
 
-For breakthrough/invention prompts, good extra grounding pressure is:
+---
+
+## 8. The right stance toward references
+
+We do not want:
+
+- pretty bibliography dressing
+- one-line paper name drops
+- abstract-only support
+- “paper X vibes like this idea” with no mechanism
+
+We do want:
+
+- actual formulas
+- actual method-defining wording
+- actual scope limits
+- actual caveats
+- actual places where the paper’s theory breaks or narrows
+
+Good prompt references should include enough context to understand why the source matters.
+
+---
+
+## 9. Reusable wording patterns
+
+### Role block
 
 ```xml
-<posture_reconstruction_rules>
-- Before proposing ideas, include a short "Hydra posture reconstruction" section with 5-10 bullets.
-- Distinguish current mainline doctrine, reserve-shelf ideas, partially closed loops, and non-goals/deprioritized paths.
-- Do not propose breakthrough candidates until that posture reconstruction is complete.
-</posture_reconstruction_rules>
+<role>
+Produce an implementation-ready blueprint.
+Do not give a memo.
+Your answer itself must be the blueprint.
+</role>
 ```
 
-```xml
-<novelty_honesty_rules>
-- For every surviving candidate, include a "closest known baseline" subsection.
-- State the nearest known method or family, the exact overlap, and the irreducible difference.
-- If the method reduces to a known technique under realistic Hydra constraints, downgrade or reject it.
-- Label each candidate as:
-  - `A`: genuinely new mechanism
-  - `B`: known mechanism with a Hydra-specific adaptation that plausibly changes capability
-  - `C`: renamed or lightly modified known trick
-- Reject all `C` candidates.
-</novelty_honesty_rules>
-```
+### Artifact skepticism block
 
 ```xml
-<minimum_falsification_rules>
-- For every surviving candidate, define the minimum falsifiable prototype that tests the claimed mechanism in isolation.
-- If the core claim cannot be tested without a large coupled rollout or major stack build-out, reject the idea as too diffuse.
-- The first benchmark should distinguish the idea from stronger tuning, more search, more data, or easier teacher signals.
-</minimum_falsification_rules>
+<artifact_note>
+The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+</artifact_note>
 ```
 
-```xml
-<abstention_rules>
-- If evidence is missing, conflicting, or too weak, output `insufficient evidence` instead of filling gaps by inference.
-- Unsupported claims must not appear in the final recommendation unless clearly labeled as a hypothesis plus falsification path.
-- If no candidate survives the novelty, grounding, and prototypeability filters, return `0 surviving candidates` and explain why.
-</abstention_rules>
-```
+### Paper handling line
 
 ```xml
-<claim_verification_rules>
-- Before finalizing, list the highest-leverage factual or technical claims in the draft.
-- Generate verification questions for those claims and answer them independently using retrieved evidence.
-- Revise the answer using those verification results instead of relying on first-pass confidence.
-</claim_verification_rules>
+- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
 ```
 
-```xml
-<evidence_bucket_rules>
-- Separate important statements into `supported`, `inference`, and `hypothesis`.
-- Only `supported` and clearly labeled `inference` may influence the final recommendation.
-- `hypothesis` items must come with a falsification path and may not be presented as established facts.
-</evidence_bucket_rules>
-```
+### Math rigor line
 
 ```xml
-<feasibility_scorecard_rules>
-- For each surviving candidate, score `novelty`, `feasibility in Hydra`, `evidence strength`, and `cheap-testability` on a fixed scale.
-- If novelty exceeds feasibility by a large margin and no decisive cheap test exists, reject or downgrade the idea.
-</feasibility_scorecard_rules>
+- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
+```
+
+### Anti-premature-stop line
+
+```xml
+- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+```
+
+### Anti-vagueness core
+
+```xml
+- no high-level survey
+- no vague answer
+- include reasoning
+- include formulas when needed
+- include code-like detail when helpful (python or rust)
+- include worked examples when helpful
+- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
+- distinguish direct artifact support from your own inference
+- do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
 ```
 
 ---
 
-## 12. Always force completion and verification
+## 10. Failure modes to ban explicitly
 
-This is another area where the official GPT-5.4 guidance and Hydra experience line up hard.
+### Failure mode 1 — Memo mode
 
-Use:
+Symptoms:
 
-```xml
-<completeness_contract>
-- Treat the task as incomplete until all requested deliverables are covered or explicitly marked [blocked].
-- Mark underspecified items [blocked] rather than pretending they are ready.
-</completeness_contract>
-```
+- polished prose
+- broad conclusions
+- weak mechanism detail
+- feels smart but cannot be built from
 
-```xml
-<verification_loop>
-- Before finalizing:
-  - check correctness
-  - check grounding
-  - check format
-  - check whether the recommendation is actionable
-</verification_loop>
-```
+Ban with:
 
-Hydra-specific upgrade:
+- “do not give a memo”
+- “your answer itself must be the blueprint”
 
-- add a final check that the model actually read the core docs holistically before narrowing in
-- add a final check that each surviving candidate beats the strongest simpler mainline alternative on more than vibes
-- add a final check that each surviving candidate has a minimum falsifiable prototype
-- add a final check that no candidate survived only because the prompt implicitly demanded at least one answer
-- add a final check that the strongest claims were independently verified rather than merely repeated confidently
+### Failure mode 2 — Truth inheritance
 
-That one catches a huge amount of fake understanding.
+Symptoms:
 
----
+- model repeats stale docs confidently
+- model treats artifact dump as ground truth
+- model fails to critique semantics
 
-## 13. Recommended prompt skeleton
+Ban with:
 
-This is the default Hydra skeleton for long-horizon research/coding prompts.
+- artifact note
+- direct-support vs inference distinction
 
-```text
-# Title
+### Failure mode 3 — Abstract citation theater
 
-Short task framing.
+Symptoms:
 
-Primary source material lives in the raw GitHub links below.
+- references look impressive
+- support is shallow
+- full paper never checked
 
-## Critical directive — how to read the core Hydra docs
-<holistic_ingestion_rules>
-...
-</holistic_ingestion_rules>
+Ban with:
 
-## Reading order
-1. core doctrine docs
-2. prior answer anchors
-3. code-grounding files
-4. outside retrieval
+- PDF-first rule
+- direct vs analogy support requirement
 
-## Raw GitHub links
-- ...
+### Failure mode 4 — Parameterized overconfidence
 
-Task body
+Symptoms:
 
-<output_contract>
-...
-</output_contract>
+- exact thresholds appear with no calibration
+- exact constants sound authoritative without evidence
 
-<verbosity_controls>
-...
-</verbosity_controls>
+Ban with:
 
-<calculation_validation_rules>
-...
-</calculation_validation_rules>
+- Python-in-bash validation rule
+- explicit support vs proposal distinction
 
-<research_mode>
-...
-</research_mode>
+### Failure mode 5 — Premature convergence
 
-<tool_persistence_rules>
-...
-</tool_persistence_rules>
+Symptoms:
 
-<dependency_checks>
-...
-</dependency_checks>
+- first plausible idea wins
+- no second-order search
+- no falsification
 
-<posture_reconstruction_rules>
-...
-</posture_reconstruction_rules>
+Ban with:
 
-<completeness_contract>
-...
-</completeness_contract>
+- long loop rule
+- saturation / blockage rule
 
-<citation_rules>
-...
-</citation_rules>
+### Failure mode 6 — Survey drift
 
-<grounding_rules>
-...
-</grounding_rules>
+Symptoms:
 
-<abstention_rules>
-...
-</abstention_rules>
+- answers list many possibilities
+- no final blueprint
+- no pruning
 
-<claim_verification_rules>
-...
-</claim_verification_rules>
+Ban with:
 
-<evidence_bucket_rules>
-...
-</evidence_bucket_rules>
+- blueprint framing
+- narrow direction bullets
 
-<novelty_honesty_rules>
-...
-</novelty_honesty_rules>
+### Failure mode 7 — Typed-hole confusion
 
-<minimum_falsification_rules>
-...
-</minimum_falsification_rules>
+Symptoms:
 
-<feasibility_scorecard_rules>
-...
-</feasibility_scorecard_rules>
+- model sees a head/field and assumes it is live, trained, or credible
 
-<verification_loop>
-...
-</verification_loop>
+Ban with:
 
-<dig_deeper_nudge>
-...
-</dig_deeper_nudge>
-```
+- force artifact critique
+- make “typed surface vs active target vs semantically valid object” a central distinction
+
+### Failure mode 8 — Logic dump / black-box rigor theater
+
+Symptoms:
+
+- major decisions appear with no reconstructable reasoning path
+- the answer sounds rigorous but the rigor lives only in hidden reasoning
+- thresholds or architecture moves are asserted without enough visible support
+
+Ban with:
+
+- explicit anti-dump-in-logic rule
+- require that important logic be inferable from artifacts or explicit blueprint content
+- require enough visible derivation that a reviewer can reproduce the conclusion
 
 ---
 
-## 14. Anti-patterns to avoid
+## 11. Reference example prompts
 
-Do not write Hydra prompts that do these things:
+Use these archive examples as the canonical naming and shape references for the new prompt style:
 
-1. **zip-first by default** when browse/raw reading is available and the docs are long
-2. **search-first reading** of core architecture docs
-3. **broad survey output** with no forced convergence
-4. **no kill criteria** for new ideas
-5. **no file-level grounding** for engineering recommendations
-6. **no explicit completion rules**
-7. **no explicit evidence boundary**
-8. **too many candidates** kept alive at once
-9. **generic "be creative" phrasing** without prototype pressure
-10. **architectural recommendations before doctrine ingestion**
-11. **over-compressing technical answers** until code, formulas, assumptions, or derivations disappear
-12. **hand-wavy arithmetic** that should have been checked with Python
-13. **breakthrough framing with no separator bar**
-14. **novelty claims with no closest-baseline comparison**
-15. **implementation claims with no dependency-closure check**
-16. **prototype claims with no minimum falsifiable core**
-17. **forcing at least one idea to survive even when none clear the bar**
-18. **confident recommendation with no abstention path when evidence is weak**
-19. **important claims left unverified because the prompt only asks for a vague final self-check**
-20. **speculation blended into grounded claims with no evidence buckets**
+- `reference_prompt_example_001_narrow_focused.md`
+- `reference_prompt_example_002_broad_novel_fuse_loop.md`
+- `reference_prompt_example_003_balanced_narrow_not_overconstrained.md`
+
+These are examples of the current artifact-first doctrine. New example prompts added to the archive should follow this naming family.
+
+Use them like this:
+
+- narrow implementation / validation prompt -> `reference_prompt_example_001_narrow_focused.md`
+- broad novelty / cross-field fusion prompt -> `reference_prompt_example_002_broad_novel_fuse_loop.md`
+- narrow but not over-constrained prompt -> `reference_prompt_example_003_balanced_narrow_not_overconstrained.md`
 
 ---
 
-## 15. Current Hydra-specific best practices
+## 12. Long-prompt rule
 
-Based on the prompt iterations that worked best so far:
+The guide does not need to be huge.
+The prompts should be.
 
-1. Use browse/raw links for core docs.
-2. Force whole-doc reading before narrowing.
-3. For serious technical tasks, prefer detailed, high-density output over compressed summaries.
-4. Demand exact insertion points and benchmark plans.
-5. Force candidate pruning.
-6. Force kill criteria.
-7. Treat stale doctrine as a real hazard and re-anchor on reconciliation first.
-8. For follow-up prompts, say "do not give another broad survey."
-9. For invention prompts, say "do not settle for a shallow invention memo."
-10. For implementation prompts, say "success means a coding agent could begin prototyping from your answer with minimal guesswork."
-11. Explicitly request code snippets, equations, worked examples, and exhaustive references when technical depth matters.
-12. Explicitly allow Python in bash for complex calculations and ask the agent to report computed results when relevant.
-13. For breakthrough prompts, require a separator-bar test: why this changes ceiling rather than merely improving slope, stability, or convenience.
-14. Require a closest-known-baseline section to kill fake novelty.
-15. Require a dependency-closure table for signals, labels, hooks, trajectories, teacher outputs, and runtime state.
-16. Require a minimum falsifiable prototype, not just a broad prototype path.
-17. Permit `0 surviving candidates` when novelty, grounding, or prototypeability filters kill everything.
-18. Require a short list of rejected directions so the model shows selection pressure instead of polished survey drift.
-19. Add an abstention rule so weak evidence yields `insufficient evidence`, not polished bluffing.
-20. For hard prompts, require a claim-level verification pass, not just a generic final self-check.
-21. Use evidence buckets (`supported`, `inference`, `hypothesis`) when the answer mixes repo facts, external evidence, and synthesis.
-22. Add a novelty-vs-feasibility scorecard when the task risks rewarding coolness over prototype realism.
+For serious external-agent work, default to prompts that are at least 2000 lines unless the task is genuinely too small to justify that much context.
+
+Those 2000+ lines should come from a real context dump, including:
+
+- real code
+- real docs
+- real tests
+- real formulas
+- real comments
+- real thresholds
+- references and quotes directly pulled from papers/PDFs
+- the method-defining words and formulas we actually use
+- enough surrounding context around every artifact block that the model can critique it instead of just pattern-matching on isolated lines
+
+Do not use links as the main evidence body inside prompts. Use the words, formulas, snippets, and context itself.
+
+Long prompts should be built like this:
+
+- real code
+- real docs
+- real tests
+- real formulas
+- real paper/PDF snippets with context
+- real constraints
+- useful context before each artifact block
+
+The artifact body should not be a pile of one-line texts with no context.
+Each artifact block should have enough title/comment/context around it that the model understands what it is looking at and why it matters.
+
+Do not bulk it up with:
+
+- one-line slogans
+- repeated meta-rules
+- broad filler prose
+- fake code
+
+The guide should stay concise.
+The prompts carry the bulk.
 
 ---
 
-## 16. Where to use this guide
+## 13. Final checklist for prompt writers
 
-Use this file when editing:
-- `PROMPT_5_FOLLOWUP_COMPUTE_ROUTER_AND_ROBUSTNESS.md`
-- `PROMPT_6_FOLLOWUP_DEBC_AR.md`
-- `PROMPT_FRESH_CONTEXT_CROSS_FIELD_BREAKTHROUGH.md`
-- `PROMPT_FRESH_CONTEXT_INVENT_NEW_TECHNIQUES.md`
-- `prompt-5.md`
-- `prompt-6.md`
-- future files in `research/agent_handoffs/prompts/`
+Before shipping a prompt, check:
 
-This guide is especially meant for:
-- browse-first raw-link prompts
-- follow-up prompts that must converge to code-ready detail
-- fresh-context prompts that must reconstruct Hydra quickly without drifting into shallow survey mode
+- role is blueprint-first
+- direction is narrow and concrete
+- style includes anti-vagueness, PDF-first, Python-in-bash, and anti-premature-stop rules
+- artifact note says artifacts may be wrong
+- the body is mostly artifacts, not explanation
+- references are real support, not decoration
+- novelty appears only where useful
+- important logic is visible and reproducible
+- if the prompt is long, the length comes from artifact density, not filler
 
-If a future prompt deviates from this guide, it should be because the task shape truly changed, not because the writer forgot the lessons.
+If those conditions hold, the prompt is probably in the new doctrine.
