@@ -2,14 +2,13 @@
 
 use burn::prelude::*;
 use burn::tensor::activation;
-use dashmap::DashMap;
 use hydra_core::action::{AGARI, HYDRA_ACTION_SPACE};
-use hydra_core::afbs::PonderResult;
+use hydra_core::afbs::{PonderCache, PonderResult, TrustLevel};
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
 use std::sync::Arc;
 
 use crate::model::ActorNet;
-use crate::saf::{SafConfig, SafMlp, apply_saf_logit, saf_tensor_from_observation};
+use crate::saf::{apply_saf_logit, saf_tensor_from_observation, SafConfig, SafMlp};
 
 pub const OBS_FLAT_SIZE: usize = NUM_CHANNELS * NUM_TILES;
 
@@ -40,7 +39,7 @@ impl InferenceConfig {
 
 pub struct InferenceServer<B: Backend> {
     pub actor: ActorNet<B>,
-    pub ponder_cache: Arc<DashMap<u64, PonderResult>>,
+    pub ponder_cache: Arc<PonderCache>,
     pub saf_mlp: SafMlp<B>,
     pub config: InferenceConfig,
     saf_alpha: f32,
@@ -50,7 +49,7 @@ pub struct InferenceServer<B: Backend> {
 impl<B: Backend> InferenceServer<B> {
     pub fn new(
         actor: ActorNet<B>,
-        ponder_cache: Arc<DashMap<u64, PonderResult>>,
+        ponder_cache: Arc<PonderCache>,
         saf_mlp: SafMlp<B>,
         saf_alpha: f32,
         config: InferenceConfig,
@@ -76,7 +75,7 @@ impl<B: Backend> InferenceServer<B> {
         let saf_mlp = saf_config.init(&device);
         Self::new(
             actor,
-            Arc::new(DashMap::new()),
+            Arc::new(PonderCache::new()),
             saf_mlp,
             saf_alpha,
             config,
@@ -94,10 +93,25 @@ impl<B: Backend> InferenceServer<B> {
         self.ponder_cache.insert(info_state_hash, result);
     }
 
+    /// Looks up a cached ponder result without trust-level filtering.
+    ///
+    /// Use `lookup_ponder_trusted` for runtime action selection.
     pub fn lookup_ponder(&self, info_state_hash: u64) -> Option<PonderResult> {
-        self.ponder_cache
-            .get(&info_state_hash)
-            .map(|entry| *entry.value())
+        self.ponder_cache.get(info_state_hash)
+    }
+
+    /// Looks up a cached result that meets the given minimum trust level.
+    pub fn lookup_ponder_trusted(
+        &self,
+        info_state_hash: u64,
+        min_trust: TrustLevel,
+    ) -> Option<PonderResult> {
+        self.ponder_cache.get_trusted(info_state_hash, min_trust)
+    }
+
+    /// Invalidates all cached entries (e.g. after a checkpoint change).
+    pub fn invalidate_cache(&self) -> u64 {
+        self.ponder_cache.invalidate()
     }
 
     pub fn infer(
@@ -143,7 +157,12 @@ impl<B: Backend> InferenceServer<B> {
         let start = std::time::Instant::now();
         let info_state_hash = Self::info_state_hash(obs);
 
-        if let Some(pondered) = self.lookup_ponder(info_state_hash) {
+        // Only use cache hits for runtime action selection when the result
+        // has Authoritative trust.  Currently nothing qualifies, keeping
+        // all ponder outputs learner-only per archive doctrine.
+        if let Some(pondered) =
+            self.lookup_ponder_trusted(info_state_hash, TrustLevel::Authoritative)
+        {
             let policy = mask_policy_cpu(&pondered.exit_policy, legal);
             let action = self.guard_action(argmax_legal(&policy, legal), legal);
             let within = start.elapsed().as_millis() as u64 <= budget_ms;
@@ -583,16 +602,10 @@ mod tests {
         let mut exit_policy = [0.0f32; HYDRA_ACTION_SPACE];
         exit_policy[5] = 0.9;
         exit_policy[6] = 0.1;
-        server.cache_ponder_result(
-            hash,
-            PonderResult {
-                exit_policy,
-                value: 0.3,
-                search_depth: 5,
-                visit_count: 64,
-                timestamp: std::time::Instant::now(),
-            },
-        );
+        // Insert with Authoritative trust so the runtime path picks it up.
+        let mut result = PonderResult::learner_only_stub(exit_policy, 0.3, 5, 64);
+        result.trust_level = TrustLevel::Authoritative;
+        server.cache_ponder_result(hash, result);
         let mut legal = [false; HYDRA_ACTION_SPACE];
         legal[5] = true;
         legal[6] = true;
@@ -628,6 +641,58 @@ mod tests {
         assert!(
             needs_search(&probs, 0.05),
             "top-2 gap of 0.01 < threshold 0.05 should trigger search"
+        );
+    }
+
+    #[test]
+    fn learner_only_cache_does_not_influence_runtime() {
+        let device = Default::default();
+        let server = make_server(&device);
+        let obs = [0.0f32; OBS_FLAT_SIZE];
+        let hash = InferenceServer::<B>::info_state_hash(&obs);
+        let mut exit_policy = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_policy[5] = 1.0;
+        let result = PonderResult::learner_only_stub(exit_policy, 0.9, 8, 500);
+        server.cache_ponder_result(hash, result);
+
+        // learner-only lookup should find it
+        assert!(server.lookup_ponder(hash).is_some());
+        // trusted lookup for Authoritative should not
+        assert!(server
+            .lookup_ponder_trusted(hash, TrustLevel::Authoritative)
+            .is_none());
+
+        let mut legal = [false; HYDRA_ACTION_SPACE];
+        legal[0] = true;
+        legal[5] = true;
+        let (action, _, _) = server.infer_timed(&obs, &legal);
+        // Runtime should NOT use the cached policy since it's LearnerOnly.
+        // Without cache, the network decides (not necessarily action 5).
+        assert!(
+            legal[action as usize],
+            "action must be legal regardless of trust path"
+        );
+    }
+
+    #[test]
+    fn cache_invalidation_prevents_reuse() {
+        let device = Default::default();
+        let server = make_server(&device);
+        let obs = [0.0f32; OBS_FLAT_SIZE];
+        let hash = InferenceServer::<B>::info_state_hash(&obs);
+        let mut result = PonderResult::learner_only_stub([0.0f32; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        result.trust_level = TrustLevel::Authoritative;
+        server.cache_ponder_result(hash, result);
+        assert!(server
+            .lookup_ponder_trusted(hash, TrustLevel::Authoritative)
+            .is_some());
+
+        server.invalidate_cache();
+        assert!(
+            server
+                .lookup_ponder_trusted(hash, TrustLevel::Authoritative)
+                .is_none(),
+            "invalidated cache should reject stale entries"
         );
     }
 }
