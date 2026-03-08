@@ -264,7 +264,7 @@ fn public_safety_score(safety: &SafetyInfo, tile: u8) -> f32 {
     score.clamp(0.0, 1.0)
 }
 
-fn exact_dealin_risk_from_waits(wait_sets: &[[f32; 34]; 3], tile: u8) -> f32 {
+fn exact_dealin_event_from_waits(wait_sets: &[[f32; 34]; 3], tile: u8) -> f32 {
     let t = tile as usize;
     if wait_sets.iter().any(|waits| waits[t] > 0.0) {
         1.0
@@ -292,8 +292,9 @@ fn build_safety_residual_targets(
             _ => action,
         };
         let public_score = public_safety_score(safety, tile);
-        let exact_risk = exact_dealin_risk_from_waits(wait_sets, tile);
-        target[action_idx] = (public_score - exact_risk).clamp(0.0, 1.0);
+        let exact_dealin = exact_dealin_event_from_waits(wait_sets, tile);
+        let exact_safety = 1.0 - exact_dealin;
+        target[action_idx] = exact_safety - public_score;
         mask[action_idx] = 1.0;
     }
     (target, mask)
@@ -623,6 +624,58 @@ mod tests {
         assert!(masked_discards > 0.0, "expected at least one discard action to be labeled");
         let masked_non_discards: f32 = mask[(DISCARD_END as usize + 1)..].iter().sum();
         assert!(masked_non_discards.abs() < 1e-6, "non-discard actions should be masked out");
+        for (&value, &mask_value) in target.iter().zip(mask.iter()) {
+            if mask_value > 0.0 {
+                assert!(value.is_finite(), "masked residual should be finite");
+                assert!((-1.0..=1.0).contains(&value), "masked residual should stay in [-1, 1], got {value}");
+            }
+        }
+        let mut saw_positive = false;
+        let mut saw_nonzero = false;
+        for sample in &game.samples {
+            let (Some(target), Some(mask)) = (sample.safety_residual, sample.safety_residual_mask) else {
+                continue;
+            };
+            for (&value, &mask_value) in target.iter().zip(mask.iter()) {
+                if mask_value <= 0.0 {
+                    continue;
+                }
+                saw_positive |= value > 0.0;
+                saw_nonzero |= value.abs() > 1e-6;
+            }
+        }
+        assert!(saw_positive, "expected at least one positive signed residual in replay labels");
+        assert!(saw_nonzero, "expected at least one nonzero signed residual in replay labels");
+    }
+
+    #[test]
+    fn build_safety_residual_targets_uses_signed_exact_safety_correction() {
+        let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        legal_mask[0] = 1.0;
+        legal_mask[1] = 1.0;
+        legal_mask[2] = 1.0;
+        legal_mask[AKA_5M as usize] = 1.0;
+
+        let mut safety = SafetyInfo::default();
+        hydra_core::safety::bit_set(&mut safety.genbutsu_all[0], 1);
+        hydra_core::safety::bit_set(&mut safety.genbutsu_all[0], 4);
+
+        let mut wait_sets = [[0.0f32; 34]; 3];
+        wait_sets[1][4] = 1.0;
+
+        let (target, mask) = build_safety_residual_targets(&legal_mask, &safety, &wait_sets);
+
+        assert!((target[0] - 1.0).abs() < 1e-6, "safe tile with public score 0 should become +1 residual");
+        assert!(target[1].abs() < 1e-6, "safe tile with public score 1 should have zero residual");
+        assert!((target[2] - 1.0).abs() < 1e-6, "safe tile with public score 0 should become +1 residual");
+        assert!((target[AKA_5M as usize] + 1.0).abs() < 1e-6, "aka tile should map to base tile before residual computation");
+        assert_eq!(mask[0], 1.0);
+        assert_eq!(mask[1], 1.0);
+        assert_eq!(mask[2], 1.0);
+        assert_eq!(mask[AKA_5M as usize], 1.0);
+        assert!(target.iter().zip(mask.iter()).all(|(&value, &mask_value)| {
+            mask_value <= 0.0 || (-1.0..=1.0).contains(&value)
+        }));
     }
 
     #[test]

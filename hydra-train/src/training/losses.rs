@@ -851,7 +851,10 @@ pub mod tests {
             &device,
         ));
         targets.delta_q_target = Some(Tensor::<B, 2>::zeros([2, 46], &device));
-        targets.safety_residual_target = Some(Tensor::<B, 2>::zeros([2, 46], &device));
+        targets.safety_residual_target = Some(Tensor::<B, 2>::from_floats(
+            [[0.5f32; 46], [-0.5f32; 46]],
+            &device,
+        ));
         targets.safety_residual_mask = Some(Tensor::<B, 2>::ones([2, 46], &device));
         let breakdown = loss_fn.total_loss(&outputs, &targets);
         let belief: f32 = breakdown.belief_fields.into_scalar().elem();
@@ -866,6 +869,27 @@ pub mod tests {
         assert!(delta_q.is_finite() && delta_q >= 0.0);
         assert!(safety_residual.is_finite() && safety_residual >= 0.0);
         assert!(total.is_finite() && total > 0.0);
+    }
+
+    #[test]
+    fn test_safety_residual_aux_loss_is_nonzero_when_enabled_and_present() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new().with_w_safety_residual(1.0));
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.safety_residual_target = Some(Tensor::<B, 2>::from_floats(
+            [[0.25f32; 46], [-0.75f32; 46]],
+            &device,
+        ));
+        targets.safety_residual_mask = Some(Tensor::<B, 2>::ones([2, 46], &device));
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        let safety_residual: f32 = breakdown.safety_residual.into_scalar().elem();
+        assert!(
+            safety_residual.is_finite() && safety_residual > 0.0,
+            "signed safety residual targets with a mask should contribute nonzero aux loss"
+        );
     }
 
     #[test]

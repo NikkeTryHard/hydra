@@ -640,8 +640,10 @@ mod tests {
         sample.danger_mask[18] = 1.0;
         let mut safety_residual = [0.0f32; HYDRA_ACTION_SPACE];
         let mut safety_residual_mask = [0.0f32; HYDRA_ACTION_SPACE];
-        safety_residual[0] = 0.75;
+        safety_residual[0] = -0.75;
+        safety_residual[1] = 0.4;
         safety_residual_mask[0] = 1.0;
+        safety_residual_mask[1] = 1.0;
         sample.safety_residual = Some(safety_residual);
         sample.safety_residual_mask = Some(safety_residual_mask);
         sample.obs[40 * 34] = 1.0;
@@ -660,8 +662,10 @@ mod tests {
         assert_eq!(swapped.danger_mask[18], 1.0);
         let sr = swapped.safety_residual.expect("safety residual target");
         let srm = swapped.safety_residual_mask.expect("safety residual mask");
-        assert!((sr[9] - 0.75).abs() < 1e-6);
+        assert!((sr[9] + 0.75).abs() < 1e-6);
+        assert!((sr[10] - 0.4).abs() < 1e-6);
         assert!((srm[9] - 1.0).abs() < 1e-6);
+        assert!((srm[10] - 1.0).abs() < 1e-6);
         assert_eq!(swapped.obs[41 * 34], 1.0);
         assert_eq!(swapped.obs[40 * 34], 0.0);
     }
@@ -733,7 +737,7 @@ mod tests {
         let mut sample = dummy_sample(0, 0);
         let mut target = [0.0f32; HYDRA_ACTION_SPACE];
         let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
-        target[0] = 0.4;
+        target[0] = -0.4;
         target[34] = 0.7;
         mask[0] = 1.0;
         mask[34] = 1.0;
@@ -749,7 +753,7 @@ mod tests {
         assert_eq!(srm.dims(), [1, HYDRA_ACTION_SPACE]);
         let values = sr.to_data().as_slice::<f32>().expect("f32").to_vec();
         let mask_values = srm.to_data().as_slice::<f32>().expect("f32").to_vec();
-        assert!((values[0] - 0.4).abs() < 1e-6);
+        assert!((values[0] + 0.4).abs() < 1e-6);
         assert!((values[34] - 0.7).abs() < 1e-6);
         assert!((mask_values[0] - 1.0).abs() < 1e-6);
         assert!((mask_values[34] - 1.0).abs() < 1e-6);
