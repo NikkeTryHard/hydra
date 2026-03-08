@@ -525,7 +525,143 @@ Use them like this:
 
 ---
 
-## 12. Long-prompt rule
+## 12. Prompt generator tool
+
+For repeated prompt authoring, use `scripts/generate_prompt.py` instead of hand-assembling every long prompt from scratch.
+
+The tool is not a prompt framework.
+It is a small JSON-driven utility for generating Hydra-style artifact-first prompts faster and more consistently.
+
+Use it when:
+
+- you want multiple prompt variants from one shared artifact packet
+- you want reusable shell blocks like `role`, `direction`, `style`, and `artifact_note`
+- you want line-ranged code/doc excerpts without manual copy-paste
+- you want per-artifact labels and explanations so the artifact body has useful context
+- you want to regenerate prompts quickly after changing the artifact set
+
+Do not use it as an excuse to stop thinking about prompt quality.
+The generator speeds up assembly.
+It does not decide what artifacts belong in the prompt.
+
+### 12.1 Tool location
+
+- script: `scripts/generate_prompt.py`
+- example config: `scripts/examples/prompt_config.example.json`
+- tests: `scripts/tests/test_generate_prompt.py`
+
+### 12.2 What the generator supports
+
+The generator currently supports:
+
+- multiple named variants in one config
+- shared default shell sections and shared default artifacts
+- per-variant shell overrides by tag
+- per-variant artifact references
+- per-variant one-off inline artifacts
+- artifact labels
+- artifact explanations
+- source labels for line-number prefixes
+- configurable fence language
+- optional line numbering
+
+Supported artifact types:
+
+- `file_range` -> include a file excerpt with inclusive `start_line` / `end_line`
+- `file_full` -> include a whole file
+- `literal` -> include literal text from the config itself
+
+This is enough for most Hydra prompt work.
+Keep the tool simple unless real author pain proves otherwise.
+
+### 12.3 Config shape
+
+The config is JSON and follows a simple pattern:
+
+- top-level `defaults` for shared shell sections and shared artifacts
+- top-level `artifacts` registry for reusable artifact definitions
+- `variants` for prompt-specific direction blocks and extra artifacts
+
+The shell is built from tagged sections such as:
+
+- `role`
+- `direction`
+- `style`
+- `artifact_note`
+
+Those tags are rendered as XML-style blocks in the output prompt.
+
+Artifact entries can carry:
+
+- `label`
+- `explanation`
+- `source_label`
+- `fence_language`
+- `show_line_numbers`
+
+That means the generated artifact body can say what the artifact is, where it came from, and why it matters, instead of dumping bare snippets.
+
+### 12.4 Minimal workflow
+
+Typical workflow:
+
+1. copy `scripts/examples/prompt_config.example.json`
+2. define the shared shell sections you want in `defaults`
+3. add reusable artifacts to the top-level `artifacts` array
+4. add one or more `variants`
+5. validate the config
+6. generate one prompt or all variants
+7. inspect the rendered prompt before sending it to an agent
+
+Useful commands:
+
+```bash
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --list-variants
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --validate-only
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --variant narrow-focused
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --all-variants --output-dir /tmp/hydra-generated-prompts
+```
+
+### 12.5 Authoring rules when using the generator
+
+The same doctrine still applies:
+
+- keep the shell lean
+- let the body carry the evidence
+- treat artifacts as evidence, not truth
+- prefer dense excerpts over decorative links
+- add explanation around artifacts when the context would otherwise be unclear
+- do not bulk up prompts with filler just because the generator makes it easy
+
+Bad generated prompt:
+
+- huge because of `file_full` spam
+- many artifacts with no explanation of why they matter
+- variants that differ only cosmetically
+- copied doctrine blocks but weak task-specific artifacts
+
+Good generated prompt:
+
+- short shell
+- dense artifact packet
+- enough explanation to orient the reader
+- variant-specific direction only where it meaningfully changes the task
+
+### 12.6 What the generator does not do
+
+The generator does not:
+
+- decide the right task framing for you
+- guarantee the prompt is narrow enough
+- guarantee the prompt is long enough for hard tasks
+- guarantee the artifacts are semantically correct
+- replace manual review of the final rendered prompt
+
+Always inspect the generated output before using it.
+
+---
+
+## 13. Long-prompt rule
 
 The guide does not need to be huge.
 The prompts should be.
@@ -571,7 +707,7 @@ The prompts carry the bulk.
 
 ---
 
-## 13. Final checklist for prompt writers
+## 14. Final checklist for prompt writers
 
 Before shipping a prompt, check:
 
