@@ -1,13 +1,62 @@
 //! Anytime Factored-Belief Search (AFBS) with PUCT selection.
+//!
+//! Includes provenance-aware caching: every [`PonderResult`] carries
+//! `source_net_hash`, `source_version`, [`TrustLevel`], and
+//! [`CacheNamespace`] so consumers can decide whether a cached result
+//! is safe to reuse at runtime vs. learner-only.
 
 use crate::action::HYDRA_ACTION_SPACE;
 use dashmap::DashMap;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 pub const C_PUCT: f32 = 2.5;
 pub const TOP_K: usize = 5;
+
+/// Trust level assigned to a cached ponder result.
+///
+/// The archive (answer_20, answer_16-1) prescribes a strict trust hierarchy:
+/// all current ponder outputs default to `LearnerOnly` until provenance and
+/// admission gates are satisfied.  Runtime action selection should only use
+/// results with `Authoritative` trust.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrustLevel {
+    /// Result may be consumed by the learner/training pipeline only.
+    /// It must NOT influence live action selection.
+    LearnerOnly,
+    /// Result may be shown to a human or logged, but must NOT influence
+    /// action selection or be treated as ground truth.
+    Advisory,
+    /// Result may warm-start a new search tree (same-episode, observed-root
+    /// only) but must NOT be used as a final action authority.
+    WarmStart,
+    /// Result has passed all admission gates and may be used for live
+    /// action selection.  Nothing currently qualifies.
+    Authoritative,
+}
+
+impl TrustLevel {
+    /// Returns `true` if `self` is at least as trusted as `min`.
+    pub fn meets(&self, min: TrustLevel) -> bool {
+        (*self as u8) >= (min as u8)
+    }
+}
+
+/// Namespace partitioning for cache entries.
+///
+/// Keeps observed roots, speculative child hints, and learner-only targets
+/// in logically separate buckets even when stored in the same physical map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CacheNamespace {
+    /// Entry was produced from a real observed game state.
+    ObservedRoot,
+    /// Entry was produced speculatively via `predicted_child_hash`.
+    SpeculativeChildHint,
+    /// Entry exists only for learner/training label production.
+    LearnerTarget,
+}
 
 pub fn has_any_legal_action(mask: &[bool; HYDRA_ACTION_SPACE]) -> bool {
     mask.iter().any(|&m| m)
@@ -352,16 +401,63 @@ pub struct PonderResult {
     pub search_depth: u8,
     pub visit_count: u32,
     pub timestamp: Instant,
+    pub source_net_hash: u64,
+    pub source_version: u32,
+    pub trust_level: TrustLevel,
+    pub cache_namespace: CacheNamespace,
+    pub generation: u64,
 }
 
 impl PonderResult {
-    pub fn from_tree(tree: &AfbsTree, root_idx: NodeIdx, value: f32, tau: f32) -> Self {
+    /// Builds a result from a completed AFBS search tree.
+    ///
+    /// The caller must supply provenance (`source_net_hash`, `source_version`)
+    /// identifying which model produced the search.  Trust level defaults to
+    /// `LearnerOnly` and namespace to `ObservedRoot`; callers may override
+    /// after construction.  Generation is set to 0 and stamped by the cache
+    /// on insertion.
+    pub fn from_tree(
+        tree: &AfbsTree,
+        root_idx: NodeIdx,
+        value: f32,
+        tau: f32,
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Self {
         Self {
             exit_policy: tree.root_exit_policy(root_idx, tau),
             value,
             search_depth: tree.max_depth(root_idx),
             visit_count: tree.root_visit_count(root_idx),
             timestamp: Instant::now(),
+            source_net_hash,
+            source_version,
+            trust_level: TrustLevel::LearnerOnly,
+            cache_namespace: CacheNamespace::ObservedRoot,
+            generation: 0,
+        }
+    }
+
+    /// Creates a learner-only result with zero provenance.
+    ///
+    /// Use for test fixtures or when the producing net is not yet tracked.
+    pub fn learner_only_stub(
+        exit_policy: [f32; HYDRA_ACTION_SPACE],
+        value: f32,
+        search_depth: u8,
+        visit_count: u32,
+    ) -> Self {
+        Self {
+            exit_policy,
+            value,
+            search_depth,
+            visit_count,
+            timestamp: Instant::now(),
+            source_net_hash: 0,
+            source_version: 0,
+            trust_level: TrustLevel::LearnerOnly,
+            cache_namespace: CacheNamespace::LearnerTarget,
+            generation: 0,
         }
     }
 }
@@ -411,23 +507,47 @@ pub fn compute_ponder_priority(top2_gap: f32, risk_score: f32, particle_ess: f32
     gap_term + risk_term + ess_term
 }
 
+/// Generation-aware ponder cache with trust-level gating.
+///
+/// Each entry carries a generation stamp set on insertion.  When the cache
+/// generation is bumped (e.g. on checkpoint change), older entries are
+/// rejected on lookup.  Runtime consumers can further filter by
+/// [`TrustLevel`].
 pub struct PonderCache {
     entries: DashMap<u64, PonderResult>,
+    generation: AtomicU64,
 }
 
 impl PonderCache {
     pub fn new() -> Self {
         Self {
             entries: DashMap::new(),
+            generation: AtomicU64::new(1),
         }
     }
 
-    pub fn get(&self, hash: u64) -> Option<PonderResult> {
-        self.entries.get(&hash).map(|entry| *entry.value())
+    pub fn current_generation(&self) -> u64 {
+        self.generation.load(AtomicOrdering::Relaxed)
     }
 
-    pub fn insert(&self, hash: u64, result: PonderResult) {
+    /// Inserts an entry, stamping the current cache generation.
+    pub fn insert(&self, hash: u64, mut result: PonderResult) {
+        result.generation = self.current_generation();
         self.entries.insert(hash, result);
+    }
+
+    /// Looks up an entry, rejecting stale generations.
+    pub fn get(&self, hash: u64) -> Option<PonderResult> {
+        let current_gen = self.current_generation();
+        self.entries
+            .get(&hash)
+            .map(|entry| *entry.value())
+            .filter(|r| r.generation >= current_gen)
+    }
+
+    /// Looks up an entry, rejecting stale generations and entries below `min_trust`.
+    pub fn get_trusted(&self, hash: u64, min_trust: TrustLevel) -> Option<PonderResult> {
+        self.get(hash).filter(|r| r.trust_level.meets(min_trust))
     }
 
     pub fn predicted_child_key(parent_hash: u64, action: u8) -> u64 {
@@ -438,7 +558,8 @@ impl PonderCache {
         self.get(Self::predicted_child_key(parent_hash, action))
     }
 
-    pub fn insert_predicted_child(&self, parent_hash: u64, action: u8, result: PonderResult) {
+    pub fn insert_predicted_child(&self, parent_hash: u64, action: u8, mut result: PonderResult) {
+        result.cache_namespace = CacheNamespace::SpeculativeChildHint;
         self.insert(Self::predicted_child_key(parent_hash, action), result);
     }
 
@@ -451,7 +572,11 @@ impl PonderCache {
     }
 
     pub fn summary(&self) -> String {
-        format!("cache(entries={})", self.entries.len())
+        format!(
+            "cache(entries={}, gen={})",
+            self.entries.len(),
+            self.current_generation()
+        )
     }
 
     pub fn contains(&self, hash: u64) -> bool {
@@ -465,6 +590,20 @@ impl PonderCache {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Bumps the generation counter, logically invalidating all existing entries.
+    ///
+    /// Entries remain in physical storage but will be rejected by `get()`
+    /// and `get_trusted()` until re-inserted at the new generation.
+    pub fn invalidate(&self) -> u64 {
+        self.generation.fetch_add(1, AtomicOrdering::Relaxed) + 1
+    }
+
+    /// Removes all entries and bumps the generation.
+    pub fn flush(&self) {
+        self.invalidate();
+        self.entries.clear();
+    }
 }
 
 impl Default for PonderCache {
@@ -474,7 +613,7 @@ impl Default for PonderCache {
 }
 
 pub struct PonderManager {
-    pub cache: DashMap<u64, PonderResult>,
+    pub cache: PonderCache,
     pub priority_queue: std::collections::BinaryHeap<PonderTask>,
     pub worker_handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -482,7 +621,7 @@ pub struct PonderManager {
 impl PonderManager {
     pub fn new() -> Self {
         Self {
-            cache: DashMap::new(),
+            cache: PonderCache::new(),
             priority_queue: std::collections::BinaryHeap::new(),
             worker_handle: None,
         }
@@ -514,7 +653,16 @@ impl PonderManager {
     }
 
     pub fn lookup(&self, hash: u64) -> Option<PonderResult> {
-        self.cache.get(&hash).map(|entry| *entry.value())
+        self.cache.get(hash)
+    }
+
+    pub fn lookup_trusted(&self, hash: u64, min_trust: TrustLevel) -> Option<PonderResult> {
+        self.cache.get_trusted(hash, min_trust)
+    }
+
+    /// Invalidates all cached entries (e.g. on checkpoint change).
+    pub fn invalidate_cache(&self) -> u64 {
+        self.cache.invalidate()
     }
 
     pub fn queue_len(&self) -> usize {
@@ -734,13 +882,7 @@ mod tests {
     #[test]
     fn ponder_cache_hit_reuses_search() {
         let cache = PonderCache::new();
-        let result = PonderResult {
-            exit_policy: [0.0; HYDRA_ACTION_SPACE],
-            value: 0.5,
-            search_depth: 4,
-            visit_count: 100,
-            timestamp: Instant::now(),
-        };
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
         cache.insert(42, result);
         assert_eq!(cache.len(), 1);
         let hit = cache.get(42).expect("should find cached result");
@@ -797,19 +939,18 @@ mod tests {
         let cache = PonderCache::new();
         let parent_hash = 777;
         let action = 11;
-        let result = PonderResult {
-            exit_policy: [0.0; HYDRA_ACTION_SPACE],
-            value: 0.25,
-            search_depth: 6,
-            visit_count: 48,
-            timestamp: Instant::now(),
-        };
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.25, 6, 48);
         cache.insert_predicted_child(parent_hash, action, result);
         let hit = cache
             .get_predicted_child(parent_hash, action)
             .expect("predicted child cache hit");
         assert_eq!(hit.visit_count, 48);
         assert!((hit.value - 0.25).abs() < 1e-6);
+        assert_eq!(
+            hit.cache_namespace,
+            CacheNamespace::SpeculativeChildHint,
+            "insert_predicted_child should set namespace"
+        );
     }
 
     #[test]
@@ -825,10 +966,13 @@ mod tests {
         tree.nodes[c1 as usize].visit_count = 3;
         tree.nodes[c1 as usize].total_value = 2.4;
 
-        let result = PonderResult::from_tree(&tree, root, 0.42, 1.0);
+        let result = PonderResult::from_tree(&tree, root, 0.42, 1.0, 0xDEAD, 1);
         assert_eq!(result.visit_count, 9);
         assert_eq!(result.search_depth, 1);
         assert!((result.value - 0.42).abs() < 1e-6);
+        assert_eq!(result.source_net_hash, 0xDEAD);
+        assert_eq!(result.source_version, 1);
+        assert_eq!(result.trust_level, TrustLevel::LearnerOnly);
         let sum: f32 = result.exit_policy.iter().sum();
         assert!(
             (sum - 1.0).abs() < 1e-6,
@@ -898,5 +1042,148 @@ mod tests {
         let mut one = [false; HYDRA_ACTION_SPACE];
         one[45] = true;
         assert!(has_any_legal_action(&one));
+    }
+
+    #[test]
+    fn trust_level_ordering() {
+        assert!(TrustLevel::Authoritative.meets(TrustLevel::LearnerOnly));
+        assert!(TrustLevel::Authoritative.meets(TrustLevel::Authoritative));
+        assert!(TrustLevel::WarmStart.meets(TrustLevel::Advisory));
+        assert!(!TrustLevel::LearnerOnly.meets(TrustLevel::Advisory));
+        assert!(!TrustLevel::Advisory.meets(TrustLevel::WarmStart));
+        assert!(!TrustLevel::WarmStart.meets(TrustLevel::Authoritative));
+    }
+
+    #[test]
+    fn cache_generation_invalidation_rejects_stale() {
+        let cache = PonderCache::new();
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        cache.insert(42, result);
+        assert!(cache.get(42).is_some());
+
+        cache.invalidate();
+        assert!(
+            cache.get(42).is_none(),
+            "stale entry should be rejected after invalidation"
+        );
+        assert_eq!(cache.len(), 1, "physical entry still present");
+
+        let fresh = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.7, 3, 50);
+        cache.insert(42, fresh);
+        let hit = cache.get(42).expect("fresh entry should be found");
+        assert!((hit.value - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cache_flush_clears_and_bumps_generation() {
+        let cache = PonderCache::new();
+        let gen_before = cache.current_generation();
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        cache.insert(42, result);
+        cache.flush();
+        assert!(cache.is_empty());
+        assert!(cache.current_generation() > gen_before);
+    }
+
+    #[test]
+    fn cache_get_trusted_filters_by_trust_level() {
+        let cache = PonderCache::new();
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        cache.insert(42, result);
+
+        assert!(
+            cache.get_trusted(42, TrustLevel::LearnerOnly).is_some(),
+            "LearnerOnly should match LearnerOnly"
+        );
+        assert!(
+            cache.get_trusted(42, TrustLevel::Advisory).is_none(),
+            "LearnerOnly should not meet Advisory"
+        );
+        assert!(
+            cache.get_trusted(42, TrustLevel::Authoritative).is_none(),
+            "LearnerOnly should not meet Authoritative"
+        );
+
+        let mut auth_result =
+            PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.9, 8, 500);
+        auth_result.trust_level = TrustLevel::Authoritative;
+        cache.insert(99, auth_result);
+        assert!(cache.get_trusted(99, TrustLevel::Authoritative).is_some());
+        assert!(cache.get_trusted(99, TrustLevel::LearnerOnly).is_some());
+    }
+
+    #[test]
+    fn insert_stamps_current_generation() {
+        let cache = PonderCache::new();
+        let gen1 = cache.current_generation();
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        cache.insert(1, result);
+        let hit = cache.get(1).unwrap();
+        assert_eq!(hit.generation, gen1);
+
+        cache.invalidate();
+        let gen2 = cache.current_generation();
+        assert!(gen2 > gen1);
+        let result2 = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.6, 3, 50);
+        cache.insert(2, result2);
+        let hit2 = cache.get(2).unwrap();
+        assert_eq!(hit2.generation, gen2);
+    }
+
+    #[test]
+    fn insert_predicted_child_sets_speculative_namespace() {
+        let cache = PonderCache::new();
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        assert_eq!(result.cache_namespace, CacheNamespace::LearnerTarget);
+        cache.insert_predicted_child(100, 5, result);
+        let hit = cache.get_predicted_child(100, 5).unwrap();
+        assert_eq!(hit.cache_namespace, CacheNamespace::SpeculativeChildHint);
+    }
+
+    #[test]
+    fn ponder_manager_uses_provenance_cache() {
+        let manager = PonderManager::new();
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        manager.cache_result(42, result);
+        assert!(manager.lookup(42).is_some());
+
+        manager.invalidate_cache();
+        assert!(
+            manager.lookup(42).is_none(),
+            "invalidated entries should be rejected"
+        );
+    }
+
+    #[test]
+    fn ponder_manager_lookup_trusted() {
+        let manager = PonderManager::new();
+        let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
+        manager.cache_result(42, result);
+        assert!(manager
+            .lookup_trusted(42, TrustLevel::LearnerOnly)
+            .is_some());
+        assert!(manager
+            .lookup_trusted(42, TrustLevel::Authoritative)
+            .is_none());
+    }
+
+    #[test]
+    fn from_tree_provenance_fields_are_set() {
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(10, 1.0, false);
+        let c0 = tree.add_node(11, 0.7, false);
+        tree.nodes[root as usize].children = smallvec::smallvec![(2, c0)];
+        tree.nodes[root as usize].visit_count = 5;
+        tree.nodes[c0 as usize].visit_count = 5;
+
+        let result = PonderResult::from_tree(&tree, root, 0.5, 1.0, 0xBEEF, 42);
+        assert_eq!(result.source_net_hash, 0xBEEF);
+        assert_eq!(result.source_version, 42);
+        assert_eq!(result.trust_level, TrustLevel::LearnerOnly);
+        assert_eq!(result.cache_namespace, CacheNamespace::ObservedRoot);
+        assert_eq!(
+            result.generation, 0,
+            "from_tree sets generation=0; cache stamps on insert"
+        );
     }
 }
