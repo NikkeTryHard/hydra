@@ -10,6 +10,9 @@ target/
 Cargo.lock
 .sisyphus/
 research/papers/
+__pycache__/
+*.pyc
+.tmp_archive_claims/
 
 # Local funding / outreach drafts
 /email_draft_*.txt
