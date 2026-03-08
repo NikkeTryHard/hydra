@@ -3,6 +3,8 @@ import json
 
 
 def render_cell(value: object) -> str:
+    if isinstance(value, list):
+        value = "<br>".join(f"- {item}" for item in value)
     text = str(value)
     text = text.replace("|", r"\|")
     text = text.replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
@@ -23,6 +25,7 @@ with jsonl.open("r", encoding="utf-8") as f:
 coverage = next(r["items"] for r in records if r["type"] == "coverage")
 legend = next(r["items"] for r in records if r["type"] == "legend")
 appendix = next(r["items"] for r in records if r["type"] == "appendix")
+status_updates = [r for r in records if r["type"] == "status_update"]
 claims = [r for r in records if r["type"] == "claim"]
 lines = []
 lines.append("## Archive canonical claims ledger")
@@ -33,12 +36,52 @@ lines.append("## Coverage")
 lines.extend(f"- {item}" for item in coverage)
 lines.append("## Legend")
 lines.extend(f"- {item}" for item in legend)
-header = "| canonical_claim | tag | all_source_refs | supporting_source_quotes | repo_supported | repo_support_detail | hydra_docs_present | hydra_docs_detail | in_code_now | in_code_detail | reproduced | reproduced_detail | validated_pass_1 | validated_pass_2 | trustworthy | implementation_ready | promising | strength_upside | risk | fallback_worthy | fallback_role | notes |"
-sep = "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+header = "| record_type | status | scope | artifact | summary | what_we_did | not_done_yet | canonical_claim | tag | all_source_refs | supporting_source_quotes | repo_supported | repo_support_detail | hydra_docs_present | hydra_docs_detail | in_code_now | in_code_detail | reproduced | reproduced_detail | validated_pass_1 | validated_pass_2 | trustworthy | implementation_ready | promising | strength_upside | risk | fallback_worthy | fallback_role | notes |"
+sep = "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
 lines.append(header)
 lines.append(sep)
+for update in status_updates:
+    row = [
+        "status_update",
+        update.get("status", ""),
+        update.get("scope", ""),
+        update.get("artifact", ""),
+        update.get("summary", ""),
+        update.get("what_we_did", []),
+        update.get("not_done_yet", []),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ]
+    lines.append(render_row(row))
 for c in claims:
     row = [
+        "claim",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         c["canonical_claim"],
         c["tag"],
         c["all_source_refs"],
