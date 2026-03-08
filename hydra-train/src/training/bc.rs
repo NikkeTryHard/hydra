@@ -139,7 +139,11 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob { 1.0 } else { 0.0 }
+            if sample < keep_prob {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -366,7 +370,7 @@ impl CheckpointMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
