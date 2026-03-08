@@ -90,9 +90,10 @@ What is only partially true:
 
 - Advanced losses exist, but default advanced loss weights are zero:
   - `hydra-train/src/training/losses.rs`
-- Advanced supervision hooks exist, but the normal batch collation path still mostly emits baseline targets:
-  - `hydra-train/src/data/sample.rs`
-  - `hydra-train/src/data/mjai_loader.rs`
+- Advanced supervision hooks exist, but target closure is uneven rather than absent:
+  - `hydra-train/src/data/sample.rs` / `hydra-train/src/data/mjai_loader.rs` already carry replay-derived `safety_residual` and can emit Stage A `belief_fields` / `mixture_weight` targets
+  - `hydra-train/src/training/rl.rs` can already consume `exit_target`, but the normal sample/batch path still does not produce a real upstream `exit_target`
+  - `delta_q_target` and `opponent_hand_type_target` still remain absent in the normal sample-to-target path
 - AFBS exists as a search shell, but not as a fully integrated public-belief search runtime:
   - `hydra-core/src/afbs.rs`
 - Hand-EV exists, but is still heuristic rather than a full offensive oracle:
@@ -403,28 +404,34 @@ Use this as the concrete coding handoff for the first tranche.
 
 #### `hydra-train/src/data/sample.rs`
 - **Current state**
-  - `MjaiSample` only stores baseline targets: policy, GRP, tenpai, danger, opp-next, score targets
-  - `MjaiBatch` only collates those baseline tensors
+  - `MjaiSample` already stores `safety_residual`, `belief_fields`, and `mixture_weights` in addition to the baseline targets
+  - `MjaiBatch` already collates those advanced tensors and forwards them into `HydraTargets`, while `delta_q_target` and `opponent_hand_type_target` still remain `None`
 - **Required changes**
-  1. decide whether advanced targets should live directly in `MjaiSample` or be introduced as a parallel advanced-target carrier
-  2. extend batch collation so the advanced target tensors needed by `HydraTargets` can be created deterministically
+  1. audit the existing advanced carriers before adding new ones
+  2. extend batch collation only for still-missing tranche targets such as a future `delta_q_target` or explicit `exit_target` carrier
   3. keep augmentation behavior correct for any tile-indexed advanced targets
 - **Do not do**
   - do not invent new model heads here
   - do not mix search-only targets into baseline batches unless provenance is explicit
+  - do not treat existing belief/mixture carriers as evidence that their teacher semantics are already strong enough to activate
 
 #### `hydra-train/src/data/mjai_loader.rs`
 - **Current state**
-  - builds only baseline labels from replay + exact waits + next discard lookahead
-  - has no production path for `exit_target`, `delta_q_target`, `belief_fields_target`, `mixture_weight_target`, `opponent_hand_type_target`, or `safety_residual_target`
+  - already builds replay-derived `safety_residual_target` plus Stage A projected `belief_fields_target` / `mixture_weight_target`
+  - still has no normal production path for `exit_target`, `delta_q_target`, or `opponent_hand_type_target`
+  - `safety_residual_target` now uses signed replay-derived correction semantics: `exact_safety - public_score` on legal discard actions only
+  - `hydra-train/src/training/exit.rs` now carries the narrowed ExIt teacher semantics and gates: compatible discard-only state check, child-visit-count target construction, subset mask, coverage gate, and KL / visit safety valve
 - **Required changes**
-  1. define which advanced targets can be built from replay-only information versus which require search/belief context
-  2. add a narrow advanced-target builder path for replay-safe labels first
-  3. leave clearly unavailable targets as absent rather than fabricating weak labels
-  4. document provenance inline: replay-derived, bridge-derived, or search-derived
+  1. separate targets that are already produced but semantically weak from targets that still have no producer path at all
+  2. keep `safety_residual_target` replay-derived and narrow; do not drift it into search-derived semantics
+  3. add a real upstream producer path for `exit_target` / `exit_mask`; the teacher object and RL consumer are now ready, but the normal training producer seam is still missing
+  4. leave clearly unavailable targets as absent rather than fabricating weak labels
+  5. document provenance inline: replay-derived, bridge-derived, or search-derived
 - **Preferred order**
-  - first: `safety_residual_target`, `delta_q_target`, and any replay-credible target that can be computed without new search infra
-  - later in same tranche if credible: `belief_fields_target`, `mixture_weight_target`, `opponent_hand_type_target`
+  - first completed: truth-align and patch `safety_residual_target` to signed replay-derived residual semantics, keeping activation narrow and conservative
+  - next: finish the real upstream producer path for masked child-visit `exit_target`, then close `delta_q_target`
+  - keep `belief_fields_target` / `mixture_weight_target` default-off until the teacher object is stronger than the current Stage A projection
+  - `opponent_hand_type_target` stays blocked on ontology / mapping / builder closure
 
 #### `hydra-train/src/training/losses.rs`
 - **Current state**
@@ -498,8 +505,8 @@ Use this as the concrete coding handoff for the first tranche.
 
 ### Suggested execution order inside the first tranche
 1. `losses.rs`: make target-presence/activation behavior explicit
-2. `sample.rs`: extend data containers/collation for advanced targets
-3. `mjai_loader.rs`: add replay-credible advanced target generation
+2. `sample.rs`: audit existing advanced carriers and extend only for still-missing tranche targets
+3. `mjai_loader.rs`: keep signed replay-derived `safety_residual` semantics stable and add new target producers only where provenance and semantics are credible
 4. `rl.rs` and `bc.rs`: prove train-step consumption with tests
 5. `bridge.rs` / `afbs.rs` / `ct_smc.rs`: only add the minimum plumbing needed for ExIt / belief-grade labels
 
