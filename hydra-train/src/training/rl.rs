@@ -5,7 +5,7 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::model::HydraModel;
-use crate::training::ach::{AchConfig, ach_policy_loss};
+use crate::training::ach::{ach_policy_loss, AchConfig};
 use crate::training::drda;
 use crate::training::losses::{HydraLoss, HydraTargets};
 
@@ -22,6 +22,7 @@ pub struct RlBatch<B: Backend> {
     pub base_logits: Tensor<B, 2>,
     pub targets: HydraTargets<B>,
     pub exit_target: Option<Tensor<B, 2>>,
+    pub exit_mask: Option<Tensor<B, 2>>,
 }
 
 impl<B: Backend> RlBatch<B> {
@@ -144,12 +145,12 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
     );
     let aux = loss_fn.total_loss(&output, &batch.targets);
     let mut total = ach_loss + aux.total * cfg.aux_weight;
-    if let Some(ref exit_target) = batch.exit_target {
+    if let (Some(exit_target), Some(exit_mask)) = (&batch.exit_target, &batch.exit_mask) {
         let exit_weight = cfg.effective_exit_weight(phase, progress);
         let exit_loss = crate::training::exit::exit_loss(
             output.policy_logits,
             exit_target.clone(),
-            batch.targets.legal_mask.clone(),
+            exit_mask.clone(),
             exit_weight,
         );
         total = total + exit_loss;
@@ -165,7 +166,7 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
 mod tests {
     use super::*;
     use crate::model::HydraModelConfig;
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::{Autodiff, NdArray};
     use burn::optim::AdamConfig;
 
@@ -187,6 +188,7 @@ mod tests {
             base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
             targets: make_dummy_targets::<AB>(&device, 2),
             exit_target: None,
+            exit_mask: None,
         };
         let cfg = RlConfig {
             tau_drda: 4.0,
@@ -221,6 +223,7 @@ mod tests {
             base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
             targets: make_dummy_targets::<AB>(&device, 2),
             exit_target: None,
+            exit_mask: None,
         };
         let cfg = RlConfig {
             tau_drda: 4.0,
@@ -262,6 +265,7 @@ mod tests {
             base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
             targets: make_dummy_targets::<AB>(&device, 2),
             exit_target: Some(Tensor::<AB, 2>::ones([2, 46], &device) / 46.0),
+            exit_mask: Some(Tensor::<AB, 2>::ones([2, 46], &device)),
         };
         let cfg = RlConfig::default_phase2()
             .with_lr(1e-3)

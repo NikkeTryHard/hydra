@@ -3,6 +3,7 @@ use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 
 use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::afbs::AfbsTree;
 use hydra_core::ct_smc::{CtSmc, CtSmcConfig};
 use hydra_core::encoder::NUM_CHANNELS;
 use hydra_train::inference;
@@ -283,6 +284,7 @@ fn ach_rl_step_integration() {
         pi_old,
         advantages,
         exit_target: None,
+        exit_mask: None,
     };
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
     let cfg = RlConfig::default_phase2();
@@ -294,6 +296,7 @@ fn ach_rl_step_integration() {
 
 #[test]
 fn exit_rl_step_with_target() {
+    use hydra_train::training::exit::{build_exit_from_afbs_tree, collate_exit_targets};
     use hydra_train::training::rl::{RlBatch, RlConfig};
 
     let device = Default::default();
@@ -306,12 +309,52 @@ fn exit_rl_step_with_target() {
     let actions = Tensor::<TestBackend, 1, Int>::from_ints(&[1i32, 2][..], &device);
     let pi_old = Tensor::<TestBackend, 1>::from_floats([0.5, 0.3], &device);
     let advantages = Tensor::<TestBackend, 1>::from_floats([1.0, -0.5], &device);
-    let mut exit_data = vec![0.0f32; batch * 46];
-    exit_data[1] = 0.8;
-    exit_data[2] = 0.2;
-    exit_data[46 + 5] = 1.0;
-    let exit_target =
-        Tensor::<TestBackend, 1>::from_floats(exit_data.as_slice(), &device).reshape([batch, 46]);
+
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(7, 1.0, false);
+    let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+    legal_mask[1] = true;
+    legal_mask[2] = true;
+    legal_mask[5] = true;
+    let mut policy_logits = [0.0f32; HYDRA_ACTION_SPACE];
+    policy_logits[1] = 3.0;
+    policy_logits[2] = 2.0;
+    policy_logits[5] = 1.0;
+    tree.expand_node(root, &policy_logits, &legal_mask, false);
+
+    let children = tree.nodes[root as usize].children.clone();
+    for &(action, child) in &children {
+        let node = &mut tree.nodes[child as usize];
+        match action {
+            1 => {
+                node.visit_count = 10;
+                node.total_value = 9.0;
+            }
+            2 => {
+                node.visit_count = 8;
+                node.total_value = 4.0;
+            }
+            5 => {
+                node.visit_count = 6;
+                node.total_value = 0.6;
+            }
+            _ => unreachable!("unexpected action in expanded root"),
+        }
+    }
+    tree.nodes[root as usize].visit_count = 24;
+
+    let mut base_pi = vec![1e-6f32; 46];
+    base_pi[1] = 0.45;
+    base_pi[2] = 0.35;
+    base_pi[5] = 0.20;
+    let legal_f32 = legal_mask.map(|x| if x { 1.0f32 } else { 0.0 });
+
+    let accepted = build_exit_from_afbs_tree(&tree, root, &base_pi, &legal_f32, 8, 5.0)
+        .expect("accepted exit target from child visits");
+
+    let samples = vec![Some(accepted.clone()), Some(accepted)];
+    let (exit_target, exit_mask) = collate_exit_targets::<TestBackend>(&samples, &device);
+
     let rl_batch = RlBatch {
         obs,
         targets,
@@ -319,7 +362,8 @@ fn exit_rl_step_with_target() {
         actions,
         pi_old,
         advantages,
-        exit_target: Some(exit_target),
+        exit_target,
+        exit_mask,
     };
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
     let cfg = RlConfig::default_phase3();

@@ -208,8 +208,8 @@ mod tests {
     #[test]
     fn test_ach_one_epoch_changes_weights() {
         use crate::model::HydraModelConfig;
-        use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
-        use crate::training::rl::{RlBatch, RlConfig, rl_step};
+        use crate::training::losses::{tests::make_dummy_targets, HydraLoss, HydraLossConfig};
+        use crate::training::rl::{rl_step, RlBatch, RlConfig};
         use burn::optim::AdamConfig;
 
         let device = Default::default();
@@ -236,6 +236,7 @@ mod tests {
             base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
             targets: make_dummy_targets::<AB>(&device, 2),
             exit_target: None,
+            exit_mask: None,
         };
         let cfg = RlConfig::default_phase2().with_lr(1e-3);
         let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
