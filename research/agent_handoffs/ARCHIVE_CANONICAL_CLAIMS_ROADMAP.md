@@ -91,12 +91,30 @@ Interpretation rules:
   - `extract_target_presence` extracts per-head sample counts from `HydraTargets` respecting per-sample masks
   - `approved_loss_config` zeros weights for Off heads, preserves Warmup/Active weights
   - 36 unit tests covering all components including full lifecycle integration with Burn NdArray backend
+- Completed (rank 5): runtime ponder/cache provenance hardening in `hydra-core/src/afbs.rs` and `hydra-train/src/inference.rs`.
+- What we did (rank 5):
+  - added `TrustLevel` enum (LearnerOnly, Advisory, WarmStart, Authoritative) with `meets()` ordering method
+  - added `CacheNamespace` enum (ObservedRoot, SpeculativeChildHint, LearnerTarget) for logical cache partitioning
+  - added provenance fields to `PonderResult`: `source_net_hash: u64`, `source_version: u32`, `trust_level`, `cache_namespace`, `generation: u64`
+  - updated `PonderResult::from_tree()` to accept `source_net_hash` and `source_version`; defaults trust to `LearnerOnly`, namespace to `ObservedRoot`
+  - added `PonderResult::learner_only_stub()` constructor for tests and untracked producers
+  - added generation tracking to `PonderCache` via `AtomicU64`; `insert()` stamps current generation, `get()` rejects stale entries
+  - added `PonderCache::get_trusted()` for trust-level-gated lookups
+  - added `PonderCache::invalidate()` (logical; bumps generation) and `flush()` (physical + generation bump)
+  - `insert_predicted_child()` now auto-sets `CacheNamespace::SpeculativeChildHint`
+  - replaced `PonderManager.cache` from raw `DashMap` to `PonderCache`; added `lookup_trusted()` and `invalidate_cache()`
+  - replaced `InferenceServer.ponder_cache` from `Arc<DashMap<u64, PonderResult>>` to `Arc<PonderCache>`
+  - added `InferenceServer::lookup_ponder_trusted()` and `invalidate_cache()`
+  - gated `InferenceServer::infer_with_budget()` cache-hit early-return behind `TrustLevel::Authoritative` (nothing currently qualifies, keeping all ponder outputs learner-only per archive doctrine)
+  - added 10 new provenance-specific tests (trust ordering, generation invalidation, flush, trust filtering, generation stamping, namespace enforcement, PonderManager provenance, from_tree provenance, learner-only runtime isolation, cache invalidation)
+  - all 258 unit tests + 6 integration tests pass; clippy clean
 - Not done yet:
   - no self-play loop or mainline batch construction code that constructs `RlBatch` yet (all bridge helpers are ready but the caller does not exist)
   - no `delta_q_target` closure yet
   - orchestrator integration for head gates (wiring controller into training step functions)
   - trunk detachment for warmup heads (requires model forward modification)
   - feature-ablation gate (Gate 5 from archive, requires evaluation arena)
+  - full ProvenanceKey/PonderMeta/CacheDecisionAudit from answer_20 are aspirational and depend on infrastructure that does not yet exist (belief digest, policy assumption digest, CompressedAfbsTree, evaluation arena for G0-G3 re-entry gates)
 
 ### Do now
 
@@ -106,7 +124,7 @@ Interpretation rules:
 | 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; keep this lane narrow and replay-derived. | canonical rows 22, 23, 24; `answer_18_combined.md` |
 | 3 | Real `exit_target` carrier and provenance closure | Completed (bridge/consumer); self-play loop is infrastructure | Bridge helpers done; remaining gap is the self-play loop that constructs RlBatch | ExIt now has helpers (`build_exit_from_afbs_tree`, `collate_exit_targets`), consumer mask support, and integration tests exercising the full AFBS-to-RL-loss path. The remaining blocker is that no non-test code constructs `RlBatch` yet. | canonical rows 34, 35; `answer_9_combined.md`, `answer_15_combined.md`, `answer_2-1_combined.md` |
 | 4 | Advanced-head activation discipline | Completed in code | Gate pack implemented: density, conflict, warmup | `HeadActivationController` with density gates (`rho >= 0.8` dense, `spp >= 5` sparse), gradient conflict tracking (cosine < 30% negative), warmup protocol (Off->Warmup->Active), and `approved_loss_config` integration. 36 tests pass. | canonical row 55; `answer_13_combined.md`, `answer_3-1_combined.md` |
-| 5 | Runtime ponder/cache provenance hardening | Not current doctrine yet, but high-priority safety correction | Directly supported defect | Current runtime cache authority is too weakly identified for decisive reuse. Fix this before leaning harder on search-derived runtime or training signals. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
+| 5 | Runtime ponder/cache provenance hardening | Completed in code | Provenance fields, generation tracking, trust gating implemented | `PonderResult` carries `source_net_hash`, `source_version`, `TrustLevel`, `CacheNamespace`, `generation`. `PonderCache` enforces generation freshness. `InferenceServer` gates runtime cache hits behind `Authoritative` trust (nothing qualifies, keeping everything learner-only). 10 new tests. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 
 ### Phase-next
 
@@ -141,7 +159,7 @@ These survive as preserved options, but they should not steer the current active
 | Current `opponent_hand_type` activation | Off | Typed hole: head exists, but ontology, mapping, and builder do not | canonical rows 30, 31; `answer_15_combined.md`, `answer_18_combined.md`, `answer_13_combined.md` |
 | Treating `oracle_critic` as student-path closure | Off | Detached privileged branch is not evidence that public/student target closure is solved | canonical rows 32, 33; `answer_15_combined.md`, `answer_18_combined.md` |
 | Broad multi-arm learned router | Blocked | Current runtime is too narrow to justify a real multi-arm routing regime | canonical row 46; `answer_10_combined.md` |
-| Current rollout authority as live decisive truth | Off | Cache provenance and admission identity are too weak | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
+| Current rollout authority as live decisive truth | Off (provenance hardened) | Cache provenance now exists; runtime gated behind Authoritative trust (nothing qualifies) | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 | Exact rollout gates beyond `top2_policy_gap < 0.10` | Rejected | Earlier `risk_score` / `particle_ess` exact cutoffs were explicitly demoted | canonical rows 49, 50; `answer_16-1_combined.md`, `answer_16_combined.md` |
 | Posterior-consensus ExIt as currently scoped | Reject | Missing public world-conditioned action-teacher object | canonical row 52; `answer_12_combined.md`, `answer_8-1_combined.md` |
 | Regime-coupled opponent filtering as currently scoped | Reject | Missing emission model, regime state, and downstream consumer chain | canonical row 53; `answer_12_combined.md` |
@@ -159,7 +177,7 @@ These survive as preserved options, but they should not steer the current active
 | H1a Hand-EV | Yes | Needs exact-one-step benchmark win | After benchmark pass |
 | H1b world-aware Hand-EV | Runtime seam only | Train/infer parity + representative-world gates | After H1a + parity + CT-SMC gates |
 | Endgame leaf exactification | Host shell only | Stronger leaf and explicit caller value | After offline late-game utility win |
-| Tiny learned ponder scorer | Yes | Cache/provenance and label logging must be trustworthy first | After provenance hardening |
+| Tiny learned ponder scorer | Yes | Cache/provenance and label logging must be trustworthy first | After provenance hardening (done) + label logging |
 | History path / asymmetric architecture | Narrow seam only | Must prove history adds value beyond current static tensor | After E0/E1-style experiment wins |
 
 ## Suggested execution order
@@ -168,7 +186,7 @@ These survive as preserved options, but they should not steer the current active
 2. Patch `safety_residual` semantics and keep advanced activation narrow. **(done)**
 3. Close real `exit_target` carrier/provenance plumbing. **(done, bridge/consumer; self-play loop is infrastructure)**
 4. Add activation-density / transfer gates before broad advanced-head activation. **(done)**
-5. Harden runtime ponder/cache provenance and admission boundaries.
+5. Harden runtime ponder/cache provenance and admission boundaries. **(done)**
 6. Run H1a Hand-EV exact-one-step benchmark; promote only if it clears the gate.
 7. Evaluate tile-aware spatial/global head routing correction before broader architecture changes.
 8. Revisit `delta_q`, belief teacher closure, and H1b only from the stronger base above.
