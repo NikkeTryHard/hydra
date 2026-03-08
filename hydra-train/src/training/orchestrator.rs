@@ -443,6 +443,7 @@ mod tests {
             base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
             targets: dummy_targets::<AB>(&device, 2),
             exit_target: Some(Tensor::<AB, 2>::ones([2, 46], &device) / 46.0),
+            exit_mask: Some(Tensor::<AB, 2>::ones([2, 46], &device)),
         };
         let cfg = RlConfig::default_phase2();
         let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
