@@ -571,6 +571,128 @@ mod tests {
     }
 
     #[test]
+    fn test_bc_step_advanced_aux_targets_change_loss() {
+        let device = Default::default();
+        let obs = Tensor::<TestBackend, 3>::random(
+            [4, crate::config::INPUT_CHANNELS, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+
+        let model1 = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<TestBackend>(&device);
+        let baseline_targets = make_dummy_targets::<TestBackend>(&device, 4);
+        let baseline_loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
+        let mut opt1 = bc_optimizer();
+        let (_, loss_baseline) = bc_train_step(
+            model1,
+            obs.clone(),
+            &baseline_targets,
+            &baseline_loss_fn,
+            1e-3,
+            &mut opt1,
+        );
+
+        let model2 = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<TestBackend>(&device);
+        let mut advanced_targets = make_dummy_targets::<TestBackend>(&device, 4);
+        advanced_targets.belief_fields_target =
+            Some(Tensor::<TestBackend, 3>::ones([4, 16, 34], &device));
+        advanced_targets.belief_fields_mask = Some(Tensor::<TestBackend, 1>::ones([4], &device));
+        advanced_targets.safety_residual_target = Some(Tensor::<TestBackend, 2>::from_floats(
+            [[0.5f32; 46], [-0.5f32; 46], [0.3f32; 46], [-0.3f32; 46]],
+            &device,
+        ));
+        advanced_targets.safety_residual_mask =
+            Some(Tensor::<TestBackend, 2>::ones([4, 46], &device));
+        advanced_targets.delta_q_target = Some(Tensor::<TestBackend, 2>::ones([4, 46], &device));
+        advanced_targets.oracle_target = Some(Tensor::<TestBackend, 2>::from_floats(
+            [
+                [0.1, -0.1, 0.05, -0.05],
+                [0.2, -0.2, 0.1, -0.1],
+                [0.05, -0.05, 0.0, 0.0],
+                [-0.1, 0.1, -0.05, 0.05],
+            ],
+            &device,
+        ));
+        advanced_targets.oracle_guidance_mask = Some(Tensor::<TestBackend, 1>::ones([4], &device));
+        let advanced_loss_fn = HydraLoss::<TestBackend>::new(
+            HydraLossConfig::new()
+                .with_w_oracle_critic(0.1)
+                .with_w_belief_fields(0.1)
+                .with_w_safety_residual(0.1)
+                .with_w_delta_q(0.05),
+        );
+        let mut opt2 = bc_optimizer();
+        let (_, loss_advanced) = bc_train_step(
+            model2,
+            obs,
+            &advanced_targets,
+            &advanced_loss_fn,
+            1e-3,
+            &mut opt2,
+        );
+
+        assert!(
+            loss_baseline.is_finite(),
+            "baseline BC loss should be finite"
+        );
+        assert!(
+            loss_advanced.is_finite(),
+            "advanced BC loss should be finite"
+        );
+        assert!(
+            (loss_baseline - loss_advanced).abs() > 1e-6,
+            "advanced aux targets should change BC loss: baseline={loss_baseline}, advanced={loss_advanced}"
+        );
+    }
+
+    #[test]
+    fn test_bc_train_epoch_with_advanced_targets() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<TestBackend>(&device);
+        let obs = Tensor::<TestBackend, 3>::random(
+            [4, crate::config::INPUT_CHANNELS, 34],
+            burn::tensor::Distribution::Normal(0.0, 0.1),
+            &device,
+        );
+        let mut targets = make_dummy_targets::<TestBackend>(&device, 4);
+        targets.belief_fields_target = Some(Tensor::<TestBackend, 3>::ones([4, 16, 34], &device));
+        targets.belief_fields_mask = Some(Tensor::<TestBackend, 1>::ones([4], &device));
+        targets.safety_residual_target =
+            Some(Tensor::<TestBackend, 2>::ones([4, 46], &device) * 0.25);
+        targets.safety_residual_mask = Some(Tensor::<TestBackend, 2>::ones([4, 46], &device));
+        targets.delta_q_target = Some(Tensor::<TestBackend, 2>::zeros([4, 46], &device));
+
+        let batches = vec![(obs, targets)];
+        let loss_fn = HydraLoss::<TestBackend>::new(
+            HydraLossConfig::new()
+                .with_w_belief_fields(0.1)
+                .with_w_safety_residual(0.1)
+                .with_w_delta_q(0.05),
+        );
+        let mut optimizer = bc_optimizer();
+        let (_, stats) = train_epoch(model, &batches, &loss_fn, 1e-3, &mut optimizer);
+
+        assert!(stats.avg_loss.is_finite(), "avg_loss should be finite");
+        assert!(
+            stats.avg_loss > 0.0,
+            "avg_loss should be positive with advanced targets"
+        );
+        assert!(stats.num_batches == 1);
+    }
+
+    #[test]
     fn test_checkpoint_save_load() {
         use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
         let device = Default::default();

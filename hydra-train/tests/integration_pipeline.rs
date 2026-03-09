@@ -110,8 +110,9 @@ fn full_pipeline_integration() {
     let d_val: f32 = d_loss.into_scalar().elem();
     assert!(d_val.is_finite(), "distill loss not finite: {d_val}");
 
-    use hydra_core::arena::{Arena, ArenaConfig, Trajectory, TrajectoryStep};
+    use hydra_core::arena::{Arena, ArenaConfig, Trajectory, TrajectoryExitLabel, TrajectoryStep};
     use hydra_core::encoder::OBS_SIZE;
+    use hydra_train::selfplay::{default_gae_config, trajectories_to_rl_batch};
     let mut arena = Arena::new(ArenaConfig::default());
     for g in 0..10u32 {
         let mut traj = Trajectory::new(g, g as u64 * 42);
@@ -124,6 +125,12 @@ fn full_pipeline_integration() {
                     p[0] = 1.0;
                     p
                 },
+                legal_mask: {
+                    let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+                    legal_mask[0] = true;
+                    legal_mask
+                },
+                exit_label: None,
                 reward: 0.0,
                 done: turn == 4,
                 player_id: (turn % 4) as u8,
@@ -137,6 +144,71 @@ fn full_pipeline_integration() {
     }
     assert_eq!(arena.games_completed, 10);
     assert!(arena.total_steps() >= 50, "should have 50+ steps");
+
+    let mut rl_traj = Trajectory::new(99, 4242);
+    let exit_label = TrajectoryExitLabel::from_slices(
+        &{
+            let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+            target[1] = 0.55;
+            target[2] = 0.45;
+            target
+        },
+        &{
+            let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+            exit_mask[1] = 1.0;
+            exit_mask[2] = 1.0;
+            exit_mask
+        },
+    )
+    .expect("valid trajectory exit label");
+    rl_traj.final_scores = [31000, 27000, 23000, 19000];
+    rl_traj.steps.push(TrajectoryStep {
+        obs: [0.2; OBS_SIZE],
+        action: 1,
+        pi_old: {
+            let mut p = [0.0; HYDRA_ACTION_SPACE];
+            p[1] = 0.6;
+            p[2] = 0.4;
+            p
+        },
+        legal_mask: {
+            let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+            legal_mask[1] = true;
+            legal_mask[2] = true;
+            legal_mask
+        },
+        exit_label: Some(exit_label),
+        reward: 0.5,
+        done: true,
+        player_id: 0,
+        game_id: 99,
+        turn: 0,
+        temperature: 1.0,
+    });
+    let rl_batch = trajectories_to_rl_batch::<TestBackend>(
+        &[rl_traj],
+        &[vec![0.0]],
+        &default_gae_config(),
+        &device,
+    );
+    let exit_target = rl_batch.exit_target.expect("trajectory exit target");
+    let exit_mask = rl_batch.exit_mask.expect("trajectory exit mask");
+    assert_eq!(exit_target.dims(), [1, HYDRA_ACTION_SPACE]);
+    assert_eq!(exit_mask.dims(), [1, HYDRA_ACTION_SPACE]);
+    let exit_target_data = exit_target
+        .to_data()
+        .as_slice::<f32>()
+        .expect("exit target data")
+        .to_vec();
+    let exit_mask_data = exit_mask
+        .to_data()
+        .as_slice::<f32>()
+        .expect("exit mask data")
+        .to_vec();
+    assert!((exit_target_data[1] - 0.55).abs() < 1e-6);
+    assert!((exit_target_data[2] - 0.45).abs() < 1e-6);
+    assert_eq!(exit_mask_data[1], 1.0);
+    assert_eq!(exit_mask_data[2], 1.0);
 
     use hydra_core::afbs::{AfbsTree, TOP_K};
     let mut tree = AfbsTree::new();
