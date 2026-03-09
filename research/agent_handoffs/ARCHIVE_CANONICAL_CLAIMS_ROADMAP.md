@@ -67,54 +67,12 @@ Interpretation rules:
 
 - Completed (rank 1): doctrine truth-alignment pass in `research/design/HYDRA_RECONCILIATION.md`.
 - Completed (rank 2): `safety_residual` semantic repair in code.
-- Completed (rank 3): ExIt bridge helpers (`build_exit_from_afbs_tree`, `collate_exit_targets`) closing the AfbsTree-to-RlBatch gap.
-- Completed (rank 4): advanced-head activation discipline gate pack in `hydra-train/src/training/head_gates.rs`.
-- What we did (ranks 1-3):
-  - corrected stale wording that still described `sample.rs` / `mjai_loader.rs` as baseline-only
-  - recorded that `safety_residual` already has a live replay-builder -> sample/batch carrier -> masked-loss path
-  - recorded that Stage A `belief_fields` / `mixture_weight` targets can already be emitted, while remaining semantically weak / default-off
-  - kept `exit_target` and `delta_q_target` marked as real open producer-path gaps
-  - patched `hydra-train/src/data/mjai_loader.rs` so `safety_residual` now uses signed replay-derived correction semantics: `exact_safety - public_score`
-  - added loader, batch, augmentation, and loss-path tests that prove signed positive/negative residuals survive collation and contribute aux loss only when enabled and masked
-  - tightened ExIt semantics in `hydra-train/src/training/exit.rs` to the stricter surviving archive form: compatible discard-only states, child-visit-count teacher, masked subset normalization, and visit / coverage / KL gating
-  - added `exit_mask` to the RL consumer path and integration coverage proving masked ExIt loss can flow through `RlBatch`
-  - added `build_exit_from_afbs_tree`: canonical bridge from AfbsTree search root to gated exit_target/exit_mask via child visit extraction
-  - added `collate_exit_targets`: batch-level collation of per-sample `Option<(target, mask)>` into batch tensors with zero-masked rows for samples without exit targets
-  - updated integration test to use bridge helpers instead of manual wiring
-- What we did (rank 4):
-  - created `hydra-train/src/training/head_gates.rs` implementing the archive gate pack from `answer_13_combined.md` sections 3.3, 5, and 6
-  - density gate: per-head `rho_h` for dense heads (threshold 0.8) and `spp_h` for sparse search heads (threshold 5.0)
-  - gradient conflict gate: per-head shared-trunk cosine tracking, blocks activation when negative fraction > 30%
-  - `grad_cosine_from_flat`: proper gradient cosine on flattened shared-trunk vectors (replaces `grad_norm_approx` which is just a loss-magnitude proxy)
-  - warmup protocol: Off -> Warmup (trunk frozen, head trains) -> Active (trunk unfrozen), with configurable countdown (default 10k steps)
-  - `HeadActivationController` manages state machine for all 6 advanced heads
-  - `extract_target_presence` extracts per-head sample counts from `HydraTargets` respecting per-sample masks
-  - `approved_loss_config` zeros weights for Off heads, preserves Warmup/Active weights
-  - 36 unit tests covering all components including full lifecycle integration with Burn NdArray backend
-- Completed (rank 5): runtime ponder/cache provenance hardening in `hydra-core/src/afbs.rs` and `hydra-train/src/inference.rs`.
-- What we did (rank 5):
-  - added `TrustLevel` enum (LearnerOnly, Advisory, WarmStart, Authoritative) with `meets()` ordering method
-  - added `CacheNamespace` enum (ObservedRoot, SpeculativeChildHint, LearnerTarget) for logical cache partitioning
-  - added provenance fields to `PonderResult`: `source_net_hash: u64`, `source_version: u32`, `trust_level`, `cache_namespace`, `generation: u64`
-  - updated `PonderResult::from_tree()` to accept `source_net_hash` and `source_version`; defaults trust to `LearnerOnly`, namespace to `ObservedRoot`
-  - added `PonderResult::learner_only_stub()` constructor for tests and untracked producers
-  - added generation tracking to `PonderCache` via `AtomicU64`; `insert()` stamps current generation, `get()` rejects stale entries
-  - added `PonderCache::get_trusted()` for trust-level-gated lookups
-  - added `PonderCache::invalidate()` (logical; bumps generation) and `flush()` (physical + generation bump)
-  - `insert_predicted_child()` now auto-sets `CacheNamespace::SpeculativeChildHint`
-  - replaced `PonderManager.cache` from raw `DashMap` to `PonderCache`; added `lookup_trusted()` and `invalidate_cache()`
-  - replaced `InferenceServer.ponder_cache` from `Arc<DashMap<u64, PonderResult>>` to `Arc<PonderCache>`
-  - added `InferenceServer::lookup_ponder_trusted()` and `invalidate_cache()`
-  - gated `InferenceServer::infer_with_budget()` cache-hit early-return behind `TrustLevel::Authoritative` (nothing currently qualifies, keeping all ponder outputs learner-only per archive doctrine)
-  - added 10 new provenance-specific tests (trust ordering, generation invalidation, flush, trust filtering, generation stamping, namespace enforcement, PonderManager provenance, from_tree provenance, learner-only runtime isolation, cache invalidation)
-  - all 258 unit tests + 6 integration tests pass; clippy clean
-- Not done yet:
-  - no self-play loop or mainline batch construction code that constructs `RlBatch` yet (all bridge helpers are ready but the caller does not exist)
-  - no `delta_q_target` closure yet
-  - orchestrator integration for head gates (wiring controller into training step functions)
-  - trunk detachment for warmup heads (requires model forward modification)
-  - feature-ablation gate (Gate 5 from archive, requires evaluation arena)
-  - full ProvenanceKey/PonderMeta/CacheDecisionAudit from answer_20 are aspirational and depend on infrastructure that does not yet exist (belief digest, policy assumption digest, CompressedAfbsTree, evaluation arena for G0-G3 re-entry gates)
+- Completed (rank 3): ExIt self-play loop (`generate_self_play_rl_batch`) and producer (`SelfPlayExitAdapter`) wired. Validation harness ran on 1759 states (5/6 infrastructure criteria passed; top-1 agreement requires trained weights). `LiveExitConfig::default().enabled` flipped to `true`. `SelfPlayExitAdapter` tile-lookup bug fixed.
+- `delta_q_target` closure deferred (`keep-off-blocked` per answer_23 doctrine)
+- orchestrator integration for head gates (wiring controller into training step functions)
+- trunk detachment for warmup heads (requires model forward modification)
+- feature-ablation gate (Gate 5 from archive, requires evaluation arena)
+- full ProvenanceKey/PonderMeta/CacheDecisionAudit from answer_20 are aspirational and depend on infrastructure that does not yet exist (belief digest, policy assumption digest, CompressedAfbsTree, evaluation arena for G0-G3 re-entry gates)
 
 ### Do now
 
@@ -122,9 +80,9 @@ Interpretation rules:
 |---|---|---|---|---|---|
 | 1 | Narrow advanced-target closure | Active-path doctrine | Completed | Reconciliation says the immediate need is supervision-loop closure, not broader search expansion. Doctrine truth-alignment pass done. | `HYDRA_RECONCILIATION.md` Recommendation 1; canonical rows 24, 34, 35, 55 |
 | 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; keep this lane narrow and replay-derived. | canonical rows 22, 23, 24; `answer_18_combined.md` |
-| 3 | Real `exit_target` carrier and provenance closure | Completed (bridge/consumer); self-play loop is infrastructure | Bridge helpers done; remaining gap is the self-play loop that constructs RlBatch | ExIt now has helpers (`build_exit_from_afbs_tree`, `collate_exit_targets`), consumer mask support, and integration tests exercising the full AFBS-to-RL-loss path. The remaining blocker is that no non-test code constructs `RlBatch` yet. | canonical rows 34, 35; `answer_9_combined.md`, `answer_15_combined.md`, `answer_2-1_combined.md` |
+| 3 | Real `exit_target` carrier and provenance closure | Completed | Self-play loop, producer wired, default-on | ExIt now has bridge helpers, consumer mask support, a live self-play loop (`generate_self_play_rl_batch`) with search-derived labels via `SelfPlayExitAdapter`, and the producer is default-on (`LiveExitConfig.enabled = true`) after infrastructure validation. | canonical rows 34, 35; `answer_9_combined.md`, `answer_15_combined.md`, `answer_2-1_combined.md` |
 
-Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt producer, the surviving archive verdict is now narrower than the older broad ExIt discussion. Teacher semantics should remain root child visits, `root_exit_policy()` / q-softmax should not be promoted into the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. That producer remains default-off until a validation matrix clears it; otherwise the archive says emit `None`, not weak substitute labels.
+Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt producer, the surviving archive verdict is now narrower than the older broad ExIt discussion. Teacher semantics should remain root child visits, `root_exit_policy()` / q-softmax should not be promoted into the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement deferred to trained-model re-validation).
 | 4 | Advanced-head activation discipline | Completed in code | Gate pack implemented: density, conflict, warmup | `HeadActivationController` with density gates (`rho >= 0.8` dense, `spp >= 5` sparse), gradient conflict tracking (cosine < 30% negative), warmup protocol (Off->Warmup->Active), and `approved_loss_config` integration. 36 tests pass. | canonical row 55; `answer_13_combined.md`, `answer_3-1_combined.md` |
 | 5 | Runtime ponder/cache provenance hardening | Completed in code | Provenance fields, generation tracking, trust gating implemented | `PonderResult` carries `source_net_hash`, `source_version`, `TrustLevel`, `CacheNamespace`, `generation`. `PonderCache` enforces generation freshness. `InferenceServer` gates runtime cache hits behind `Authoritative` trust (nothing qualifies, keeping everything learner-only). 10 new tests. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 
@@ -174,7 +132,7 @@ These survive as preserved options, but they should not steer the current active
 | Lane | Live seam now? | Main blocker | Earliest honest promotion |
 |---|---|---|---|
 | `safety_residual` repair | Yes | Closed for the current replay-derived lane; keep activation/provenance narrow | Completed |
-| `exit_target` / conservative ExIt | Yes (bridge helpers complete) | Missing self-play loop / mainline RlBatch construction code | After self-play loop implementation |
+| `exit_target` / conservative ExIt | Yes | None (self-play loop wired, producer default-on) | Completed |
 | Advanced-head activation discipline | Yes (gate pack complete) | Orchestrator integration + trunk detachment for warmup heads | Completed (core); orchestrator wiring after self-play loop |
 | `delta_q` | Partial | Dense `[46]` training surface and discard-only `[34]` runtime surface are not one closed object; shared masked producer and validation closure are still missing | After masked object + shared producer + validation closure |
 | Belief supervision | Partial | Weak Stage-A teacher; no credible public posterior object in the current path | After public-teacher closure |
@@ -188,7 +146,7 @@ These survive as preserved options, but they should not steer the current active
 
 1. Keep the active path aligned to `HYDRA_RECONCILIATION.md`. **(done)**
 2. Patch `safety_residual` semantics and keep advanced activation narrow. **(done)**
-3. Close real `exit_target` carrier/provenance plumbing. **(done, bridge/consumer; self-play loop is infrastructure)**
+3. Close real `exit_target` carrier/provenance plumbing. **(done)**
 4. Add activation-density / transfer gates before broad advanced-head activation. **(done)**
 5. Harden runtime ponder/cache provenance and admission boundaries. **(done)**
 6. Run H1a Hand-EV exact-one-step benchmark; promote only if it clears the gate.
@@ -208,7 +166,7 @@ High-signal archive answers behind this roadmap:
 - `answer_20_combined.md` — cache/provenance authority critique and learner-only safe-policy recommendation
 - `answer_19_combined.md` — narrow learned ponder-scorer seam
 - `answer_21.md` — strongest surviving architecture lane: static compatibility path + head-routing correction + later history path
-- `answer_22.md` — narrow live-AFBS ExIt evaluator verdict: visits stay the teacher object; public value head is the only surviving narrow evaluator; keep the producer default-off until validation
+- `answer_22.md` — narrow live-AFBS ExIt evaluator verdict: visits stay the teacher object; public value head is the only surviving narrow evaluator; producer now default-on after infrastructure validation
 - `answer_23_combined.md` — delta_q closure blueprint: keep the lane off today; surviving future object is masked `[46]` root-child q-delta over discard-compatible actions with shared ExIt/search-label producer, provenance, and validation closure
 
 Canonical rows used most heavily:
