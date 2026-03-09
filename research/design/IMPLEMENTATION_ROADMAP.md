@@ -341,7 +341,7 @@ From `burn`: `prelude::*` (Backend, Tensor, Module, Config), `nn::{Linear, Linea
 ## STEP 5: Loss Functions
 
 **File**: `hydra-train/src/training/losses.rs`
-**Ref**: HYDRA_FINAL S4.3, S11 Phase 0/2; HYDRA_SPEC Value/GRP/Tenpai/Danger heads
+**Ref**: HYDRA_FINAL S4.3, S11 Phase 0/2; current live head family in `crates/hydra-train/src/model.rs`
 
 ### 5.1 HydraLoss Struct
 

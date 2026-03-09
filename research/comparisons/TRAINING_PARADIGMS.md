@@ -363,7 +363,7 @@ already processes all visible game state.
 
 **Sources**: [UNREAL Paper](https://arxiv.org/abs/1611.05397) |
 [Auxiliary Task Comparison](https://arxiv.org/abs/2310.04241) |
-[Hydra Spec](research/design/HYDRA_SPEC.md)
+[Hydra Final](../design/HYDRA_FINAL.md)
 
 ---
 
