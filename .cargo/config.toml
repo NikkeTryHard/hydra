@@ -8,4 +8,3 @@ rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]
 
 [env]
 RAYON_NUM_THREADS = "16"
-NEXTEST_TEST_THREADS = "16"
