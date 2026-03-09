@@ -8,9 +8,9 @@
 
 ## Related Documents
 
-- [../HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — current execution doctrine and active-vs-reserve split
+- [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — current execution doctrine and active-vs-reserve split
 - [../../docs/GAME_ENGINE.md](../../docs/GAME_ENGINE.md) — current runtime reality
-- [../HYDRA_ARCHIVE.md](HYDRA_ARCHIVE.md) — archive / reserve-only planning surfaces
+- [HYDRA_ARCHIVE.md](HYDRA_ARCHIVE.md) — archive / reserve-only planning surfaces
 - [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — implementation/infrastructure reference
 - [../infrastructure/CHECKPOINTING.md](../infrastructure/CHECKPOINTING.md) — checkpoint format, save protocol, retention policy
 

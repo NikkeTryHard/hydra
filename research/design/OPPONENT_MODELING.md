@@ -66,7 +66,7 @@ Hydra addresses the opponent modeling gap through seven complementary systems:
 
 ## 2. Safety Planes: Explicit Defensive Encoding
 
-> For the channel-level summary, see [HYDRA_SPEC § Safety Channels](HYDRA_SPEC.md#safety-channels-6284). This section provides the detailed design rationale and encoding logic.
+> For the live channel-level summary, see [docs/GAME_ENGINE.md § Baseline Prefix Channel Layout](../../docs/GAME_ENGINE.md#baseline-prefix-channel-layout-channels-0-84) and the safety-system section there. This file provides the deeper design rationale and encoding logic.
 
 Hydra dedicates 23 input channels (channels 62–84) to safety information — a novel addition absent from Mortal's 1012-channel encoding. These planes pre-compute traditional Japanese mahjong defensive concepts, giving the network structured safety data rather than forcing it to rediscover these patterns implicitly.
 
@@ -214,7 +214,7 @@ Estimate the probability each opponent is in tenpai, with emphasis on detecting 
 
 ### 3.2 Architecture
 
-> See [HYDRA_SPEC § Tenpai Head](HYDRA_SPEC.md#tenpai-head) for the canonical architecture specification (GAP → FC(256→64) → FC(64→3) → Sigmoid).
+> For the current target head family, see [HYDRA_FINAL.md § 4.3 Heads](HYDRA_FINAL.md#43-heads-multi-task). Treat this section as rationale for why the tenpai head exists and what signals it should learn from.
 
 ### 3.3 Key Input Features and Signals
 
@@ -318,7 +318,7 @@ Estimate the deal-in probability for each possible discard tile. Given the curre
 
 ### 4.2 Architecture and Design Rationale
 
-> See [HYDRA_SPEC § Danger Head](HYDRA_SPEC.md#danger-head) for the canonical architecture specification (1×1 Conv1D(256→3) → Sigmoid, output [B × 3 × 34]).
+> For the current target head family, see [HYDRA_FINAL.md § 4.3 Heads](HYDRA_FINAL.md#43-heads-multi-task). Treat this section as rationale for why the danger head should stay per-opponent and per-tile.
 
 Per-opponent granularity (3×34) is essential for mawashi-uchi (回し打ち) — the strategy of dodging one specific dangerous opponent while continuing to push against others. An aggregate 1×34 output would discard the per-opponent information that the backbone already encodes (genbutsu channels 62–70, suji channels 71–79, tenpai hints 82–84 are all per-opponent), creating an information bottleneck.
 
@@ -505,7 +505,7 @@ Key design decisions:
 - **Gradients flow through conditioning:** No stop-gradient. The danger loss teaches the call-intent head to produce representations that are maximally useful for danger estimation. This is the standard pattern in all production FiLM implementations (Meta Seamless, DI-engine, MTRL).
 - **`danger_conv`:** `Conv1d(256, 1, kernel_size=1)` — shared across opponents (same conv applied to differently-modulated features).
 
-> **Architecture note (sequential dependency):** FiLM conditioning creates a sequential dependency between the call-intent head and the danger head — the call-intent output must be computed *before* the danger head can run. This conflicts with [HYDRA_SPEC](HYDRA_SPEC.md)'s description of heads operating "in parallel" from the shared backbone. **Options:** (a) Accept the sequential dependency and update HYDRA_SPEC (minimal latency impact since both heads are tiny). (b) Use simple concatenation instead of FiLM (preserves parallelism but weaker conditioning). (c) Defer FiLM to a second iteration after baseline danger head is validated. **Recommended: option (a)** — the latency cost of one extra small MLP forward pass (~0.1ms) is negligible.
+> **Architecture note (sequential dependency):** FiLM conditioning creates a sequential dependency between the call-intent head and the danger head — the call-intent output must be computed *before* the danger head can run. That makes this a reserve/future extension unless current doctrine explicitly promotes it. **Options:** (a) accept the sequential dependency if the live architecture is revised to allow it, (b) use simple concatenation instead of FiLM (preserves parallelism but weaker conditioning), or (c) defer FiLM to a second iteration after baseline danger head is validated. **Recommended:** keep it deferred unless the active architecture deliberately adopts the sequential dependency.
 
 > **Novelty note:** No published mahjong AI predicts opponent yaku intent as an explicit output. [houou-statistics](https://github.com/chienshyong/houou-statistics) provides detailed analyses of open tenpai characteristics by yaku type, confirming that different yaku plans produce distinct observable signal patterns. The call-intent head makes these statistical patterns learnable as a first-class output.
 
@@ -590,7 +590,7 @@ These multiply on top of the base wait type multiplier:
 
 ## 7. Comparison to Existing Approaches
 
-> See [HYDRA_SPEC § Key Differentiators from Mortal](HYDRA_SPEC.md#key-differentiators-from-mortal) for the full feature comparison table.
+> For current Hydra-vs-Mortal doctrine, use `README.md`, `HYDRA_FINAL.md`, `HYDRA_RECONCILIATION.md`, and this file together rather than relying on the legacy spec.
 
 ### Key Differentiator
 
