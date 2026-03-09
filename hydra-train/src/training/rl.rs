@@ -250,6 +250,145 @@ mod tests {
     }
 
     #[test]
+    fn test_rl_step_advanced_aux_targets_change_loss() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let obs = Tensor::<AB, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+
+        let baseline_batch = RlBatch {
+            obs: obs.clone(),
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 2),
+            exit_target: None,
+            exit_mask: None,
+        };
+        let baseline_cfg = RlConfig {
+            tau_drda: 4.0,
+            ach_cfg: AchConfig::new(),
+            lr: 1e-4,
+            exit_weight: 0.5,
+            aux_weight: 0.1,
+        };
+        let baseline_loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let mut opt1 = AdamConfig::new().init();
+        let (_, loss_baseline) = rl_step(
+            model,
+            &baseline_batch,
+            &baseline_cfg,
+            &baseline_loss_fn,
+            &mut opt1,
+        );
+
+        let model2 = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let mut advanced_targets = make_dummy_targets::<AB>(&device, 2);
+        advanced_targets.belief_fields_target = Some(Tensor::<AB, 3>::ones([2, 16, 34], &device));
+        advanced_targets.belief_fields_mask = Some(Tensor::<AB, 1>::ones([2], &device));
+        advanced_targets.safety_residual_target = Some(Tensor::<AB, 2>::from_floats(
+            [[0.5f32; 46], [-0.5f32; 46]],
+            &device,
+        ));
+        advanced_targets.safety_residual_mask = Some(Tensor::<AB, 2>::ones([2, 46], &device));
+        advanced_targets.delta_q_target = Some(Tensor::<AB, 2>::ones([2, 46], &device));
+
+        let advanced_batch = RlBatch {
+            obs,
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: advanced_targets,
+            exit_target: None,
+            exit_mask: None,
+        };
+        let advanced_loss_fn = HydraLoss::<AB>::new(
+            HydraLossConfig::new()
+                .with_w_belief_fields(0.1)
+                .with_w_safety_residual(0.1)
+                .with_w_delta_q(0.1),
+        );
+        let mut opt2 = AdamConfig::new().init();
+        let (_, loss_advanced) = rl_step(
+            model2,
+            &advanced_batch,
+            &baseline_cfg,
+            &advanced_loss_fn,
+            &mut opt2,
+        );
+
+        assert!(loss_baseline.is_finite(), "baseline loss should be finite");
+        assert!(loss_advanced.is_finite(), "advanced loss should be finite");
+        assert!(
+            (loss_baseline - loss_advanced).abs() > 1e-6,
+            "advanced aux targets should change RL loss: baseline={loss_baseline}, advanced={loss_advanced}"
+        );
+    }
+
+    #[test]
+    fn test_rl_step_exit_plus_advanced_aux_combined() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let mut targets = make_dummy_targets::<AB>(&device, 2);
+        targets.belief_fields_target = Some(Tensor::<AB, 3>::ones([2, 16, 34], &device));
+        targets.belief_fields_mask = Some(Tensor::<AB, 1>::ones([2], &device));
+        targets.safety_residual_target = Some(Tensor::<AB, 2>::from_floats(
+            [[0.3f32; 46], [-0.3f32; 46]],
+            &device,
+        ));
+        targets.safety_residual_mask = Some(Tensor::<AB, 2>::ones([2, 46], &device));
+        targets.delta_q_target = Some(Tensor::<AB, 2>::zeros([2, 46], &device));
+        targets.oracle_target = Some(Tensor::<AB, 2>::from_floats(
+            [[0.1, -0.1, 0.05, -0.05], [0.2, -0.2, 0.1, -0.1]],
+            &device,
+        ));
+        targets.oracle_guidance_mask = Some(Tensor::<AB, 1>::ones([2], &device));
+
+        let batch = RlBatch {
+            obs: Tensor::<AB, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device),
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.5], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -1.0], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets,
+            exit_target: Some(Tensor::<AB, 2>::ones([2, 46], &device) / 46.0),
+            exit_mask: Some(Tensor::<AB, 2>::ones([2, 46], &device)),
+        };
+        let cfg = RlConfig::default_phase3()
+            .with_lr(1e-3)
+            .with_exit_weight(0.5)
+            .with_aux_weight(0.2);
+        let loss_fn = HydraLoss::<AB>::new(
+            HydraLossConfig::new()
+                .with_w_oracle_critic(0.1)
+                .with_w_belief_fields(0.1)
+                .with_w_safety_residual(0.1)
+                .with_w_delta_q(0.05),
+        );
+        let mut optimizer = AdamConfig::new().init();
+        let (_, loss) =
+            rl_step_with_phase_progress(model, &batch, &cfg, 3, 1.0, &loss_fn, &mut optimizer);
+        assert!(
+            loss.is_finite(),
+            "combined exit+aux loss should be finite: {loss}"
+        );
+        assert!(loss > 0.0, "combined loss should be positive: {loss}");
+    }
+
+    #[test]
     fn test_rl_step_with_phase_progress_accepts_phase2_ramp() {
         let device = Default::default();
         let model = HydraModelConfig::new(2)
