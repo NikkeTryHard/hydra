@@ -871,9 +871,9 @@ Every pull request and merge to main runs automated checks to catch regressions 
 | Stage | Command | Trigger | Expected Time |
 |-------|---------|---------|---------------|
 | Rust lint | `cargo clippy --all-targets -- -D warnings` | Every PR | ~30s |
-| Rust test | `cargo test --release` | Every PR | ~2min |
-| Burn model smoke test | `cargo test --release model_smoke_tests` | Every PR | ~30s |
-| Encoding regression | `cargo test --release encoder_golden_tests` | Every PR | ~1min |
+| Rust test | `cargo nextest run --release` | Every PR | ~2min |
+| Burn model smoke test | `cargo nextest run --release model_smoke_tests` | Every PR | ~30s |
+| Encoding regression | `cargo nextest run --release encoder_golden_tests` | Every PR | ~1min |
 | Full eval (200K games) | `cargo run --release --bin evaluate -- --tier full` | Merge to main | ~4h |
 
 **Design rationale:** The encoding regression stage runs the golden tests from TESTING.md § Known-State Golden Tests. Any encoder change that alters output tensors must explicitly regenerate golden files — accidental encoding drift is the single most dangerous silent failure mode in the pipeline. The full eval runs only on merge to main because it takes hours and is not needed for incremental development.

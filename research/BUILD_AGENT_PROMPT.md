@@ -43,7 +43,7 @@ When a gate passes, commit with a descriptive message. Do not accumulate 8 steps
 After every step, run ALL THREE:
 ```
 cargo build --release
-cargo test --release
+cargo nextest run --release
 cargo clippy --all-targets -- -D warnings
 ```
 All three must pass. If clippy warns, fix it. If tests fail, fix them. If it doesn't compile, fix it. Do not proceed with any failures.
@@ -105,7 +105,7 @@ Final: Integration test chaining all 12 steps end-to-end.
 
 ```
 cargo build --release          # zero errors
-cargo test --release           # all ~55 tests pass
+cargo nextest run --release    # all ~55 tests pass
 cargo clippy -- -D warnings    # zero warnings
 ```
 
