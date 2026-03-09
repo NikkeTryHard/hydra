@@ -48,7 +48,7 @@ Cross-validate the Rust scoring engine against the `mahjong` Python library (v1.
 **Edge cases requiring explicit test fixtures:**
 
 - Pinfu tsumo (fu calculation differs from ron)
-- Double yakuman (e.g., Daisangen + Tsuuiisou — additive stacking per [HYDRA_SPEC § Target Ruleset](HYDRA_SPEC.md#target-ruleset-tenhou-houou-4-player-%E9%B3%B3%E5%87%B0%E5%8D%93-%E5%9B%9B%E4%BA%BA%E6%89%93%E3%81%A1))
+- Double yakuman (e.g., Daisangen + Tsuuiisou — additive stacking under the Tenhou ruleset Hydra targets)
 - Kazoe yakuman (13+ han from non-yakuman yaku — scored as yakuman per Tenhou rules)
 - Paarenchan (8+ consecutive dealer wins — no special scoring per Tenhou rules; honba uncapped)
 - Kiriage mangan (3 han 60 fu / 4 han 30 fu = 7700, NOT rounded to mangan per Tenhou ranked rules)
