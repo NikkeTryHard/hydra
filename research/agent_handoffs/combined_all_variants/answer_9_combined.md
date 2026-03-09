@@ -47,8 +47,16 @@ The artifacts below reflect what the current codebase/docs and prior handoffs ap
 </artifact_note>
 
 <artifacts>
+Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+</artifacts>
 
-Artifact A — model output surface and parameter budget context:
+]]>
+  </prompt_text>
+  </prompt_section>
+
+  <answer_section>
+  <answer_text status="preserved" source_path="agent_9.md">
+  <![CDATA[# Conservative ExIt + delta-q supervision blueprint
 
 ```rust
 //! Full HydraModel combining backbone and all output heads.
@@ -1081,14 +1089,6 @@ No broad public-belief search.
 The smallest credible tranche is one optional advanced-target carrier, one activation policy, and exactly three live targets: ExIt, delta-Q, safety residual.
 ```
 
-</artifacts>
-]]>
-  </prompt_text>
-  </prompt_section>
-
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_9.md">
-  <![CDATA[# Conservative ExIt + delta-q supervision blueprint
 
 ## 0. Commit this lane, and keep it narrow
 
