@@ -9,6 +9,8 @@
 >
 > **Demotion note:** Treat this file as a reference/backlog map, not as the default build order for the strongest current Hydra. Any section that conflicts with reconciliation or current runtime reality should be treated as archived or future-use material, not immediate marching orders.
 
+> **Current repo snapshot (2026-03 code reality):** `hydra-train` already exists as a substantial crate. The live tree now includes `data/`, `training/`, `teacher/`, `selfplay.rs`, `inference.rs`, `eval.rs`, `league.rs`, and the `src/bin/train.rs` binary in addition to the original backbone / heads / model surfaces. The model already exposes the advanced output family (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`), and the training stack already contains `live_exit.rs`, `exit_validation.rs`, `head_gates.rs`, and `orchestrator.rs`. Read the step-by-step bootstrap sections below as historical implementation context unless a section is explicitly updated to describe the current code snapshot.
+
 **Dev agent rules**:
 - Every task ends with tests that PASS
 - No `unwrap()` in library code (use `?` or explicit error handling)
@@ -30,43 +32,41 @@
 
 ---
 
-## Step 1: Create hydra-train Crate
+## Step 1: Historical bootstrap note -- hydra-train crate creation is already complete
 
 **Ref: HYDRA_FINAL Section 4, Section 11 (Training pipeline)**
 
-### 1.1 Workspace Registration
+### 1.1 Current status
 
-Edit `/home/nikketryhard/dev/hydra/Cargo.toml` to add `hydra-train` to `[workspace] members`.
+- `hydra-train` is already registered in the workspace (`Cargo.toml`).
+- `crates/hydra-train/Cargo.toml` already exists and the crate builds as part of the live workspace.
+- The current `src/lib.rs` exports `backbone`, `config`, `data`, `eval`, `heads`, `inference`, `league`, `model`, `saf`, `selfplay`, `teacher`, and `training`.
 
-### 1.2 Crate Cargo.toml
+### 1.2 Current module structure
 
-Create `hydra-train/Cargo.toml`. Use whatever the latest `burn` version on crates.io is at build time.
-
-**Required dependencies**:
-- `hydra-core = { path = "../hydra-core" }`
-- `burn = { version = "0.16", features = ["train", "tch"] }`
-- `serde = { version = "1.0", features = ["derive"] }`
-
-**Dev dependencies**: `burn = { version = "0.16", features = ["ndarray"] }`
-
-**IMPORTANT**: If `burn` 0.16 doesn't exist yet, use whatever the latest stable release is. Check `crates.io/crates/burn` first.
-
-### 1.3 Module Structure
-
-```
-hydra-train/
+```text
+crates/hydra-train/
   Cargo.toml
   src/
-    lib.rs          # pub mod declarations
-    model.rs        # Full HydraModel combining backbone + heads
-    backbone.rs     # SEResNet, SEResBlock, SEBlock
-    heads.rs        # All 9 output heads
-    config.rs       # HydraModelConfig (hyperparameters)
+    bin/train.rs            # current BC-style training binary entrypoint
+    backbone.rs
+    config.rs
+    data/
+    eval.rs
+    heads.rs
+    inference.rs
+    league.rs
+    lib.rs
+    model.rs
+    saf.rs
+    selfplay.rs
+    teacher/
+    training/
 ```
 
-`lib.rs` exports: `pub mod backbone; pub mod config; pub mod heads; pub mod model;`
+Historical note: the original bootstrap work from this step is done. Use the rest of this roadmap for current shape/reference details, not to recreate the crate from scratch.
 
-**Note**: Search/belief code goes in `hydra-core` (pure Rust, no Burn dep): `ct_smc.rs`, `afbs.rs`, `robust_opponent.rs`, `endgame.rs`, `sinkhorn.rs`, `hand_ev.rs`, `arena.rs`. Training code goes in `hydra-train` (depends on Burn): `ach.rs`, `drda.rs`, `gae.rs`, `bc.rs`, `exit.rs`, `distill.rs`, `saf.rs`, `league.rs`, `eval.rs`, `inference.rs`.
+**Ownership note**: Search/belief runtime code stays in `hydra-core` (`ct_smc.rs`, `afbs.rs`, `robust_opponent.rs`, `endgame.rs`, `sinkhorn.rs`, `hand_ev.rs`, `arena.rs`). Burn-based model/training/orchestration code stays in `hydra-train`.
 
 ### 1.4 Constants (in `config.rs`)
 
@@ -137,7 +137,7 @@ Shape trace: `[B,256,34] -> mean(dim=2) -> [B,256,1] -> squeeze -> [B,256] -> fc
 
 **SEResNet<B: Backend>**: Full backbone.
 - Fields: `input_conv: Conv1d<B>` (`INPUT_CHANNELS`, 256, k=3, pad=Same), `input_gn: GroupNorm<B>` (32, 256), `blocks: Vec<SEResBlock<B>>`, `final_gn: GroupNorm<B>` (32, 256)
-- **SEResNetConfig**: `num_blocks: usize` (12 for ActorNet, 24 for LearnerNet), `input_channels: usize` (baseline 85; final target = fixed superset per `HYDRA_FINAL`), `hidden_channels: usize` (256), `num_groups: usize` (32), `se_bottleneck: usize` (64)
+- **SEResNetConfig**: `num_blocks: usize` (12 for ActorNet, 24 for LearnerNet), `input_channels: usize` (current live default 192; the old 85-channel view is baseline-prefix only), `hidden_channels: usize` (256), `num_groups: usize` (32), `se_bottleneck: usize` (64)
 - `init<B>(&self, device) -> SEResNet<B>`: Create input_conv, input_gn, N residual blocks, final_gn.
 - `forward(&self, x: [B, INPUT_CHANNELS, 34]) -> (spatial: [B, 256, 34], pooled: [B, 256])`:
   Input conv -> input_gn -> mish -> N residual blocks -> final_gn -> mish -> (spatial, global_avg_pool).
@@ -162,8 +162,8 @@ File: `hydra-train/src/backbone.rs` (in `#[cfg(test)] mod tests`). Use `burn::ba
 |------|-----------|
 | `se_block_preserves_shape` | SEBlock(256,64) on [4,256,34] -> output [4,256,34] |
 | `se_res_block_preserves_shape` | SEResBlock(256,32,64) on [4,256,34] -> output [4,256,34] |
-| `backbone_output_shapes_12_blocks` | SEResNet(12,85,256,32,64) on [4,85,34] -> spatial [4,256,34], pooled [4,256] |
-| `backbone_output_shapes_24_blocks` | SEResNet(24,85,256,32,64) on [2,85,34] -> spatial [2,256,34], pooled [2,256] |
+| `backbone_output_shapes_12_blocks` | SEResNet(12,192,256,32,64) on [4,192,34] -> spatial [4,256,34], pooled [4,256] |
+| `backbone_output_shapes_24_blocks` | SEResNet(24,192,256,32,64) on [2,192,34] -> spatial [2,256,34], pooled [2,256] |
 
 ---
 
@@ -173,7 +173,7 @@ File: `hydra-train/src/backbone.rs` (in `#[cfg(test)] mod tests`). Use `burn::ba
 
 All code goes in `hydra-train/src/heads.rs`.
 
-There are 8 inference heads + 1 oracle-only head = 9 total. Each head is a separate struct. They share NO weights. Every head takes either `pooled: [B, 256]` or `spatial: [B, 256, 34]` from the backbone.
+Current code reality is broader than the original 9-head bootstrap plan. The live model exposes the original 9-output core (policy/value/score/tenpai/GRP/opp-next/danger/oracle) plus five advanced outputs already present structurally in `model.rs`: `belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, and `safety_residual`. They still share the same backbone and remain staged at the data/loss level rather than all being equally active today.
 
 ### 3.1 Head Summary Table
 
@@ -188,8 +188,13 @@ There are 8 inference heads + 1 oracle-only head = 9 total. Each head is a separ
 | 7 | OppNextDiscardHead | spatial [B,256,34] | Conv1d(256,3,1) | [B, 3, 34] | none (raw logits) |
 | 8 | DangerHead | spatial [B,256,34] | Conv1d(256,3,1) | [B, 3, 34] | sigmoid |
 | 9 | OracleCriticHead | pooled [B,256] | Linear(256,4) | [B, 4] | none (raw) |
+| 10 | BeliefFieldHead | spatial [B,256,34] | Conv1d(256,16,1) | [B, 16, 34] | none (raw) |
+| 11 | MixtureWeightHead | pooled [B,256] | Linear(256,4) | [B, 4] | none (raw logits) |
+| 12 | OpponentHandTypeHead | pooled [B,256] | Linear(256,24) | [B, 24] | none (raw logits) |
+| 13 | DeltaQHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
+| 14 | SafetyResidualHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
 
-Note: Heads 7-10 from HYDRA_FINAL S4.3 (Mixture-SIB fields, hand-type latent, delta-Q regression, safety bound residual) are deferred to Step 12 (SaF + belief heads).
+Current activation note: the advanced heads above are structurally live, but their target paths are not all equally closed. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, while `delta_q_target` and `opponent_hand_type_target` still remain absent in the standard sample-to-target conversion.
 
 ### 3.2 Struct Definitions
 
@@ -260,25 +265,31 @@ The model returns ALL head outputs in a single struct, NOT a tuple:
 - `opp_next_discard: Tensor<B, 3>` -- [B, 3, 34].
 - `danger: Tensor<B, 3>` -- [B, 3, 34].
 - `oracle_critic: Tensor<B, 2>` -- [B, 4]. Only meaningful during oracle training.
+- `belief_fields: Tensor<B, 3>` -- [B, 16, 34].
+- `mixture_weight_logits: Tensor<B, 2>` -- [B, 4].
+- `opponent_hand_type: Tensor<B, 2>` -- [B, 24].
+- `delta_q: Tensor<B, 2>` -- [B, 46].
+- `safety_residual: Tensor<B, 2>` -- [B, 46].
 
 ### 4.2 HydraModel Struct
 
 **HydraModel<B: Backend>** (`#[derive(Module, Debug)]`):
-- Fields: `backbone: SEResNet<B>`, plus one field for each of the 9 heads (policy, value, score_pdf, score_cdf, opp_tenpai, grp, opp_next_discard, danger, oracle_critic).
+- Fields: `backbone: SEResNet<B>`, the 9 core heads above, plus the currently implemented advanced heads `belief_field`, `mixture_weight`, `opponent_hand_type`, `delta_q`, and `safety_residual`.
 
 ### 4.3 HydraModelConfig
 
 **HydraModelConfig** (`#[derive(Config, Debug)]`):
 - `num_blocks: usize` -- 12 for ActorNet, 24 for LearnerNet (NO default -- must be specified)
-- `input_channels: usize` (default = current baseline 85; migrate to final fixed-superset channel count from `HYDRA_FINAL`), `hidden_channels: usize` (default 256), `num_groups: usize` (default 32), `se_bottleneck: usize` (default 64)
+- `input_channels: usize` (default = current live fixed-superset 192), `hidden_channels: usize` (default 256), `num_groups: usize` (default 32), `se_bottleneck: usize` (default 64)
 - `action_space: usize` (default 46), `score_bins: usize` (default 64), `num_opponents: usize` (default 3), `grp_classes: usize` (default 24)
+- `num_belief_components: usize` (default 4), `opponent_hand_type_classes: usize` (default 8 in current config surface)
 - Convenience constructors: `actor() -> Self` (num_blocks=12, ~5M params), `learner() -> Self` (num_blocks=24, ~10M params)
 - Usage: `HydraModelConfig::new(12)` for ActorNet, `HydraModelConfig::new(24)` for LearnerNet
 
 ### 4.4 Init and Forward
 
 - `init<B>(&self, device) -> HydraModel<B>`: Create backbone from SEResNetConfig, create HeadsConfig, init all heads.
-- `forward(&self, x: [B, INPUT_CHANNELS, 34]) -> HydraOutput<B>`: Backbone -> (spatial, pooled) -> feed each head. Clone `pooled` 6 times (7 uses, last is move), clone `spatial` 1 time (2 uses, last is move).
+- `forward(&self, x: [B, INPUT_CHANNELS, 34]) -> HydraOutput<B>`: Backbone -> (spatial, pooled) -> feed all currently implemented heads. The live code also detaches the oracle branch from the shared pooled representation before feeding `oracle_critic`.
 
 **CRITICAL**: The last uses of `pooled` and `spatial` must NOT be cloned (Burn moves on use).
 
@@ -287,20 +298,20 @@ The model returns ALL head outputs in a single struct, NOT a tuple:
 - Do NOT run the backbone twice (once per head). Run it ONCE, share outputs.
 - Do NOT add dropout to the model. Dropout is NOT in HYDRA_FINAL architecture.
 - Do NOT forget to clone tensors. Burn moves on use. Last consumer gets the move.
-- Do NOT make HydraOutput generic over which heads are present. Always return all 9.
+- Do NOT make HydraOutput generic over which heads are present. Always return the full currently implemented output surface.
 - Do NOT add a `training: bool` parameter to forward. Oracle critic is always computed; it's simply ignored at inference time.
-- Do NOT reshape the input inside forward. The caller provides [B, 85, 34] directly.
+- Do NOT reshape the input inside forward beyond the standard `[B, INPUT_CHANNELS, 34]` contract. The live caller path already provides `[B, 192, 34]`.
 
 ### 4.6 Tests for Step 4
 
 | Test | Assertion |
 |------|-----------|
-| `actor_net_all_output_shapes` | HydraModelConfig::new(12) on [4,85,34] -> all 9 head shapes correct |
-| `learner_net_all_output_shapes` | HydraModelConfig::new(24) on [2,85,34] -> all 9 head shapes correct |
+| `actor_net_all_output_shapes` | HydraModelConfig::new(12) on [4,192,34] -> all implemented head shapes correct |
+| `learner_net_all_output_shapes` | HydraModelConfig::new(24) on [2,192,34] -> all implemented head shapes correct |
 | `value_head_bounded` | Random input -> all value outputs in [-1, 1] |
 | `danger_head_bounded` | Random input -> all danger outputs in [0, 1] |
 
-Expected output shapes: policy=[B,46], value=[B,1], score_pdf=[B,64], score_cdf=[B,64], opp_tenpai=[B,3], grp=[B,24], opp_next_discard=[B,3,34], danger=[B,3,34], oracle_critic=[B,4]
+Expected live output shapes: policy=[B,46], value=[B,1], score_pdf=[B,64], score_cdf=[B,64], opp_tenpai=[B,3], grp=[B,24], opp_next_discard=[B,3,34], danger=[B,3,34], oracle_critic=[B,4], belief_fields=[B,16,34], mixture_weight_logits=[B,4], opponent_hand_type=[B,24], delta_q=[B,46], safety_residual=[B,46]
 
 ---
 
@@ -321,7 +332,7 @@ Expected output shapes: policy=[B,46], value=[B,1], score_pdf=[B,64], score_cdf=
 
 ## Quick Reference: Import Map
 
-From `hydra-core`: `encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE}` (85, 34, 2890), `action::HYDRA_ACTION_SPACE` (46)
+From `hydra-core`: `encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE}` (192, 34, 6528), `action::HYDRA_ACTION_SPACE` (46)
 
 From `burn`: `prelude::*` (Backend, Tensor, Module, Config), `nn::{Linear, LinearConfig, GroupNorm, GroupNormConfig}`, `nn::conv::{Conv1d, Conv1dConfig}`, `nn::PaddingConfig1d`, `tensor::activation` (mish, sigmoid, tanh)
 
@@ -406,8 +417,8 @@ For each game: create GameState from start_kyoku -> step through events -> at ea
 ### 6.3 MjaiSample Struct
 
 **MjaiSample**: One decision point.
-- Fields: `obs: [f32; 2890]` (85*34 flat), `action: u8` (0-45), `legal_mask: [f32; 46]`, `placement: u8` (0-3), `score_delta: i32`, `grp_label: u8` (0-23), `tenpai: [f32; 3]`, `opp_next: [u8; 3]` (0-33 or 255=none), `danger: [f32; 3*34]`, `danger_mask: [f32; 3*34]`
-- Size: ~12.4 KB per sample. At 70 decisions/game * 6M games = 420M samples.
+- Fields: `obs: [f32; 6528]` (192*34 flat), `action: u8` (0-45), `legal_mask: [f32; 46]`, `placement: u8` (0-3), `score_delta: i32`, `grp_label: u8` (0-23), `tenpai: [f32; 3]`, `opp_next: [u8; 3]` (0-33 or 255=none), `danger: [f32; 3*34]`, `danger_mask: [f32; 3*34]`, plus the currently implemented optional advanced carriers (`safety_residual`, `belief_fields`, `mixture_weights`) and presence flags.
+- Size note: the old 85x34 sample-size estimate is stale. Recompute memory/storage sizing against the live 192x34 observation contract when using this section operationally.
 - Stream from disk, do NOT load all into RAM.
 
 ### 6.4 GRP Label Construction
@@ -418,7 +429,7 @@ For each game: create GameState from start_kyoku -> step through events -> at ea
 
 ### 6.5 Suit Permutation (6x augmentation)
 
-- `augment_obs_suit(obs: &[f32; 2890], perm: &[u8; 3]) -> [f32; 2890]`: Permute suit indices for all 85 channels x 34 tiles using `permute_tile_type`.
+- `augment_obs_suit(obs: &[f32; 6528], perm: &[u8; 3]) -> [f32; 6528]`: Permute suit indices for the live 192 channels x 34 tiles using the current encoder-compatible augmentation helpers.
 - `augment_action_suit(action: u8, perm: &[u8; 3]) -> u8`: Permute discard actions (0-36) only; non-discard actions (37-45) unchanged.
 - `augment_mask_suit(mask: &[f32; 46], perm: &[u8; 3]) -> [f32; 46]`: Permute first 37 entries; keep 37-45 unchanged.
 - Use `hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_type, permute_tile_extended}`. ALL_PERMUTATIONS has 6 entries (index 0 = identity).
@@ -430,9 +441,9 @@ Seat rotation is NOT a post-hoc transform on the obs tensor -- it requires RE-EN
 ### 6.7 Batch Collation into Burn Tensors
 
 **MjaiBatch<B: Backend>**:
-- Fields: `obs: [batch, 85, 34]`, `actions: [batch] Int`, `legal_mask: [batch, 46]`, `value_target: [batch]`, `grp_target: [batch, 24]`, `tenpai_target: [batch, 3]`, `danger_target: [batch, 3, 34]`, `danger_mask: [batch, 3, 34]`, `opp_next_target: [batch, 3, 34]`, `score_pdf_target: [batch, 64]`, `score_cdf_target: [batch, 64]`
+- Fields: `obs: [batch, 192, 34]`, `actions: [batch] Int`, `legal_mask: [batch, 46]`, `value_target: [batch]`, `grp_target: [batch, 24]`, `tenpai_target: [batch, 3]`, `danger_target: [batch, 3, 34]`, `danger_mask: [batch, 3, 34]`, `opp_next_target: [batch, 3, 34]`, `score_pdf_target: [batch, 64]`, `score_cdf_target: [batch, 64]`, with optional advanced tensors for the currently carried targets.
 
-Collation: stack obs arrays -> reshape [B,85,34], convert action to Int tensor, grp_label -> one_hot [B,24], opp_next -> one_hot per opponent (mask 255 as zero), score_delta -> value target (div by 100,000), score_delta -> bin index for pdf, score_delta -> step function for cdf.
+Collation: stack obs arrays -> reshape [B,192,34], convert action to Int tensor, grp_label -> one_hot [B,24], opp_next -> one_hot per opponent (mask 255 as zero), score_delta -> value target (div by 100,000), score_delta -> bin index for pdf, score_delta -> step function for cdf.
 
 ### 6.8 MUST NOT
 
@@ -449,7 +460,7 @@ Collation: stack obs arrays -> reshape [B,85,34], convert action to Int tensor, 
 | `test_load_single_game` | parse 1 .mjson.gz -> >50 decision points extracted |
 | `test_augment_6x` | 6 suit perms on same obs -> 6 distinct obs (identity included) |
 | `test_augment_preserves_honors` | suit perm does not move channels 27-33 |
-| `test_batch_shapes` | batch=32 -> obs=[32,85,34], actions=[32], mask=[32,46] |
+| `test_batch_shapes` | batch=32 -> obs=[32,192,34], actions=[32], mask=[32,46] |
 | `test_legal_mask_valid` | no sample in batch has all-zero mask |
 | `test_seat_rotation_4x` | same decision point from 4 seats -> 4 different obs, hand channels differ |
 
@@ -683,7 +694,7 @@ Benchmark: `bench_ct_smc_full_pipeline` -- median < 1ms over 1000 runs (forward 
 
 ### 10.3 Batched Leaf Evaluation
 
-**LeafBatch**: `obs_buffer: Vec<f32>` (N * 85 * 34), `node_indices: Vec<NodeIdx>`, `batch_size: usize`
+**LeafBatch**: `obs_buffer: Vec<f32>` (N * 192 * 34), `node_indices: Vec<NodeIdx>`, `batch_size: usize`
 - `MIN_BATCH = 32` for GPU efficiency. Returns (policy_logits[46], value[1]) per leaf.
 
 ### 10.4 Robust KL-Ball Opponent Nodes
@@ -728,7 +739,7 @@ Action sampling: per-seat temperature T ~ Uniform(0.5, 1.5), sampled once at gam
 ### 11.2 Trajectory Struct
 
 **TrajectoryStep** (`#[repr(C)]`):
-- Fields: `obs: [f32; 85*34]`, `action: u8`, `pi_old: [f32; 46]`, `reward: f32`, `done: bool`, `player_id: u8`, `game_id: u32`, `turn: u16`, `temperature: f32`
+- Fields: `obs: [f32; 192*34]`, `action: u8`, `pi_old: [f32; 46]`, `reward: f32`, `done: bool`, `player_id: u8`, `game_id: u32`, `turn: u16`, `temperature: f32`
 
 **Trajectory**: `steps: Vec<TrajectoryStep>`, `final_scores: [i32; 4]`, `game_id: u32`, `seed: u64`
 
@@ -746,9 +757,9 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 - Safety valve: skip if visit_count < min_visits OR KL(exit||base) > max_kl.
 - Combined loss: `L = L_ach + exit_weight*L_exit + saf_weight*L_saf + aux_weight*L_aux`
 
-> **Implementation status (2026-03-09):** The replay-derived ExIt consumer path (`ExitConfig`, `build_exit_from_afbs_tree`, `collate_exit_targets`, `exit_target`/`exit_mask` in `RlBatch`) and the live AFBS ExIt producer (`live_exit.rs`) are both implemented and tested.
+> **Implementation status (2026-03-09):** The ExIt helper/consumer path (`ExitConfig`, `build_exit_from_afbs_tree`, `collate_exit_targets`, `exit_target`/`exit_mask` in `RlBatch`) and the live AFBS ExIt producer (`live_exit.rs`) are both implemented and tested. The live self-play/RL lane is real; the normal replay/sample path still does not emit `exit_target`.
 >
-> **Live producer details:** `hydra-train/src/training/live_exit.rs` implements the Agent 22 blueprint -- learner-only, root-only AFBS with the public model value head as leaf scorer, all-legal discard seeding (bypasses `TOP_K=5`), visit-based labels via `build_exit_from_afbs_tree`, and default-off (`LiveExitConfig.enabled = false`). The self-play hook in `selfplay.rs` passes `&SafetyInfo` to support the `ExitSearchAdapter` trait. 17 unit tests pass.
+> **Live producer details:** `hydra-train/src/training/live_exit.rs` implements the Agent 22 blueprint -- learner-only, root-only AFBS with the public model value head as leaf scorer, all-legal discard seeding (bypasses `TOP_K=5`), and visit-based labels via `build_exit_from_afbs_tree`. `LiveExitConfig::default().enabled` is now `true`; disable explicitly when you want the producer off. The self-play hook in `selfplay.rs` passes `&SafetyInfo` to support the `ExitSearchAdapter` trait.
 >
 > **Self-play wiring (2026-03-09):** The ExIt producer is now wired into the self-play training loop:
 > - `orchestrator.rs`: `live_exit_config_from_plan(plan)` maps `MaintenancePlan` flags to `LiveExitConfig`
@@ -848,7 +859,7 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 **InferenceServer**: `actor: ActorNet`, `ponder_cache: Arc<DashMap<u64, PonderResult>>`, `saf_mlp: SafMlp`
 - Fast path: ActorNet forward + SaF adaptor (< 5ms). Slow path: reuse pondered AFBS subtree.
 - On-turn budget: 80-150ms. Call reactions: 20-50ms. Agari guard: always-on final check.
-- Signature: `infer(server, obs: &[f32; 85*34], legal: &[bool; 46]) -> (u8, [f32; 46])`
+- Signature: `infer(server, obs: &[f32; 192*34], legal: &[bool; 46]) -> (u8, [f32; 46])`
 - Tests: `inference_respects_time_budget`, `agari_guard_prevents_illegal`
 
 ---

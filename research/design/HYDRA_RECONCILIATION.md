@@ -85,6 +85,15 @@ What is confirmed in code today:
 - The train model already includes advanced heads structurally:
   - `hydra-train/src/model.rs`
   - `hydra-train/src/heads.rs`
+- The self-play/live ExIt lane is no longer just helper code:
+  - `hydra-train/src/training/live_exit.rs`
+  - `hydra-train/src/training/exit_validation.rs`
+  - `hydra-train/src/selfplay.rs`
+- Advanced-head activation discipline is implemented as an explicit controller:
+  - `hydra-train/src/training/head_gates.rs`
+- Runtime ponder/cache provenance hardening is implemented:
+  - `hydra-core/src/afbs.rs`
+  - `hydra-train/src/inference.rs`
 
 What is only partially true:
 
@@ -92,7 +101,8 @@ What is only partially true:
   - `hydra-train/src/training/losses.rs`
 - Advanced supervision hooks exist, but target closure is uneven rather than absent:
   - `hydra-train/src/data/sample.rs` / `hydra-train/src/data/mjai_loader.rs` already carry replay-derived `safety_residual` and can emit Stage A `belief_fields` / `mixture_weight` targets
-  - `hydra-train/src/training/rl.rs` can already consume `exit_target`, but the normal sample/batch path still does not produce a real upstream `exit_target`
+  - `hydra-train/src/training/rl.rs` can already consume `exit_target`, and the self-play/live producer path now carries `exit_target` / `exit_mask` through `TrajectoryExitLabel` into `RlBatch`
+  - the normal replay/sample batch path still does not emit `exit_target`, so ExIt closure is real in the live self-play lane but still uneven across training data paths
   - `delta_q_target` and `opponent_hand_type_target` still remain absent in the normal sample-to-target path
 - AFBS exists as a search shell, but not as a fully integrated public-belief search runtime:
   - `hydra-core/src/afbs.rs`
