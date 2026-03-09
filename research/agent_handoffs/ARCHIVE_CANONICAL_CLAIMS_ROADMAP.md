@@ -123,6 +123,8 @@ Interpretation rules:
 | 1 | Narrow advanced-target closure | Active-path doctrine | Completed | Reconciliation says the immediate need is supervision-loop closure, not broader search expansion. Doctrine truth-alignment pass done. | `HYDRA_RECONCILIATION.md` Recommendation 1; canonical rows 24, 34, 35, 55 |
 | 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; keep this lane narrow and replay-derived. | canonical rows 22, 23, 24; `answer_18_combined.md` |
 | 3 | Real `exit_target` carrier and provenance closure | Completed (bridge/consumer); self-play loop is infrastructure | Bridge helpers done; remaining gap is the self-play loop that constructs RlBatch | ExIt now has helpers (`build_exit_from_afbs_tree`, `collate_exit_targets`), consumer mask support, and integration tests exercising the full AFBS-to-RL-loss path. The remaining blocker is that no non-test code constructs `RlBatch` yet. | canonical rows 34, 35; `answer_9_combined.md`, `answer_15_combined.md`, `answer_2-1_combined.md` |
+
+Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt producer, the surviving archive verdict is now narrower than the older broad ExIt discussion. Teacher semantics should remain root child visits, `root_exit_policy()` / q-softmax should not be promoted into the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. That producer remains default-off until a validation matrix clears it; otherwise the archive says emit `None`, not weak substitute labels.
 | 4 | Advanced-head activation discipline | Completed in code | Gate pack implemented: density, conflict, warmup | `HeadActivationController` with density gates (`rho >= 0.8` dense, `spp >= 5` sparse), gradient conflict tracking (cosine < 30% negative), warmup protocol (Off->Warmup->Active), and `approved_loss_config` integration. 36 tests pass. | canonical row 55; `answer_13_combined.md`, `answer_3-1_combined.md` |
 | 5 | Runtime ponder/cache provenance hardening | Completed in code | Provenance fields, generation tracking, trust gating implemented | `PonderResult` carries `source_net_hash`, `source_version`, `TrustLevel`, `CacheNamespace`, `generation`. `PonderCache` enforces generation freshness. `InferenceServer` gates runtime cache hits behind `Authoritative` trust (nothing qualifies, keeping everything learner-only). 10 new tests. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 
@@ -132,10 +134,12 @@ Interpretation rules:
 |---|---|---|---|---|---|
 | 6 | H1a Hand-EV semantic repair on the current 42-plane surface | Fits current sequencing; still proposal-level | Strong live seam | Must beat current Hand-EV on exact-one-step oracle slices and stay within encode-cost limits. | canonical rows 36, 37, 38; `answer_14_combined.md`, `answer_17_combined.md` |
 | 7 | Tile-aware spatial/global head routing correction | Strong archive architecture survivor; not current doctrine | Narrow problem is visible in repo now | Route tile-indexed outputs from spatial features first; do not auto-promote the whole history-sidecar package. | canonical row 56; `answer_21.md` |
-| 8 | `delta_q` closure | Doctrinally interesting, not semantically closed | Mismatched surfaces, absent normal builder | Needs a single semantically aligned object, support mask, and credible training path before activation. | canonical row 29; `answer_15_combined.md`, `answer_18_combined.md`, `answer_7-1_combined.md` |
+| 8 | `delta_q` closure | Doctrinally interesting, not semantically closed | Mismatched surfaces, absent normal builder | Needs a masked `[46]` root-child q-delta object, explicit `[46]` support mask, shared root-search producer, and validation-backed training path before activation. | canonical rows 29, 30; `answer_15_combined.md`, `answer_18_combined.md`, `answer_7-1_combined.md`, `answer_23_combined.md` |
 | 9 | Public-posterior belief teacher closure | Doctrine-compatible later lane | Current Stage-A path is semantically weak | Must replace Stage-A projection with a credible public teacher object before any belief/mix activation. | canonical rows 25, 26, 27, 28; `answer_15_combined.md`, `answer_18_combined.md`, `answer_3-1_combined.md` |
 | 10 | World-aware CT-SMC Hand-EV (H1b) | Later selective lane only | Runtime seam exists; train/infer parity blocked | H1a must win first, CT-SMC quality gates must pass, and training-time matching search-context observations must exist. | canonical rows 39, 40, 41; `answer_14_combined.md`, `answer_1-1_combined.md` |
 | 11 | Specialist endgame leaf exactification | Later/narrower than Hand-EV | Host shell exists, stronger leaf absent | Keep it as a specialist late-game lane, likely via pondering/search-side deployment, not fast-path identity. | canonical rows 42, 43; `answer_14_combined.md`, `answer_3-1_combined.md` |
+
+Additional narrowing from `answer_23_combined.md`: current doctrine still keeps `delta_q_target` off. The only surviving honest closure lane is learner-only, root-only, search-derived `Q(child) - Q(root)` supervision over discard-compatible actions, preserved in the existing `[46]` head space via an explicit `[46]` mask. Hydra should not zero-extend the bridge/runtime `[34]` plane into training supervision; it should first close one shared ExIt/`delta_q` producer, provenance contract, and validation envelope.
 
 ### Reserve shelf
 
@@ -172,7 +176,7 @@ These survive as preserved options, but they should not steer the current active
 | `safety_residual` repair | Yes | Closed for the current replay-derived lane; keep activation/provenance narrow | Completed |
 | `exit_target` / conservative ExIt | Yes (bridge helpers complete) | Missing self-play loop / mainline RlBatch construction code | After self-play loop implementation |
 | Advanced-head activation discipline | Yes (gate pack complete) | Orchestrator integration + trunk detachment for warmup heads | Completed (core); orchestrator wiring after self-play loop |
-| `delta_q` | Partial | Dense `[46]` training surface and discard-only `[34]` runtime surface are not one closed object | After object + mask + builder closure |
+| `delta_q` | Partial | Dense `[46]` training surface and discard-only `[34]` runtime surface are not one closed object; shared masked producer and validation closure are still missing | After masked object + shared producer + validation closure |
 | Belief supervision | Partial | Weak Stage-A teacher; no credible public posterior object in the current path | After public-teacher closure |
 | H1a Hand-EV | Yes | Needs exact-one-step benchmark win | After benchmark pass |
 | H1b world-aware Hand-EV | Runtime seam only | Train/infer parity + representative-world gates | After H1a + parity + CT-SMC gates |
@@ -204,12 +208,16 @@ High-signal archive answers behind this roadmap:
 - `answer_20_combined.md` — cache/provenance authority critique and learner-only safe-policy recommendation
 - `answer_19_combined.md` — narrow learned ponder-scorer seam
 - `answer_21.md` — strongest surviving architecture lane: static compatibility path + head-routing correction + later history path
+- `answer_22.md` — narrow live-AFBS ExIt evaluator verdict: visits stay the teacher object; public value head is the only surviving narrow evaluator; keep the producer default-off until validation
+- `answer_23_combined.md` — delta_q closure blueprint: keep the lane off today; surviving future object is masked `[46]` root-child q-delta over discard-compatible actions with shared ExIt/search-label producer, provenance, and validation closure
 
 Canonical rows used most heavily:
 
 - 22-24: `safety_residual`
 - 25-31: belief / mixture / opponent-hand-type keep-off logic
+- 29-30: `delta_q` blocker plus masked future closure object
 - 34-35: ExIt doctrine versus missing carrier
+- 41: live-AFBS ExIt evaluator semantics (visit teacher, reject q-softmax teacher, value-head evaluator under learner-only root-only AFBS)
 - 36-41: Hand-EV realism, CT-SMC seam, parity blocker
 - 42-45: endgame shell and tiny learned ponder scorer
 - 46-50: router block, rollout provenance defect, threshold cleanup
