@@ -50,8 +50,16 @@ The artifacts below reflect what the current codebase/docs and prior handoffs ap
 </artifact_note>
 
 <artifacts>
+Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+</artifacts>
 
-Artifact A — current training-risk fears under audit:
+]]>
+  </prompt_text>
+  </prompt_section>
+
+  <answer_section>
+  <answer_text status="preserved" source_path="agent_13.md">
+  <![CDATA[# Hydra long-run training risk audit blueprint
 
 ```text
 - rollout-net distillation reducing search quality
@@ -1015,14 +1023,6 @@ fn all_outputs_finite_for_random_input() {
 }
 ```
 
-</artifacts>
-]]>
-  </prompt_text>
-  </prompt_section>
-
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_13.md">
-  <![CDATA[# Hydra long-run training risk audit blueprint
 
 **Evidence labels**
 
