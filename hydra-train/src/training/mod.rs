@@ -7,6 +7,7 @@ pub mod drda;
 pub mod exit;
 pub mod gae;
 pub mod head_gates;
+pub mod live_exit;
 pub mod losses;
 pub mod orchestrator;
 pub mod rl;

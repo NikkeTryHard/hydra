@@ -2,4 +2,5 @@
 
 pub mod augment;
 pub mod mjai_loader;
+pub mod pipeline;
 pub mod sample;
