@@ -17,7 +17,7 @@ def render_row(values: list[object]) -> str:
 
 base = Path(__file__).resolve().parent
 jsonl = base / "ARCHIVE_CANONICAL_CLAIMS.jsonl"
-md = base / "ARCHIVE_CANONICAL_CLAIMS.md"
+md = base / "ARCHIVE_CANONICAL_CLAIMS_RENDERED.md"
 records = []
 with jsonl.open("r", encoding="utf-8") as f:
     for line in f:
@@ -28,7 +28,10 @@ appendix = next(r["items"] for r in records if r["type"] == "appendix")
 status_updates = [r for r in records if r["type"] == "status_update"]
 claims = [r for r in records if r["type"] == "claim"]
 lines = []
-lines.append("## Archive canonical claims ledger")
+lines.append("# Archive canonical claims ledger (generated)")
+lines.append(
+    "This file is generated from `ARCHIVE_CANONICAL_CLAIMS.jsonl`. Edit the JSONL, not this markdown render."
+)
 lines.append(
     "This file is a stricter canonical ledger for the archive corpus in `research/agent_handoffs/combined_all_variants` only. Archive files are the extraction corpus. Current Hydra docs/code are used only for post-extraction validation and contradiction checks."
 )
