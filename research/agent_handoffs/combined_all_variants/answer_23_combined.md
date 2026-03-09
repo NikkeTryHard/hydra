@@ -96,12 +96,12 @@ Type: `file_full`
 Source: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`
 Why it matters: Raw canonical-claims artifact. Use it to cross-check the markdown condensation and preserve exact rows.
 
-## Artifact 06 — Canonical claims markdown table
+## Artifact 06 — Canonical claims markdown render
 Artifact id: `claims-md-full`
 Source label: CLAIMSMD
 Type: `file_full`
-Source: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.md`
-Why it matters: Human-readable version of the validated archive claims. Includes the typed-hole and keep-off rows for delta_q.
+Source: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md`
+Why it matters: Generated human-readable render of the validated archive claims. Includes the typed-hole and keep-off rows for delta_q.
 
 ## Artifact 07 — Combined answer 18 full artifact
 Artifact id: `answer-18-full`
@@ -376,7 +376,7 @@ Why it matters: Grounds what node q-value means in the actual search tree code.
     {
       "id": "claims-md-full",
       "type": "file_full",
-      "path": "research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.md",
+  "path": "research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md",
       "label": "Canonical claims markdown table",
       "explanation": "Human-readable version of the validated archive claims. Includes the typed-hole and keep-off rows for delta_q.",
       "source_label": "CLAIMSMD",

@@ -26,7 +26,7 @@
   - `research/design/HYDRA_FINAL.md`
   - `research/design/HYDRA_RECONCILIATION.md`
   - `research/design/IMPLEMENTATION_ROADMAP.md`
-  - `research/BUILD_AGENT_PROMPT.md`
+- `research/BUILD_AGENT_PROMPT.md` (historical; removed later, see `combined_all_variants/README.md`)
   - `research/design/OPPONENT_MODELING.md`
   - `research/design/TESTING.md`
   - `research/infrastructure/INFRASTRUCTURE.md`
@@ -34,7 +34,7 @@
   - `research/design/SEEDING.md`
   - plus any evidence/comparison docs that materially affect your conclusions
 
-  Treat `research/BUILD_AGENT_PROMPT.md` as an execution-rigor overlay on the design docs, but your task here is purely research/design.
+Treat the old `research/BUILD_AGENT_PROMPT.md` reference here as historical execution-rigor context only; for the current routing chain, use `combined_all_variants/README.md` and the live authority docs.
 
   ## Settled decisions you should treat as fixed inputs
 

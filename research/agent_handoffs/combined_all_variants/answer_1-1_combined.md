@@ -34,7 +34,7 @@
   1. `research/design/HYDRA_FINAL.md` = the architectural SSOT for final strength
   2. `research/design/HYDRA_RECONCILIATION.md` = the reconciled active-path / reserve-shelf / dropped-shelf decision memo
   3. `research/design/IMPLEMENTATION_ROADMAP.md` = the implementation ordering and gates
-  4. `research/BUILD_AGENT_PROMPT.md` = execution-discipline and rigor overlay on the other docs
+4. `research/BUILD_AGENT_PROMPT.md` = historical execution-discipline overlay on the other docs (removed later; see `combined_all_variants/README.md` for the current routing chain)
   5. `research/design/OPPONENT_MODELING.md`, `research/design/TESTING.md`, `research/infrastructure/INFRASTRUCTURE.md`, `docs/GAME_ENGINE.md`, `research/design/SEEDING.md` = supporting specs and constraints
 
   ## Resolved decisions you should treat as fixed inputs

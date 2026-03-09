@@ -35,10 +35,10 @@
 
   1. `research/design/HYDRA_FINAL.md` = the architectural SSOT for final strength
   2. `research/design/IMPLEMENTATION_ROADMAP.md` = the implementation ordering and gates
-  3. `research/BUILD_AGENT_PROMPT.md` = execution-discipline and rigor overlay on the other docs
+  3. `research/BUILD_AGENT_PROMPT.md` = historical execution-discipline overlay on the other docs (removed later; see `combined_all_variants/README.md` for the current routing chain)
   4. `research/design/OPPONENT_MODELING.md`, `research/design/TESTING.md`, `research/infrastructure/INFRASTRUCTURE.md`, `docs/GAME_ENGINE.md`, `research/design/SEEDING.md` = supporting specs and constraints
 
-  **Important:** use `research/BUILD_AGENT_PROMPT.md` as a cross-cutting overlay on the rest of the docs, but do so in a **design/advisory** sense rather than a code-execution sense. In other words, use it to understand ordering, rigor, and what must not be hand-waved.
+  **Important:** treat the old `research/BUILD_AGENT_PROMPT.md` reference here as historical context only. For the current routing chain, use `combined_all_variants/README.md` and the live authority docs instead.
 
   ### What you should focus on
 
@@ -109,7 +109,7 @@
   3. If more context is needed, send the remaining markdown raw links and any especially relevant external PDF links.
 
   ## Notes
-  - `research/BUILD_AGENT_PROMPT.md` should be treated as an execution overlay on top of the architecture/design docs.
+- historical `research/BUILD_AGENT_PROMPT.md` references should now be interpreted through the current routing chain described in `combined_all_variants/README.md`.
   - Do not use AGPL code as implementation source.
   - Keep `.cargo/config.toml` local-only; it is not part of the handoff.
   </start-prompt>
