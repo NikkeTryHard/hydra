@@ -1,0 +1,11 @@
+[build]
+jobs = 16
+rustc-wrapper = "scripts/rustc-wrapper.sh"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]
+
+[env]
+RAYON_NUM_THREADS = "16"
+NEXTEST_TEST_THREADS = "16"

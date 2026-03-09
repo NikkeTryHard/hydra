@@ -3,7 +3,7 @@
 **Goal**: Write all Rust/Burn code until `hydra-train` compiles, tests pass, and is ready to train.
 **No GPU hours. No training. Just code that works.**
 
-**End state**: `cargo build --release && cargo test --release && cargo clippy -- -D warnings` all green. Every HYDRA_FINAL component implemented and tested.
+**End state**: `cargo build --release && cargo nextest run --release && cargo clippy -- -D warnings` all green. Every HYDRA_FINAL component implemented and tested.
 
 > **Current sequencing note:** This roadmap is an implementation-detail reference, not the sole authority on what to build next. For the immediate execution order, `research/design/HYDRA_RECONCILIATION.md` wins when it conflicts with this roadmap's broader full-stack sequencing.
 >
