@@ -36,8 +36,8 @@ If you are deciding what to build next, read these in order:
 | [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Current execution doctrine and active/reserve split |
 | [HYDRA_ARCHIVE.md](research/design/HYDRA_ARCHIVE.md) | Archived / reserve-only planning surfaces |
 | [HYDRA_SPEC.md](research/design/HYDRA_SPEC.md) | Historical architecture spec only |
-| [MORTAL_ANALYSIS.md](research/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
-| [OPPONENT_MODELING.md](research/OPPONENT_MODELING.md) | Opponent-modeling rationale; includes both active ideas and reserve/future extensions |
+| [MORTAL_ANALYSIS.md](research/intel/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
+| [OPPONENT_MODELING.md](research/design/OPPONENT_MODELING.md) | Opponent-modeling rationale; includes both active ideas and reserve/future extensions |
 | [INFRASTRUCTURE.md](research/infrastructure/INFRASTRUCTURE.md) | Rust stack, data pipeline, training infra, hardware, deployment |
 | [SEEDING.md](research/design/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
 | [CHECKPOINTING.md](research/infrastructure/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
