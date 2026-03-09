@@ -77,13 +77,15 @@ Under purely random dealing, $X_t$ is multivariate hypergeometric; under strateg
 
 **Group C -- Search and belief features (dynamic, ~60-200 planes):** Belief marginals $B_t(k,z)$, mixture weights/entropy/ESS, AFBS action deltas $\Delta Q(a)$, risk estimates, robust opponent stress indicators. Zeroed with presence mask when unavailable.
 
-**Group D -- Hand-EV oracle features (~34-68 planes, CPU-precomputed):** For each discard candidate $a$ (34 tile types), pre-compute exact look-ahead analysis:
+**Group D -- Hand-EV oracle features (~34-68 planes, CPU-precomputed):** For each discard candidate $a$ (34 tile types), pre-compute look-ahead analysis on the existing 42-plane interface:
 - $P_{\text{tenpai}}^{(d)}(a)$: probability of reaching tenpai within $d \in \{1,2,3\}$ self-draws.
 - $P_{\text{win}}^{(d)}(a)$: probability of winning within $d$ draws (tsumo + simplified ron model).
 - $\mathbb{E}[\text{score} \mid \text{win}, a]$: expected hand value (han/fu/score) if we win after discarding $a$.
 - Ukeire vector: 34-element effective tile acceptance weighted by remaining counts.
 
 These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + scoring engine) using belief-weighted remaining tile counts from CT-SMC. Zero GPU cost -- CPU pre-computes during game step processing. Suphx reported these look-ahead features as their single biggest practical improvement (Li et al. 2020).
+
+Current implementation note: the live repo already carries the same 42-plane Hand-EV surface through `HandEvFeatures`, bridge code, and encoder channels, but the present formulas remain heuristic approximations rather than exact local-oracle semantics. Treat the interface as live and the stronger semantics as the upgrade target.
 
 ### 4.2 Two-tier architecture
 
@@ -104,7 +106,7 @@ A 40-block teacher trained only on hard states (1-5%) gets just ~7 spp -- catast
 | **LearnerNet** | 24 | ~10M | Training (ACH/ExIt) + deep AFBS on hard positions | GPU 0-1 (train), GPU 3 (search) |
 | **ActorNet** | 12 | ~5M | Self-play data generation + shallow SaF features | GPU 2 |
 
-All use SE-ResNet with GroupNorm(32) and Mish. bf16 precision. **Continuous distillation**: Learner -> Actor (every 1-2 minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms. LearnerNet runs deep AFBS on GPU 3 for hard-position ExIt labels.
+All use SE-ResNet with GroupNorm(32) and Mish. Target deployment precision is bf16-capable, but the current repo remains fp32-first unless backend autocast is wired explicitly. **Continuous distillation**: Learner -> Actor (every 1-2 minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms. LearnerNet runs deep AFBS on GPU 3 for hard-position ExIt labels.
 
 ### 4.3 Heads (multi-task)
 
@@ -115,6 +117,8 @@ All use SE-ResNet with GroupNorm(32) and Mish. bf16 precision. **Continuous dist
 **Belief heads:** (7) Mixture-SIB external fields $F_\theta^{(\ell)}(k,z)$ and mixture weight logits. (8) Opponent hand-type latent predictor.
 
 **Search distillation heads:** (9) $\Delta Q$ regression (predict search advantage over baseline). (10) Safety bound residual (predict conservatism gap).
+
+Current implementation note: the live model already exposes these advanced output families structurally in one output contract (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`), but activation remains staged because the target paths are not equally closed today.
 
 ---
 
@@ -201,6 +205,8 @@ On event: lookup predicted child key; if match, shift root and keep statistics; 
 
 ### 7.5 Endgame exactification (wall-small solver)
 
+Current implementation note: the live repo currently implements a selective particle-weighted PIMC shell for this area rather than a full exact multiplayer endgame solver. Keep exactification as the target direction, not as a claim about the current `endgame.rs` semantics.
+
 **Trigger:** Activate when remaining wall $\le W^* = 10$ tiles AND at least one threatening signal (riichi, open tenpai, high-tempo opponent).
 
 **PIMC with top-k draw pruning.** Full Expectimax over wall=10 is too slow (~661K paths per particle at 0.1ms each = 66s). Instead, use **Pure PIMC**: for each CT-SMC particle, sample ONE draw sequence (weighted by hypergeometric probabilities) and ONE opponent action sequence (from ActorNet policy). Average over P particles. This reduces to P forward passes per endgame evaluation. With top-mass particle reduction (keep particles covering 95% weight, typically P=50-100): **5-10ms per decision**, well within budget. Top-k draw pruning (branch only on the 2-3 most likely draws at our nodes) provides a middle ground between PIMC and full Expectimax when more precision is needed.
@@ -252,7 +258,7 @@ For each legal action $a$, AFBS returns: $\Delta Q(a)$, deal-in risk estimates (
 
 ### 10.1 ExIt targets
 
-From AFBS: $\pi^{\text{ExIt}}(\cdot\mid I)=\mathrm{Softmax}(Q(I,\cdot)/\tau_{\text{ExIt}})$.
+Current Hydra doctrine and implementation direction use a masked, visit-based root-child distribution as the ExIt teacher object. `root_exit_policy()` / q-softmax is not the teacher object for the live AFBS-generated ExIt lane.
 
 ### 10.2 Pondering = label amplification
 
