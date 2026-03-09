@@ -5,6 +5,7 @@ pub mod bc;
 pub mod distill;
 pub mod drda;
 pub mod exit;
+pub mod exit_validation;
 pub mod gae;
 pub mod head_gates;
 pub mod live_exit;

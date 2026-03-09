@@ -15,8 +15,10 @@ use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 
 use crate::config::{GAE_GAMMA, GAE_LAMBDA};
+use crate::model::HydraModel;
 use crate::training::exit::collate_exit_targets;
 use crate::training::gae::{compute_per_player_gae, normalize_advantages, GaeConfig};
+use crate::training::live_exit::{make_live_exit_fn, LiveExitConfig};
 use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;
 
@@ -474,6 +476,107 @@ pub fn trajectories_to_rl_batch<B: Backend>(
     }
 }
 
+/// Raw output from a batch of self-play games before RL batch collation.
+///
+/// Separates trajectory generation from batch construction so that tests
+/// and future arena buffering can inspect individual game results.
+pub struct SelfPlayBatchSource {
+    /// Completed game trajectories, one per seed.
+    pub trajectories: Vec<Trajectory>,
+    /// Per-step value baselines for each trajectory, used by GAE.
+    pub values: Vec<Vec<f32>>,
+}
+
+/// Generates self-play trajectories with optional live ExIt labels.
+///
+/// Runs one game per seed using the provided model for both action
+/// selection and value estimation. When `live_exit_cfg.enabled` is true,
+/// the ExIt producer attempts to generate search-distillation labels at
+/// each decision point (subject to the producer's internal gates).
+///
+/// The returned [`SelfPlayBatchSource`] contains raw trajectories and
+/// per-step value baselines suitable for [`trajectories_to_rl_batch`].
+pub fn generate_self_play_batch_source<B: Backend>(
+    game_seeds: &[u64],
+    temperature: f32,
+    rng_seed: u64,
+    model: &HydraModel<B>,
+    device: &B::Device,
+    live_exit_cfg: LiveExitConfig,
+) -> SelfPlayBatchSource {
+    let mut trajectories = Vec::with_capacity(game_seeds.len());
+    let mut all_values = Vec::with_capacity(game_seeds.len());
+
+    for (idx, &seed) in game_seeds.iter().enumerate() {
+        let game_rng = rng_seed.wrapping_add(idx as u64);
+
+        let infer_fn = |obs: &[f32; OBS_SIZE]| -> [f32; HYDRA_ACTION_SPACE] {
+            let (logits, _) = model.policy_value_cpu(obs, device);
+            logits
+        };
+
+        let exit_cfg = live_exit_cfg.clone();
+        let exit_fn = make_live_exit_fn(exit_cfg, |obs: &[f32; OBS_SIZE]| {
+            model.policy_value_cpu(obs, device)
+        });
+
+        let trajectory =
+            run_self_play_game_with_exit_labels(seed, temperature, game_rng, infer_fn, exit_fn);
+
+        let step_values: Vec<f32> = trajectory
+            .steps
+            .iter()
+            .map(|step| {
+                let (_, value) = model.policy_value_cpu(&step.obs, device);
+                value
+            })
+            .collect();
+
+        all_values.push(step_values);
+        trajectories.push(trajectory);
+    }
+
+    SelfPlayBatchSource {
+        trajectories,
+        values: all_values,
+    }
+}
+
+/// Generates a complete RL training batch from self-play games.
+///
+/// This is the main entry point for the training loop's data generation
+/// phase. It combines trajectory generation (with optional ExIt labels)
+/// and GAE-based advantage computation into a single [`RlBatch`].
+///
+/// # Arguments
+///
+/// * `game_seeds` - One seed per game to generate
+/// * `temperature` - Exploration temperature for action sampling
+/// * `rng_seed` - Base RNG seed for per-game derivation
+/// * `model` - Current model for inference and value estimation
+/// * `device` - Burn backend device
+/// * `gae_config` - GAE hyperparameters for advantage computation
+/// * `live_exit_cfg` - ExIt producer configuration from the maintenance plan
+pub fn generate_self_play_rl_batch<B: Backend>(
+    game_seeds: &[u64],
+    temperature: f32,
+    rng_seed: u64,
+    model: &HydraModel<B>,
+    device: &B::Device,
+    gae_config: &GaeConfig,
+    live_exit_cfg: LiveExitConfig,
+) -> RlBatch<B> {
+    let source = generate_self_play_batch_source(
+        game_seeds,
+        temperature,
+        rng_seed,
+        model,
+        device,
+        live_exit_cfg,
+    );
+    trajectories_to_rl_batch(&source.trajectories, &source.values, gae_config, device)
+}
+
 fn run_player_decision<F, E>(
     env: &mut DecisionEnv<'_, F>,
     pid: u8,
@@ -640,6 +743,7 @@ pub fn default_gae_config() -> GaeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::HydraModelConfig;
     use burn::backend::NdArray;
 
     type B = NdArray<f32>;
@@ -789,6 +893,51 @@ mod tests {
         assert!(!trajectory.steps.is_empty());
         assert!(trajectory.is_complete());
         assert!(trajectory.validate().is_ok());
+    }
+
+    #[test]
+    fn test_generate_self_play_batch_source_without_exit() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<B>(&device);
+        let seeds = [42u64, 43];
+        let cfg = LiveExitConfig {
+            enabled: false,
+            ..LiveExitConfig::default()
+        };
+
+        let source = generate_self_play_batch_source(&seeds, 1.0, 100, &model, &device, cfg);
+
+        assert_eq!(source.trajectories.len(), 2);
+        assert_eq!(source.values.len(), 2);
+        for (traj, vals) in source.trajectories.iter().zip(source.values.iter()) {
+            assert_eq!(traj.steps.len(), vals.len());
+            assert!(traj.steps.iter().all(|s| s.exit_label.is_none()));
+        }
+    }
+
+    #[test]
+    fn test_generate_self_play_rl_batch_produces_valid_batch() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<B>(&device);
+        let seeds = [42u64];
+        let cfg = LiveExitConfig::default();
+        let gae = GaeConfig {
+            gamma: GAE_GAMMA,
+            lambda: GAE_LAMBDA,
+        };
+
+        let batch = generate_self_play_rl_batch(&seeds, 1.0, 100, &model, &device, &gae, cfg);
+        let [steps, action_dim] = batch.targets.policy_target.dims();
+        assert!(steps > 0);
+        assert_eq!(action_dim, HYDRA_ACTION_SPACE);
     }
 
     #[test]

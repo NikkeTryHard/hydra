@@ -1,6 +1,8 @@
 //! Full HydraModel combining backbone and all output heads.
 
 use burn::prelude::*;
+use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE};
 
 use crate::backbone::{SEResNet, SEResNetConfig};
 use crate::config::INPUT_CHANNELS;
@@ -250,6 +252,39 @@ impl<B: Backend> HydraModel<B> {
         self.policy.forward(pooled)
     }
 
+    /// Runs a single observation through the full model and returns policy
+    /// logits and value scalar on the CPU.
+    ///
+    /// This is the adapter used by the live ExIt producer during self-play.
+    /// It performs a single-sample forward pass, extracts the policy logits
+    /// as a fixed-size array and the value head output as a scalar.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the forward pass produces non-extractable tensor data.
+    pub fn policy_value_cpu(
+        &self,
+        obs: &[f32; OBS_SIZE],
+        device: &B::Device,
+    ) -> ([f32; HYDRA_ACTION_SPACE], f32) {
+        let input = Tensor::<B, 1>::from_floats(obs.as_slice(), device).reshape([
+            1,
+            NUM_CHANNELS,
+            NUM_TILES,
+        ]);
+        let output = self.forward(input);
+        let logits_vec = output
+            .policy_logits_cpu()
+            .expect("policy logits extraction failed");
+        let logits: [f32; HYDRA_ACTION_SPACE] = logits_vec
+            .try_into()
+            .expect("policy logits length mismatch");
+        let value = output
+            .value_scalar()
+            .expect("value scalar extraction failed");
+        (logits, value)
+    }
+
     pub fn forward(&self, x: Tensor<B, 3>) -> HydraOutput<B> {
         let (spatial, pooled) = self.backbone.forward(x);
         let oracle_input = pooled.clone().detach();
@@ -330,6 +365,17 @@ mod tests {
         for &v in data.as_slice::<f32>().expect("f32") {
             assert!((-1.0..=1.0).contains(&v), "value {v} out of [-1,1]");
         }
+    }
+
+    #[test]
+    fn policy_value_cpu_returns_correct_shapes() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let obs = [0.0f32; OBS_SIZE];
+        let (logits, value) = model.policy_value_cpu(&obs, &device);
+        assert_eq!(logits.len(), HYDRA_ACTION_SPACE);
+        assert!(value.is_finite());
+        assert!(logits.iter().all(|v| v.is_finite()));
     }
 
     #[test]

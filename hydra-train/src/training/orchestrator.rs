@@ -8,8 +8,10 @@ use crate::model::HydraModel;
 use crate::training::bc::{bc_train_step, oracle_guiding_train_step, phase_learning_rate};
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
+use crate::training::exit::ExitConfig;
+use crate::training::live_exit::LiveExitConfig;
 use crate::training::losses::{HydraLoss, HydraTargets};
-use crate::training::rl::{rl_step_with_phase_progress, RlBatch, RlConfig};
+use crate::training::rl::{RlBatch, RlConfig, rl_step_with_phase_progress};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchmarkGateMetrics {
@@ -187,6 +189,18 @@ pub fn maintenance_plan(
         distill_warning: distill_state.should_warn(max_distill_kl_drift),
         shallow_exit_enabled,
         deep_exit_enabled,
+    }
+}
+
+/// Builds the live ExIt producer config from the current maintenance plan.
+///
+/// Returns a [`LiveExitConfig`] with `enabled` set according to the plan's
+/// exit flags. The producer remains default-off when neither shallow nor
+/// deep exit is active.
+pub fn live_exit_config_from_plan(plan: &MaintenancePlan) -> LiveExitConfig {
+    LiveExitConfig {
+        enabled: plan.shallow_exit_enabled || plan.deep_exit_enabled,
+        exit_config: ExitConfig::default_phase3(),
     }
 }
 
@@ -425,6 +439,45 @@ mod tests {
         assert!(!plan.should_distill);
         assert!(!plan.shallow_exit_enabled);
         assert!(!plan.deep_exit_enabled);
+    }
+
+    #[test]
+    fn live_exit_config_from_plan_disabled_when_no_exit() {
+        let plan = MaintenancePlan {
+            should_rebase: false,
+            should_distill: false,
+            distill_warning: false,
+            shallow_exit_enabled: false,
+            deep_exit_enabled: false,
+        };
+        let cfg = live_exit_config_from_plan(&plan);
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn live_exit_config_from_plan_enabled_on_shallow_exit() {
+        let plan = MaintenancePlan {
+            should_rebase: false,
+            should_distill: false,
+            distill_warning: false,
+            shallow_exit_enabled: true,
+            deep_exit_enabled: false,
+        };
+        let cfg = live_exit_config_from_plan(&plan);
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn live_exit_config_from_plan_enabled_on_deep_exit() {
+        let plan = MaintenancePlan {
+            should_rebase: false,
+            should_distill: false,
+            distill_warning: false,
+            shallow_exit_enabled: false,
+            deep_exit_enabled: true,
+        };
+        let cfg = live_exit_config_from_plan(&plan);
+        assert!(cfg.enabled);
     }
 
     #[test]
