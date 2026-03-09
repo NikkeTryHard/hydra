@@ -208,8 +208,8 @@ mod tests {
     #[test]
     fn test_ach_one_epoch_changes_weights() {
         use crate::model::HydraModelConfig;
-        use crate::training::losses::{tests::make_dummy_targets, HydraLoss, HydraLossConfig};
-        use crate::training::rl::{rl_step, RlBatch, RlConfig};
+        use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
+        use crate::training::rl::{RlBatch, RlConfig, rl_step};
         use burn::optim::AdamConfig;
 
         let device = Default::default();

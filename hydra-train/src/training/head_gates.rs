@@ -914,7 +914,7 @@ mod tests {
         tracker.record(head, -0.3); // negative
         tracker.record(head, 0.1); // positive
         tracker.record(head, -0.2); // negative
-                                    // 2/4 = 0.5
+        // 2/4 = 0.5
         assert!((tracker.negative_fraction(head) - 0.5).abs() < 1e-6);
         assert_eq!(tracker.total_checks(head), 4);
         assert!(tracker.is_conflicting(head, 0.3)); // 0.5 > 0.3
