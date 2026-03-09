@@ -12,8 +12,8 @@ use hydra_train::data::pipeline::{
 use hydra_train::data::sample::MjaiSample;
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::{
-    policy_agreement, target_actions_from_policy_target, train_epoch, warmup_then_cosine_lr,
-    BCTrainerConfig, CheckpointMeta,
+    BCTrainerConfig, CheckpointMeta, policy_agreement, target_actions_from_policy_target,
+    train_epoch, warmup_then_cosine_lr,
 };
 use hydra_train::training::losses::{HydraLoss, HydraLossConfig};
 

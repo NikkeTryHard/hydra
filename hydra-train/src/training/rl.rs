@@ -5,7 +5,7 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::model::HydraModel;
-use crate::training::ach::{ach_policy_loss, AchConfig};
+use crate::training::ach::{AchConfig, ach_policy_loss};
 use crate::training::drda;
 use crate::training::losses::{HydraLoss, HydraTargets};
 
@@ -166,7 +166,7 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
 mod tests {
     use super::*;
     use crate::model::HydraModelConfig;
-    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::{Autodiff, NdArray};
     use burn::optim::AdamConfig;
 

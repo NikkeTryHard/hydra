@@ -4,8 +4,8 @@ use std::path::Path;
 
 use burn::prelude::*;
 
-use crate::data::mjai_loader::{load_game_from_path, MjaiDataset};
-use crate::data::sample::{collate_batch, collate_batch_augmented, MjaiSample};
+use crate::data::mjai_loader::{MjaiDataset, load_game_from_path};
+use crate::data::sample::{MjaiSample, collate_batch, collate_batch_augmented};
 use crate::training::losses::HydraTargets;
 
 fn next_seed(seed: &mut u64) -> u64 {

@@ -382,13 +382,14 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                         danger_mask[start..start + 34].fill(1.0);
                     }
                 }
-                let (safety_residual, safety_residual_mask) = build_safety_residual_targets(
-                    &legal_mask,
-                    &safety[actor],
-                    &wait_sets,
-                );
-                let (belief_fields, mixture_weights, belief_fields_present, mixture_weights_present) =
-                    build_stage_a_belief_targets(&state, actor, &obs);
+                let (safety_residual, safety_residual_mask) =
+                    build_safety_residual_targets(&legal_mask, &safety[actor], &wait_sets);
+                let (
+                    belief_fields,
+                    mixture_weights,
+                    belief_fields_present,
+                    mixture_weights_present,
+                ) = build_stage_a_belief_targets(&state, actor, &obs);
                 samples.push(MjaiSample {
                     obs: obs_encoded,
                     action: hydra_action.id(),
@@ -602,11 +603,19 @@ mod tests {
         let (log, final_scores) = play_game_with_mjai_log(7);
         let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
         let expected = oracle_target_from_scores(final_scores);
-        assert!(!game.samples.is_empty(), "expected replay to produce samples");
+        assert!(
+            !game.samples.is_empty(),
+            "expected replay to produce samples"
+        );
         for sample in game.samples.iter().take(8) {
-            let got_target = sample.oracle_target.expect("oracle target should be present");
+            let got_target = sample
+                .oracle_target
+                .expect("oracle target should be present");
             for (got, want) in got_target.iter().zip(expected.iter()) {
-                assert!((got - want).abs() < 1e-6, "oracle target mismatch: {got} vs {want}");
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "oracle target mismatch: {got} vs {want}"
+                );
             }
         }
     }
@@ -615,25 +624,39 @@ mod tests {
     fn load_game_from_reader_populates_safety_residual_for_discards_only() {
         let (log, _) = play_game_with_mjai_log(11);
         let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
-        let sample = game.samples.iter().find(|s| s.action <= DISCARD_END).expect("discard sample");
+        let sample = game
+            .samples
+            .iter()
+            .find(|s| s.action <= DISCARD_END)
+            .expect("discard sample");
         let target = sample.safety_residual.expect("safety residual target");
         let mask = sample.safety_residual_mask.expect("safety residual mask");
         assert_eq!(target.len(), HYDRA_ACTION_SPACE);
         assert_eq!(mask.len(), HYDRA_ACTION_SPACE);
         let masked_discards: f32 = mask[..=DISCARD_END as usize].iter().sum();
-        assert!(masked_discards > 0.0, "expected at least one discard action to be labeled");
+        assert!(
+            masked_discards > 0.0,
+            "expected at least one discard action to be labeled"
+        );
         let masked_non_discards: f32 = mask[(DISCARD_END as usize + 1)..].iter().sum();
-        assert!(masked_non_discards.abs() < 1e-6, "non-discard actions should be masked out");
+        assert!(
+            masked_non_discards.abs() < 1e-6,
+            "non-discard actions should be masked out"
+        );
         for (&value, &mask_value) in target.iter().zip(mask.iter()) {
             if mask_value > 0.0 {
                 assert!(value.is_finite(), "masked residual should be finite");
-                assert!((-1.0..=1.0).contains(&value), "masked residual should stay in [-1, 1], got {value}");
+                assert!(
+                    (-1.0..=1.0).contains(&value),
+                    "masked residual should stay in [-1, 1], got {value}"
+                );
             }
         }
         let mut saw_positive = false;
         let mut saw_nonzero = false;
         for sample in &game.samples {
-            let (Some(target), Some(mask)) = (sample.safety_residual, sample.safety_residual_mask) else {
+            let (Some(target), Some(mask)) = (sample.safety_residual, sample.safety_residual_mask)
+            else {
                 continue;
             };
             for (&value, &mask_value) in target.iter().zip(mask.iter()) {
@@ -644,8 +667,14 @@ mod tests {
                 saw_nonzero |= value.abs() > 1e-6;
             }
         }
-        assert!(saw_positive, "expected at least one positive signed residual in replay labels");
-        assert!(saw_nonzero, "expected at least one nonzero signed residual in replay labels");
+        assert!(
+            saw_positive,
+            "expected at least one positive signed residual in replay labels"
+        );
+        assert!(
+            saw_nonzero,
+            "expected at least one nonzero signed residual in replay labels"
+        );
     }
 
     #[test]
@@ -665,17 +694,31 @@ mod tests {
 
         let (target, mask) = build_safety_residual_targets(&legal_mask, &safety, &wait_sets);
 
-        assert!((target[0] - 1.0).abs() < 1e-6, "safe tile with public score 0 should become +1 residual");
-        assert!(target[1].abs() < 1e-6, "safe tile with public score 1 should have zero residual");
-        assert!((target[2] - 1.0).abs() < 1e-6, "safe tile with public score 0 should become +1 residual");
-        assert!((target[AKA_5M as usize] + 1.0).abs() < 1e-6, "aka tile should map to base tile before residual computation");
+        assert!(
+            (target[0] - 1.0).abs() < 1e-6,
+            "safe tile with public score 0 should become +1 residual"
+        );
+        assert!(
+            target[1].abs() < 1e-6,
+            "safe tile with public score 1 should have zero residual"
+        );
+        assert!(
+            (target[2] - 1.0).abs() < 1e-6,
+            "safe tile with public score 0 should become +1 residual"
+        );
+        assert!(
+            (target[AKA_5M as usize] + 1.0).abs() < 1e-6,
+            "aka tile should map to base tile before residual computation"
+        );
         assert_eq!(mask[0], 1.0);
         assert_eq!(mask[1], 1.0);
         assert_eq!(mask[2], 1.0);
         assert_eq!(mask[AKA_5M as usize], 1.0);
-        assert!(target.iter().zip(mask.iter()).all(|(&value, &mask_value)| {
-            mask_value <= 0.0 || (-1.0..=1.0).contains(&value)
-        }));
+        assert!(
+            target.iter().zip(mask.iter()).all(|(&value, &mask_value)| {
+                mask_value <= 0.0 || (-1.0..=1.0).contains(&value)
+            })
+        );
     }
 
     #[test]
@@ -699,13 +742,15 @@ mod tests {
         let mut audit = StageABeliefAuditSummary::default();
         for sample in &game.samples {
             let target = match (sample.belief_fields, sample.mixture_weights) {
-                (Some(belief_fields), mixture_weights) => Some(crate::teacher::belief::StageABeliefTarget {
-                    belief_fields,
-                    mixture_weights,
-                    trust: 1.0,
-                    ess: 1.0,
-                    entropy: 0.0,
-                }),
+                (Some(belief_fields), mixture_weights) => {
+                    Some(crate::teacher::belief::StageABeliefTarget {
+                        belief_fields,
+                        mixture_weights,
+                        trust: 1.0,
+                        ess: 1.0,
+                        entropy: 0.0,
+                    })
+                }
                 _ => None,
             };
             audit.record(target.as_ref());

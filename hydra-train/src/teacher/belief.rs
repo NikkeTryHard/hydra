@@ -168,10 +168,12 @@ mod tests {
         let target = build_stage_a_teacher(&remaining, 40, StageABeliefConfig::default())
             .expect("teacher target");
         assert!(target.trust >= StageABeliefConfig::default().trust_threshold);
-        assert!(target
-            .belief_fields
-            .iter()
-            .all(|v| v.is_finite() && *v >= 0.0));
+        assert!(
+            target
+                .belief_fields
+                .iter()
+                .all(|v| v.is_finite() && *v >= 0.0)
+        );
     }
 
     #[test]

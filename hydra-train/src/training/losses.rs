@@ -1106,19 +1106,25 @@ pub mod tests {
 
     #[test]
     fn test_validate_rejects_negative_primary_weights() {
-        assert!(HydraLossConfig::new()
-            .with_w_tenpai(-0.1)
-            .validate()
-            .is_err());
-        assert!(HydraLossConfig::new()
-            .with_w_danger(-0.1)
-            .validate()
-            .is_err());
+        assert!(
+            HydraLossConfig::new()
+                .with_w_tenpai(-0.1)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            HydraLossConfig::new()
+                .with_w_danger(-0.1)
+                .validate()
+                .is_err()
+        );
         assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
-        assert!(HydraLossConfig::new()
-            .with_w_score(-0.1)
-            .validate()
-            .is_err());
+        assert!(
+            HydraLossConfig::new()
+                .with_w_score(-0.1)
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
