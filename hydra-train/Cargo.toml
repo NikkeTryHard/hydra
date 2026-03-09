@@ -9,6 +9,10 @@ repository = "https://github.com/hydra-mahjong/hydra"
 [lib]
 crate-type = ["rlib"]
 
+[[bin]]
+name = "train"
+path = "src/bin/train.rs"
+
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 burn = { version = "0.20", features = ["train", "tch"] }
