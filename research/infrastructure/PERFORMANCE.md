@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-Hydra's training loop runs millions of game simulations. Every microsecond saved per game step compounds across billions of steps. This document is the single source of truth for Hydra's performance methodology, benchmarks, techniques, and results.
+Hydra's training loop runs millions of game simulations. Every microsecond saved per game step compounds across billions of steps. This document is the main reference for Hydra's performance methodology, benchmarks, techniques, and results, but it is not the repo-wide authority router.
 
 The bottleneck is not where you'd expect. Neural network inference dominates wall-clock time in the training loop (~1ms per batch-512 forward pass), but the game engine's per-step overhead determines how many games a single CPU core can drive between inference calls. Faster simulation means higher GPU utilization, which means faster training convergence.
 
@@ -433,10 +433,10 @@ For training throughput, encode N observations into a single contiguous buffer (
 | cargo-pgo | https://github.com/Kobzol/cargo-pgo | Profile-Guided Optimization workflow for Rust |
 | RiichiEnv (smly) | https://github.com/smly/RiichiEnv | Engine foundation (Apache-2.0), Nyanten shanten tables |
 | riichienv-core shanten | `hydra-engine/riichienv-core/src/shanten/` | Vendored lookup tables: KEYS1, KEYS2, KEYS3, hash functions |
-| Hydra encoder | `hydra-core/src/encoder.rs` | 85x34 tensor encoder, all encode_* methods |
+| Hydra encoder | `hydra-core/src/encoder.rs` | 192x34 fixed-superset tensor encoder; first 85 channels preserve the baseline prefix |
 | Hydra benchmarks | `hydra-core/benches/simulator_bench.rs` | Criterion benchmarks: single_game, batch_100, encode_observation |
 | Hydra bridge | `hydra-core/src/bridge.rs` | Observation extraction layer (extract_* functions) |
 | Hydra safety | `hydra-core/src/safety.rs` | Safety channel computation (genbutsu, suji, kabe) |
-| HYDRA_SPEC.md | `research/HYDRA_SPEC.md` | Architecture spec: 85x34 input, 46-action output, 5 heads |
-| INFRASTRUCTURE.md | `research/INFRASTRUCTURE.md` | Stack decisions, throughput targets, batch simulation design |
+| HYDRA_FINAL.md | `research/design/HYDRA_FINAL.md` | Target architecture SSOT |
+| INFRASTRUCTURE.md | `research/infrastructure/INFRASTRUCTURE.md` | Stack decisions, throughput targets, batch simulation design |
 | TESTING.md | `research/TESTING.md` | Golden encoder tests, property-based tests, correctness verification |

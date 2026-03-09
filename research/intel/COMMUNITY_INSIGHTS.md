@@ -378,7 +378,7 @@ If 2 of 3 → push. Otherwise → fold. Additional factors: round number, curren
 
 ## 13. Key Takeaways for Hydra
 
-> **Ownership note:** This section captures community-observed signals and hypotheses. Canonical Mortal limitation statements live in `MORTAL_ANALYSIS.md`; architecture-level Hydra-vs-Mortal deltas live in `HYDRA_SPEC.md`.
+> **Ownership note:** This section captures community-observed signals and hypotheses. Canonical Mortal limitation statements live in `MORTAL_ANALYSIS.md`; current Hydra architecture-level deltas live across `README.md`, `HYDRA_FINAL.md`, `HYDRA_RECONCILIATION.md`, and focused design docs like `OPPONENT_MODELING.md`.
 
 ### Confirmed Gaps in Existing AIs (Opportunities for Hydra)
 
