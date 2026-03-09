@@ -46,8 +46,16 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 </artifact_note>
 
 <artifacts>
+Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+</artifacts>
 
-Artifact A — AFBS/search module full excerpt:
+]]>
+  </prompt_text>
+  </prompt_section>
+
+  <answer_section>
+  <answer_text status="preserved" source_path="agent_19.md">
+  <![CDATA[## Blueprint: tiny learned scorer for the next ponder quantum
 
 ```rust
 //! Anytime Factored-Belief Search (AFBS) with PUCT selection.
@@ -1619,14 +1627,6 @@ impl BenchmarkGates {
 Evaluation harness summary fields: mean placement, stable dan, win rate, deal-in rate, tsumo rate.
 ```
 
-</artifacts>
-]]>
-  </prompt_text>
-  </prompt_section>
-
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_19.md">
-  <![CDATA[## Blueprint: tiny learned scorer for the next ponder quantum
 
 ### 1. The decision to learn
 
