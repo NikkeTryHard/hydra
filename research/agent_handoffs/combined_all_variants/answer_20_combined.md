@@ -48,8 +48,16 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 </artifact_note>
 
 <artifacts>
+Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+</artifacts>
 
-Artifact A — AFBS search and cache structures:
+]]>
+  </prompt_text>
+  </prompt_section>
+
+  <answer_section>
+  <answer_text status="preserved" source_path="agent_20.md">
+  <![CDATA[## 0. Set these defaults now
 
 ```rust
 //! Anytime Factored-Belief Search (AFBS) with PUCT selection.
@@ -1002,14 +1010,6 @@ pub fn compute_win_rate(placements: &[u8]) -> f32 {
 }
 ```
 
-</artifacts>
-]]>
-  </prompt_text>
-  </prompt_section>
-
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_20.md">
-  <![CDATA[## 0. Set these defaults now
 
 ```rust
 // production defaults
