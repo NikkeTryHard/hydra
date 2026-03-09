@@ -378,4 +378,4 @@ Run benchmarks with `cargo bench`.
 
 ## License
 
-hydra-core is BSL-1.1 (see [hydra-core/LICENSE](../hydra-core/LICENSE)). hydra-engine is Apache-2.0 (vendored upstream). All dependencies use MIT, Apache-2.0, or BSD-compatible licenses.
+hydra-core is BSL-1.1 (see [hydra-core/LICENSE](../crates/hydra-core/LICENSE)). hydra-engine is Apache-2.0 (vendored upstream). All dependencies use MIT, Apache-2.0, or BSD-compatible licenses.
