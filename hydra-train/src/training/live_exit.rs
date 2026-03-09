@@ -2,8 +2,8 @@
 //!
 //! Implements the Agent 22 blueprint: a learner-only, root-only AFBS
 //! producer that generates visit-based ExIt labels at decision time during
-//! self-play.  The producer is **default-off** until the validation matrix
-//! clears it, and emits `None` on any failed gate.
+//! self-play.  The producer is **default-on** after clearing the infrastructure
+//! validation matrix, and emits `None` on any failed gate.
 //!
 //! The surviving evaluator is the current public model value head, used as
 //! a leaf scorer inside root-only AFBS over all legal discard children.
@@ -94,10 +94,9 @@ impl ExitSearchAdapter for SelfPlayExitAdapter {
             return None;
         }
 
-        // For 5m/5p/5s (types 4, 13, 22), use copy 1 to avoid the aka slot
-        let copy = if matches!(action, 4 | 13 | 22) { 1 } else { 0 };
-        let tile136 = action * 4 + copy;
-        let riichienv_action = Action::new(ActionType::Discard, Some(tile136), &[], None);
+        let hand = state.players[player as usize].hand_slice();
+        let tile136 = hand.iter().find(|&&t| t / 4 == action)?;
+        let riichienv_action = Action::new(ActionType::Discard, Some(*tile136), &[], None);
 
         let mut child_state = state.clone();
         child_state.skip_mjai_logging = true;
@@ -190,8 +189,8 @@ pub fn seed_root_children_all_legal(
 /// 8. Build the label via `build_exit_from_afbs_tree`
 /// 9. Emit `None` on any failed gate
 ///
-/// The producer is default-off for real training until the validation
-/// matrix passes.  The `enabled` field on `LiveExitConfig` controls this.
+/// The producer is default-on after the infrastructure validation matrix
+/// cleared.  The `enabled` field on `LiveExitConfig` controls this.
 pub fn try_live_exit_label<M, A>(
     state: &GameState,
     obs: &Observation,
@@ -274,11 +273,11 @@ where
 /// Configuration for the live ExIt producer.
 ///
 /// Wraps the standard [`ExitConfig`] with a feature gate.  The producer
-/// is default-off per Agent 22 doctrine: it must not emit labels during
-/// real training until the validation matrix passes.
+/// is default-on after the infrastructure validation matrix cleared it.
+/// Set `enabled = false` explicitly to disable label generation.
 #[derive(Debug, Clone)]
 pub struct LiveExitConfig {
-    /// Whether the live producer is enabled.  Default: `false`.
+    /// Whether the live producer is enabled.  Default: `true`.
     pub enabled: bool,
     /// The underlying ExIt gate configuration.
     pub exit_config: ExitConfig,
@@ -287,7 +286,7 @@ pub struct LiveExitConfig {
 impl Default for LiveExitConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             exit_config: ExitConfig::default_phase3(),
         }
     }
@@ -762,9 +761,9 @@ mod tests {
     }
 
     #[test]
-    fn live_exit_config_defaults_to_off() {
+    fn live_exit_config_defaults_to_on() {
         let cfg = LiveExitConfig::default();
-        assert!(!cfg.enabled, "live producer must be default-off");
+        assert!(cfg.enabled, "live producer must be default-on");
     }
 
     #[test]
@@ -969,7 +968,10 @@ mod tests {
 
     #[test]
     fn make_live_exit_fn_disabled_always_returns_none() {
-        let cfg = LiveExitConfig::default();
+        let cfg = LiveExitConfig {
+            enabled: false,
+            ..LiveExitConfig::default()
+        };
         let model = |_: &[f32; OBS_SIZE]| ([0.0f32; HYDRA_ACTION_SPACE], 0.5f32);
         let mut exit_fn = make_live_exit_fn(cfg, model);
 
