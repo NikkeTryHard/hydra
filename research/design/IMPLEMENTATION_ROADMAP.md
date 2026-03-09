@@ -715,7 +715,7 @@ Benchmark: `bench_ct_smc_full_pipeline` -- median < 1ms over 1000 runs (forward 
 
 ## Step 11: Self-Play Arena + Distillation + ExIt Pipeline
 
-### Files: `hydra-core/src/arena.rs`, `hydra-train/src/distill.rs`, `hydra-train/src/exit.rs`
+### Files: `hydra-core/src/arena.rs`, `hydra-train/src/distill.rs`, `hydra-train/src/exit.rs`, `hydra-train/src/training/live_exit.rs`
 
 ### 11.1 Arena: BatchSimulator Integration
 
@@ -745,6 +745,12 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 - ExIt policy: `pi_exit(a|I) = softmax(Q(I,a) / tau_exit)` from AFBS.
 - Safety valve: skip if visit_count < min_visits OR KL(exit||base) > max_kl.
 - Combined loss: `L = L_ach + exit_weight*L_exit + saf_weight*L_saf + aux_weight*L_aux`
+
+> **Implementation status (2026-03-09):** The replay-derived ExIt consumer path (`ExitConfig`, `build_exit_from_afbs_tree`, `collate_exit_targets`, `exit_target`/`exit_mask` in `RlBatch`) and the live AFBS ExIt producer (`live_exit.rs`) are both implemented and tested.
+>
+> **Live producer details:** `hydra-train/src/training/live_exit.rs` implements the Agent 22 blueprint -- learner-only, root-only AFBS with the public model value head as leaf scorer, all-legal discard seeding (bypasses `TOP_K=5`), visit-based labels via `build_exit_from_afbs_tree`, and default-off (`LiveExitConfig.enabled = false`). The self-play hook in `selfplay.rs` passes `&SafetyInfo` to support the `ExitSearchAdapter` trait. 17 unit tests pass.
+>
+> **Remaining:** Concrete `ExitSearchAdapter` implementation (child-observation reconstruction after discard), validation matrix to enable the producer.
 
 ### 11.5 Tests
 
