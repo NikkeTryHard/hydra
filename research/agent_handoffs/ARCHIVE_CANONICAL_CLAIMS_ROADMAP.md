@@ -2,7 +2,7 @@
 
 > Non-SSOT handoff artifact.
 >
-> This file ranks archive-derived research lanes from `ARCHIVE_CANONICAL_CLAIMS.md`.
+> This file ranks archive-derived research lanes from `ARCHIVE_CANONICAL_CLAIMS.jsonl`.
 > It does **not** promote archive claims into current Hydra doctrine by itself.
 >
 > Authority order remains:
@@ -30,8 +30,8 @@ Use it after reading `README.md` authority routing and `HYDRA_RECONCILIATION.md`
 
 Primary evidence base:
 
-- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.md`
 - `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`
+- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md` (generated human-readable render)
 - `research/design/HYDRA_RECONCILIATION.md`
 - `research/design/HYDRA_ARCHIVE.md`
 - strongest cited archive answers, especially:
@@ -80,9 +80,9 @@ Interpretation rules:
 |---|---|---|---|---|---|
 | 1 | Narrow advanced-target closure | Active-path doctrine | Completed | Reconciliation says the immediate need is supervision-loop closure, not broader search expansion. Doctrine truth-alignment pass done. | `HYDRA_RECONCILIATION.md` Recommendation 1; canonical rows 24, 34, 35, 55 |
 | 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; keep this lane narrow and replay-derived. | canonical rows 22, 23, 24; `answer_18_combined.md` |
-| 3 | Real `exit_target` carrier and provenance closure | Completed | Self-play loop, producer wired, default-on | ExIt now has bridge helpers, consumer mask support, a live self-play loop (`generate_self_play_rl_batch`) with search-derived labels via `SelfPlayExitAdapter`, and the producer is default-on (`LiveExitConfig.enabled = true`) after infrastructure validation. | canonical rows 34, 35; `answer_9_combined.md`, `answer_15_combined.md`, `answer_2-1_combined.md` |
+| 3 | Self-play `exit_target` carrier closure | Completed in the live self-play lane | Self-play loop, producer wired, default-on | ExIt now has bridge helpers, consumer mask support, a live self-play loop (`generate_self_play_rl_batch`) with search-derived labels via `SelfPlayExitAdapter`, and the producer is default-on (`LiveExitConfig.enabled = true`) after infrastructure validation. This completion is about the live self-play lane; the normal replay/sample path still does not emit `exit_target`. | canonical rows 34, 35; `answer_9_combined.md`, `answer_15_combined.md`, `answer_2-1_combined.md` |
 
-Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt producer, the surviving archive verdict is now narrower than the older broad ExIt discussion. Teacher semantics should remain root child visits, `root_exit_policy()` / q-softmax should not be promoted into the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement deferred to trained-model re-validation).
+Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt producer, the surviving archive verdict is now narrower than the older broad ExIt discussion. Teacher semantics should remain root child visits, `root_exit_policy()` / q-softmax should not be promoted into the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement deferred to trained-model re-validation). Read this as a live self-play/producer status update, not as a claim that every training data path in the repo now carries `exit_target`.
 | 4 | Advanced-head activation discipline | Completed in code | Gate pack implemented: density, conflict, warmup | `HeadActivationController` with density gates (`rho >= 0.8` dense, `spp >= 5` sparse), gradient conflict tracking (cosine < 30% negative), warmup protocol (Off->Warmup->Active), and `approved_loss_config` integration. 36 tests pass. | canonical row 55; `answer_13_combined.md`, `answer_3-1_combined.md` |
 | 5 | Runtime ponder/cache provenance hardening | Completed in code | Provenance fields, generation tracking, trust gating implemented | `PonderResult` carries `source_net_hash`, `source_version`, `TrustLevel`, `CacheNamespace`, `generation`. `PonderCache` enforces generation freshness. `InferenceServer` gates runtime cache hits behind `Authoritative` trust (nothing qualifies, keeping everything learner-only). 10 new tests. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 
@@ -132,7 +132,7 @@ These survive as preserved options, but they should not steer the current active
 | Lane | Live seam now? | Main blocker | Earliest honest promotion |
 |---|---|---|---|
 | `safety_residual` repair | Yes | Closed for the current replay-derived lane; keep activation/provenance narrow | Completed |
-| `exit_target` / conservative ExIt | Yes | None (self-play loop wired, producer default-on) | Completed |
+| `exit_target` / conservative ExIt | Yes | Self-play/live-producer lane is closed; replay/sample path still separate | Completed for the live self-play lane |
 | Advanced-head activation discipline | Yes (gate pack complete) | Orchestrator integration + trunk detachment for warmup heads | Completed (core); orchestrator wiring after self-play loop |
 | `delta_q` | Partial | Dense `[46]` training surface and discard-only `[34]` runtime surface are not one closed object; shared masked producer and validation closure are still missing | After masked object + shared producer + validation closure |
 | Belief supervision | Partial | Weak Stage-A teacher; no credible public posterior object in the current path | After public-teacher closure |
@@ -146,7 +146,7 @@ These survive as preserved options, but they should not steer the current active
 
 1. Keep the active path aligned to `HYDRA_RECONCILIATION.md`. **(done)**
 2. Patch `safety_residual` semantics and keep advanced activation narrow. **(done)**
-3. Close real `exit_target` carrier/provenance plumbing. **(done)**
+3. Close real `exit_target` carrier/provenance plumbing for the live self-play lane. **(done)**
 4. Add activation-density / transfer gates before broad advanced-head activation. **(done)**
 5. Harden runtime ponder/cache provenance and admission boundaries. **(done)**
 6. Run H1a Hand-EV exact-one-step benchmark; promote only if it clears the gate.
