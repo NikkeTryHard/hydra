@@ -46,8 +46,16 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 </artifact_note>
 
 <artifacts>
+Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+</artifacts>
 
-Artifact A — full Hand-EV module:
+]]>
+  </prompt_text>
+  </prompt_section>
+
+  <answer_section>
+  <answer_text status="preserved" source_path="agent_17.md">
+  <![CDATA[# Hand-EV semantic repair blueprint
 
 ```rust
 //! Hand-EV oracle features: per-discard tenpai/win probability and ukeire.
@@ -1068,14 +1076,6 @@ Selective search layered on top only where it clearly pays. Not a giant search p
 Hand-EV realism improvements are a cheaper, higher-ROI upgrade than broader search.
 ```
 
-</artifacts>
-]]>
-  </prompt_text>
-  </prompt_section>
-
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_17.md">
-  <![CDATA[# Hand-EV semantic repair blueprint
 
 ## 0. Rename the thing before changing any math
 

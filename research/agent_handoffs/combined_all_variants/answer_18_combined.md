@@ -44,8 +44,16 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 </artifact_note>
 
 <artifacts>
+Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+</artifacts>
 
-Artifact A — target object and loss surface:
+]]>
+  </prompt_text>
+  </prompt_section>
+
+  <answer_section>
+  <answer_text status="preserved" source_path="agent_18.md">
+  <![CDATA[# Blueprint: advanced target provenance closure for the current tranche
 
 ```rust
 //! Loss functions for all 9 heads + total weighted loss.
@@ -1074,14 +1082,6 @@ fn test_optional_belief_losses_activate_when_targets_present() {
 }
 ```
 
-</artifacts>
-]]>
-  </prompt_text>
-  </prompt_section>
-
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_18.md">
-  <![CDATA[# Blueprint: advanced target provenance closure for the current tranche
 
 Implement this blueprint exactly for the existing model surface. Do not add heads. Do not widen search. Do not turn on any advanced loss until the head is classified as `Ready` by the registry below.
 
