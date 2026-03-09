@@ -1159,12 +1159,16 @@ mod tests {
         let manager = PonderManager::new();
         let result = PonderResult::learner_only_stub([0.0; HYDRA_ACTION_SPACE], 0.5, 4, 100);
         manager.cache_result(42, result);
-        assert!(manager
-            .lookup_trusted(42, TrustLevel::LearnerOnly)
-            .is_some());
-        assert!(manager
-            .lookup_trusted(42, TrustLevel::Authoritative)
-            .is_none());
+        assert!(
+            manager
+                .lookup_trusted(42, TrustLevel::LearnerOnly)
+                .is_some()
+        );
+        assert!(
+            manager
+                .lookup_trusted(42, TrustLevel::Authoritative)
+                .is_none()
+        );
     }
 
     #[test]
