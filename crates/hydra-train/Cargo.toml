@@ -2,7 +2,7 @@
 name = "hydra-train"
 version = "0.1.0"
 edition = "2024"
-license-file = "../LICENSE"
+license-file = "../../LICENSE"
 description = "Hydra Riichi Mahjong AI - training pipeline (SE-ResNet, ACH, ExIt)"
 repository = "https://github.com/hydra-mahjong/hydra"
 

@@ -13,7 +13,7 @@ It is intentionally opinionated:
 
 Scope:
 - Target architecture authority: `research/design/HYDRA_FINAL.md`
-- Verified code reality: `hydra-core/`, `hydra-train/`
+- Verified code reality: `crates/hydra-core/`, `crates/hydra-train/`
 - Deep-agent inputs: `ANSWER_1.md`, `ANSWER_2.md`, `ANSWER_3.md`
 - High-impact drift only; not a full doc rewrite
 
@@ -106,7 +106,7 @@ What is outdated, wrong, or overstated in docs:
 - `README.md` authority routing has been fixed, but secondary docs still need cleanup discipline to avoid reintroducing stale guidance.
 - `research/design/HYDRA_SPEC.md` is explicitly outdated but still heavily referenced.
 - `research/infrastructure/INFRASTRUCTURE.md` still operationalizes old PPO-era assumptions.
-- `docs/GAME_ENGINE.md` and `hydra-core/README.md` now correctly describe `85x34` only as the baseline prefix, not the full live encoder.
+- `docs/GAME_ENGINE.md` and `crates/hydra-core/README.md` now correctly describe `85x34` only as the baseline prefix, not the full live encoder.
 
 Doc drift that materially affects decisions:
 

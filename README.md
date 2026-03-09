@@ -63,5 +63,5 @@ Active implementation. `hydra-core` is already built out as a real baseline engi
 
 ## License
 
-- **hydra-core** (encoder, training pipeline): [BSL 1.1](hydra-core/LICENSE) -- free for non-commercial use, converts to Apache-2.0 on 2031-03-02
+- **hydra-core** (encoder, training pipeline): [BSL 1.1](crates/hydra-core/LICENSE) -- free for non-commercial use, converts to Apache-2.0 on 2031-03-02
 - **hydra-engine** (game rules): Apache-2.0 (vendored from riichienv-core)

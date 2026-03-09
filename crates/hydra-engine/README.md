@@ -76,7 +76,7 @@ Changes from upstream `riichienv-core`, all targeting training throughput:
 
 Measured on Intel Core Ultra 7 265KF, 20 cores, `RAYON_NUM_THREADS=4`.
 Trivial agent (first legal action), Criterion median. Full methodology
-in [research/ENGINE_BENCHMARKS.md](../research/ENGINE_BENCHMARKS.md).
+in [research/ENGINE_BENCHMARKS.md](../../research/ENGINE_BENCHMARKS.md).
 
 | Benchmark | hydra-engine | riichienv-core 0.3.4 | Delta |
 |-----------|-------------|---------------------|-------|

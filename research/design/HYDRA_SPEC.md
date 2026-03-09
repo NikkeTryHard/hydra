@@ -8,7 +8,7 @@
 >
 > 1. `research/design/HYDRA_FINAL.md` — target architecture SSOT
 > 2. `research/design/HYDRA_RECONCILIATION.md` — current repo reality, active path, reserve shelf, dropped shelf
-> 3. `docs/GAME_ENGINE.md` and `hydra-core/README.md` — current implemented engine/runtime baseline
+> 3. `docs/GAME_ENGINE.md` and `crates/hydra-core/README.md` — current implemented engine/runtime baseline
 
 A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through a combination of proven techniques, novel opponent-aware features, and inference-time search. Intermediate milestone: surpass Mortal, Suphx, and NAGA.
 
