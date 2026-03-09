@@ -1,7 +1,33 @@
 //! Self-play arena: batch game simulation with trajectory collection.
 
-use crate::action::HYDRA_ACTION_SPACE;
+use crate::action::{AKA_5M, AKA_5P, AKA_5S, DISCARD_END, HYDRA_ACTION_SPACE};
 use crate::encoder::OBS_SIZE;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrajectoryExitLabel {
+    pub target: [f32; HYDRA_ACTION_SPACE],
+    pub mask: [f32; HYDRA_ACTION_SPACE],
+}
+
+impl TrajectoryExitLabel {
+    pub fn from_slices(target: &[f32], mask: &[f32]) -> Option<Self> {
+        if target.len() != HYDRA_ACTION_SPACE || mask.len() != HYDRA_ACTION_SPACE {
+            return None;
+        }
+        let mut target_arr = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask_arr = [0.0f32; HYDRA_ACTION_SPACE];
+        target_arr.copy_from_slice(target);
+        mask_arr.copy_from_slice(mask);
+        Some(Self {
+            target: target_arr,
+            mask: mask_arr,
+        })
+    }
+
+    pub fn to_vec_pair(self) -> (Vec<f32>, Vec<f32>) {
+        (self.target.to_vec(), self.mask.to_vec())
+    }
+}
 
 pub struct ArenaConfig {
     pub num_parallel_games: usize,
@@ -101,6 +127,8 @@ pub struct TrajectoryStep {
     pub obs: [f32; OBS_SIZE],
     pub action: u8,
     pub pi_old: [f32; HYDRA_ACTION_SPACE],
+    pub legal_mask: [bool; HYDRA_ACTION_SPACE],
+    pub exit_label: Option<TrajectoryExitLabel>,
     pub reward: f32,
     pub done: bool,
     pub player_id: u8,
@@ -439,9 +467,67 @@ impl Trajectory {
             if step.action as usize >= HYDRA_ACTION_SPACE {
                 return Err(format!("step {i}: invalid action {}", step.action));
             }
+            if !step.legal_mask.iter().any(|&is_legal| is_legal) {
+                return Err(format!("step {i}: legal_mask has no legal actions"));
+            }
+            if !step.legal_mask[step.action as usize] {
+                return Err(format!(
+                    "step {i}: selected action {} is not marked legal",
+                    step.action
+                ));
+            }
             let pi_sum: f32 = step.pi_old.iter().sum();
             if pi_sum > 0.0 && (pi_sum - 1.0).abs() > 0.05 {
                 return Err(format!("step {i}: pi_old sums to {pi_sum}"));
+            }
+            if let Some(exit_label) = step.exit_label {
+                let mut masked_mass = 0.0f32;
+                let mut saw_masked_action = false;
+                for action_idx in 0..HYDRA_ACTION_SPACE {
+                    let mask_value = exit_label.mask[action_idx];
+                    if mask_value < -1e-6 || (mask_value - 1.0).abs() > 1e-3 && mask_value > 1e-6 {
+                        return Err(format!(
+                            "step {i}: exit mask at action {action_idx} is not approximately binary ({mask_value})"
+                        ));
+                    }
+                    let target_value = exit_label.target[action_idx];
+                    if target_value < -1e-6 {
+                        return Err(format!(
+                            "step {i}: exit target at action {action_idx} is negative ({target_value})"
+                        ));
+                    }
+                    if mask_value > 0.5 {
+                        saw_masked_action = true;
+                        if !step.legal_mask[action_idx] {
+                            return Err(format!(
+                                "step {i}: exit label masks illegal action {action_idx}"
+                            ));
+                        }
+                        if action_idx > DISCARD_END as usize {
+                            return Err(format!(
+                                "step {i}: exit label masks non-discard action {action_idx}"
+                            ));
+                        }
+                        if matches!(action_idx as u8, AKA_5M | AKA_5P | AKA_5S) {
+                            return Err(format!(
+                                "step {i}: exit label includes aka discard action {action_idx}"
+                            ));
+                        }
+                        masked_mass += target_value;
+                    } else if target_value.abs() > 1e-5 {
+                        return Err(format!(
+                            "step {i}: exit target has non-zero mass outside mask at action {action_idx}"
+                        ));
+                    }
+                }
+                if !saw_masked_action {
+                    return Err(format!("step {i}: exit label mask is empty"));
+                }
+                if (masked_mass - 1.0).abs() > 1e-3 {
+                    return Err(format!(
+                        "step {i}: exit target mass over masked actions is {masked_mass}"
+                    ));
+                }
             }
         }
         Ok(())
@@ -663,6 +749,12 @@ mod tests {
             obs: [0.0; OBS_SIZE],
             action: 0,
             pi_old: [0.0; HYDRA_ACTION_SPACE],
+            legal_mask: {
+                let mut mask = [false; HYDRA_ACTION_SPACE];
+                mask[0] = true;
+                mask
+            },
+            exit_label: None,
             reward: 0.0,
             done: false,
             player_id: 0,
@@ -686,6 +778,13 @@ mod tests {
                 p[45] = 0.2;
                 p
             },
+            legal_mask: {
+                let mut mask = [false; HYDRA_ACTION_SPACE];
+                mask[7] = true;
+                mask[45] = true;
+                mask
+            },
+            exit_label: None,
             reward: 1.5,
             done: false,
             player_id: 2,
@@ -720,6 +819,12 @@ mod tests {
                 obs: [0.0; OBS_SIZE],
                 action: 0,
                 pi_old: [0.0; HYDRA_ACTION_SPACE],
+                legal_mask: {
+                    let mut mask = [false; HYDRA_ACTION_SPACE];
+                    mask[0] = true;
+                    mask
+                },
+                exit_label: None,
                 reward: 0.0,
                 done: true,
                 player_id: 0,
@@ -799,6 +904,12 @@ mod tests {
                 p[0] = 1.0;
                 p
             },
+            legal_mask: {
+                let mut mask = [false; HYDRA_ACTION_SPACE];
+                mask[0] = true;
+                mask
+            },
+            exit_label: None,
             reward: 0.0,
             done: true,
             player_id: 5,
@@ -820,6 +931,12 @@ mod tests {
                 p[3] = 1.0;
                 p
             },
+            legal_mask: {
+                let mut mask = [false; HYDRA_ACTION_SPACE];
+                mask[3] = true;
+                mask
+            },
+            exit_label: None,
             reward: 0.0,
             done: true,
             player_id: 0,
@@ -849,6 +966,12 @@ mod tests {
                         p[(turn % 34) as usize] = 1.0;
                         p
                     },
+                    legal_mask: {
+                        let mut mask = [false; HYDRA_ACTION_SPACE];
+                        mask[(turn % 34) as usize] = true;
+                        mask
+                    },
+                    exit_label: None,
                     reward: 0.0,
                     done: turn == 9,
                     player_id: (turn % 4) as u8,
