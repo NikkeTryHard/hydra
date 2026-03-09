@@ -328,13 +328,7 @@ mod tests {
     fn ukeire_counts_improving_tiles() {
         let hand = [0u8; NUM_TILE_TYPES];
         let remaining = [4.0f32; NUM_TILE_TYPES];
-        let improves_on_tile_0 = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
-            if h[0] > 0 {
-                0
-            } else {
-                1
-            }
-        };
+        let improves_on_tile_0 = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] > 0 { 0 } else { 1 } };
         let uke = compute_ukeire(&hand, &remaining, &improves_on_tile_0);
         assert!((uke[0] - 4.0).abs() < 1e-5);
         assert!(uke[1..].iter().all(|&v| v == 0.0));
@@ -348,11 +342,7 @@ mod tests {
         let remaining = [4.0f32; NUM_TILE_TYPES];
         let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
             let total: u8 = h.iter().sum();
-            if total >= 4 {
-                0
-            } else {
-                1
-            }
+            if total >= 4 { 0 } else { 1 }
         };
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &shanten_fn);
         assert!(
@@ -367,13 +357,7 @@ mod tests {
         hand[0] = 2;
         hand[1] = 1;
         let remaining = [3.0f32; NUM_TILE_TYPES];
-        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
-            if h[0] >= 3 {
-                -1
-            } else {
-                0
-            }
-        };
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] >= 3 { -1 } else { 0 } };
         let uke = compute_ukeire(&hand, &remaining, &shanten_fn);
         let acceptance: f32 = uke.iter().sum();
         assert!((acceptance - 3.0).abs() < 1e-5, "tile 0 has 3 remaining");
@@ -384,10 +368,12 @@ mod tests {
         let hand = [0u8; NUM_TILE_TYPES];
         let remaining = [4.0f32; NUM_TILE_TYPES];
         let features = compute_hand_ev(&hand, &remaining);
-        assert!(features
-            .tenpai_prob
-            .iter()
-            .all(|p| p.iter().all(|&v| v == 0.0)));
+        assert!(
+            features
+                .tenpai_prob
+                .iter()
+                .all(|p| p.iter().all(|&v| v == 0.0))
+        );
         assert!(features.expected_score.iter().all(|&v| v == 0.0));
     }
 
@@ -409,13 +395,7 @@ mod tests {
         remaining[0] = 1.0;
         remaining[2] = 3.0;
 
-        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
-            if h[0] > 0 {
-                0
-            } else {
-                1
-            }
-        };
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] > 0 { 0 } else { 1 } };
 
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &shanten_fn);
         let tenpai = features.tenpai_prob[1];
@@ -475,11 +455,7 @@ mod tests {
         after[1] -= 1;
         let p = immediate_win_probability(&after, &remaining, 0, &|counts| {
             let total: u8 = counts.iter().sum();
-            if counts[0] >= 4 && total >= 4 {
-                -1
-            } else {
-                0
-            }
+            if counts[0] >= 4 && total >= 4 { -1 } else { 0 }
         });
         assert!(p > 0.0);
     }
@@ -493,11 +469,7 @@ mod tests {
         remaining[0] = 3.0;
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &|counts| {
             let total: u8 = counts.iter().sum();
-            if counts[0] >= 4 && total >= 4 {
-                -1
-            } else {
-                0
-            }
+            if counts[0] >= 4 && total >= 4 { -1 } else { 0 }
         });
         assert!(features.expected_score[1] > 0.0);
         assert!(features.win_prob[1][2] > 0.0);
