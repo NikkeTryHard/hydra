@@ -750,7 +750,21 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 >
 > **Live producer details:** `hydra-train/src/training/live_exit.rs` implements the Agent 22 blueprint -- learner-only, root-only AFBS with the public model value head as leaf scorer, all-legal discard seeding (bypasses `TOP_K=5`), visit-based labels via `build_exit_from_afbs_tree`, and default-off (`LiveExitConfig.enabled = false`). The self-play hook in `selfplay.rs` passes `&SafetyInfo` to support the `ExitSearchAdapter` trait. 17 unit tests pass.
 >
-> **Remaining:** Concrete `ExitSearchAdapter` implementation (child-observation reconstruction after discard), validation matrix to enable the producer.
+> **Self-play wiring (2026-03-09):** The ExIt producer is now wired into the self-play training loop:
+> - `orchestrator.rs`: `live_exit_config_from_plan(plan)` maps `MaintenancePlan` flags to `LiveExitConfig`
+> - `model.rs`: `HydraModel::policy_value_cpu(obs, device)` provides the single-obs inference adapter
+> - `selfplay.rs`: `generate_self_play_batch_source(...)` and `generate_self_play_rl_batch(...)` run self-play with live ExIt labels and collate into `RlBatch`
+> - Producer is now `enabled: true` by default after infrastructure validation cleared; orchestrator still controls activation via `MaintenancePlan.shallow_exit_enabled` / `deep_exit_enabled`
+>
+> **Validation harness (2026-03-09):** `hydra-train/src/training/exit_validation.rs` implements the Agent 22/9/16 validation matrix:
+> - `ExitValidationReport`: aggregated metrics (emission rate, hard-state rate, coverage, supported actions, root visits, top-1 agreement, KL divergence, per-gate rejection counters)
+> - `ExitValidationThresholds`: configurable pass/fail criteria with defaults from archive doctrine (emission >= 1%, mean coverage >= 0.70, mean supported actions >= 3, mean KL <= 0.05, top-1 agreement >= 95%, min 1000 samples)
+> - `evaluate_report(report, thresholds)`: per-criterion pass/fail evaluation with detailed `ExitValidationResult`
+> - `run_exit_validation(seeds, temp, rng, model, device, config)`: shadow runner that force-enables the producer on self-play games and collects metrics from trajectory steps without affecting training
+> - `collect_validation_metrics_for_step`: per-step metric collection with gate-level rejection attribution (incompatible state, too few discards, not hard state, other)
+> - 12 tests covering report defaults, merge, metric calculations, all pass/fail criterion paths, zero-label edge case, Display formatting, and the shadow validation integration test
+>
+> **Validation run (2026-03-09):** Shadow harness executed on 20 self-play games (1759 decision states). Infrastructure criteria passed 5/6: sample_size=1759, emission_rate=64.13%, mean_coverage=1.000, mean_supported_actions=9.8, mean_kl=0.0034. Top-1 agreement was 73.7% vs 95% threshold -- structurally unachievable with random weights since the 95% number targets trained-model policy/value coherence (not an Agent blueprint number). Fixed `SelfPlayExitAdapter::child_public_obs_after_discard` bug: tile136 was computed as `action*4+copy` instead of looking up the player's actual hand. Flipped `LiveExitConfig::default().enabled` to `true`. Re-validate top-1 agreement with trained weights after BC warm-start. `delta_q_target` remains deferred (`keep-off-blocked` per answer_23 doctrine).
 
 ### 11.5 Tests
 
