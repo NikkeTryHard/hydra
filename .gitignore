@@ -7,7 +7,6 @@ Mortal-Policy/
 RiichiEnv/
 AGENTS.md
 target/
-Cargo.lock
 .sisyphus/
 research/papers/
 __pycache__/
