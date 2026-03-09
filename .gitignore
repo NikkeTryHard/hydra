@@ -18,3 +18,4 @@ __pycache__/
 /email_draft_*.md
 /tacc_allocation_*.txt
 /tacc_allocation_*.md
+handoff_zips/
