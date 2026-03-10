@@ -8,15 +8,15 @@ Evidence sourced from Mortal, Suphx, akochan, academic papers, and community ana
 ## Table of Contents
 
 1. [Suji/Kabe Defense](#1-sujikabe-defense)
-2. [Damaten Detection](#2-damaten-detection)
-3. [Betaori (Defensive Retreat)](#3-betaori)
+2. [Damaten Detection](#2-damaten-silent-tenpai-detection)
+3. [Betaori (Defensive Retreat)](#3-betaori-defensive-retreat)
 4. [Placement-Aware Play](#4-placement-aware-play)
 5. [Yaku Selection & Hand Planning](#5-yaku-selection--hand-planning)
-6. [Call Efficiency](#6-call-efficiency)
+6. [Call Efficiency](#6-call-efficiency-chipon-decisions)
 7. [Riichi Timing](#7-riichi-timing)
 8. [Tile Efficiency (Shanten)](#8-tile-efficiency-shanten)
-9. [Opponent Hand Reading](#9-opponent-hand-reading)
-10. [Disproportionate-Gain Tricks](#10-disproportionate-gain-tricks)
+9. [Opponent Hand Reading](#9-opponent-hand-reading-from-discard-patterns)
+10. [Disproportionate-Gain Tricks](#10-disproportionate-gain-mahjong-specific-tricks)
 
 ---
 

@@ -7,16 +7,16 @@
 
 ## Table of Contents
 
-1. [NNUE: Efficiently Updatable Neural Networks](#1-nnue)
-2. [Novel NN + Classical Algorithm Hybrids](#2-novel-hybrids)
-3. [Poker AI: Libratus & Pluribus](#3-poker-ai)
-4. [Recent Imperfect Information Game AI (2020-2025)](#4-recent-papers)
-5. [Cross-Domain Approaches](#5-cross-domain)
-6. [Synthesis: Ideas for Mahjong AI](#6-synthesis)
+1. [NNUE: Efficiently Updatable Neural Networks](#1-nnue-efficiently-updatable-neural-networks)
+2. [Novel NN + Classical Algorithm Hybrids](#2-novel-nn-classical-algorithm-hybrids)
+3. [Poker AI: Libratus & Pluribus](#3-poker-ai-beyond-standard-cfr)
+4. [Recent Imperfect Information Game AI (2020-2025)](#4-recent-imperfect-information-game-ai-2020-2025)
+5. [Cross-Domain Approaches](#5-cross-domain-approaches)
+6. [Synthesis: Ideas for Mahjong AI](#6-synthesis-paradigm-breaking-ideas-for-hydra-mahjong-ai)
 
 ---
 
-## 1. NNUE: Efficiently Updatable Neural Networks {#1-nnue}
+## 1. NNUE: Efficiently Updatable Neural Networks
 
 **Source**: [Chessprogramming Wiki](https://www.chessprogramming.org/NNUE) | [Stockfish NNUE PyTorch](https://deepwiki.com/official-stockfish/nnue-pytorch/9-nnue-architecture-reference)
 
@@ -122,7 +122,7 @@ output_k = clamp(Y_k, 0, 127)
 
 ---
 
-## 2. Novel NN + Classical Algorithm Hybrids {#2-novel-hybrids}
+## 2. Novel NN + Classical Algorithm Hybrids
 
 ### 2.1 Student of Games (DeepMind, 2023) -- GT-CFR
 
@@ -192,7 +192,7 @@ them, abstract them into "synopses" (statistical summaries), and plan over those
 
 ---
 
-## 3. Poker AI: Beyond Standard CFR {#3-poker-ai}
+## 3. Poker AI: Beyond Standard CFR
 
 ### 3.1 Libratus (CMU, 2017) -- Three-Module Architecture
 
@@ -272,7 +272,7 @@ then samples the action for the actual hand held.
 
 ---
 
-## 4. Recent Imperfect Information Game AI (2020-2025) {#4-recent-papers}
+## 4. Recent Imperfect Information Game AI (2020-2025)
 
 ### 4.1 DeepNash / R-NaD (DeepMind, 2022) -- Model-Free Nash Convergence
 
@@ -390,7 +390,7 @@ about opponent tendencies.
 
 ---
 
-## 5. Cross-Domain Approaches {#5-cross-domain}
+## 5. Cross-Domain Approaches
 
 ### 5.1 Decision Transformers (2021) -- RL as Sequence Modeling
 
@@ -468,7 +468,7 @@ Carlo methods as new evidence (discards, calls, etc.) arrives.
 
 ---
 
-## 6. Synthesis: Paradigm-Breaking Ideas for Hydra Mahjong AI {#6-synthesis}
+## 6. Synthesis: Paradigm-Breaking Ideas for Hydra Mahjong AI
 
 ### 6.1 The Mahjong Problem Space
 
