@@ -742,7 +742,7 @@ The Burn model implements Hydra’s current SE-ResNet family as documented by th
 
 ## Reproducibility and Seeding
 
-> This section has been moved to [SEEDING.md](SEEDING.md).
+> This section has been moved to [../design/SEEDING.md](../design/SEEDING.md).
 
 ## Checkpoint Management
 
