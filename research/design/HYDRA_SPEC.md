@@ -20,7 +20,7 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through
 - [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — current repo reality and implementation priorities
 - [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — infrastructure reference (legacy sections clearly marked)
 
-- [MORL_PLACEMENT.md](MORL_PLACEMENT.md) -- Non-convex placement MORL (Phase 3 modification, preference-conditioned training)
+- Historical MORL placement note — no standalone `MORL_PLACEMENT.md` file currently exists in this repo.
 ---
 
 ## Use This File Only For
@@ -39,7 +39,7 @@ Do **not** use this file as the current implementation spec for model shape, tra
 | **Inference VRAM** | <1.5GB | Fits 8GB consumer GPUs easily |
 | **Inference Latency** | <15ms | Well under 50ms limit |
 | **Training VRAM** | <4GB active | Fits RTX PRO 6000 Blackwell (96GB) with massive headroom |
-| **Target Strength** | Rival LuckyJ | Surpass Mortal (~7-dan), approach LuckyJ-level play (10+ stable dan on Tenhou). See [COMMUNITY_INSIGHTS § LuckyJ](../research/COMMUNITY_INSIGHTS.md#4-luckyj-tencent-ai-lab) for competitive analysis. |
+| **Target Strength** | Rival LuckyJ | Surpass Mortal (~7-dan), approach LuckyJ-level play (10+ stable dan on Tenhou). See [COMMUNITY_INSIGHTS § LuckyJ](../intel/COMMUNITY_INSIGHTS.md#4-luckyj-tencent) for competitive analysis. |
 
 > **Note on parameter count:** Each SE-ResBlock contains ~402K parameters (2× Conv1d(256,256,k=3) + 2× GroupNorm + SE module). 40 blocks × 402K ≈ 16.1M backbone. Heads add ~372K. This makes Hydra (~16.5M) roughly 50% larger than Mortal (~10.9M at 192ch/40 blocks), providing additional capacity for the five output heads and safety encoding.
 
@@ -50,7 +50,7 @@ Do **not** use this file as the current implementation spec for model shape, tra
 1. **Proven over Novel** — Prioritize techniques with published evidence (Suphx, Mortal). Novel additions (safety planes, danger head) are grounded in Mahjong theory, not speculation.
 2. **Practical Constraints** — Must fit <8GB inference VRAM, <50ms latency.
 3. **Clean IP** -- No Mortal-derived code (AGPL restriction). All code written from scratch. hydra-core is BSL-1.1, hydra-engine is Apache-2.0, all dependencies MIT/Apache licensed.
-4. **100% Rust** — Game engine, training, and inference all in Rust. Burn framework with burn-tch (libtorch/cuDNN) backend. See [RUST_STACK.md](RUST_STACK.md).
+4. **100% Rust** — Game engine, training, and inference all in Rust. Burn framework with burn-tch (libtorch/cuDNN) backend. See [../infrastructure/RUST_STACK.md](../infrastructure/RUST_STACK.md).
 
 ---
 
@@ -79,7 +79,7 @@ Hydra targets the **Tenhou ranked 4-player (dan-i-sen)** ruleset as used in the 
 | Return (oka) | **30000** | 1st place receives 20000 oka bonus (4 × 5000 difference from start). |
 | Tobi (bankruptcy) | **Yes** | Game ends immediately when any player's score drops below 0. Score of exactly 0 does NOT trigger tobi. |
 | Agari yame | **Yes (automatic)** | In all-last hands, if dealer is in 1st place, the game automatically ends on dealer win or dealer tenpai at exhaustive draw. Introduced 2010/06/01. |
-| Uma | **Configurable** | Training: [3, 1, -1, -3]. Evaluation: [90, 45, 0, -135] (Tenhou Houou style). See [TRAINING.md § Placement Points](TRAINING.md#placement-points). |
+| Uma | **Configurable** | Training: [3, 1, -1, -3]. Evaluation: [90, 45, 0, -135] (Tenhou Houou style). Historical `TRAINING.md` placement-point links are no longer live in this repo. |
 
 ### Tile and Dora Rules
 
@@ -107,7 +107,7 @@ Hydra targets the **Tenhou ranked 4-player (dan-i-sen)** ruleset as used in the 
 |------|-------------|-------|
 | Kuikae (swap call) | **Banned** | After chi/pon, cannot discard the tile that would complete the same sequence/group. Both genbutsu-kuikae (exact tile) and suji-kuikae (sequence swap) are prohibited. |
 
-> **Ruleset as code:** The engine's `rules.rs` module ([INFRASTRUCTURE.md § Module Structure](INFRASTRUCTURE.md#module-structure)) should expose these as constants, not configuration toggles. Tenhou Houou rules are the only target for training and evaluation. If future work targets Majsoul or WRC rulesets, the constants can be swapped per-build, but the engine need not support runtime rule switching.
+> **Ruleset as code:** The engine's `rules.rs` module ([INFRASTRUCTURE.md § Module Structure](../infrastructure/INFRASTRUCTURE.md#module-structure)) should expose these as constants, not configuration toggles. Tenhou Houou rules are the only target for training and evaluation. If future work targets Majsoul or WRC rulesets, the constants can be swapped per-build, but the engine need not support runtime rule switching.
 
 ## Architecture Overview
 
@@ -115,7 +115,7 @@ Hydra uses a **Unified Multi-Head SE-ResNet** architecture. A single deep convol
 
 The input observation tensor has shape `[Batch × 85 × 34]`, encoding 85 feature channels across the 34 tile types. A convolutional stem projects this into 256 channels using a 3×1 kernel. The representation then flows through 40 pre-activation SE-ResNet blocks — each applying GroupNorm, Mish activation, two 3×1 convolutions, and a squeeze-and-excitation attention gate — producing a shared latent tensor of shape `[B × 256 × 34]`. No pooling is applied anywhere in the backbone, preserving the full 34-tile spatial geometry.
 
-For Phase 2 Oracle Distillation, the Teacher network uses the same backbone but with a wider stem: `Conv1d(290, 256, 3)` instead of `Conv1d(85, 256, 3)`. The 290-channel input is the public observation (85ch) concatenated with the oracle observation (205ch: opponent hands, wall draw order, dora/ura indicators). All 40 ResBlock weights are identical and transferable between teacher and student — only the stem Conv1d differs. See [Phase 2: Oracle Distillation RL](TRAINING.md#phase-2-oracle-distillation-rl) for the full oracle encoding specification.
+For Phase 2 Oracle Distillation, the Teacher network uses the same backbone but with a wider stem: `Conv1d(290, 256, 3)` instead of `Conv1d(85, 256, 3)`. The 290-channel input is the public observation (85ch) concatenated with the oracle observation (205ch: opponent hands, wall draw order, dora/ura indicators). All 40 ResBlock weights are identical and transferable between teacher and student — only the stem Conv1d differs. The older `TRAINING.md` oracle-distillation link is no longer live in this repo.
 
 From this shared representation, output heads operate from the backbone: the Policy Head selects the next action, the Value Head estimates expected round outcome, the GRP Head predicts final game placement distribution, the Tenpai Head estimates opponent tenpai probabilities, and the Danger Head estimates per-tile deal-in risk per opponent. The baseline five heads run in parallel. When extended heads are active (call-intent, wait-set, value-tenpai, Sinkhorn), the call-intent head runs first and its output conditions the Danger Head via FiLM — a minor sequential dependency with negligible latency impact (~0.1ms). See [OPPONENT_MODELING § 4.7](OPPONENT_MODELING.md#47-call-intent--yaku-plan-inference-head) for details.
 
@@ -250,7 +250,7 @@ Both Suphx and Mortal explicitly avoid pooling layers. The 34-position dimension
 | **Total (Student, baseline 5 heads)** | **~16.5M** | -- | |
 | **Total (Student, all 9 heads)** | **~16.6M** | **100%** | |
 
-> The backbone completely dominates the parameter budget. Head overhead is negligible (~2.5% total for all 9 heads), meaning the full extended head design adds opponent modeling capability at virtually zero parameter cost. Extended heads are gated by ablation results (see [ABLATION_PLAN S A10-A12](ABLATION_PLAN.md#a10-dense-vs-sparse-danger-labels)) and may be added incrementally.
+> The backbone completely dominates the parameter budget. Head overhead is negligible (~2.5% total for all 9 heads), meaning the full extended head design adds opponent modeling capability at virtually zero parameter cost. Extended heads are gated by ablation results and may be added incrementally, but the older standalone `ABLATION_PLAN.md` file is no longer present in this repo.
 
 **Oracle Teacher stem:** `Conv1d(290, 256, 3)` = ~223K params (vs student's ~66K). The teacher total is ~16.7M — only +157K over the student (+0.95%). All other weights are shared.
 
@@ -289,7 +289,7 @@ Riichi and kan require selecting WHICH tile to discard/use, which cannot be expr
 
 This two-phase approach means the Policy Head always outputs 46 logits per forward pass, but may be called TWICE per game action when riichi or kan is selected. The second pass reuses the same network with an updated observation (legal action mask changes).
 
-> **Source (Mortal):** Mortal uses this exact 46-action mapping with indices 0–36 for discards (including aka), 37 for riichi, 38–40 for chi, 41 for pon, 42 for kan (two-phase with `at_kan_select`), 43 for agari, 44 for ryuukyoku, 45 for pass. See [MORTAL_ANALYSIS § Architecture](MORTAL_ANALYSIS.md) for the verified mapping.
+> **Source (Mortal):** Mortal uses this exact 46-action mapping with indices 0–36 for discards (including aka), 37 for riichi, 38–40 for chi, 41 for pon, 42 for kan (two-phase with `at_kan_select`), 43 for agari, 44 for ryuukyoku, 45 for pass. See [MORTAL_ANALYSIS.md](../intel/MORTAL_ANALYSIS.md) for the verified mapping.
 > **Note:** The previous Hydra spec used a different 46-action mapping (0–33 for discards without aka, different indices for calls). This has been updated to match Mortal's proven mapping for dataset compatibility and to resolve the aka-dora selectability issue identified by external review.
 
 ### Value Head (Critic)
@@ -300,7 +300,7 @@ This two-phase approach means the Policy Head always outputs 46 logits per forwa
 
 **Architecture:** Global average pooling collapses the spatial dimension (256 × 34 → 256), followed by a two-layer MLP (256 → 512 → 1) with ReLU activation. The scalar output predicts the expected point gain or loss from the current game state.
 
-> **Oracle Critic (Phase 2–3 training only):** During RL training, an asymmetric oracle critic replaces this value head. The oracle critic runs on the **teacher** backbone (Conv1d(290, 256, 3) stem, receiving 85 public + 205 oracle channels) and outputs **4 scalars** (one per player) with a zero-sum auxiliary loss enforcing V₁+V₂+V₃+V₄=0. The student's 1-scalar value head described above is used only at inference. See [TRAINING § Oracle Critic](TRAINING.md#component-2-oracle-critic-training-only) for the full specification.
+> **Oracle Critic (Phase 2–3 training only):** During RL training, an asymmetric oracle critic replaces this value head. The oracle critic runs on the **teacher** backbone (Conv1d(290, 256, 3) stem, receiving 85 public + 205 oracle channels) and outputs **4 scalars** (one per player) with a zero-sum auxiliary loss enforcing V₁+V₂+V₃+V₄=0. The student's 1-scalar value head described above is used only at inference. The older `TRAINING.md` oracle-critic link is no longer live in this repo.
 
 ### GRP Head (Global Rank Prediction)
 
@@ -506,7 +506,7 @@ Each discard in channels 11–22 includes:
 - Tedashi flag (whether it came from the hand or was the drawn tile)
 - Temporal position (exponential decay weighting)
 
-> **Note:** A post-call flag (whether the discard followed a meld call) is not part of the base 85-channel encoding. See [ABLATION_PLAN A9](ABLATION_PLAN.md#a9-discard-sequence-encoder-tedashi-gru) for a GRU-based extension that additionally encodes post-call context as a token feature.
+> **Note:** A post-call flag (whether the discard followed a meld call) is not part of the base 85-channel encoding. A GRU-based extension was part of the older ablation-plan material, but that standalone `ABLATION_PLAN.md` file is no longer present in this repo.
 
 ### Data Flow
 
