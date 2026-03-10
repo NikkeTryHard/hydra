@@ -6,7 +6,7 @@
 
 Hydra's reward function design, informed by cross-domain analysis of reward systems in Pluribus, ReBeL, AlphaStar, OpenAI Five, and RVR Mahjong.
 
-> **Background reading:** The full literature survey of reward functions across landmark AI systems is archived in [archive/REWARD_SURVEY.md](archive/REWARD_SURVEY.md).
+> **Background reading:** The full literature survey of reward functions across landmark AI systems is not currently preserved as a standalone archive file in this repo; treat the references and analysis below as the surviving summary surface.
 
 ---
 
@@ -93,7 +93,7 @@ This is **the most directly relevant work.** For Hydra:
 
 ## 2. Hydra's Reward Function — Final Decision
 
-Based on cross-domain survey ([archived](archive/REWARD_SURVEY.md)), Mortal source code analysis, Mortal community insights (30+ GitHub discussions), Mortal-Policy PPO fork analysis, Suphx paper extraction, RVR paper analysis, PPO best practices from CleanRL/SB3, and scoring system comparison across all major platforms:
+Based on the earlier cross-domain survey work (no longer preserved here as a standalone `archive/REWARD_SURVEY.md` file), Mortal source code analysis, Mortal community insights (30+ GitHub discussions), Mortal-Policy PPO fork analysis, Suphx paper extraction, RVR paper analysis, PPO best practices from CleanRL/SB3, and scoring system comparison across all major platforms:
 
 ### The Formula
 
@@ -143,4 +143,4 @@ The anti-pattern list below is retained as reference guidance; do not treat dead
 | [14] | Engstrom et al., "Implementation Matters in Deep Policy Gradients" | 2020 | ICLR |
 | [15] | Huang, "The 37 Implementation Details of Proximal Policy Optimization" | 2022 | Blog/ICLR |
 
-> For references [1]-[5], [7]-[8] (Pluribus, ReBeL, AlphaStar, OpenAI Five, and related works), see [archive/REWARD_SURVEY.md](archive/REWARD_SURVEY.md#references).
+> References [1]-[5] and [7]-[8] come from the earlier cross-domain reward survey work, but that standalone archive file is not currently present in this repo.
