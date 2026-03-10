@@ -73,7 +73,7 @@ Curated integration priority guide for every repo, tool, dataset, and framework 
 
 ## 3. Data Sources & Datasets
 
-> **Training data is ready**: ~6.6M high-rank 4p hanchan across three sources (2M Tenhou Houou + 1M Majsoul Throne + 3M Majsoul Jade). Tenhou logs pre-converted to MJAI. See [archive/DATA_SOURCES.md](archive/DATA_SOURCES.md) for full details on sources, converters, and alternative datasets.
+> **Training data is ready**: ~6.6M high-rank 4p hanchan across three sources (2M Tenhou Houou + 1M Majsoul Throne + 3M Majsoul Jade). Tenhou logs pre-converted to MJAI. A separate `archive/DATA_SOURCES.md` file is not present in the current repo, so treat this section as the surviving high-level summary.
 
 ### Synthetic Data (for self-play)
 
@@ -160,4 +160,3 @@ Curated integration priority guide for every repo, tool, dataset, and framework 
 | lizhisim | Simulator | MIT | Watch — same author as xiangting |
 | Burn | Rust ML | Apache-2.0 | Long-term: native Rust training + inference |
 | candle | Rust ML | Apache-2.0 | Alternative: skip ONNX, write inference in Rust |
-

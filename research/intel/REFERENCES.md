@@ -19,7 +19,7 @@ Single source of truth for all citations in the Hydra project.
 | Speedup Training Artificial Intelligence for Mahjong via Reward Variance Reduction | Li, Wu, Fu, Fu, Zhao, Xing | 2022 | [IEEE CoG](https://ieee-cog.org/2022/assets/papers/paper_103.pdf) | RVR technique for reducing gradient noise from luck variance, oracle critic + expected reward network | Enables training on limited hardware; hand-luck baseline subtraction |
 | Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game | Fu, Liu, Wu, Wang, Yang, Li, Xing, Li, Ma, Fu, Yang | 2022 | [ICLR 2022](https://openreview.net/forum?id=DTXZqTNV5nW) | ACH (Actor-Critic Hedge): merges deep RL with Weighted CFR for Nash Equilibrium convergence in imperfect-info games. Core offline training algorithm for Tencent's LuckyJ. | Game-theoretic RL alternative to PPO/DQN; LuckyJ's ACH + OLSS reached 10.68 stable dan on Tenhou |
 | Opponent-Limited Online Search for Imperfect Information Games | Liu, Fu, Fu, Yang | 2023 | [ICML 2023](https://proceedings.mlr.press/v202/liu23k.html) | OLSS: imperfect-info subgame solving with opponent-limited tree pruning, orders of magnitude faster than common-knowledge methods. Tested on 2-player mahjong. | Core search component for LuckyJ; search-as-feature integration enables real-time strategy adjustment |
-| Look-ahead Reasoning with a Learned Model in Imperfect Information Games (LAMIR) | Kubicek, Lisy | 2026 | [ICLR 2026](https://openreview.net/forum?id=NnBbr4hI8a) | Learns abstract game models from agent-environment interaction, enables CFR-based depth-limited look-ahead search in imperfect-info games. Tested on 2-player games. [arXiv:2510.05048](https://arxiv.org/abs/2510.05048), [Code](https://github.com/aicenter/lamir) | Inspiration for Hydra's inference-time search direction (SEARCH_PGOI.md). Referenced in TACC allocation proposal as "LAS" framing. |
+| Look-ahead Reasoning with a Learned Model in Imperfect Information Games (LAMIR) | Kubicek, Lisy | 2026 | [ICLR 2026](https://openreview.net/forum?id=NnBbr4hI8a) | Learns abstract game models from agent-environment interaction, enables CFR-based depth-limited look-ahead search in imperfect-info games. Tested on 2-player games. [arXiv:2510.05048](https://arxiv.org/abs/2510.05048), [Code](https://github.com/aicenter/lamir) | Inspiration for Hydra's inference-time search direction (historical `SEARCH_PGOI.md` planning surface; not present as a standalone doc in the current repo). Referenced in TACC allocation proposal as "LAS" framing. |
 | Hierarchical CFR with Policy Abstraction in Mahjong | (CFR-p authors) | 2023 | [arXiv:2307.12087](https://arxiv.org/abs/2307.12087) | Applied vanilla CFR to a simplified 2-player 68-tile Mahjong variant with hierarchical policy abstraction. Even this heavily reduced game had ~10^43 leaf nodes before abstraction. Only known CFR application to any Mahjong variant. | Confirms 4-player Mahjong remains intractable for tabular CFR. Supports Hydra's RL-based approach over game-theoretic solving. |
 
 ### General Game AI
@@ -143,7 +143,7 @@ Single source of truth for all citations in the Hydra project.
 
 ## Training Data Sources
 
-> See [ECOSYSTEM.md § Data Sources & Datasets](ECOSYSTEM.md#3-data-sources--datasets) for the training data summary and [archive/DATA_SOURCES.md](archive/DATA_SOURCES.md) for full details on sources, converters, and alternative datasets.
+> See [ECOSYSTEM.md § Data Sources & Datasets](ECOSYSTEM.md#3-data-sources--datasets) for the current training data summary. A separate `archive/DATA_SOURCES.md` file is not present in the current repo.
 
 ---
 
@@ -209,7 +209,7 @@ Single source of truth for all citations in the Hydra project.
 
 ## License Compatibility
 
-> License policy: See [INFRASTRUCTURE.md § License Compatibility](INFRASTRUCTURE.md#license-compatibility)
+> License policy: See [../infrastructure/INFRASTRUCTURE.md#license-compatibility](../infrastructure/INFRASTRUCTURE.md#license-compatibility)
 
 ---
 
