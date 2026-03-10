@@ -9,7 +9,7 @@
 ## Related Documents
 
 - [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, training infra, hardware, deployment
-- [SEEDING.md](SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
+- [../design/SEEDING.md](../design/SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
 - [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — current execution doctrine and active-vs-reserve split
 
 ---
@@ -29,7 +29,7 @@ Every checkpoint is a single record serialized via Burn's Record system (NamedMp
 | model_record | Student network weights (bf16) | Burn's Module::record(); SE-ResNet backbone + all heads |
 | optimizer_record | AdamW state (fp32 momentum buffers) | Burn's Optimizer::record(); see dtype note below |
 | scheduler_record | LR scheduler internal state | Cosine annealing position |
-| rng_state | Burn backend + system RNG states | See [Checkpoint RNG State](SEEDING.md#checkpoint-rng-state) |
+| rng_state | Burn backend + system RNG states | See [Checkpoint RNG State](../design/SEEDING.md#checkpoint-rng-state) |
 | global_step | Monotonic training step counter | Continuous across the entire run |
 | phase | Current phase (1, 2, or 3) | Integer |
 | config | Full training configuration | Makes checkpoint self-describing |
@@ -182,7 +182,7 @@ Each training phase has its own checkpoint directory with independent retention 
 
 ### Opponent Pool Versioning
 
-During Phase 3 league self-play, the training agent plays against a pool of past versions of itself (see the [opponent pool table in Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo)). This subsection specifies how pool models are created, versioned, rated, cached, and pruned.
+During Phase 3 league self-play, the training agent plays against a pool of past versions of itself (see the [reserve-stage opponent pool table](INFRASTRUCTURE.md#reserve-stage-league-self-play)). This subsection specifies how pool models are created, versioned, rated, cached, and pruned.
 
 **Pool composition** (reserve design if a future league phase is revived):
 
@@ -198,7 +198,7 @@ During Phase 3 league self-play, the training agent plays against a pool of past
 
 **Rating integration:** New pool entries are rated using the OpenSkill PlackettLuce system described in the [Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation) section. A newly promoted model inherits its mu (skill estimate) from the current training model's rating but has its sigma (uncertainty) inflated to the larger of the current sigma or one-third of the default sigma. This sigma inflation ensures the new entry is sampled frequently for evaluation games until its rating stabilizes.
 
-**GPU cache:** The 5 most recently used pool models are kept resident in GPU memory as bf16 inference copies (LRU eviction). This avoids repeated CPU-to-GPU transfers for frequently matched opponents. The cache capacity matches the value documented in the [opponent pool table in Phase 3](INFRASTRUCTURE.md#phase-3-league-self-play-ppo).
+**GPU cache:** The 5 most recently used pool models are kept resident in GPU memory as bf16 inference copies (LRU eviction). This avoids repeated CPU-to-GPU transfers for frequently matched opponents. The cache capacity matches the value documented in the [reserve-stage opponent pool table](INFRASTRUCTURE.md#reserve-stage-league-self-play).
 
 **Sidecar metadata:** Each pool model has a companion .meta.json file containing: version number, source global step, source phase, current rating mu and sigma, total games played, win rate, and promotion timestamp (UTC). This metadata enables pool management decisions (eviction, sampling) without deserializing the full model weights.
 
@@ -206,7 +206,7 @@ During Phase 3 league self-play, the training agent plays against a pool of past
 
 **FIFO eviction:** When the pool directory exceeds 20 model files, the oldest non-anchor entry is deleted. Before deletion, the model's full rating history (mu, sigma, games played, win rate) is appended to a pool eviction log for post-hoc analysis. The .meta.json sidecar is also deleted.
 
-**Deterministic selection:** Pool opponent selection uses its own SeedSequence child, as described in the [Phase Transition Seeding](SEEDING.md#phase-transition-seeding) section. Given the same seed and the same pool contents (same models at the same FIFO positions), the same opponent matchup sequence is produced. This enables controlled ablations where only the training policy changes while the opponent schedule remains fixed.
+**Deterministic selection:** Pool opponent selection uses its own SeedSequence child, as described in the [Stage Transition Seeding](../design/SEEDING.md#stage-transition-seeding-reserve--future-planning) section. Given the same seed and the same pool contents (same models at the same FIFO positions), the same opponent matchup sequence is produced. This enables controlled ablations where only the training policy changes while the opponent schedule remains fixed.
 
 ### Phase Transition Loading
 
@@ -221,7 +221,7 @@ Phase transitions are the most delicate moments in the training pipeline. The st
 | 3 | Freeze teacher: eval mode, no gradients, bf16 cast | Teacher provides signal only — must not receive gradient updates |
 | 4 | Freeze copy of Phase 1 policy head as KL anchor | Prevents catastrophic forgetting of BC knowledge during RL |
 | 5 | Discard optimizer and scheduler state from checkpoint | Stale BC momentum is counterproductive for RL; create fresh AdamW with warmup |
-| 6 | Re-seed all RNG from Phase 2 SeedSequence child | See [Phase Transition Seeding](SEEDING.md#phase-transition-seeding) |
+| 6 | Re-seed all RNG from Phase 2 SeedSequence child | See [Stage Transition Seeding](../design/SEEDING.md#stage-transition-seeding-reserve--future-planning) |
 | 7 | Reset best-metric tracker; begin Phase 2 training loop | Phase 2 uses a different "best" metric than Phase 1 |
 
 **Phase 2 to 3 transition** (cross-reference: the [Phase 2 → 3 procedure in Phase Transitions](INFRASTRUCTURE.md#phase-transitions)):
@@ -234,12 +234,12 @@ Phase transitions are the most delicate moments in the training pipeline. The st
 | 4 | Initialize opponent pool with distill_best.pt and bc_best.pt as frozen anchors | Pool starts with two fixed reference opponents |
 | 5 | Freeze Phase 2 policy as new KL anchor | Prevents catastrophic forgetting of distillation knowledge |
 | 6 | Discard optimizer and scheduler; create fresh AdamW with warmup | Same rationale as Phase 1 → 2: stale momentum harms new objective |
-| 7 | Re-seed all RNG from Phase 3 SeedSequence child | See [Phase Transition Seeding](SEEDING.md#phase-transition-seeding) |
+| 7 | Re-seed all RNG from Phase 3 SeedSequence child | See [Stage Transition Seeding](../design/SEEDING.md#stage-transition-seeding-reserve--future-planning) |
 | 8 | Initialize OpenSkill ratings for all pool members; reset best-metric tracker | Rating system starts fresh for the league |
 
 **Strict loading:** Both transitions use strict model loading, meaning every key in the checkpoint must match exactly one key in the model, and vice versa. This is safe because the student architecture is identical across all three phases — same ResBlock count, same channel width, same head structure. A key mismatch at transition time indicates a code bug, not an expected architecture change, and should fail loudly.
 
-**Teacher isolation:** The teacher model in Phase 2 is a separate instantiation with its own state_dict. It is never mixed into the student's state_dict and has no entry in the student's optimizer. By default, the teacher is discarded at the Phase 2 -> 3 transition and no cleanup of the student checkpoint is needed. **If PGOI is enabled** ([SEARCH_PGOI.md](SEARCH_PGOI.md)), the teacher's stem state_dict is preserved in the Phase 3 checkpoint for inference-time oracle queries.
+**Teacher isolation:** The teacher model in Phase 2 is a separate instantiation with its own state_dict. It is never mixed into the student's state_dict and has no entry in the student's optimizer. By default, the teacher is discarded at the Phase 2 -> 3 transition and no cleanup of the student checkpoint is needed. If a future search-assisted oracle path is revived, the teacher's stem state_dict can be preserved in the Phase 3 checkpoint for inference-time oracle queries.
 
 ### Checkpoint Integrity
 
