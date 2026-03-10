@@ -26,6 +26,17 @@ This roadmap exists to answer one narrow question:
 This file is an archive triage map, not a replacement build-order memo.
 Use it after reading `README.md` authority routing and `HYDRA_RECONCILIATION.md`.
 
+## Workflow note
+
+When using any short-form next-step triage helper for this repo, keep it subordinate to the main authority chain.
+
+That helper should:
+- read the main authority chain first
+- bias toward the safest highest-impact next step
+- report whether noisy archive surfaces were actually checked
+
+It does **not** promote archive material into doctrine, and it does **not** outrank `HYDRA_RECONCILIATION.md`.
+
 ## Inputs and interpretation rules
 
 Primary evidence base:
@@ -67,6 +78,7 @@ Interpretation rules:
 
 - Completed (rank 1): doctrine truth-alignment pass in `research/design/HYDRA_RECONCILIATION.md`.
 - Completed (rank 2): `safety_residual` semantic repair in code.
+- Completed (supporting tranche infrastructure): learner BC now supports hardware-agnostic microbatch accumulation, and `src/bin/train.rs` can stage narrow replay-derived `safety_residual` activation without opening the weaker advanced-target lanes.
 - Completed (rank 3): ExIt self-play loop (`generate_self_play_rl_batch`) and producer (`SelfPlayExitAdapter`) wired. Validation harness ran on 1759 states (5/6 infrastructure criteria passed; top-1 agreement requires trained weights). `LiveExitConfig::default().enabled` flipped to `true`. `SelfPlayExitAdapter` tile-lookup bug fixed.
 - `delta_q_target` closure deferred (`keep-off-blocked` per answer_23 doctrine)
 - orchestrator integration for head gates (wiring controller into training step functions)
@@ -78,8 +90,8 @@ Interpretation rules:
 
 | Rank | Lane | Doctrine status | Repo status | Why now | Refs |
 |---|---|---|---|---|---|
-| 1 | Narrow advanced-target closure | Active-path doctrine | Completed | Reconciliation says the immediate need is supervision-loop closure, not broader search expansion. Doctrine truth-alignment pass done. | `HYDRA_RECONCILIATION.md` Recommendation 1; canonical rows 24, 34, 35, 55 |
-| 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; keep this lane narrow and replay-derived. | canonical rows 22, 23, 24; `answer_18_combined.md` |
+| 1 | Narrow `safety_residual` / BC activation sublane | Active-path doctrine | Completed | Reconciliation says the immediate need is supervision-loop closure, not broader search expansion. The completed portion is the replay-derived `safety_residual` BC lane plus hardware-agnostic BC microbatch accumulation; broader Recommendation 1 closure remains open. | `HYDRA_RECONCILIATION.md` Recommendation 1; canonical rows 24, 34, 35, 55 |
+| 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end, with BC-path staged activation and microbatch accumulation available for learner training | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; the train binary can enable only this narrow advanced loss while keeping weaker lanes blocked, and BC no longer assumes one machine's VRAM shape. Keep this lane replay-derived and narrow. | canonical rows 22, 23, 24; `answer_18_combined.md` |
 | 3 | Self-play `exit_target` carrier closure | Completed in the live self-play lane | Self-play loop, producer wired, default-on | ExIt now has bridge helpers, consumer mask support, a live self-play loop (`generate_self_play_rl_batch`) with search-derived labels via `SelfPlayExitAdapter`, and the producer is default-on (`LiveExitConfig.enabled = true`) after infrastructure validation. This completion is about the live self-play lane; the normal replay/sample path still does not emit `exit_target`. | canonical rows 34, 35; `answer_9_combined.md`, `answer_15_combined.md`, `answer_2-1_combined.md` |
 
 Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt producer, the surviving archive verdict is now narrower than the older broad ExIt discussion. Teacher semantics should remain root child visits, `root_exit_policy()` / q-softmax should not be promoted into the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement deferred to trained-model re-validation). Read this as a live self-play/producer status update, not as a claim that every training data path in the repo now carries `exit_target`.
