@@ -68,6 +68,10 @@ Working principle for this memo:
 | Current runtime reality | `docs/GAME_ENGINE.md` |
 | Historical / reserve-only planning surfaces | `HYDRA_ARCHIVE.md` |
 
+Workflow helper note:
+- Any short-form next-step triage helper must read the authority chain above, bias toward the safest highest-impact next task, and explicitly report which noisy research surfaces were checked.
+- It is workflow tooling, not doctrine, and it never outranks this file.
+
 ## 2. Verified repo reality
 
 What is confirmed in code today:
@@ -459,11 +463,12 @@ Use this as the concrete coding handoff for the first tranche.
 #### `hydra-train/src/training/bc.rs`
 - **Current state**
   - BC already routes through `HydraTargets`
-  - it can benefit from advanced targets as soon as batches provide them
+  - it now consumes replay-derived `safety_residual` targets through the supervised path and supports hardware-agnostic microbatch accumulation for full-learner BC runs
 - **Required changes**
-  1. add tranche-specific tests showing BC consumes advanced targets when present
-  2. confirm policy-agreement and oracle-guiding paths behave sanely when optional advanced targets are activated
-  3. make failures obvious if target tensors are shape-inconsistent
+  1. completed: add tranche-specific tests showing BC consumes replay-derived `safety_residual` targets when present
+  2. completed: confirm policy-agreement remains sane with optional advanced targets present and that the BC path supports staged `advanced_loss.safety_residual` activation through `src/bin/train.rs`
+  3. completed: add hardware-agnostic microbatch accumulation so full-learner BC keeps the same effective batch semantics without hardcoding machine-specific GPU assumptions
+  4. later: keep extending the BC/RL surface only for semantically credible targets that are still actually missing (`exit_target` replay/sample production, `delta_q`, stronger belief teachers)
 
 #### `hydra-train/src/training/rl.rs`
 - **Current state**
@@ -526,6 +531,10 @@ Use this as the concrete coding handoff for the first tranche.
 - at least one train path produces nonzero advanced auxiliary loss contributions in tests
 - `exit_target` is produced by a real upstream path, not just by unit-test fixtures
 - no new heads, no broad AFBS rewrite, no duplicated belief stack
+
+Current tranche-status note:
+- completed for the narrow supervised BC lane: replay-derived `safety_residual` now reaches the train binary with explicit staged activation controls, and full-learner BC now has hardware-agnostic microbatch accumulation rather than assuming one machine's VRAM shape
+- still open before Recommendation 1 is fully complete: normal replay/sample `exit_target` production, `delta_q` closure, and stronger public-teacher belief semantics
 
 ## 7. Final handoff / progress report
 

@@ -337,9 +337,11 @@ Every module in `hydra-core` has inline unit tests (`#[cfg(test)]` modules). Bey
 | Test File | What It Covers |
 |-----------|---------------|
 | `golden_encoder.rs` | Regression tests for the encoder. Compares encoder output against saved golden snapshots. Catches silent encoding drift when any channel logic changes. |
-| `mjai_replay.rs` | Replays recorded MJAI game logs through the engine and verifies that game state, actions, and observations match the expected sequence. |
+| `mjai_replay.rs` | Replays recorded MJAI game logs through the engine and verifies that game state, actions, and observations match the expected sequence. The current regression surface explicitly covers replay round-reset correctness and kan-action legality matching so MJAI replay stays aligned with runtime legality checks. |
 | `proptest_invariants.rs` | Property-based tests using `proptest`. Generates random game states and verifies invariants: legal mask consistency, encoder channel bounds, tile count conservation, action round-trip fidelity. |
 | `game_loop_integration.rs` | End-to-end game loop tests. Runs complete games with `FirstActionSelector` and verifies termination, score consistency, and result collection. |
+
+Current replay-status note: after fixing MJAI replay round-start reset semantics and kan replay matching in the vendored engine layer, the Hydra MJAI loader was re-audited against the Tenhou Houou 2025 corpus (`178,897` files) with `0` skips.
 
 ### Benchmarks
 

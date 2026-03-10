@@ -59,7 +59,7 @@ If you are deciding what to build next, read these in order:
 
 ## Status
 
-Active implementation. `hydra-core` is already built out as a real baseline engine/encoder crate, and `hydra-train` contains a substantial training/model scaffold with partial advanced integration. The immediate project need is reconciliation plus closure of the highest-leverage training/search supervision loops, not a restart from scratch.
+Active implementation. `hydra-core` is already built out as a real baseline engine/encoder crate, and `hydra-train` contains a substantial training/model scaffold with partial advanced integration. The repo now has a real narrow replay-derived `safety_residual` supervision lane, with `src/bin/train.rs` able to activate only that advanced loss while keeping weaker lanes blocked, plus hardware-agnostic microbatch accumulation for full-learner BC runs; the immediate project need is still replay/sample `exit_target` production, `delta_q` closure, and stronger belief-teacher semantics, not a restart from scratch.
 
 ## License
 
