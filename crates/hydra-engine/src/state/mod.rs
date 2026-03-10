@@ -407,6 +407,62 @@ impl GameState {
         self._get_legal_actions_into(player_id, buf);
     }
 
+    #[inline]
+    fn replay_action_matches_legal(legal: &Action, replay: &Action) -> bool {
+        if legal.action_type != replay.action_type {
+            return false;
+        }
+
+        let tiles_match = legal.tile == replay.tile;
+        let consumes_match = legal.consume_slice() == replay.consume_slice();
+
+        if tiles_match {
+            if consumes_match {
+                return true;
+            }
+
+            if replay.consume_count == 0 && legal.action_type == ActionType::Kakan {
+                return true;
+            }
+
+            if replay.consume_count == 0
+                && matches!(
+                    legal.action_type,
+                    ActionType::Discard
+                        | ActionType::Riichi
+                        | ActionType::Tsumo
+                        | ActionType::Ron
+                        | ActionType::Pass
+                )
+            {
+                return true;
+            }
+        }
+
+        if consumes_match && matches!(legal.action_type, ActionType::Ankan | ActionType::Kakan) {
+            return true;
+        }
+
+        if matches!(legal.action_type, ActionType::Ankan | ActionType::Kakan) {
+            if let (Some(legal_tile), Some(replay_tile)) = (legal.tile, replay.tile) {
+                return legal_tile / 4 == replay_tile / 4;
+            }
+        }
+
+        if replay.tile.is_none() {
+            return matches!(
+                legal.action_type,
+                ActionType::Tsumo
+                    | ActionType::Ron
+                    | ActionType::Riichi
+                    | ActionType::KyushuKyuhai
+                    | ActionType::Kita
+            );
+        }
+
+        false
+    }
+
     /// Build an observation for replay validation, temporarily adjusting phase if needed.
     pub fn get_observation_for_replay(
         &mut self,
@@ -435,7 +491,7 @@ impl GameState {
         let mut exists = obs
             ._legal_actions
             .iter()
-            .any(|a| a.action_type == env_action.action_type && a.tile == env_action.tile);
+            .any(|a| Self::replay_action_matches_legal(a, env_action));
 
         if !exists
             && env_action.action_type == ActionType::Discard
@@ -2288,6 +2344,35 @@ impl GameState {
     /// Apply a replay log action to advance game state.
     pub fn apply_log_action(&mut self, action: &LogAction) {
         <Self as GameStateEventHandler>::apply_log_action(self, action)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_ankan_matcher_accepts_same_tile_class_with_different_copy_ids() {
+        let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
+        let replay = Action::new(ActionType::Ankan, Some(17), &[17, 17, 17, 17], Some(0));
+
+        assert!(GameState::replay_action_matches_legal(&legal, &replay));
+    }
+
+    #[test]
+    fn replay_kakan_matcher_accepts_same_tile_class_with_different_copy_ids() {
+        let legal = Action::new(ActionType::Kakan, Some(16), &[16, 17, 18], Some(0));
+        let replay = Action::new(ActionType::Kakan, Some(17), &[], Some(0));
+
+        assert!(GameState::replay_action_matches_legal(&legal, &replay));
+    }
+
+    #[test]
+    fn replay_kan_matcher_rejects_different_tile_classes() {
+        let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
+        let replay = Action::new(ActionType::Ankan, Some(20), &[20, 20, 20, 20], Some(0));
+
+        assert!(!GameState::replay_action_matches_legal(&legal, &replay));
     }
 }
 
