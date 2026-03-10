@@ -23,6 +23,8 @@
 
 **Current execution authority**: `research/design/HYDRA_RECONCILIATION.md` for immediate tranche ordering.
 
+> **Workflow helper note:** Any short-form “what should I build next?” helper for this repo should name the safest highest-impact next task, say whether it is documented/safe, and report checked/not-checked coverage across authority docs, source, tests, and noisier research surfaces. It is workflow tooling only and does not outrank this roadmap or `HYDRA_RECONCILIATION.md`.
+
 ---
 
 # HYDRA Build Plan: Steps 1-4 (Neural Network Foundation)
@@ -483,8 +485,9 @@ Collation: stack obs arrays -> reshape [B,192,34], convert action to Int tensor,
 
 ### 7.3 Epoch Loop
 
-- Signature: `train_epoch(&mut self, loader: &mut MjaiDataLoader<B>) -> EpochStats`
-- For each batch: forward -> total_loss (all 8 heads) -> backward -> gradient clip (max_norm=1.0) -> optimizer step -> track metrics (avg loss, policy agreement).
+- Current code path: `train_epoch(model, samples, microbatch_size, accum_steps, augment, device, loss_fn, lr, optimizer) -> (HydraModel<B>, EpochStats)`
+- The live BC loop now streams sample chunks into collation on demand, supports microbatch accumulation while preserving the logical batch size, and can stage replay-derived `safety_residual` loss activation through `src/bin/train.rs` without introducing machine-specific source assumptions.
+- For each effective batch: forward/backward over microbatches -> accumulate gradients -> gradient clip via optimizer config -> optimizer step -> track metrics (avg loss, policy agreement).
 - `EpochStats`: `avg_loss: f64`, `policy_agreement: f64`
 
 ### 7.4 Policy Agreement Metric
@@ -515,6 +518,8 @@ Collation: stack obs arrays -> reshape [B,192,34], convert action to Int tensor,
 | `test_bc_overfit_10_samples` | overfit 10 fixed samples in <100 steps -> loss < 0.1 |
 | `test_checkpoint_save_load` | save, load, forward same input -> identical output (bitwise) |
 | `test_policy_agreement_range` | random model agreement ~1/46 (~2.2%), not 0% or 100% |
+
+Current status note: this BC surface is no longer just the historical baseline loop. The live code already covers narrow advanced-target consumption for replay-derived `safety_residual`, `advanced_loss` config validation in `src/bin/train.rs`, and hardware-agnostic microbatch accumulation for learner-sized runs; broader advanced-target closure remains tracked in `HYDRA_RECONCILIATION.md`.
 
 ---
 
