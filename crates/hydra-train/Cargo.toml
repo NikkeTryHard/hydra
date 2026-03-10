@@ -13,6 +13,10 @@ crate-type = ["rlib"]
 name = "train"
 path = "src/bin/train.rs"
 
+[[bin]]
+name = "mjai_audit"
+path = "src/bin/mjai_audit.rs"
+
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 burn = { version = "0.20", features = ["train", "tch"] }
@@ -21,6 +25,8 @@ dashmap = "6.1.0"
 flate2 = "1.1.9"
 serde_json = "1.0.149"
 riichienv-core = { version = "0.3.4", path = "../hydra-engine", package = "hydra-engine" }
+rayon = "1.10"
+indicatif = "0.17"
 
 [dev-dependencies]
 burn = { version = "0.20", features = ["ndarray"] }
