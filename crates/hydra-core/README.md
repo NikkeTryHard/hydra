@@ -55,7 +55,7 @@ If you need the active architecture/plan rather than the crate-local runtime sum
 ## Benchmarks
 
 Measured on Intel Core Ultra 7 265KF, Criterion median, `RAYON_NUM_THREADS=4`.
-Full methodology in [research/ENGINE_BENCHMARKS.md](../../research/ENGINE_BENCHMARKS.md).
+Full methodology in [research/infrastructure/ENGINE_BENCHMARKS.md](../../research/infrastructure/ENGINE_BENCHMARKS.md).
 
 | Benchmark | Time |
 |-----------|------|

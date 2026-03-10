@@ -439,4 +439,4 @@ For training throughput, encode N observations into a single contiguous buffer (
 | Hydra safety | `hydra-core/src/safety.rs` | Safety channel computation (genbutsu, suji, kabe) |
 | HYDRA_FINAL.md | `research/design/HYDRA_FINAL.md` | Target architecture SSOT |
 | INFRASTRUCTURE.md | `research/infrastructure/INFRASTRUCTURE.md` | Stack decisions, throughput targets, batch simulation design |
-| TESTING.md | `research/TESTING.md` | Golden encoder tests, property-based tests, correctness verification |
+| TESTING.md | `research/design/TESTING.md` | Golden encoder tests, property-based tests, correctness verification |
