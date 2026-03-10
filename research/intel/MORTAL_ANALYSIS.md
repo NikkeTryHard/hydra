@@ -84,7 +84,7 @@ Source: `libriichi/src/lib.rs`, `libriichi/src/consts.rs`
 
 ## MJAI Protocol
 
-> See [INFRASTRUCTURE.md § MJAI Protocol](INFRASTRUCTURE.md#mjai-protocol) for the full protocol specification (message types, tile encoding, Mortal meta extensions). Hydra's canonical MJAI definition lives there.
+> See [../infrastructure/INFRASTRUCTURE.md#mjai-protocol](../infrastructure/INFRASTRUCTURE.md#mjai-protocol) for the full protocol specification (message types, tile encoding, Mortal meta extensions). Hydra's canonical MJAI definition lives there.
 
 Source: `libriichi/src/mjai/event.rs`
 
