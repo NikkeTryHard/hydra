@@ -330,6 +330,18 @@ fn build_stage_a_belief_targets(
     }
 }
 
+fn should_sample_replay_event(event: &MjaiEvent) -> bool {
+    matches!(
+        event,
+        MjaiEvent::Dahai { .. }
+            | MjaiEvent::Pon { .. }
+            | MjaiEvent::Chi { .. }
+            | MjaiEvent::Kan { .. }
+            | MjaiEvent::Ankan { .. }
+            | MjaiEvent::Kakan { .. }
+    )
+}
+
 fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     let final_scores = final_scores(&events);
     let oracle_target = oracle_target_from_scores(final_scores);
@@ -338,12 +350,13 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
     let mut safety = array::from_fn(|_| SafetyInfo::default());
     let mut encoder = ObservationEncoder::new();
-    let mut samples = Vec::new();
+    let mut samples = Vec::with_capacity(events.len());
 
     for (idx, event) in events.iter().enumerate() {
-        let env_action = mjai_event_to_action(event)
-            .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
-        if let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) {
+        if should_sample_replay_event(event) {
+            let env_action = mjai_event_to_action(event)
+                .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
+            if let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) {
             let obs = state
                 .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
                 .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
@@ -410,6 +423,7 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                     mixture_weights_present,
                 });
             }
+        }
         }
 
         update_safety(&mut safety, event)?;
@@ -733,6 +747,31 @@ mod tests {
         let belief = sample.belief_fields.expect("belief fields");
         assert_eq!(belief.len(), 16 * 34);
         assert!(sample.belief_fields_present);
+    }
+
+    #[test]
+    fn should_sample_replay_event_skips_reach_and_hora() {
+        let dahai = MjaiEvent::Dahai {
+            actor: 0,
+            pai: "1m".to_string(),
+            tsumogiri: false,
+        };
+        let reach = MjaiEvent::Reach { actor: 0 };
+        let hora = MjaiEvent::Hora {
+            actor: 0,
+            target: 1,
+            pai: Some("1m".to_string()),
+            uradora_markers: None,
+            yaku: None,
+            fu: None,
+            han: None,
+            scores: None,
+            delta: None,
+        };
+
+        assert!(should_sample_replay_event(&dahai));
+        assert!(!should_sample_replay_event(&reach));
+        assert!(!should_sample_replay_event(&hora));
     }
 
     #[test]
