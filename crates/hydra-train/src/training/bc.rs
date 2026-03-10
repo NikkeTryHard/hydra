@@ -1,11 +1,14 @@
 //! Behavioral cloning training loop (Phase 0).
 
 use burn::grad_clipping::GradientClippingConfig;
-use burn::optim::{AdamConfig, GradientsParams};
+use burn::module::AutodiffModule;
+use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::config::OracleGuidingConfig;
+use crate::data::pipeline::collate_sample_chunk;
+use crate::data::sample::MjaiSample;
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::losses::{HydraLoss, HydraTargets};
 
@@ -139,7 +142,11 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob { 1.0 } else { 0.0 }
+            if sample < keep_prob {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -288,42 +295,91 @@ impl BCTrainerConfig {
     }
 }
 
+/// Run one epoch of behavioral cloning with optional gradient accumulation.
+///
+/// `microbatch_size` is the physical batch size that goes through forward/backward
+/// at once (controls peak VRAM). `accum_steps` is how many microbatches to
+/// accumulate before one optimizer step. The effective logical batch size is
+/// `microbatch_size * accum_steps`.
+///
+/// For backwards compatibility: set `accum_steps = 1` and `microbatch_size =
+/// batch_size` to get the original behavior.
+#[allow(clippy::too_many_arguments)]
 pub fn train_epoch<B: AutodiffBackend>(
     model: HydraModel<B>,
-    batches: &[(Tensor<B, 3>, HydraTargets<B>)],
+    samples: &[&MjaiSample],
+    microbatch_size: usize,
+    accum_steps: usize,
+    augment: bool,
+    device: &B::Device,
     loss_fn: &HydraLoss<B>,
     lr: f64,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
-) -> (HydraModel<B>, EpochStats) {
+) -> (HydraModel<B>, EpochStats)
+where
+    HydraModel<B>: AutodiffModule<B>,
+{
+    let accum_steps = accum_steps.max(1);
     let mut m = model;
     let mut total_loss = 0.0;
     let mut total_agreement = 0.0;
-    for (obs, targets) in batches {
+    let mut num_batches = 0usize;
+    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
+    let mut accum_current = 0usize;
+    let mut accum_loss = 0.0;
+    let mut accum_agreement = 0.0;
+
+    for chunk in samples.chunks(microbatch_size) {
+        let Some((obs, targets)) = collate_sample_chunk::<B>(chunk, augment, device) else {
+            continue;
+        };
         let output = m.forward(obs.clone());
-        total_agreement += policy_agreement(
+        accum_agreement += policy_agreement(
             output.policy_logits.clone(),
             targets.legal_mask.clone(),
             target_actions_from_policy_target(targets.policy_target.clone()),
         );
-        let breakdown = loss_fn.total_loss(&output, targets);
+        let breakdown = loss_fn.total_loss(&output, &targets);
         let loss = breakdown.total.clone().into_scalar().elem::<f64>();
         let grads = breakdown.total.backward();
         let grads = GradientsParams::from_grads(grads, &m);
-        m = optimizer.step(lr, m, grads);
-        total_loss += loss;
+        accumulator.accumulate(&m, grads);
+        accum_loss += loss;
+        accum_current += 1;
+
+        if accum_current >= accum_steps {
+            let grads = accumulator.grads();
+            m = optimizer.step(lr, m, grads);
+            total_loss += accum_loss / accum_current as f64;
+            total_agreement += accum_agreement / accum_current as f64;
+            num_batches += 1;
+            accum_current = 0;
+            accum_loss = 0.0;
+            accum_agreement = 0.0;
+        }
     }
+
+    // Flush any remaining accumulated microbatches
+    if accum_current > 0 {
+        let grads = accumulator.grads();
+        m = optimizer.step(lr, m, grads);
+        total_loss += accum_loss / accum_current as f64;
+        total_agreement += accum_agreement / accum_current as f64;
+        num_batches += 1;
+    }
+
     let stats = EpochStats {
-        avg_loss: if batches.is_empty() {
+        avg_loss: if num_batches == 0 {
             0.0
         } else {
-            total_loss / batches.len() as f64
+            total_loss / num_batches as f64
         },
-        policy_agreement: if batches.is_empty() {
+        policy_agreement: if num_batches == 0 {
             0.0
         } else {
-            total_agreement / batches.len() as f64
+            total_agreement / num_batches as f64
         },
-        num_batches: batches.len(),
+        num_batches,
     };
     (m, stats)
 }
@@ -366,7 +422,7 @@ impl CheckpointMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
@@ -542,7 +598,12 @@ mod tests {
             &device,
         );
         let output = model.forward(obs.clone());
-        let predicted = output.policy_logits.argmax(1).squeeze_dim::<1>(1).to_data();
+        let predicted = output
+            .policy_logits
+            .clone()
+            .argmax(1)
+            .squeeze_dim::<1>(1)
+            .to_data();
         let predicted = predicted.as_slice::<i64>().expect("i64");
         let mut policy_target = vec![0.0f32; predicted.len() * 46];
         for (row, &action) in predicted.iter().enumerate() {
@@ -554,15 +615,14 @@ mod tests {
             Tensor::<TestBackend, 1>::from_floats(policy_target.as_slice(), &device)
                 .reshape([predicted.len(), 46]);
 
-        let batches = vec![(obs, targets)];
-        let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
-        let mut optimizer = bc_optimizer();
-        let (_, stats) = train_epoch(model, &batches, &loss_fn, 1e-6, &mut optimizer);
-
+        let acc = policy_agreement(
+            output.policy_logits,
+            targets.legal_mask,
+            target_actions_from_policy_target(targets.policy_target),
+        );
         assert!(
-            (stats.policy_agreement - 1.0).abs() < 1e-6,
-            "agreement should reflect matching targets, got {}",
-            stats.policy_agreement
+            (acc - 1.0).abs() < 1e-6,
+            "agreement should reflect matching targets, got {acc}"
         );
     }
 
@@ -670,7 +730,6 @@ mod tests {
         targets.safety_residual_mask = Some(Tensor::<TestBackend, 2>::ones([4, 46], &device));
         targets.delta_q_target = Some(Tensor::<TestBackend, 2>::zeros([4, 46], &device));
 
-        let batches = vec![(obs, targets)];
         let loss_fn = HydraLoss::<TestBackend>::new(
             HydraLossConfig::new()
                 .with_w_belief_fields(0.1)
@@ -678,14 +737,10 @@ mod tests {
                 .with_w_delta_q(0.05),
         );
         let mut optimizer = bc_optimizer();
-        let (_, stats) = train_epoch(model, &batches, &loss_fn, 1e-3, &mut optimizer);
+        let (_, stats) = bc_train_step(model, obs, &targets, &loss_fn, 1e-3, &mut optimizer);
 
-        assert!(stats.avg_loss.is_finite(), "avg_loss should be finite");
-        assert!(
-            stats.avg_loss > 0.0,
-            "avg_loss should be positive with advanced targets"
-        );
-        assert!(stats.num_batches == 1);
+        assert!(stats.is_finite(), "loss should be finite");
+        assert!(stats > 0.0, "loss should be positive with advanced targets");
     }
 
     #[test]
