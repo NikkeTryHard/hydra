@@ -10,8 +10,8 @@ exploitation/defense, hidden tiles, partial observability.
 ## Table of Contents
 
 1. [Information-Theoretic Decision Making](#1-information-theoretic-decision-making)
-2. [Bayesian Opponent Modeling](#2-bayesian-opponent-modeling)
-3. [Online Learning & Regret Minimization](#3-online-learning--regret-minimization)
+2. [Bayesian Opponent Modeling](#2-bayesian-opponent-modeling-via-particle-filters)
+3. [Online Learning & Regret Minimization](#3-online-learning--regret-minimization-cfr)
 4. [Differential Game Theory](#4-differential-game-theory)
 5. [Causal Inference in Games](#5-causal-inference-in-games)
 6. [Information Geometry of Games](#6-information-geometry-of-games)
