@@ -30,7 +30,9 @@ impl GameStateEventHandler for GameState {
                 // Initialize round state from event
                 self.honba = honba;
                 self.riichi_sticks = kyoutaku as u32;
+                self.kyoku_idx = oya;
                 self.players.iter_mut().enumerate().for_each(|(i, p)| {
+                    p.reset_round();
                     p.score = scores[i];
                 });
                 self.round_wind = match bakaze.as_str() {
@@ -43,25 +45,40 @@ impl GameStateEventHandler for GameState {
                 self.oya = oya;
                 self.wall
                     .set_dora_indicators_single(parse_mjai_tile(&dora_marker));
+                self.wall.tile_count = 136 - (13 * 4);
+                self.wall.rinshan_draw_count = 0;
+                self.wall.pending_kan_dora_count = 0;
+                self.wall.draw_cursor = 0;
+                self.clear_claims();
+                self.clear_active_players();
+                self.pending_kan = None;
+                self.pending_oya_won = false;
+                self.pending_is_draw = false;
+                self.needs_initialize_next_round = false;
+                self.turn_count = 0;
+                self.riichi_pending_acceptance = None;
+                self.is_rinshan_flag = false;
+                self.is_first_turn = true;
+                self.is_after_kan = false;
+                self.last_discard = None;
+                self.last_error = None;
+                self.win_results = Default::default();
+                self.last_win_results = Default::default();
+                self.riichi_sutehais = [None; 4];
+                self.last_tedashis = [None; 4];
 
                 // Set hands
                 for (i, hand_strs) in tehais.iter().enumerate() {
-                    self.players[i].hand_len = 0;
                     for tile_str in hand_strs {
                         self.players[i].push_hand(parse_mjai_tile(tile_str));
                     }
                     self.players[i].hand_slice_mut().sort();
                 }
 
-                // Clear other state
-                for p in &mut self.players {
-                    p.discard_len = 0;
-                    p.meld_count = 0;
-                    p.riichi_declared = false;
-                    p.riichi_stage = false;
-                }
                 self.drawn_tile = None;
                 self.current_player = self.oya; // Oya starts
+                self.phase = Phase::WaitAct;
+                self.set_single_active_player(self.current_player);
                 self.needs_tsumo = true;
                 self.is_done = false;
             }
@@ -687,5 +704,151 @@ impl GameStateEventHandler for GameState {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::{Action, ActionType};
+    use crate::rule::GameRule;
+
+    fn start_kyoku_event() -> MjaiEvent {
+        MjaiEvent::StartKyoku {
+            bakaze: "E".to_string(),
+            kyoku: 1,
+            honba: 2,
+            kyoutaku: 1,
+            oya: 2,
+            scores: vec![25_000, 24_000, 26_000, 25_000],
+            dora_marker: "4m".to_string(),
+            tehais: vec![
+                vec![
+                    "1m".to_string(),
+                    "2m".to_string(),
+                    "3m".to_string(),
+                    "4m".to_string(),
+                    "5m".to_string(),
+                    "6m".to_string(),
+                    "7m".to_string(),
+                    "8m".to_string(),
+                    "9m".to_string(),
+                    "1p".to_string(),
+                    "2p".to_string(),
+                    "3p".to_string(),
+                    "4p".to_string(),
+                ],
+                vec![
+                    "1s".to_string(),
+                    "2s".to_string(),
+                    "3s".to_string(),
+                    "4s".to_string(),
+                    "5s".to_string(),
+                    "6s".to_string(),
+                    "7s".to_string(),
+                    "8s".to_string(),
+                    "9s".to_string(),
+                    "E".to_string(),
+                    "S".to_string(),
+                    "W".to_string(),
+                    "N".to_string(),
+                ],
+                vec![
+                    "P".to_string(),
+                    "F".to_string(),
+                    "C".to_string(),
+                    "1m".to_string(),
+                    "1m".to_string(),
+                    "2m".to_string(),
+                    "2m".to_string(),
+                    "3m".to_string(),
+                    "3m".to_string(),
+                    "4m".to_string(),
+                    "4m".to_string(),
+                    "5m".to_string(),
+                    "5m".to_string(),
+                ],
+                vec![
+                    "6p".to_string(),
+                    "6p".to_string(),
+                    "7p".to_string(),
+                    "7p".to_string(),
+                    "8p".to_string(),
+                    "8p".to_string(),
+                    "9p".to_string(),
+                    "9p".to_string(),
+                    "1s".to_string(),
+                    "1s".to_string(),
+                    "2s".to_string(),
+                    "2s".to_string(),
+                    "3s".to_string(),
+                ],
+            ],
+        }
+    }
+
+    #[test]
+    fn start_kyoku_replay_resets_round_scoped_state() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+
+        state.wall.tile_count = 3;
+        state.wall.draw_cursor = 5;
+        state.wall.rinshan_draw_count = 2;
+        state.wall.pending_kan_dora_count = 1;
+        state.current_player = 1;
+        state.phase = Phase::WaitResponse;
+        state.active_players = [0, 1, 2, 3];
+        state.active_player_count = 4;
+        state.pending_kan = Some((1, Action::new(ActionType::Kakan, Some(42), &[], Some(1))));
+        state.pending_oya_won = true;
+        state.pending_is_draw = true;
+        state.needs_initialize_next_round = true;
+        state.turn_count = 99;
+        state.riichi_pending_acceptance = Some(3);
+        state.is_rinshan_flag = true;
+        state.is_first_turn = false;
+        state.is_after_kan = true;
+        state.last_discard = Some((1, 16));
+        state.riichi_sutehais = [Some(1), Some(2), Some(3), Some(4)];
+        state.last_tedashis = [Some(5), Some(6), Some(7), Some(8)];
+        state.players[0].riichi_declared = true;
+        state.players[1].riichi_stage = true;
+        state.players[2].push_discard(0, true, false);
+        state.players[3].push_meld(Meld::new(MeldType::Pon, &[0, 1, 2], true, 0, Some(2)));
+
+        state.apply_mjai_event(start_kyoku_event());
+
+        assert_eq!(state.honba, 2);
+        assert_eq!(state.riichi_sticks, 1);
+        assert_eq!(state.oya, 2);
+        assert_eq!(state.current_player, 2);
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.active_player_count, 1);
+        assert_eq!(state.active_players[0], 2);
+        assert_eq!(state.wall.tile_count, 84);
+        assert_eq!(state.wall.draw_cursor, 0);
+        assert_eq!(state.wall.rinshan_draw_count, 0);
+        assert_eq!(state.wall.pending_kan_dora_count, 0);
+        assert_eq!(state.pending_kan, None);
+        assert!(!state.pending_oya_won);
+        assert!(!state.pending_is_draw);
+        assert!(!state.needs_initialize_next_round);
+        assert_eq!(state.turn_count, 0);
+        assert_eq!(state.riichi_pending_acceptance, None);
+        assert!(!state.is_rinshan_flag);
+        assert!(state.is_first_turn);
+        assert!(!state.is_after_kan);
+        assert_eq!(state.last_discard, None);
+        assert_eq!(state.riichi_sutehais, [None; 4]);
+        assert_eq!(state.last_tedashis, [None; 4]);
+        assert!(!state.players[0].riichi_declared);
+        assert!(!state.players[1].riichi_stage);
+        assert_eq!(state.players[2].discard_len, 0);
+        assert_eq!(state.players[3].meld_count, 0);
+        assert_eq!(state.players[0].score, 25_000);
+        assert_eq!(state.players[1].score, 24_000);
+        assert_eq!(state.players[2].score, 26_000);
+        assert_eq!(state.players[3].score, 25_000);
     }
 }
