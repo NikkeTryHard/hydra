@@ -83,15 +83,15 @@ graph TD
 
 **3a. Burn (model init and training)**
 
-The Burn backend is seeded with `component_seed` before model construction at the start of each phase, ensuring that orthogonal initialization (specified in the [Model Definition](INFRASTRUCTURE.md#model-definition) section) produces identical weights given the same seed. During training, the backend RNG governs any stochastic layers — though Hydra's architecture uses no dropout, so the primary effect is on initialization.
+The Burn backend is seeded with `component_seed` before model construction at the start of each phase, ensuring that orthogonal initialization (specified in the [Model Definition](../infrastructure/INFRASTRUCTURE.md#model-definition) section) produces identical weights given the same seed. During training, the backend RNG governs any stochastic layers — though Hydra's architecture uses no dropout, so the primary effect is on initialization.
 
 **3b. DataLoader Workers**
 
-Each DataLoader worker receives a deterministic seed derived from the hierarchy's DataLoader child. Workers use this seed to initialize their local ChaCha8Rng, ensuring that the 8 workers specified in the [Data Loading Pipeline](INFRASTRUCTURE.md#gap-2-data-loading-pipeline) section produce deterministic file ordering and buffer shuffling across runs. Workers must never share RNG state or seed from system time.
+Each DataLoader worker receives a deterministic seed derived from the hierarchy's DataLoader child. Workers use this seed to initialize their local ChaCha8Rng, ensuring that the 8 workers specified in the [Data Loading Pipeline](../infrastructure/INFRASTRUCTURE.md#gap-2-data-loading-pipeline) section produce deterministic file ordering and buffer shuffling across runs. Workers must never share RNG state or seed from system time.
 
 **3c. Suit Augmentation**
 
-Each DataLoader worker maintains a local ChaCha8Rng for selecting 1-of-6 suit permutations per game, as specified in the [Suit Permutation Augmentation](INFRASTRUCTURE.md#gap-4-suit-permutation-augmentation) section. The local RNG is derived from the worker's own seed (not global state). Over 6 epochs, this produces approximately uniform coverage of all 6 permutations for each game, without requiring coordination between workers.
+Each DataLoader worker maintains a local ChaCha8Rng for selecting 1-of-6 suit permutations per game, as specified in the [Suit Permutation Augmentation](../infrastructure/INFRASTRUCTURE.md#gap-4-suit-permutation-augmentation) section. The local RNG is derived from the worker's own seed (not global state). Over 6 epochs, this produces approximately uniform coverage of all 6 permutations for each game, without requiring coordination between workers.
 
 **3d. Rust Game Engine (Self-Play Seeds)**
 
@@ -102,7 +102,7 @@ The Rust game engine receives a session seed derived from the hierarchy's game e
 - **Per-kyoku:** Within each game, wall shuffles use a KDF pattern proven by Mortal: `SHA-256(session_seed || nonce || kyoku || honba)` produces a 32-byte seed for a fresh `ChaCha8Rng` that drives the Fisher-Yates shuffle for that specific kyoku's wall, dead wall, and dora indicators.
 - **Version pinning:** Pin `chacha20 = "=0.10.0"` in `Cargo.toml` to ensure cross-version replay stability. A minor version bump in the cipher crate could silently change the keystream, breaking deterministic replay.
 - **Shuffle implementation:** Vendor the Fisher-Yates shuffle implementation rather than depending on `rand::seq::SliceRandom`. The `SliceRandom` API has changed distribution behavior across `rand` versions; a vendored shuffle with a fixed algorithm guarantees identical wall orderings across Hydra versions.
-- **Cross-reference:** Deterministic replay of `(seed, kyoku, honba) → wall` is the foundation of the evaluation protocol described in the [Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation) section.
+- **Cross-reference:** Deterministic replay of `(seed, kyoku, honba) → wall` is the foundation of the evaluation protocol described in the [Rating and Evaluation](../infrastructure/INFRASTRUCTURE.md#rating-and-evaluation) section.
 
 **3e. Rayon Thread RNG**
 
@@ -124,7 +124,7 @@ If Hydra later revives a league/pool phase, opponent category selection should u
 
 **Implementation notes:**
 - bf16 matrix multiplications are deterministic given identical inputs; non-determinism in mixed-precision training comes from reduction ordering in multi-stream operations (e.g., gradient all-reduce), not from the matmul itself.
-- GroupNorm (used throughout the model, as specified in the [Model Definition](INFRASTRUCTURE.md#model-definition) section) is fully deterministic — it has no running statistics and no non-deterministic CUDA kernels.
+- GroupNorm (used throughout the model, as specified in the [Model Definition](../infrastructure/INFRASTRUCTURE.md#model-definition) section) is fully deterministic — it has no running statistics and no non-deterministic CUDA kernels.
 - Conv1d switches to a deterministic cuDNN kernel when deterministic mode is enabled, with ~5–8% overhead compared to the auto-tuned non-deterministic kernel.
 - **Recommendation:** Enable full determinism for supervised-stage ablation studies and seed-specific debugging. Later stochastic stages will usually remain non-bitwise-reproducible because exploration and parallel scheduling dominate the variance budget.
 
@@ -165,15 +165,15 @@ If Hydra uses multiple training stages with materially different data-generation
 A standardized set of 50,000 game seeds ensures cross-run and cross-version comparability of evaluation results. The seed bank is a first-class artifact, not a runtime computation.
 
 - **Generation:** Derived from a published constant (`EVAL_MASTER = 0x2000`) using `derive_seed(0x2000, i)` for i in 0..50000. The constant follows Mortal's convention for evaluation key derivation.
-- **Storage:** Checked into the repository as `data/eval_seeds.json` — never generated at runtime. This eliminates any risk of evaluation seed drift across code versions or platforms.
-- **Usage tiers** (matching [INFRASTRUCTURE.md § Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation)):
+- **Storage:** Treat the seed bank as a tracked evaluation artifact under the run/eval workflow; no checked-in `data/eval_seeds.json` file currently exists in the repo.
+- **Usage tiers** (matching [INFRASTRUCTURE.md § Rating and Evaluation](../infrastructure/INFRASTRUCTURE.md#rating-and-evaluation)):
 
 | Tier | Seeds Used | Games (x4 rotations) | Purpose |
 |------|-----------|----------------------|---------|
 | Quick eval | First 1,000 | 4,000 | Trend detection during training |
 | Full eval | All 50,000 | 200,000 | Publication-quality checkpoint comparison |
 
-- **Cross-reference:** These tiers match the evaluation scale table in the [Rating and Evaluation](INFRASTRUCTURE.md#rating-and-evaluation) section. The ablation tier (250,000 sets / 1M games) uses a separate, larger seed bank generated from `EVAL_MASTER_ABLATION = 0x2001`.
+- **Cross-reference:** These tiers match the evaluation scale table in the [Rating and Evaluation](../infrastructure/INFRASTRUCTURE.md#rating-and-evaluation) section. The ablation tier (250,000 sets / 1M games) uses a separate, larger seed bank generated from `EVAL_MASTER_ABLATION = 0x2001`.
 - **Invariant:** The seed bank file is append-only. New seeds may be added for larger evaluations, but existing seeds are never reordered or removed.
 
 ### Known Limitations
