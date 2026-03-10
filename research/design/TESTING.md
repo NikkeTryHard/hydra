@@ -122,6 +122,8 @@ Construct a game state programmatically â†’ encode to the live `192x34` tensor â
 
 Parse real Tenhou and Majsoul game logs in MJAI format, replay the events through the game engine, and verify that the reconstructed game state matches the log's recorded outcomes (final scores, winner, winning hand, yaku).
 
+Current status note: the live replay path now has explicit regression coverage for replay round-reset semantics and kan replay legality matching, and a full Tenhou Houou 2025 audit (`178,897` MJAI files) completed with `0` skips after those fixes. Remaining replay failures should be treated as true file/data faults unless a new regression reproducer says otherwise.
+
 **Minimum test corpus:**
 
 - 100 randomly sampled Tenhou Houou games
