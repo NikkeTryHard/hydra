@@ -11,10 +11,10 @@
 //! not q-softmax via `root_exit_policy()`.
 
 use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
-use hydra_core::afbs::{predicted_child_hash, AfbsTree, NodeIdx};
-use hydra_core::arena::{softmax_temperature, TrajectoryExitLabel};
+use hydra_core::afbs::{AfbsTree, NodeIdx, predicted_child_hash};
+use hydra_core::arena::{TrajectoryExitLabel, softmax_temperature};
 use hydra_core::bridge::encode_observation;
-use hydra_core::encoder::{ObservationEncoder, OBS_SIZE};
+use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action, ActionType};
 use riichienv_core::observation::Observation;
@@ -22,8 +22,8 @@ use riichienv_core::state::GameState;
 
 use crate::selfplay::StepRecord;
 use crate::training::exit::{
-    build_exit_from_afbs_tree, compatible_discard_state, is_hard_state, ExitConfig,
-    MIN_EXIT_AVG_ROOT_VISITS_PER_LEGAL_DISCARD,
+    ExitConfig, MIN_EXIT_AVG_ROOT_VISITS_PER_LEGAL_DISCARD, build_exit_from_afbs_tree,
+    compatible_discard_state, is_hard_state,
 };
 
 /// Adapter trait for generating child public observations after a discard.
