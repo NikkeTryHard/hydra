@@ -1,21 +1,22 @@
-# Hydra training container
+# Hydra container
 
-This image packages Hydra's current training entrypoint as a prebuilt binary for SCNet-style registry import and GPU execution.
+This image packages all Hydra binaries as prebuilt executables for SCNet-style registry import and GPU execution.
 
 ## What is inside
 
-- Hydra `train` binary from `crates/hydra-train/src/bin/train.rs`
+- `train` -- training entrypoint from `crates/hydra-train/src/bin/train.rs`
+- `mjai_audit` -- MJAI replay auditor from `crates/hydra-train/src/bin/mjai_audit.rs`
 - Burn + `tch` / libtorch-compatible runtime via PyTorch 2.9.0 CUDA image
-- `sudo` and `openssh-server` installed to stay closer to SCNet's documented custom-image expectations for SSH-capable container usage
+- `sudo` and `openssh-server` installed for SCNet SSH-capable container usage
 
-This first image is intentionally training-focused. It does **not** add Jupyter, VS Code server, or RStudio.
+This image does **not** add Jupyter, VS Code server, or RStudio.
 
 ## Build locally
 
 From the repo root:
 
 ```bash
-docker build -f docker/train/Dockerfile -t hydra-train:local .
+docker build -f docker/train/Dockerfile -t hydra:local .
 ```
 
 ## Basic smoke check
@@ -23,7 +24,7 @@ docker build -f docker/train/Dockerfile -t hydra-train:local .
 No arguments should print the binary usage contract:
 
 ```bash
-docker run --rm hydra-train:local
+docker run --rm hydra:local
 ```
 
 ## Runtime contract
@@ -44,7 +45,7 @@ docker run --rm \
   -v /host/config:/config:ro \
   -v /host/mjai:/data:ro \
   -v /host/output:/output \
-  hydra-train:local \
+  hydra:local \
   /config/train.json
 ```
 
@@ -64,7 +65,7 @@ Your JSON config should point at the mounted container paths, for example:
 Tag the image:
 
 ```bash
-docker tag hydra-train:local ghcr.io/nikketryhard/hydra-train:latest
+docker tag hydra:local ghcr.io/nikketryhard/hydra:latest
 ```
 
 Log in if needed:
@@ -76,14 +77,14 @@ gh auth token | docker login ghcr.io -u NikkeTryHard --password-stdin
 Push:
 
 ```bash
-docker push ghcr.io/nikketryhard/hydra-train:latest
+docker push ghcr.io/nikketryhard/hydra:latest
 ```
 
 If you also want a versioned tag:
 
 ```bash
-docker tag hydra-train:local ghcr.io/nikketryhard/hydra-train:0.1.0
-docker push ghcr.io/nikketryhard/hydra-train:0.1.0
+docker tag hydra:local ghcr.io/nikketryhard/hydra:0.1.0
+docker push ghcr.io/nikketryhard/hydra:0.1.0
 ```
 
 ## SCNet note
