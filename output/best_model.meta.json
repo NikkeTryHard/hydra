@@ -1,0 +1,8 @@
+{
+  "epoch": 300,
+  "train_loss": 3.0735163984696072,
+  "eval_agreement": 0.3818359375,
+  "timestamp": 1773264966,
+  "num_blocks": 24,
+  "hidden_channels": 256
+}
