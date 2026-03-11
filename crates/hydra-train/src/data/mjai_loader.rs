@@ -18,7 +18,8 @@ use riichienv_core::rule::GameRule;
 use riichienv_core::shanten::calc_shanten_from_counts;
 use riichienv_core::state::GameState;
 use std::array;
-use std::io::{self, BufRead};
+use flate2::read::GzDecoder;
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
 const MISSING_TILE_TARGET: u8 = 255;
@@ -440,6 +441,22 @@ pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
     let events = read_mjai_events(reader)
         .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
     load_game_from_events(events)
+}
+
+pub fn load_game_from_stream<R: Read>(reader: R) -> io::Result<MjaiGame> {
+    let mut reader = BufReader::new(reader);
+    let is_gzip = {
+        let buf = reader
+            .fill_buf()
+            .map_err(|err| invalid_data(format!("failed to inspect MJAI stream: {err}")))?;
+        buf.starts_with(&[0x1f, 0x8b])
+    };
+
+    if is_gzip {
+        return load_game_from_reader(BufReader::new(GzDecoder::new(reader)));
+    }
+
+    load_game_from_reader(reader)
 }
 
 pub fn load_game_from_path(path: impl AsRef<Path>) -> io::Result<MjaiGame> {
