@@ -31,8 +31,9 @@ RUN chmod +x scripts/rustc-wrapper.sh
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    CARGO_BUILD_RUSTC_WRAPPER= cargo build --release -p hydra-train --bin train && \
-    cp /app/target/release/train /tmp/train
+    CARGO_BUILD_RUSTC_WRAPPER= cargo build --release -p hydra-train && \
+    cp /app/target/release/train /tmp/train && \
+    cp /app/target/release/mjai_audit /tmp/mjai_audit
 
 FROM pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime AS runtime
 
@@ -59,5 +60,6 @@ RUN ldconfig
 WORKDIR /app
 
 COPY --from=builder /tmp/train /usr/local/bin/train
+COPY --from=builder /tmp/mjai_audit /usr/local/bin/mjai_audit
 
 ENTRYPOINT ["/usr/local/bin/train"]
