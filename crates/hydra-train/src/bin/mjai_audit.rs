@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use hydra_train::data::mjai_loader::load_game_from_path;
+use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
@@ -76,6 +77,10 @@ fn is_mjai_file(path: &Path) -> bool {
 }
 
 fn collect_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    if dir.is_file() {
+        return Ok(vec![dir.to_path_buf()]);
+    }
+
     let mut paths = Vec::new();
     let entries = fs::read_dir(dir)
         .map_err(|err| format!("failed to read data dir {}: {err}", dir.display()))?;
@@ -90,6 +95,20 @@ fn collect_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
+fn is_archive_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name) if name.ends_with(".tar.zst") || name.contains(".tar-") && name.ends_with(".zst")
+    )
+}
+
+fn is_mjai_archive_entry(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name) if name.ends_with(".json") || name.ends_with(".json.gz") || name.ends_with(".mjai.json") || name.ends_with(".mjai.json.gz")
+    )
+}
+
 fn summarize_error(err: &str) -> String {
     let summary = err.lines().next().unwrap_or(err).trim();
     if summary.is_empty() {
@@ -102,6 +121,112 @@ fn summarize_error(err: &str) -> String {
 fn run() -> Result<(), String> {
     let started_at = Instant::now();
     let config = parse_args(std::env::args())?;
+
+    if config.data_dir.is_file() && is_archive_file(&config.data_dir) {
+        let file = fs::File::open(&config.data_dir).map_err(|err| {
+            format!(
+                "failed to open archive {}: {err}",
+                config.data_dir.display()
+            )
+        })?;
+        let zstd = zstd::Decoder::new(file).map_err(|err| {
+            format!(
+                "failed to decode archive {}: {err}",
+                config.data_dir.display()
+            )
+        })?;
+        let mut archive = tar::Archive::new(zstd);
+
+        let mut loaded = 0usize;
+        let mut skipped = 0usize;
+        let mut samples = 0usize;
+        let mut error_buckets = HashMap::<String, usize>::new();
+        let mut failure_examples = Vec::<(String, String)>::new();
+
+        for entry_result in archive.entries().map_err(|err| {
+            format!(
+                "failed to iterate archive {}: {err}",
+                config.data_dir.display()
+            )
+        })? {
+            let entry = entry_result.map_err(|err| {
+                format!(
+                    "failed to read archive entry in {}: {err}",
+                    config.data_dir.display()
+                )
+            })?;
+            let entry_path = entry
+                .path()
+                .map_err(|err| {
+                    format!(
+                        "failed to inspect archive entry in {}: {err}",
+                        config.data_dir.display()
+                    )
+                })?
+                .into_owned();
+            if !is_mjai_archive_entry(&entry_path) {
+                continue;
+            }
+
+            match load_game_from_stream(BufReader::new(entry)) {
+                Ok(game) => {
+                    loaded += 1;
+                    samples += game.num_samples();
+                }
+                Err(err) => {
+                    skipped += 1;
+                    let err_string = err.to_string();
+                    let bucket = summarize_error(&err_string);
+                    *error_buckets.entry(bucket).or_insert(0) += 1;
+                    if failure_examples.len() < config.failure_examples {
+                        failure_examples.push((entry_path.display().to_string(), err_string));
+                    }
+                }
+            }
+        }
+
+        let elapsed_secs = started_at.elapsed().as_secs_f64();
+        let total = loaded + skipped;
+        let files_per_sec = if elapsed_secs > 0.0 {
+            total as f64 / elapsed_secs
+        } else {
+            0.0
+        };
+        let samples_per_sec = if elapsed_secs > 0.0 {
+            samples as f64 / elapsed_secs
+        } else {
+            0.0
+        };
+
+        println!(
+            "Audit complete: loaded={} skipped={} samples={} total={}",
+            loaded, skipped, samples, total
+        );
+        println!(
+            "Speed: elapsed={:.2}s files_per_sec={:.2} samples_per_sec={:.2}",
+            elapsed_secs, files_per_sec, samples_per_sec
+        );
+
+        let mut buckets = error_buckets.into_iter().collect::<Vec<_>>();
+        buckets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if buckets.is_empty() {
+            println!("No failures detected.");
+        } else {
+            println!("Top failure buckets:");
+            for (bucket, count) in buckets.into_iter().take(20) {
+                println!("  {count:>6}  {bucket}");
+            }
+            if !failure_examples.is_empty() {
+                println!("Failure examples:");
+                for (path, err) in failure_examples {
+                    println!("---\n{path}\n{err}");
+                }
+            }
+        }
+
+        return Ok(());
+    }
+
     let paths = collect_paths(&config.data_dir)?;
     let total = paths.len();
     println!(
