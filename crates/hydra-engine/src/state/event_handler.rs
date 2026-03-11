@@ -9,6 +9,40 @@ fn parse_mjai_tile(s: &str) -> u8 {
     mjai_to_tid(s).unwrap_or(0)
 }
 
+fn mjai_tile_has_explicit_copy(s: &str) -> bool {
+    matches!(s, "5mr" | "5pr" | "5sr")
+}
+
+fn remove_replay_hand_tile_by_mjai(player: &mut super::player::PlayerState, tile: u8, mjai: &str) {
+    let idx = if mjai_tile_has_explicit_copy(mjai) {
+        player.hand_slice().iter().position(|&t| t == tile)
+    } else {
+        let tile_type = tile / 4;
+        player.hand_slice().iter().position(|&t| t / 4 == tile_type)
+    };
+
+    if let Some(idx) = idx {
+        player.remove_hand(idx);
+    }
+}
+
+fn alloc_start_kyoku_tile(tile_counts: &mut [u8; 34], tile_str: &str) -> u8 {
+    let tile = parse_mjai_tile(tile_str);
+    let tile_type = (tile / 4) as usize;
+
+    if mjai_tile_has_explicit_copy(tile_str) {
+        tile_counts[tile_type] = tile_counts[tile_type].max(1);
+        return tile;
+    }
+
+    let mut copy = tile_counts[tile_type];
+    if matches!(tile_type, 4 | 13 | 22) {
+        copy = copy.max(1);
+    }
+    tile_counts[tile_type] = copy.saturating_add(1);
+    tile_type as u8 * 4 + copy
+}
+
 pub trait GameStateEventHandler {
     fn apply_mjai_event(&mut self, event: MjaiEvent);
     fn apply_log_action(&mut self, action: &LogAction);
@@ -69,8 +103,10 @@ impl GameStateEventHandler for GameState {
 
                 // Set hands
                 for (i, hand_strs) in tehais.iter().enumerate() {
+                    let mut tile_counts = [0u8; 34];
                     for tile_str in hand_strs {
-                        self.players[i].push_hand(parse_mjai_tile(tile_str));
+                        self.players[i]
+                            .push_hand(alloc_start_kyoku_tile(&mut tile_counts, tile_str));
                     }
                     self.players[i].hand_slice_mut().sort();
                 }
@@ -99,13 +135,7 @@ impl GameStateEventHandler for GameState {
             MjaiEvent::Dahai { actor, pai, .. } => {
                 let tile = parse_mjai_tile(&pai);
                 self.current_player = actor as u8;
-                if let Some(idx) = self.players[actor]
-                    .hand_slice()
-                    .iter()
-                    .position(|&t| t == tile)
-                {
-                    self.players[actor].remove_hand(idx);
-                }
+                remove_replay_hand_tile_by_mjai(&mut self.players[actor], tile, &pai);
                 self.players[actor].push_discard(tile, false, false);
                 self.last_discard = Some((actor as u8, tile));
                 self.drawn_tile = None;
@@ -128,13 +158,8 @@ impl GameStateEventHandler for GameState {
                 let form_tiles = vec![tile, c1, c2];
 
                 for t in &[c1, c2] {
-                    if let Some(idx) = self.players[actor]
-                        .hand_slice()
-                        .iter()
-                        .position(|&x| x == *t)
-                    {
-                        self.players[actor].remove_hand(idx);
-                    }
+                    let mjai = if *t == c1 { &consumed[0] } else { &consumed[1] };
+                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], *t, mjai);
                 }
 
                 self.players[actor].push_meld(Meld::new(
@@ -160,13 +185,8 @@ impl GameStateEventHandler for GameState {
                 let form_tiles = vec![tile, c1, c2];
 
                 for t in &[c1, c2] {
-                    if let Some(idx) = self.players[actor]
-                        .hand_slice()
-                        .iter()
-                        .position(|&x| x == *t)
-                    {
-                        self.players[actor].remove_hand(idx);
-                    }
+                    let mjai = if *t == c1 { &consumed[0] } else { &consumed[1] };
+                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], *t, mjai);
                 }
 
                 self.players[actor].push_meld(Meld::new(
@@ -194,13 +214,7 @@ impl GameStateEventHandler for GameState {
 
                 for c in &consumed {
                     let tv = parse_mjai_tile(c);
-                    if let Some(idx) = self.players[actor]
-                        .hand_slice()
-                        .iter()
-                        .position(|&x| x == tv)
-                    {
-                        self.players[actor].remove_hand(idx);
-                    }
+                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], tv, c);
                 }
 
                 self.players[actor].push_meld(Meld::new(
@@ -217,26 +231,14 @@ impl GameStateEventHandler for GameState {
                 for c in &consumed {
                     let t = parse_mjai_tile(c);
                     tiles.push(t);
-                    if let Some(idx) = self.players[actor]
-                        .hand_slice()
-                        .iter()
-                        .position(|&x| x == t)
-                    {
-                        self.players[actor].remove_hand(idx);
-                    }
+                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], t, c);
                 }
                 self.players[actor].push_meld(Meld::new(MeldType::Ankan, &tiles, false, -1, None));
                 self.needs_tsumo = true;
             }
             MjaiEvent::Kakan { actor, pai } => {
                 let tile = parse_mjai_tile(&pai);
-                if let Some(idx) = self.players[actor]
-                    .hand_slice()
-                    .iter()
-                    .position(|&x| x == tile)
-                {
-                    self.players[actor].remove_hand(idx);
-                }
+                remove_replay_hand_tile_by_mjai(&mut self.players[actor], tile, &pai);
                 for m in self.players[actor].melds_slice_mut().iter_mut() {
                     if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
                         m.meld_type = MeldType::Kakan;
@@ -712,6 +714,7 @@ mod tests {
     use super::*;
     use crate::action::{Action, ActionType};
     use crate::rule::GameRule;
+    use std::collections::HashSet;
 
     fn start_kyoku_event() -> MjaiEvent {
         MjaiEvent::StartKyoku {
@@ -850,5 +853,204 @@ mod tests {
         assert_eq!(state.players[1].score, 24_000);
         assert_eq!(state.players[2].score, 26_000);
         assert_eq!(state.players[3].score, 25_000);
+    }
+
+    #[test]
+    fn replay_kakan_removes_matching_tile_class_from_hand() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+        state.apply_mjai_event(MjaiEvent::StartKyoku {
+            bakaze: "E".to_string(),
+            kyoku: 1,
+            honba: 0,
+            kyoutaku: 0,
+            oya: 0,
+            scores: vec![25_000, 25_000, 25_000, 25_000],
+            dora_marker: "1m".to_string(),
+            tehais: vec![
+                vec![
+                    "1m".to_string(),
+                    "2m".to_string(),
+                    "3m".to_string(),
+                    "4m".to_string(),
+                    "5m".to_string(),
+                    "6m".to_string(),
+                    "7m".to_string(),
+                    "8m".to_string(),
+                    "9m".to_string(),
+                    "1p".to_string(),
+                    "2p".to_string(),
+                    "3p".to_string(),
+                    "4p".to_string(),
+                    "4p".to_string(),
+                ],
+                vec![
+                    "1s".to_string(),
+                    "2s".to_string(),
+                    "3s".to_string(),
+                    "4s".to_string(),
+                    "5s".to_string(),
+                    "6s".to_string(),
+                    "7s".to_string(),
+                    "8s".to_string(),
+                    "9s".to_string(),
+                    "E".to_string(),
+                    "S".to_string(),
+                    "W".to_string(),
+                    "N".to_string(),
+                ],
+                vec![
+                    "P".to_string(),
+                    "F".to_string(),
+                    "C".to_string(),
+                    "1m".to_string(),
+                    "1m".to_string(),
+                    "2m".to_string(),
+                    "2m".to_string(),
+                    "3m".to_string(),
+                    "3m".to_string(),
+                    "4m".to_string(),
+                    "4m".to_string(),
+                    "5m".to_string(),
+                    "5m".to_string(),
+                ],
+                vec![
+                    "6p".to_string(),
+                    "6p".to_string(),
+                    "7p".to_string(),
+                    "7p".to_string(),
+                    "8p".to_string(),
+                    "8p".to_string(),
+                    "9p".to_string(),
+                    "9p".to_string(),
+                    "1s".to_string(),
+                    "1s".to_string(),
+                    "2s".to_string(),
+                    "2s".to_string(),
+                    "3s".to_string(),
+                ],
+            ],
+        });
+
+        state.apply_mjai_event(MjaiEvent::Pon {
+            actor: 0,
+            target: 0,
+            pai: "4p".to_string(),
+            consumed: vec!["4p".to_string(), "4p".to_string()],
+        });
+        state.apply_mjai_event(MjaiEvent::Tsumo {
+            actor: 0,
+            pai: "4p".to_string(),
+        });
+
+        let four_p_count_before = state.players[0]
+            .hand_slice()
+            .iter()
+            .filter(|&&tile| tile / 4 == 12)
+            .count();
+        assert_eq!(four_p_count_before, 1);
+
+        state.apply_mjai_event(MjaiEvent::Kakan {
+            actor: 0,
+            pai: "4p".to_string(),
+        });
+
+        let four_p_count_after = state.players[0]
+            .hand_slice()
+            .iter()
+            .filter(|&&tile| tile / 4 == 12)
+            .count();
+        assert_eq!(four_p_count_after, 0);
+        assert!(state.players[0]
+            .melds_slice()
+            .iter()
+            .any(|meld| meld.meld_type == MeldType::Kakan && meld.tiles[0] / 4 == 12));
+    }
+
+    #[test]
+    fn replay_start_kyoku_assigns_unique_tile_ids_for_duplicate_plain_tiles() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+
+        state.apply_mjai_event(MjaiEvent::StartKyoku {
+            bakaze: "E".to_string(),
+            kyoku: 1,
+            honba: 0,
+            kyoutaku: 0,
+            oya: 0,
+            scores: vec![25_000, 25_000, 25_000, 25_000],
+            dora_marker: "1m".to_string(),
+            tehais: vec![
+                vec![
+                    "6m".to_string(),
+                    "6m".to_string(),
+                    "6m".to_string(),
+                    "7m".to_string(),
+                    "8m".to_string(),
+                    "9m".to_string(),
+                    "1p".to_string(),
+                    "2p".to_string(),
+                    "3p".to_string(),
+                    "4p".to_string(),
+                    "5p".to_string(),
+                    "6p".to_string(),
+                    "7p".to_string(),
+                ],
+                vec![
+                    "1s".to_string(),
+                    "2s".to_string(),
+                    "3s".to_string(),
+                    "4s".to_string(),
+                    "5s".to_string(),
+                    "6s".to_string(),
+                    "7s".to_string(),
+                    "8s".to_string(),
+                    "9s".to_string(),
+                    "E".to_string(),
+                    "S".to_string(),
+                    "W".to_string(),
+                    "N".to_string(),
+                ],
+                vec![
+                    "P".to_string(),
+                    "F".to_string(),
+                    "C".to_string(),
+                    "1m".to_string(),
+                    "1m".to_string(),
+                    "2m".to_string(),
+                    "2m".to_string(),
+                    "3m".to_string(),
+                    "3m".to_string(),
+                    "4m".to_string(),
+                    "4m".to_string(),
+                    "5m".to_string(),
+                    "5m".to_string(),
+                ],
+                vec![
+                    "6p".to_string(),
+                    "6p".to_string(),
+                    "7p".to_string(),
+                    "7p".to_string(),
+                    "8p".to_string(),
+                    "8p".to_string(),
+                    "9p".to_string(),
+                    "9p".to_string(),
+                    "1s".to_string(),
+                    "1s".to_string(),
+                    "2s".to_string(),
+                    "2s".to_string(),
+                    "3s".to_string(),
+                ],
+            ],
+        });
+
+        let six_m_tiles: Vec<u8> = state.players[0]
+            .hand_slice()
+            .iter()
+            .copied()
+            .filter(|tile| tile / 4 == 5)
+            .collect();
+        assert_eq!(six_m_tiles.len(), 3);
+        assert_eq!(six_m_tiles.iter().copied().collect::<HashSet<_>>().len(), 3);
     }
 }

@@ -3,6 +3,7 @@
 use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
 use crate::teacher::belief::{StageABeliefConfig, build_stage_a_teacher};
 use crate::training::losses::oracle_target_from_scores;
+use flate2::read::GzDecoder;
 use hydra_core::action::{
     AKA_5M, AKA_5P, AKA_5S, ActionPhase, DISCARD_END, HYDRA_ACTION_SPACE, build_legal_mask,
     riichienv_to_hydra,
@@ -18,7 +19,6 @@ use riichienv_core::rule::GameRule;
 use riichienv_core::shanten::calc_shanten_from_counts;
 use riichienv_core::state::GameState;
 use std::array;
-use flate2::read::GzDecoder;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
@@ -358,73 +358,73 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
             let env_action = mjai_event_to_action(event)
                 .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
             if let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) {
-            let obs = state
-                .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
-                .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
-            let hydra_action = riichienv_to_hydra(&env_action)
-                .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
-            let legal = obs.legal_actions_method();
-            let phase = if matches!(event, MjaiEvent::Dahai { .. })
-                && state.players[actor].riichi_declared
-            {
-                ActionPhase::RiichiSelect
-            } else {
-                ActionPhase::Normal
-            };
-            let legal_mask = bool_mask_to_f32(build_legal_mask(&legal, phase));
-            if legal_mask[hydra_action.id() as usize] > 0.0 {
-                let obs_encoded = encode_observation(
-                    &mut encoder,
-                    &obs,
-                    &safety[actor],
-                    state.drawn_tile.map(tile136_to_type),
-                );
-                let mut tenpai = [0.0; 3];
-                let mut opp_next = [MISSING_TILE_TARGET; 3];
-                let mut danger = [0.0; 102];
-                let mut danger_mask = [0.0; 102];
-                let mut wait_sets = [[0.0f32; 34]; 3];
-                for rel in 0..3usize {
-                    let opp = abs_opp(actor, rel);
-                    let (waits, is_tenpai) = exact_waits(&state, opp);
-                    wait_sets[rel] = waits;
-                    tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
-                    opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
-                    let start = rel * 34;
-                    danger[start..start + 34].copy_from_slice(&wait_sets[rel]);
-                    if is_tenpai {
-                        danger_mask[start..start + 34].fill(1.0);
+                let obs = state
+                    .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
+                    .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
+                let hydra_action = riichienv_to_hydra(&env_action)
+                    .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
+                let legal = obs.legal_actions_method();
+                let phase = if matches!(event, MjaiEvent::Dahai { .. })
+                    && state.players[actor].riichi_declared
+                {
+                    ActionPhase::RiichiSelect
+                } else {
+                    ActionPhase::Normal
+                };
+                let legal_mask = bool_mask_to_f32(build_legal_mask(&legal, phase));
+                if legal_mask[hydra_action.id() as usize] > 0.0 {
+                    let obs_encoded = encode_observation(
+                        &mut encoder,
+                        &obs,
+                        &safety[actor],
+                        state.drawn_tile.map(tile136_to_type),
+                    );
+                    let mut tenpai = [0.0; 3];
+                    let mut opp_next = [MISSING_TILE_TARGET; 3];
+                    let mut danger = [0.0; 102];
+                    let mut danger_mask = [0.0; 102];
+                    let mut wait_sets = [[0.0f32; 34]; 3];
+                    for rel in 0..3usize {
+                        let opp = abs_opp(actor, rel);
+                        let (waits, is_tenpai) = exact_waits(&state, opp);
+                        wait_sets[rel] = waits;
+                        tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
+                        opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
+                        let start = rel * 34;
+                        danger[start..start + 34].copy_from_slice(&wait_sets[rel]);
+                        if is_tenpai {
+                            danger_mask[start..start + 34].fill(1.0);
+                        }
                     }
+                    let (safety_residual, safety_residual_mask) =
+                        build_safety_residual_targets(&legal_mask, &safety[actor], &wait_sets);
+                    let (
+                        belief_fields,
+                        mixture_weights,
+                        belief_fields_present,
+                        mixture_weights_present,
+                    ) = build_stage_a_belief_targets(&state, actor, &obs);
+                    samples.push(MjaiSample {
+                        obs: obs_encoded,
+                        action: hydra_action.id(),
+                        legal_mask,
+                        placement: score_to_placement(final_scores, actor as u8),
+                        score_delta: final_scores[actor] - state.players[actor].score,
+                        grp_label,
+                        oracle_target: Some(oracle_target),
+                        tenpai,
+                        opp_next,
+                        danger,
+                        danger_mask,
+                        safety_residual: Some(safety_residual),
+                        safety_residual_mask: Some(safety_residual_mask),
+                        belief_fields,
+                        mixture_weights,
+                        belief_fields_present,
+                        mixture_weights_present,
+                    });
                 }
-                let (safety_residual, safety_residual_mask) =
-                    build_safety_residual_targets(&legal_mask, &safety[actor], &wait_sets);
-                let (
-                    belief_fields,
-                    mixture_weights,
-                    belief_fields_present,
-                    mixture_weights_present,
-                ) = build_stage_a_belief_targets(&state, actor, &obs);
-                samples.push(MjaiSample {
-                    obs: obs_encoded,
-                    action: hydra_action.id(),
-                    legal_mask,
-                    placement: score_to_placement(final_scores, actor as u8),
-                    score_delta: final_scores[actor] - state.players[actor].score,
-                    grp_label,
-                    oracle_target: Some(oracle_target),
-                    tenpai,
-                    opp_next,
-                    danger,
-                    danger_mask,
-                    safety_residual: Some(safety_residual),
-                    safety_residual_mask: Some(safety_residual_mask),
-                    belief_fields,
-                    mixture_weights,
-                    belief_fields_present,
-                    mixture_weights_present,
-                });
             }
-        }
         }
 
         update_safety(&mut safety, event)?;
@@ -838,5 +838,54 @@ mod tests {
 
         assert_eq!(game.final_scores, final_scores);
         assert!(game.samples.len() > 50);
+    }
+
+    #[test]
+    fn load_game_from_reader_accepts_valid_kakan_replay_with_class_only_tiles() {
+        let log = [
+            r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","4p","4p","4p","5s","6s"],["1p","2p","3p","4p","5p","6p","7p","8p","9p","1s","2s","3s","E"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","5p","6p","7p","8p","9p","S"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"5s","tsumogiri":false}"#,
+            r#"{"type":"pon","actor":0,"target":0,"pai":"4p","consumed":["4p","4p"]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"6s","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"E"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"E","tsumogiri":true}"#,
+            r#"{"type":"tsumo","actor":2,"pai":"8m"}"#,
+            r#"{"type":"dahai","actor":2,"pai":"8m","tsumogiri":true}"#,
+            r#"{"type":"tsumo","actor":3,"pai":"S"}"#,
+            r#"{"type":"dahai","actor":3,"pai":"S","tsumogiri":true}"#,
+            r#"{"type":"tsumo","actor":0,"pai":"4p"}"#,
+            r#"{"type":"kakan","actor":0,"pai":"4p"}"#,
+            r#"{"type":"tsumo","actor":0,"pai":"7s"}"#,
+            r#"{"type":"dahai","actor":0,"pai":"7s","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ];
+
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+
+        assert!(!game.samples.is_empty());
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.action < HYDRA_ACTION_SPACE as u8)
+        );
+    }
+
+    #[test]
+    fn load_game_from_reader_accepts_duplicate_plain_tiles_in_start_kyoku() {
+        let log = [
+            r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["6m","6m","6m","7m","8m","9m","1p","2p","3p","4p","5p","6p","7p","8p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"8p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ];
+
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+
+        assert!(!game.samples.is_empty());
     }
 }
