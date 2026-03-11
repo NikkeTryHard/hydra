@@ -19,3 +19,7 @@ __pycache__/
 /tacc_allocation_*.txt
 /tacc_allocation_*.md
 handoff_zips/
+
+# Local build/env config
+.cargo/
+.pixi-env/
