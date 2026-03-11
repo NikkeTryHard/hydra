@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 
 const MJAI_AUDIT_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 

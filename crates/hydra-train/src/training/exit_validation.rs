@@ -9,12 +9,12 @@ use std::fmt;
 
 use burn::prelude::Backend;
 use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
-use hydra_core::arena::{softmax_temperature, TrajectoryStep};
+use hydra_core::arena::{TrajectoryStep, softmax_temperature};
 
 use crate::model::HydraModel;
 use crate::selfplay::generate_self_play_batch_source;
-use crate::training::exit::{compatible_discard_state, is_hard_state, ExitConfig};
-use crate::training::live_exit::{budget_from_legal_count, LiveExitConfig};
+use crate::training::exit::{ExitConfig, compatible_discard_state, is_hard_state};
+use crate::training::live_exit::{LiveExitConfig, budget_from_legal_count};
 
 /// Aggregated metrics from a shadow ExIt validation run.
 ///

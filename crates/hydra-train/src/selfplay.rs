@@ -1,13 +1,13 @@
 use burn::prelude::*;
 use hydra_core::action::{
-    build_legal_mask, hydra_to_riichienv, riichienv_to_hydra, ActionPhase, GameContext,
-    HydraAction, HYDRA_ACTION_SPACE,
+    ActionPhase, GameContext, HYDRA_ACTION_SPACE, HydraAction, build_legal_mask,
+    hydra_to_riichienv, riichienv_to_hydra,
 };
 use hydra_core::arena::{
-    sample_action_with_temperature, Trajectory, TrajectoryExitLabel, TrajectoryStep,
+    Trajectory, TrajectoryExitLabel, TrajectoryStep, sample_action_with_temperature,
 };
 use hydra_core::bridge::encode_observation;
-use hydra_core::encoder::{ObservationEncoder, NUM_CHANNELS, OBS_SIZE};
+use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::observation::Observation;
@@ -17,8 +17,8 @@ use riichienv_core::state::GameState;
 use crate::config::{GAE_GAMMA, GAE_LAMBDA};
 use crate::model::HydraModel;
 use crate::training::exit::collate_exit_targets;
-use crate::training::gae::{compute_per_player_gae, normalize_advantages, GaeConfig};
-use crate::training::live_exit::{make_live_exit_fn, LiveExitConfig};
+use crate::training::gae::{GaeConfig, compute_per_player_gae, normalize_advantages};
+use crate::training::live_exit::{LiveExitConfig, make_live_exit_fn};
 use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;
 
@@ -1093,10 +1093,12 @@ mod tests {
             },
         );
 
-        assert!(trajectory
-            .steps
-            .iter()
-            .any(|step| step.exit_label.is_some()));
+        assert!(
+            trajectory
+                .steps
+                .iter()
+                .any(|step| step.exit_label.is_some())
+        );
         assert!(trajectory.validate().is_ok());
     }
 }
