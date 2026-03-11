@@ -104,11 +104,21 @@ pub fn policy_agreement<B: Backend>(
     mask: Tensor<B, 2>,
     targets: Tensor<B, 1, Int>,
 ) -> f64 {
+    let (correct, total) = policy_agreement_counts(logits, mask, targets);
+    correct as f64 / total as f64
+}
+
+pub fn policy_agreement_counts<B: Backend>(
+    logits: Tensor<B, 2>,
+    mask: Tensor<B, 2>,
+    targets: Tensor<B, 1, Int>,
+) -> (usize, usize) {
     let masked = logits + (mask.ones_like() - mask) * (-1e9f32);
     let predicted = masked.argmax(1).squeeze_dim::<1>(1);
     let correct = predicted.equal(targets);
-    let n = correct.dims()[0] as f64;
-    correct.int().sum().into_scalar().elem::<i64>() as f64 / n
+    let total = correct.dims()[0];
+    let correct = correct.int().sum().into_scalar().elem::<i64>() as usize;
+    (correct, total)
 }
 
 pub fn target_actions_from_policy_target<B: Backend>(
@@ -142,11 +152,7 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob {
-                1.0
-            } else {
-                0.0
-            }
+            if sample < keep_prob { 1.0 } else { 0.0 }
         })
         .collect()
 }
@@ -422,7 +428,7 @@ impl CheckpointMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
@@ -582,6 +588,28 @@ mod tests {
         let targets = Tensor::<NdArray<f32>, 1, Int>::from_ints(&[0i32; 32][..], &device);
         let acc = policy_agreement(output.policy_logits, mask, targets);
         assert!((0.0..=1.0).contains(&acc), "agreement {acc} out of [0,1]");
+    }
+
+    #[test]
+    fn test_policy_agreement_counts_match_fraction() {
+        let device: <NdArray<f32> as Backend>::Device = Default::default();
+        let logits = Tensor::<NdArray<f32>, 2>::from_floats(
+            [
+                [10.0, 1.0, 0.0],
+                [0.0, 9.0, 1.0],
+                [0.0, 1.0, 8.0],
+                [3.0, 2.0, 1.0],
+            ],
+            &device,
+        );
+        let mask = Tensor::<NdArray<f32>, 2>::ones([4, 3], &device);
+        let targets = Tensor::<NdArray<f32>, 1, Int>::from_ints([0, 1, 1, 2], &device);
+
+        let acc = policy_agreement(logits.clone(), mask.clone(), targets.clone());
+        let (correct, total) = policy_agreement_counts(logits, mask, targets);
+
+        assert_eq!((correct, total), (2, 4));
+        assert!((acc - correct as f64 / total as f64).abs() < 1e-12);
     }
 
     #[test]

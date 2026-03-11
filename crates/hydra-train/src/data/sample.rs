@@ -403,6 +403,24 @@ pub fn collate_batch_augmented<B: Backend>(
     collate_batch(&augmented, device)
 }
 
+pub fn collate_samples<B: Backend>(
+    samples: &[MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> Option<(Tensor<B, 3>, HydraTargets<B>)> {
+    if samples.is_empty() {
+        return None;
+    }
+
+    let batch = if augment {
+        collate_batch_augmented(samples, device)
+    } else {
+        collate_batch(samples, device)
+    };
+    let obs = batch.obs.clone();
+    Some((obs, batch.into_hydra_targets()))
+}
+
 pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
     use crate::data::augment::{
         augment_action_suit, augment_belief_fields_suit, augment_mask_suit, augment_obs_suit,
