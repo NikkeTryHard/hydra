@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     mold \
+    protobuf-compiler \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -33,12 +34,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     CARGO_BUILD_RUSTC_WRAPPER= cargo build --release -p hydra-train && \
     cp /app/target/release/train /tmp/train && \
-    cp /app/target/release/mjai_audit /tmp/mjai_audit
+    cp /app/target/release/mjai_audit /tmp/mjai_audit && \
+    cp /app/target/release/recompress /tmp/recompress
 
 FROM pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    HYDRA_TRAIN_DEVICE=cpu \
     LIBTORCH_USE_PYTORCH=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -61,5 +62,6 @@ WORKDIR /app
 
 COPY --from=builder /tmp/train /usr/local/bin/train
 COPY --from=builder /tmp/mjai_audit /usr/local/bin/mjai_audit
+COPY --from=builder /tmp/recompress /usr/local/bin/recompress
 
 ENTRYPOINT ["/usr/local/bin/train"]
