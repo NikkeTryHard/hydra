@@ -413,7 +413,13 @@ impl GameState {
             return false;
         }
 
-        let tiles_match = legal.tile == replay.tile;
+        let tiles_match = match (legal.tile, replay.tile) {
+            (Some(legal_tile), Some(replay_tile)) => {
+                Self::replay_tile_matches_mjai_semantics(legal_tile, replay_tile)
+            }
+            (None, None) => true,
+            _ => false,
+        };
         let consumes_match = legal.consume_slice() == replay.consume_slice();
 
         if tiles_match {
@@ -463,6 +469,28 @@ impl GameState {
         false
     }
 
+    #[inline]
+    fn replay_tile_matches_mjai_semantics(legal_tile: u8, replay_tile: u8) -> bool {
+        if legal_tile == replay_tile {
+            return true;
+        }
+
+        let legal_type = legal_tile / 4;
+        let replay_type = replay_tile / 4;
+        if legal_type != replay_type {
+            return false;
+        }
+
+        if matches!(legal_type, 4 | 13 | 22) {
+            let red_copy = legal_type * 4;
+            let legal_is_red = legal_tile == red_copy;
+            let replay_is_red = replay_tile == red_copy;
+            return legal_is_red == replay_is_red;
+        }
+
+        true
+    }
+
     /// Build an observation for replay validation, temporarily adjusting phase if needed.
     pub fn get_observation_for_replay(
         &mut self,
@@ -499,10 +527,15 @@ impl GameState {
         {
             self.players[pid as usize].riichi_declared = false;
             let new_obs = self.get_observation(pid);
-            let is_legal_retry = new_obs
-                ._legal_actions
-                .iter()
-                .any(|a| a.action_type == ActionType::Discard && a.tile == env_action.tile);
+            let is_legal_retry = new_obs._legal_actions.iter().any(|a| {
+                a.action_type == ActionType::Discard
+                    && match (a.tile, env_action.tile) {
+                        (Some(legal_tile), Some(replay_tile)) => {
+                            Self::replay_tile_matches_mjai_semantics(legal_tile, replay_tile)
+                        }
+                        _ => false,
+                    }
+            });
 
             if is_legal_retry {
                 obs = new_obs;
@@ -2365,6 +2398,35 @@ mod tests {
         let replay = Action::new(ActionType::Kakan, Some(17), &[], Some(0));
 
         assert!(GameState::replay_action_matches_legal(&legal, &replay));
+    }
+
+    #[test]
+    fn replay_discard_matcher_accepts_same_tile_class_with_different_copy_ids() {
+        let legal = Action::new(ActionType::Discard, Some(44), &[], Some(0));
+        let replay = Action::new(ActionType::Discard, Some(46), &[], Some(0));
+
+        assert!(GameState::replay_action_matches_legal(&legal, &replay));
+    }
+
+    #[test]
+    fn replay_discard_matcher_distinguishes_plain_and_red_fives() {
+        let legal_red = Action::new(ActionType::Discard, Some(52), &[], Some(0));
+        let replay_plain = Action::new(ActionType::Discard, Some(53), &[], Some(0));
+        let legal_plain = Action::new(ActionType::Discard, Some(54), &[], Some(0));
+        let replay_red = Action::new(ActionType::Discard, Some(52), &[], Some(0));
+
+        assert!(!GameState::replay_action_matches_legal(
+            &legal_red,
+            &replay_plain
+        ));
+        assert!(GameState::replay_action_matches_legal(
+            &legal_plain,
+            &replay_plain
+        ));
+        assert!(!GameState::replay_action_matches_legal(
+            &legal_plain,
+            &replay_red
+        ));
     }
 
     #[test]
