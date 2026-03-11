@@ -1,16 +1,24 @@
 use std::fs;
-use std::io;
+use std::io::{self, BufReader};
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 
 use burn::prelude::*;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 
-use crate::data::mjai_loader::{load_game_from_path, MjaiDataset};
+use crate::data::mjai_loader::{load_game_from_path, load_game_from_stream, MjaiDataset, MjaiGame};
 use crate::data::sample::{collate_batch, collate_batch_augmented, MjaiSample};
 use crate::training::losses::HydraTargets;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+const MJAI_ARCHIVE_QUEUE_BOUND: usize = 128;
+
+struct ArchiveEntryJob {
+    display_name: String,
+    data: Vec<u8>,
+}
 
 fn next_seed(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -22,6 +30,108 @@ fn is_mjai_file(path: &Path) -> bool {
         path.file_name().and_then(|name| name.to_str()),
         Some(name) if name.ends_with(".json") || name.ends_with(".json.gz")
     )
+}
+
+fn is_tar_zst_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name) if name.ends_with(".tar.zst") || name.contains(".tar-") && name.ends_with(".zst")
+    )
+}
+
+fn is_mjai_archive_entry(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name) if name.ends_with(".json") || name.ends_with(".json.gz") || name.ends_with(".mjai.json") || name.ends_with(".mjai.json.gz")
+    )
+}
+
+fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset> {
+    let pool = ThreadPoolBuilder::new()
+        .stack_size(MJAI_LOAD_THREAD_STACK_SIZE)
+        .build()
+        .map_err(|err| {
+            io::Error::other(format!(
+                "failed to build MJAI archive loader thread pool: {err}"
+            ))
+        })?;
+
+    let path_buf = path.to_path_buf();
+    let (job_tx, job_rx) = mpsc::sync_channel::<ArchiveEntryJob>(MJAI_ARCHIVE_QUEUE_BOUND);
+
+    let producer = thread::Builder::new()
+        .name("mjai-archive-reader".to_string())
+        .stack_size(MJAI_LOAD_THREAD_STACK_SIZE)
+        .spawn(move || -> io::Result<()> {
+            let file = fs::File::open(&path_buf)?;
+            let zstd = zstd::Decoder::new(file).map_err(|err| {
+                io::Error::other(format!(
+                    "failed to open zstd archive {}: {err}",
+                    path_buf.display()
+                ))
+            })?;
+            let mut archive = tar::Archive::new(zstd);
+
+            for entry_result in archive.entries()? {
+                let mut entry = entry_result?;
+                let entry_path = entry.path()?.into_owned();
+                if !is_mjai_archive_entry(&entry_path) {
+                    continue;
+                }
+
+                let mut data = Vec::with_capacity(entry.size() as usize);
+                std::io::Read::read_to_end(&mut entry, &mut data)?;
+                let display_name = format!("{} in {}", entry_path.display(), path_buf.display());
+
+                if job_tx.send(ArchiveEntryJob { display_name, data }).is_err() {
+                    break;
+                }
+            }
+
+            Ok(())
+        })
+        .map_err(|err| io::Error::other(format!("failed to spawn archive reader: {err}")))?;
+
+    let results: Vec<(String, io::Result<MjaiGame>)> = pool.install(|| {
+        job_rx
+            .into_iter()
+            .par_bridge()
+            .map(|job| {
+                let result = load_game_from_stream(BufReader::new(std::io::Cursor::new(job.data)));
+                (job.display_name, result)
+            })
+            .collect()
+    });
+
+    producer.join().map_err(|_| {
+        io::Error::other(format!(
+            "archive reader thread panicked for {}",
+            path.display()
+        ))
+    })??;
+
+    let mut dataset = MjaiDataset::new(train_fraction);
+    let mut skipped = 0usize;
+
+    for (display_name, result) in results {
+        match result {
+            Ok(game) => dataset.add_game(game),
+            Err(err) => {
+                eprintln!("Skipping {display_name}: {err}");
+                skipped += 1;
+            }
+        }
+    }
+
+    println!(
+        "Loaded {} MJAI games ({} samples, {} skipped) from archive {}",
+        dataset.num_games(),
+        dataset.num_samples(),
+        skipped,
+        path.display()
+    );
+
+    Ok(dataset)
 }
 
 fn clone_sample(sample: &MjaiSample) -> MjaiSample {
@@ -47,16 +157,35 @@ fn clone_sample(sample: &MjaiSample) -> MjaiSample {
 }
 
 pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDataset> {
+    if dir.is_file() {
+        if is_tar_zst_file(dir) {
+            return load_mjai_archive(dir, train_fraction);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "expected directory or .tar.zst archive, got {}",
+                dir.display()
+            ),
+        ));
+    }
+
     let mut paths = Vec::new();
+    let mut archives = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let path = entry.path();
-        if file_type.is_file() && is_mjai_file(&path) {
-            paths.push(path);
+        if file_type.is_file() {
+            if is_mjai_file(&path) {
+                paths.push(path);
+            } else if is_tar_zst_file(&path) {
+                archives.push(path);
+            }
         }
     }
     paths.sort();
+    archives.sort();
 
     let mut dataset = MjaiDataset::new(train_fraction);
     dataset.games.reserve(paths.len());
@@ -91,6 +220,13 @@ pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDa
         skipped,
         dir.display()
     );
+
+    for archive in archives {
+        let archive_dataset = load_mjai_archive(&archive, train_fraction)?;
+        for game in archive_dataset.games {
+            dataset.add_game(game);
+        }
+    }
 
     Ok(dataset)
 }
@@ -157,10 +293,14 @@ pub fn collate_sample_chunk<B: Backend>(
 mod tests {
     use super::*;
     use burn::backend::NdArray;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::encoder::OBS_SIZE;
+    use std::fs::File;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tar::Builder;
 
     use crate::data::mjai_loader::{MjaiDataset, MjaiGame};
 
@@ -200,6 +340,30 @@ mod tests {
             final_scores: [25_000; 4],
         });
         dataset
+    }
+
+    fn valid_game_json() -> String {
+        [
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
+    }
+
+    fn write_tar_zst_with_entries(path: &Path, entries: &[(&str, Vec<u8>)]) {
+        let file = File::create(path).expect("create archive");
+        let encoder = zstd::Encoder::new(file, 19).expect("create zstd encoder");
+        let mut builder = Builder::new(encoder.auto_finish());
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, *name, data.as_slice())
+                .expect("append tar entry");
+        }
+        builder.finish().expect("finish tar builder");
     }
 
     #[test]
@@ -278,6 +442,58 @@ mod tests {
         let dataset = load_mjai_directory(&dir, 0.5).expect("directory load should succeed");
         assert_eq!(dataset.num_games(), 2);
         assert_eq!(dataset.games.len(), 2);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_mjai_directory_reads_tar_zst_archive() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let archive_path =
+            std::env::temp_dir().join(format!("hydra_pipeline_archive_{unique}.tar.zst"));
+
+        let raw = valid_game_json();
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(raw.as_bytes()).expect("write gz payload");
+        let gz_bytes = gz.finish().expect("finish gz payload");
+
+        write_tar_zst_with_entries(
+            &archive_path,
+            &[
+                ("game_a.mjai.json", raw.clone().into_bytes()),
+                ("game_b.mjai.json.gz", gz_bytes),
+                ("ignore.txt", b"nope".to_vec()),
+            ],
+        );
+
+        let dataset = load_mjai_directory(&archive_path, 0.5).expect("archive load should succeed");
+        assert_eq!(dataset.num_games(), 2);
+        assert_eq!(dataset.games.len(), 2);
+
+        fs::remove_file(&archive_path).ok();
+    }
+
+    #[test]
+    fn test_load_mjai_directory_reads_mixed_dir_and_archives() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hydra_pipeline_mixed_{unique}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let raw = valid_game_json();
+        fs::write(dir.join("loose.json"), &raw).expect("write loose game");
+        write_tar_zst_with_entries(
+            &dir.join("pack.tar.zst"),
+            &[("packed.mjai.json", raw.into_bytes())],
+        );
+
+        let dataset = load_mjai_directory(&dir, 0.5).expect("mixed load should succeed");
+        assert_eq!(dataset.num_games(), 2);
 
         fs::remove_dir_all(&dir).ok();
     }
