@@ -11,6 +11,7 @@ pub mod heads;
 pub mod inference;
 pub mod league;
 pub mod model;
+pub mod preflight;
 pub mod saf;
 pub mod selfplay;
 pub mod teacher;
