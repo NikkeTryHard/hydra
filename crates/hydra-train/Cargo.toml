@@ -28,6 +28,7 @@ serde = { version = "1.0", features = ["derive"] }
 dashmap = "6.1.0"
 flate2 = "1.1.9"
 serde_json = "1.0.149"
+serde_yaml = "0.9"
 riichienv-core = { version = "0.3.4", path = "../hydra-engine", package = "hydra-engine" }
 rayon = "1.10"
 indicatif = "0.17"
