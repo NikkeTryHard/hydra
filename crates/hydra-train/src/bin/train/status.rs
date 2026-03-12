@@ -55,8 +55,7 @@ pub(super) fn estimate_epoch_progress(
     seen_samples: usize,
     assumed_games_seen: usize,
     epoch_optimizer_steps: usize,
-    microbatch_size: usize,
-    accum_steps: usize,
+    batch_size: usize,
 ) -> Option<EpochProgressEstimate> {
     if !manifest.counts_exact || assumed_games_seen == 0 {
         return None;
@@ -64,7 +63,7 @@ pub(super) fn estimate_epoch_progress(
     let estimated_total_samples =
         seen_samples.saturating_mul(manifest.train_count) / assumed_games_seen.max(1);
     let estimated_total_optimizer_steps =
-        optimizer_steps_for_samples(estimated_total_samples, microbatch_size, accum_steps)
+        optimizer_steps_for_samples(estimated_total_samples, batch_size)
             .max(epoch_optimizer_steps)
             .max(1);
     let estimated_remaining_optimizer_steps =
@@ -119,14 +118,10 @@ pub(super) fn epoch_progress_message_with_rate(
     }
 }
 
-fn optimizer_steps_for_samples(
-    samples: usize,
-    microbatch_size: usize,
-    accum_steps: usize,
-) -> usize {
+fn optimizer_steps_for_samples(samples: usize, batch_size: usize) -> usize {
     if samples == 0 {
         0
     } else {
-        samples.div_ceil(microbatch_size).div_ceil(accum_steps)
+        samples.div_ceil(batch_size.max(1))
     }
 }
