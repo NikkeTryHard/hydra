@@ -27,8 +27,9 @@ use super::artifacts::{
 };
 use super::config::{train_device, AdvancedLossConfig, TrainConfig};
 use super::loss_policy::build_loss_config;
+use super::schedule::effective_lr;
 use super::validation::validation_batch_stats;
-use super::{effective_lr, TrainBackend, ValidBackend};
+use super::{TrainBackend, ValidBackend};
 
 pub(super) struct PreflightRuntime {
     pub(super) report: PreflightReport,
