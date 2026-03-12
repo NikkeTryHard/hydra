@@ -2,6 +2,8 @@
 mod config;
 #[path = "train/artifacts.rs"]
 mod artifacts;
+#[path = "train/bootstrap.rs"]
+mod bootstrap;
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
 #[path = "train/epoch_runner.rs"]
@@ -22,33 +24,15 @@ mod status;
 mod validation;
 
 use std::env;
-use std::fs;
-use std::time::Instant;
 
 use burn::backend::{Autodiff, LibTorch};
-use burn::prelude::*;
-use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use colored::Colorize;
-use hydra_train::data::pipeline::{StreamingLoaderConfig, scan_data_sources_with_progress};
-use hydra_train::model::HydraModelConfig;
-use hydra_train::training::bc::BCTrainerConfig;
-use hydra_train::training::losses::HydraLoss;
-use tboard::EventWriter;
 
-use self::artifacts::BcArtifactPaths;
-use self::config::{
-    configure_threads, device_label, parse_args, read_config, train_device, train_microbatch_size,
-    validate_config,
-};
+use self::presentation::print_banner;
+use self::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
+use self::config::{parse_args, read_config};
 use self::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use self::loss_policy::build_loss_config;
-use self::presentation::{make_bar, print_banner};
-use self::preflight_runtime::{
-    apply_preflight_selection, preflight_request_from_env, run_preflight, run_probe_only,
-};
-use self::progress::BannerStats;
-use self::resume::{ResumeContext, runtime_resume_contract, validate_resume_runtime_compatibility};
-use self::schedule::schedule_total_steps;
+use self::preflight_runtime::{preflight_request_from_env, run_probe_only};
 
 #[cfg(test)]
 use self::config::{
@@ -68,135 +52,43 @@ type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::In
 
 fn run() -> Result<(), String> {
     let config_path = parse_args(env::args())?;
-    let mut config = read_config(&config_path)?;
+    let config = read_config(&config_path)?;
     if let Some((request, result_path)) = preflight_request_from_env()? {
         return run_probe_only(&config, request, &result_path);
     }
-    validate_config(&config)?;
-    configure_threads(config.num_threads)?;
-
-    let resume = ResumeContext::load(&config)?;
-    let session_start_global_step = resume.session_start_global_step;
-    let artifacts = BcArtifactPaths::new(&config.output_dir, session_start_global_step);
-    artifacts.create_dirs()?;
-
-    let loader_config = StreamingLoaderConfig {
-        buffer_games: config.buffer_games,
-        buffer_samples: config.buffer_samples,
-        train_fraction: config.train_fraction,
-        seed: config.seed,
-        archive_queue_bound: config.archive_queue_bound,
-        max_skip_logs_per_source: config.max_skip_logs_per_source,
-    };
-
-    let scan_sources_len = if config.data_dir.is_file() {
-        1
-    } else {
-        fs::read_dir(&config.data_dir)
-            .map_err(|err| {
-                format!(
-                    "failed to read data dir {}: {err}",
-                    config.data_dir.display()
-                )
-            })?
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_type().ok().filter(|ft| ft.is_file()))
-            .count()
-    };
-    let scan_pb = make_bar(
-        scan_sources_len as u64,
-        "[scan] [{bar:40.cyan/blue}] {pos}/{len} sources {msg}",
-    )?;
-    scan_pb.set_message("Scanning archives...".to_string());
-    let manifest =
-        scan_data_sources_with_progress(&config.data_dir, config.train_fraction, Some(&scan_pb))
-            .map_err(|err| {
-                format!(
-                    "failed to scan MJAI data from {}: {err}",
-                    config.data_dir.display()
-                )
-            })?;
-    if manifest.counts_exact {
-        scan_pb.finish_with_message(format!(
-            "found {} train / {} val games",
-            manifest.train_count, manifest.val_count
-        ));
-    } else {
-        scan_pb.finish_with_message(format!(
-            "found {} sources; exact game counts deferred to streaming load",
-            manifest.sources.len()
-        ));
-    }
-
-    let scheduler_warmup_steps = config.max_train_steps.map_or(
-        BCTrainerConfig::default_learner().warmup_steps,
-        |max_steps| max_steps.clamp(1, BCTrainerConfig::default_learner().warmup_steps.min(100)),
-    );
-    let train_cfg = BCTrainerConfig::default_learner()
-        .with_batch_size(config.batch_size)
-        .with_lr(BCTrainerConfig::default_learner().lr)
-        .with_warmup_steps(scheduler_warmup_steps);
-    train_cfg
-        .validate()
-        .map_err(|err| format!("invalid trainer config: {err}"))?;
-
-    let device_name = device_label(&config.device);
-    let model_config = HydraModelConfig::learner();
-    let preflight = run_preflight(
-        &config_path,
-        &config,
-        &model_config,
-        &device_name,
-        &artifacts,
-    )?;
-    config = apply_preflight_selection(&config, preflight.selected);
-    let current_runtime = runtime_resume_contract(&config);
-    if let Some(state) = resume.state.as_ref() {
-        validate_resume_runtime_compatibility(state, current_runtime)?;
-    }
-    let train_device = train_device(&config.device);
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    let mut model = model_config.init::<TrainBackend>(&train_device);
-    if let Some(checkpoint_base) = resume.checkpoint_base.as_ref() {
-        model = model
-            .load_file(checkpoint_base, &recorder, &train_device)
-            .map_err(|err| {
-                format!(
-                    "failed to load checkpoint {}: {err}",
-                    checkpoint_base.display()
-                )
-            })?;
-    }
-
-    let mut optimizer = train_cfg.optimizer_config().init();
-    let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
-    let valid_loss_fn =
-        HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
-    let total_steps = schedule_total_steps(&config, session_start_global_step);
-    let microbatch_size = train_microbatch_size(&config);
-    let accum_steps = config.batch_size.div_ceil(microbatch_size).max(1);
-    let mut best_validation = resume.best_validation();
-    let mut global_step = session_start_global_step;
-    let run_start = Instant::now();
-    let mut last_log_step = global_step;
-    let mut last_log_time = run_start;
-    let mut tb = if config.tensorboard {
-        Some(
-            EventWriter::create(&artifacts.tb_session_dir)
-                .map_err(|err| format!("tensorboard init: {err}"))?,
-        )
-    } else {
-        None
-    };
-
-    let banner_stats = BannerStats {
-        total_sources: manifest.sources.len(),
-        total_games: manifest.total_games,
-        train_count: manifest.train_count,
-        val_count: manifest.val_count,
+    let (bootstrap, runtime) = initialize_training_bootstrap(&config_path, config)?;
+    let TrainingBootstrap {
+        config,
+        resume,
+        artifacts,
+        loader_config,
+        manifest,
+        train_cfg,
+        model_config,
+        preflight,
+        device_name,
+        train_device,
+        current_runtime,
+        session_start_global_step,
+        total_steps,
+        microbatch_size,
         accum_steps,
-        counts_exact: manifest.counts_exact,
-    };
+        scheduler_warmup_steps,
+        banner_stats,
+        loss_fn,
+        valid_loss_fn,
+    } = bootstrap;
+    let TrainingRuntime {
+        mut model,
+        mut optimizer,
+        mut best_validation,
+        mut global_step,
+        run_start,
+        mut last_log_step,
+        mut last_log_time,
+        mut tb,
+    } = runtime;
+
     print_banner(
         &model_config,
         &config,
@@ -205,6 +97,7 @@ fn run() -> Result<(), String> {
         &banner_stats,
         scheduler_warmup_steps,
     );
+
     println!(
         "{} {} {} {}",
         "Preflight:".bold().cyan(),
@@ -286,13 +179,21 @@ fn main() {
 mod tests {
     use super::*;
     use burn::backend::libtorch::LibTorchDevice;
+    use burn::prelude::*;
     use hydra_train::training::bc::policy_agreement_counts;
+    use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
+    use crate::artifacts::BcArtifactPaths;
+    use crate::config::{train_device, train_microbatch_size, validate_config};
+    use crate::loss_policy::build_loss_config;
     use crate::presentation::{format_progress_message, phase_label};
-    use crate::resume::{BestValidation, EpochContinuation, paused_training_message};
-    use crate::schedule::{lr_status_message, steps_per_second};
+    use crate::resume::{
+        BestValidation, EpochContinuation, paused_training_message,
+        validate_resume_runtime_compatibility,
+    };
+    use crate::schedule::{lr_status_message, schedule_total_steps, steps_per_second};
     use crate::status::{
         EpochProgressEstimate, display_step_label, display_validation_scope_label,
         epoch_progress_message_with_rate, estimate_epoch_progress, format_rough_duration,
