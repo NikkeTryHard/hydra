@@ -3,9 +3,14 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_core::tile::permute_tile_type;
+use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
 
 use crate::training::losses::HydraTargets;
+
+use crate::data::augment::{
+    augment_action_suit, augment_action_vector_suit, augment_belief_fields_suit, augment_mask_suit,
+    augment_obs_suit,
+};
 
 fn permute_tile_vector_34(values: &[f32; 34], perm: &[u8; 3]) -> [f32; 34] {
     let mut out = [0.0f32; 34];
@@ -153,6 +158,232 @@ pub struct MjaiBatch<B: Backend> {
     pub score_cdf_target: Tensor<B, 2>,
 }
 
+struct CollateBuffers {
+    obs_flat: Vec<f32>,
+    actions: Vec<i64>,
+    mask_flat: Vec<f32>,
+    values: Vec<f32>,
+    grp_flat: Vec<f32>,
+    oracle_flat: Vec<f32>,
+    oracle_mask: Vec<f32>,
+    tenpai_flat: Vec<f32>,
+    danger_flat: Vec<f32>,
+    dmask_flat: Vec<f32>,
+    safety_residual_flat: Vec<f32>,
+    safety_residual_mask_flat: Vec<f32>,
+    any_safety_residual: bool,
+    belief_fields_flat: Vec<f32>,
+    mixture_weights_flat: Vec<f32>,
+    any_belief_fields: bool,
+    any_mixture_weights: bool,
+    belief_fields_mask: Vec<f32>,
+    mixture_weight_mask: Vec<f32>,
+    opp_flat: Vec<f32>,
+    pdf_flat: Vec<f32>,
+    cdf_flat: Vec<f32>,
+}
+
+impl CollateBuffers {
+    fn new(batch: usize) -> Self {
+        Self {
+            obs_flat: vec![0.0f32; batch * OBS_SIZE],
+            actions: vec![0i64; batch],
+            mask_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
+            values: vec![0.0f32; batch],
+            grp_flat: vec![0.0f32; batch * 24],
+            oracle_flat: vec![0.0f32; batch * 4],
+            oracle_mask: vec![0.0f32; batch],
+            tenpai_flat: vec![0.0f32; batch * 3],
+            danger_flat: vec![0.0f32; batch * 102],
+            dmask_flat: vec![0.0f32; batch * 102],
+            safety_residual_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
+            safety_residual_mask_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
+            any_safety_residual: false,
+            belief_fields_flat: vec![0.0f32; batch * 16 * 34],
+            mixture_weights_flat: vec![0.0f32; batch * 4],
+            any_belief_fields: false,
+            any_mixture_weights: false,
+            belief_fields_mask: vec![0.0f32; batch],
+            mixture_weight_mask: vec![0.0f32; batch],
+            opp_flat: vec![0.0f32; batch * 102],
+            pdf_flat: vec![0.0f32; batch * SCORE_BINS],
+            cdf_flat: vec![0.0f32; batch * SCORE_BINS],
+        }
+    }
+
+    fn write_sample(&mut self, index: usize, sample: &MjaiSample, perm: Option<&[u8; 3]>) {
+        let obs = perm.map_or(sample.obs, |perm| augment_obs_suit(&sample.obs, perm));
+        let action = perm.map_or(sample.action, |perm| {
+            augment_action_suit(sample.action, perm)
+        });
+        let legal_mask = perm.map_or(sample.legal_mask, |perm| {
+            augment_mask_suit(&sample.legal_mask, perm)
+        });
+        let opp_next = perm.map_or(sample.opp_next, |perm| {
+            permute_opp_next_targets(sample.opp_next, perm)
+        });
+        let danger = perm.map_or(sample.danger, |perm| {
+            permute_spatial_targets_3x34(sample.danger, perm)
+        });
+        let danger_mask = perm.map_or(sample.danger_mask, |perm| {
+            permute_spatial_targets_3x34(sample.danger_mask, perm)
+        });
+        let safety_residual = match (sample.safety_residual, perm) {
+            (Some(values), Some(perm)) => Some(augment_action_vector_suit(&values, perm)),
+            (Some(values), None) => Some(values),
+            (None, _) => None,
+        };
+        let safety_residual_mask = match (sample.safety_residual_mask, perm) {
+            (Some(values), Some(perm)) => Some(augment_action_vector_suit(&values, perm)),
+            (Some(values), None) => Some(values),
+            (None, _) => None,
+        };
+        let belief_fields = match (sample.belief_fields, perm) {
+            (Some(values), Some(perm)) => Some(augment_belief_fields_suit(&values, perm)),
+            (Some(values), None) => Some(values),
+            (None, _) => None,
+        };
+
+        self.obs_flat[index * OBS_SIZE..(index + 1) * OBS_SIZE].copy_from_slice(&obs);
+        self.actions[index] = action as i64;
+        self.mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+            .copy_from_slice(&legal_mask);
+        self.values[index] = score_delta_to_value(sample.score_delta);
+        if (sample.grp_label as usize) < 24 {
+            self.grp_flat[index * 24 + sample.grp_label as usize] = 1.0;
+        }
+        if let Some(oracle) = sample.oracle_target {
+            self.oracle_flat[index * 4..(index + 1) * 4].copy_from_slice(&oracle);
+            self.oracle_mask[index] = 1.0;
+        }
+        self.tenpai_flat[index * 3..(index + 1) * 3].copy_from_slice(&sample.tenpai);
+        self.danger_flat[index * 102..(index + 1) * 102].copy_from_slice(&danger);
+        self.dmask_flat[index * 102..(index + 1) * 102].copy_from_slice(&danger_mask);
+        if let Some(values) = safety_residual {
+            self.safety_residual_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+            self.any_safety_residual = true;
+        }
+        if let Some(values) = safety_residual_mask {
+            self.safety_residual_mask_flat
+                [index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+            self.any_safety_residual = true;
+        }
+        if let Some(values) = belief_fields {
+            self.belief_fields_flat[index * 16 * 34..(index + 1) * 16 * 34]
+                .copy_from_slice(&values);
+            self.any_belief_fields = true;
+        }
+        if sample.belief_fields_present {
+            self.belief_fields_mask[index] = 1.0;
+            self.any_belief_fields = true;
+        }
+        if let Some(values) = sample.mixture_weights {
+            self.mixture_weights_flat[index * 4..(index + 1) * 4].copy_from_slice(&values);
+            self.any_mixture_weights = true;
+        }
+        if sample.mixture_weights_present {
+            self.mixture_weight_mask[index] = 1.0;
+            self.any_mixture_weights = true;
+        }
+        for (opp, tile) in opp_next.iter().copied().enumerate() {
+            if tile < 34 {
+                self.opp_flat[index * 102 + opp * 34 + tile as usize] = 1.0;
+            }
+        }
+        let pdf = score_delta_to_pdf(sample.score_delta);
+        self.pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&pdf);
+        let cdf = score_delta_to_cdf(sample.score_delta);
+        self.cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&cdf);
+    }
+
+    fn into_batch<B: Backend>(self, batch: usize, device: &B::Device) -> MjaiBatch<B> {
+        MjaiBatch {
+            obs: Tensor::<B, 1>::from_floats(self.obs_flat.as_slice(), device).reshape([
+                batch,
+                NUM_CHANNELS,
+                34,
+            ]),
+            actions: Tensor::<B, 1, Int>::from_ints(self.actions.as_slice(), device),
+            legal_mask: Tensor::<B, 1>::from_floats(self.mask_flat.as_slice(), device)
+                .reshape([batch, HYDRA_ACTION_SPACE]),
+            value_target: Tensor::<B, 1>::from_floats(self.values.as_slice(), device),
+            grp_target: Tensor::<B, 1>::from_floats(self.grp_flat.as_slice(), device)
+                .reshape([batch, 24]),
+            oracle_target: if self.oracle_mask.iter().any(|&v| v > 0.0) {
+                Some(
+                    Tensor::<B, 1>::from_floats(self.oracle_flat.as_slice(), device)
+                        .reshape([batch, 4]),
+                )
+            } else {
+                None
+            },
+            oracle_target_mask: Tensor::<B, 1>::from_floats(self.oracle_mask.as_slice(), device),
+            tenpai_target: Tensor::<B, 1>::from_floats(self.tenpai_flat.as_slice(), device)
+                .reshape([batch, 3]),
+            danger_target: Tensor::<B, 1>::from_floats(self.danger_flat.as_slice(), device)
+                .reshape([batch, 3, 34]),
+            danger_mask: Tensor::<B, 1>::from_floats(self.dmask_flat.as_slice(), device)
+                .reshape([batch, 3, 34]),
+            safety_residual_target: if self.any_safety_residual {
+                Some(
+                    Tensor::<B, 1>::from_floats(self.safety_residual_flat.as_slice(), device)
+                        .reshape([batch, HYDRA_ACTION_SPACE]),
+                )
+            } else {
+                None
+            },
+            safety_residual_mask: if self.any_safety_residual {
+                Some(
+                    Tensor::<B, 1>::from_floats(self.safety_residual_mask_flat.as_slice(), device)
+                        .reshape([batch, HYDRA_ACTION_SPACE]),
+                )
+            } else {
+                None
+            },
+            belief_fields_target: if self.any_belief_fields {
+                Some(
+                    Tensor::<B, 1>::from_floats(self.belief_fields_flat.as_slice(), device)
+                        .reshape([batch, 16, 34]),
+                )
+            } else {
+                None
+            },
+            mixture_weight_target: if self.any_mixture_weights {
+                Some(
+                    Tensor::<B, 1>::from_floats(self.mixture_weights_flat.as_slice(), device)
+                        .reshape([batch, 4]),
+                )
+            } else {
+                None
+            },
+            belief_fields_mask: if self.any_belief_fields {
+                Some(Tensor::<B, 1>::from_floats(
+                    self.belief_fields_mask.as_slice(),
+                    device,
+                ))
+            } else {
+                None
+            },
+            mixture_weight_mask: if self.any_mixture_weights {
+                Some(Tensor::<B, 1>::from_floats(
+                    self.mixture_weight_mask.as_slice(),
+                    device,
+                ))
+            } else {
+                None
+            },
+            opp_next_target: Tensor::<B, 1>::from_floats(self.opp_flat.as_slice(), device)
+                .reshape([batch, 3, 34]),
+            score_pdf_target: Tensor::<B, 1>::from_floats(self.pdf_flat.as_slice(), device)
+                .reshape([batch, SCORE_BINS]),
+            score_cdf_target: Tensor::<B, 1>::from_floats(self.cdf_flat.as_slice(), device)
+                .reshape([batch, SCORE_BINS]),
+        }
+    }
+}
+
 impl<B: Backend> MjaiBatch<B> {
     pub fn into_hydra_targets(self) -> HydraTargets<B> {
         let batch = self.actions.dims()[0];
@@ -221,160 +452,11 @@ impl<B: Backend> MjaiBatch<B> {
 
 pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> MjaiBatch<B> {
     let batch = samples.len();
-    let mut obs_flat = vec![0.0f32; batch * OBS_SIZE];
-    let mut actions = vec![0i64; batch];
-    let mut mask_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
-    let mut values = vec![0.0f32; batch];
-    let mut grp_flat = vec![0.0f32; batch * 24];
-    let mut oracle_flat = vec![0.0f32; batch * 4];
-    let mut oracle_mask = vec![0.0f32; batch];
-    let mut tenpai_flat = vec![0.0f32; batch * 3];
-    let mut danger_flat = vec![0.0f32; batch * 102];
-    let mut dmask_flat = vec![0.0f32; batch * 102];
-    let mut safety_residual_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
-    let mut safety_residual_mask_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
-    let mut any_safety_residual = false;
-    let mut belief_fields_flat = vec![0.0f32; batch * 16 * 34];
-    let mut mixture_weights_flat = vec![0.0f32; batch * 4];
-    let mut any_belief_fields = false;
-    let mut any_mixture_weights = false;
-    let mut belief_fields_mask = vec![0.0f32; batch];
-    let mut mixture_weight_mask = vec![0.0f32; batch];
-    let mut opp_flat = vec![0.0f32; batch * 102];
-    let mut pdf_flat = vec![0.0f32; batch * SCORE_BINS];
-    let mut cdf_flat = vec![0.0f32; batch * SCORE_BINS];
-
+    let mut buffers = CollateBuffers::new(batch);
     for (i, s) in samples.iter().enumerate() {
-        obs_flat[i * OBS_SIZE..(i + 1) * OBS_SIZE].copy_from_slice(&s.obs);
-        actions[i] = s.action as i64;
-        mask_flat[i * HYDRA_ACTION_SPACE..(i + 1) * HYDRA_ACTION_SPACE]
-            .copy_from_slice(&s.legal_mask);
-        values[i] = score_delta_to_value(s.score_delta);
-        if (s.grp_label as usize) < 24 {
-            grp_flat[i * 24 + s.grp_label as usize] = 1.0;
-        }
-        if let Some(oracle) = s.oracle_target {
-            oracle_flat[i * 4..(i + 1) * 4].copy_from_slice(&oracle);
-            oracle_mask[i] = 1.0;
-        }
-        tenpai_flat[i * 3..(i + 1) * 3].copy_from_slice(&s.tenpai);
-        danger_flat[i * 102..(i + 1) * 102].copy_from_slice(&s.danger);
-        dmask_flat[i * 102..(i + 1) * 102].copy_from_slice(&s.danger_mask);
-        if let Some(values) = s.safety_residual {
-            safety_residual_flat[i * HYDRA_ACTION_SPACE..(i + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&values);
-            any_safety_residual = true;
-        }
-        if let Some(values) = s.safety_residual_mask {
-            safety_residual_mask_flat[i * HYDRA_ACTION_SPACE..(i + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&values);
-            any_safety_residual = true;
-        }
-        if let Some(values) = s.belief_fields {
-            belief_fields_flat[i * 16 * 34..(i + 1) * 16 * 34].copy_from_slice(&values);
-            any_belief_fields = true;
-        }
-        if s.belief_fields_present {
-            belief_fields_mask[i] = 1.0;
-            any_belief_fields = true;
-        }
-        if let Some(values) = s.mixture_weights {
-            mixture_weights_flat[i * 4..(i + 1) * 4].copy_from_slice(&values);
-            any_mixture_weights = true;
-        }
-        if s.mixture_weights_present {
-            mixture_weight_mask[i] = 1.0;
-            any_mixture_weights = true;
-        }
-        for opp in 0..3usize {
-            if s.opp_next[opp] < 34 {
-                opp_flat[i * 102 + opp * 34 + s.opp_next[opp] as usize] = 1.0;
-            }
-        }
-        let pdf = score_delta_to_pdf(s.score_delta);
-        pdf_flat[i * SCORE_BINS..(i + 1) * SCORE_BINS].copy_from_slice(&pdf);
-        let cdf = score_delta_to_cdf(s.score_delta);
-        cdf_flat[i * SCORE_BINS..(i + 1) * SCORE_BINS].copy_from_slice(&cdf);
+        buffers.write_sample(i, s, None);
     }
-
-    MjaiBatch {
-        obs: Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([
-            batch,
-            NUM_CHANNELS,
-            34,
-        ]),
-        actions: Tensor::<B, 1, Int>::from_ints(actions.as_slice(), device),
-        legal_mask: Tensor::<B, 1>::from_floats(mask_flat.as_slice(), device)
-            .reshape([batch, HYDRA_ACTION_SPACE]),
-        value_target: Tensor::<B, 1>::from_floats(values.as_slice(), device),
-        grp_target: Tensor::<B, 1>::from_floats(grp_flat.as_slice(), device).reshape([batch, 24]),
-        oracle_target: if oracle_mask.iter().any(|&v| v > 0.0) {
-            Some(Tensor::<B, 1>::from_floats(oracle_flat.as_slice(), device).reshape([batch, 4]))
-        } else {
-            None
-        },
-        oracle_target_mask: Tensor::<B, 1>::from_floats(oracle_mask.as_slice(), device),
-        tenpai_target: Tensor::<B, 1>::from_floats(tenpai_flat.as_slice(), device)
-            .reshape([batch, 3]),
-        danger_target: Tensor::<B, 1>::from_floats(danger_flat.as_slice(), device)
-            .reshape([batch, 3, 34]),
-        danger_mask: Tensor::<B, 1>::from_floats(dmask_flat.as_slice(), device)
-            .reshape([batch, 3, 34]),
-        safety_residual_target: if any_safety_residual {
-            Some(
-                Tensor::<B, 1>::from_floats(safety_residual_flat.as_slice(), device)
-                    .reshape([batch, HYDRA_ACTION_SPACE]),
-            )
-        } else {
-            None
-        },
-        safety_residual_mask: if any_safety_residual {
-            Some(
-                Tensor::<B, 1>::from_floats(safety_residual_mask_flat.as_slice(), device)
-                    .reshape([batch, HYDRA_ACTION_SPACE]),
-            )
-        } else {
-            None
-        },
-        belief_fields_target: if any_belief_fields {
-            Some(
-                Tensor::<B, 1>::from_floats(belief_fields_flat.as_slice(), device)
-                    .reshape([batch, 16, 34]),
-            )
-        } else {
-            None
-        },
-        mixture_weight_target: if any_mixture_weights {
-            Some(
-                Tensor::<B, 1>::from_floats(mixture_weights_flat.as_slice(), device)
-                    .reshape([batch, 4]),
-            )
-        } else {
-            None
-        },
-        belief_fields_mask: if any_belief_fields {
-            Some(Tensor::<B, 1>::from_floats(
-                belief_fields_mask.as_slice(),
-                device,
-            ))
-        } else {
-            None
-        },
-        mixture_weight_mask: if any_mixture_weights {
-            Some(Tensor::<B, 1>::from_floats(
-                mixture_weight_mask.as_slice(),
-                device,
-            ))
-        } else {
-            None
-        },
-        opp_next_target: Tensor::<B, 1>::from_floats(opp_flat.as_slice(), device)
-            .reshape([batch, 3, 34]),
-        score_pdf_target: Tensor::<B, 1>::from_floats(pdf_flat.as_slice(), device)
-            .reshape([batch, SCORE_BINS]),
-        score_cdf_target: Tensor::<B, 1>::from_floats(cdf_flat.as_slice(), device)
-            .reshape([batch, SCORE_BINS]),
-    }
+    buffers.into_batch(batch, device)
 }
 
 pub fn score_to_placement(scores: [i32; 4], player: u8) -> u8 {
@@ -399,8 +481,48 @@ pub fn collate_batch_augmented<B: Backend>(
     samples: &[MjaiSample],
     device: &B::Device,
 ) -> MjaiBatch<B> {
-    let augmented = augment_samples_6x(samples);
-    collate_batch(&augmented, device)
+    let batch = samples.len() * ALL_PERMUTATIONS.len();
+    let mut buffers = CollateBuffers::new(batch);
+    let mut index = 0usize;
+    for sample in samples {
+        for perm in &ALL_PERMUTATIONS {
+            buffers.write_sample(index, sample, Some(perm));
+            index += 1;
+        }
+    }
+    buffers.into_batch(batch, device)
+}
+
+pub fn collate_sample_refs<B: Backend>(
+    samples: &[&MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> Option<(Tensor<B, 3>, HydraTargets<B>)> {
+    if samples.is_empty() {
+        return None;
+    }
+
+    let batch = if augment {
+        let batch = samples.len() * ALL_PERMUTATIONS.len();
+        let mut buffers = CollateBuffers::new(batch);
+        let mut index = 0usize;
+        for sample in samples {
+            for perm in &ALL_PERMUTATIONS {
+                buffers.write_sample(index, sample, Some(perm));
+                index += 1;
+            }
+        }
+        buffers.into_batch(batch, device)
+    } else {
+        let batch = samples.len();
+        let mut buffers = CollateBuffers::new(batch);
+        for (index, sample) in samples.iter().enumerate() {
+            buffers.write_sample(index, sample, None);
+        }
+        buffers.into_batch(batch, device)
+    };
+    let obs = batch.obs.clone();
+    Some((obs, batch.into_hydra_targets()))
 }
 
 pub fn collate_samples<B: Backend>(
@@ -867,5 +989,141 @@ mod tests {
         assert_eq!(permute_tile_type(0, swap_mp), 9);
         assert!((swapped_belief[9] - 1.0).abs() < 1e-6);
         assert!((swapped_mix[0] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collate_sample_refs_matches_owned_collation_without_augmentation() {
+        let device = Default::default();
+        let samples = vec![dummy_sample(2, 100), dummy_sample(7, -500)];
+        let refs: Vec<_> = samples.iter().collect();
+
+        let (obs, targets) =
+            collate_sample_refs::<B>(&refs, false, &device).expect("borrowed collate");
+        let (owned_obs, owned_targets) =
+            collate_samples::<B>(&samples, false, &device).expect("owned collate");
+
+        assert_eq!(obs.dims(), owned_obs.dims());
+        assert_eq!(
+            targets.policy_target.dims(),
+            owned_targets.policy_target.dims()
+        );
+        assert_eq!(targets.legal_mask.dims(), owned_targets.legal_mask.dims());
+        assert_eq!(
+            targets.danger_target.dims(),
+            owned_targets.danger_target.dims()
+        );
+        assert_eq!(obs.to_data(), owned_obs.to_data());
+        assert_eq!(
+            targets.policy_target.to_data(),
+            owned_targets.policy_target.to_data()
+        );
+        assert_eq!(
+            targets.legal_mask.to_data(),
+            owned_targets.legal_mask.to_data()
+        );
+        assert_eq!(
+            targets.value_target.to_data(),
+            owned_targets.value_target.to_data()
+        );
+        assert_eq!(
+            targets.grp_target.to_data(),
+            owned_targets.grp_target.to_data()
+        );
+        assert_eq!(
+            targets.danger_target.to_data(),
+            owned_targets.danger_target.to_data()
+        );
+        assert_eq!(
+            targets.danger_mask.to_data(),
+            owned_targets.danger_mask.to_data()
+        );
+        assert_eq!(
+            targets.opp_next_target.to_data(),
+            owned_targets.opp_next_target.to_data()
+        );
+        assert_eq!(
+            targets.score_pdf_target.to_data(),
+            owned_targets.score_pdf_target.to_data()
+        );
+        assert_eq!(
+            targets.score_cdf_target.to_data(),
+            owned_targets.score_cdf_target.to_data()
+        );
+    }
+
+    #[test]
+    fn collate_sample_refs_matches_owned_collation_with_augmentation() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        sample.obs = [0.0; OBS_SIZE];
+        sample.obs[40 * 34] = 1.0;
+        sample.opp_next = [0, 9, 27];
+        sample.danger[0] = 0.25;
+        sample.danger[34 + 9] = 0.5;
+        sample.danger_mask[18] = 1.0;
+        let mut safety_residual = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut safety_residual_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        safety_residual[0] = -0.75;
+        safety_residual[1] = 0.4;
+        safety_residual_mask[0] = 1.0;
+        safety_residual_mask[1] = 1.0;
+        sample.safety_residual = Some(safety_residual);
+        sample.safety_residual_mask = Some(safety_residual_mask);
+
+        let refs = vec![&sample];
+        let (obs, targets) =
+            collate_sample_refs::<B>(&refs, true, &device).expect("borrowed collate");
+        let (owned_obs, owned_targets) =
+            collate_samples::<B>(&[sample], true, &device).expect("owned collate");
+
+        assert_eq!(obs.dims(), owned_obs.dims());
+        assert_eq!(
+            targets.policy_target.to_data(),
+            owned_targets.policy_target.to_data()
+        );
+        assert_eq!(
+            targets.legal_mask.to_data(),
+            owned_targets.legal_mask.to_data()
+        );
+        assert_eq!(
+            targets.danger_target.to_data(),
+            owned_targets.danger_target.to_data()
+        );
+        assert_eq!(
+            targets.danger_mask.to_data(),
+            owned_targets.danger_mask.to_data()
+        );
+        assert_eq!(
+            targets.opp_next_target.to_data(),
+            owned_targets.opp_next_target.to_data()
+        );
+        assert_eq!(
+            targets.score_pdf_target.to_data(),
+            owned_targets.score_pdf_target.to_data()
+        );
+        assert_eq!(
+            targets.score_cdf_target.to_data(),
+            owned_targets.score_cdf_target.to_data()
+        );
+        assert_eq!(
+            targets
+                .safety_residual_target
+                .expect("borrowed safety residual")
+                .to_data(),
+            owned_targets
+                .safety_residual_target
+                .expect("owned safety residual")
+                .to_data()
+        );
+        assert_eq!(
+            targets
+                .safety_residual_mask
+                .expect("borrowed safety residual mask")
+                .to_data(),
+            owned_targets
+                .safety_residual_mask
+                .expect("owned safety residual mask")
+                .to_data()
+        );
     }
 }
