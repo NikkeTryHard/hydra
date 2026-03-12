@@ -4,6 +4,8 @@ mod config;
 mod artifacts;
 #[path = "train/resume.rs"]
 mod resume;
+#[path = "train/status.rs"]
+mod status;
 
 use std::env;
 use std::fs;
@@ -49,6 +51,13 @@ use self::resume::{
     resumed_progress_message, runtime_resume_contract,
     validate_resume_runtime_compatibility,
 };
+use self::status::{
+    display_step_label, display_validation_scope_label, epoch_progress_message_with_rate,
+    estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
+};
+
+#[cfg(test)]
+use self::status::{EpochProgressEstimate, format_rough_duration};
 
 #[cfg(test)]
 use self::config::default_seed;
@@ -159,126 +168,12 @@ struct ValidationSummary {
     samples: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct EpochProgressEstimate {
-    completed_optimizer_steps: usize,
-    estimated_total_optimizer_steps: usize,
-    estimated_remaining_optimizer_steps: usize,
-    completion_fraction: f64,
-}
-
-fn session_steps_completed(global_step: usize, session_start_global_step: usize) -> usize {
-    global_step.saturating_sub(session_start_global_step)
-}
-
-fn reached_session_step_budget(
-    global_step: usize,
-    session_start_global_step: usize,
-    max_train_steps: Option<usize>,
-) -> bool {
-    max_train_steps
-        .map(|budget| session_steps_completed(global_step, session_start_global_step) >= budget)
-        .unwrap_or(false)
-}
-
-fn display_step_label(
-    global_step: usize,
-    session_start_global_step: usize,
-    max_train_steps: Option<usize>,
-) -> String {
-    let session_step = session_steps_completed(global_step, session_start_global_step);
-    if let Some(total) = max_train_steps {
-        format!("step {session_step}/{total} global={global_step}")
-    } else {
-        format!("step {global_step}")
-    }
-}
-
-fn display_validation_scope_label(
-    global_step: usize,
-    session_start_global_step: usize,
-    max_train_steps: Option<usize>,
-) -> String {
-    let session_step = session_steps_completed(global_step, session_start_global_step);
-    match max_train_steps {
-        Some(total) => format!("validation @ step {session_step}/{total} global={global_step}"),
-        None => format!("validation @ step {global_step}"),
-    }
-}
-
 fn schedule_total_steps(config: &TrainConfig, session_start_global_step: usize) -> usize {
     config
         .max_train_steps
         .map(|budget| session_start_global_step + budget)
         .unwrap_or(config.num_epochs.max(1))
         .max(1)
-}
-
-fn estimate_epoch_progress(
-    manifest: &hydra_train::data::pipeline::DataManifest,
-    seen_samples: usize,
-    assumed_games_seen: usize,
-    epoch_optimizer_steps: usize,
-    microbatch_size: usize,
-    accum_steps: usize,
-) -> Option<EpochProgressEstimate> {
-    if !manifest.counts_exact || assumed_games_seen == 0 {
-        return None;
-    }
-    let estimated_total_samples =
-        seen_samples.saturating_mul(manifest.train_count) / assumed_games_seen.max(1);
-    let estimated_total_optimizer_steps =
-        optimizer_steps_for_samples(estimated_total_samples, microbatch_size, accum_steps)
-            .max(epoch_optimizer_steps)
-            .max(1);
-    let estimated_remaining_optimizer_steps =
-        estimated_total_optimizer_steps.saturating_sub(epoch_optimizer_steps);
-    Some(EpochProgressEstimate {
-        completed_optimizer_steps: epoch_optimizer_steps,
-        estimated_total_optimizer_steps,
-        estimated_remaining_optimizer_steps,
-        completion_fraction: epoch_optimizer_steps as f64 / estimated_total_optimizer_steps as f64,
-    })
-}
-
-fn format_rough_duration(seconds: f64) -> String {
-    let rounded = seconds.max(0.0).round() as u64;
-    let hours = rounded / 3600;
-    let minutes = (rounded % 3600) / 60;
-    let secs = rounded % 60;
-    if hours > 0 {
-        format!("~{}h{}m", hours, minutes)
-    } else if minutes > 0 {
-        format!("~{}m{}s", minutes, secs)
-    } else {
-        format!("~{}s", secs)
-    }
-}
-
-fn epoch_progress_message_with_rate(
-    progress: Option<EpochProgressEstimate>,
-    step_rate: Option<f64>,
-) -> String {
-    match progress {
-        Some(progress) => {
-            let eta = step_rate
-                .filter(|rate| *rate > 0.0)
-                .map(|rate| {
-                    format!(
-                        " rough_eta={}",
-                        format_rough_duration(progress.estimated_remaining_optimizer_steps as f64 / rate)
-                    )
-                })
-                .unwrap_or_default();
-            format!(
-                "epoch={:.1}% epoch_left≈{} steps{}",
-                progress.completion_fraction * 100.0,
-                progress.estimated_remaining_optimizer_steps,
-                eta,
-            )
-        }
-        None => "epoch=pending".to_string(),
-    }
 }
 
 fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
@@ -353,18 +248,6 @@ fn batch_stats_from_breakdown<B: Backend>(
         loss_opp_next: scalar1(&breakdown.opp_next),
         loss_score_pdf: scalar1(&breakdown.score_pdf),
         loss_score_cdf: scalar1(&breakdown.score_cdf),
-    }
-}
-
-fn optimizer_steps_for_samples(
-    samples: usize,
-    microbatch_size: usize,
-    accum_steps: usize,
-) -> usize {
-    if samples == 0 {
-        0
-    } else {
-        samples.div_ceil(microbatch_size).div_ceil(accum_steps)
     }
 }
 
