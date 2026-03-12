@@ -12,6 +12,8 @@ mod preflight_runtime;
 mod progress;
 #[path = "train/resume.rs"]
 mod resume;
+#[path = "train/schedule.rs"]
+mod schedule;
 #[path = "train/status.rs"]
 mod status;
 #[path = "train/validation.rs"]
@@ -19,7 +21,7 @@ mod validation;
 
 use std::env;
 use std::fs;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use burn::backend::{Autodiff, LibTorch};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
@@ -32,7 +34,7 @@ use hydra_train::data::pipeline::{
 use hydra_train::data::sample::collate_samples;
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::{
-    BCTrainerConfig, policy_agreement, target_actions_from_policy_target, warmup_then_cosine_lr,
+    BCTrainerConfig, policy_agreement, target_actions_from_policy_target,
 };
 use hydra_train::training::losses::HydraLoss;
 use indicatif::MultiProgress;
@@ -43,8 +45,8 @@ use self::artifacts::{
     save_latest_checkpoint_and_state,
 };
 use self::config::{
-    TrainConfig, configure_threads, device_label, parse_args, read_config, train_device,
-    train_microbatch_size, validate_config, validation_sample_limit,
+    configure_threads, device_label, parse_args, read_config, train_device, train_microbatch_size,
+    validate_config, validation_sample_limit,
 };
 use self::loss_policy::build_loss_config;
 use self::presentation::{
@@ -62,6 +64,7 @@ use self::resume::{
     resumed_progress_message, runtime_resume_contract,
     validate_resume_runtime_compatibility,
 };
+use self::schedule::{effective_lr, lr_status_message, schedule_total_steps, steps_per_second};
 use self::status::{
     display_step_label, display_validation_scope_label, epoch_progress_message_with_rate,
     estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
@@ -72,7 +75,9 @@ use self::validation::{ValidationSummary, is_better_validation, run_validation};
 use self::status::{EpochProgressEstimate, format_rough_duration};
 
 #[cfg(test)]
-use self::config::{AdvancedLossConfig, default_seed, validation_microbatch_size};
+use std::time::Duration;
+#[cfg(test)]
+use self::config::{AdvancedLossConfig, TrainConfig, default_seed, validation_microbatch_size};
 #[cfg(test)]
 use hydra_train::preflight::PreflightConfig;
 #[cfg(test)]
@@ -83,41 +88,6 @@ use self::resume::{
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
-
-fn schedule_total_steps(config: &TrainConfig, session_start_global_step: usize) -> usize {
-    config
-        .max_train_steps
-        .map(|budget| session_start_global_step + budget)
-        .unwrap_or(config.num_epochs.max(1))
-        .max(1)
-}
-
-fn lr_status_message(step: usize, warmup_steps: usize, lr: f64) -> String {
-    if warmup_steps > 0 && step < warmup_steps {
-        format!("lr={lr:.2e} warmup {}/{}", step, warmup_steps)
-    } else {
-        format!("lr={lr:.2e} cosine")
-    }
-}
-
-fn effective_lr(train_cfg: &BCTrainerConfig, step: usize, total_steps: usize) -> f64 {
-    warmup_then_cosine_lr(
-        step,
-        train_cfg.warmup_steps.min(total_steps),
-        total_steps,
-        train_cfg.lr,
-        1e-6,
-    )
-}
-
-fn steps_per_second(window_steps: usize, elapsed: Duration) -> f64 {
-    let secs = elapsed.as_secs_f64();
-    if window_steps == 0 || secs <= f64::EPSILON {
-        0.0
-    } else {
-        window_steps as f64 / secs
-    }
-}
 
 fn run() -> Result<(), String> {
     let config_path = parse_args(env::args())?;
