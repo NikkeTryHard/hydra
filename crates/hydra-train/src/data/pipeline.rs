@@ -1,17 +1,18 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use burn::prelude::*;
 use indicatif::ProgressBar;
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 
-use crate::data::mjai_loader::{MjaiDataset, MjaiGame, load_game_from_path, load_game_from_stream};
-use crate::data::sample::{MjaiSample, collate_batch, collate_batch_augmented};
+use crate::data::mjai_loader::{load_game_from_path, load_game_from_stream, MjaiDataset, MjaiGame};
+use crate::data::sample::{collate_sample_refs, MjaiSample};
 use crate::training::losses::HydraTargets;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -93,8 +94,15 @@ pub struct StreamEpochIterator {
 }
 
 struct ArchiveEntryJob {
+    sequence: usize,
     display_name: String,
     data: Vec<u8>,
+}
+
+struct ParsedArchiveGame {
+    sequence: usize,
+    display_name: String,
+    result: io::Result<MjaiGame>,
 }
 
 struct SkipLogState {
@@ -353,28 +361,30 @@ fn spawn_archive_stream(
             })?;
             let mut archive = tar::Archive::new(zstd);
             let (job_tx, job_rx) = mpsc::sync_channel::<ArchiveEntryJob>(archive_queue_bound);
+            let (parsed_tx, parsed_rx) =
+                mpsc::sync_channel::<ParsedArchiveGame>(archive_queue_bound);
 
-            let skip_state_for_parse = Arc::clone(&skip_state);
-            let parse_tx = tx.clone();
+            let parsed_tx_for_parse = parsed_tx.clone();
             let parser = thread::Builder::new()
                 .name(format!("mjai-archive-parse-{}", path_for_thread.display()))
                 .spawn(move || -> io::Result<()> {
                     pool.install(|| {
                         job_rx.into_iter().par_bridge().try_for_each(|job| {
-                            match load_game_from_stream(BufReader::new(std::io::Cursor::new(
-                                job.data,
-                            ))) {
-                                Ok(game) => parse_tx.send(game).map_err(|_| {
+                            let result = load_game_from_stream(BufReader::new(
+                                std::io::Cursor::new(job.data),
+                            ));
+                            parsed_tx_for_parse
+                                .send(ParsedArchiveGame {
+                                    sequence: job.sequence,
+                                    display_name: job.display_name,
+                                    result,
+                                })
+                                .map_err(|_| {
                                     io::Error::new(
                                         io::ErrorKind::BrokenPipe,
                                         "archive stream receiver dropped",
                                     )
-                                }),
-                                Err(err) => {
-                                    skip_state_for_parse.log_skip(&job.display_name, &err);
-                                    Ok(())
-                                }
-                            }
+                                })
                         })
                     })
                 })
@@ -384,7 +394,42 @@ fn spawn_archive_stream(
                         path_for_thread.display()
                     ))
                 })?;
+            drop(parsed_tx);
 
+            let skip_state_for_collect = Arc::clone(&skip_state);
+            let ordered_tx = tx.clone();
+            let collector = thread::Builder::new()
+                .name(format!("mjai-archive-order-{}", path_for_thread.display()))
+                .spawn(move || -> io::Result<()> {
+                    let mut next_sequence = 0usize;
+                    let mut pending = BTreeMap::new();
+                    for parsed in parsed_rx {
+                        pending.insert(parsed.sequence, parsed);
+                        while let Some(parsed) = pending.remove(&next_sequence) {
+                            match parsed.result {
+                                Ok(game) => ordered_tx.send(game).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::BrokenPipe,
+                                        "archive stream receiver dropped",
+                                    )
+                                })?,
+                                Err(err) => {
+                                    skip_state_for_collect.log_skip(&parsed.display_name, &err)
+                                }
+                            }
+                            next_sequence += 1;
+                        }
+                    }
+                    Ok(())
+                })
+                .map_err(|err| {
+                    io::Error::other(format!(
+                        "failed to spawn archive ordering thread {}: {err}",
+                        path_for_thread.display()
+                    ))
+                })?;
+
+            let mut sequence = 0usize;
             for entry_result in archive.entries()? {
                 let mut entry = entry_result?;
                 let entry_path = entry.path()?.into_owned();
@@ -408,6 +453,7 @@ fn spawn_archive_stream(
                 }
                 if job_tx
                     .send(ArchiveEntryJob {
+                        sequence,
                         display_name: identity,
                         data,
                     })
@@ -415,12 +461,19 @@ fn spawn_archive_stream(
                 {
                     break;
                 }
+                sequence += 1;
             }
 
             drop(job_tx);
             parser.join().map_err(|_| {
                 io::Error::other(format!(
                     "archive parse thread panicked for {}",
+                    path_for_thread.display()
+                ))
+            })??;
+            collector.join().map_err(|_| {
+                io::Error::other(format!(
+                    "archive ordering thread panicked for {}",
                     path_for_thread.display()
                 ))
             })??;
@@ -679,6 +732,7 @@ fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset
             })?;
             let mut archive = tar::Archive::new(zstd);
 
+            let mut sequence = 0usize;
             for entry_result in archive.entries()? {
                 let mut entry = entry_result?;
                 let entry_path = entry.path()?.into_owned();
@@ -690,22 +744,30 @@ fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset
                 std::io::Read::read_to_end(&mut entry, &mut data)?;
                 let display_name = format!("{} in {}", entry_path.display(), path_buf.display());
 
-                if job_tx.send(ArchiveEntryJob { display_name, data }).is_err() {
+                if job_tx
+                    .send(ArchiveEntryJob {
+                        sequence,
+                        display_name,
+                        data,
+                    })
+                    .is_err()
+                {
                     break;
                 }
+                sequence += 1;
             }
 
             Ok(())
         })
         .map_err(|err| io::Error::other(format!("failed to spawn archive reader: {err}")))?;
 
-    let results: Vec<(String, io::Result<MjaiGame>)> = pool.install(|| {
+    let mut results: Vec<(usize, String, io::Result<MjaiGame>)> = pool.install(|| {
         job_rx
             .into_iter()
             .par_bridge()
             .map(|job| {
                 let result = load_game_from_stream(BufReader::new(std::io::Cursor::new(job.data)));
-                (job.display_name, result)
+                (job.sequence, job.display_name, result)
             })
             .collect()
     });
@@ -720,7 +782,9 @@ fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset
     let mut dataset = MjaiDataset::new(train_fraction);
     let mut skipped = 0usize;
 
-    for (display_name, result) in results {
+    results.sort_by_key(|(sequence, _, _)| *sequence);
+
+    for (_, display_name, result) in results {
         match result {
             Ok(game) => dataset.add_game(game),
             Err(err) => {
@@ -743,28 +807,6 @@ fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset
     );
 
     Ok(dataset)
-}
-
-fn clone_sample(sample: &MjaiSample) -> MjaiSample {
-    MjaiSample {
-        obs: sample.obs,
-        action: sample.action,
-        legal_mask: sample.legal_mask,
-        placement: sample.placement,
-        score_delta: sample.score_delta,
-        grp_label: sample.grp_label,
-        oracle_target: sample.oracle_target,
-        tenpai: sample.tenpai,
-        opp_next: sample.opp_next,
-        danger: sample.danger,
-        danger_mask: sample.danger_mask,
-        safety_residual: sample.safety_residual,
-        safety_residual_mask: sample.safety_residual_mask,
-        belief_fields: sample.belief_fields,
-        mixture_weights: sample.mixture_weights,
-        belief_fields_present: sample.belief_fields_present,
-        mixture_weights_present: sample.mixture_weights_present,
-    }
 }
 
 pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDataset> {
@@ -874,15 +916,7 @@ pub fn build_batches<B: Backend>(
 
     samples
         .chunks(batch_size)
-        .map(|chunk| {
-            let owned: Vec<MjaiSample> = chunk.iter().map(|sample| clone_sample(sample)).collect();
-            let batch = if augment {
-                collate_batch_augmented(&owned, device)
-            } else {
-                collate_batch(&owned, device)
-            };
-            (batch.obs.clone(), batch.into_hydra_targets())
-        })
+        .filter_map(|chunk| collate_sample_refs::<B>(chunk, augment, device))
         .collect()
 }
 
@@ -891,25 +925,15 @@ pub fn collate_sample_chunk<B: Backend>(
     augment: bool,
     device: &B::Device,
 ) -> Option<(Tensor<B, 3>, HydraTargets<B>)> {
-    if samples.is_empty() {
-        return None;
-    }
-
-    let owned: Vec<MjaiSample> = samples.iter().map(|sample| clone_sample(sample)).collect();
-    let batch = if augment {
-        collate_batch_augmented(&owned, device)
-    } else {
-        collate_batch(&owned, device)
-    };
-    Some((batch.obs.clone(), batch.into_hydra_targets()))
+    collate_sample_refs::<B>(samples, augment, device)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use burn::backend::NdArray;
-    use flate2::Compression;
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::encoder::OBS_SIZE;
     use std::fs::File;
