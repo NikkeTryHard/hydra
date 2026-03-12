@@ -46,6 +46,16 @@ pub fn default_min_microbatch_size() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeOnlyConfig {
+    pub kind: ProbeKind,
+    pub candidate_microbatch: usize,
+    pub warmup_steps: Option<usize>,
+    pub measure_steps: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PreflightConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -67,6 +77,8 @@ pub struct PreflightConfig {
     pub min_microbatch_size: usize,
     #[serde(default = "default_candidate_microbatches")]
     pub candidate_microbatches: Vec<usize>,
+    #[serde(default)]
+    pub probe_only: Option<ProbeOnlyConfig>,
 }
 
 impl Default for PreflightConfig {
@@ -82,6 +94,7 @@ impl Default for PreflightConfig {
             required_successes: default_required_successes(),
             min_microbatch_size: default_min_microbatch_size(),
             candidate_microbatches: default_candidate_microbatches(),
+            probe_only: None,
         }
     }
 }
