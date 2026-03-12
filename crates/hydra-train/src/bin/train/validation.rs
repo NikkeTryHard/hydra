@@ -22,6 +22,7 @@ pub(super) struct ValidationSummary {
 }
 
 pub(super) fn validation_batch_stats<B: Backend>(
+    sample_count: usize,
     output: &HydraOutput<B>,
     targets: &HydraTargets<B>,
     loss_fn: &HydraLoss<B>,
@@ -33,7 +34,7 @@ pub(super) fn validation_batch_stats<B: Backend>(
         target_actions,
     );
     let breakdown = loss_fn.total_loss(output, targets);
-    batch_stats_from_breakdown(agreement, &breakdown)
+    batch_stats_from_breakdown(sample_count, agreement, &breakdown)
 }
 
 pub(super) fn is_better_validation(
@@ -87,7 +88,7 @@ pub(super) fn run_validation(
                 continue;
             };
             let output = model_valid.forward(obs);
-            let batch_stats = validation_batch_stats(&output, &targets, loss_fn);
+            let batch_stats = validation_batch_stats(capped_chunk.len(), &output, &targets, loss_fn);
             stats.record_batch(batch_stats);
             total_samples += capped_chunk.len();
         }
