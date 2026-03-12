@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 
 use burn::backend::libtorch::LibTorchDevice;
 use hydra_train::preflight::PreflightConfig;
+use hydra_train::training::bc::BCTrainerConfig;
+use hydra_train::model::HydraModelConfig;
 use rayon::ThreadPoolBuilder;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TrainConfig {
     pub(crate) data_dir: PathBuf,
     pub(crate) output_dir: PathBuf,
@@ -27,6 +30,8 @@ pub(crate) struct TrainConfig {
     pub(crate) seed: u64,
     #[serde(default)]
     pub(crate) advanced_loss: Option<AdvancedLossConfig>,
+    #[serde(default)]
+    pub(crate) bc: BcHyperparamConfig,
     #[serde(default = "default_device")]
     pub(crate) device: String,
     #[serde(default = "default_buffer_games")]
@@ -59,6 +64,33 @@ pub(crate) struct TrainConfig {
     pub(crate) preflight: PreflightConfig,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BcHyperparamConfig {
+    #[serde(default = "default_bc_learning_rate")]
+    pub(crate) learning_rate: f64,
+    #[serde(default = "default_bc_min_learning_rate")]
+    pub(crate) min_learning_rate: f64,
+    #[serde(default = "default_bc_weight_decay")]
+    pub(crate) weight_decay: f32,
+    #[serde(default = "default_bc_grad_clip_norm")]
+    pub(crate) grad_clip_norm: f32,
+    #[serde(default = "default_bc_warmup_steps")]
+    pub(crate) warmup_steps: usize,
+}
+
+impl Default for BcHyperparamConfig {
+    fn default() -> Self {
+        Self {
+            learning_rate: default_bc_learning_rate(),
+            min_learning_rate: default_bc_min_learning_rate(),
+            weight_decay: default_bc_weight_decay(),
+            grad_clip_norm: default_bc_grad_clip_norm(),
+            warmup_steps: default_bc_warmup_steps(),
+        }
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AdvancedLossConfig {
@@ -71,6 +103,26 @@ pub(crate) struct AdvancedLossConfig {
 
 pub(crate) fn default_batch_size() -> usize {
     2048
+}
+
+pub(crate) fn default_bc_learning_rate() -> f64 {
+    2.5e-4
+}
+
+pub(crate) fn default_bc_min_learning_rate() -> f64 {
+    1e-6
+}
+
+pub(crate) fn default_bc_weight_decay() -> f32 {
+    1e-5
+}
+
+pub(crate) fn default_bc_grad_clip_norm() -> f32 {
+    1.0
+}
+
+pub(crate) fn default_bc_warmup_steps() -> usize {
+    1000
 }
 
 pub(crate) fn default_train_fraction() -> f32 {
@@ -130,7 +182,7 @@ pub(crate) fn default_max_validation_samples() -> Option<usize> {
 }
 
 pub(crate) fn usage(program: &str) -> String {
-    format!("Usage: {program} <config.json>")
+    format!("Usage: {program} <config.yaml>")
 }
 
 pub(crate) fn parse_args<I>(args: I) -> Result<PathBuf, String>
@@ -151,10 +203,8 @@ pub(crate) fn read_config(path: &Path) -> Result<TrainConfig, String> {
     match path.extension().and_then(OsStr::to_str) {
         Some("yaml" | "yml") => serde_yaml::from_str(&raw)
             .map_err(|err| format!("failed to parse yaml config {}: {err}", path.display())),
-        Some("json") => serde_json::from_str(&raw)
-            .map_err(|err| format!("failed to parse json config {}: {err}", path.display())),
         _ => Err(format!(
-            "unsupported config extension for {}; use .yaml or .yml",
+            "unsupported config extension for {}; use .yaml",
             path.display()
         )),
     }
@@ -261,7 +311,35 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
     {
         return Err("validation_microbatch_size must be greater than 0".to_string());
     }
+    if config.bc.learning_rate <= 0.0 {
+        return Err("bc.learning_rate must be greater than 0".to_string());
+    }
+    if config.bc.min_learning_rate <= 0.0 {
+        return Err("bc.min_learning_rate must be greater than 0".to_string());
+    }
+    if config.bc.min_learning_rate > config.bc.learning_rate {
+        return Err("bc.min_learning_rate must be less than or equal to bc.learning_rate".to_string());
+    }
+    if config.bc.weight_decay < 0.0 {
+        return Err("bc.weight_decay must be non-negative".to_string());
+    }
+    if config.bc.grad_clip_norm <= 0.0 {
+        return Err("bc.grad_clip_norm must be greater than 0".to_string());
+    }
+    if config.bc.warmup_steps == 0 {
+        return Err("bc.warmup_steps must be greater than 0".to_string());
+    }
     Ok(())
+}
+
+pub(crate) fn trainer_config_from_train_config(config: &TrainConfig) -> BCTrainerConfig {
+    BCTrainerConfig::new(HydraModelConfig::learner())
+        .with_batch_size(config.batch_size)
+        .with_lr(config.bc.learning_rate)
+        .with_min_learning_rate(config.bc.min_learning_rate)
+        .with_weight_decay(config.bc.weight_decay)
+        .with_grad_clip_norm(config.bc.grad_clip_norm)
+        .with_warmup_steps(config.bc.warmup_steps)
 }
 
 pub(crate) fn train_microbatch_size(config: &TrainConfig) -> usize {

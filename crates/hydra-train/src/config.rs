@@ -630,6 +630,11 @@ mod tests {
             "BC lr should be 2.5e-4, got {}",
             bc.lr
         );
+        assert!(
+            (bc.min_learning_rate - 1e-6).abs() < 1e-12,
+            "BC min_learning_rate should be 1e-6, got {}",
+            bc.min_learning_rate
+        );
         assert_eq!(
             bc.batch_size, 2048,
             "BC batch_size should be 2048, got {}",

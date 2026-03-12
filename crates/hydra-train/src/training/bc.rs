@@ -60,6 +60,8 @@ pub struct BCTrainerConfig {
     pub model_config: HydraModelConfig,
     #[config(default = "2.5e-4")]
     pub lr: f64,
+    #[config(default = "1e-6")]
+    pub min_learning_rate: f64,
     #[config(default = "2048")]
     pub batch_size: usize,
     #[config(default = "1.0")]
@@ -152,7 +154,11 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob { 1.0 } else { 0.0 }
+            if sample < keep_prob {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -235,8 +241,12 @@ pub fn oracle_guiding_train_step<B: AutodiffBackend>(
 impl BCTrainerConfig {
     pub fn summary(&self) -> String {
         format!(
-            "lr={:.1e} batch={} clip={:.1} wd={:.1e}",
-            self.lr, self.batch_size, self.grad_clip_norm, self.weight_decay
+            "lr={:.1e} min_lr={:.1e} batch={} clip={:.1} wd={:.1e}",
+            self.lr,
+            self.min_learning_rate,
+            self.batch_size,
+            self.grad_clip_norm,
+            self.weight_decay
         )
     }
 
@@ -268,18 +278,36 @@ impl BCTrainerConfig {
     }
 
     pub fn effective_lr(&self, step: usize, total_steps: usize) -> f64 {
-        warmup_then_cosine_lr(step, self.warmup_steps, total_steps, self.lr, 1e-6)
+        warmup_then_cosine_lr(
+            step,
+            self.warmup_steps,
+            total_steps,
+            self.lr,
+            self.min_learning_rate,
+        )
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.lr <= 0.0 {
             return Err("lr must be positive");
         }
+        if self.min_learning_rate <= 0.0 {
+            return Err("min_learning_rate must be positive");
+        }
+        if self.min_learning_rate > self.lr {
+            return Err("min_learning_rate must be <= lr");
+        }
         if self.batch_size == 0 {
             return Err("batch_size must be > 0");
         }
         if self.grad_clip_norm <= 0.0 {
             return Err("grad_clip_norm must be positive");
+        }
+        if self.weight_decay < 0.0 {
+            return Err("weight_decay must be non-negative");
+        }
+        if self.warmup_steps == 0 {
+            return Err("warmup_steps must be > 0");
         }
         Ok(())
     }
@@ -447,7 +475,7 @@ impl CheckpointMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
@@ -465,10 +493,24 @@ mod tests {
     fn test_bc_config_defaults() {
         let cfg = BCTrainerConfig::new(HydraModelConfig::actor());
         assert!((cfg.lr - 2.5e-4).abs() < 1e-10);
+        assert!((cfg.min_learning_rate - 1e-6).abs() < 1e-12);
         assert_eq!(cfg.batch_size, 2048);
         assert!((cfg.grad_clip_norm - 1.0).abs() < 1e-6);
         assert!((cfg.weight_decay - 1e-5).abs() < 1e-8);
         assert_eq!(cfg.warmup_steps, 1000);
+    }
+
+    #[test]
+    fn effective_lr_respects_configured_min_learning_rate() {
+        let cfg = BCTrainerConfig::new(HydraModelConfig::actor())
+            .with_lr(1e-3)
+            .with_min_learning_rate(1e-4)
+            .with_warmup_steps(10);
+        let lr = cfg.effective_lr(1_000, 1_000);
+        assert!(
+            lr >= 1e-4 - 1e-10,
+            "lr floor should respect configured min: {lr}"
+        );
     }
 
     #[test]
