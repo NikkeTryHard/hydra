@@ -1,0 +1,31 @@
+data_dir: /data
+output_dir: /output
+num_epochs: 1
+batch_size: 256
+train_fraction: 0.9
+augment: true
+seed: 42
+device: cuda:0
+buffer_games: 512
+buffer_samples: 8192
+num_threads: 16
+tensorboard: true
+archive_queue_bound: 256
+validation_every_n_epochs: 1
+max_skip_logs_per_source: 4
+log_every_n_steps: 25
+validate_every_n_steps: 200
+checkpoint_every_n_steps: 200
+max_train_steps: 1000
+max_validation_samples: 8192
+preflight:
+  enabled: true
+  advisory_only: false
+  reuse_cache: true
+  allow_override_explicit_microbatch: false
+  warmup_steps: 1
+  measure_steps: 1
+  safety_backoff_rungs: 0
+  required_successes: 2
+  min_microbatch_size: 1
+  candidate_microbatches: [512, 384, 256, 192, 128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]
