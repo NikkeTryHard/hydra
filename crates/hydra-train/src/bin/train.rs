@@ -44,7 +44,9 @@ use self::config::{
     AdvancedLossConfig, TrainConfig, configure_threads, device_label, parse_args, read_config,
     train_device, train_microbatch_size, validate_config, validation_sample_limit,
 };
-use self::presentation::{format_progress_message, make_bar, make_spinner, phase_label};
+use self::presentation::{
+    format_progress_message, make_bar, make_spinner, phase_label, print_banner,
+};
 use self::preflight_runtime::{
     apply_preflight_selection, preflight_request_from_env, run_preflight, run_probe_only,
 };
@@ -85,14 +87,6 @@ fn schedule_total_steps(config: &TrainConfig, session_start_global_step: usize) 
         .map(|budget| session_start_global_step + budget)
         .unwrap_or(config.num_epochs.max(1))
         .max(1)
-}
-
-fn model_kind(config: &HydraModelConfig) -> &'static str {
-    if config.is_learner() {
-        "learner"
-    } else {
-        "actor"
-    }
 }
 
 fn reject_blocked_advanced_loss_presence(field: &str, weight: Option<f32>) -> Result<(), String> {
@@ -150,109 +144,6 @@ fn steps_per_second(window_steps: usize, elapsed: Duration) -> f64 {
     } else {
         window_steps as f64 / secs
     }
-}
-
-fn print_banner(
-    model_config: &HydraModelConfig,
-    config: &TrainConfig,
-    artifacts: &BcArtifactPaths,
-    device_name: &str,
-    stats: &BannerStats,
-    scheduler_warmup_steps: usize,
-) {
-    println!();
-    println!();
-    println!("{}", "Hydra BC trainer".bold().cyan());
-    println!(
-        "  {} {}",
-        "Model:".white(),
-        format!(
-            "{} ({} blocks, {}ch)",
-            model_kind(model_config),
-            model_config.num_blocks,
-            model_config.hidden_channels
-        )
-        .green()
-    );
-    println!("  {} {}", "Device:".white(), device_name.green());
-    println!(
-        "  {} {}",
-        "Dataset:".white(),
-        if stats.counts_exact {
-            format!(
-                "{} ({} sources, {} games)",
-                config.data_dir.display(),
-                stats.total_sources,
-                stats.total_games
-            )
-        } else {
-            format!(
-                "{} ({} sources, archive counts deferred)",
-                config.data_dir.display(),
-                stats.total_sources,
-            )
-        }
-        .green()
-    );
-    println!(
-        "  {} {}",
-        "Train:".white(),
-        if stats.counts_exact {
-            format!("{} games | Val: {} games", stats.train_count, stats.val_count)
-        } else {
-            "streaming split, counts estimated while loading".to_string()
-        }
-        .green()
-    );
-    println!(
-        "  {} {}",
-        "Buffer:".white(),
-        format!("{} samples (max {} games)", config.buffer_samples, config.buffer_games).yellow()
-    );
-    println!(
-        "  {} {}",
-        "Optimizer batch:".white(),
-        format!(
-            "{} ({} x {} accum)",
-            config.batch_size,
-            config.microbatch_size.unwrap_or(config.batch_size),
-            stats.accum_steps
-        )
-        .yellow()
-    );
-    println!(
-        "  {} {}",
-        "Epochs:".white(),
-        config.num_epochs.to_string().yellow()
-    );
-    println!(
-        "  {} {}",
-        "Schedule:".white(),
-        format!(
-            "warmup+cosine (warmup_steps={}, max_train_steps={})",
-            scheduler_warmup_steps,
-            config
-                .max_train_steps
-                .map(|steps| steps.to_string())
-                .unwrap_or_else(|| "epoch-derived".to_string())
-        )
-        .yellow()
-    );
-    println!(
-        "  {} {}",
-        "Output:".white(),
-        artifacts.root.display().to_string().green()
-    );
-    println!(
-        "  {} {}",
-        "TBoard:".white(),
-        if config.tensorboard {
-            artifacts.tb_session_dir.display().to_string().green()
-        } else {
-            "disabled".yellow()
-        }
-    );
-    println!();
 }
 
 fn run() -> Result<(), String> {
