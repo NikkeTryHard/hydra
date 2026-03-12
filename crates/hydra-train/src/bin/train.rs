@@ -2,6 +2,8 @@
 mod config;
 #[path = "train/artifacts.rs"]
 mod artifacts;
+#[path = "train/presentation.rs"]
+mod presentation;
 #[path = "train/resume.rs"]
 mod resume;
 #[path = "train/status.rs"]
@@ -33,7 +35,7 @@ use hydra_train::training::bc::{
     BCTrainerConfig, policy_agreement, target_actions_from_policy_target, warmup_then_cosine_lr,
 };
 use hydra_train::training::losses::{HydraLoss, HydraLossConfig, HydraTargets, LossBreakdown};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar};
 use tboard::EventWriter;
 
 use self::artifacts::{
@@ -46,6 +48,7 @@ use self::config::{
     train_device, train_microbatch_size, validate_config,
     validation_microbatch_size, validation_sample_limit,
 };
+use self::presentation::{format_progress_message, make_bar, make_spinner, phase_label};
 use self::resume::{
     BestValidation, EpochContinuation, ResumeContext, paused_training_message,
     resumed_progress_message, runtime_resume_contract,
@@ -176,25 +179,6 @@ fn schedule_total_steps(config: &TrainConfig, session_start_global_step: usize) 
         .max(1)
 }
 
-fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
-    let pb = ProgressBar::new(len);
-    let style = ProgressStyle::with_template(template)
-        .map_err(|err| format!("failed to build progress style: {err}"))?
-        .progress_chars("=> ");
-    pb.set_style(style);
-    Ok(pb)
-}
-
-fn make_spinner(template: &str) -> Result<ProgressBar, String> {
-    let pb = ProgressBar::new_spinner();
-    let style = ProgressStyle::with_template(template)
-        .map_err(|err| format!("failed to build spinner style: {err}"))?
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
-    pb.set_style(style);
-    pb.enable_steady_tick(Duration::from_millis(120));
-    Ok(pb)
-}
-
 fn scalar1<B: Backend>(tensor: &Tensor<B, 1>) -> f64 {
     tensor.clone().into_scalar().elem::<f64>()
 }
@@ -259,13 +243,6 @@ fn model_kind(config: &HydraModelConfig) -> &'static str {
     }
 }
 
-fn phase_label(prefix: &str, epoch_index: usize, num_epochs: usize) -> String {
-    if num_epochs <= 1 {
-        prefix.to_string()
-    } else {
-        format!("{prefix} {}/{}", epoch_index + 1, num_epochs)
-    }
-}
 fn read_preflight_cache(path: &Path) -> Result<PreflightCacheEntry, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read preflight cache {}: {err}", path.display()))?;
@@ -1000,13 +977,6 @@ fn is_better_validation(summary: ValidationSummary, best: Option<BestValidation>
                     && summary.agreement > best.agreement)
         }
     }
-}
-
-fn format_progress_message(loss: f64, agreement: f64, lr_message: &str, step_rate: f64) -> String {
-    format!(
-        "loss={loss:.4} agree={:.2}% steps/s={step_rate:.2} {lr_message}",
-        agreement * 100.0
-    )
 }
 
 fn run_validation(
