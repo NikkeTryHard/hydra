@@ -2,6 +2,8 @@
 mod config;
 #[path = "train/artifacts.rs"]
 mod artifacts;
+#[path = "train/loss_policy.rs"]
+mod loss_policy;
 #[path = "train/presentation.rs"]
 mod presentation;
 #[path = "train/preflight_runtime.rs"]
@@ -32,7 +34,7 @@ use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::{
     BCTrainerConfig, policy_agreement, target_actions_from_policy_target, warmup_then_cosine_lr,
 };
-use hydra_train::training::losses::{HydraLoss, HydraLossConfig};
+use hydra_train::training::losses::HydraLoss;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
@@ -41,9 +43,10 @@ use self::artifacts::{
     save_latest_checkpoint_and_state,
 };
 use self::config::{
-    AdvancedLossConfig, TrainConfig, configure_threads, device_label, parse_args, read_config,
-    train_device, train_microbatch_size, validate_config, validation_sample_limit,
+    TrainConfig, configure_threads, device_label, parse_args, read_config, train_device,
+    train_microbatch_size, validate_config, validation_sample_limit,
 };
+use self::loss_policy::build_loss_config;
 use self::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, print_banner,
 };
@@ -69,7 +72,7 @@ use self::validation::{ValidationSummary, is_better_validation, run_validation};
 use self::status::{EpochProgressEstimate, format_rough_duration};
 
 #[cfg(test)]
-use self::config::{default_seed, validation_microbatch_size};
+use self::config::{AdvancedLossConfig, default_seed, validation_microbatch_size};
 #[cfg(test)]
 use hydra_train::preflight::PreflightConfig;
 #[cfg(test)]
@@ -87,36 +90,6 @@ fn schedule_total_steps(config: &TrainConfig, session_start_global_step: usize) 
         .map(|budget| session_start_global_step + budget)
         .unwrap_or(config.num_epochs.max(1))
         .max(1)
-}
-
-fn reject_blocked_advanced_loss_presence(field: &str, weight: Option<f32>) -> Result<(), String> {
-    match weight {
-        Some(_) => Err(format!(
-            "advanced_loss.{field} is not supported in train.rs because this BC data path does not safely support it yet"
-        )),
-        None => Ok(()),
-    }
-}
-
-fn build_loss_config(
-    advanced_loss: Option<&AdvancedLossConfig>,
-) -> Result<HydraLossConfig, String> {
-    if let Some(cfg) = advanced_loss {
-        reject_blocked_advanced_loss_presence("belief_fields", cfg.belief_fields)?;
-        reject_blocked_advanced_loss_presence("mixture_weight", cfg.mixture_weight)?;
-        reject_blocked_advanced_loss_presence("opponent_hand_type", cfg.opponent_hand_type)?;
-        reject_blocked_advanced_loss_presence("delta_q", cfg.delta_q)?;
-    }
-
-    let safety_residual = advanced_loss
-        .and_then(|cfg| cfg.safety_residual)
-        .unwrap_or(0.0);
-
-    let loss_config = HydraLossConfig::new().with_w_safety_residual(safety_residual);
-    loss_config
-        .validate()
-        .map_err(|err| format!("invalid loss config: {err}"))?;
-    Ok(loss_config)
 }
 
 fn lr_status_message(step: usize, warmup_steps: usize, lr: f64) -> String {
