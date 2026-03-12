@@ -394,18 +394,28 @@ where
 pub struct CheckpointMeta {
     pub epoch: u32,
     pub train_loss: f64,
-    pub eval_agreement: f64,
+    pub eval_agreement: Option<f64>,
+    pub eval_policy_loss: Option<f64>,
+    pub eval_total_loss: Option<f64>,
     pub timestamp: u64,
     pub num_blocks: usize,
     pub hidden_channels: usize,
 }
 
 impl CheckpointMeta {
-    pub fn new(epoch: u32, train_loss: f64, eval_agreement: f64) -> Self {
+    pub fn new(
+        epoch: u32,
+        train_loss: f64,
+        eval_agreement: Option<f64>,
+        eval_policy_loss: Option<f64>,
+        eval_total_loss: Option<f64>,
+    ) -> Self {
         Self {
             epoch,
             train_loss,
             eval_agreement,
+            eval_policy_loss,
+            eval_total_loss,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -416,11 +426,20 @@ impl CheckpointMeta {
     }
 
     pub fn summary(&self) -> String {
+        let eval_summary = match (
+            self.eval_policy_loss,
+            self.eval_total_loss,
+            self.eval_agreement,
+        ) {
+            (Some(policy_loss), Some(total_loss), Some(agreement)) => format!(
+                "policy_ce={policy_loss:.4} total={total_loss:.4} agree={:.2}%",
+                agreement * 100.0
+            ),
+            _ => "eval=n/a".to_string(),
+        };
         format!(
-            "epoch={} loss={:.4} agree={:.2}%",
-            self.epoch,
-            self.train_loss,
-            self.eval_agreement * 100.0
+            "epoch={} loss={:.4} {}",
+            self.epoch, self.train_loss, eval_summary
         )
     }
 }
@@ -805,5 +824,20 @@ mod tests {
             assert!((a - b).abs() < 1e-6, "mismatch at {i}: {a} vs {b}");
         }
         std::fs::remove_file(format!("{path}.mpk")).ok();
+    }
+
+    #[test]
+    fn checkpoint_meta_summary_handles_missing_eval_metrics() {
+        let meta = CheckpointMeta::new(10, 2.5, None, None, None);
+        assert_eq!(meta.summary(), "epoch=10 loss=2.5000 eval=n/a");
+    }
+
+    #[test]
+    fn checkpoint_meta_summary_reports_eval_metrics() {
+        let meta = CheckpointMeta::new(10, 2.5, Some(0.375), Some(1.75), Some(2.25));
+        assert_eq!(
+            meta.summary(),
+            "epoch=10 loss=2.5000 policy_ce=1.7500 total=2.2500 agree=37.50%"
+        );
     }
 }
