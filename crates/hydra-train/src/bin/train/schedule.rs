@@ -29,7 +29,7 @@ pub(super) fn effective_lr(train_cfg: &BCTrainerConfig, step: usize, total_steps
         train_cfg.warmup_steps.min(total_steps),
         total_steps,
         train_cfg.lr,
-        1e-6,
+        train_cfg.min_learning_rate,
     )
 }
 
