@@ -12,11 +12,12 @@ use hydra_train::preflight::{
 };
 use hydra_train::training::bc::CheckpointMeta;
 
+use super::progress::{EpochLogEntry, ScalarAverages, StepLogEntry};
 use super::resume::{
     build_resume_state, current_timestamp_s, write_resume_state, BestValidation, EpochContinuation,
     RuntimeResumeContract,
 };
-use super::{EpochLogEntry, ScalarAverages, StepLogEntry, TrainBackend, ValidationSummary};
+use super::{TrainBackend, ValidationSummary};
 
 pub(crate) struct BcArtifactPaths {
     pub(crate) root: PathBuf,
