@@ -6,6 +6,8 @@ mod artifacts;
 mod presentation;
 #[path = "train/preflight_runtime.rs"]
 mod preflight_runtime;
+#[path = "train/progress.rs"]
+mod progress;
 #[path = "train/resume.rs"]
 mod resume;
 #[path = "train/status.rs"]
@@ -30,7 +32,7 @@ use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::{
     BCTrainerConfig, policy_agreement, target_actions_from_policy_target, warmup_then_cosine_lr,
 };
-use hydra_train::training::losses::{HydraLoss, HydraLossConfig, LossBreakdown};
+use hydra_train::training::losses::{HydraLoss, HydraLossConfig};
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
@@ -45,6 +47,10 @@ use self::config::{
 use self::presentation::{format_progress_message, make_bar, make_spinner, phase_label};
 use self::preflight_runtime::{
     apply_preflight_selection, preflight_request_from_env, run_preflight, run_probe_only,
+};
+use self::progress::{
+    BannerStats, BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry,
+    batch_stats_from_breakdown,
 };
 use self::resume::{
     BestValidation, EpochContinuation, ResumeContext, paused_training_message,
@@ -73,151 +79,12 @@ use self::resume::{
 type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
 
-#[derive(Default, serde::Serialize)]
-struct ScalarAverages {
-    total_loss: f64,
-    policy_agreement: f64,
-    loss_policy: f64,
-    loss_value: f64,
-    loss_grp: f64,
-    loss_tenpai: f64,
-    loss_danger: f64,
-    loss_opp_next: f64,
-    loss_score_pdf: f64,
-    loss_score_cdf: f64,
-    num_batches: usize,
-}
-
-#[derive(Clone, Copy, Default)]
-struct BatchStats {
-    total_loss: f64,
-    policy_agreement: f64,
-    loss_policy: f64,
-    loss_value: f64,
-    loss_grp: f64,
-    loss_tenpai: f64,
-    loss_danger: f64,
-    loss_opp_next: f64,
-    loss_score_pdf: f64,
-    loss_score_cdf: f64,
-}
-
-#[derive(serde::Serialize)]
-struct EpochLogEntry {
-    epoch: usize,
-    global_step: usize,
-    lr: f64,
-    train_total_loss: f64,
-    train_policy_agreement: f64,
-    train_loss_policy: f64,
-    train_loss_value: f64,
-    train_loss_grp: f64,
-    train_loss_tenpai: f64,
-    train_loss_danger: f64,
-    train_loss_opp_next: f64,
-    train_loss_score_pdf: f64,
-    train_loss_score_cdf: f64,
-    val_total_loss: Option<f64>,
-    val_policy_loss: Option<f64>,
-    val_policy_agreement: Option<f64>,
-    best_val_policy_loss: Option<f64>,
-    best_val_agreement: Option<f64>,
-    num_batches: usize,
-}
-
-#[derive(serde::Serialize)]
-struct StepLogEntry {
-    global_step: usize,
-    epoch: usize,
-    lr: f64,
-    train_total_loss: f64,
-    train_policy_agreement: f64,
-    train_loss_policy: f64,
-    train_loss_value: f64,
-    train_loss_grp: f64,
-    train_loss_tenpai: f64,
-    train_loss_danger: f64,
-    train_loss_opp_next: f64,
-    train_loss_score_pdf: f64,
-    train_loss_score_cdf: f64,
-    val_total_loss: Option<f64>,
-    val_policy_loss: Option<f64>,
-    val_policy_agreement: Option<f64>,
-    best_val_policy_loss: Option<f64>,
-    best_val_agreement: Option<f64>,
-}
-
-struct BannerStats {
-    total_sources: usize,
-    total_games: usize,
-    train_count: usize,
-    val_count: usize,
-    accum_steps: usize,
-    counts_exact: bool,
-}
-
 fn schedule_total_steps(config: &TrainConfig, session_start_global_step: usize) -> usize {
     config
         .max_train_steps
         .map(|budget| session_start_global_step + budget)
         .unwrap_or(config.num_epochs.max(1))
         .max(1)
-}
-
-fn scalar1<B: Backend>(tensor: &Tensor<B, 1>) -> f64 {
-    tensor.clone().into_scalar().elem::<f64>()
-}
-
-impl ScalarAverages {
-    fn record_batch(&mut self, batch: BatchStats) {
-        self.total_loss += batch.total_loss;
-        self.policy_agreement += batch.policy_agreement;
-        self.loss_policy += batch.loss_policy;
-        self.loss_value += batch.loss_value;
-        self.loss_grp += batch.loss_grp;
-        self.loss_tenpai += batch.loss_tenpai;
-        self.loss_danger += batch.loss_danger;
-        self.loss_opp_next += batch.loss_opp_next;
-        self.loss_score_pdf += batch.loss_score_pdf;
-        self.loss_score_cdf += batch.loss_score_cdf;
-        self.num_batches += 1;
-    }
-
-    fn finalize(mut self) -> Self {
-        if self.num_batches == 0 {
-            return self;
-        }
-        let denom = self.num_batches as f64;
-        self.total_loss /= denom;
-        self.policy_agreement /= denom;
-        self.loss_policy /= denom;
-        self.loss_value /= denom;
-        self.loss_grp /= denom;
-        self.loss_tenpai /= denom;
-        self.loss_danger /= denom;
-        self.loss_opp_next /= denom;
-        self.loss_score_pdf /= denom;
-        self.loss_score_cdf /= denom;
-        self
-    }
-}
-
-fn batch_stats_from_breakdown<B: Backend>(
-    agreement: f64,
-    breakdown: &LossBreakdown<B>,
-) -> BatchStats {
-    BatchStats {
-        total_loss: scalar1(&breakdown.total),
-        policy_agreement: agreement,
-        loss_policy: scalar1(&breakdown.policy),
-        loss_value: scalar1(&breakdown.value),
-        loss_grp: scalar1(&breakdown.grp),
-        loss_tenpai: scalar1(&breakdown.tenpai),
-        loss_danger: scalar1(&breakdown.danger),
-        loss_opp_next: scalar1(&breakdown.opp_next),
-        loss_score_pdf: scalar1(&breakdown.score_pdf),
-        loss_score_cdf: scalar1(&breakdown.score_cdf),
-    }
 }
 
 fn model_kind(config: &HydraModelConfig) -> &'static str {

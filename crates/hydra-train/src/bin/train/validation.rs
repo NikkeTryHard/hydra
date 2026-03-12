@@ -8,11 +8,9 @@ use hydra_train::model::{HydraModel, HydraOutput};
 use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
+use super::progress::{BatchStats, ScalarAverages, batch_stats_from_breakdown};
 use super::resume::BestValidation;
-use super::{
-    BatchStats, ScalarAverages, TrainBackend, ValidBackend, batch_stats_from_breakdown,
-    policy_agreement, target_actions_from_policy_target,
-};
+use super::{TrainBackend, ValidBackend, policy_agreement, target_actions_from_policy_target};
 
 #[derive(Clone, Copy)]
 pub(super) struct ValidationSummary {
