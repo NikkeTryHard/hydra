@@ -4,6 +4,8 @@ mod config;
 mod artifacts;
 #[path = "train/presentation.rs"]
 mod presentation;
+#[path = "train/preflight_runtime.rs"]
+mod preflight_runtime;
 #[path = "train/resume.rs"]
 mod resume;
 #[path = "train/status.rs"]
@@ -13,26 +15,18 @@ mod validation;
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
-use burn::backend::{Autodiff, LibTorch, libtorch::LibTorchDevice};
-use burn::module::AutodiffModule;
+use burn::backend::{Autodiff, LibTorch};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use colored::Colorize;
 use hydra_train::data::pipeline::{
-    StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch, stream_val_pass,
+    StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
 };
 use hydra_train::data::sample::collate_samples;
 use hydra_train::model::{HydraModel, HydraModelConfig};
-use hydra_train::preflight::{
-    ExplicitSettings, HardwareFingerprint, PreflightCacheEntry, PreflightCacheKey,
-    PreflightReport, ProbeKind, ProbeResult, ProbeStatus, SelectedRuntimeConfig,
-    WorkloadFingerprint, candidate_ladder, default_notes, resolve_runtime_config,
-};
 use hydra_train::training::bc::{
     BCTrainerConfig, policy_agreement, target_actions_from_policy_target, warmup_then_cosine_lr,
 };
@@ -41,15 +35,17 @@ use indicatif::MultiProgress;
 use tboard::EventWriter;
 
 use self::artifacts::{
-    BcArtifactPaths, PreflightPaths, append_step_log, append_training_log, log_tensorboard,
-    save_checkpoint, save_latest_checkpoint_and_state, write_preflight_cache,
-    write_preflight_report,
+    BcArtifactPaths, append_step_log, append_training_log, log_tensorboard, save_checkpoint,
+    save_latest_checkpoint_and_state,
 };
 use self::config::{
     AdvancedLossConfig, TrainConfig, configure_threads, device_label, parse_args, read_config,
     train_device, train_microbatch_size, validate_config, validation_sample_limit,
 };
 use self::presentation::{format_progress_message, make_bar, make_spinner, phase_label};
+use self::preflight_runtime::{
+    apply_preflight_selection, preflight_request_from_env, run_preflight, run_probe_only,
+};
 use self::resume::{
     BestValidation, EpochContinuation, ResumeContext, paused_training_message,
     resumed_progress_message, runtime_resume_contract,
@@ -59,7 +55,7 @@ use self::status::{
     display_step_label, display_validation_scope_label, epoch_progress_message_with_rate,
     estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
 };
-use self::validation::{ValidationSummary, is_better_validation, run_validation, validation_batch_stats};
+use self::validation::{ValidationSummary, is_better_validation, run_validation};
 
 #[cfg(test)]
 use self::status::{EpochProgressEstimate, format_rough_duration};
@@ -76,11 +72,6 @@ use self::resume::{
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
-
-struct PreflightRuntime {
-    report: PreflightReport,
-    selected: SelectedRuntimeConfig,
-}
 
 #[derive(Default, serde::Serialize)]
 struct ScalarAverages {
@@ -235,556 +226,6 @@ fn model_kind(config: &HydraModelConfig) -> &'static str {
     } else {
         "actor"
     }
-}
-
-fn read_preflight_cache(path: &Path) -> Result<PreflightCacheEntry, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read preflight cache {}: {err}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse preflight cache {}: {err}", path.display()))
-}
-
-fn advanced_loss_signature(config: Option<&AdvancedLossConfig>) -> String {
-    match config {
-        Some(config) => serde_json::to_string(config)
-            .unwrap_or_else(|_| "advanced_loss:unserializable".to_string()),
-        None => "advanced_loss:none".to_string(),
-    }
-}
-
-fn workload_fingerprint(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-) -> WorkloadFingerprint {
-    WorkloadFingerprint {
-        batch_size: config.batch_size,
-        augment: config.augment,
-        model_signature: format!(
-            "blocks:{} input:{} hidden:{} groups:{} action:{} score_bins:{}",
-            model_config.num_blocks,
-            model_config.input_channels,
-            model_config.hidden_channels,
-            model_config.num_groups,
-            model_config.action_space,
-            model_config.score_bins,
-        ),
-        code_signature: format!(
-            "hydra-train:{}:{}:preflight-v2",
-            env!("CARGO_PKG_VERSION"),
-            env!("CARGO_PKG_NAME")
-        ),
-        advanced_loss_signature: advanced_loss_signature(config.advanced_loss.as_ref()),
-    }
-}
-
-fn hardware_fingerprint(device_label: &str) -> HardwareFingerprint {
-    HardwareFingerprint {
-        device_label: device_label.to_string(),
-        backend: "burn-libtorch".to_string(),
-    }
-}
-
-fn preflight_cache_key(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-    device_label: &str,
-) -> PreflightCacheKey {
-    PreflightCacheKey {
-        hardware: hardware_fingerprint(device_label),
-        workload: workload_fingerprint(config, model_config),
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ProbeRequest {
-    kind: ProbeKind,
-    candidate_microbatch: usize,
-    warmup_steps: usize,
-    measure_steps: usize,
-}
-
-fn probe_kind_name(kind: ProbeKind) -> &'static str {
-    match kind {
-        ProbeKind::Train => "train",
-        ProbeKind::Validation => "validation",
-    }
-}
-
-fn parse_probe_kind(value: &str) -> Result<ProbeKind, String> {
-    match value {
-        "train" => Ok(ProbeKind::Train),
-        "validation" => Ok(ProbeKind::Validation),
-        _ => Err(format!("unsupported preflight probe kind: {value}")),
-    }
-}
-
-fn preflight_request_from_env() -> Result<Option<(ProbeRequest, PathBuf)>, String> {
-    let Some(kind) = env::var_os("HYDRA_PREFLIGHT_PROBE_KIND") else {
-        return Ok(None);
-    };
-    let kind = parse_probe_kind(&kind.to_string_lossy())?;
-    let candidate_microbatch = env::var("HYDRA_PREFLIGHT_CANDIDATE_MB")
-        .map_err(|_| "missing HYDRA_PREFLIGHT_CANDIDATE_MB".to_string())?
-        .parse::<usize>()
-        .map_err(|err| format!("invalid HYDRA_PREFLIGHT_CANDIDATE_MB: {err}"))?;
-    let warmup_steps = env::var("HYDRA_PREFLIGHT_WARMUP_STEPS")
-        .map_err(|_| "missing HYDRA_PREFLIGHT_WARMUP_STEPS".to_string())?
-        .parse::<usize>()
-        .map_err(|err| format!("invalid HYDRA_PREFLIGHT_WARMUP_STEPS: {err}"))?;
-    let measure_steps = env::var("HYDRA_PREFLIGHT_MEASURE_STEPS")
-        .map_err(|_| "missing HYDRA_PREFLIGHT_MEASURE_STEPS".to_string())?
-        .parse::<usize>()
-        .map_err(|err| format!("invalid HYDRA_PREFLIGHT_MEASURE_STEPS: {err}"))?;
-    let result_path = PathBuf::from(
-        env::var("HYDRA_PREFLIGHT_RESULT_PATH")
-            .map_err(|_| "missing HYDRA_PREFLIGHT_RESULT_PATH".to_string())?,
-    );
-    Ok(Some((
-        ProbeRequest {
-            kind,
-            candidate_microbatch,
-            warmup_steps,
-            measure_steps,
-        },
-        result_path,
-    )))
-}
-
-fn write_probe_result(path: &Path, result: &ProbeResult) -> Result<(), String> {
-    let json = serde_json::to_string(result)
-        .map_err(|err| format!("failed to serialize probe result {}: {err}", path.display()))?;
-    fs::write(path, json)
-        .map_err(|err| format!("failed to write probe result {}: {err}", path.display()))
-}
-
-fn read_probe_result(path: &Path) -> Result<ProbeResult, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read probe result {}: {err}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse probe result {}: {err}", path.display()))
-}
-
-fn probe_result_path(
-    artifacts: &BcArtifactPaths,
-    kind: ProbeKind,
-    candidate_microbatch: usize,
-    attempt: usize,
-) -> PathBuf {
-    artifacts.root.join(format!(
-        "preflight_probe_{}_{}_{}.json",
-        probe_kind_name(kind),
-        candidate_microbatch,
-        attempt
-    ))
-}
-
-fn measure_samples_per_second(samples: usize, elapsed: Duration) -> f64 {
-    if samples == 0 {
-        return 0.0;
-    }
-    let seconds = elapsed.as_secs_f64();
-    if seconds <= f64::EPSILON {
-        0.0
-    } else {
-        samples as f64 / seconds
-    }
-}
-
-fn probe_train_candidate(
-    config: &TrainConfig,
-    request: ProbeRequest,
-    loader_config: &StreamingLoaderConfig,
-    manifest: &hydra_train::data::pipeline::DataManifest,
-    train_device: &LibTorchDevice,
-) -> Result<f64, String> {
-    let scheduler_warmup_steps = config.max_train_steps.map_or(
-        BCTrainerConfig::default_learner().warmup_steps,
-        |max_steps| max_steps.clamp(1, BCTrainerConfig::default_learner().warmup_steps.min(100)),
-    );
-    let train_cfg = BCTrainerConfig::default_learner()
-        .with_batch_size(config.batch_size)
-        .with_lr(BCTrainerConfig::default_learner().lr)
-        .with_warmup_steps(scheduler_warmup_steps);
-    let mut model = HydraModelConfig::learner().init::<TrainBackend>(train_device);
-    let mut optimizer = train_cfg.optimizer_config().init();
-    let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
-    let microbatch_size = request.candidate_microbatch.min(config.batch_size).max(1);
-    let accum_steps = config.batch_size.div_ceil(microbatch_size).max(1);
-    let target_steps = request.warmup_steps + request.measure_steps;
-    let mut completed_steps = 0usize;
-    let mut accum_current = 0usize;
-    let mut accumulator: GradientsAccumulator<HydraModel<TrainBackend>> =
-        GradientsAccumulator::new();
-    let mut measure_start = None;
-
-    for buffer_result in stream_train_epoch(manifest, loader_config, 0, None) {
-        let buffer =
-            buffer_result.map_err(|err| format!("preflight train stream failed: {err}"))?;
-        for chunk in buffer.chunks(microbatch_size) {
-            let Some((obs, targets)) =
-                collate_samples::<TrainBackend>(chunk, config.augment, train_device)
-            else {
-                continue;
-            };
-            let output = model.forward(obs);
-            let breakdown = loss_fn.total_loss(&output, &targets);
-            let grads = breakdown.total.backward();
-            let grads = GradientsParams::from_grads(grads, &model);
-            accumulator.accumulate(&model, grads);
-            accum_current += 1;
-            if accum_current < accum_steps {
-                continue;
-            }
-            let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
-            let grads = accumulator.grads();
-            model = optimizer.step(lr, model, grads);
-            accum_current = 0;
-            completed_steps += 1;
-            if completed_steps == request.warmup_steps {
-                measure_start = Some(Instant::now());
-            }
-            if completed_steps >= target_steps {
-                let elapsed = measure_start
-                    .map(|start| start.elapsed())
-                    .unwrap_or_default();
-                return Ok(measure_samples_per_second(
-                    request.measure_steps.max(1) * config.batch_size,
-                    elapsed,
-                ));
-            }
-        }
-    }
-
-    Err(format!(
-        "not enough train data to finish preflight probe at microbatch {}",
-        microbatch_size
-    ))
-}
-
-fn probe_validation_candidate(
-    config: &TrainConfig,
-    request: ProbeRequest,
-    loader_config: &StreamingLoaderConfig,
-    manifest: &hydra_train::data::pipeline::DataManifest,
-    train_device: &LibTorchDevice,
-) -> Result<f64, String> {
-    let model = HydraModelConfig::learner().init::<TrainBackend>(train_device);
-    let model_valid = model.valid();
-    let loss_fn = HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
-    let microbatch_size = request.candidate_microbatch.max(1);
-    let target_steps = request.warmup_steps + request.measure_steps;
-    let mut completed_steps = 0usize;
-    let mut measure_start = None;
-
-    for buffer_result in stream_val_pass(manifest, loader_config, None) {
-        let buffer =
-            buffer_result.map_err(|err| format!("preflight validation stream failed: {err}"))?;
-        for chunk in buffer.chunks(microbatch_size) {
-            let Some((obs, targets)) = collate_samples::<ValidBackend>(chunk, false, train_device)
-            else {
-                continue;
-            };
-            let output = model_valid.forward(obs);
-            let _ = validation_batch_stats(&output, &targets, &loss_fn);
-            completed_steps += 1;
-            if completed_steps == request.warmup_steps {
-                measure_start = Some(Instant::now());
-            }
-            if completed_steps >= target_steps {
-                let elapsed = measure_start
-                    .map(|start| start.elapsed())
-                    .unwrap_or_default();
-                return Ok(measure_samples_per_second(
-                    request.measure_steps.max(1) * microbatch_size,
-                    elapsed,
-                ));
-            }
-        }
-    }
-
-    Err(format!(
-        "not enough validation data to finish preflight probe at microbatch {}",
-        microbatch_size
-    ))
-}
-
-fn run_probe_only(
-    config: &TrainConfig,
-    request: ProbeRequest,
-    result_path: &Path,
-) -> Result<(), String> {
-    let loader_config = StreamingLoaderConfig {
-        buffer_games: config.buffer_games,
-        buffer_samples: config.buffer_samples,
-        train_fraction: config.train_fraction,
-        seed: config.seed,
-        archive_queue_bound: config.archive_queue_bound,
-        max_skip_logs_per_source: config.max_skip_logs_per_source,
-    };
-    let manifest = scan_data_sources_with_progress(&config.data_dir, config.train_fraction, None)
-        .map_err(|err| {
-        format!(
-            "failed to scan preflight data from {}: {err}",
-            config.data_dir.display()
-        )
-    })?;
-    let train_device = train_device(&config.device);
-    let measured_samples_per_second = match request.kind {
-        ProbeKind::Train => {
-            probe_train_candidate(config, request, &loader_config, &manifest, &train_device)?
-        }
-        ProbeKind::Validation => {
-            probe_validation_candidate(config, request, &loader_config, &manifest, &train_device)?
-        }
-    };
-    write_probe_result(
-        result_path,
-        &ProbeResult {
-            kind: request.kind,
-            candidate_microbatch: request.candidate_microbatch,
-            status: ProbeStatus::Success,
-            measured_samples_per_second: Some(measured_samples_per_second),
-            detail: format!(
-                "stable {} probe on real dataset",
-                probe_kind_name(request.kind)
-            ),
-        },
-    )
-}
-
-fn execute_probe_request(
-    config_path: &Path,
-    request: ProbeRequest,
-    result_path: &Path,
-) -> Result<ProbeResult, String> {
-    fs::remove_file(result_path).ok();
-    let output =
-        Command::new(env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?)
-            .arg(config_path)
-            .env("HYDRA_PREFLIGHT_PROBE_KIND", probe_kind_name(request.kind))
-            .env(
-                "HYDRA_PREFLIGHT_CANDIDATE_MB",
-                request.candidate_microbatch.to_string(),
-            )
-            .env(
-                "HYDRA_PREFLIGHT_WARMUP_STEPS",
-                request.warmup_steps.to_string(),
-            )
-            .env(
-                "HYDRA_PREFLIGHT_MEASURE_STEPS",
-                request.measure_steps.to_string(),
-            )
-            .env("HYDRA_PREFLIGHT_RESULT_PATH", result_path)
-            .output()
-            .map_err(|err| format!("failed to spawn preflight probe child: {err}"))?;
-
-    if result_path.exists() {
-        let result = read_probe_result(result_path)?;
-        fs::remove_file(result_path).ok();
-        return Ok(result);
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = format!(
-        "probe process status={:?} stdout={} stderr={}",
-        output.status.code(),
-        stdout.trim(),
-        stderr.trim()
-    );
-    Ok(ProbeResult {
-        kind: request.kind,
-        candidate_microbatch: request.candidate_microbatch,
-        status: classify_probe_detail(&detail),
-        measured_samples_per_second: None,
-        detail,
-    })
-}
-
-fn best_probe_result(results: &[ProbeResult]) -> Option<&ProbeResult> {
-    results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .max_by(|left, right| {
-            left.measured_samples_per_second
-                .unwrap_or(0.0)
-                .partial_cmp(&right.measured_samples_per_second.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-}
-
-fn probe_candidate_ladder(
-    config_path: &Path,
-    config: &TrainConfig,
-    artifacts: &BcArtifactPaths,
-    kind: ProbeKind,
-    candidates: &[usize],
-) -> Result<(usize, Vec<ProbeResult>), String> {
-    let explicit_candidate = match kind {
-        ProbeKind::Train => config.microbatch_size,
-        ProbeKind::Validation => config.validation_microbatch_size,
-    };
-    let use_explicit_only =
-        explicit_candidate.is_some() && !config.preflight.allow_override_explicit_microbatch;
-    let candidate_list: Vec<usize> = if use_explicit_only {
-        vec![explicit_candidate.unwrap_or(1)]
-    } else {
-        candidates.to_vec()
-    };
-    let mut results = Vec::new();
-    let mut stable_results = Vec::new();
-
-    for candidate in candidate_list {
-        let mut stable = true;
-        let stable_start = results.len();
-        let attempts = config.preflight.required_successes.max(1);
-        for attempt in 0..attempts {
-            let request = ProbeRequest {
-                kind,
-                candidate_microbatch: candidate,
-                warmup_steps: config.preflight.warmup_steps,
-                measure_steps: config.preflight.measure_steps,
-            };
-            let result_path = probe_result_path(artifacts, kind, candidate, attempt);
-            let result = execute_probe_request(config_path, request, &result_path)?;
-            let passed = result.status == ProbeStatus::Success;
-            results.push(result);
-            if !passed {
-                stable = false;
-                break;
-            }
-        }
-        if stable {
-            stable_results.extend(results[stable_start..].iter().cloned());
-            if use_explicit_only {
-                return Ok((candidate, results));
-            }
-        }
-    }
-
-    if use_explicit_only {
-        return Err(format!(
-            "explicit {} microbatch {} failed preflight",
-            probe_kind_name(kind),
-            explicit_candidate.unwrap_or(1)
-        ));
-    }
-
-    let selected = best_probe_result(&stable_results)
-        .map(|result| result.candidate_microbatch)
-        .ok_or_else(|| {
-            format!(
-                "no stable {} microbatch found in preflight",
-                probe_kind_name(kind)
-            )
-        })?;
-    Ok((selected, results))
-}
-
-fn apply_preflight_selection(config: &TrainConfig, selected: SelectedRuntimeConfig) -> TrainConfig {
-    if config.preflight.advisory_only {
-        return config.clone();
-    }
-    let mut resolved = config.clone();
-    resolved.microbatch_size = Some(selected.train_microbatch_size);
-    resolved.validation_microbatch_size = Some(selected.validation_microbatch_size);
-    resolved
-}
-
-fn classify_probe_detail(detail: &str) -> ProbeStatus {
-    let lowered = detail.to_ascii_lowercase();
-    if lowered.contains("out of memory") || lowered.contains("oom") {
-        ProbeStatus::Oom
-    } else if lowered.contains("cuda") || lowered.contains("cudnn") || lowered.contains("libtorch")
-    {
-        ProbeStatus::BackendError
-    } else if lowered.contains("data") || lowered.contains("collate") || lowered.contains("replay")
-    {
-        ProbeStatus::DataError
-    } else {
-        ProbeStatus::BackendError
-    }
-}
-
-fn run_preflight(
-    config_path: &Path,
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-    device_label: &str,
-    artifacts: &BcArtifactPaths,
-) -> Result<PreflightRuntime, String> {
-    let cache_key = preflight_cache_key(config, model_config, device_label);
-    let paths = PreflightPaths::new(artifacts);
-    let explicit = ExplicitSettings {
-        train_microbatch_explicit: config.microbatch_size.is_some(),
-        validation_microbatch_explicit: config.validation_microbatch_size.is_some(),
-    };
-
-    if config.preflight.enabled && config.preflight.reuse_cache && paths.cache_path.exists() {
-        let entry = read_preflight_cache(&paths.cache_path)?;
-        if entry.cache_key == cache_key {
-            let report = PreflightReport {
-                schema_version: 1,
-                cache_key,
-                selected: entry.selected,
-                explicit,
-                advisory_only: config.preflight.advisory_only,
-                cache_hit: true,
-                train_probe_results: Vec::new(),
-                validation_probe_results: Vec::new(),
-                notes: default_notes(),
-            };
-            write_preflight_report(&paths.report_path, &report)?;
-            return Ok(PreflightRuntime {
-                report,
-                selected: entry.selected,
-            });
-        }
-    }
-
-    let candidates = candidate_ladder(&config.preflight, config.batch_size);
-    let (train_microbatch, train_probe_results) = probe_candidate_ladder(
-        config_path,
-        config,
-        artifacts,
-        ProbeKind::Train,
-        &candidates,
-    )?;
-    let (validation_microbatch, validation_probe_results) = probe_candidate_ladder(
-        config_path,
-        config,
-        artifacts,
-        ProbeKind::Validation,
-        &candidates,
-    )?;
-    let selected = resolve_runtime_config(
-        config.batch_size,
-        explicit,
-        train_microbatch,
-        validation_microbatch,
-    );
-    let report = PreflightReport {
-        schema_version: 1,
-        cache_key: cache_key.clone(),
-        selected,
-        explicit,
-        advisory_only: config.preflight.advisory_only,
-        cache_hit: false,
-        train_probe_results,
-        validation_probe_results,
-        notes: default_notes(),
-    };
-    write_preflight_report(&paths.report_path, &report)?;
-    if config.preflight.enabled && config.preflight.reuse_cache {
-        write_preflight_cache(
-            &paths.cache_path,
-            &PreflightCacheEntry {
-                cache_key,
-                selected,
-            },
-        )?;
-    }
-    Ok(PreflightRuntime { report, selected })
 }
 
 fn reject_blocked_advanced_loss_presence(field: &str, weight: Option<f32>) -> Result<(), String> {
@@ -1639,7 +1080,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn::backend::libtorch::LibTorchDevice;
     use hydra_train::training::bc::policy_agreement_counts;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn parse_args_accepts_single_config_path() {
