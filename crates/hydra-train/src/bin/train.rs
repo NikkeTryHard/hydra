@@ -1,10 +1,15 @@
+#[path = "train/config.rs"]
+mod config;
+#[path = "train/artifacts.rs"]
+mod artifacts;
+#[path = "train/resume.rs"]
+mod resume;
+
 use std::env;
-use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use burn::backend::{Autodiff, LibTorch, libtorch::LibTorchDevice};
 use burn::module::AutodiffModule;
@@ -18,83 +23,49 @@ use hydra_train::data::pipeline::{
 use hydra_train::data::sample::collate_samples;
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    ExplicitSettings, HardwareFingerprint, PreflightCacheEntry, PreflightCacheKey, PreflightConfig,
+    ExplicitSettings, HardwareFingerprint, PreflightCacheEntry, PreflightCacheKey,
     PreflightReport, ProbeKind, ProbeResult, ProbeStatus, SelectedRuntimeConfig,
-    WorkloadFingerprint, candidate_ladder, default_cache_name, default_notes, default_report_name,
-    resolve_runtime_config,
+    WorkloadFingerprint, candidate_ladder, default_notes, resolve_runtime_config,
 };
 use hydra_train::training::bc::{
-    BCTrainerConfig, CheckpointMeta, policy_agreement, target_actions_from_policy_target,
-    warmup_then_cosine_lr,
+    BCTrainerConfig, policy_agreement, target_actions_from_policy_target, warmup_then_cosine_lr,
 };
 use hydra_train::training::losses::{HydraLoss, HydraLossConfig, HydraTargets, LossBreakdown};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use rayon::ThreadPoolBuilder;
 use tboard::EventWriter;
+
+use self::artifacts::{
+    BcArtifactPaths, PreflightPaths, append_step_log, append_training_log, log_tensorboard,
+    save_checkpoint, save_latest_checkpoint_and_state, write_preflight_cache,
+    write_preflight_report,
+};
+use self::config::{
+    AdvancedLossConfig, TrainConfig, configure_threads, device_label, parse_args, read_config,
+    train_device, train_microbatch_size, validate_config,
+    validation_microbatch_size, validation_sample_limit,
+};
+use self::resume::{
+    BestValidation, EpochContinuation, ResumeContext, paused_training_message,
+    resumed_progress_message, runtime_resume_contract,
+    validate_resume_runtime_compatibility,
+};
+
+#[cfg(test)]
+use self::config::default_seed;
+#[cfg(test)]
+use hydra_train::preflight::PreflightConfig;
+#[cfg(test)]
+use self::resume::{
+    BcResumeState, ResumeSemantics, build_resume_state, checkpoint_base_from_path,
+    latest_state_path_for_checkpoint_base, resume_banner_message, test_runtime_resume_contract,
+};
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct TrainConfig {
-    data_dir: PathBuf,
-    output_dir: PathBuf,
-    num_epochs: usize,
-    #[serde(default = "default_batch_size")]
-    batch_size: usize,
-    #[serde(default)]
-    microbatch_size: Option<usize>,
-    #[serde(default)]
-    validation_microbatch_size: Option<usize>,
-    #[serde(default = "default_train_fraction")]
-    train_fraction: f32,
-    #[serde(default = "default_augment")]
-    augment: bool,
-    resume_checkpoint: Option<PathBuf>,
-    #[serde(default = "default_seed")]
-    seed: u64,
-    #[serde(default)]
-    advanced_loss: Option<AdvancedLossConfig>,
-    #[serde(default = "default_device")]
-    device: String,
-    #[serde(default = "default_buffer_games")]
-    buffer_games: usize,
-    #[serde(default = "default_buffer_samples")]
-    buffer_samples: usize,
-    #[serde(default)]
-    num_threads: Option<usize>,
-    #[serde(default = "default_tensorboard")]
-    tensorboard: bool,
-    #[serde(default = "default_archive_queue_bound")]
-    archive_queue_bound: usize,
-    #[serde(default = "default_validation_every_n_epochs")]
-    validation_every_n_epochs: usize,
-    #[serde(default = "default_max_skip_logs_per_source")]
-    max_skip_logs_per_source: usize,
-    #[serde(default = "default_log_every_n_steps")]
-    log_every_n_steps: usize,
-    #[serde(default = "default_validate_every_n_steps")]
-    validate_every_n_steps: usize,
-    #[serde(default = "default_checkpoint_every_n_steps")]
-    checkpoint_every_n_steps: usize,
-    #[serde(default)]
-    max_train_steps: Option<usize>,
-    #[serde(default)]
-    max_validation_batches: Option<usize>,
-    #[serde(default = "default_max_validation_samples")]
-    max_validation_samples: Option<usize>,
-    #[serde(default)]
-    preflight: PreflightConfig,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
-#[serde(deny_unknown_fields)]
-struct AdvancedLossConfig {
-    safety_residual: Option<f32>,
-    belief_fields: Option<f32>,
-    mixture_weight: Option<f32>,
-    opponent_hand_type: Option<f32>,
-    delta_q: Option<f32>,
+struct PreflightRuntime {
+    report: PreflightReport,
+    selected: SelectedRuntimeConfig,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -180,25 +151,6 @@ struct BannerStats {
     counts_exact: bool,
 }
 
-struct PreflightPaths {
-    report_path: PathBuf,
-    cache_path: PathBuf,
-}
-
-impl PreflightPaths {
-    fn new(artifacts: &BcArtifactPaths) -> Self {
-        Self {
-            report_path: artifacts.root.join(default_report_name()),
-            cache_path: artifacts.root.join(default_cache_name()),
-        }
-    }
-}
-
-struct PreflightRuntime {
-    report: PreflightReport,
-    selected: SelectedRuntimeConfig,
-}
-
 #[derive(Clone, Copy)]
 struct ValidationSummary {
     total_loss: f64,
@@ -207,155 +159,12 @@ struct ValidationSummary {
     samples: usize,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-struct BestValidation {
-    policy_loss: f64,
-    agreement: f64,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ResumeSemantics {
-    ReplaySkippedStepsFreshOptimizer,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-struct BcResumeState {
-    schema_version: u32,
-    resume_semantics: ResumeSemantics,
-    next_epoch: usize,
-    skip_optimizer_steps_in_epoch: usize,
-    global_step: usize,
-    best_validation: Option<BestValidation>,
-    saved_at_unix_s: u64,
-}
-
-struct BcArtifactPaths {
-    root: PathBuf,
-    tb_root: PathBuf,
-    tb_session_dir: PathBuf,
-    latest_model_base: PathBuf,
-    best_model_base: PathBuf,
-    latest_state_path: PathBuf,
-    training_log_path: PathBuf,
-    step_log_path: PathBuf,
-}
-
-struct ResumeContext {
-    checkpoint_base: Option<PathBuf>,
-    state: Option<BcResumeState>,
-    session_start_global_step: usize,
-    start_epoch: usize,
-}
-
-impl ResumeContext {
-    fn load(config: &TrainConfig) -> Result<Self, String> {
-        let checkpoint_base = config
-            .resume_checkpoint
-            .as_ref()
-            .map(|path| checkpoint_base_from_path(path));
-        let state = checkpoint_base
-            .as_ref()
-            .and_then(|base| latest_state_path_for_checkpoint_base(base))
-            .filter(|path| path.exists())
-            .map(|path| read_resume_state(&path))
-            .transpose()?;
-        let session_start_global_step = state.as_ref().map(|state| state.global_step).unwrap_or(0);
-        let start_epoch = state.as_ref().map(|state| state.next_epoch).unwrap_or(0);
-        Ok(Self {
-            checkpoint_base,
-            state,
-            session_start_global_step,
-            start_epoch,
-        })
-    }
-
-    fn best_validation(&self) -> Option<BestValidation> {
-        self.state.as_ref().and_then(|state| state.best_validation)
-    }
-
-    fn steps_to_skip_for_epoch(&self, epoch: usize) -> usize {
-        self.state
-            .as_ref()
-            .filter(|state| state.next_epoch == epoch)
-            .map(|state| state.skip_optimizer_steps_in_epoch)
-            .unwrap_or(0)
-    }
-
-    fn print_banner(&self) {
-        if let Some(state) = self.state.as_ref() {
-            println!(
-                "{} {}",
-                "Resume:".bold().cyan(),
-                resume_banner_message(state).yellow(),
-            );
-        }
-    }
-}
-
-struct EpochContinuation {
-    next_epoch: usize,
-    skip_optimizer_steps_in_epoch: usize,
-    epoch_completed: bool,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EpochProgressEstimate {
     completed_optimizer_steps: usize,
     estimated_total_optimizer_steps: usize,
     estimated_remaining_optimizer_steps: usize,
     completion_fraction: f64,
-}
-
-impl BcArtifactPaths {
-    fn new(output_dir: &Path, resume_global_step: usize) -> Self {
-        let root = output_dir.join("bc");
-        let tb_root = root.join("tb");
-        let tb_session_dir = tb_root.join(format!(
-            "run_g{:08}_{}",
-            resume_global_step,
-            current_timestamp_s()
-        ));
-        Self {
-            latest_model_base: root.join("latest_model"),
-            best_model_base: root.join("best_model"),
-            latest_state_path: root.join("latest_state.yaml"),
-            training_log_path: root.join("training_log.jsonl"),
-            step_log_path: root.join("step_log.jsonl"),
-            root,
-            tb_root,
-            tb_session_dir,
-        }
-    }
-
-    fn create_dirs(&self) -> Result<(), String> {
-        for dir in [&self.root, &self.tb_root, &self.tb_session_dir] {
-            fs::create_dir_all(dir).map_err(|err| {
-                format!("failed to create BC artifact dir {}: {err}", dir.display())
-            })?;
-        }
-        Ok(())
-    }
-}
-
-fn current_timestamp_s() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn checkpoint_base_from_path(path: &Path) -> PathBuf {
-    if path.extension() == Some(OsStr::new("mpk")) {
-        path.with_extension("")
-    } else {
-        path.to_path_buf()
-    }
-}
-
-fn latest_state_path_for_checkpoint_base(checkpoint_base: &Path) -> Option<PathBuf> {
-    (checkpoint_base.file_name() == Some(OsStr::new("latest_model")))
-        .then(|| checkpoint_base.with_file_name("latest_state.yaml"))
 }
 
 fn session_steps_completed(global_step: usize, session_start_global_step: usize) -> usize {
@@ -457,9 +266,7 @@ fn epoch_progress_message_with_rate(
                 .map(|rate| {
                     format!(
                         " rough_eta={}",
-                        format_rough_duration(
-                            progress.estimated_remaining_optimizer_steps as f64 / rate
-                        )
+                        format_rough_duration(progress.estimated_remaining_optimizer_steps as f64 / rate)
                     )
                 })
                 .unwrap_or_default();
@@ -474,47 +281,113 @@ fn epoch_progress_message_with_rate(
     }
 }
 
-fn read_resume_state(path: &Path) -> Result<BcResumeState, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read resume state {}: {err}", path.display()))?;
-    serde_yaml::from_str(&raw)
-        .map_err(|err| format!("failed to parse resume state {}: {err}", path.display()))
+fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
+    let pb = ProgressBar::new(len);
+    let style = ProgressStyle::with_template(template)
+        .map_err(|err| format!("failed to build progress style: {err}"))?
+        .progress_chars("=> ");
+    pb.set_style(style);
+    Ok(pb)
 }
 
-fn write_resume_state(path: &Path, state: &BcResumeState) -> Result<(), String> {
-    let yaml = serde_yaml::to_string(state)
-        .map_err(|err| format!("failed to serialize resume state {}: {err}", path.display()))?;
-    fs::write(path, yaml)
-        .map_err(|err| format!("failed to write resume state {}: {err}", path.display()))
+fn make_spinner(template: &str) -> Result<ProgressBar, String> {
+    let pb = ProgressBar::new_spinner();
+    let style = ProgressStyle::with_template(template)
+        .map_err(|err| format!("failed to build spinner style: {err}"))?
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+    pb.set_style(style);
+    pb.enable_steady_tick(Duration::from_millis(120));
+    Ok(pb)
 }
 
+fn scalar1<B: Backend>(tensor: &Tensor<B, 1>) -> f64 {
+    tensor.clone().into_scalar().elem::<f64>()
+}
+
+impl ScalarAverages {
+    fn record_batch(&mut self, batch: BatchStats) {
+        self.total_loss += batch.total_loss;
+        self.policy_agreement += batch.policy_agreement;
+        self.loss_policy += batch.loss_policy;
+        self.loss_value += batch.loss_value;
+        self.loss_grp += batch.loss_grp;
+        self.loss_tenpai += batch.loss_tenpai;
+        self.loss_danger += batch.loss_danger;
+        self.loss_opp_next += batch.loss_opp_next;
+        self.loss_score_pdf += batch.loss_score_pdf;
+        self.loss_score_cdf += batch.loss_score_cdf;
+        self.num_batches += 1;
+    }
+
+    fn finalize(mut self) -> Self {
+        if self.num_batches == 0 {
+            return self;
+        }
+        let denom = self.num_batches as f64;
+        self.total_loss /= denom;
+        self.policy_agreement /= denom;
+        self.loss_policy /= denom;
+        self.loss_value /= denom;
+        self.loss_grp /= denom;
+        self.loss_tenpai /= denom;
+        self.loss_danger /= denom;
+        self.loss_opp_next /= denom;
+        self.loss_score_pdf /= denom;
+        self.loss_score_cdf /= denom;
+        self
+    }
+}
+
+fn batch_stats_from_breakdown<B: Backend>(
+    agreement: f64,
+    breakdown: &LossBreakdown<B>,
+) -> BatchStats {
+    BatchStats {
+        total_loss: scalar1(&breakdown.total),
+        policy_agreement: agreement,
+        loss_policy: scalar1(&breakdown.policy),
+        loss_value: scalar1(&breakdown.value),
+        loss_grp: scalar1(&breakdown.grp),
+        loss_tenpai: scalar1(&breakdown.tenpai),
+        loss_danger: scalar1(&breakdown.danger),
+        loss_opp_next: scalar1(&breakdown.opp_next),
+        loss_score_pdf: scalar1(&breakdown.score_pdf),
+        loss_score_cdf: scalar1(&breakdown.score_cdf),
+    }
+}
+
+fn optimizer_steps_for_samples(
+    samples: usize,
+    microbatch_size: usize,
+    accum_steps: usize,
+) -> usize {
+    if samples == 0 {
+        0
+    } else {
+        samples.div_ceil(microbatch_size).div_ceil(accum_steps)
+    }
+}
+
+fn model_kind(config: &HydraModelConfig) -> &'static str {
+    if config.is_learner() {
+        "learner"
+    } else {
+        "actor"
+    }
+}
+
+fn phase_label(prefix: &str, epoch_index: usize, num_epochs: usize) -> String {
+    if num_epochs <= 1 {
+        prefix.to_string()
+    } else {
+        format!("{prefix} {}/{}", epoch_index + 1, num_epochs)
+    }
+}
 fn read_preflight_cache(path: &Path) -> Result<PreflightCacheEntry, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read preflight cache {}: {err}", path.display()))?;
     serde_json::from_str(&raw)
         .map_err(|err| format!("failed to parse preflight cache {}: {err}", path.display()))
-}
-
-fn write_preflight_cache(path: &Path, entry: &PreflightCacheEntry) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(entry).map_err(|err| {
-        format!(
-            "failed to serialize preflight cache {}: {err}",
-            path.display()
-        )
-    })?;
-    fs::write(path, json)
-        .map_err(|err| format!("failed to write preflight cache {}: {err}", path.display()))
-}
-
-fn write_preflight_report(path: &Path, report: &PreflightReport) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(report).map_err(|err| {
-        format!(
-            "failed to serialize preflight report {}: {err}",
-            path.display()
-        )
-    })?;
-    fs::write(path, json)
-        .map_err(|err| format!("failed to write preflight report {}: {err}", path.display()))
 }
 
 fn advanced_loss_signature(config: Option<&AdvancedLossConfig>) -> String {
@@ -1060,169 +933,6 @@ fn run_preflight(
     Ok(PreflightRuntime { report, selected })
 }
 
-fn default_batch_size() -> usize {
-    2048
-}
-
-fn default_train_fraction() -> f32 {
-    0.9
-}
-
-fn default_augment() -> bool {
-    true
-}
-
-fn default_seed() -> u64 {
-    0
-}
-
-fn default_device() -> String {
-    "cpu".to_string()
-}
-
-fn default_buffer_games() -> usize {
-    50_000
-}
-
-fn default_buffer_samples() -> usize {
-    32_768
-}
-
-fn default_tensorboard() -> bool {
-    true
-}
-
-fn default_archive_queue_bound() -> usize {
-    128
-}
-
-fn default_validation_every_n_epochs() -> usize {
-    1
-}
-
-fn default_max_skip_logs_per_source() -> usize {
-    32
-}
-
-fn default_log_every_n_steps() -> usize {
-    50
-}
-
-fn default_validate_every_n_steps() -> usize {
-    200
-}
-
-fn default_checkpoint_every_n_steps() -> usize {
-    200
-}
-
-fn default_max_validation_samples() -> Option<usize> {
-    Some(8_192)
-}
-
-fn usage(program: &str) -> String {
-    format!("Usage: {program} <config.json>")
-}
-
-fn parse_args<I>(args: I) -> Result<PathBuf, String>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut args = args.into_iter();
-    let program = args.next().unwrap_or_else(|| "train".to_string());
-    match (args.next(), args.next()) {
-        (Some(config), None) => Ok(PathBuf::from(config)),
-        _ => Err(usage(&program)),
-    }
-}
-
-fn read_config(path: &Path) -> Result<TrainConfig, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read config {}: {err}", path.display()))?;
-    match path.extension().and_then(OsStr::to_str) {
-        Some("yaml" | "yml") => serde_yaml::from_str(&raw)
-            .map_err(|err| format!("failed to parse yaml config {}: {err}", path.display())),
-        Some("json") => serde_json::from_str(&raw)
-            .map_err(|err| format!("failed to parse json config {}: {err}", path.display())),
-        _ => Err(format!(
-            "unsupported config extension for {}; use .yaml or .yml",
-            path.display()
-        )),
-    }
-}
-
-fn build_resume_state(
-    next_epoch: usize,
-    skip_optimizer_steps_in_epoch: usize,
-    global_step: usize,
-    best_validation: Option<BestValidation>,
-) -> BcResumeState {
-    BcResumeState {
-        schema_version: 1,
-        resume_semantics: ResumeSemantics::ReplaySkippedStepsFreshOptimizer,
-        next_epoch,
-        skip_optimizer_steps_in_epoch,
-        global_step,
-        best_validation,
-        saved_at_unix_s: current_timestamp_s(),
-    }
-}
-
-fn save_latest_checkpoint_and_state(
-    artifacts: &BcArtifactPaths,
-    model: &HydraModel<TrainBackend>,
-    global_step: usize,
-    train_loss: f64,
-    best_validation: Option<BestValidation>,
-    continuation: &EpochContinuation,
-) -> Result<(), String> {
-    save_checkpoint(
-        model,
-        &artifacts.latest_model_base,
-        global_step,
-        train_loss,
-        None,
-    )?;
-    let state = build_resume_state(
-        continuation.next_epoch,
-        continuation.skip_optimizer_steps_in_epoch,
-        global_step,
-        best_validation,
-    );
-    write_resume_state(&artifacts.latest_state_path, &state)
-}
-
-fn resumed_progress_message(replayed_steps: usize, total_replayed_steps: usize) -> String {
-    format!("replay {replayed_steps}/{total_replayed_steps} before new updates")
-}
-
-fn paused_training_message(continuation: &EpochContinuation) -> String {
-    format!(
-        "resume_epoch={} replay_steps_in_epoch={} exact_sample_cursor=not_restored",
-        continuation.next_epoch + 1,
-        continuation.skip_optimizer_steps_in_epoch
-    )
-}
-
-fn resume_banner_message(state: &BcResumeState) -> String {
-    if state.skip_optimizer_steps_in_epoch > 0 {
-        format!(
-            "global_step={} semantics={:?} replaying {} completed optimizer steps from epoch {} before new updates",
-            state.global_step,
-            state.resume_semantics,
-            state.skip_optimizer_steps_in_epoch,
-            state.next_epoch + 1
-        )
-    } else {
-        format!(
-            "global_step={} semantics={:?} resuming at epoch {} with new updates immediately",
-            state.global_step,
-            state.resume_semantics,
-            state.next_epoch + 1
-        )
-    }
-}
-
 fn reject_blocked_advanced_loss_presence(field: &str, weight: Option<f32>) -> Result<(), String> {
     match weight {
         Some(_) => Err(format!(
@@ -1251,231 +961,6 @@ fn build_loss_config(
         .validate()
         .map_err(|err| format!("invalid loss config: {err}"))?;
     Ok(loss_config)
-}
-
-fn parse_train_device(value: &str) -> LibTorchDevice {
-    let value = value.trim().to_ascii_lowercase();
-    if value == "cpu" {
-        return LibTorchDevice::Cpu;
-    }
-    if value == "cuda" {
-        return LibTorchDevice::Cuda(0);
-    }
-    if let Some(index) = value.strip_prefix("cuda:") {
-        let index = index.parse::<usize>().unwrap_or_else(|_| {
-            panic!("unsupported HYDRA_TRAIN_DEVICE={value}; expected cpu, cuda, or cuda:<index>")
-        });
-        return LibTorchDevice::Cuda(index);
-    }
-    panic!("unsupported HYDRA_TRAIN_DEVICE={value}; expected cpu, cuda, or cuda:<index>");
-}
-
-fn train_device(config_device: &str) -> LibTorchDevice {
-    match env::var("HYDRA_TRAIN_DEVICE") {
-        Ok(value) => parse_train_device(&value),
-        Err(_) => parse_train_device(config_device),
-    }
-}
-
-fn device_label(config_device: &str) -> String {
-    match env::var("HYDRA_TRAIN_DEVICE") {
-        Ok(value) => value,
-        Err(_) => config_device.to_string(),
-    }
-}
-
-fn configure_threads(num_threads: Option<usize>) -> Result<(), String> {
-    let Some(num_threads) = num_threads else {
-        return Ok(());
-    };
-    if num_threads == 0 {
-        return Err("num_threads must be greater than 0".to_string());
-    }
-    match ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build_global()
-    {
-        Ok(()) => Ok(()),
-        Err(err) if err.to_string().contains("initialized") => Ok(()),
-        Err(err) => Err(format!("failed to configure rayon thread pool: {err}")),
-    }
-}
-
-fn validate_config(config: &TrainConfig) -> Result<(), String> {
-    if config.num_epochs == 0 {
-        return Err("num_epochs must be greater than 0".to_string());
-    }
-    if config.batch_size == 0 {
-        return Err("batch_size must be greater than 0".to_string());
-    }
-    if config.buffer_games == 0 {
-        return Err("buffer_games must be greater than 0".to_string());
-    }
-    if config.buffer_samples == 0 {
-        return Err("buffer_samples must be greater than 0".to_string());
-    }
-    if config.archive_queue_bound == 0 {
-        return Err("archive_queue_bound must be greater than 0".to_string());
-    }
-    if config.validation_every_n_epochs == 0 {
-        return Err("validation_every_n_epochs must be greater than 0".to_string());
-    }
-    if config.log_every_n_steps == 0 {
-        return Err("log_every_n_steps must be greater than 0".to_string());
-    }
-    if config.validate_every_n_steps == 0 {
-        return Err("validate_every_n_steps must be greater than 0".to_string());
-    }
-    if config.checkpoint_every_n_steps == 0 {
-        return Err("checkpoint_every_n_steps must be greater than 0".to_string());
-    }
-    if let Some(max_train_steps) = config.max_train_steps
-        && max_train_steps == 0
-    {
-        return Err("max_train_steps must be greater than 0 when set".to_string());
-    }
-    if let Some(max_validation_batches) = config.max_validation_batches
-        && max_validation_batches == 0
-    {
-        return Err("max_validation_batches must be greater than 0 when set".to_string());
-    }
-    if let Some(max_validation_samples) = config.max_validation_samples
-        && max_validation_samples == 0
-    {
-        return Err("max_validation_samples must be greater than 0 when set".to_string());
-    }
-    if let Some(microbatch_size) = config.microbatch_size
-        && microbatch_size == 0
-    {
-        return Err("microbatch_size must be greater than 0".to_string());
-    }
-    if let Some(validation_microbatch_size) = config.validation_microbatch_size
-        && validation_microbatch_size == 0
-    {
-        return Err("validation_microbatch_size must be greater than 0".to_string());
-    }
-    Ok(())
-}
-
-fn train_microbatch_size(config: &TrainConfig) -> usize {
-    config.microbatch_size.unwrap_or(config.batch_size)
-}
-
-fn validation_microbatch_size(config: &TrainConfig) -> usize {
-    config
-        .validation_microbatch_size
-        .unwrap_or_else(|| train_microbatch_size(config))
-}
-
-fn validation_sample_limit(config: &TrainConfig) -> Option<usize> {
-    config.max_validation_samples.or_else(|| {
-        config
-            .max_validation_batches
-            .map(|limit| limit.saturating_mul(validation_microbatch_size(config)))
-    })
-}
-
-fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
-    let pb = ProgressBar::new(len);
-    let style = ProgressStyle::with_template(template)
-        .map_err(|err| format!("failed to build progress style: {err}"))?
-        .progress_chars("=> ");
-    pb.set_style(style);
-    Ok(pb)
-}
-
-fn make_spinner(template: &str) -> Result<ProgressBar, String> {
-    let pb = ProgressBar::new_spinner();
-    let style = ProgressStyle::with_template(template)
-        .map_err(|err| format!("failed to build spinner style: {err}"))?
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
-    pb.set_style(style);
-    pb.enable_steady_tick(Duration::from_millis(120));
-    Ok(pb)
-}
-
-fn scalar1<B: Backend>(tensor: &Tensor<B, 1>) -> f64 {
-    tensor.clone().into_scalar().elem::<f64>()
-}
-
-impl ScalarAverages {
-    fn record_batch(&mut self, batch: BatchStats) {
-        self.total_loss += batch.total_loss;
-        self.policy_agreement += batch.policy_agreement;
-        self.loss_policy += batch.loss_policy;
-        self.loss_value += batch.loss_value;
-        self.loss_grp += batch.loss_grp;
-        self.loss_tenpai += batch.loss_tenpai;
-        self.loss_danger += batch.loss_danger;
-        self.loss_opp_next += batch.loss_opp_next;
-        self.loss_score_pdf += batch.loss_score_pdf;
-        self.loss_score_cdf += batch.loss_score_cdf;
-        self.num_batches += 1;
-    }
-
-    fn finalize(mut self) -> Self {
-        if self.num_batches == 0 {
-            return self;
-        }
-        let denom = self.num_batches as f64;
-        self.total_loss /= denom;
-        self.policy_agreement /= denom;
-        self.loss_policy /= denom;
-        self.loss_value /= denom;
-        self.loss_grp /= denom;
-        self.loss_tenpai /= denom;
-        self.loss_danger /= denom;
-        self.loss_opp_next /= denom;
-        self.loss_score_pdf /= denom;
-        self.loss_score_cdf /= denom;
-        self
-    }
-}
-
-fn batch_stats_from_breakdown<B: Backend>(
-    agreement: f64,
-    breakdown: &LossBreakdown<B>,
-) -> BatchStats {
-    BatchStats {
-        total_loss: scalar1(&breakdown.total),
-        policy_agreement: agreement,
-        loss_policy: scalar1(&breakdown.policy),
-        loss_value: scalar1(&breakdown.value),
-        loss_grp: scalar1(&breakdown.grp),
-        loss_tenpai: scalar1(&breakdown.tenpai),
-        loss_danger: scalar1(&breakdown.danger),
-        loss_opp_next: scalar1(&breakdown.opp_next),
-        loss_score_pdf: scalar1(&breakdown.score_pdf),
-        loss_score_cdf: scalar1(&breakdown.score_cdf),
-    }
-}
-
-fn optimizer_steps_for_samples(
-    samples: usize,
-    microbatch_size: usize,
-    accum_steps: usize,
-) -> usize {
-    if samples == 0 {
-        0
-    } else {
-        samples.div_ceil(microbatch_size).div_ceil(accum_steps)
-    }
-}
-
-fn model_kind(config: &HydraModelConfig) -> &'static str {
-    if config.is_learner() {
-        "learner"
-    } else {
-        "actor"
-    }
-}
-
-fn phase_label(prefix: &str, epoch_index: usize, num_epochs: usize) -> String {
-    if num_epochs <= 1 {
-        prefix.to_string()
-    } else {
-        format!("{prefix} {}/{}", epoch_index + 1, num_epochs)
-    }
 }
 
 fn lr_status_message(step: usize, warmup_steps: usize, lr: f64) -> String {
@@ -1551,10 +1036,7 @@ fn print_banner(
         "  {} {}",
         "Train:".white(),
         if stats.counts_exact {
-            format!(
-                "{} games | Val: {} games",
-                stats.train_count, stats.val_count
-            )
+            format!("{} games | Val: {} games", stats.train_count, stats.val_count)
         } else {
             "streaming split, counts estimated while loading".to_string()
         }
@@ -1563,11 +1045,7 @@ fn print_banner(
     println!(
         "  {} {}",
         "Buffer:".white(),
-        format!(
-            "{} samples (max {} games)",
-            config.buffer_samples, config.buffer_games
-        )
-        .yellow()
+        format!("{} samples (max {} games)", config.buffer_samples, config.buffer_games).yellow()
     );
     println!(
         "  {} {}",
@@ -1613,127 +1091,6 @@ fn print_banner(
         }
     );
     println!();
-}
-
-fn save_checkpoint(
-    model: &HydraModel<TrainBackend>,
-    checkpoint_base: &Path,
-    epoch: usize,
-    train_loss: f64,
-    validation_summary: Option<ValidationSummary>,
-) -> Result<(), String> {
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    model
-        .clone()
-        .save_file(checkpoint_base, &recorder)
-        .map_err(|err| {
-            format!(
-                "failed to save checkpoint {}: {err}",
-                checkpoint_base.display()
-            )
-        })?;
-
-    let meta = CheckpointMeta::new(
-        epoch as u32,
-        train_loss,
-        validation_summary.map(|summary| summary.agreement),
-        validation_summary.map(|summary| summary.policy_loss),
-        validation_summary.map(|summary| summary.total_loss),
-    );
-    let meta_path = checkpoint_base.with_extension("meta.json");
-    let meta_json = serde_json::to_string_pretty(&meta)
-        .map_err(|err| format!("failed to serialize checkpoint metadata: {err}"))?;
-    fs::write(&meta_path, meta_json).map_err(|err| {
-        format!(
-            "failed to write checkpoint metadata {}: {err}",
-            meta_path.display()
-        )
-    })
-}
-
-fn append_training_log(path: &Path, entry: &EpochLogEntry) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|err| format!("failed to open training log {}: {err}", path.display()))?;
-    let line = serde_json::to_string(entry)
-        .map_err(|err| format!("failed to serialize training log entry: {err}"))?;
-    writeln!(file, "{line}")
-        .map_err(|err| format!("failed to append training log {}: {err}", path.display()))
-}
-
-fn append_step_log(path: &Path, entry: &StepLogEntry) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|err| format!("failed to open step log {}: {err}", path.display()))?;
-    let line = serde_json::to_string(entry)
-        .map_err(|err| format!("failed to serialize step log entry: {err}"))?;
-    writeln!(file, "{line}")
-        .map_err(|err| format!("failed to append step log {}: {err}", path.display()))
-}
-
-fn log_tensorboard<W: Write>(
-    tb: &mut EventWriter<W>,
-    epoch: usize,
-    train: &ScalarAverages,
-    val_summary: Option<ValidationSummary>,
-    lr: f64,
-    best_validation: Option<BestValidation>,
-) -> Result<(), String> {
-    let step = epoch as i64;
-    tb.write_scalar(step, "train/total_loss", train.total_loss as f32)
-        .map_err(|err| format!("tensorboard write train/total_loss failed: {err}"))?;
-    tb.write_scalar(
-        step,
-        "train/policy_agreement",
-        train.policy_agreement as f32,
-    )
-    .map_err(|err| format!("tensorboard write train/policy_agreement failed: {err}"))?;
-    if let Some(val_summary) = val_summary {
-        tb.write_scalar(step, "val/policy_agreement", val_summary.agreement as f32)
-            .map_err(|err| format!("tensorboard write val/policy_agreement failed: {err}"))?;
-        tb.write_scalar(step, "val/policy_loss", val_summary.policy_loss as f32)
-            .map_err(|err| format!("tensorboard write val/policy_loss failed: {err}"))?;
-        tb.write_scalar(step, "val/total_loss", val_summary.total_loss as f32)
-            .map_err(|err| format!("tensorboard write val/total_loss failed: {err}"))?;
-    }
-    tb.write_scalar(step, "lr", lr as f32)
-        .map_err(|err| format!("tensorboard write lr failed: {err}"))?;
-    if let Some(best_validation) = best_validation {
-        tb.write_scalar(
-            step,
-            "train/best_val_agreement",
-            best_validation.agreement as f32,
-        )
-        .map_err(|err| format!("tensorboard write train/best_val_agreement failed: {err}"))?;
-        tb.write_scalar(
-            step,
-            "train/best_val_policy_loss",
-            best_validation.policy_loss as f32,
-        )
-        .map_err(|err| format!("tensorboard write train/best_val_policy_loss failed: {err}"))?;
-    }
-    tb.write_scalar(step, "train/loss_policy", train.loss_policy as f32)
-        .map_err(|err| format!("tensorboard write train/loss_policy failed: {err}"))?;
-    tb.write_scalar(step, "train/loss_value", train.loss_value as f32)
-        .map_err(|err| format!("tensorboard write train/loss_value failed: {err}"))?;
-    tb.write_scalar(step, "train/loss_grp", train.loss_grp as f32)
-        .map_err(|err| format!("tensorboard write train/loss_grp failed: {err}"))?;
-    tb.write_scalar(step, "train/loss_tenpai", train.loss_tenpai as f32)
-        .map_err(|err| format!("tensorboard write train/loss_tenpai failed: {err}"))?;
-    tb.write_scalar(step, "train/loss_danger", train.loss_danger as f32)
-        .map_err(|err| format!("tensorboard write train/loss_danger failed: {err}"))?;
-    tb.write_scalar(step, "train/loss_opp_next", train.loss_opp_next as f32)
-        .map_err(|err| format!("tensorboard write train/loss_opp_next failed: {err}"))?;
-    tb.write_scalar(step, "train/loss_score_pdf", train.loss_score_pdf as f32)
-        .map_err(|err| format!("tensorboard write train/loss_score_pdf failed: {err}"))?;
-    tb.write_scalar(step, "train/loss_score_cdf", train.loss_score_cdf as f32)
-        .map_err(|err| format!("tensorboard write train/loss_score_cdf failed: {err}"))?;
-    tb.flush()
-        .map_err(|err| format!("tensorboard flush failed: {err}"))
 }
 
 fn validation_batch_stats<B: Backend>(
@@ -1919,6 +1276,10 @@ fn run() -> Result<(), String> {
         &artifacts,
     )?;
     config = apply_preflight_selection(&config, preflight.selected);
+    let current_runtime = runtime_resume_contract(&config);
+    if let Some(state) = resume.state.as_ref() {
+        validate_resume_runtime_compatibility(state, current_runtime)?;
+    }
     let train_device = train_device(&config.device);
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     let mut model = model_config.init::<TrainBackend>(&train_device);
@@ -2078,7 +1439,7 @@ fn run() -> Result<(), String> {
 
                     if accum_current >= accum_steps {
                         let grads = accumulator.grads();
-                        let drained: Vec<_> = pending_breakdowns.drain(..).collect();
+                        let drained = std::mem::take(&mut pending_breakdowns);
                         accum_current = 0;
                         if epoch_optimizer_steps < steps_to_skip {
                             epoch_optimizer_steps += 1;
@@ -2290,6 +1651,7 @@ fn run() -> Result<(), String> {
                             stats.total_loss / stats.num_batches.max(1) as f64,
                             best_validation,
                             &continuation,
+                            current_runtime,
                         )?;
                     }
 
@@ -2357,6 +1719,7 @@ fn run() -> Result<(), String> {
             train_stats.total_loss,
             best_validation,
             &continuation,
+            current_runtime,
         )?;
 
         if !continuation.epoch_completed {
@@ -2699,10 +2062,11 @@ num_epochs: 3
                 policy_loss: 1.23,
                 agreement: 0.45,
             }),
+            test_runtime_resume_contract(2048, 256, 256),
         );
         let yaml = serde_yaml::to_string(&state).expect("serialize state");
         let parsed: BcResumeState = serde_yaml::from_str(&yaml).expect("parse state");
-        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.schema_version, 2);
         assert_eq!(
             parsed.resume_semantics,
             ResumeSemantics::ReplaySkippedStepsFreshOptimizer
@@ -2711,6 +2075,7 @@ num_epochs: 3
         assert_eq!(parsed.skip_optimizer_steps_in_epoch, 37);
         assert_eq!(parsed.global_step, 137);
         assert_eq!(parsed.best_validation, state.best_validation);
+        assert_eq!(parsed.runtime, state.runtime);
     }
 
     #[test]
@@ -2723,19 +2088,26 @@ num_epochs: 3
                 policy_loss: 1.5,
                 agreement: 0.41,
             }),
+            test_runtime_resume_contract(2048, 256, 128),
         );
         assert_eq!(
             resume_banner_message(&state),
-            "global_step=2048 semantics=ReplaySkippedStepsFreshOptimizer replaying 137 completed optimizer steps from epoch 3 before new updates"
+            "global_step=2048 semantics=ReplaySkippedStepsFreshOptimizer replaying 137 completed optimizer steps from epoch 3 before new updates runtime=train_mb:256 val_mb:128 accum_steps:8"
         );
     }
 
     #[test]
     fn resume_banner_message_mentions_immediate_updates_when_no_replay() {
-        let state = build_resume_state(1, 0, 500, None);
+        let state = build_resume_state(
+            1,
+            0,
+            500,
+            None,
+            test_runtime_resume_contract(2048, 512, 256),
+        );
         assert_eq!(
             resume_banner_message(&state),
-            "global_step=500 semantics=ReplaySkippedStepsFreshOptimizer resuming at epoch 2 with new updates immediately"
+            "global_step=500 semantics=ReplaySkippedStepsFreshOptimizer resuming at epoch 2 with new updates immediately runtime=train_mb:512 val_mb:256 accum_steps:4"
         );
     }
 
@@ -2748,8 +2120,38 @@ num_epochs: 3
         };
         assert_eq!(
             paused_training_message(&continuation),
-            "resume_epoch=1 replay_steps_in_epoch=88 exact_sample_cursor=not_restored"
+            "resume_epoch=1 replay_steps_in_epoch=88 exact_sample_cursor=not_restored partial_epoch_requires_matching_runtime"
         );
+    }
+
+    #[test]
+    fn partial_epoch_resume_rejects_runtime_mismatch() {
+        let state = build_resume_state(
+            0,
+            12,
+            400,
+            None,
+            test_runtime_resume_contract(2048, 256, 128),
+        );
+        let err = validate_resume_runtime_compatibility(
+            &state,
+            test_runtime_resume_contract(2048, 512, 128),
+        )
+        .expect_err("partial epoch resume should fail when runtime differs");
+        assert!(err.contains("partial-epoch resume requires identical runtime contract"));
+    }
+
+    #[test]
+    fn epoch_boundary_resume_allows_runtime_change_with_same_batch_size() {
+        let state = build_resume_state(
+            1,
+            0,
+            400,
+            None,
+            test_runtime_resume_contract(2048, 256, 128),
+        );
+        validate_resume_runtime_compatibility(&state, test_runtime_resume_contract(2048, 512, 256))
+            .expect("epoch-boundary resume should allow new runtime contract");
     }
 
     #[test]
@@ -3138,12 +2540,12 @@ num_epochs: 1
         let (chunk1_correct, chunk1_total) = policy_agreement_counts(
             logits.clone().slice([0..4, 0..2]),
             mask.clone().slice([0..4, 0..2]),
-            targets.clone().slice([0..4]),
+            targets.clone().slice(0..4),
         );
         let (chunk2_correct, chunk2_total) = policy_agreement_counts(
             logits.slice([4..5, 0..2]),
             mask.slice([4..5, 0..2]),
-            targets.slice([4..5]),
+            targets.slice(4..5),
         );
 
         let weighted =
