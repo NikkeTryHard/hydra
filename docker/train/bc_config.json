@@ -17,8 +17,8 @@
   "validation_every_n_epochs": 1,
   "max_skip_logs_per_source": 4,
   "log_every_n_steps": 25,
-  "validate_every_n_steps": 100,
-  "checkpoint_every_n_steps": 100,
+  "validate_every_n_steps": 200,
+  "checkpoint_every_n_steps": 200,
   "max_train_steps": 1000,
-  "max_validation_samples": 2048
+  "max_validation_samples": 8192
 }
