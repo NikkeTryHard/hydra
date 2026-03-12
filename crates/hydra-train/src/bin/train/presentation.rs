@@ -8,6 +8,7 @@ use hydra_train::model::HydraModelConfig;
 use super::artifacts::BcArtifactPaths;
 use super::config::TrainConfig;
 use super::progress::BannerStats;
+use hydra_train::training::bc::BCTrainerConfig;
 
 pub(super) fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
     let pb = ProgressBar::new(len);
@@ -56,13 +57,24 @@ pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {
     }
 }
 
+pub(super) fn bc_hyperparam_summary(train_cfg: &BCTrainerConfig) -> String {
+    format!(
+        "lr={:.2e} min_lr={:.2e} wd={:.1e} clip={:.2} warmup_steps={}",
+        train_cfg.lr,
+        train_cfg.min_learning_rate,
+        train_cfg.weight_decay,
+        train_cfg.grad_clip_norm,
+        train_cfg.warmup_steps,
+    )
+}
+
 pub(super) fn print_banner(
     model_config: &HydraModelConfig,
     config: &TrainConfig,
     artifacts: &BcArtifactPaths,
     device_name: &str,
     stats: &BannerStats,
-    scheduler_warmup_steps: usize,
+    train_cfg: &BCTrainerConfig,
 ) {
     println!();
     println!();
@@ -133,6 +145,11 @@ pub(super) fn print_banner(
     );
     println!(
         "  {} {}",
+        "BC hyperparams:".white(),
+        bc_hyperparam_summary(train_cfg).yellow()
+    );
+    println!(
+        "  {} {}",
         "Epochs:".white(),
         config.num_epochs.to_string().yellow()
     );
@@ -141,7 +158,7 @@ pub(super) fn print_banner(
         "Schedule:".white(),
         format!(
             "warmup+cosine (warmup_steps={}, max_train_steps={})",
-            scheduler_warmup_steps,
+            train_cfg.warmup_steps,
             config
                 .max_train_steps
                 .map(|steps| steps.to_string())
@@ -164,4 +181,25 @@ pub(super) fn print_banner(
         }
     );
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bc_hyperparam_summary;
+    use hydra_train::model::HydraModelConfig;
+    use hydra_train::training::bc::BCTrainerConfig;
+
+    #[test]
+    fn bc_hyperparam_summary_includes_resolved_values() {
+        let cfg = BCTrainerConfig::new(HydraModelConfig::learner())
+            .with_lr(2.5e-4)
+            .with_min_learning_rate(1e-6)
+            .with_weight_decay(1e-5)
+            .with_grad_clip_norm(1.0)
+            .with_warmup_steps(1000);
+        assert_eq!(
+            bc_hyperparam_summary(&cfg),
+            "lr=2.50e-4 min_lr=1.00e-6 wd=1.0e-5 clip=1.00 warmup_steps=1000"
+        );
+    }
 }
