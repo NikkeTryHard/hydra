@@ -24,19 +24,22 @@ mod status;
 mod validation;
 
 use std::env;
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use burn::backend::{Autodiff, LibTorch};
 use colored::Colorize;
 
 use self::presentation::print_banner;
+use self::artifacts::BcArtifactPaths;
 use self::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
-use self::config::{parse_args, read_config};
+use self::config::{configure_threads, parse_args, read_config, validate_config};
 use self::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use self::preflight_runtime::{preflight_request_from_env, run_probe_only};
+use self::preflight_runtime::{probe_kind_name, probe_request_from_config, run_probe_only};
 
 #[cfg(test)]
 use self::config::{
-    AdvancedLossConfig, TrainConfig, default_seed, validation_microbatch_size,
+    AdvancedLossConfig, BcHyperparamConfig, TrainConfig, default_seed, validation_microbatch_size,
     validation_sample_limit,
 };
 #[cfg(test)]
@@ -44,7 +47,8 @@ use hydra_train::preflight::PreflightConfig;
 #[cfg(test)]
 use self::resume::{
     BcResumeState, ResumeSemantics, build_resume_state, checkpoint_base_from_path,
-    latest_state_path_for_checkpoint_base, resume_banner_message, test_runtime_resume_contract,
+    latest_optimizer_base_for_checkpoint_base, latest_state_path_for_checkpoint_base,
+    read_resume_state, resume_banner_message, test_runtime_resume_contract,
 };
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
@@ -53,8 +57,30 @@ type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::In
 fn run() -> Result<(), String> {
     let config_path = parse_args(env::args())?;
     let config = read_config(&config_path)?;
-    if let Some((request, result_path)) = preflight_request_from_env()? {
-        return run_probe_only(&config, request, &result_path);
+    if let Some(request) = probe_request_from_config(&config)? {
+        validate_config(&config)?;
+        configure_threads(config.num_threads)?;
+        let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
+        artifacts.create_dirs()?;
+        let result_path = artifacts.root.join(format!(
+            "probe_only_{}_{}.json",
+            probe_kind_name(request.kind),
+            request.candidate_microbatch
+        ));
+        println!(
+            "{} {} {} {} {}",
+            "Probe-only:".bold().cyan(),
+            format!("kind={}", probe_kind_name(request.kind)).yellow(),
+            format!("candidate_mb={}", request.candidate_microbatch).yellow(),
+            format!("warmup_steps={}", request.warmup_steps).yellow(),
+            format!("measure_steps={}", request.measure_steps).yellow(),
+        );
+        run_probe_only(&config, request, &result_path)?;
+        let result = std::fs::read_to_string(&result_path)
+            .map_err(|err| format!("failed to read probe result {}: {err}", result_path.display()))?;
+        println!("{} {}", "Probe result: ".bold().cyan(), result);
+        println!("{} {}", "Probe artifact:".bold().cyan(), result_path.display());
+        return Ok(());
     }
     let (bootstrap, runtime) = initialize_training_bootstrap(&config_path, config)?;
     let TrainingBootstrap {
@@ -72,8 +98,6 @@ fn run() -> Result<(), String> {
         session_start_global_step,
         total_steps,
         microbatch_size,
-        accum_steps,
-        scheduler_warmup_steps,
         banner_stats,
         loss_fn,
         valid_loss_fn,
@@ -95,7 +119,7 @@ fn run() -> Result<(), String> {
         &artifacts,
         &device_name,
         &banner_stats,
-        scheduler_warmup_steps,
+        &train_cfg,
     );
 
     println!(
@@ -127,7 +151,6 @@ fn run() -> Result<(), String> {
                 session_start_global_step,
                 steps_to_skip: resume.steps_to_skip_for_epoch(epoch),
                 microbatch_size,
-                accum_steps,
                 total_steps,
                 current_runtime,
                 run_start: &run_start,
@@ -316,6 +339,76 @@ num_epochs: 3
             latest_state_path_for_checkpoint_base(Path::new("/tmp/out/bc/best_model")),
             None
         );
+        assert_eq!(
+            latest_optimizer_base_for_checkpoint_base(Path::new("/tmp/out/bc/latest_model")),
+            Some(PathBuf::from("/tmp/out/bc/latest_optimizer"))
+        );
+        assert_eq!(
+            latest_optimizer_base_for_checkpoint_base(Path::new("/tmp/out/bc/best_model")),
+            None
+        );
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra_train_{label}_{}_{}", std::process::id(), nanos))
+    }
+
+    #[test]
+    fn read_resume_state_rejects_legacy_resume_semantics() {
+        let dir = unique_temp_dir("legacy_resume_state");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let state_path = dir.join("latest_state.yaml");
+        let legacy_yaml = r#"schema_version: 2
+resume_semantics: ReplaySkippedStepsFreshOptimizer
+next_epoch: 1
+skip_optimizer_steps_in_epoch: 12
+global_step: 400
+best_validation:
+  policy_loss: 1.5
+  agreement: 0.4
+runtime:
+  batch_size: 2048
+  train_microbatch_size: 256
+  validation_microbatch_size: 128
+  accum_steps: 8
+saved_at_unix_s: 123
+"#;
+        std::fs::write(&state_path, legacy_yaml).expect("write legacy state");
+
+        let err = read_resume_state(&state_path).expect_err("legacy resume state should fail");
+        assert!(err.contains("failed to parse resume state"));
+        std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn read_resume_state_rejects_unknown_fields() {
+        let dir = unique_temp_dir("resume_unknown_field");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let state_path = dir.join("latest_state.yaml");
+        let yaml = r#"schema_version: 3
+resume_semantics: RestoreOptimizerSkipSeenSamples
+next_epoch: 1
+skip_optimizer_steps_in_epoch: 12
+global_step: 400
+best_validation:
+  policy_loss: 1.5
+  agreement: 0.4
+runtime:
+  batch_size: 2048
+  train_microbatch_size: 256
+  validation_microbatch_size: 128
+  accum_steps: 8
+saved_at_unix_s: 123
+unexpected_field: true
+"#;
+        std::fs::write(&state_path, yaml).expect("write invalid state");
+        let err = read_resume_state(&state_path).expect_err("unknown field should fail");
+        assert!(err.contains("failed to parse resume state"));
+        std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
     }
 
     #[test]
@@ -347,6 +440,7 @@ num_epochs: 3
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -381,10 +475,10 @@ num_epochs: 3
         );
         let yaml = serde_yaml::to_string(&state).expect("serialize state");
         let parsed: BcResumeState = serde_yaml::from_str(&yaml).expect("parse state");
-        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.schema_version, 3);
         assert_eq!(
             parsed.resume_semantics,
-            ResumeSemantics::ReplaySkippedStepsFreshOptimizer
+            ResumeSemantics::RestoreOptimizerSkipSeenSamples
         );
         assert_eq!(parsed.next_epoch, 0);
         assert_eq!(parsed.skip_optimizer_steps_in_epoch, 37);
@@ -407,7 +501,7 @@ num_epochs: 3
         );
         assert_eq!(
             resume_banner_message(&state),
-            "global_step=2048 semantics=ReplaySkippedStepsFreshOptimizer replaying 137 completed optimizer steps from epoch 3 before new updates runtime=train_mb:256 val_mb:128 accum_steps:8"
+            "global_step=2048 semantics=RestoreOptimizerSkipSeenSamples skipping 137 completed optimizer steps worth of samples in epoch 3 before new updates runtime=train_mb:256 val_mb:128 accum_steps:8"
         );
     }
 
@@ -422,7 +516,7 @@ num_epochs: 3
         );
         assert_eq!(
             resume_banner_message(&state),
-            "global_step=500 semantics=ReplaySkippedStepsFreshOptimizer resuming at epoch 2 with new updates immediately runtime=train_mb:512 val_mb:256 accum_steps:4"
+            "global_step=500 semantics=RestoreOptimizerSkipSeenSamples resuming at epoch 2 with new updates immediately runtime=train_mb:512 val_mb:256 accum_steps:4"
         );
     }
 
@@ -435,7 +529,7 @@ num_epochs: 3
         };
         assert_eq!(
             paused_training_message(&continuation),
-            "resume_epoch=1 replay_steps_in_epoch=88 exact_sample_cursor=not_restored partial_epoch_requires_matching_runtime"
+            "resume_epoch=1 skipped_optimizer_steps_in_epoch=88 optimizer_state=restored sample_cursor=reconstructed_from_logical_batch_count partial_epoch_requires_matching_runtime"
         );
     }
 
@@ -470,15 +564,10 @@ num_epochs: 3
     }
 
     #[test]
-    fn read_config_supports_yaml_and_json_during_transition() {
+    fn read_config_supports_yaml_only() {
         let dir = std::env::temp_dir();
         let yaml_path = dir.join(format!(
             "hydra_train_yaml_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
-        let json_path = dir.join(format!(
-            "hydra_train_json_{}_{}.json",
             std::process::id(),
             default_seed()
         ));
@@ -486,17 +575,148 @@ num_epochs: 3
 output_dir: /tmp/out
 num_epochs: 1
 "#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        assert_eq!(read_config(&yaml_path).expect("yaml config").num_epochs, 1);
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_json_config() {
+        let dir = std::env::temp_dir();
+        let json_path = dir.join(format!(
+            "hydra_train_json_{}_{}.json",
+            std::process::id(),
+            default_seed()
+        ));
         let json = r#"{
             "data_dir": "/tmp/data",
             "output_dir": "/tmp/out",
             "num_epochs": 1
         }"#;
-        fs::write(&yaml_path, yaml).expect("write yaml config");
-        fs::write(&json_path, json).expect("write json config");
-        assert_eq!(read_config(&yaml_path).expect("yaml config").num_epochs, 1);
-        assert_eq!(read_config(&json_path).expect("json config").num_epochs, 1);
-        fs::remove_file(yaml_path).ok();
-        fs::remove_file(json_path).ok();
+        std::fs::write(&json_path, json).expect("write json config");
+        let err = read_config(&json_path).expect_err("json config should be rejected");
+        assert!(err.contains("unsupported config extension"));
+        assert!(err.contains("use .yaml"));
+        std::fs::remove_file(json_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_top_level_fields() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_unknown_field_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+old_field: true
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let err = read_config(&yaml_path).expect_err("unknown field should fail");
+        assert!(err.contains("failed to parse yaml config"));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_accepts_preflight_probe_only_block() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_probe_only_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  probe_only:
+    kind: train
+    candidate_microbatch: 256
+    warmup_steps: 5
+    measure_steps: 7
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let config = read_config(&yaml_path).expect("probe-only config should parse");
+        let probe = config.preflight.probe_only.expect("probe_only should exist");
+        assert_eq!(probe.kind, hydra_train::preflight::ProbeKind::Train);
+        assert_eq!(probe.candidate_microbatch, 256);
+        assert_eq!(probe.warmup_steps, Some(5));
+        assert_eq!(probe.measure_steps, Some(7));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_accepts_bc_hyperparameter_block() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_bc_block_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+bc:
+  learning_rate: 1.0e-4
+  min_learning_rate: 1.0e-5
+  weight_decay: 2.0e-5
+  grad_clip_norm: 0.5
+  warmup_steps: 321
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let config = read_config(&yaml_path).expect("bc block should parse");
+        assert!((config.bc.learning_rate - 1.0e-4).abs() < 1e-12);
+        assert!((config.bc.min_learning_rate - 1.0e-5).abs() < 1e-12);
+        assert!((config.bc.weight_decay - 2.0e-5).abs() < 1e-12);
+        assert!((config.bc.grad_clip_norm - 0.5).abs() < 1e-6);
+        assert_eq!(config.bc.warmup_steps, 321);
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_bc_fields() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_bc_unknown_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+bc:
+  learning_rate: 1.0e-4
+  old_knob: true
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let err = read_config(&yaml_path).expect_err("unknown bc field should fail");
+        assert!(err.contains("failed to parse yaml config"));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_probe_only_fields() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_probe_only_unknown_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  probe_only:
+    kind: train
+    candidate_microbatch: 256
+    mystery_field: true
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let err = read_config(&yaml_path).expect_err("unknown probe_only field should fail");
+        assert!(err.contains("failed to parse yaml config"));
+        std::fs::remove_file(yaml_path).ok();
     }
 
     #[test]
@@ -509,7 +729,7 @@ num_epochs: 1
             counts_exact: false,
         };
         assert_eq!(
-            estimate_epoch_progress(&manifest, 10_000, 10, 25, 64, 4),
+            estimate_epoch_progress(&manifest, 10_000, 10, 25, 256),
             None
         );
     }
@@ -523,7 +743,7 @@ num_epochs: 1
             val_count: 0,
             counts_exact: true,
         };
-        let progress = estimate_epoch_progress(&manifest, 12_800, 10, 40, 64, 4)
+        let progress = estimate_epoch_progress(&manifest, 12_800, 10, 40, 256)
             .expect("exact counts should yield estimate");
         assert_eq!(progress.completed_optimizer_steps, 40);
         assert_eq!(progress.estimated_total_optimizer_steps, 500);
@@ -624,6 +844,7 @@ num_epochs: 1
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -670,6 +891,7 @@ num_epochs: 1
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -786,22 +1008,61 @@ num_epochs: 1
     #[test]
     fn read_config_rejects_unknown_advanced_loss_field() {
         let base = std::env::temp_dir().join(format!(
-            "hydra_train_bad_advanced_loss_{}_{}.json",
+            "hydra_train_bad_advanced_loss_{}_{}.yaml",
             std::process::id(),
             default_seed()
         ));
-        let json = r#"{
-            "data_dir": "/tmp/data",
-            "output_dir": "/tmp/out",
-            "num_epochs": 3,
-            "advanced_loss": {
-                "not_a_real_field": 0.1
-            }
-        }"#;
-        fs::write(&base, json).expect("write config");
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 3
+advanced_loss:
+  not_a_real_field: 0.1
+"#;
+        fs::write(&base, yaml).expect("write config");
         let err = read_config(&base).expect_err("unknown advanced loss field should fail");
         assert!(err.contains("not_a_real_field"));
         fs::remove_file(base).ok();
+    }
+
+    #[test]
+    fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
+        let cfg = TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: None,
+            bc: BcHyperparamConfig {
+                learning_rate: 1e-4,
+                min_learning_rate: 2e-4,
+                weight_decay: 1e-5,
+                grad_clip_norm: 1.0,
+                warmup_steps: 100,
+            },
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: None,
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: PreflightConfig::default(),
+        };
+        let err = validate_config(&cfg).expect_err("invalid bc ranges should fail");
+        assert!(err.contains("bc.min_learning_rate"));
     }
 
     #[test]
