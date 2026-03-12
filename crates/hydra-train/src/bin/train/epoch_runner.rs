@@ -1,0 +1,651 @@
+use std::io::Write;
+use std::time::Instant;
+
+use burn::backend::libtorch::LibTorchDevice;
+use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
+use colored::Colorize;
+use indicatif::MultiProgress;
+use tboard::EventWriter;
+
+use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
+use hydra_train::data::sample::collate_samples;
+use hydra_train::model::HydraModel;
+use hydra_train::training::bc::{
+    policy_agreement, target_actions_from_policy_target, BCTrainerConfig,
+};
+use hydra_train::training::losses::HydraLoss;
+
+use super::artifacts::{
+    append_step_log, append_training_log, log_tensorboard, save_checkpoint,
+    save_latest_checkpoint_and_state, BcArtifactPaths,
+};
+use super::config::{validation_sample_limit, TrainConfig};
+use super::presentation::{format_progress_message, make_bar, make_spinner, phase_label};
+use super::progress::{
+    batch_stats_from_breakdown, BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry,
+};
+use super::resume::{
+    paused_training_message, resumed_progress_message, BestValidation, EpochContinuation,
+    RuntimeResumeContract,
+};
+use super::schedule::{effective_lr, lr_status_message, steps_per_second};
+use super::status::{
+    display_step_label, display_validation_scope_label, epoch_progress_message_with_rate,
+    estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
+};
+use super::validation::{is_better_validation, run_validation};
+use super::{TrainBackend, ValidBackend};
+
+pub(super) struct EpochRunnerContext<'a> {
+    pub(super) epoch: usize,
+    pub(super) config: &'a TrainConfig,
+    pub(super) manifest: &'a DataManifest,
+    pub(super) loader_config: &'a StreamingLoaderConfig,
+    pub(super) artifacts: &'a BcArtifactPaths,
+    pub(super) train_cfg: &'a BCTrainerConfig,
+    pub(super) loss_fn: &'a HydraLoss<TrainBackend>,
+    pub(super) valid_loss_fn: &'a HydraLoss<ValidBackend>,
+    pub(super) train_device: &'a LibTorchDevice,
+    pub(super) session_start_global_step: usize,
+    pub(super) steps_to_skip: usize,
+    pub(super) microbatch_size: usize,
+    pub(super) accum_steps: usize,
+    pub(super) total_steps: usize,
+    pub(super) current_runtime: RuntimeResumeContract,
+    pub(super) run_start: &'a Instant,
+}
+
+pub(super) struct EpochRuntimeMut<'a, O, W>
+where
+    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    W: Write,
+{
+    pub(super) model: &'a mut HydraModel<TrainBackend>,
+    pub(super) optimizer: &'a mut O,
+    pub(super) global_step: &'a mut usize,
+    pub(super) best_validation: &'a mut Option<BestValidation>,
+    pub(super) tb: &'a mut Option<EventWriter<W>>,
+    pub(super) last_log_step: &'a mut usize,
+    pub(super) last_log_time: &'a mut Instant,
+}
+
+pub(super) struct EpochRunOutcome {
+    pub(super) stop_after_epoch: bool,
+}
+
+fn should_run_epoch_end_validation(epoch: usize, num_epochs: usize, every_n_epochs: usize) -> bool {
+    (epoch + 1).is_multiple_of(every_n_epochs) || epoch + 1 == num_epochs
+}
+
+fn build_epoch_continuation(
+    epoch: usize,
+    epoch_completed: bool,
+    epoch_optimizer_steps: usize,
+) -> EpochContinuation {
+    EpochContinuation {
+        next_epoch: if epoch_completed { epoch + 1 } else { epoch },
+        skip_optimizer_steps_in_epoch: if epoch_completed {
+            0
+        } else {
+            epoch_optimizer_steps
+        },
+        epoch_completed,
+    }
+}
+
+pub(super) fn run_epoch<O, W>(
+    context: EpochRunnerContext<'_>,
+    runtime: EpochRuntimeMut<'_, O, W>,
+) -> Result<EpochRunOutcome, String>
+where
+    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    W: Write,
+{
+    let EpochRunnerContext {
+        epoch,
+        config,
+        manifest,
+        loader_config,
+        artifacts,
+        train_cfg,
+        loss_fn,
+        valid_loss_fn,
+        train_device,
+        session_start_global_step,
+        steps_to_skip,
+        microbatch_size,
+        accum_steps,
+        total_steps,
+        current_runtime,
+        run_start,
+    } = context;
+    let EpochRuntimeMut {
+        model,
+        optimizer,
+        global_step,
+        best_validation,
+        tb,
+        last_log_step,
+        last_log_time,
+    } = runtime;
+
+    let multi = MultiProgress::new();
+    let load_label = phase_label("load", epoch, config.num_epochs);
+    let train_label = phase_label("train", epoch, config.num_epochs);
+    let load_pb = if manifest.counts_exact {
+        multi.add(make_bar(
+            manifest.train_count as u64,
+            &format!("[{load_label}] [{{bar:30.cyan/blue}}] {{pos}}/{{len}} games {{msg}}"),
+        )?)
+    } else {
+        multi.add(make_spinner(&format!(
+            "[{load_label}] {{spinner:.cyan}} games={{pos}} {{msg}}"
+        ))?)
+    };
+    let train_pb = if let Some(max_train_steps) = config.max_train_steps {
+        multi.add(make_bar(
+            max_train_steps as u64,
+            &format!("[{train_label}] [{{bar:30.green/black}}] {{pos}}/{{len}} steps {{msg}}"),
+        )?)
+    } else {
+        multi.add(make_spinner(&format!(
+            "[{train_label}] {{spinner:.green}} steps={{pos}} {{msg}}"
+        ))?)
+    };
+
+    let mut stats = ScalarAverages::default();
+    let mut step_window = ScalarAverages::default();
+    let mut accumulator: GradientsAccumulator<HydraModel<TrainBackend>> =
+        GradientsAccumulator::new();
+    let mut accum_current = 0usize;
+    let mut pending_breakdowns: Vec<BatchStats> = Vec::new();
+    let mut seen_samples = 0usize;
+    let mut epoch_completed = true;
+    let mut assumed_games_seen = 0usize;
+    let mut remaining_games = manifest.train_count;
+    let mut epoch_optimizer_steps = 0usize;
+
+    for buffer_result in stream_train_epoch(manifest, loader_config, epoch, Some(&load_pb)) {
+        let buffer = buffer_result.map_err(|err| format!("training stream failed: {err}"))?;
+        if manifest.counts_exact {
+            let assumed_games = remaining_games.min(config.buffer_games);
+            remaining_games = remaining_games.saturating_sub(assumed_games);
+            assumed_games_seen += assumed_games;
+        }
+        seen_samples += buffer.len();
+        if manifest.counts_exact && assumed_games_seen > 0 {
+            let estimated_steps = estimate_epoch_progress(
+                manifest,
+                seen_samples,
+                assumed_games_seen,
+                epoch_optimizer_steps,
+                microbatch_size,
+                accum_steps,
+            )
+            .map(|progress| progress.estimated_total_optimizer_steps)
+            .unwrap_or(1);
+            if config.max_train_steps.is_none() {
+                train_pb.set_length(estimated_steps as u64);
+            }
+        } else if !manifest.counts_exact {
+            load_pb.set_message(format!(
+                "samples={} steps={}",
+                seen_samples, stats.num_batches
+            ));
+        }
+
+        for chunk in buffer.chunks(microbatch_size) {
+            let lr = effective_lr(train_cfg, *global_step, total_steps);
+            let mut completed_step = false;
+
+            {
+                let Some((obs, targets)) =
+                    collate_samples::<TrainBackend>(chunk, config.augment, train_device)
+                else {
+                    continue;
+                };
+                let output = model.forward(obs.clone());
+                let agreement = policy_agreement(
+                    output.policy_logits.clone(),
+                    targets.legal_mask.clone(),
+                    target_actions_from_policy_target(targets.policy_target.clone()),
+                );
+                let breakdown = loss_fn.total_loss(&output, &targets);
+                let batch_stats = batch_stats_from_breakdown(agreement, &breakdown);
+                let grads = breakdown.total.backward();
+                let grads = GradientsParams::from_grads(grads, model);
+                accumulator.accumulate(model, grads);
+                pending_breakdowns.push(batch_stats);
+                accum_current += 1;
+
+                if accum_current >= accum_steps {
+                    let grads = accumulator.grads();
+                    let drained = std::mem::take(&mut pending_breakdowns);
+                    accum_current = 0;
+                    if epoch_optimizer_steps < steps_to_skip {
+                        epoch_optimizer_steps += 1;
+                        train_pb.set_message(resumed_progress_message(
+                            epoch_optimizer_steps,
+                            steps_to_skip,
+                        ));
+                    } else {
+                        *model = optimizer.step(lr, model.clone(), grads);
+                        for batch_stats in drained {
+                            stats.record_batch(batch_stats);
+                            step_window.record_batch(batch_stats);
+                        }
+                        epoch_optimizer_steps += 1;
+                        *global_step += 1;
+                        train_pb.inc(1);
+                        let lr_message =
+                            lr_status_message(*global_step, train_cfg.warmup_steps, lr);
+                        train_pb.set_message(format_progress_message(
+                            stats.total_loss / stats.num_batches.max(1) as f64,
+                            stats.policy_agreement / stats.num_batches.max(1) as f64,
+                            &lr_message,
+                            steps_per_second(
+                                session_steps_completed(*global_step, session_start_global_step),
+                                run_start.elapsed(),
+                            ),
+                        ));
+                    }
+                    completed_step = true;
+                }
+            }
+
+            if completed_step {
+                let session_step = session_steps_completed(*global_step, session_start_global_step);
+                let val_summary = if session_step > 0
+                    && session_step.is_multiple_of(config.validate_every_n_steps)
+                {
+                    multi
+                        .println(format!(
+                            "{} {}",
+                            display_validation_scope_label(
+                                *global_step,
+                                session_start_global_step,
+                                config.max_train_steps,
+                            )
+                            .bold()
+                            .magenta(),
+                            match validation_sample_limit(config) {
+                                Some(limit) => format!("target_samples={limit}").yellow(),
+                                None => "target_samples=all".yellow(),
+                            }
+                        ))
+                        .map_err(|err| {
+                            format!("failed to print validation start summary: {err}")
+                        })?;
+                    let summary = run_validation(
+                        model,
+                        config,
+                        loader_config,
+                        manifest,
+                        train_device,
+                        valid_loss_fn,
+                        None,
+                    )?;
+                    if is_better_validation(summary, *best_validation) {
+                        *best_validation = Some(BestValidation {
+                            policy_loss: summary.policy_loss,
+                            agreement: summary.agreement,
+                        });
+                        save_checkpoint(
+                            model,
+                            &artifacts.best_model_base,
+                            *global_step,
+                            step_window.total_loss / step_window.num_batches.max(1) as f64,
+                            Some(summary),
+                        )?;
+                    }
+                    multi
+                        .println(format!(
+                            "{} {} {} {} {}",
+                            display_validation_scope_label(
+                                *global_step,
+                                session_start_global_step,
+                                config.max_train_steps,
+                            )
+                            .bold()
+                            .magenta(),
+                            format!("val_samples={}", summary.samples).yellow(),
+                            format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
+                            format!("val_total={:.4}", summary.total_loss).yellow(),
+                            format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
+                        ))
+                        .map_err(|err| format!("failed to print validation summary: {err}"))?;
+                    Some(summary)
+                } else {
+                    None
+                };
+
+                if session_step > 0 && session_step.is_multiple_of(config.log_every_n_steps) {
+                    let window_stats = std::mem::take(&mut step_window).finalize();
+                    let lr_message = lr_status_message(*global_step, train_cfg.warmup_steps, lr);
+                    let window_steps = (*global_step).saturating_sub(*last_log_step);
+                    let step_rate = steps_per_second(window_steps, last_log_time.elapsed());
+                    *last_log_step = *global_step;
+                    *last_log_time = Instant::now();
+
+                    multi
+                        .println(format!(
+                            "{} {} {} {} {} {} {} {}",
+                            display_step_label(
+                                *global_step,
+                                session_start_global_step,
+                                config.max_train_steps,
+                            )
+                            .bold()
+                            .cyan(),
+                            format!("train_loss={:.4}", window_stats.total_loss).green(),
+                            format!("train_agree={:.2}%", window_stats.policy_agreement * 100.0)
+                                .green(),
+                            if let Some(val_summary) = val_summary.as_ref() {
+                                format!(
+                                    "val_ce={:.4} val_agree={:.2}%",
+                                    val_summary.policy_loss,
+                                    val_summary.agreement * 100.0
+                                )
+                            } else {
+                                "val=skipped".to_string()
+                            }
+                            .bold()
+                            .yellow(),
+                            if let Some(best_validation) = *best_validation {
+                                format!(
+                                    "best_ce={:.4} best_agree={:.2}%",
+                                    best_validation.policy_loss,
+                                    best_validation.agreement * 100.0
+                                )
+                            } else {
+                                "best=n/a".to_string()
+                            }
+                            .bold()
+                            .magenta(),
+                            epoch_progress_message_with_rate(
+                                estimate_epoch_progress(
+                                    manifest,
+                                    seen_samples,
+                                    assumed_games_seen,
+                                    epoch_optimizer_steps,
+                                    microbatch_size,
+                                    accum_steps,
+                                ),
+                                Some(step_rate),
+                            )
+                            .white(),
+                            format!("steps/s={step_rate:.2}").white(),
+                            lr_message.white(),
+                        ))
+                        .map_err(|err| format!("failed to print train summary: {err}"))?;
+
+                    if let Some(ref mut tb_writer) = tb.as_mut() {
+                        log_tensorboard(
+                            tb_writer,
+                            *global_step,
+                            &window_stats,
+                            val_summary,
+                            lr,
+                            *best_validation,
+                        )?;
+                    }
+
+                    let step_entry = StepLogEntry {
+                        global_step: *global_step,
+                        epoch: epoch + 1,
+                        lr,
+                        train_total_loss: window_stats.total_loss,
+                        train_policy_agreement: window_stats.policy_agreement,
+                        train_loss_policy: window_stats.loss_policy,
+                        train_loss_value: window_stats.loss_value,
+                        train_loss_grp: window_stats.loss_grp,
+                        train_loss_tenpai: window_stats.loss_tenpai,
+                        train_loss_danger: window_stats.loss_danger,
+                        train_loss_opp_next: window_stats.loss_opp_next,
+                        train_loss_score_pdf: window_stats.loss_score_pdf,
+                        train_loss_score_cdf: window_stats.loss_score_cdf,
+                        val_total_loss: val_summary.map(|summary| summary.total_loss),
+                        val_policy_loss: val_summary.map(|summary| summary.policy_loss),
+                        val_policy_agreement: val_summary.map(|summary| summary.agreement),
+                        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
+                        best_val_agreement: best_validation.map(|best| best.agreement),
+                    };
+                    append_step_log(&artifacts.step_log_path, &step_entry)?;
+                }
+
+                if session_step > 0 && session_step.is_multiple_of(config.checkpoint_every_n_steps)
+                {
+                    let continuation = EpochContinuation {
+                        next_epoch: epoch,
+                        skip_optimizer_steps_in_epoch: epoch_optimizer_steps,
+                        epoch_completed: false,
+                    };
+                    save_latest_checkpoint_and_state(
+                        artifacts,
+                        model,
+                        *global_step,
+                        stats.total_loss / stats.num_batches.max(1) as f64,
+                        *best_validation,
+                        &continuation,
+                        current_runtime,
+                    )?;
+                }
+
+                if reached_session_step_budget(
+                    *global_step,
+                    session_start_global_step,
+                    config.max_train_steps,
+                ) {
+                    epoch_completed = false;
+                    break;
+                }
+            }
+        }
+
+        if reached_session_step_budget(
+            *global_step,
+            session_start_global_step,
+            config.max_train_steps,
+        ) {
+            epoch_completed = false;
+            break;
+        }
+    }
+
+    if accum_current > 0 && epoch_completed {
+        let lr = effective_lr(train_cfg, *global_step, total_steps);
+        let grads = accumulator.grads();
+        *model = optimizer.step(lr, model.clone(), grads);
+        for batch_stats in pending_breakdowns.drain(..) {
+            stats.record_batch(batch_stats);
+            step_window.record_batch(batch_stats);
+        }
+        *global_step += 1;
+        train_pb.inc(1);
+    }
+
+    load_pb.finish_with_message("training data stream complete".to_string());
+    let train_stats = stats.finalize();
+    let final_steps = config.max_train_steps.unwrap_or(*global_step).max(1) as u64;
+    let final_lr = effective_lr(train_cfg, *global_step, total_steps);
+    train_pb.set_length(final_steps);
+    train_pb.finish_with_message(format_progress_message(
+        train_stats.total_loss,
+        train_stats.policy_agreement,
+        &lr_status_message(*global_step, train_cfg.warmup_steps, final_lr),
+        steps_per_second(
+            session_steps_completed(*global_step, session_start_global_step),
+            run_start.elapsed(),
+        ),
+    ));
+
+    let continuation = build_epoch_continuation(epoch, epoch_completed, epoch_optimizer_steps);
+    save_latest_checkpoint_and_state(
+        artifacts,
+        model,
+        *global_step,
+        train_stats.total_loss,
+        *best_validation,
+        &continuation,
+        current_runtime,
+    )?;
+
+    if !continuation.epoch_completed {
+        println!(
+            "{} {}",
+            "Paused BC training".bold().cyan(),
+            paused_training_message(&continuation).yellow(),
+        );
+        return Ok(EpochRunOutcome {
+            stop_after_epoch: true,
+        });
+    }
+
+    let val_summary = if should_run_epoch_end_validation(
+        epoch,
+        config.num_epochs,
+        config.validation_every_n_epochs,
+    ) {
+        println!(
+            "{} {}",
+            "validation @ epoch end".bold().magenta(),
+            match validation_sample_limit(config) {
+                Some(limit) => format!("target_samples={limit}").yellow(),
+                None => "target_samples=all".yellow(),
+            }
+        );
+        let summary = run_validation(
+            model,
+            config,
+            loader_config,
+            manifest,
+            train_device,
+            valid_loss_fn,
+            None,
+        )?;
+        if is_better_validation(summary, *best_validation) {
+            *best_validation = Some(BestValidation {
+                policy_loss: summary.policy_loss,
+                agreement: summary.agreement,
+            });
+            save_checkpoint(
+                model,
+                &artifacts.best_model_base,
+                epoch + 1,
+                train_stats.total_loss,
+                Some(summary),
+            )?;
+        }
+        println!(
+            "{} {} {} {} {}",
+            "validation @ epoch end".bold().magenta(),
+            format!("val_samples={}", summary.samples).yellow(),
+            format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
+            format!("val_total={:.4}", summary.total_loss).yellow(),
+            format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
+        );
+        Some(summary)
+    } else {
+        None
+    };
+
+    if let Some(ref mut tb_writer) = tb.as_mut() {
+        log_tensorboard(
+            tb_writer,
+            epoch + 1,
+            &train_stats,
+            val_summary,
+            final_lr,
+            *best_validation,
+        )?;
+    }
+
+    let entry = EpochLogEntry {
+        epoch: epoch + 1,
+        global_step: *global_step,
+        lr: final_lr,
+        train_total_loss: train_stats.total_loss,
+        train_policy_agreement: train_stats.policy_agreement,
+        train_loss_policy: train_stats.loss_policy,
+        train_loss_value: train_stats.loss_value,
+        train_loss_grp: train_stats.loss_grp,
+        train_loss_tenpai: train_stats.loss_tenpai,
+        train_loss_danger: train_stats.loss_danger,
+        train_loss_opp_next: train_stats.loss_opp_next,
+        train_loss_score_pdf: train_stats.loss_score_pdf,
+        train_loss_score_cdf: train_stats.loss_score_cdf,
+        val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
+        val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
+        val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
+        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
+        best_val_agreement: best_validation.map(|best| best.agreement),
+        num_batches: train_stats.num_batches,
+    };
+    append_training_log(&artifacts.training_log_path, &entry)?;
+
+    let lr_message = lr_status_message(*global_step, train_cfg.warmup_steps, final_lr);
+    println!(
+        "{} {} {} {} {} {}",
+        phase_label("epoch", epoch, config.num_epochs).bold().cyan(),
+        format!("train_loss={:.4}", train_stats.total_loss).green(),
+        format!("train_agree={:.2}%", train_stats.policy_agreement * 100.0).green(),
+        if let Some(val_summary) = val_summary.as_ref() {
+            format!(
+                "val_ce={:.4} val_agree={:.2}% val_samples={}",
+                val_summary.policy_loss,
+                val_summary.agreement * 100.0,
+                val_summary.samples
+            )
+        } else {
+            "val=skipped".to_string()
+        }
+        .bold()
+        .yellow(),
+        if let Some(best_validation) = *best_validation {
+            format!(
+                "best_ce={:.4} best_agree={:.2}%",
+                best_validation.policy_loss,
+                best_validation.agreement * 100.0
+            )
+        } else {
+            "best=n/a".to_string()
+        }
+        .bold()
+        .magenta(),
+        lr_message.white(),
+    );
+
+    Ok(EpochRunOutcome {
+        stop_after_epoch: reached_session_step_budget(
+            *global_step,
+            session_start_global_step,
+            config.max_train_steps,
+        ),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoch_end_validation_runs_on_interval_or_final_epoch() {
+        assert!(should_run_epoch_end_validation(0, 3, 1));
+        assert!(!should_run_epoch_end_validation(0, 3, 2));
+        assert!(should_run_epoch_end_validation(1, 3, 2));
+        assert!(should_run_epoch_end_validation(2, 3, 5));
+    }
+
+    #[test]
+    fn build_epoch_continuation_matches_completion_state() {
+        let completed = build_epoch_continuation(2, true, 99);
+        assert_eq!(completed.next_epoch, 3);
+        assert_eq!(completed.skip_optimizer_steps_in_epoch, 0);
+        assert!(completed.epoch_completed);
+
+        let partial = build_epoch_continuation(2, false, 99);
+        assert_eq!(partial.next_epoch, 2);
+        assert_eq!(partial.skip_optimizer_steps_in_epoch, 99);
+        assert!(!partial.epoch_completed);
+    }
+}

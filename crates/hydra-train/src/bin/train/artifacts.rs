@@ -17,7 +17,8 @@ use super::resume::{
     build_resume_state, current_timestamp_s, write_resume_state, BestValidation, EpochContinuation,
     RuntimeResumeContract,
 };
-use super::{TrainBackend, ValidationSummary};
+use super::validation::ValidationSummary;
+use super::TrainBackend;
 
 pub(crate) struct BcArtifactPaths {
     pub(crate) root: PathBuf,
