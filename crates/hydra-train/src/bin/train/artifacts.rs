@@ -2,8 +2,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use burn::optim::Optimizer;
 use burn::prelude::Module;
-use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
+use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use tboard::EventWriter;
 
 use hydra_train::model::HydraModel;
@@ -25,6 +26,7 @@ pub(crate) struct BcArtifactPaths {
     pub(crate) tb_root: PathBuf,
     pub(crate) tb_session_dir: PathBuf,
     pub(crate) latest_model_base: PathBuf,
+    pub(crate) latest_optimizer_base: PathBuf,
     pub(crate) best_model_base: PathBuf,
     pub(crate) latest_state_path: PathBuf,
     pub(crate) training_log_path: PathBuf,
@@ -56,6 +58,7 @@ impl BcArtifactPaths {
         ));
         Self {
             latest_model_base: root.join("latest_model"),
+            latest_optimizer_base: root.join("latest_optimizer"),
             best_model_base: root.join("best_model"),
             latest_state_path: root.join("latest_state.yaml"),
             training_log_path: root.join("training_log.jsonl"),
@@ -101,15 +104,19 @@ pub(crate) fn write_preflight_report(path: &Path, report: &PreflightReport) -> R
         .map_err(|err| format!("failed to write preflight report {}: {err}", path.display()))
 }
 
-pub(crate) fn save_latest_checkpoint_and_state(
+pub(crate) fn save_latest_checkpoint_and_state<O>(
     artifacts: &BcArtifactPaths,
     model: &HydraModel<TrainBackend>,
+    optimizer: &O,
     global_step: usize,
     train_loss: f64,
     best_validation: Option<BestValidation>,
     continuation: &EpochContinuation,
     runtime: RuntimeResumeContract,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+{
     save_checkpoint(
         model,
         &artifacts.latest_model_base,
@@ -117,6 +124,18 @@ pub(crate) fn save_latest_checkpoint_and_state(
         train_loss,
         None,
     )?;
+    let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+    optimizer_recorder
+        .record(
+            optimizer.to_record(),
+            artifacts.latest_optimizer_base.clone(),
+        )
+        .map_err(|err| {
+            format!(
+                "failed to save optimizer state {}: {err}",
+                artifacts.latest_optimizer_base.display()
+            )
+        })?;
     let state = build_resume_state(
         continuation.next_epoch,
         continuation.skip_optimizer_steps_in_epoch,

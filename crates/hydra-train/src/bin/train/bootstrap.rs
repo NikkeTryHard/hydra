@@ -5,8 +5,9 @@ use std::time::Instant;
 use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::Adam;
+use burn::optim::Optimizer;
 use burn::prelude::Module;
-use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
+use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use tboard::EventWriter;
 
 use hydra_train::data::pipeline::{
@@ -18,8 +19,8 @@ use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::BcArtifactPaths;
 use super::config::{
-    configure_threads, device_label, train_device, train_microbatch_size, validate_config,
-    TrainConfig,
+    configure_threads, device_label, train_device, train_microbatch_size,
+    trainer_config_from_train_config, validate_config, TrainConfig,
 };
 use super::loss_policy::build_loss_config;
 use super::preflight_runtime::{apply_preflight_selection, run_preflight, PreflightRuntime};
@@ -45,8 +46,6 @@ pub(super) struct TrainingBootstrap {
     pub(super) session_start_global_step: usize,
     pub(super) total_steps: usize,
     pub(super) microbatch_size: usize,
-    pub(super) accum_steps: usize,
-    pub(super) scheduler_warmup_steps: usize,
     pub(super) banner_stats: BannerStats,
     pub(super) loss_fn: HydraLoss<TrainBackend>,
     pub(super) valid_loss_fn: HydraLoss<ValidBackend>,
@@ -123,14 +122,7 @@ pub(super) fn initialize_training_bootstrap(
         ));
     }
 
-    let scheduler_warmup_steps = config.max_train_steps.map_or(
-        BCTrainerConfig::default_learner().warmup_steps,
-        |max_steps| max_steps.clamp(1, BCTrainerConfig::default_learner().warmup_steps.min(100)),
-    );
-    let train_cfg = BCTrainerConfig::default_learner()
-        .with_batch_size(config.batch_size)
-        .with_lr(BCTrainerConfig::default_learner().lr)
-        .with_warmup_steps(scheduler_warmup_steps);
+    let train_cfg = trainer_config_from_train_config(&config);
     train_cfg
         .validate()
         .map_err(|err| format!("invalid trainer config: {err}"))?;
@@ -163,13 +155,39 @@ pub(super) fn initialize_training_bootstrap(
             })?;
     }
 
-    let optimizer = train_cfg.optimizer_config().init();
+    let optimizer = if resume.restores_optimizer_state() {
+        let optimizer_base = resume.optimizer_base.as_ref().ok_or_else(|| {
+            let checkpoint = resume
+                .checkpoint_base
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            format!(
+                "resume state for checkpoint {} requires optimizer sidecar, but none was found next to that checkpoint",
+                checkpoint
+            )
+        })?;
+        let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+        let optimizer_record = optimizer_recorder
+            .load(optimizer_base.clone(), &train_device)
+            .map_err(|err| {
+                format!(
+                    "failed to load optimizer state {}: {err}",
+                    optimizer_base.display()
+                )
+            })?;
+        train_cfg
+            .optimizer_config()
+            .init()
+            .load_record(optimizer_record)
+    } else {
+        train_cfg.optimizer_config().init()
+    };
     let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let valid_loss_fn =
         HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let total_steps = schedule_total_steps(&config, session_start_global_step);
     let microbatch_size = train_microbatch_size(&config);
-    let accum_steps = config.batch_size.div_ceil(microbatch_size).max(1);
     let best_validation = resume.best_validation();
     let global_step = session_start_global_step;
     let run_start = Instant::now();
@@ -189,7 +207,7 @@ pub(super) fn initialize_training_bootstrap(
         total_games: manifest.total_games,
         train_count: manifest.train_count,
         val_count: manifest.val_count,
-        accum_steps,
+        accum_steps: current_runtime.accum_steps,
         counts_exact: manifest.counts_exact,
     };
 
@@ -209,8 +227,6 @@ pub(super) fn initialize_training_bootstrap(
             session_start_global_step,
             total_steps,
             microbatch_size,
-            accum_steps,
-            scheduler_warmup_steps,
             banner_stats,
             loss_fn,
             valid_loss_fn,
