@@ -8,16 +8,16 @@ use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder,
 use tboard::EventWriter;
 
 use hydra_train::model::HydraModel;
-use hydra_train::preflight::{default_cache_name, PreflightCacheEntry};
+use hydra_train::preflight::{PreflightCacheEntry, default_cache_name};
 use hydra_train::training::bc::CheckpointMeta;
 
+use super::TrainBackend;
 use super::progress::{EpochLogEntry, ScalarAverages, StepLogEntry};
 use super::resume::{
-    build_resume_state, current_timestamp_s, write_resume_state, BestValidation, EpochContinuation,
-    RuntimeResumeContract,
+    BestValidation, EpochContinuation, RuntimeResumeContract, build_resume_state,
+    current_timestamp_s, write_resume_state,
 };
 use super::validation::ValidationSummary;
-use super::TrainBackend;
 
 pub(crate) struct BcArtifactPaths {
     pub(crate) root: PathBuf,

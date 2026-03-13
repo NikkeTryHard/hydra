@@ -1,4 +1,4 @@
-data_dir: /data/dataset.tar.zst
+data_dir: /data
 output_dir: /output
 num_epochs: 1
 batch_size: 2048
@@ -18,13 +18,6 @@ validate_every_n_steps: 200
 checkpoint_every_n_steps: 200
 max_validation_samples: 8192
 preflight:
-  enabled: true
-  advisory_only: false
-  reuse_cache: true
-  allow_override_explicit_microbatch: false
-  warmup_steps: 4
-  measure_steps: 12
-  safety_backoff_rungs: 0
+  warmup_steps: 2
+  measure_steps: 2
   required_successes: 2
-  min_microbatch_size: 32
-  candidate_microbatches: [256, 192, 128, 96, 64, 48, 32]

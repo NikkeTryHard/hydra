@@ -1,17 +1,17 @@
-#[path = "train/config.rs"]
-mod config;
 #[path = "train/artifacts.rs"]
 mod artifacts;
 #[path = "train/bootstrap.rs"]
 mod bootstrap;
-#[path = "train/loss_policy.rs"]
-mod loss_policy;
+#[path = "train/config.rs"]
+mod config;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
-#[path = "train/presentation.rs"]
-mod presentation;
+#[path = "train/loss_policy.rs"]
+mod loss_policy;
 #[path = "train/preflight_runtime.rs"]
 mod preflight_runtime;
+#[path = "train/presentation.rs"]
+mod presentation;
 #[path = "train/progress.rs"]
 mod progress;
 #[path = "train/resume.rs"]
@@ -29,18 +29,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use burn::backend::{Autodiff, LibTorch};
 use colored::Colorize;
+use colored::control as color_control;
 
-use self::presentation::{
-    explicit_preflight_summary, format_probe_results_table, manual_runtime_warning, print_banner,
-};
 use self::artifacts::BcArtifactPaths;
 use self::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
 use self::config::{configure_threads, parse_args, read_config, validate_config};
 use self::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use self::preflight_runtime::{
-    best_probe_result, format_probe_result_summary, load_saved_preflight_entry,
-    preflight_cache_key, probe_kind_name, probe_request_from_cli, run_preflight,
-    run_probe_child_mode, run_probe_ladder_only, training_runtime_warning,
+    best_probe_summary, format_probe_selection_summary, probe_kind_name, probe_request_from_cli,
+    run_preflight, run_probe_child_mode, run_probe_ladder_only,
+};
+use self::presentation::{
+    explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
+    format_preflight_summary_line, format_probe_results_table, format_status_line,
+    format_warning_line, print_banner, print_preflight_banner, timestamped,
 };
 
 #[cfg(test)]
@@ -49,18 +51,19 @@ use self::config::{
     validation_sample_limit,
 };
 #[cfg(test)]
-use hydra_train::preflight::PreflightConfig;
-#[cfg(test)]
 use self::resume::{
     BcResumeState, ResumeSemantics, build_resume_state, checkpoint_base_from_path,
     latest_optimizer_base_for_checkpoint_base, latest_state_path_for_checkpoint_base,
     read_resume_state, resume_banner_message, test_runtime_resume_contract,
 };
+#[cfg(test)]
+use hydra_train::preflight::PreflightConfig;
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
 
 fn run() -> Result<(), String> {
+    color_control::set_override(true);
     let cli = parse_args(env::args())?;
     let config = read_config(&cli.config_path)?;
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
@@ -71,6 +74,11 @@ fn run() -> Result<(), String> {
         configure_threads(config.num_threads)?;
         let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
         artifacts.create_root_dir()?;
+        print_preflight_banner(
+            "Hydra preflight",
+            &config,
+            &self::config::device_label(&config.device),
+        );
         let preflight = run_preflight(
             &cli.config_path,
             &config,
@@ -79,27 +87,35 @@ fn run() -> Result<(), String> {
             &artifacts,
         )?;
         println!(
-            "{} {}",
-            "Preflight:".bold().cyan(),
-            explicit_preflight_summary(preflight.selected, preflight.explicit).yellow()
-        );
-        println!(
-            "{}\n{}",
-            "Preflight train table".bold().cyan(),
-            format_probe_results_table(
-                hydra_train::preflight::ProbeKind::Train,
-                &preflight.train_probe_results,
-                Some(preflight.selected.train_microbatch_size),
+            "{}",
+            format_preflight_summary_line(
+                "Preflight:",
+                explicit_preflight_summary(preflight.runtime, preflight.explicit)
             )
         );
         println!(
-            "{}\n{}",
-            "Preflight validation table".bold().cyan(),
-            format_probe_results_table(
-                hydra_train::preflight::ProbeKind::Validation,
-                &preflight.validation_probe_results,
-                Some(preflight.selected.validation_microbatch_size),
-            )
+            "{}",
+            timestamped(format!(
+                "{}\n{}",
+                "Preflight train table".bold().cyan(),
+                format_probe_results_table(
+                    hydra_train::preflight::ProbeKind::Train,
+                    &preflight.train_probe_results,
+                    Some(preflight.runtime.selected.train_microbatch_size),
+                )
+            ))
+        );
+        println!(
+            "{}",
+            timestamped(format!(
+                "{}\n{}",
+                "Preflight validation table".bold().cyan(),
+                format_probe_results_table(
+                    hydra_train::preflight::ProbeKind::Validation,
+                    &preflight.validation_probe_results,
+                    Some(preflight.runtime.selected.validation_microbatch_size),
+                )
+            ))
         );
         return Ok(());
     }
@@ -108,35 +124,63 @@ fn run() -> Result<(), String> {
         configure_threads(config.num_threads)?;
         let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
         artifacts.create_root_dir()?;
-        println!(
-            "{} {} {} {} {}",
-            "Probe-only:".bold().cyan(),
-            format!("kind={}", probe_kind_name(request.kind)).yellow(),
-            format!("candidate_mb={}", request.candidate_microbatch).yellow(),
-            format!("warmup_steps={}", request.warmup_steps).yellow(),
-            format!("measure_steps={}", request.measure_steps).yellow(),
-        );
-        let (selected, results) = run_probe_ladder_only(&cli.config_path, &config, &artifacts, request)?;
-        let selected_result = best_probe_result(&results)
-            .ok_or_else(|| format!("no stable {} probe result found", probe_kind_name(request.kind)))?;
-        println!(
-            "{} {}",
-            "Probe selected:".bold().cyan(),
-            format_probe_result_summary(selected_result).green()
+        print_preflight_banner(
+            "Hydra probe-only",
+            &config,
+            &self::config::device_label(&config.device),
         );
         println!(
-            "{} {}",
-            "Probe best candidate:".bold().cyan(),
-            format!("{}={}", probe_kind_name(request.kind), selected).yellow()
+            "{}",
+            format_status_line(
+                "Probe-only:",
+                format!(
+                    "kind={} candidate_mb={} warmup_steps={} measure_steps={}",
+                    probe_kind_name(request.kind),
+                    request.candidate_microbatch,
+                    request.warmup_steps,
+                    request.measure_steps,
+                )
+            )
+        );
+        let (selected, results) =
+            run_probe_ladder_only(&cli.config_path, &config, &artifacts, request)?;
+        let selected_summary = best_probe_summary(&results).ok_or_else(|| {
+            format!(
+                "no stable {} probe result found",
+                probe_kind_name(request.kind)
+            )
+        })?;
+        println!(
+            "{}",
+            format_preflight_selection_line(format_probe_selection_summary(
+                request.kind,
+                &selected_summary,
+            ))
         );
         println!(
-            "{}\n{}",
-            "Probe final table".bold().cyan(),
-            format_probe_results_table(request.kind, &results, Some(selected))
+            "{}",
+            format_status_line(
+                "Probe best candidate:",
+                format!("{}={}", probe_kind_name(request.kind), selected)
+            )
+        );
+        println!(
+            "{}",
+            timestamped(format!(
+                "{}\n{}",
+                "Probe final table".bold().cyan(),
+                format_probe_results_table(request.kind, &results, Some(selected))
+            ))
         );
         return Ok(());
     }
-    let (bootstrap, runtime) = initialize_training_bootstrap(&cli.config_path, config)?;
+    let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
+    artifacts.create_root_dir()?;
+    println!(
+        "{}",
+        format_warning_line(explicit_preflight_recommendation())
+    );
+    let (bootstrap, runtime) = initialize_training_bootstrap(&cli.config_path, config.clone())?;
     let TrainingBootstrap {
         config,
         resume,
@@ -175,18 +219,6 @@ fn run() -> Result<(), String> {
         &train_cfg,
     );
 
-    let saved_preflight = load_saved_preflight_entry(&artifacts)?;
-    let expected_preflight_key = preflight_cache_key(&config, &model_config, &device_name);
-    if let Some(warning) =
-        training_runtime_warning(&config, saved_preflight.as_ref(), &expected_preflight_key)
-    {
-        println!(
-            "{} {}",
-            "Warning:".bold().yellow(),
-            manual_runtime_warning(warning.configured, warning.saved).yellow()
-        );
-    }
-
     resume.print_banner();
 
     for epoch in resume.start_epoch..config.num_epochs {
@@ -224,21 +256,24 @@ fn run() -> Result<(), String> {
     }
 
     println!(
-        "{} {}",
-        "Finished BC training. Best validation policy CE:"
+        "{}",
+        timestamped(format!(
+            "{} {}",
+            "Finished BC training. Best validation policy CE:"
+                .bold()
+                .cyan(),
+            if let Some(best_validation) = best_validation {
+                format!(
+                    "{:.4} (agree {:.2}%)",
+                    best_validation.policy_loss,
+                    best_validation.agreement * 100.0
+                )
+            } else {
+                "n/a".to_string()
+            }
             .bold()
-            .cyan(),
-        if let Some(best_validation) = best_validation {
-            format!(
-                "{:.4} (agree {:.2}%)",
-                best_validation.policy_loss,
-                best_validation.agreement * 100.0
-            )
-        } else {
-            "n/a".to_string()
-        }
-        .bold()
-        .green()
+            .green()
+        ))
     );
 
     Ok(())
@@ -365,7 +400,9 @@ mod tests {
             "train".to_string(),
         ];
         let err = parse_args(args).expect_err("partial probe args should fail");
-        assert!(err.contains("probe mode requires both --probe-kind and --probe-candidate-microbatch"));
+        assert!(
+            err.contains("probe mode requires both --probe-kind and --probe-candidate-microbatch")
+        );
     }
 
     #[test]
@@ -473,7 +510,11 @@ num_epochs: 3
             .duration_since(UNIX_EPOCH)
             .expect("time went backwards")
             .as_nanos();
-        std::env::temp_dir().join(format!("hydra_train_{label}_{}_{}", std::process::id(), nanos))
+        std::env::temp_dir().join(format!(
+            "hydra_train_{label}_{}_{}",
+            std::process::id(),
+            nanos
+        ))
     }
 
     #[test]
@@ -1262,6 +1303,15 @@ advanced_loss:
 
     #[test]
     fn train_device_prefers_env_override_then_config() {
+        struct EnvGuard;
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    env::remove_var("HYDRA_TRAIN_DEVICE");
+                }
+            }
+        }
+        let _guard = EnvGuard;
         unsafe {
             env::remove_var("HYDRA_TRAIN_DEVICE");
         }
@@ -1277,10 +1327,6 @@ advanced_loss:
             env::set_var("HYDRA_TRAIN_DEVICE", "cpu");
         }
         assert_eq!(train_device("cuda:3"), LibTorchDevice::Cpu);
-
-        unsafe {
-            env::remove_var("HYDRA_TRAIN_DEVICE");
-        }
     }
 
     #[test]
@@ -1289,10 +1335,16 @@ advanced_loss:
         unsafe {
             env::set_var("HYDRA_TRAIN_DEVICE", "vulkan");
         }
-        let _ = train_device("cpu");
-        unsafe {
-            env::remove_var("HYDRA_TRAIN_DEVICE");
+        struct EnvGuard;
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    env::remove_var("HYDRA_TRAIN_DEVICE");
+                }
+            }
         }
+        let _guard = EnvGuard;
+        let _ = train_device("cpu");
     }
 
     #[test]

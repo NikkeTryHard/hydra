@@ -88,7 +88,8 @@ pub(super) fn run_validation(
                 continue;
             };
             let output = model_valid.forward(obs);
-            let batch_stats = validation_batch_stats(capped_chunk.len(), &output, &targets, loss_fn);
+            let batch_stats =
+                validation_batch_stats(capped_chunk.len(), &output, &targets, loss_fn);
             stats.record_batch(batch_stats);
             total_samples += capped_chunk.len();
         }

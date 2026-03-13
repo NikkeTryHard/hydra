@@ -36,6 +36,8 @@ tboard = "0.1.1"
 colored = "3"
 tar = "0.4"
 zstd = "0.13"
+ctrlc = "3.4"
+time = { version = "0.3", features = ["formatting"] }
 
 [dev-dependencies]
 burn = { version = "0.20", features = ["ndarray"] }

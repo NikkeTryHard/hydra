@@ -8,25 +8,27 @@ use colored::Colorize;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
-use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
-use hydra_train::data::sample::{collate_samples, MjaiSample};
+use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
+use hydra_train::data::sample::{MjaiSample, collate_samples};
 use hydra_train::model::HydraModel;
 use hydra_train::training::bc::{
-    policy_agreement, target_actions_from_policy_target, BCTrainerConfig,
+    BCTrainerConfig, policy_agreement, target_actions_from_policy_target,
 };
 use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::{
-    append_step_log, append_training_log, log_tensorboard, save_checkpoint,
-    save_latest_checkpoint_and_state, BcArtifactPaths,
+    BcArtifactPaths, append_step_log, append_training_log, log_tensorboard, save_checkpoint,
+    save_latest_checkpoint_and_state,
 };
-use super::config::{validation_sample_limit, TrainConfig};
-use super::presentation::{format_progress_message, make_bar, make_spinner, phase_label};
+use super::config::{TrainConfig, validation_sample_limit};
+use super::presentation::{
+    format_progress_message, make_bar, make_spinner, phase_label, timestamped,
+};
 use super::progress::{
-    batch_stats_from_breakdown, BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry,
+    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_stats_from_breakdown,
 };
 use super::resume::{
-    paused_training_message, BestValidation, EpochContinuation, RuntimeResumeContract,
+    BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
@@ -290,7 +292,7 @@ where
                 && session_step.is_multiple_of(config.validate_every_n_steps)
             {
                 multi
-                    .println(format!(
+                    .println(timestamped(format!(
                         "{} {}",
                         display_validation_scope_label(
                             *global_step,
@@ -303,7 +305,7 @@ where
                             Some(limit) => format!("target_samples={limit}").yellow(),
                             None => "target_samples=all".yellow(),
                         }
-                    ))
+                    )))
                     .map_err(|err| format!("failed to print validation start summary: {err}"))?;
                 let summary = run_validation(
                     model,
@@ -328,7 +330,7 @@ where
                     )?;
                 }
                 multi
-                    .println(format!(
+                    .println(timestamped(format!(
                         "{} {} {} {} {}",
                         display_validation_scope_label(
                             *global_step,
@@ -341,7 +343,7 @@ where
                         format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
                         format!("val_total={:.4}", summary.total_loss).yellow(),
                         format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
-                    ))
+                    )))
                     .map_err(|err| format!("failed to print validation summary: {err}"))?;
                 Some(summary)
             } else {
@@ -357,7 +359,7 @@ where
                 *last_log_time = Instant::now();
 
                 multi
-                    .println(format!(
+                    .println(timestamped(format!(
                         "{} {} {} {} {} {} {} {}",
                         display_step_label(
                             *global_step,
@@ -404,7 +406,7 @@ where
                         .white(),
                         format!("steps/s={step_rate:.2}").white(),
                         lr_message.white(),
-                    ))
+                    )))
                     .map_err(|err| format!("failed to print train summary: {err}"))?;
 
                 if let Some(ref mut tb_writer) = tb.as_mut() {
@@ -530,9 +532,12 @@ where
 
     if !continuation.epoch_completed {
         println!(
-            "{} {}",
-            "Paused BC training".bold().cyan(),
-            paused_training_message(&continuation).yellow(),
+            "{}",
+            timestamped(format!(
+                "{} {}",
+                "Paused BC training".bold().cyan(),
+                paused_training_message(&continuation).yellow(),
+            ))
         );
         return Ok(EpochRunOutcome {
             stop_after_epoch: true,
@@ -545,12 +550,15 @@ where
         config.validation_every_n_epochs,
     ) {
         println!(
-            "{} {}",
-            "validation @ epoch end".bold().magenta(),
-            match validation_sample_limit(config) {
-                Some(limit) => format!("target_samples={limit}").yellow(),
-                None => "target_samples=all".yellow(),
-            }
+            "{}",
+            timestamped(format!(
+                "{} {}",
+                "validation @ epoch end".bold().magenta(),
+                match validation_sample_limit(config) {
+                    Some(limit) => format!("target_samples={limit}").yellow(),
+                    None => "target_samples=all".yellow(),
+                }
+            ))
         );
         let summary = run_validation(
             model,
@@ -575,12 +583,15 @@ where
             )?;
         }
         println!(
-            "{} {} {} {} {}",
-            "validation @ epoch end".bold().magenta(),
-            format!("val_samples={}", summary.samples).yellow(),
-            format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
-            format!("val_total={:.4}", summary.total_loss).yellow(),
-            format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
+            "{}",
+            timestamped(format!(
+                "{} {} {} {} {}",
+                "validation @ epoch end".bold().magenta(),
+                format!("val_samples={}", summary.samples).yellow(),
+                format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
+                format!("val_total={:.4}", summary.total_loss).yellow(),
+                format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
+            ))
         );
         Some(summary)
     } else {
@@ -623,34 +634,37 @@ where
 
     let lr_message = lr_status_message(*global_step, train_cfg.warmup_steps, final_lr);
     println!(
-        "{} {} {} {} {} {}",
-        phase_label("epoch", epoch, config.num_epochs).bold().cyan(),
-        format!("train_loss={:.4}", train_stats.total_loss).green(),
-        format!("train_agree={:.2}%", train_stats.policy_agreement * 100.0).green(),
-        if let Some(val_summary) = val_summary.as_ref() {
-            format!(
-                "val_ce={:.4} val_agree={:.2}% val_samples={}",
-                val_summary.policy_loss,
-                val_summary.agreement * 100.0,
-                val_summary.samples
-            )
-        } else {
-            "val=skipped".to_string()
-        }
-        .bold()
-        .yellow(),
-        if let Some(best_validation) = *best_validation {
-            format!(
-                "best_ce={:.4} best_agree={:.2}%",
-                best_validation.policy_loss,
-                best_validation.agreement * 100.0
-            )
-        } else {
-            "best=n/a".to_string()
-        }
-        .bold()
-        .magenta(),
-        lr_message.white(),
+        "{}",
+        timestamped(format!(
+            "{} {} {} {} {} {}",
+            phase_label("epoch", epoch, config.num_epochs).bold().cyan(),
+            format!("train_loss={:.4}", train_stats.total_loss).green(),
+            format!("train_agree={:.2}%", train_stats.policy_agreement * 100.0).green(),
+            if let Some(val_summary) = val_summary.as_ref() {
+                format!(
+                    "val_ce={:.4} val_agree={:.2}% val_samples={}",
+                    val_summary.policy_loss,
+                    val_summary.agreement * 100.0,
+                    val_summary.samples
+                )
+            } else {
+                "val=skipped".to_string()
+            }
+            .bold()
+            .yellow(),
+            if let Some(best_validation) = *best_validation {
+                format!(
+                    "best_ce={:.4} best_agree={:.2}%",
+                    best_validation.policy_loss,
+                    best_validation.agreement * 100.0
+                )
+            } else {
+                "best=n/a".to_string()
+            }
+            .bold()
+            .magenta(),
+            lr_message.white(),
+        ))
     );
 
     Ok(EpochRunOutcome {
