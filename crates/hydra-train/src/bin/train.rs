@@ -4,16 +4,32 @@ mod artifacts;
 mod bootstrap;
 #[path = "train/config.rs"]
 mod config;
+#[path = "train/config_runtime.rs"]
+mod config_runtime;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
+#[path = "train/modes.rs"]
+mod modes;
 #[path = "train/preflight_runtime.rs"]
 mod preflight_runtime;
+#[path = "train/preflight_fingerprint.rs"]
+mod preflight_fingerprint;
+#[path = "train/probe_request.rs"]
+mod probe_request;
+#[path = "train/probe_process.rs"]
+mod probe_process;
+#[path = "train/probe_ladder.rs"]
+mod probe_ladder;
+#[path = "train/probe_summary.rs"]
+mod probe_summary;
 #[path = "train/presentation.rs"]
 mod presentation;
 #[path = "train/progress.rs"]
 mod progress;
+#[path = "train/runtime_autotune.rs"]
+mod runtime_autotune;
 #[path = "train/resume.rs"]
 mod resume;
 #[path = "train/schedule.rs"]
@@ -28,22 +44,12 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use burn::backend::{Autodiff, LibTorch};
-use colored::Colorize;
 use colored::control as color_control;
 
-use self::artifacts::BcArtifactPaths;
-use self::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
-use self::config::{configure_threads, parse_args, read_config, validate_config};
-use self::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use self::preflight_runtime::{
-    best_probe_summary, format_probe_selection_summary, probe_kind_name, probe_request_from_cli,
-    run_preflight, run_probe_child_mode, run_probe_ladder_only,
-};
-use self::presentation::{
-    explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
-    format_preflight_summary_line, format_probe_results_table, format_status_line,
-    format_warning_line, print_banner, print_preflight_banner, timestamped,
-};
+use self::config::{parse_args, read_config};
+use self::modes::{handle_preflight_mode, handle_probe_mode, handle_training_mode};
+use self::preflight_runtime::run_probe_child_mode;
+use self::probe_request::probe_request_from_cli;
 
 #[cfg(test)]
 use self::config::{
@@ -70,213 +76,12 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     if cli.preflight {
-        validate_config(&config)?;
-        configure_threads(config.num_threads)?;
-        let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
-        artifacts.create_root_dir()?;
-        print_preflight_banner(
-            "Hydra preflight",
-            &config,
-            &self::config::device_label(&config.device),
-        );
-        let preflight = run_preflight(
-            &cli.config_path,
-            &config,
-            &hydra_train::model::HydraModelConfig::learner(),
-            &self::config::device_label(&config.device),
-            &artifacts,
-        )?;
-        println!(
-            "{}",
-            format_preflight_summary_line(
-                "Preflight:",
-                explicit_preflight_summary(preflight.runtime, preflight.explicit)
-            )
-        );
-        println!(
-            "{}",
-            timestamped(format!(
-                "{}\n{}",
-                "Preflight train table".bold().cyan(),
-                format_probe_results_table(
-                    hydra_train::preflight::ProbeKind::Train,
-                    &preflight.train_probe_results,
-                    Some(preflight.runtime.selected.train_microbatch_size),
-                )
-            ))
-        );
-        println!(
-            "{}",
-            timestamped(format!(
-                "{}\n{}",
-                "Preflight validation table".bold().cyan(),
-                format_probe_results_table(
-                    hydra_train::preflight::ProbeKind::Validation,
-                    &preflight.validation_probe_results,
-                    Some(preflight.runtime.selected.validation_microbatch_size),
-                )
-            ))
-        );
-        return Ok(());
+        return handle_preflight_mode(&cli.config_path, &config);
     }
     if let Some(request) = probe_request_from_cli(&config, cli.probe_only.clone())? {
-        validate_config(&config)?;
-        configure_threads(config.num_threads)?;
-        let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
-        artifacts.create_root_dir()?;
-        print_preflight_banner(
-            "Hydra probe-only",
-            &config,
-            &self::config::device_label(&config.device),
-        );
-        println!(
-            "{}",
-            format_status_line(
-                "Probe-only:",
-                format!(
-                    "kind={} candidate_mb={} warmup_steps={} measure_steps={}",
-                    probe_kind_name(request.kind),
-                    request.candidate_microbatch,
-                    request.warmup_steps,
-                    request.measure_steps,
-                )
-            )
-        );
-        let (selected, results) =
-            run_probe_ladder_only(&cli.config_path, &config, &artifacts, request)?;
-        let selected_summary = best_probe_summary(&results).ok_or_else(|| {
-            format!(
-                "no stable {} probe result found",
-                probe_kind_name(request.kind)
-            )
-        })?;
-        println!(
-            "{}",
-            format_preflight_selection_line(format_probe_selection_summary(
-                request.kind,
-                &selected_summary,
-            ))
-        );
-        println!(
-            "{}",
-            format_status_line(
-                "Probe best candidate:",
-                format!("{}={}", probe_kind_name(request.kind), selected)
-            )
-        );
-        println!(
-            "{}",
-            timestamped(format!(
-                "{}\n{}",
-                "Probe final table".bold().cyan(),
-                format_probe_results_table(request.kind, &results, Some(selected))
-            ))
-        );
-        return Ok(());
+        return handle_probe_mode(&cli.config_path, &config, request);
     }
-    let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
-    artifacts.create_root_dir()?;
-    println!(
-        "{}",
-        format_warning_line(explicit_preflight_recommendation())
-    );
-    let (bootstrap, runtime) = initialize_training_bootstrap(&cli.config_path, config.clone())?;
-    let TrainingBootstrap {
-        config,
-        resume,
-        artifacts,
-        loader_config,
-        manifest,
-        train_cfg,
-        model_config,
-        device_name,
-        train_device,
-        current_runtime,
-        session_start_global_step,
-        total_steps,
-        microbatch_size,
-        banner_stats,
-        loss_fn,
-        valid_loss_fn,
-    } = bootstrap;
-    let TrainingRuntime {
-        mut model,
-        mut optimizer,
-        mut best_validation,
-        mut global_step,
-        run_start,
-        mut last_log_step,
-        mut last_log_time,
-        mut tb,
-    } = runtime;
-
-    print_banner(
-        &model_config,
-        &config,
-        &artifacts,
-        &device_name,
-        &banner_stats,
-        &train_cfg,
-    );
-
-    resume.print_banner();
-
-    for epoch in resume.start_epoch..config.num_epochs {
-        let outcome = run_epoch(
-            EpochRunnerContext {
-                epoch,
-                config: &config,
-                manifest: &manifest,
-                loader_config: &loader_config,
-                artifacts: &artifacts,
-                train_cfg: &train_cfg,
-                loss_fn: &loss_fn,
-                valid_loss_fn: &valid_loss_fn,
-                train_device: &train_device,
-                session_start_global_step,
-                steps_to_skip: resume.steps_to_skip_for_epoch(epoch),
-                microbatch_size,
-                total_steps,
-                current_runtime,
-                run_start: &run_start,
-            },
-            EpochRuntimeMut {
-                model: &mut model,
-                optimizer: &mut optimizer,
-                global_step: &mut global_step,
-                best_validation: &mut best_validation,
-                tb: &mut tb,
-                last_log_step: &mut last_log_step,
-                last_log_time: &mut last_log_time,
-            },
-        )?;
-        if outcome.stop_after_epoch {
-            break;
-        }
-    }
-
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} {}",
-            "Finished BC training. Best validation policy CE:"
-                .bold()
-                .cyan(),
-            if let Some(best_validation) = best_validation {
-                format!(
-                    "{:.4} (agree {:.2}%)",
-                    best_validation.policy_loss,
-                    best_validation.agreement * 100.0
-                )
-            } else {
-                "n/a".to_string()
-            }
-            .bold()
-            .green()
-        ))
-    );
-
-    Ok(())
+    handle_training_mode(&cli.config_path, config)
 }
 
 fn main() {
