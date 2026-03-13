@@ -10,11 +10,11 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 use std::time::Instant;
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 
 const CHANNEL_BOUND: usize = 64;
@@ -108,22 +108,24 @@ fn process_archive(
                 let rx = &rx;
                 let output_dir = &output_dir_owned;
                 let pb = &pb_writer;
-                s.spawn(move || loop {
-                    let entry = {
-                        let guard = rx.lock().expect("lock rx");
-                        guard.recv()
-                    };
-                    let Ok(entry) = entry else { break };
-                    match compress_entry(&entry, output_dir) {
-                        Ok(bytes) => {
-                            archive_bytes_ref.fetch_add(bytes, Ordering::Relaxed);
+                s.spawn(move || {
+                    loop {
+                        let entry = {
+                            let guard = rx.lock().expect("lock rx");
+                            guard.recv()
+                        };
+                        let Ok(entry) = entry else { break };
+                        match compress_entry(&entry, output_dir) {
+                            Ok(bytes) => {
+                                archive_bytes_ref.fetch_add(bytes, Ordering::Relaxed);
+                            }
+                            Err(err) => {
+                                eprintln!("  error: {}: {err}", entry.name);
+                            }
                         }
-                        Err(err) => {
-                            eprintln!("  error: {}: {err}", entry.name);
-                        }
+                        archive_files_ref.fetch_add(1, Ordering::Relaxed);
+                        pb.inc(1);
                     }
-                    archive_files_ref.fetch_add(1, Ordering::Relaxed);
-                    pb.inc(1);
                 })
             })
             .collect();

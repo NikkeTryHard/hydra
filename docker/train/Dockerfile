@@ -32,7 +32,10 @@ RUN chmod +x scripts/rustc-wrapper.sh
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    CARGO_BUILD_RUSTC_WRAPPER= cargo build --release -p hydra-train && \
+    CARGO_BUILD_RUSTC_WRAPPER=/app/scripts/rustc-wrapper.sh \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C link-arg=-fuse-ld=/usr/bin/mold' \
+    cargo build --release -p hydra-train && \
     cp /app/target/release/train /tmp/train && \
     cp /app/target/release/mjai_audit /tmp/mjai_audit && \
     cp /app/target/release/recompress /tmp/recompress

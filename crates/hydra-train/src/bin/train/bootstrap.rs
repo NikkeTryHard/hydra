@@ -3,15 +3,15 @@ use std::path::Path;
 use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
-use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::Adam;
 use burn::optim::Optimizer;
+use burn::optim::adaptor::OptimizerAdaptor;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use tboard::EventWriter;
 
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, DataManifest, StreamingLoaderConfig,
+    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
 };
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::BCTrainerConfig;
@@ -19,13 +19,13 @@ use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::BcArtifactPaths;
 use super::config::{
-    configure_threads, device_label, train_device, train_microbatch_size,
-    trainer_config_from_train_config, validate_config, TrainConfig,
+    TrainConfig, configure_threads, device_label, train_device, train_microbatch_size,
+    trainer_config_from_train_config, validate_config,
 };
 use super::loss_policy::build_loss_config;
 use super::progress::BannerStats;
 use super::resume::{
-    runtime_resume_contract, validate_resume_runtime_compatibility, ResumeContext,
+    ResumeContext, runtime_resume_contract, validate_resume_runtime_compatibility,
 };
 use super::schedule::schedule_total_steps;
 use super::{TrainBackend, ValidBackend};
@@ -79,6 +79,7 @@ pub(super) fn initialize_training_bootstrap(
         seed: config.seed,
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
+        aggregate_skip_logs: false,
     };
 
     let scan_sources_len = if config.data_dir.is_file() {

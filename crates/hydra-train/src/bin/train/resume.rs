@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
 
-use super::config::{train_microbatch_size, validation_microbatch_size, TrainConfig};
+use super::config::{TrainConfig, train_microbatch_size, validation_microbatch_size};
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -91,9 +91,12 @@ impl ResumeContext {
     pub(crate) fn print_banner(&self) {
         if let Some(state) = self.state.as_ref() {
             println!(
-                "{} {}",
-                "Resume:".bold().cyan(),
-                resume_banner_message(state).yellow(),
+                "{}",
+                timestamped(format!(
+                    "{} {}",
+                    "Resume:".bold().cyan(),
+                    resume_banner_message(state).yellow(),
+                ))
             );
         }
     }
@@ -271,3 +274,4 @@ pub(crate) fn resume_banner_message(state: &BcResumeState) -> String {
         )
     }
 }
+use super::presentation::timestamped;

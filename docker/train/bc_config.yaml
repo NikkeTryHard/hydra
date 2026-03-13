@@ -19,13 +19,6 @@ checkpoint_every_n_steps: 200
 max_train_steps: 1000
 max_validation_samples: 8192
 preflight:
-  enabled: true
-  advisory_only: false
-  reuse_cache: true
-  allow_override_explicit_microbatch: false
-  warmup_steps: 1
-  measure_steps: 1
-  safety_backoff_rungs: 0
+  warmup_steps: 2
+  measure_steps: 2
   required_successes: 2
-  min_microbatch_size: 1
-  candidate_microbatches: [512, 384, 256, 192, 128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]

@@ -3,7 +3,7 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
+use hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_type};
 
 use crate::training::losses::HydraTargets;
 

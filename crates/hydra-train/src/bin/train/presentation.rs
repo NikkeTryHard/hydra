@@ -1,20 +1,25 @@
 use colored::Colorize;
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::{
-    ExplicitSettings, ProbeKind, ProbeResult, ProbeStatus, SelectedRuntimeConfig,
+    EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult, ProbeStatus,
 };
 
 use super::artifacts::BcArtifactPaths;
 use super::config::TrainConfig;
+use super::config::display_num_threads;
+use super::preflight_runtime::summarize_probe_results;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
 
 pub(super) fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
     let pb = ProgressBar::new(len);
+    pb.set_draw_target(ProgressDrawTarget::stdout());
     let style = ProgressStyle::with_template(template)
         .map_err(|err| format!("failed to build progress style: {err}"))?
         .progress_chars("=> ");
@@ -24,12 +29,112 @@ pub(super) fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> 
 
 pub(super) fn make_spinner(template: &str) -> Result<ProgressBar, String> {
     let pb = ProgressBar::new_spinner();
+    pb.set_draw_target(ProgressDrawTarget::stdout());
     let style = ProgressStyle::with_template(template)
         .map_err(|err| format!("failed to build spinner style: {err}"))?
         .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
     pb.set_style(style);
     pb.enable_steady_tick(Duration::from_millis(120));
     Ok(pb)
+}
+
+pub(super) fn preflight_phase_label(phase: &str) -> String {
+    format!("preflight {phase}")
+}
+
+fn utc_log_prefix() -> String {
+    let ts = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+    format!("[{ts}]")
+}
+
+pub(super) fn with_utc_timestamp(message: String) -> String {
+    format!("{} {}", utc_log_prefix().dimmed(), message)
+}
+
+pub(super) fn timestamped(message: impl std::fmt::Display) -> String {
+    with_utc_timestamp(message.to_string())
+}
+
+pub(super) fn format_runtime_tuning_message(
+    knob: &str,
+    candidate: String,
+    index: usize,
+    total: usize,
+) -> String {
+    with_utc_timestamp(format!(
+        "{} {} {}",
+        "[preflight:runtime]".bold().cyan(),
+        format!("phase={knob}").yellow(),
+        format!(
+            "candidate={candidate} option={}/{}",
+            index + 1,
+            total.max(1)
+        )
+        .white(),
+    ))
+}
+
+pub(super) fn format_runtime_tuning_result(
+    knob: &str,
+    candidate: String,
+    throughput: f64,
+    best_candidate: String,
+    best_throughput: f64,
+) -> String {
+    with_utc_timestamp(format!(
+        "{} {} {} {}",
+        "[preflight:runtime]".bold().cyan(),
+        format!("phase={knob}").yellow(),
+        format!("candidate={candidate} throughput={throughput:.2} samples/s").green(),
+        format!("best={} ({best_throughput:.2} samples/s)", best_candidate).magenta(),
+    ))
+}
+
+pub(super) fn format_timed_phase_message(
+    phase: &str,
+    detail: &str,
+    elapsed_seconds: f64,
+) -> String {
+    with_utc_timestamp(format!(
+        "{} {} {}",
+        "[preflight:timing]".bold().cyan(),
+        format!("phase={phase}").yellow(),
+        format!("{detail} elapsed={elapsed_seconds:.2}s").green(),
+    ))
+}
+
+pub(super) fn format_preflight_summary_line(label: &str, detail: impl std::fmt::Display) -> String {
+    with_utc_timestamp(format!(
+        "{} {}",
+        label.bold().cyan(),
+        detail.to_string().yellow()
+    ))
+}
+
+pub(super) fn format_preflight_selection_line(detail: impl std::fmt::Display) -> String {
+    with_utc_timestamp(format!(
+        "{} {}",
+        "Preflight selected:".bold().cyan(),
+        detail.to_string().green()
+    ))
+}
+
+pub(super) fn format_status_line(label: &str, detail: impl std::fmt::Display) -> String {
+    with_utc_timestamp(format!(
+        "{} {}",
+        label.bold().cyan(),
+        detail.to_string().yellow()
+    ))
+}
+
+pub(super) fn format_warning_line(detail: impl std::fmt::Display) -> String {
+    with_utc_timestamp(format!(
+        "{} {}",
+        "Warning:".bold().yellow(),
+        detail.to_string().yellow()
+    ))
 }
 
 pub(super) fn phase_label(prefix: &str, epoch_index: usize, num_epochs: usize) -> String {
@@ -71,6 +176,16 @@ pub(super) fn bc_hyperparam_summary(train_cfg: &BCTrainerConfig) -> String {
     )
 }
 
+fn print_header_block(title: &str) {
+    println!();
+    println!();
+    println!("{}", title.bold().cyan());
+}
+
+fn print_banner_field(label: &str, value: impl std::fmt::Display) {
+    println!("  {} {}", format!("{label}:").white(), value);
+}
+
 fn probe_status_label(status: &ProbeStatus) -> &'static str {
     match status {
         ProbeStatus::Success => "success",
@@ -80,25 +195,169 @@ fn probe_status_label(status: &ProbeStatus) -> &'static str {
     }
 }
 
+fn parse_probe_progress_fields(line: &str) -> Option<std::collections::BTreeMap<&str, &str>> {
+    let trimmed = line.trim();
+    let payload = trimmed.strip_prefix("probe_progress ")?;
+    let mut fields = std::collections::BTreeMap::new();
+    for token in payload.split_whitespace() {
+        let (key, value) = token.split_once('=')?;
+        fields.insert(key, value);
+    }
+    Some(fields)
+}
+
+pub(super) fn format_probe_progress_line(line: &str) -> Option<String> {
+    let fields = parse_probe_progress_fields(line)?;
+    let kind = *fields.get("kind")?;
+    let candidate = *fields.get("candidate_mb")?;
+    let phase = *fields.get("phase")?;
+    let prefix = format!("[preflight:{kind}]").cyan().bold();
+    let label = format!("candidate_mb={candidate}").yellow();
+
+    let message = match phase {
+        "scan_start" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=scan dataset=streaming".white()
+        ),
+        "scan_complete" => {
+            let sources = fields.get("sources").copied().unwrap_or("?");
+            let total_games = fields.get("total_games").copied().unwrap_or("?");
+            let counts_exact = fields.get("counts_exact").copied().unwrap_or("false");
+            let counts = if counts_exact == "true" {
+                format!("sources={sources} games={total_games}")
+            } else {
+                format!("sources={sources} games=streaming")
+            };
+            format!("{} {} {}", prefix, label, counts.green())
+        }
+        "starting" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            format!(
+                "phase=probe warmup={} measure={}",
+                fields.get("warmup_steps").copied().unwrap_or("?"),
+                fields.get("measure_steps").copied().unwrap_or("?")
+            )
+            .white()
+        ),
+        "warmup" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            format!(
+                "phase=warmup step={}",
+                fields.get("step").copied().unwrap_or("?"),
+            )
+            .dimmed()
+        ),
+        "measure" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            format!(
+                "phase=measure step={} throughput={} samples/s",
+                fields.get("step").copied().unwrap_or("?"),
+                fields.get("throughput").copied().unwrap_or("0.00")
+            )
+            .green()
+        ),
+        "measure_start" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            format!(
+                "phase=measure_start total_steps={}",
+                fields.get("total_steps").copied().unwrap_or("?")
+            )
+            .dimmed()
+        ),
+        "done" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            format!(
+                "phase=done throughput={} samples/s elapsed={}s",
+                fields.get("throughput").copied().unwrap_or("0.00"),
+                fields.get("elapsed").copied().unwrap_or("0.00")
+            )
+            .green()
+        ),
+        _ => return None,
+    };
+
+    Some(with_utc_timestamp(message))
+}
+
+pub(super) fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &str) {
+    print_header_block(title);
+    print_banner_field("Device", device_name.green());
+    print_banner_field("Dataset", config.data_dir.display().to_string().green());
+    print_banner_field(
+        "Optimizer batch",
+        format!("{} samples", config.batch_size).yellow(),
+    );
+    print_banner_field(
+        "Runtime defaults",
+        format!(
+            "train_mb={} val_mb={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={}",
+            config.microbatch_size.unwrap_or(config.batch_size),
+            config
+                .validation_microbatch_size
+                .unwrap_or(config.microbatch_size.unwrap_or(config.batch_size)),
+            display_num_threads(config.num_threads),
+            config.buffer_games,
+            config.buffer_samples,
+            config.archive_queue_bound,
+        )
+        .yellow(),
+    );
+    println!();
+}
+
 pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
     match result.status {
-        ProbeStatus::Success => format!(
-            "[{}] candidate_mb={} status=success throughput={:.2} samples/s",
-            match result.kind {
-                ProbeKind::Train => "train",
-                ProbeKind::Validation => "validation",
-            },
-            result.candidate_microbatch,
-            result.measured_samples_per_second.unwrap_or(0.0)
+        ProbeStatus::Success => with_utc_timestamp(
+            format!(
+                "[{}] candidate_mb={} outcome=success throughput={:.2} samples/s elapsed={:.2}s",
+                match result.kind {
+                    ProbeKind::Train => "train",
+                    ProbeKind::Validation => "validation",
+                },
+                result.candidate_microbatch,
+                result.measured_samples_per_second.unwrap_or(0.0),
+                result.elapsed_seconds.unwrap_or(0.0)
+            )
+            .green()
+            .to_string(),
         ),
-        _ => format!(
-            "[{}] candidate_mb={} status={}",
-            match result.kind {
-                ProbeKind::Train => "train",
-                ProbeKind::Validation => "validation",
-            },
-            result.candidate_microbatch,
-            probe_status_label(&result.status)
+        ProbeStatus::Oom => with_utc_timestamp(
+            format!(
+                "[{}] candidate_mb={} outcome=oom next=smaller_microbatch",
+                match result.kind {
+                    ProbeKind::Train => "train",
+                    ProbeKind::Validation => "validation",
+                },
+                result.candidate_microbatch,
+            )
+            .red()
+            .to_string(),
+        ),
+        _ => with_utc_timestamp(
+            format!(
+                "[{}] candidate_mb={} outcome={} detail={}",
+                match result.kind {
+                    ProbeKind::Train => "train",
+                    ProbeKind::Validation => "validation",
+                },
+                result.candidate_microbatch,
+                probe_status_label(&result.status),
+                result.detail
+            )
+            .red()
+            .to_string(),
         ),
     }
 }
@@ -112,58 +371,58 @@ pub(super) fn format_probe_results_table(
         ProbeKind::Train => "train",
         ProbeKind::Validation => "validation",
     };
+    let summaries = summarize_probe_results(results);
     let mut lines = vec![format!(
-        "kind         selected  candidate_mb  status         throughput(samples/s)"
+        "kind         selected  candidate_mb  attempts  status         avg_throughput(samples/s)  avg_elapsed(s)"
     )];
     lines.push(
-        "------------ ---------  ------------  -------------  ---------------------".to_string(),
+        "------------ ---------  ------------  --------  -------------  -------------------------  --------------".to_string(),
     );
-    for result in results {
-        let selected = if selected_candidate == Some(result.candidate_microbatch) {
+    for summary in summaries {
+        let selected = if selected_candidate == Some(summary.candidate_microbatch) {
             "yes"
         } else {
             "no"
         };
-        let throughput = result
-            .measured_samples_per_second
+        let throughput = summary
+            .average_samples_per_second
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "-".to_string());
+        let elapsed = summary
+            .average_elapsed_seconds
             .map(|value| format!("{value:.2}"))
             .unwrap_or_else(|| "-".to_string());
         lines.push(format!(
-            "{kind_label:<12} {selected:<9} {candidate:<12} {status:<13} {throughput:>21}",
-            candidate = result.candidate_microbatch,
-            status = probe_status_label(&result.status),
+            "{kind_label:<12} {selected:<9} {candidate:<12} {attempts:<8} {status:<13} {throughput:>25} {elapsed:>15}",
+            candidate = summary.candidate_microbatch,
+            attempts = summary.attempts,
+            status = probe_status_label(&summary.status),
         ));
     }
     lines.join("\n")
 }
 
 pub(super) fn explicit_preflight_summary(
-    selected: SelectedRuntimeConfig,
+    runtime: EffectiveRuntimeConfig,
     explicit: ExplicitSettings,
 ) -> String {
     format!(
-        "saved train_mb={} val_mb={} accum_steps={} explicit(train={}, val={})",
-        selected.train_microbatch_size,
-        selected.validation_microbatch_size,
-        selected.accum_steps,
+        "saved train_mb={} val_mb={} accum_steps={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={} explicit(train={}, val={})",
+        runtime.selected.train_microbatch_size,
+        runtime.selected.validation_microbatch_size,
+        runtime.selected.accum_steps,
+        display_num_threads(runtime.loader.num_threads),
+        runtime.loader.buffer_games,
+        runtime.loader.buffer_samples,
+        runtime.loader.archive_queue_bound,
         explicit.train_microbatch_explicit,
         explicit.validation_microbatch_explicit,
     )
 }
 
-pub(super) fn manual_runtime_warning(
-    configured: SelectedRuntimeConfig,
-    saved: SelectedRuntimeConfig,
-) -> String {
-    format!(
-        "manual runtime values in use; configured train_mb={} val_mb={} accum_steps={} instead of saved preflight train_mb={} val_mb={} accum_steps={}",
-        configured.train_microbatch_size,
-        configured.validation_microbatch_size,
-        configured.accum_steps,
-        saved.train_microbatch_size,
-        saved.validation_microbatch_size,
-        saved.accum_steps,
-    )
+pub(super) fn explicit_preflight_recommendation() -> String {
+    "using config runtime only; run train <config.yaml> --preflight to tune this machine before training"
+        .to_string()
 }
 
 pub(super) fn print_banner(
@@ -174,24 +433,20 @@ pub(super) fn print_banner(
     stats: &BannerStats,
     train_cfg: &BCTrainerConfig,
 ) {
-    println!();
-    println!();
-    println!("{}", "Hydra BC trainer".bold().cyan());
-    println!(
-        "  {} {}",
-        "Model:".white(),
+    print_header_block("Hydra BC trainer");
+    print_banner_field(
+        "Model",
         format!(
             "{} ({} blocks, {}ch)",
             model_kind(model_config),
             model_config.num_blocks,
             model_config.hidden_channels
         )
-        .green()
+        .green(),
     );
-    println!("  {} {}", "Device:".white(), device_name.green());
-    println!(
-        "  {} {}",
-        "Dataset:".white(),
+    print_banner_field("Device", device_name.green());
+    print_banner_field(
+        "Dataset",
         if stats.counts_exact {
             format!(
                 "{} ({} sources, {} games)",
@@ -206,11 +461,10 @@ pub(super) fn print_banner(
                 stats.total_sources,
             )
         }
-        .green()
+        .green(),
     );
-    println!(
-        "  {} {}",
-        "Train:".white(),
+    print_banner_field(
+        "Train",
         if stats.counts_exact {
             format!(
                 "{} games | Val: {} games",
@@ -219,41 +473,33 @@ pub(super) fn print_banner(
         } else {
             "streaming split, counts estimated while loading".to_string()
         }
-        .green()
+        .green(),
     );
-    println!(
-        "  {} {}",
-        "Buffer:".white(),
+    print_banner_field(
+        "Buffer",
         format!(
-            "{} samples (max {} games)",
-            config.buffer_samples, config.buffer_games
+            "{} samples (max {} games, archive_queue_bound={}, threads={})",
+            config.buffer_samples,
+            config.buffer_games,
+            config.archive_queue_bound,
+            display_num_threads(config.num_threads)
         )
-        .yellow()
+        .yellow(),
     );
-    println!(
-        "  {} {}",
-        "Optimizer batch:".white(),
+    print_banner_field(
+        "Optimizer batch",
         format!(
             "{} ({} x {} accum)",
             config.batch_size,
             config.microbatch_size.unwrap_or(config.batch_size),
             stats.accum_steps
         )
-        .yellow()
+        .yellow(),
     );
-    println!(
-        "  {} {}",
-        "BC hyperparams:".white(),
-        bc_hyperparam_summary(train_cfg).yellow()
-    );
-    println!(
-        "  {} {}",
-        "Epochs:".white(),
-        config.num_epochs.to_string().yellow()
-    );
-    println!(
-        "  {} {}",
-        "Schedule:".white(),
+    print_banner_field("BC hyperparams", bc_hyperparam_summary(train_cfg).yellow());
+    print_banner_field("Epochs", config.num_epochs.to_string().yellow());
+    print_banner_field(
+        "Schedule",
         format!(
             "warmup+cosine (warmup_steps={}, max_train_steps={})",
             train_cfg.warmup_steps,
@@ -262,21 +508,16 @@ pub(super) fn print_banner(
                 .map(|steps| steps.to_string())
                 .unwrap_or_else(|| "epoch-derived".to_string())
         )
-        .yellow()
+        .yellow(),
     );
-    println!(
-        "  {} {}",
-        "Output:".white(),
-        artifacts.root.display().to_string().green()
-    );
-    println!(
-        "  {} {}",
-        "TBoard:".white(),
+    print_banner_field("Output", artifacts.root.display().to_string().green());
+    print_banner_field(
+        "TBoard",
         if config.tensorboard {
             artifacts.tb_session_dir.display().to_string().green()
         } else {
             "disabled".yellow()
-        }
+        },
     );
     println!();
 }

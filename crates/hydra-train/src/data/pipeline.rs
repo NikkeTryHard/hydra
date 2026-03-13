@@ -3,16 +3,18 @@ use std::fs;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 use burn::prelude::*;
 use indicatif::ProgressBar;
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
-use crate::data::mjai_loader::{load_game_from_path, load_game_from_stream, MjaiDataset, MjaiGame};
-use crate::data::sample::{collate_sample_refs, MjaiSample};
+use crate::data::mjai_loader::{MjaiDataset, MjaiGame, load_game_from_path, load_game_from_stream};
+use crate::data::sample::{MjaiSample, collate_sample_refs};
 use crate::training::losses::HydraTargets;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -34,6 +36,7 @@ pub struct StreamingLoaderConfig {
     pub seed: u64,
     pub archive_queue_bound: usize,
     pub max_skip_logs_per_source: usize,
+    pub aggregate_skip_logs: bool,
 }
 
 impl Default for StreamingLoaderConfig {
@@ -45,6 +48,7 @@ impl Default for StreamingLoaderConfig {
             seed: 0,
             archive_queue_bound: MJAI_ARCHIVE_QUEUE_BOUND,
             max_skip_logs_per_source: 32,
+            aggregate_skip_logs: false,
         }
     }
 }
@@ -110,6 +114,8 @@ struct SkipLogState {
     emitted: AtomicUsize,
     suppressed: AtomicUsize,
     max_logs: usize,
+    aggregate_only: bool,
+    reason_counts: std::sync::Mutex<BTreeMap<&'static str, usize>>,
 }
 
 fn compact_identity(identity: &str) -> &str {
@@ -138,29 +144,60 @@ fn compact_error_message(err: &dyn std::fmt::Display) -> &'static str {
 }
 
 impl SkipLogState {
-    fn new(source: String, max_logs: usize) -> Self {
+    fn utc_prefix() -> String {
+        let ts = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+        format!("[{ts}]")
+    }
+
+    fn new(source: String, max_logs: usize, aggregate_only: bool) -> Self {
         Self {
             source,
             emitted: AtomicUsize::new(0),
             suppressed: AtomicUsize::new(0),
             max_logs,
+            aggregate_only,
+            reason_counts: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
     fn log_skip(&self, identity: &str, err: &dyn std::fmt::Display) {
+        let reason = compact_error_message(err);
+        if let Ok(mut counts) = self.reason_counts.lock() {
+            *counts.entry(reason).or_insert(0) += 1;
+        }
+        if self.aggregate_only {
+            self.suppressed.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         let emitted = self.emitted.fetch_add(1, Ordering::Relaxed);
         if emitted < self.max_logs {
-            eprintln!(
-                "Skipping {}: {}",
-                compact_identity(identity),
-                compact_error_message(err)
-            );
+            eprintln!("Skipping {}: {}", compact_identity(identity), reason);
         } else {
             self.suppressed.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     fn flush_summary(&self) {
+        if self.aggregate_only {
+            if let Ok(counts) = self.reason_counts.lock()
+                && !counts.is_empty()
+            {
+                let summary = counts
+                    .iter()
+                    .map(|(reason, count)| format!("{reason}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!(
+                    "{} [preflight:skip] source={} {}",
+                    Self::utc_prefix(),
+                    self.source,
+                    summary
+                );
+            }
+            return;
+        }
         let suppressed = self.suppressed.load(Ordering::Relaxed);
         if suppressed > 0 {
             eprintln!(
@@ -339,7 +376,11 @@ fn spawn_archive_stream(
     let (tx, rx) = mpsc::sync_channel::<MjaiGame>(archive_queue_bound);
     let path_for_thread = path.clone();
     let path_for_logs = path.display().to_string();
-    let skip_state = Arc::new(SkipLogState::new(path_for_logs, max_skip_logs_per_source));
+    let skip_state = Arc::new(SkipLogState::new(
+        path_for_logs,
+        max_skip_logs_per_source,
+        config.aggregate_skip_logs,
+    ));
     let handle = thread::Builder::new()
         .name(format!("mjai-stream-{}", path.display()))
         .stack_size(MJAI_LOAD_THREAD_STACK_SIZE)
@@ -932,8 +973,8 @@ pub fn collate_sample_chunk<B: Backend>(
 mod tests {
     use super::*;
     use burn::backend::NdArray;
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::encoder::OBS_SIZE;
     use std::fs::File;

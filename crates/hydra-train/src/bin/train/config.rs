@@ -4,10 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use burn::backend::libtorch::LibTorchDevice;
-use hydra_train::preflight::{PreflightConfig, ProbeKind};
-use hydra_train::training::bc::BCTrainerConfig;
 use hydra_train::model::HydraModelConfig;
+use hydra_train::preflight::{LoaderRuntimeConfig, PreflightConfig, ProbeKind};
+use hydra_train::training::bc::BCTrainerConfig;
 use rayon::ThreadPoolBuilder;
+use std::thread::available_parallelism;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -245,7 +246,9 @@ where
                 preflight = true;
             }
             "--probe-kind" => {
-                let value = args.next().ok_or_else(|| "missing value for --probe-kind".to_string())?;
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --probe-kind".to_string())?;
                 probe_kind = Some(parse_probe_kind(&value)?);
             }
             "--probe-candidate-microbatch" => {
@@ -361,11 +364,9 @@ pub(crate) fn device_label(config_device: &str) -> String {
 }
 
 pub(crate) fn configure_threads(num_threads: Option<usize>) -> Result<(), String> {
-    let Some(num_threads) = num_threads else {
+    let num_threads = resolved_num_threads(num_threads)?;
+    if num_threads <= 1 {
         return Ok(());
-    };
-    if num_threads == 0 {
-        return Err("num_threads must be greater than 0".to_string());
     }
     match ThreadPoolBuilder::new()
         .num_threads(num_threads)
@@ -374,6 +375,35 @@ pub(crate) fn configure_threads(num_threads: Option<usize>) -> Result<(), String
         Ok(()) => Ok(()),
         Err(err) if err.to_string().contains("initialized") => Ok(()),
         Err(err) => Err(format!("failed to configure rayon thread pool: {err}")),
+    }
+}
+
+pub(crate) fn default_num_threads_for_system() -> usize {
+    let logical = available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    match logical {
+        0 | 1 => 1,
+        2..=4 => logical.saturating_sub(1).max(1),
+        5..=8 => logical.saturating_sub(2).max(1),
+        _ => 8,
+    }
+}
+
+pub(crate) fn resolved_num_threads(num_threads: Option<usize>) -> Result<usize, String> {
+    if let Some(num_threads) = num_threads {
+        if num_threads == 0 {
+            return Err("num_threads must be greater than 0".to_string());
+        }
+        return Ok(num_threads);
+    }
+    Ok(default_num_threads_for_system())
+}
+
+pub(crate) fn display_num_threads(num_threads: Option<usize>) -> String {
+    match num_threads {
+        Some(value) => value.to_string(),
+        None => format!("{} (auto)", default_num_threads_for_system()),
     }
 }
 
@@ -437,7 +467,9 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
         return Err("bc.min_learning_rate must be greater than 0".to_string());
     }
     if config.bc.min_learning_rate > config.bc.learning_rate {
-        return Err("bc.min_learning_rate must be less than or equal to bc.learning_rate".to_string());
+        return Err(
+            "bc.min_learning_rate must be less than or equal to bc.learning_rate".to_string(),
+        );
     }
     if config.bc.weight_decay < 0.0 {
         return Err("bc.weight_decay must be non-negative".to_string());
@@ -459,6 +491,17 @@ pub(crate) fn trainer_config_from_train_config(config: &TrainConfig) -> BCTraine
         .with_weight_decay(config.bc.weight_decay)
         .with_grad_clip_norm(config.bc.grad_clip_norm)
         .with_warmup_steps(config.bc.warmup_steps)
+}
+
+pub(crate) fn loader_runtime_config(config: &TrainConfig) -> LoaderRuntimeConfig {
+    LoaderRuntimeConfig {
+        num_threads: Some(default_num_threads_for_system())
+            .filter(|_| config.num_threads.is_none())
+            .or(config.num_threads),
+        buffer_games: config.buffer_games,
+        buffer_samples: config.buffer_samples,
+        archive_queue_bound: config.archive_queue_bound,
+    }
 }
 
 pub(crate) fn train_microbatch_size(config: &TrainConfig) -> usize {

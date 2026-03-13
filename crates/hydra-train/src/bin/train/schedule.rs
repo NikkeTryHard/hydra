@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use hydra_train::training::bc::{warmup_then_cosine_lr, BCTrainerConfig};
+use hydra_train::training::bc::{BCTrainerConfig, warmup_then_cosine_lr};
 
 use super::config::TrainConfig;
 
