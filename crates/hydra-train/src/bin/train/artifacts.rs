@@ -8,9 +8,7 @@ use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder,
 use tboard::EventWriter;
 
 use hydra_train::model::HydraModel;
-use hydra_train::preflight::{
-    default_cache_name, default_report_name, PreflightCacheEntry, PreflightReport,
-};
+use hydra_train::preflight::{default_cache_name, PreflightCacheEntry};
 use hydra_train::training::bc::CheckpointMeta;
 
 use super::progress::{EpochLogEntry, ScalarAverages, StepLogEntry};
@@ -34,14 +32,12 @@ pub(crate) struct BcArtifactPaths {
 }
 
 pub(crate) struct PreflightPaths {
-    pub(crate) report_path: PathBuf,
     pub(crate) cache_path: PathBuf,
 }
 
 impl PreflightPaths {
     pub(crate) fn new(artifacts: &BcArtifactPaths) -> Self {
         Self {
-            report_path: artifacts.root.join(default_report_name()),
             cache_path: artifacts.root.join(default_cache_name()),
         }
     }
@@ -69,8 +65,18 @@ impl BcArtifactPaths {
         }
     }
 
-    pub(crate) fn create_dirs(&self) -> Result<(), String> {
-        for dir in [&self.root, &self.tb_root, &self.tb_session_dir] {
+    pub(crate) fn create_root_dir(&self) -> Result<(), String> {
+        fs::create_dir_all(&self.root).map_err(|err| {
+            format!(
+                "failed to create BC artifact dir {}: {err}",
+                self.root.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    pub(crate) fn create_tensorboard_dirs(&self) -> Result<(), String> {
+        for dir in [&self.tb_root, &self.tb_session_dir] {
             fs::create_dir_all(dir).map_err(|err| {
                 format!("failed to create BC artifact dir {}: {err}", dir.display())
             })?;
@@ -91,17 +97,6 @@ pub(crate) fn write_preflight_cache(
     })?;
     fs::write(path, json)
         .map_err(|err| format!("failed to write preflight cache {}: {err}", path.display()))
-}
-
-pub(crate) fn write_preflight_report(path: &Path, report: &PreflightReport) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(report).map_err(|err| {
-        format!(
-            "failed to serialize preflight report {}: {err}",
-            path.display()
-        )
-    })?;
-    fs::write(path, json)
-        .map_err(|err| format!("failed to write preflight report {}: {err}", path.display()))
 }
 
 pub(crate) fn save_latest_checkpoint_and_state<O>(
