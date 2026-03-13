@@ -587,6 +587,141 @@ fn rerun_probe_finalists(
     Ok(())
 }
 
+fn local_refinement_candidates(
+    summaries: &[ProbeCandidateSummary],
+    min_gap: usize,
+    max_candidates: usize,
+    ceiling: usize,
+) -> Vec<usize> {
+    let mut successful = summaries
+        .iter()
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .filter_map(|summary| {
+            summary
+                .average_samples_per_second
+                .map(|score| (summary.candidate_microbatch, score))
+        })
+        .collect::<Vec<_>>();
+    successful.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let Some((winner, _)) = successful.first().copied() else {
+        return Vec::new();
+    };
+
+    let mut all_candidates = successful
+        .iter()
+        .map(|(candidate, _)| *candidate)
+        .collect::<Vec<_>>();
+    all_candidates.sort_unstable();
+    all_candidates.dedup();
+
+    let winner_index = all_candidates
+        .iter()
+        .position(|candidate| *candidate == winner);
+    let Some(winner_index) = winner_index else {
+        return Vec::new();
+    };
+
+    let mut refined = BTreeSet::new();
+    let lower = winner_index
+        .checked_sub(1)
+        .and_then(|index| all_candidates.get(index).copied());
+    let upper = all_candidates.get(winner_index + 1).copied();
+    let failed_above = summaries
+        .iter()
+        .filter(|summary| {
+            summary.candidate_microbatch > winner && summary.status == ProbeStatus::Oom
+        })
+        .map(|summary| summary.candidate_microbatch)
+        .min();
+
+    for neighbor in [lower, upper, failed_above].into_iter().flatten() {
+        let lo = neighbor.min(winner);
+        let hi = neighbor.max(winner);
+        if hi.saturating_sub(lo) < min_gap.max(1) {
+            continue;
+        }
+        let midpoint = lo + (hi - lo) / 2;
+        if midpoint != lo && midpoint != hi && midpoint <= ceiling {
+            refined.insert(midpoint);
+        }
+    }
+
+    refined.into_iter().take(max_candidates.max(1)).collect()
+}
+
+fn refine_probe_winner_locally(
+    config_path: &Path,
+    artifacts: &BcArtifactPaths,
+    kind: ProbeKind,
+    config: &TrainConfig,
+    results: &mut Vec<ProbeResult>,
+    progress: &indicatif::ProgressBar,
+) -> Result<(), String> {
+    if !config.preflight.local_refinement_enabled {
+        return Ok(());
+    }
+    let summaries = summarize_probe_results(results);
+    let ceiling = dynamic_probe_ceiling(
+        config,
+        kind,
+        best_probe_summary(results)
+            .map(|summary| summary.candidate_microbatch)
+            .unwrap_or(config.batch_size),
+    );
+    let candidates = local_refinement_candidates(
+        &summaries,
+        config.preflight.local_refinement_min_gap,
+        config.preflight.local_refinement_max_candidates,
+        ceiling,
+    );
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    println!(
+        "{}",
+        format_preflight_summary_line(
+            "Preflight local refine:",
+            format!(
+                "kind={} candidates={:?} extra_measure_steps={}",
+                probe_kind_name(kind),
+                candidates,
+                config.preflight.local_refinement_extra_measure_steps.max(1),
+            )
+        )
+    );
+    for candidate in candidates {
+        let base = candidate_average(results, candidate).unwrap_or(0.0);
+        let seconds_per_step = if base > 0.0 {
+            summarize_probe_results(results)
+                .into_iter()
+                .find(|summary| summary.candidate_microbatch == candidate)
+                .and_then(|summary| summary.average_elapsed_seconds)
+                .unwrap_or(0.0)
+                / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
+        } else {
+            0.0
+        };
+        let (warmup_steps, measure_steps) = adaptive_probe_steps(config, seconds_per_step);
+        rerun_candidate_attempts(
+            config_path,
+            artifacts,
+            kind,
+            candidate,
+            1,
+            warmup_steps,
+            measure_steps + config.preflight.local_refinement_extra_measure_steps.max(1),
+            results,
+            progress,
+        )?;
+    }
+    Ok(())
+}
+
 fn score_tuple_samples_mean(scores: &[f64]) -> f64 {
     if scores.is_empty() {
         return 0.0;
@@ -640,23 +775,8 @@ fn rerun_candidate_attempts(
     Ok(())
 }
 
-fn is_meaningful_improvement(current_best: f64, challenger: f64, tolerance_ratio: f64) -> bool {
-    challenger > current_best * (1.0 + tolerance_ratio.max(0.0))
-}
-
 fn should_continue_validation_growth(best: f64, challenger: f64, tolerance_ratio: f64) -> bool {
     challenger >= best * (1.0 - tolerance_ratio.max(0.0))
-}
-
-fn nearby_refinement_candidates(ladder: &[usize], center: usize) -> Vec<usize> {
-    let mut candidates = ladder
-        .iter()
-        .copied()
-        .filter(|candidate| *candidate < center && *candidate >= center.saturating_mul(3) / 5)
-        .collect::<Vec<_>>();
-    candidates.sort_unstable_by(|a, b| b.cmp(a));
-    candidates.truncate(2);
-    candidates
 }
 
 fn run_candidate_attempts(
@@ -725,10 +845,9 @@ fn search_train_microbatch(
         format_preflight_summary_line(
             "Preflight ladder:",
             format!(
-                "kind=train candidates={:?} required_successes={} stop_patience={}",
+                "kind=train candidates={:?} required_successes={}",
                 candidates,
                 config.preflight.required_successes.max(1),
-                config.preflight.train_search_stop_patience.max(1)
             )
         )
     );
@@ -738,11 +857,7 @@ fn search_train_microbatch(
     )?;
     let mut results = Vec::new();
     let mut stable_results = Vec::new();
-    let mut non_improving_streak = 0usize;
-    let mut best_candidate = None;
     let mut best_score = f64::NEG_INFINITY;
-    let tolerance = config.preflight.measure_noise_tolerance_ratio;
-    let ladder = candidate_ladder(&config.preflight, config.batch_size);
 
     for candidate in candidates {
         let stable_start = results.len();
@@ -770,57 +885,29 @@ fn search_train_microbatch(
         stable_results.extend(results[stable_start..].iter().cloned());
         let throughput = candidate_average(&results, candidate).unwrap_or(0.0);
         if throughput > best_score {
-            let meaningful = best_candidate
-                .map(|_| is_meaningful_improvement(best_score, throughput, tolerance))
-                .unwrap_or(true);
-            if meaningful {
-                non_improving_streak = 0;
-            } else {
-                non_improving_streak += 1;
-            }
             best_score = throughput;
-            best_candidate = Some(candidate);
-        } else {
-            non_improving_streak += 1;
         }
 
         if use_explicit_only {
             progress.finish_with_message("preflight train ladder complete".green().to_string());
             return Ok((candidate, results));
         }
-
-        if let Some(best) = best_candidate
-            && candidate < best
-            && non_improving_streak >= config.preflight.train_search_stop_patience.max(1)
-        {
-            for refine_candidate in nearby_refinement_candidates(&ladder, best) {
-                if stable_results
-                    .iter()
-                    .any(|result| result.candidate_microbatch == refine_candidate)
-                {
-                    continue;
-                }
-                let stable_start = results.len();
-                let refine_passed = run_candidate_attempts(
-                    config_path,
-                    artifacts,
-                    ProbeKind::Train,
-                    refine_candidate,
-                    config.preflight.required_successes.max(1),
-                    config.preflight.warmup_steps,
-                    config.preflight.measure_steps,
-                    &mut results,
-                    &progress,
-                )?;
-                if refine_passed {
-                    stable_results.extend(results[stable_start..].iter().cloned());
-                }
-            }
-            break;
-        }
     }
 
     progress.finish_with_message("preflight train ladder complete".green().to_string());
+    refine_probe_winner_locally(
+        config_path,
+        artifacts,
+        ProbeKind::Train,
+        config,
+        &mut results,
+        &progress,
+    )?;
+    stable_results = results
+        .iter()
+        .filter(|result| result.status == ProbeStatus::Success)
+        .cloned()
+        .collect();
     rerun_probe_finalists(
         config_path,
         artifacts,
@@ -956,6 +1043,19 @@ fn search_validation_microbatch(
     }
 
     progress.finish_with_message("preflight validation ladder complete".green().to_string());
+    refine_probe_winner_locally(
+        config_path,
+        artifacts,
+        ProbeKind::Validation,
+        config,
+        &mut results,
+        &progress,
+    )?;
+    stable_results = results
+        .iter()
+        .filter(|result| result.status == ProbeStatus::Success)
+        .cloned()
+        .collect();
     rerun_probe_finalists(
         config_path,
         artifacts,
@@ -2259,20 +2359,83 @@ mod tests {
     }
 
     #[test]
-    fn nearby_refinement_candidates_stay_below_center_and_close() {
-        let ladder = vec![
-            256, 192, 160, 144, 128, 112, 104, 96, 80, 72, 64, 48, 32, 24, 16,
+    fn local_refinement_candidates_include_midpoints_around_winner() {
+        let summaries = vec![
+            ProbeCandidateSummary {
+                candidate_microbatch: 48,
+                status: ProbeStatus::Success,
+                attempts: 2,
+                average_samples_per_second: Some(570.0),
+                average_elapsed_seconds: Some(16.0),
+            },
+            ProbeCandidateSummary {
+                candidate_microbatch: 64,
+                status: ProbeStatus::Success,
+                attempts: 2,
+                average_samples_per_second: Some(520.0),
+                average_elapsed_seconds: Some(18.0),
+            },
+            ProbeCandidateSummary {
+                candidate_microbatch: 32,
+                status: ProbeStatus::Success,
+                attempts: 2,
+                average_samples_per_second: Some(500.0),
+                average_elapsed_seconds: Some(18.0),
+            },
         ];
-        let nearby = nearby_refinement_candidates(&ladder, 96);
-        assert_eq!(nearby, vec![80, 72]);
+        let candidates = local_refinement_candidates(&summaries, 8, 3, 256);
+        assert_eq!(candidates, vec![40, 56]);
     }
 
     #[test]
-    fn meaningful_improvement_respects_tolerance_ratio() {
-        assert!(is_meaningful_improvement(100.0, 103.0, 0.02));
-        assert!(!is_meaningful_improvement(100.0, 101.0, 0.02));
-        assert!(should_continue_validation_growth(100.0, 99.0, 0.02));
-        assert!(!should_continue_validation_growth(100.0, 96.0, 0.02));
+    fn local_refinement_candidates_skip_small_gaps() {
+        let summaries = vec![
+            ProbeCandidateSummary {
+                candidate_microbatch: 64,
+                status: ProbeStatus::Success,
+                attempts: 2,
+                average_samples_per_second: Some(570.0),
+                average_elapsed_seconds: Some(16.0),
+            },
+            ProbeCandidateSummary {
+                candidate_microbatch: 72,
+                status: ProbeStatus::Success,
+                attempts: 2,
+                average_samples_per_second: Some(560.0),
+                average_elapsed_seconds: Some(17.0),
+            },
+        ];
+        let candidates = local_refinement_candidates(&summaries, 16, 3, 256);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn local_refinement_candidates_include_success_failure_boundary_midpoint() {
+        let summaries = vec![
+            ProbeCandidateSummary {
+                candidate_microbatch: 48,
+                status: ProbeStatus::Success,
+                attempts: 2,
+                average_samples_per_second: Some(570.0),
+                average_elapsed_seconds: Some(16.0),
+            },
+            ProbeCandidateSummary {
+                candidate_microbatch: 64,
+                status: ProbeStatus::Oom,
+                attempts: 1,
+                average_samples_per_second: None,
+                average_elapsed_seconds: None,
+            },
+            ProbeCandidateSummary {
+                candidate_microbatch: 32,
+                status: ProbeStatus::Success,
+                attempts: 2,
+                average_samples_per_second: Some(520.0),
+                average_elapsed_seconds: Some(18.0),
+            },
+        ];
+        let candidates = local_refinement_candidates(&summaries, 8, 3, 256);
+        assert_eq!(candidates, vec![40, 56]);
     }
 
     #[test]
