@@ -1,43 +1,46 @@
-use std::env;
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::thread;
+use std::collections::BTreeSet;
+use std::io::Write;
+use std::path::Path;
 use std::time::{Duration, Instant};
-use std::{collections::BTreeMap, collections::BTreeSet};
 
 use burn::backend::libtorch::LibTorchDevice;
 use burn::module::AutodiffModule;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use colored::Colorize;
 use hydra_train::data::pipeline::{
-    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
-    stream_val_pass,
+    scan_data_sources_with_progress, stream_train_epoch, stream_val_pass, DataManifest,
+    StreamingLoaderConfig,
 };
-use hydra_train::data::sample::{MjaiSample, collate_samples};
+use hydra_train::data::sample::{collate_samples, MjaiSample};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, HardwareFingerprint, LoaderRuntimeConfig,
-    PreflightCacheEntry, PreflightCacheKey, ProbeKind, ProbeResult, ProbeStatus,
-    WorkloadFingerprint, candidate_ladder, resolve_runtime_config,
+    candidate_ladder, resolve_runtime_config, EffectiveRuntimeConfig, ExplicitSettings,
+    PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
 };
 use hydra_train::training::losses::HydraLoss;
 
-use super::artifacts::{BcArtifactPaths, PreflightPaths, write_preflight_cache};
+use super::artifacts::{write_preflight_cache, BcArtifactPaths, PreflightPaths};
 use super::config::{
-    AdvancedLossConfig, ProbeChildRequest, ProbeCliRequest, TrainConfig,
-    default_num_threads_for_system, loader_runtime_config, train_device,
-    trainer_config_from_train_config,
+    configure_threads, default_num_threads_for_system, train_device,
+    trainer_config_from_train_config, ProbeChildRequest, TrainConfig,
 };
 use super::loss_policy::build_loss_config;
+use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::{
     format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
-    format_probe_status_line, format_runtime_tuning_message, format_runtime_tuning_result,
-    format_status_line, format_timed_phase_message, make_bar, make_spinner, preflight_phase_label,
+    format_probe_status_line, format_status_line, format_timed_phase_message, make_bar,
+    make_spinner, preflight_phase_label,
 };
+use super::probe_ladder::{
+    candidate_average, close_probe_finalists, dynamic_probe_ceiling, dynamic_probe_ladder,
+    local_refinement_candidates, probe_only_candidate_ladder,
+};
+use super::probe_process::{probe_result_path, write_probe_result};
+use super::probe_request::{probe_child_request_from_cli, ProbeRequest};
+use super::probe_summary::{
+    best_probe_summary, format_probe_selection_summary, probe_kind_name, summarize_probe_results,
+};
+use super::runtime_autotune::autotune_loader_runtime;
 use super::schedule::effective_lr;
 use super::validation::validation_batch_stats;
 use super::{TrainBackend, ValidBackend};
@@ -47,156 +50,6 @@ pub(super) struct PreflightRuntime {
     pub(super) train_probe_results: Vec<ProbeResult>,
     pub(super) validation_probe_results: Vec<ProbeResult>,
     pub(super) explicit: ExplicitSettings,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ProbeRequest {
-    pub(super) kind: ProbeKind,
-    pub(super) candidate_microbatch: usize,
-    pub(super) warmup_steps: usize,
-    pub(super) measure_steps: usize,
-}
-
-fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
-    static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
-    static HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
-    let flag = INTERRUPTED
-        .get_or_init(|| Arc::new(AtomicBool::new(false)))
-        .clone();
-    if HANDLER_INSTALLED.get().is_none() {
-        ctrlc::set_handler({
-            let flag = flag.clone();
-            move || {
-                flag.store(true, Ordering::SeqCst);
-            }
-        })
-        .map_err(|err| format!("failed to install preflight interrupt handler: {err}"))?;
-        let _ = HANDLER_INSTALLED.set(());
-    }
-    Ok(flag)
-}
-
-fn should_suppress_probe_output_line(line: &str) -> bool {
-    let lowered = line.to_ascii_lowercase();
-    lowered.contains("thread 'main'")
-        || lowered.contains("called `result::unwrap()`")
-        || lowered.contains("called `result::unwrap()")
-        || lowered.contains("note: run with `rust_backtrace=1`")
-        || lowered.contains("stack backtrace")
-        || lowered.contains("frame #")
-        || lowered.contains("exception raised from malloc")
-        || lowered.contains("/pytorch/")
-        || lowered.contains("/opt/conda/lib/python")
-        || lowered.contains("cudacachingallocator")
-        || lowered.contains("skipping ")
-}
-
-fn normalized_probe_output_line(line: &str) -> Option<String> {
-    if let Some(formatted) = format_probe_progress_line(line) {
-        return Some(formatted);
-    }
-    if line.trim_start().starts_with("probe_progress ") {
-        return None;
-    }
-    if should_suppress_probe_output_line(line) {
-        return None;
-    }
-    Some(line.trim().to_string())
-}
-
-fn spawn_output_forwarder<R>(reader: R, stderr: bool) -> thread::JoinHandle<Result<Vec<u8>, String>>
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let mut collected = Vec::new();
-        let mut buffered = BufReader::new(reader);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            let read = buffered
-                .read_until(b'\n', &mut line)
-                .map_err(|err| format!("failed reading preflight probe output: {err}"))?;
-            if read == 0 {
-                break;
-            }
-            collected.extend_from_slice(&line);
-            let text = String::from_utf8_lossy(&line);
-            if let Some(formatted) = normalized_probe_output_line(&text) {
-                if stderr {
-                    writeln!(std::io::stderr(), "{formatted}").map_err(|err| {
-                        format!("failed forwarding preflight probe stderr: {err}")
-                    })?;
-                    std::io::stderr()
-                        .flush()
-                        .map_err(|err| format!("failed flushing preflight probe stderr: {err}"))?;
-                } else {
-                    writeln!(std::io::stdout(), "{formatted}").map_err(|err| {
-                        format!("failed forwarding preflight probe stdout: {err}")
-                    })?;
-                    std::io::stdout()
-                        .flush()
-                        .map_err(|err| format!("failed flushing preflight probe stdout: {err}"))?;
-                }
-            }
-        }
-        Ok(collected)
-    })
-}
-
-fn summarize_probe_failure_output(output: &str) -> String {
-    let mut lines = Vec::new();
-    for line in output.lines() {
-        if should_suppress_probe_output_line(line) {
-            continue;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("probe_progress ") {
-            continue;
-        }
-        lines.push(trimmed.to_string());
-        if lines.len() >= 3 {
-            break;
-        }
-    }
-    lines.join(" | ")
-}
-
-fn probe_failure_detail(
-    status: ProbeStatus,
-    stdout: &str,
-    stderr: &str,
-    exit_code: Option<i32>,
-) -> String {
-    match status {
-        ProbeStatus::Oom => format!(
-            "probe process status={exit_code:?} detail=libtorch/cuda oom during preflight probe; raw panic output suppressed"
-        ),
-        _ => {
-            let summary = summarize_probe_failure_output(stderr);
-            let fallback = if summary.is_empty() {
-                summarize_probe_failure_output(stdout)
-            } else {
-                summary
-            };
-            if fallback.is_empty() {
-                format!(
-                    "probe process status={exit_code:?} detail=probe child failed without structured result"
-                )
-            } else {
-                format!("probe process status={exit_code:?} detail={fallback}")
-            }
-        }
-    }
-}
-
-fn join_output_forwarder(
-    handle: thread::JoinHandle<Result<Vec<u8>, String>>,
-    stream_name: &str,
-) -> Result<Vec<u8>, String> {
-    handle
-        .join()
-        .map_err(|_| format!("preflight probe {stream_name} forwarder panicked"))?
 }
 
 fn emit_probe_progress(line: &str) -> Result<(), String> {
@@ -243,295 +96,6 @@ fn emit_probe_step_progress(
             throughput,
         ))
     }
-}
-
-fn child_output(status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>) -> std::process::Output {
-    std::process::Output {
-        status,
-        stdout,
-        stderr,
-    }
-}
-
-fn wait_for_probe_child(
-    child: &mut Child,
-    interrupted: &AtomicBool,
-) -> Result<Option<ExitStatus>, String> {
-    loop {
-        if interrupted.load(Ordering::SeqCst) {
-            child.kill().ok();
-            child.wait().ok();
-            return Ok(None);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(Some(status)),
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(err) => {
-                child.kill().ok();
-                child.wait().ok();
-                return Err(format!(
-                    "failed while waiting for preflight probe child: {err}"
-                ));
-            }
-        }
-    }
-}
-
-fn total_memory_bytes() -> Option<u64> {
-    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
-    let line = meminfo.lines().find(|line| line.starts_with("MemTotal:"))?;
-    let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
-    Some(kb.saturating_mul(1024))
-}
-
-pub(super) fn advanced_loss_signature(config: Option<&AdvancedLossConfig>) -> String {
-    match config {
-        Some(config) => serde_json::to_string(config)
-            .unwrap_or_else(|_| "advanced_loss:unserializable".to_string()),
-        None => "advanced_loss:none".to_string(),
-    }
-}
-
-pub(super) fn workload_fingerprint(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-) -> WorkloadFingerprint {
-    WorkloadFingerprint {
-        batch_size: config.batch_size,
-        augment: config.augment,
-        train_fraction_bits: config.train_fraction.to_bits(),
-        max_skip_logs_per_source: config.max_skip_logs_per_source,
-        max_validation_batches: config.max_validation_batches,
-        max_validation_samples: config.max_validation_samples,
-        model_signature: format!(
-            "blocks:{} input:{} hidden:{} groups:{} action:{} score_bins:{}",
-            model_config.num_blocks,
-            model_config.input_channels,
-            model_config.hidden_channels,
-            model_config.num_groups,
-            model_config.action_space,
-            model_config.score_bins,
-        ),
-        code_signature: format!(
-            "hydra-train:{}:{}:preflight-v3",
-            env!("CARGO_PKG_VERSION"),
-            env!("CARGO_PKG_NAME")
-        ),
-        advanced_loss_signature: advanced_loss_signature(config.advanced_loss.as_ref()),
-    }
-}
-
-pub(super) fn hardware_fingerprint(device_label: &str) -> HardwareFingerprint {
-    HardwareFingerprint {
-        device_label: device_label.to_string(),
-        backend: "burn-libtorch".to_string(),
-        cpu_logical_cores: default_num_threads_for_system(),
-        total_memory_bytes: total_memory_bytes(),
-    }
-}
-
-fn autotune_buffer_samples_candidates(config: &TrainConfig) -> Vec<usize> {
-    let mut candidates = vec![
-        config.buffer_samples.max(1),
-        config.buffer_samples.saturating_mul(2).max(1),
-        config.buffer_samples.saturating_mul(4).max(1),
-    ];
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates
-}
-
-fn autotune_buffer_games_candidates(config: &TrainConfig) -> Vec<usize> {
-    let mut candidates = vec![
-        config.buffer_games.max(1),
-        config.buffer_games.saturating_mul(2).max(1),
-    ];
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates
-}
-
-fn autotune_archive_queue_candidates(config: &TrainConfig) -> Vec<usize> {
-    let mut candidates = vec![config.archive_queue_bound.max(1), 64, 128, 256];
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates
-}
-
-fn runtime_probe_loader_config(config: &TrainConfig) -> StreamingLoaderConfig {
-    StreamingLoaderConfig {
-        buffer_games: config.buffer_games,
-        buffer_samples: config.buffer_samples,
-        train_fraction: config.train_fraction,
-        seed: config.seed,
-        archive_queue_bound: config.archive_queue_bound,
-        max_skip_logs_per_source: config.max_skip_logs_per_source,
-        aggregate_skip_logs: true,
-    }
-}
-
-fn measure_train_runtime_throughput(
-    config: &TrainConfig,
-    loader_config: &StreamingLoaderConfig,
-    manifest: &DataManifest,
-    train_device: &LibTorchDevice,
-) -> Result<f64, String> {
-    let train_cfg = trainer_config_from_train_config(config);
-    let mut model = HydraModelConfig::learner().init::<TrainBackend>(train_device);
-    let mut optimizer = train_cfg.optimizer_config().init();
-    let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
-    let microbatch_size = config
-        .microbatch_size
-        .unwrap_or(config.batch_size)
-        .min(config.batch_size)
-        .max(1);
-    let warmup_steps = config.preflight.warmup_steps.max(1);
-    let measure_steps = config.preflight.measure_steps.max(1);
-    let target_steps = warmup_steps + measure_steps;
-    let mut completed_steps = 0usize;
-    let mut pending_samples = std::collections::VecDeque::new();
-    let mut measure_start = None;
-
-    for buffer_result in stream_train_epoch(manifest, loader_config, 0, None) {
-        let buffer = buffer_result.map_err(|err| format!("runtime train stream failed: {err}"))?;
-        pending_samples.extend(buffer);
-        while pending_samples.len() >= config.batch_size {
-            let logical_batch: Vec<MjaiSample> =
-                pending_samples.drain(..config.batch_size).collect();
-            let logical_batch_len = logical_batch.len().max(1) as f32;
-            let mut accumulator: GradientsAccumulator<HydraModel<TrainBackend>> =
-                GradientsAccumulator::new();
-            for chunk in logical_batch.chunks(microbatch_size) {
-                let Some((obs, targets)) =
-                    collate_samples::<TrainBackend>(chunk, config.augment, train_device)
-                else {
-                    continue;
-                };
-                let output = model.forward(obs);
-                let breakdown = loss_fn.total_loss(&output, &targets);
-                let chunk_weight = chunk.len() as f32 / logical_batch_len;
-                let grads = (breakdown.total * chunk_weight).backward();
-                let grads = GradientsParams::from_grads(grads, &model);
-                accumulator.accumulate(&model, grads);
-            }
-            let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
-            let grads = accumulator.grads();
-            model = optimizer.step(lr, model, grads);
-            completed_steps += 1;
-            if completed_steps == warmup_steps {
-                measure_start = Some(Instant::now());
-            }
-            if completed_steps >= target_steps {
-                let elapsed = measure_start
-                    .map(|start| start.elapsed())
-                    .unwrap_or_default();
-                return Ok(measure_samples_per_second(
-                    measure_steps * config.batch_size,
-                    elapsed,
-                ));
-            }
-        }
-    }
-
-    Err("not enough train data to finish runtime probe".to_string())
-}
-
-fn tune_runtime_knob<T, F>(
-    base: &TrainConfig,
-    knob_name: &str,
-    candidates: &[T],
-    display: impl Fn(T) -> String,
-    apply: impl Fn(&mut TrainConfig, T),
-    score: &mut F,
-) -> Result<T, String>
-where
-    T: Copy,
-    F: FnMut(&TrainConfig) -> Result<f64, String>,
-{
-    let mut best = *candidates
-        .first()
-        .ok_or_else(|| "runtime autotune candidate list cannot be empty".to_string())?;
-    let mut best_score = f64::NEG_INFINITY;
-    let progress = make_bar(
-        candidates.len() as u64,
-        "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
-    )?;
-    for (index, candidate) in candidates.iter().enumerate() {
-        let candidate_label = display(*candidate);
-        progress.set_message(format_runtime_tuning_message(
-            knob_name,
-            candidate_label.clone(),
-            index,
-            candidates.len(),
-        ));
-        let mut candidate_config = base.clone();
-        apply(&mut candidate_config, *candidate);
-        let throughput = score(&candidate_config)?;
-        if throughput > best_score {
-            best_score = throughput;
-            best = *candidate;
-        }
-        progress.inc(1);
-        println!(
-            "{}",
-            format_runtime_tuning_result(
-                knob_name,
-                candidate_label,
-                throughput,
-                display(best),
-                best_score,
-            )
-        );
-    }
-    progress.finish_with_message(
-        format!("runtime tuning {knob_name} complete")
-            .green()
-            .to_string(),
-    );
-    Ok(best)
-}
-
-fn candidate_average(results: &[ProbeResult], candidate: usize) -> Option<f64> {
-    summarize_probe_results(results)
-        .into_iter()
-        .find(|summary| {
-            summary.candidate_microbatch == candidate && summary.status == ProbeStatus::Success
-        })
-        .and_then(|summary| summary.average_samples_per_second)
-}
-
-fn close_probe_finalists(
-    results: &[ProbeResult],
-    margin_ratio: f64,
-    max_candidates: usize,
-) -> Vec<ProbeCandidateSummary> {
-    let mut summaries = summarize_probe_results(results)
-        .into_iter()
-        .filter(|summary| summary.status == ProbeStatus::Success)
-        .collect::<Vec<_>>();
-    summaries.sort_by(|left, right| {
-        right
-            .average_samples_per_second
-            .unwrap_or(0.0)
-            .partial_cmp(&left.average_samples_per_second.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let Some(best) = summaries
-        .first()
-        .and_then(|summary| summary.average_samples_per_second)
-    else {
-        return Vec::new();
-    };
-    summaries
-        .into_iter()
-        .filter(|summary| {
-            summary
-                .average_samples_per_second
-                .map(|score| score >= best * (1.0 - margin_ratio.max(0.0)))
-                .unwrap_or(false)
-        })
-        .take(max_candidates.max(1))
-        .collect()
 }
 
 fn rerun_probe_finalists(
@@ -587,73 +151,6 @@ fn rerun_probe_finalists(
     Ok(())
 }
 
-fn local_refinement_candidates(
-    summaries: &[ProbeCandidateSummary],
-    min_gap: usize,
-    max_candidates: usize,
-    ceiling: usize,
-) -> Vec<usize> {
-    let mut successful = summaries
-        .iter()
-        .filter(|summary| summary.status == ProbeStatus::Success)
-        .filter_map(|summary| {
-            summary
-                .average_samples_per_second
-                .map(|score| (summary.candidate_microbatch, score))
-        })
-        .collect::<Vec<_>>();
-    successful.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let Some((winner, _)) = successful.first().copied() else {
-        return Vec::new();
-    };
-
-    let mut all_candidates = successful
-        .iter()
-        .map(|(candidate, _)| *candidate)
-        .collect::<Vec<_>>();
-    all_candidates.sort_unstable();
-    all_candidates.dedup();
-
-    let winner_index = all_candidates
-        .iter()
-        .position(|candidate| *candidate == winner);
-    let Some(winner_index) = winner_index else {
-        return Vec::new();
-    };
-
-    let mut refined = BTreeSet::new();
-    let lower = winner_index
-        .checked_sub(1)
-        .and_then(|index| all_candidates.get(index).copied());
-    let upper = all_candidates.get(winner_index + 1).copied();
-    let failed_above = summaries
-        .iter()
-        .filter(|summary| {
-            summary.candidate_microbatch > winner && summary.status == ProbeStatus::Oom
-        })
-        .map(|summary| summary.candidate_microbatch)
-        .min();
-
-    for neighbor in [lower, upper, failed_above].into_iter().flatten() {
-        let lo = neighbor.min(winner);
-        let hi = neighbor.max(winner);
-        if hi.saturating_sub(lo) < min_gap.max(1) {
-            continue;
-        }
-        let midpoint = lo + (hi - lo) / 2;
-        if midpoint != lo && midpoint != hi && midpoint <= ceiling {
-            refined.insert(midpoint);
-        }
-    }
-
-    refined.into_iter().take(max_candidates.max(1)).collect()
-}
-
 fn refine_probe_winner_locally(
     config_path: &Path,
     artifacts: &BcArtifactPaths,
@@ -702,14 +199,11 @@ fn refine_probe_winner_locally(
     for candidate in candidates {
         let seconds_per_step = successful_summaries
             .iter()
-            .min_by_key(|summary| {
-                summary
-                    .candidate_microbatch
-                    .abs_diff(candidate)
-            })
+            .min_by_key(|summary| summary.candidate_microbatch.abs_diff(candidate))
             .and_then(|summary| summary.average_elapsed_seconds)
             .map(|elapsed| {
-                elapsed / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
+                elapsed
+                    / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
             })
             .unwrap_or_else(|| {
                 config.preflight.target_measure_seconds
@@ -729,13 +223,6 @@ fn refine_probe_winner_locally(
         )?;
     }
     Ok(())
-}
-
-fn score_tuple_samples_mean(scores: &[f64]) -> f64 {
-    if scores.is_empty() {
-        return 0.0;
-    }
-    scores.iter().sum::<f64>() / scores.len() as f64
 }
 
 fn adaptive_probe_steps(config: &TrainConfig, seconds_per_step: f64) -> (usize, usize) {
@@ -1085,394 +572,6 @@ fn search_validation_microbatch(
     Ok((selected_summary.candidate_microbatch, results))
 }
 
-fn score_runtime_tuple(
-    config: &TrainConfig,
-    manifest: &DataManifest,
-    train_device: &LibTorchDevice,
-    cache: &mut BTreeMap<(usize, usize, usize), Vec<f64>>,
-) -> Result<f64, String> {
-    let key = (
-        config.archive_queue_bound,
-        config.buffer_samples,
-        config.buffer_games,
-    );
-    if let Some(scores) = cache.get(&key)
-        && !scores.is_empty()
-    {
-        return Ok(score_tuple_samples_mean(scores));
-    }
-    let loader = runtime_probe_loader_config(config);
-    let score = measure_train_runtime_throughput(config, &loader, manifest, train_device)?;
-    cache.insert(key, vec![score]);
-    Ok(score)
-}
-
-fn push_runtime_tuple_sample(
-    config: &TrainConfig,
-    manifest: &DataManifest,
-    train_device: &LibTorchDevice,
-    cache: &mut BTreeMap<(usize, usize, usize), Vec<f64>>,
-) -> Result<f64, String> {
-    let key = (
-        config.archive_queue_bound,
-        config.buffer_samples,
-        config.buffer_games,
-    );
-    let loader = runtime_probe_loader_config(config);
-    let sample = measure_train_runtime_throughput(config, &loader, manifest, train_device)?;
-    let samples = cache.entry(key).or_default();
-    samples.push(sample);
-    Ok(score_tuple_samples_mean(samples))
-}
-
-fn autotune_loader_runtime(
-    config: &TrainConfig,
-    manifest: &DataManifest,
-    train_device: &LibTorchDevice,
-) -> Result<LoaderRuntimeConfig, String> {
-    let runtime_tuning_started = Instant::now();
-    let mut tuned = config.clone();
-    tuned.num_threads = loader_runtime_config(&tuned).num_threads;
-
-    if let Some(num_threads) = tuned.num_threads
-        && num_threads == 0
-    {
-        return Err("runtime autotune produced invalid num_threads=0".to_string());
-    }
-
-    let mut score_cache: BTreeMap<(usize, usize, usize), Vec<f64>> = BTreeMap::new();
-
-    let queue_candidates = autotune_archive_queue_candidates(&tuned);
-    let sample_candidates = autotune_buffer_samples_candidates(&tuned);
-    let game_candidates = autotune_buffer_games_candidates(&tuned);
-
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_tuple = (
-        tuned.archive_queue_bound,
-        tuned.buffer_samples,
-        tuned.buffer_games,
-    );
-    let mut coarse_scores = Vec::new();
-    let coarse_started = Instant::now();
-    println!(
-        "{}",
-        format_timed_phase_message(
-            "runtime_coarse_search",
-            &format!(
-                "starting tuples={}",
-                queue_candidates.len() * sample_candidates.len() * game_candidates.len()
-            ),
-            0.0,
-        )
-    );
-
-    let coarse_progress = make_bar(
-        (queue_candidates.len() * sample_candidates.len() * game_candidates.len()) as u64,
-        "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
-    )?;
-    for queue in &queue_candidates {
-        for samples in &sample_candidates {
-            for games in &game_candidates {
-                coarse_progress.set_message(format_runtime_tuning_message(
-                    "coarse_search",
-                    format!("q={queue}, samples={samples}, games={games}"),
-                    coarse_progress.position() as usize,
-                    coarse_progress.length().unwrap_or(1) as usize,
-                ));
-                let mut candidate = tuned.clone();
-                candidate.archive_queue_bound = *queue;
-                candidate.buffer_samples = *samples;
-                candidate.buffer_games = *games;
-                let score =
-                    score_runtime_tuple(&candidate, manifest, train_device, &mut score_cache)?;
-                coarse_progress.inc(1);
-                coarse_scores.push(((*queue, *samples, *games), score));
-                if score > best_score {
-                    best_score = score;
-                    best_tuple = (*queue, *samples, *games);
-                }
-            }
-        }
-    }
-    coarse_progress.finish_with_message("runtime coarse search complete".green().to_string());
-    println!(
-        "{}",
-        format_timed_phase_message(
-            "runtime_coarse_search",
-            "complete",
-            coarse_started.elapsed().as_secs_f64(),
-        )
-    );
-
-    coarse_scores.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let close_tuples = coarse_scores
-        .iter()
-        .filter(|(_, score)| {
-            *score >= best_score * (1.0 - config.preflight.loader_tuple_margin_ratio)
-        })
-        .take(2)
-        .map(|(tuple, _)| *tuple)
-        .collect::<Vec<_>>();
-    if close_tuples.len() >= 2 {
-        let refine_started = Instant::now();
-        println!(
-            "{}",
-            format_preflight_summary_line(
-                "Runtime refine:",
-                format!(
-                    "close_tuples={:?} extra_samples={}",
-                    close_tuples,
-                    config.preflight.loader_tuple_extra_samples.max(1)
-                )
-            )
-        );
-        for tuple in &close_tuples {
-            let mut candidate = tuned.clone();
-            candidate.archive_queue_bound = tuple.0;
-            candidate.buffer_samples = tuple.1;
-            candidate.buffer_games = tuple.2;
-            for _ in 0..config.preflight.loader_tuple_extra_samples.max(1) {
-                let averaged = push_runtime_tuple_sample(
-                    &candidate,
-                    manifest,
-                    train_device,
-                    &mut score_cache,
-                )?;
-                if averaged > best_score {
-                    best_score = averaged;
-                    best_tuple = *tuple;
-                }
-            }
-        }
-        println!(
-            "{}",
-            format_timed_phase_message(
-                "runtime_refine",
-                "complete",
-                refine_started.elapsed().as_secs_f64(),
-            )
-        );
-    }
-
-    tuned.archive_queue_bound = best_tuple.0;
-    tuned.buffer_samples = best_tuple.1;
-    tuned.buffer_games = best_tuple.2;
-
-    for _round in 0..config.preflight.loader_runtime_rounds.max(1) {
-        let mut score = |candidate: &TrainConfig| {
-            score_runtime_tuple(candidate, manifest, train_device, &mut score_cache)
-        };
-
-        let queue_candidates = autotune_archive_queue_candidates(&tuned);
-        tuned.archive_queue_bound = tune_runtime_knob(
-            &tuned,
-            "archive_queue_bound",
-            &queue_candidates,
-            |value| value.to_string(),
-            |cfg, value| cfg.archive_queue_bound = value,
-            &mut score,
-        )?;
-
-        let sample_candidates = autotune_buffer_samples_candidates(&tuned);
-        tuned.buffer_samples = tune_runtime_knob(
-            &tuned,
-            "buffer_samples",
-            &sample_candidates,
-            |value| value.to_string(),
-            |cfg, value| cfg.buffer_samples = value,
-            &mut score,
-        )?;
-
-        let game_candidates = autotune_buffer_games_candidates(&tuned);
-        tuned.buffer_games = tune_runtime_knob(
-            &tuned,
-            "buffer_games",
-            &game_candidates,
-            |value| value.to_string(),
-            |cfg, value| cfg.buffer_games = value,
-            &mut score,
-        )?;
-    }
-
-    println!(
-        "{}",
-        format_timed_phase_message(
-            "runtime_tuning_total",
-            "complete",
-            runtime_tuning_started.elapsed().as_secs_f64(),
-        )
-    );
-
-    Ok(loader_runtime_config(&tuned))
-}
-
-pub(super) fn preflight_cache_key(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-    device_label: &str,
-) -> PreflightCacheKey {
-    PreflightCacheKey {
-        hardware: hardware_fingerprint(device_label),
-        workload: workload_fingerprint(config, model_config),
-    }
-}
-
-pub(super) fn probe_kind_name(kind: ProbeKind) -> &'static str {
-    match kind {
-        ProbeKind::Train => "train",
-        ProbeKind::Validation => "validation",
-    }
-}
-
-pub(super) fn probe_request_from_cli(
-    config: &TrainConfig,
-    probe: Option<ProbeCliRequest>,
-) -> Result<Option<ProbeRequest>, String> {
-    let Some(probe) = probe else {
-        return Ok(None);
-    };
-    let warmup_steps = probe.warmup_steps.unwrap_or(config.preflight.warmup_steps);
-    let measure_steps = probe
-        .measure_steps
-        .unwrap_or(config.preflight.measure_steps);
-    if probe.candidate_microbatch == 0 {
-        return Err("--probe-candidate-microbatch must be greater than 0".to_string());
-    }
-    if warmup_steps == 0 {
-        return Err("--probe-warmup-steps must be greater than 0".to_string());
-    }
-    if measure_steps == 0 {
-        return Err("--probe-measure-steps must be greater than 0".to_string());
-    }
-    Ok(Some(ProbeRequest {
-        kind: probe.kind,
-        candidate_microbatch: probe.candidate_microbatch,
-        warmup_steps,
-        measure_steps,
-    }))
-}
-
-pub(super) fn probe_child_request_from_cli(
-    child: Option<ProbeChildRequest>,
-) -> Result<Option<(ProbeRequest, PathBuf)>, String> {
-    let Some(child) = child else {
-        return Ok(None);
-    };
-    let request = ProbeRequest {
-        kind: child.request.kind,
-        candidate_microbatch: child.request.candidate_microbatch,
-        warmup_steps: child
-            .request
-            .warmup_steps
-            .ok_or_else(|| "internal probe child missing resolved warmup steps".to_string())?,
-        measure_steps: child
-            .request
-            .measure_steps
-            .ok_or_else(|| "internal probe child missing resolved measure steps".to_string())?,
-    };
-    Ok(Some((request, child.result_path)))
-}
-
-pub(super) fn probe_candidate_ceiling(request: ProbeRequest) -> usize {
-    request.candidate_microbatch.max(1)
-}
-
-const MAX_DYNAMIC_PROBE_CANDIDATE: usize = 8192;
-
-fn dynamic_probe_ceiling(config: &TrainConfig, kind: ProbeKind, seed: usize) -> usize {
-    match kind {
-        ProbeKind::Train => config.batch_size.max(seed),
-        ProbeKind::Validation => config
-            .max_validation_samples
-            .unwrap_or(MAX_DYNAMIC_PROBE_CANDIDATE.saturating_mul(8))
-            .max(config.batch_size.max(seed).saturating_mul(8)),
-    }
-}
-
-fn dynamic_probe_growth_candidates(
-    config: &TrainConfig,
-    kind: ProbeKind,
-    seed: usize,
-) -> Vec<usize> {
-    let ceiling = dynamic_probe_ceiling(config, kind, seed);
-    let mut candidates = Vec::new();
-    let mut current = seed.max(1);
-    loop {
-        let next = current.saturating_mul(2);
-        if next <= current || next > ceiling {
-            break;
-        }
-        candidates.push(next);
-        current = next;
-    }
-    candidates
-}
-
-pub(super) fn probe_only_candidate_ladder(
-    config: &TrainConfig,
-    request: ProbeRequest,
-) -> Vec<usize> {
-    let ceiling = probe_candidate_ceiling(request);
-    let mut candidates: Vec<usize> = candidate_ladder(&config.preflight, config.batch_size)
-        .into_iter()
-        .filter(|candidate| *candidate <= ceiling)
-        .collect();
-    if candidates.is_empty() {
-        candidates.push(ceiling);
-    }
-    candidates
-}
-
-pub(super) fn dynamic_probe_ladder(
-    config: &TrainConfig,
-    kind: ProbeKind,
-    seed: usize,
-) -> Vec<usize> {
-    let mut lower = candidate_ladder(&config.preflight, config.batch_size)
-        .into_iter()
-        .filter(|candidate| *candidate < seed)
-        .collect::<Vec<_>>();
-    let mut ladder = vec![seed.max(1)];
-    ladder.extend(dynamic_probe_growth_candidates(config, kind, seed));
-    lower.sort_unstable_by(|a, b| b.cmp(a));
-    ladder.extend(lower);
-    ladder.dedup();
-    ladder
-}
-
-pub(super) fn write_probe_result(path: &Path, result: &ProbeResult) -> Result<(), String> {
-    let json = serde_json::to_string(result)
-        .map_err(|err| format!("failed to serialize probe result {}: {err}", path.display()))?;
-    fs::write(path, json)
-        .map_err(|err| format!("failed to write probe result {}: {err}", path.display()))
-}
-
-pub(super) fn read_probe_result(path: &Path) -> Result<ProbeResult, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read probe result {}: {err}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse probe result {}: {err}", path.display()))
-}
-
-pub(super) fn probe_result_path(
-    artifacts: &BcArtifactPaths,
-    kind: ProbeKind,
-    candidate_microbatch: usize,
-    attempt: usize,
-) -> PathBuf {
-    artifacts.root.join(format!(
-        "preflight_probe_{}_{}_{}.json",
-        probe_kind_name(kind),
-        candidate_microbatch,
-        attempt
-    ))
-}
-
 pub(super) fn measure_samples_per_second(samples: usize, elapsed: Duration) -> f64 {
     if samples == 0 {
         return 0.0;
@@ -1483,60 +582,6 @@ pub(super) fn measure_samples_per_second(samples: usize, elapsed: Duration) -> f
     } else {
         samples as f64 / seconds
     }
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct ProbeCandidateSummary {
-    pub(super) candidate_microbatch: usize,
-    pub(super) status: ProbeStatus,
-    pub(super) attempts: usize,
-    pub(super) average_samples_per_second: Option<f64>,
-    pub(super) average_elapsed_seconds: Option<f64>,
-}
-
-fn average(values: impl Iterator<Item = f64>) -> Option<f64> {
-    let mut count = 0usize;
-    let mut sum = 0.0;
-    for value in values {
-        count += 1;
-        sum += value;
-    }
-    (count > 0).then_some(sum / count as f64)
-}
-
-pub(super) fn summarize_probe_results(results: &[ProbeResult]) -> Vec<ProbeCandidateSummary> {
-    let mut grouped = std::collections::BTreeMap::<usize, Vec<&ProbeResult>>::new();
-    for result in results {
-        grouped
-            .entry(result.candidate_microbatch)
-            .or_default()
-            .push(result);
-    }
-
-    grouped
-        .into_iter()
-        .rev()
-        .map(|(candidate_microbatch, group)| {
-            let status = group
-                .iter()
-                .find(|result| result.status != ProbeStatus::Success)
-                .map(|result| result.status.clone())
-                .unwrap_or(ProbeStatus::Success);
-            ProbeCandidateSummary {
-                candidate_microbatch,
-                status,
-                attempts: group.len(),
-                average_samples_per_second: average(
-                    group
-                        .iter()
-                        .filter_map(|result| result.measured_samples_per_second),
-                ),
-                average_elapsed_seconds: average(
-                    group.iter().filter_map(|result| result.elapsed_seconds),
-                ),
-            }
-        })
-        .collect()
 }
 
 pub(super) fn probe_train_candidate(
@@ -1690,12 +735,8 @@ pub(super) fn run_probe_only(
     request: ProbeRequest,
     result_path: &Path,
 ) -> Result<(), String> {
-    if let Some(num_threads) = config.num_threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build_global()
-            .map_err(|err| format!("failed to configure rayon threads for probe child: {err}"))?;
-    }
+    configure_threads(config.num_threads)
+        .map_err(|err| format!("failed to configure rayon threads for probe child: {err}"))?;
     let loader_config = StreamingLoaderConfig {
         buffer_games: config.buffer_games,
         buffer_samples: config.buffer_samples,
@@ -1778,80 +819,12 @@ pub(super) fn execute_probe_request(
     request: ProbeRequest,
     result_path: &Path,
 ) -> Result<ProbeResult, String> {
-    fs::remove_file(result_path).ok();
-    let interrupted = interrupt_flag()?;
-    interrupted.store(false, Ordering::SeqCst);
-    let mut child =
-        Command::new(env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?)
-            .arg(config_path)
-            .arg("--probe-kind")
-            .arg(probe_kind_name(request.kind))
-            .arg("--probe-candidate-microbatch")
-            .arg(request.candidate_microbatch.to_string())
-            .arg("--probe-warmup-steps")
-            .arg(request.warmup_steps.to_string())
-            .arg("--probe-measure-steps")
-            .arg(request.measure_steps.to_string())
-            .arg("--probe-result-path")
-            .arg(result_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|err| format!("failed to spawn preflight probe child: {err}"))?;
-    let stdout_handle = child
-        .stdout
-        .take()
-        .map(|stdout| spawn_output_forwarder(stdout, false));
-    let stderr_handle = child
-        .stderr
-        .take()
-        .map(|stderr| spawn_output_forwarder(stderr, true));
-    if wait_for_probe_child(&mut child, interrupted.as_ref())?.is_none() {
-        fs::remove_file(result_path).ok();
-        if let Some(handle) = stdout_handle {
-            let _ = join_output_forwarder(handle, "stdout");
-        }
-        if let Some(handle) = stderr_handle {
-            let _ = join_output_forwarder(handle, "stderr");
-        }
-        return Err("preflight interrupted; probe child terminated".to_string());
-    }
-    let stdout = match stdout_handle {
-        Some(handle) => join_output_forwarder(handle, "stdout")?,
-        None => Vec::new(),
-    };
-    let stderr = match stderr_handle {
-        Some(handle) => join_output_forwarder(handle, "stderr")?,
-        None => Vec::new(),
-    };
-    let status = child
-        .try_wait()
-        .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
-        .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
-    let output = child_output(status, stdout, stderr);
-
-    if result_path.exists() {
-        let result = read_probe_result(result_path)?;
-        fs::remove_file(result_path).ok();
-        return Ok(result);
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
-    let combined = format!("stdout={stdout} stderr={stderr}");
-    let status = classify_probe_detail(&combined);
-    let detail = probe_failure_detail(status.clone(), stdout, stderr, output.status.code());
-    Ok(ProbeResult {
-        kind: request.kind,
-        candidate_microbatch: request.candidate_microbatch,
-        status,
-        measured_samples_per_second: None,
-        elapsed_seconds: None,
-        detail,
-    })
+    super::probe_process::execute_probe_request(
+        config_path,
+        request,
+        result_path,
+        classify_probe_detail,
+    )
 }
 
 pub(super) fn format_probe_attempt_message(
@@ -1871,33 +844,6 @@ pub(super) fn format_probe_attempt_message(
 
 pub(super) fn format_probe_result_summary(result: &ProbeResult) -> String {
     format_probe_status_line(result)
-}
-
-pub(super) fn format_probe_selection_summary(
-    kind: ProbeKind,
-    summary: &ProbeCandidateSummary,
-) -> String {
-    format!(
-        "selected {} microbatch={} avg_throughput={:.2} samples/s avg_elapsed={:.2}s attempts={}",
-        probe_kind_name(kind),
-        summary.candidate_microbatch,
-        summary.average_samples_per_second.unwrap_or(0.0),
-        summary.average_elapsed_seconds.unwrap_or(0.0),
-        summary.attempts,
-    )
-}
-
-pub(super) fn best_probe_summary(results: &[ProbeResult]) -> Option<ProbeCandidateSummary> {
-    summarize_probe_results(results)
-        .into_iter()
-        .filter(|summary| summary.status == ProbeStatus::Success)
-        .max_by(|left, right| {
-            left.average_samples_per_second
-                .unwrap_or(0.0)
-                .partial_cmp(&right.average_samples_per_second.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.candidate_microbatch.cmp(&right.candidate_microbatch))
-        })
 }
 
 pub(super) fn probe_candidate_ladder(
@@ -2088,7 +1034,12 @@ pub(super) fn run_preflight(
     device_label: &str,
     artifacts: &BcArtifactPaths,
 ) -> Result<PreflightRuntime, String> {
-    let cache_key = preflight_cache_key(config, model_config, device_label);
+    let cache_key = preflight_cache_key(
+        config,
+        model_config,
+        device_label,
+        default_num_threads_for_system(),
+    );
     let paths = PreflightPaths::new(artifacts);
     let explicit = ExplicitSettings {
         train_microbatch_explicit: config.microbatch_size.is_some(),
@@ -2156,7 +1107,10 @@ pub(super) fn run_preflight(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::config::loader_runtime_config;
     use hydra_train::preflight::{PreflightConfig, ProbeStatus};
 
     fn dummy_config() -> TrainConfig {
@@ -2218,21 +1172,21 @@ mod tests {
     fn preflight_cache_key_changes_only_for_workload_relevant_inputs() {
         let config = dummy_config();
         let model = HydraModelConfig::learner();
-        let baseline = preflight_cache_key(&config, &model, "cpu");
+        let baseline = preflight_cache_key(&config, &model, "cpu", 8);
 
         let mut threaded = config.clone();
         threaded.num_threads = Some(8);
-        assert_eq!(baseline, preflight_cache_key(&threaded, &model, "cpu"));
+        assert_eq!(baseline, preflight_cache_key(&threaded, &model, "cpu", 8));
 
         let mut buffered = config.clone();
         buffered.buffer_samples += 1;
-        assert_eq!(baseline, preflight_cache_key(&buffered, &model, "cpu"));
+        assert_eq!(baseline, preflight_cache_key(&buffered, &model, "cpu", 8));
 
         let mut validation_limited = config.clone();
         validation_limited.max_validation_batches = Some(4);
         assert_ne!(
             baseline,
-            preflight_cache_key(&validation_limited, &model, "cpu")
+            preflight_cache_key(&validation_limited, &model, "cpu", 8)
         );
     }
 
@@ -2253,218 +1207,6 @@ mod tests {
         assert!(loader.is_err());
         let effective = loader_runtime_config(&config);
         assert!(effective.num_threads.is_some());
-    }
-
-    #[test]
-    fn probe_request_from_cli_uses_probe_overrides() {
-        let config = dummy_config();
-
-        let request = probe_request_from_cli(
-            &config,
-            Some(ProbeCliRequest {
-                kind: ProbeKind::Validation,
-                candidate_microbatch: 192,
-                warmup_steps: Some(7),
-                measure_steps: Some(9),
-            }),
-        )
-        .expect("probe request should parse")
-        .expect("probe request should be present");
-        assert_eq!(request.kind, ProbeKind::Validation);
-        assert_eq!(request.candidate_microbatch, 192);
-        assert_eq!(request.warmup_steps, 7);
-        assert_eq!(request.measure_steps, 9);
-    }
-
-    #[test]
-    fn probe_request_from_cli_falls_back_to_preflight_defaults() {
-        let mut config = dummy_config();
-        config.preflight.warmup_steps = 11;
-        config.preflight.measure_steps = 13;
-        let request = probe_request_from_cli(
-            &config,
-            Some(ProbeCliRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 256,
-                warmup_steps: None,
-                measure_steps: None,
-            }),
-        )
-        .expect("probe request should parse")
-        .expect("probe request should be present");
-        assert_eq!(request.warmup_steps, 11);
-        assert_eq!(request.measure_steps, 13);
-    }
-
-    #[test]
-    fn probe_request_from_cli_rejects_zero_values() {
-        let config = dummy_config();
-
-        let err = probe_request_from_cli(
-            &config,
-            Some(ProbeCliRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 0,
-                warmup_steps: Some(0),
-                measure_steps: Some(0),
-            }),
-        )
-        .expect_err("zero candidate should fail");
-        assert!(err.contains("--probe-candidate-microbatch"));
-    }
-
-    #[test]
-    fn probe_only_candidate_ladder_respects_ceiling_and_descending_order() {
-        let mut config = dummy_config();
-        config.batch_size = 512;
-        config.preflight.candidate_microbatches = vec![64, 512, 192, 128, 256, 192, 32];
-        let ladder = probe_only_candidate_ladder(
-            &config,
-            ProbeRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 192,
-                warmup_steps: 4,
-                measure_steps: 12,
-            },
-        );
-        assert_eq!(ladder, vec![192, 128, 64, 32]);
-    }
-
-    #[test]
-    fn probe_only_candidate_ladder_falls_back_to_requested_candidate_when_filtered_empty() {
-        let mut config = dummy_config();
-        config.batch_size = 512;
-        config.preflight.candidate_microbatches = vec![512, 256];
-        let ladder = probe_only_candidate_ladder(
-            &config,
-            ProbeRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 48,
-                warmup_steps: 4,
-                measure_steps: 12,
-            },
-        );
-        assert_eq!(ladder, vec![48]);
-    }
-
-    #[test]
-    fn dynamic_probe_ladder_grows_up_then_sweeps_down() {
-        let mut config = dummy_config();
-        config.batch_size = 512;
-        config.preflight.candidate_microbatches = vec![512, 256, 128, 64, 32, 16];
-        let ladder = dynamic_probe_ladder(&config, ProbeKind::Train, 64);
-        assert_eq!(ladder, vec![64, 128, 256, 512, 32, 16]);
-    }
-
-    #[test]
-    fn dynamic_validation_probe_ladder_can_grow_past_batch_size() {
-        let mut config = dummy_config();
-        config.batch_size = 512;
-        config.preflight.candidate_microbatches = vec![512, 256, 128, 64, 32, 16];
-        let ladder = dynamic_probe_ladder(&config, ProbeKind::Validation, 512);
-        assert!(ladder.starts_with(&[512, 1024, 2048, 4096]));
-        assert!(ladder.contains(&256));
-        assert!(ladder.contains(&16));
-    }
-
-    #[test]
-    fn local_refinement_candidates_include_midpoints_around_winner() {
-        let summaries = vec![
-            ProbeCandidateSummary {
-                candidate_microbatch: 48,
-                status: ProbeStatus::Success,
-                attempts: 2,
-                average_samples_per_second: Some(570.0),
-                average_elapsed_seconds: Some(16.0),
-            },
-            ProbeCandidateSummary {
-                candidate_microbatch: 64,
-                status: ProbeStatus::Success,
-                attempts: 2,
-                average_samples_per_second: Some(520.0),
-                average_elapsed_seconds: Some(18.0),
-            },
-            ProbeCandidateSummary {
-                candidate_microbatch: 32,
-                status: ProbeStatus::Success,
-                attempts: 2,
-                average_samples_per_second: Some(500.0),
-                average_elapsed_seconds: Some(18.0),
-            },
-        ];
-        let candidates = local_refinement_candidates(&summaries, 8, 3, 256);
-        assert_eq!(candidates, vec![40, 56]);
-    }
-
-    #[test]
-    fn local_refinement_candidates_skip_small_gaps() {
-        let summaries = vec![
-            ProbeCandidateSummary {
-                candidate_microbatch: 64,
-                status: ProbeStatus::Success,
-                attempts: 2,
-                average_samples_per_second: Some(570.0),
-                average_elapsed_seconds: Some(16.0),
-            },
-            ProbeCandidateSummary {
-                candidate_microbatch: 72,
-                status: ProbeStatus::Success,
-                attempts: 2,
-                average_samples_per_second: Some(560.0),
-                average_elapsed_seconds: Some(17.0),
-            },
-        ];
-        let candidates = local_refinement_candidates(&summaries, 16, 3, 256);
-        assert!(candidates.is_empty());
-    }
-
-    #[test]
-    fn local_refinement_candidates_include_success_failure_boundary_midpoint() {
-        let summaries = vec![
-            ProbeCandidateSummary {
-                candidate_microbatch: 48,
-                status: ProbeStatus::Success,
-                attempts: 2,
-                average_samples_per_second: Some(570.0),
-                average_elapsed_seconds: Some(16.0),
-            },
-            ProbeCandidateSummary {
-                candidate_microbatch: 64,
-                status: ProbeStatus::Oom,
-                attempts: 1,
-                average_samples_per_second: None,
-                average_elapsed_seconds: None,
-            },
-            ProbeCandidateSummary {
-                candidate_microbatch: 32,
-                status: ProbeStatus::Success,
-                attempts: 2,
-                average_samples_per_second: Some(520.0),
-                average_elapsed_seconds: Some(18.0),
-            },
-        ];
-        let candidates = local_refinement_candidates(&summaries, 8, 3, 256);
-        assert_eq!(candidates, vec![40, 56]);
-    }
-
-    #[test]
-    fn probe_child_request_from_cli_parses_child_probe_inputs() {
-        let (request, path) = probe_child_request_from_cli(Some(ProbeChildRequest {
-            request: ProbeCliRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 192,
-                warmup_steps: Some(4),
-                measure_steps: Some(12),
-            },
-            result_path: PathBuf::from("/tmp/probe.json"),
-        }))
-        .expect("child request should parse")
-        .expect("child request should be present");
-        assert_eq!(request.kind, ProbeKind::Train);
-        assert_eq!(request.candidate_microbatch, 192);
-        assert_eq!(request.warmup_steps, 4);
-        assert_eq!(request.measure_steps, 12);
-        assert_eq!(path, PathBuf::from("/tmp/probe.json"));
     }
 
     #[test]
@@ -2490,80 +1232,5 @@ mod tests {
             detail: String::new(),
         });
         assert!(oom.contains("[train] candidate_mb=256 outcome=oom next=smaller_microbatch"));
-    }
-
-    #[test]
-    fn summarize_probe_results_averages_all_successful_attempts_for_candidate() {
-        let summaries = summarize_probe_results(&[
-            ProbeResult {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 64,
-                status: ProbeStatus::Success,
-                measured_samples_per_second: Some(400.0),
-                elapsed_seconds: Some(2.0),
-                detail: String::new(),
-            },
-            ProbeResult {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 64,
-                status: ProbeStatus::Success,
-                measured_samples_per_second: Some(500.0),
-                elapsed_seconds: Some(3.0),
-                detail: String::new(),
-            },
-            ProbeResult {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 48,
-                status: ProbeStatus::Success,
-                measured_samples_per_second: Some(450.0),
-                elapsed_seconds: Some(2.5),
-                detail: String::new(),
-            },
-        ]);
-        assert_eq!(summaries[0].candidate_microbatch, 64);
-        assert_eq!(summaries[0].attempts, 2);
-        assert_eq!(summaries[0].average_samples_per_second, Some(450.0));
-        assert_eq!(summaries[0].average_elapsed_seconds, Some(2.5));
-    }
-
-    #[test]
-    fn best_probe_summary_prefers_higher_average_not_single_spike() {
-        let summary = best_probe_summary(&[
-            ProbeResult {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 64,
-                status: ProbeStatus::Success,
-                measured_samples_per_second: Some(400.0),
-                elapsed_seconds: Some(2.0),
-                detail: String::new(),
-            },
-            ProbeResult {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 64,
-                status: ProbeStatus::Success,
-                measured_samples_per_second: Some(500.0),
-                elapsed_seconds: Some(2.0),
-                detail: String::new(),
-            },
-            ProbeResult {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 48,
-                status: ProbeStatus::Success,
-                measured_samples_per_second: Some(470.0),
-                elapsed_seconds: Some(2.0),
-                detail: String::new(),
-            },
-            ProbeResult {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 48,
-                status: ProbeStatus::Success,
-                measured_samples_per_second: Some(480.0),
-                elapsed_seconds: Some(2.0),
-                detail: String::new(),
-            },
-        ])
-        .expect("best summary should exist");
-        assert_eq!(summary.candidate_microbatch, 48);
-        assert_eq!(summary.average_samples_per_second, Some(475.0));
     }
 }

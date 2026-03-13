@@ -2,8 +2,8 @@ use colored::Colorize;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::{
@@ -11,9 +11,9 @@ use hydra_train::preflight::{
 };
 
 use super::artifacts::BcArtifactPaths;
-use super::config::TrainConfig;
 use super::config::display_num_threads;
-use super::preflight_runtime::summarize_probe_results;
+use super::config::TrainConfig;
+use super::probe_summary::summarize_probe_results;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
 
@@ -73,22 +73,6 @@ pub(super) fn format_runtime_tuning_message(
             total.max(1)
         )
         .white(),
-    ))
-}
-
-pub(super) fn format_runtime_tuning_result(
-    knob: &str,
-    candidate: String,
-    throughput: f64,
-    best_candidate: String,
-    best_throughput: f64,
-) -> String {
-    with_utc_timestamp(format!(
-        "{} {} {} {}",
-        "[preflight:runtime]".bold().cyan(),
-        format!("phase={knob}").yellow(),
-        format!("candidate={candidate} throughput={throughput:.2} samples/s").green(),
-        format!("best={} ({best_throughput:.2} samples/s)", best_candidate).magenta(),
     ))
 }
 
