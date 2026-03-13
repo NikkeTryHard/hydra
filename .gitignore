@@ -24,3 +24,4 @@ handoff_zips/
 .cargo/
 .pixi-env/
 output/
+out/
