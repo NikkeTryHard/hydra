@@ -1,12 +1,13 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use burn::backend::libtorch::LibTorchDevice;
 use burn::module::AutodiffModule;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
+use colored::Colorize;
 
 use hydra_train::data::pipeline::{
     scan_data_sources_with_progress, stream_train_epoch, stream_val_pass, DataManifest,
@@ -15,26 +16,34 @@ use hydra_train::data::pipeline::{
 use hydra_train::data::sample::{collate_samples, MjaiSample};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    candidate_ladder, default_notes, resolve_runtime_config, ExplicitSettings, HardwareFingerprint,
-    PreflightCacheEntry, PreflightCacheKey, PreflightReport, ProbeKind, ProbeResult, ProbeStatus,
+    candidate_ladder, resolve_runtime_config, ExplicitSettings, HardwareFingerprint,
+    PreflightCacheEntry, PreflightCacheKey, ProbeKind, ProbeResult, ProbeStatus,
     SelectedRuntimeConfig, WorkloadFingerprint,
 };
 use hydra_train::training::losses::HydraLoss;
 
-use super::artifacts::{
-    write_preflight_cache, write_preflight_report, BcArtifactPaths, PreflightPaths,
-};
+use super::artifacts::{write_preflight_cache, BcArtifactPaths, PreflightPaths};
 use super::config::{
-    train_device, trainer_config_from_train_config, AdvancedLossConfig, TrainConfig,
+    train_device, trainer_config_from_train_config, AdvancedLossConfig, ProbeChildRequest,
+    ProbeCliRequest, TrainConfig,
 };
 use super::loss_policy::build_loss_config;
+use super::presentation::{format_probe_status_line, make_bar, make_spinner};
 use super::schedule::effective_lr;
 use super::validation::validation_batch_stats;
 use super::{TrainBackend, ValidBackend};
 
 pub(super) struct PreflightRuntime {
-    pub(super) report: PreflightReport,
     pub(super) selected: SelectedRuntimeConfig,
+    pub(super) train_probe_results: Vec<ProbeResult>,
+    pub(super) validation_probe_results: Vec<ProbeResult>,
+    pub(super) explicit: ExplicitSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TrainingRuntimeWarning {
+    pub(super) configured: SelectedRuntimeConfig,
+    pub(super) saved: SelectedRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +61,53 @@ pub(super) fn read_preflight_cache(path: &Path) -> Result<PreflightCacheEntry, S
         .map_err(|err| format!("failed to parse preflight cache {}: {err}", path.display()))
 }
 
+pub(super) fn load_saved_preflight_entry(
+    artifacts: &BcArtifactPaths,
+) -> Result<Option<PreflightCacheEntry>, String> {
+    let path = PreflightPaths::new(artifacts).cache_path;
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(read_preflight_cache(&path)?))
+}
+
+pub(super) fn configured_runtime_selection(config: &TrainConfig) -> SelectedRuntimeConfig {
+    resolve_runtime_config(
+        config.batch_size,
+        ExplicitSettings {
+            train_microbatch_explicit: config.microbatch_size.is_some(),
+            validation_microbatch_explicit: config.validation_microbatch_size.is_some(),
+        },
+        config.microbatch_size.unwrap_or(config.batch_size),
+        config
+            .validation_microbatch_size
+            .unwrap_or_else(|| config.microbatch_size.unwrap_or(config.batch_size)),
+    )
+}
+
+pub(super) fn training_runtime_warning(
+    config: &TrainConfig,
+    saved: Option<&PreflightCacheEntry>,
+    expected_cache_key: &PreflightCacheKey,
+) -> Option<TrainingRuntimeWarning> {
+    let saved = saved?;
+    if &saved.cache_key != expected_cache_key {
+        return None;
+    }
+    if config.microbatch_size.is_none() && config.validation_microbatch_size.is_none() {
+        return None;
+    }
+    let configured = configured_runtime_selection(config);
+    if configured == saved.selected {
+        None
+    } else {
+        Some(TrainingRuntimeWarning {
+            configured,
+            saved: saved.selected,
+        })
+    }
+}
+
 pub(super) fn advanced_loss_signature(config: Option<&AdvancedLossConfig>) -> String {
     match config {
         Some(config) => serde_json::to_string(config)
@@ -67,6 +123,14 @@ pub(super) fn workload_fingerprint(
     WorkloadFingerprint {
         batch_size: config.batch_size,
         augment: config.augment,
+        train_fraction_bits: config.train_fraction.to_bits(),
+        buffer_games: config.buffer_games,
+        buffer_samples: config.buffer_samples,
+        num_threads: config.num_threads,
+        archive_queue_bound: config.archive_queue_bound,
+        max_skip_logs_per_source: config.max_skip_logs_per_source,
+        max_validation_batches: config.max_validation_batches,
+        max_validation_samples: config.max_validation_samples,
         model_signature: format!(
             "blocks:{} input:{} hidden:{} groups:{} action:{} score_bins:{}",
             model_config.num_blocks,
@@ -110,10 +174,11 @@ pub(super) fn probe_kind_name(kind: ProbeKind) -> &'static str {
     }
 }
 
-pub(super) fn probe_request_from_config(
+pub(super) fn probe_request_from_cli(
     config: &TrainConfig,
+    probe: Option<ProbeCliRequest>,
 ) -> Result<Option<ProbeRequest>, String> {
-    let Some(probe) = config.preflight.probe_only.as_ref() else {
+    let Some(probe) = probe else {
         return Ok(None);
     };
     let warmup_steps = probe.warmup_steps.unwrap_or(config.preflight.warmup_steps);
@@ -121,13 +186,13 @@ pub(super) fn probe_request_from_config(
         .measure_steps
         .unwrap_or(config.preflight.measure_steps);
     if probe.candidate_microbatch == 0 {
-        return Err("preflight.probe_only.candidate_microbatch must be greater than 0".to_string());
+        return Err("--probe-candidate-microbatch must be greater than 0".to_string());
     }
     if warmup_steps == 0 {
-        return Err("preflight.probe_only warmup_steps must be greater than 0".to_string());
+        return Err("--probe-warmup-steps must be greater than 0".to_string());
     }
     if measure_steps == 0 {
-        return Err("preflight.probe_only measure_steps must be greater than 0".to_string());
+        return Err("--probe-measure-steps must be greater than 0".to_string());
     }
     Ok(Some(ProbeRequest {
         kind: probe.kind,
@@ -135,6 +200,46 @@ pub(super) fn probe_request_from_config(
         warmup_steps,
         measure_steps,
     }))
+}
+
+pub(super) fn probe_child_request_from_cli(
+    child: Option<ProbeChildRequest>,
+) -> Result<Option<(ProbeRequest, PathBuf)>, String> {
+    let Some(child) = child else {
+        return Ok(None);
+    };
+    let request = ProbeRequest {
+        kind: child.request.kind,
+        candidate_microbatch: child.request.candidate_microbatch,
+        warmup_steps: child
+            .request
+            .warmup_steps
+            .ok_or_else(|| "internal probe child missing resolved warmup steps".to_string())?,
+        measure_steps: child
+            .request
+            .measure_steps
+            .ok_or_else(|| "internal probe child missing resolved measure steps".to_string())?,
+    };
+    Ok(Some((request, child.result_path)))
+}
+
+pub(super) fn probe_candidate_ceiling(request: ProbeRequest) -> usize {
+    request.candidate_microbatch.max(1)
+}
+
+pub(super) fn probe_only_candidate_ladder(
+    config: &TrainConfig,
+    request: ProbeRequest,
+) -> Vec<usize> {
+    let ceiling = probe_candidate_ceiling(request);
+    let mut candidates: Vec<usize> = candidate_ladder(&config.preflight, config.batch_size)
+        .into_iter()
+        .filter(|candidate| *candidate <= ceiling)
+        .collect();
+    if candidates.is_empty() {
+        candidates.push(ceiling);
+    }
+    candidates
 }
 
 pub(super) fn write_probe_result(path: &Path, result: &ProbeResult) -> Result<(), String> {
@@ -177,6 +282,45 @@ pub(super) fn measure_samples_per_second(samples: usize, elapsed: Duration) -> f
     }
 }
 
+fn child_scan_progress_template(kind: ProbeKind) -> &'static str {
+    match kind {
+        ProbeKind::Train => "[probe-train-scan] {spinner:.cyan} {msg}",
+        ProbeKind::Validation => "[probe-val-scan] {spinner:.cyan} {msg}",
+    }
+}
+
+fn child_step_progress_template(kind: ProbeKind) -> &'static str {
+    match kind {
+        ProbeKind::Train => "[probe-train] {spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
+        ProbeKind::Validation => "[probe-val] {spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
+    }
+}
+
+fn probe_phase_message(
+    kind: ProbeKind,
+    microbatch_size: usize,
+    completed_steps: usize,
+    request: ProbeRequest,
+) -> String {
+    if completed_steps < request.warmup_steps {
+        format!(
+            "{} candidate_mb={} phase=warmup step {}/{}",
+            probe_kind_name(kind),
+            microbatch_size,
+            completed_steps + 1,
+            request.warmup_steps.max(1)
+        )
+    } else {
+        format!(
+            "{} candidate_mb={} phase=measure step {}/{}",
+            probe_kind_name(kind),
+            microbatch_size,
+            completed_steps + 1 - request.warmup_steps,
+            request.measure_steps.max(1)
+        )
+    }
+}
+
 pub(super) fn probe_train_candidate(
     config: &TrainConfig,
     request: ProbeRequest,
@@ -193,6 +337,10 @@ pub(super) fn probe_train_candidate(
     let mut completed_steps = 0usize;
     let mut pending_samples = std::collections::VecDeque::new();
     let mut measure_start = None;
+    let step_pb = make_bar(
+        target_steps as u64,
+        child_step_progress_template(ProbeKind::Train),
+    )?;
 
     for buffer_result in stream_train_epoch(manifest, loader_config, 0, None) {
         let buffer =
@@ -220,6 +368,13 @@ pub(super) fn probe_train_candidate(
             let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
             let grads = accumulator.grads();
             model = optimizer.step(lr, model, grads);
+            step_pb.set_message(probe_phase_message(
+                ProbeKind::Train,
+                microbatch_size,
+                completed_steps,
+                request,
+            ));
+            step_pb.inc(1);
             completed_steps += 1;
             if completed_steps == request.warmup_steps {
                 measure_start = Some(Instant::now());
@@ -228,6 +383,7 @@ pub(super) fn probe_train_candidate(
                 let elapsed = measure_start
                     .map(|start| start.elapsed())
                     .unwrap_or_default();
+                step_pb.finish_and_clear();
                 return Ok(measure_samples_per_second(
                     request.measure_steps.max(1) * config.batch_size,
                     elapsed,
@@ -235,6 +391,8 @@ pub(super) fn probe_train_candidate(
             }
         }
     }
+
+    step_pb.finish_and_clear();
 
     Err(format!(
         "not enough train data to finish preflight probe at microbatch {}",
@@ -256,6 +414,10 @@ pub(super) fn probe_validation_candidate(
     let target_steps = request.warmup_steps + request.measure_steps;
     let mut completed_steps = 0usize;
     let mut measure_start = None;
+    let step_pb = make_bar(
+        target_steps as u64,
+        child_step_progress_template(ProbeKind::Validation),
+    )?;
 
     for buffer_result in stream_val_pass(manifest, loader_config, None) {
         let buffer =
@@ -267,6 +429,13 @@ pub(super) fn probe_validation_candidate(
             };
             let output = model_valid.forward(obs);
             let _ = validation_batch_stats(chunk.len(), &output, &targets, &loss_fn);
+            step_pb.set_message(probe_phase_message(
+                ProbeKind::Validation,
+                microbatch_size,
+                completed_steps,
+                request,
+            ));
+            step_pb.inc(1);
             completed_steps += 1;
             if completed_steps == request.warmup_steps {
                 measure_start = Some(Instant::now());
@@ -275,6 +444,7 @@ pub(super) fn probe_validation_candidate(
                 let elapsed = measure_start
                     .map(|start| start.elapsed())
                     .unwrap_or_default();
+                step_pb.finish_and_clear();
                 return Ok(measure_samples_per_second(
                     request.measure_steps.max(1) * microbatch_size,
                     elapsed,
@@ -282,6 +452,8 @@ pub(super) fn probe_validation_candidate(
             }
         }
     }
+
+    step_pb.finish_and_clear();
 
     Err(format!(
         "not enough validation data to finish preflight probe at microbatch {}",
@@ -294,6 +466,12 @@ pub(super) fn run_probe_only(
     request: ProbeRequest,
     result_path: &Path,
 ) -> Result<(), String> {
+    if let Some(num_threads) = config.num_threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
+            .map_err(|err| format!("failed to configure rayon threads for probe child: {err}"))?;
+    }
     let loader_config = StreamingLoaderConfig {
         buffer_games: config.buffer_games,
         buffer_samples: config.buffer_samples,
@@ -302,13 +480,29 @@ pub(super) fn run_probe_only(
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
     };
-    let manifest = scan_data_sources_with_progress(&config.data_dir, config.train_fraction, None)
-        .map_err(|err| {
+    let scan_pb = make_spinner(child_scan_progress_template(request.kind))?;
+    scan_pb.set_message(format!(
+        "{} candidate_mb={} scanning dataset",
+        probe_kind_name(request.kind),
+        request.candidate_microbatch
+    ));
+    let manifest =
+        scan_data_sources_with_progress(&config.data_dir, config.train_fraction, Some(&scan_pb))
+            .map_err(|err| {
+                format!(
+                    "failed to scan preflight data from {}: {err}",
+                    config.data_dir.display()
+                )
+            })?;
+    scan_pb.finish_with_message(
         format!(
-            "failed to scan preflight data from {}: {err}",
-            config.data_dir.display()
+            "{} candidate_mb={} scan complete",
+            probe_kind_name(request.kind),
+            request.candidate_microbatch
         )
-    })?;
+        .green()
+        .to_string(),
+    );
     let train_device = train_device(&config.device);
     let measured_samples_per_second = match request.kind {
         ProbeKind::Train => {
@@ -333,6 +527,17 @@ pub(super) fn run_probe_only(
     )
 }
 
+pub(super) fn run_probe_child_mode(
+    config: &TrainConfig,
+    child: Option<ProbeChildRequest>,
+) -> Result<bool, String> {
+    let Some((request, result_path)) = probe_child_request_from_cli(child)? else {
+        return Ok(false);
+    };
+    run_probe_only(config, request, &result_path)?;
+    Ok(true)
+}
+
 pub(super) fn execute_probe_request(
     config_path: &Path,
     request: ProbeRequest,
@@ -342,20 +547,19 @@ pub(super) fn execute_probe_request(
     let output =
         Command::new(env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?)
             .arg(config_path)
-            .env("HYDRA_PREFLIGHT_PROBE_KIND", probe_kind_name(request.kind))
-            .env(
-                "HYDRA_PREFLIGHT_CANDIDATE_MB",
-                request.candidate_microbatch.to_string(),
-            )
-            .env(
-                "HYDRA_PREFLIGHT_WARMUP_STEPS",
-                request.warmup_steps.to_string(),
-            )
-            .env(
-                "HYDRA_PREFLIGHT_MEASURE_STEPS",
-                request.measure_steps.to_string(),
-            )
-            .env("HYDRA_PREFLIGHT_RESULT_PATH", result_path)
+            .arg("--probe-kind")
+            .arg(probe_kind_name(request.kind))
+            .arg("--probe-candidate-microbatch")
+            .arg(request.candidate_microbatch.to_string())
+            .arg("--probe-warmup-steps")
+            .arg(request.warmup_steps.to_string())
+            .arg("--probe-measure-steps")
+            .arg(request.measure_steps.to_string())
+            .arg("--probe-result-path")
+            .arg(result_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .output()
             .map_err(|err| format!("failed to spawn preflight probe child: {err}"))?;
 
@@ -380,6 +584,34 @@ pub(super) fn execute_probe_request(
         measured_samples_per_second: None,
         detail,
     })
+}
+
+pub(super) fn format_probe_attempt_message(
+    kind: ProbeKind,
+    candidate: usize,
+    attempt: usize,
+    total_attempts: usize,
+) -> String {
+    format!(
+        "[preflight:{}] candidate_mb={} attempt {}/{}",
+        probe_kind_name(kind),
+        candidate,
+        attempt,
+        total_attempts.max(1)
+    )
+}
+
+pub(super) fn format_probe_result_summary(result: &ProbeResult) -> String {
+    format_probe_status_line(result)
+}
+
+pub(super) fn format_probe_selection_summary(kind: ProbeKind, result: &ProbeResult) -> String {
+    format!(
+        "selected {} microbatch={} throughput={:.2} samples/s",
+        probe_kind_name(kind),
+        result.candidate_microbatch,
+        result.measured_samples_per_second.unwrap_or(0.0)
+    )
 }
 
 pub(super) fn best_probe_result(results: &[ProbeResult]) -> Option<&ProbeResult> {
@@ -414,12 +646,33 @@ pub(super) fn probe_candidate_ladder(
     };
     let mut results = Vec::new();
     let mut stable_results = Vec::new();
+    println!(
+        "{} {}",
+        "Preflight ladder:".bold().cyan(),
+        format!(
+            "kind={} candidates={:?} required_successes={}",
+            probe_kind_name(kind),
+            candidate_list,
+            config.preflight.required_successes.max(1)
+        )
+        .yellow()
+    );
+    let progress = make_bar(
+        (candidate_list.len() * config.preflight.required_successes.max(1)) as u64,
+        "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
+    )?;
 
     for candidate in candidate_list {
         let mut stable = true;
         let stable_start = results.len();
         let attempts = config.preflight.required_successes.max(1);
         for attempt in 0..attempts {
+            progress.set_message(format_probe_attempt_message(
+                kind,
+                candidate,
+                attempt + 1,
+                attempts,
+            ));
             let request = ProbeRequest {
                 kind,
                 candidate_microbatch: candidate,
@@ -429,6 +682,8 @@ pub(super) fn probe_candidate_ladder(
             let result_path = probe_result_path(artifacts, kind, candidate, attempt);
             let result = execute_probe_request(config_path, request, &result_path)?;
             let passed = result.status == ProbeStatus::Success;
+            progress.inc(1);
+            progress.println(format!("{}", format_probe_result_summary(&result).yellow()));
             results.push(result);
             if !passed {
                 stable = false;
@@ -442,6 +697,7 @@ pub(super) fn probe_candidate_ladder(
             }
         }
     }
+    progress.finish_and_clear();
 
     if use_explicit_only {
         return Err(format!(
@@ -459,20 +715,45 @@ pub(super) fn probe_candidate_ladder(
                 probe_kind_name(kind)
             )
         })?;
+    if let Some(result) = best_probe_result(&stable_results) {
+        println!(
+            "{} {}",
+            "Preflight selected:".bold().cyan(),
+            format_probe_selection_summary(kind, result).green()
+        );
+    }
     Ok((selected, results))
 }
 
-pub(super) fn apply_preflight_selection(
+pub(super) fn run_probe_ladder_only(
+    config_path: &Path,
     config: &TrainConfig,
-    selected: SelectedRuntimeConfig,
-) -> TrainConfig {
-    if config.preflight.advisory_only {
-        return config.clone();
-    }
-    let mut resolved = config.clone();
-    resolved.microbatch_size = Some(selected.train_microbatch_size);
-    resolved.validation_microbatch_size = Some(selected.validation_microbatch_size);
-    resolved
+    artifacts: &BcArtifactPaths,
+    request: ProbeRequest,
+) -> Result<(usize, Vec<ProbeResult>), String> {
+    let scan_pb = make_spinner("{spinner:.cyan} {msg}")?;
+    scan_pb.set_message(format!(
+        "scanning data for {} probe",
+        probe_kind_name(request.kind)
+    ));
+    let _ =
+        scan_data_sources_with_progress(&config.data_dir, config.train_fraction, Some(&scan_pb))
+            .map_err(|err| {
+                format!(
+                    "failed to scan preflight data from {}: {err}",
+                    config.data_dir.display()
+                )
+            })?;
+    scan_pb.finish_with_message(
+        format!("scan complete for {} probe", probe_kind_name(request.kind))
+            .green()
+            .to_string(),
+    );
+
+    let candidates = probe_only_candidate_ladder(config, request);
+    let selected =
+        probe_candidate_ladder(config_path, config, artifacts, request.kind, &candidates)?;
+    Ok(selected)
 }
 
 pub(super) fn classify_probe_detail(detail: &str) -> ProbeStatus {
@@ -504,28 +785,6 @@ pub(super) fn run_preflight(
         validation_microbatch_explicit: config.validation_microbatch_size.is_some(),
     };
 
-    if config.preflight.enabled && config.preflight.reuse_cache && paths.cache_path.exists() {
-        let entry = read_preflight_cache(&paths.cache_path)?;
-        if entry.cache_key == cache_key {
-            let report = PreflightReport {
-                schema_version: 1,
-                cache_key,
-                selected: entry.selected,
-                explicit,
-                advisory_only: config.preflight.advisory_only,
-                cache_hit: true,
-                train_probe_results: Vec::new(),
-                validation_probe_results: Vec::new(),
-                notes: default_notes(),
-            };
-            write_preflight_report(&paths.report_path, &report)?;
-            return Ok(PreflightRuntime {
-                report,
-                selected: entry.selected,
-            });
-        }
-    }
-
     let candidates = candidate_ladder(&config.preflight, config.batch_size);
     let (train_microbatch, train_probe_results) = probe_candidate_ladder(
         config_path,
@@ -547,34 +806,25 @@ pub(super) fn run_preflight(
         train_microbatch,
         validation_microbatch,
     );
-    let report = PreflightReport {
-        schema_version: 1,
-        cache_key: cache_key.clone(),
+    write_preflight_cache(
+        &paths.cache_path,
+        &PreflightCacheEntry {
+            cache_key,
+            selected,
+        },
+    )?;
+    Ok(PreflightRuntime {
         selected,
-        explicit,
-        advisory_only: config.preflight.advisory_only,
-        cache_hit: false,
         train_probe_results,
         validation_probe_results,
-        notes: default_notes(),
-    };
-    write_preflight_report(&paths.report_path, &report)?;
-    if config.preflight.enabled && config.preflight.reuse_cache {
-        write_preflight_cache(
-            &paths.cache_path,
-            &PreflightCacheEntry {
-                cache_key,
-                selected,
-            },
-        )?;
-    }
-    Ok(PreflightRuntime { report, selected })
+        explicit,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hydra_train::preflight::{PreflightConfig, ProbeOnlyConfig, ProbeStatus};
+    use hydra_train::preflight::{PreflightConfig, ProbeStatus};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -632,48 +882,105 @@ mod tests {
     }
 
     #[test]
-    fn apply_preflight_selection_respects_advisory_only() {
-        let mut advisory = dummy_config();
-        advisory.preflight.advisory_only = true;
-        let advisory_selected = apply_preflight_selection(
-            &advisory,
-            SelectedRuntimeConfig {
+    fn training_runtime_warning_only_fires_for_manual_mismatch() {
+        let mut config = dummy_config();
+        let cache_key = preflight_cache_key(&config, &HydraModelConfig::learner(), "cpu");
+        let saved = PreflightCacheEntry {
+            cache_key: cache_key.clone(),
+            selected: SelectedRuntimeConfig {
                 train_microbatch_size: 128,
                 validation_microbatch_size: 96,
                 accum_steps: 2,
             },
-        );
-        assert_eq!(advisory_selected.microbatch_size, advisory.microbatch_size);
-        assert_eq!(
-            advisory_selected.validation_microbatch_size,
-            advisory.validation_microbatch_size
-        );
+        };
+        let warning =
+            training_runtime_warning(&config, Some(&saved), &cache_key).expect("warning expected");
+        assert_eq!(warning.saved, saved.selected);
+        assert_eq!(warning.configured.train_microbatch_size, 64);
 
-        let applied = apply_preflight_selection(
-            &dummy_config(),
-            SelectedRuntimeConfig {
-                train_microbatch_size: 128,
-                validation_microbatch_size: 96,
-                accum_steps: 2,
-            },
-        );
-        assert_eq!(applied.microbatch_size, Some(128));
-        assert_eq!(applied.validation_microbatch_size, Some(96));
+        config.microbatch_size = None;
+        config.validation_microbatch_size = None;
+        assert!(training_runtime_warning(&config, Some(&saved), &cache_key).is_none());
     }
 
     #[test]
-    fn probe_request_from_config_uses_probe_only_overrides() {
-        let mut config = dummy_config();
-        config.preflight.probe_only = Some(ProbeOnlyConfig {
-            kind: ProbeKind::Validation,
-            candidate_microbatch: 192,
-            warmup_steps: Some(7),
-            measure_steps: Some(9),
-        });
+    fn training_runtime_warning_ignores_stale_cache_key() {
+        let config = dummy_config();
+        let expected = preflight_cache_key(&config, &HydraModelConfig::learner(), "cpu");
+        let stale = PreflightCacheEntry {
+            cache_key: preflight_cache_key(&config, &HydraModelConfig::learner(), "cuda:0"),
+            selected: SelectedRuntimeConfig {
+                train_microbatch_size: 128,
+                validation_microbatch_size: 96,
+                accum_steps: 2,
+            },
+        };
+        assert!(training_runtime_warning(&config, Some(&stale), &expected).is_none());
+    }
 
-        let request = probe_request_from_config(&config)
-            .expect("probe request should parse")
-            .expect("probe_only should be present");
+    #[test]
+    fn preflight_cache_key_changes_when_runtime_relevant_knobs_change() {
+        let config = dummy_config();
+        let model = HydraModelConfig::learner();
+        let baseline = preflight_cache_key(&config, &model, "cpu");
+
+        let mut threaded = config.clone();
+        threaded.num_threads = Some(8);
+        assert_ne!(baseline, preflight_cache_key(&threaded, &model, "cpu"));
+
+        let mut buffered = config.clone();
+        buffered.buffer_samples += 1;
+        assert_ne!(baseline, preflight_cache_key(&buffered, &model, "cpu"));
+
+        let mut validation_limited = config.clone();
+        validation_limited.max_validation_batches = Some(4);
+        assert_ne!(
+            baseline,
+            preflight_cache_key(&validation_limited, &model, "cpu")
+        );
+    }
+
+    #[test]
+    fn training_runtime_warning_ignores_matching_manual_values() {
+        let config = dummy_config();
+        let cache_key = preflight_cache_key(&config, &HydraModelConfig::learner(), "cpu");
+        let saved = PreflightCacheEntry {
+            cache_key: cache_key.clone(),
+            selected: SelectedRuntimeConfig {
+                train_microbatch_size: 64,
+                validation_microbatch_size: 32,
+                accum_steps: 4,
+            },
+        };
+        assert!(training_runtime_warning(&config, Some(&saved), &cache_key).is_none());
+    }
+
+    #[test]
+    fn configured_runtime_selection_matches_train_defaults() {
+        let mut config = dummy_config();
+        config.microbatch_size = None;
+        config.validation_microbatch_size = None;
+        let configured = configured_runtime_selection(&config);
+        assert_eq!(configured.train_microbatch_size, config.batch_size);
+        assert_eq!(configured.validation_microbatch_size, config.batch_size);
+        assert_eq!(configured.accum_steps, 1);
+    }
+
+    #[test]
+    fn probe_request_from_cli_uses_probe_overrides() {
+        let config = dummy_config();
+
+        let request = probe_request_from_cli(
+            &config,
+            Some(ProbeCliRequest {
+                kind: ProbeKind::Validation,
+                candidate_microbatch: 192,
+                warmup_steps: Some(7),
+                measure_steps: Some(9),
+            }),
+        )
+        .expect("probe request should parse")
+        .expect("probe request should be present");
         assert_eq!(request.kind, ProbeKind::Validation);
         assert_eq!(request.candidate_microbatch, 192);
         assert_eq!(request.warmup_steps, 7);
@@ -681,35 +988,115 @@ mod tests {
     }
 
     #[test]
-    fn probe_request_from_config_falls_back_to_preflight_defaults() {
+    fn probe_request_from_cli_falls_back_to_preflight_defaults() {
         let mut config = dummy_config();
         config.preflight.warmup_steps = 11;
         config.preflight.measure_steps = 13;
-        config.preflight.probe_only = Some(ProbeOnlyConfig {
-            kind: ProbeKind::Train,
-            candidate_microbatch: 256,
-            warmup_steps: None,
-            measure_steps: None,
-        });
-
-        let request = probe_request_from_config(&config)
-            .expect("probe request should parse")
-            .expect("probe_only should be present");
+        let request = probe_request_from_cli(
+            &config,
+            Some(ProbeCliRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 256,
+                warmup_steps: None,
+                measure_steps: None,
+            }),
+        )
+        .expect("probe request should parse")
+        .expect("probe request should be present");
         assert_eq!(request.warmup_steps, 11);
         assert_eq!(request.measure_steps, 13);
     }
 
     #[test]
-    fn probe_request_from_config_rejects_zero_values() {
-        let mut config = dummy_config();
-        config.preflight.probe_only = Some(ProbeOnlyConfig {
-            kind: ProbeKind::Train,
-            candidate_microbatch: 0,
-            warmup_steps: Some(0),
-            measure_steps: Some(0),
-        });
+    fn probe_request_from_cli_rejects_zero_values() {
+        let config = dummy_config();
 
-        let err = probe_request_from_config(&config).expect_err("zero candidate should fail");
-        assert!(err.contains("candidate_microbatch"));
+        let err = probe_request_from_cli(
+            &config,
+            Some(ProbeCliRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 0,
+                warmup_steps: Some(0),
+                measure_steps: Some(0),
+            }),
+        )
+        .expect_err("zero candidate should fail");
+        assert!(err.contains("--probe-candidate-microbatch"));
+    }
+
+    #[test]
+    fn probe_only_candidate_ladder_respects_ceiling_and_descending_order() {
+        let mut config = dummy_config();
+        config.batch_size = 512;
+        config.preflight.candidate_microbatches = vec![64, 512, 192, 128, 256, 192, 32];
+        let ladder = probe_only_candidate_ladder(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 192,
+                warmup_steps: 4,
+                measure_steps: 12,
+            },
+        );
+        assert_eq!(ladder, vec![192, 128, 64, 32]);
+    }
+
+    #[test]
+    fn probe_only_candidate_ladder_falls_back_to_requested_candidate_when_filtered_empty() {
+        let mut config = dummy_config();
+        config.batch_size = 512;
+        config.preflight.candidate_microbatches = vec![512, 256];
+        let ladder = probe_only_candidate_ladder(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 48,
+                warmup_steps: 4,
+                measure_steps: 12,
+            },
+        );
+        assert_eq!(ladder, vec![48]);
+    }
+
+    #[test]
+    fn probe_child_request_from_cli_parses_child_probe_inputs() {
+        let (request, path) = probe_child_request_from_cli(Some(ProbeChildRequest {
+            request: ProbeCliRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 192,
+                warmup_steps: Some(4),
+                measure_steps: Some(12),
+            },
+            result_path: PathBuf::from("/tmp/probe.json"),
+        }))
+        .expect("child request should parse")
+        .expect("child request should be present");
+        assert_eq!(request.kind, ProbeKind::Train);
+        assert_eq!(request.candidate_microbatch, 192);
+        assert_eq!(request.warmup_steps, 4);
+        assert_eq!(request.measure_steps, 12);
+        assert_eq!(path, PathBuf::from("/tmp/probe.json"));
+    }
+
+    #[test]
+    fn format_probe_result_summary_reports_success_and_oom() {
+        let success = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 192,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: Some(1234.5),
+            detail: String::new(),
+        });
+        assert!(success.contains("candidate_mb=192"));
+        assert!(success.contains("1234.50 samples/s"));
+
+        let oom = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 256,
+            status: ProbeStatus::Oom,
+            measured_samples_per_second: None,
+            detail: String::new(),
+        });
+        assert_eq!(oom, "[train] candidate_mb=256 status=oom");
     }
 }
