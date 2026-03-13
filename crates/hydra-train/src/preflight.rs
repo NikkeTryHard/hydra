@@ -28,10 +28,6 @@ pub fn default_min_microbatch_size() -> usize {
     16
 }
 
-pub fn default_train_search_stop_patience() -> usize {
-    2
-}
-
 pub fn default_validation_growth_patience() -> usize {
     2
 }
@@ -88,6 +84,22 @@ pub fn default_max_adaptive_measure_steps() -> usize {
     8
 }
 
+pub fn default_local_refinement_enabled() -> bool {
+    true
+}
+
+pub fn default_local_refinement_max_candidates() -> usize {
+    3
+}
+
+pub fn default_local_refinement_min_gap() -> usize {
+    8
+}
+
+pub fn default_local_refinement_extra_measure_steps() -> usize {
+    2
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightConfig {
@@ -103,8 +115,6 @@ pub struct PreflightConfig {
     pub min_microbatch_size: usize,
     #[serde(default = "default_candidate_microbatches")]
     pub candidate_microbatches: Vec<usize>,
-    #[serde(default = "default_train_search_stop_patience")]
-    pub train_search_stop_patience: usize,
     #[serde(default = "default_validation_growth_patience")]
     pub validation_growth_patience: usize,
     #[serde(default = "default_validation_growth_max_steps")]
@@ -133,6 +143,14 @@ pub struct PreflightConfig {
     pub max_adaptive_warmup_steps: usize,
     #[serde(default = "default_max_adaptive_measure_steps")]
     pub max_adaptive_measure_steps: usize,
+    #[serde(default = "default_local_refinement_enabled")]
+    pub local_refinement_enabled: bool,
+    #[serde(default = "default_local_refinement_max_candidates")]
+    pub local_refinement_max_candidates: usize,
+    #[serde(default = "default_local_refinement_min_gap")]
+    pub local_refinement_min_gap: usize,
+    #[serde(default = "default_local_refinement_extra_measure_steps")]
+    pub local_refinement_extra_measure_steps: usize,
 }
 
 impl Default for PreflightConfig {
@@ -144,7 +162,6 @@ impl Default for PreflightConfig {
             required_successes: default_required_successes(),
             min_microbatch_size: default_min_microbatch_size(),
             candidate_microbatches: default_candidate_microbatches(),
-            train_search_stop_patience: default_train_search_stop_patience(),
             validation_growth_patience: default_validation_growth_patience(),
             validation_growth_max_steps: default_validation_growth_max_steps(),
             measure_noise_tolerance_ratio: default_measure_noise_tolerance_ratio(),
@@ -159,6 +176,10 @@ impl Default for PreflightConfig {
             target_measure_seconds: default_target_measure_seconds(),
             max_adaptive_warmup_steps: default_max_adaptive_warmup_steps(),
             max_adaptive_measure_steps: default_max_adaptive_measure_steps(),
+            local_refinement_enabled: default_local_refinement_enabled(),
+            local_refinement_max_candidates: default_local_refinement_max_candidates(),
+            local_refinement_min_gap: default_local_refinement_min_gap(),
+            local_refinement_extra_measure_steps: default_local_refinement_extra_measure_steps(),
         }
     }
 }
@@ -315,10 +336,13 @@ mod tests {
     #[test]
     fn preflight_defaults_include_search_policy_controls() {
         let config = PreflightConfig::default();
-        assert_eq!(config.train_search_stop_patience, 2);
         assert_eq!(config.validation_growth_patience, 2);
         assert_eq!(config.validation_growth_max_steps, 6);
         assert!((config.measure_noise_tolerance_ratio - 0.02).abs() < f64::EPSILON);
         assert_eq!(config.loader_runtime_rounds, 2);
+        assert!(config.local_refinement_enabled);
+        assert_eq!(config.local_refinement_max_candidates, 3);
+        assert_eq!(config.local_refinement_min_gap, 8);
+        assert_eq!(config.local_refinement_extra_measure_steps, 2);
     }
 }
