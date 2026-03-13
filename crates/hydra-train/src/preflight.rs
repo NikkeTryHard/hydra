@@ -2,18 +2,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub fn default_enabled() -> bool {
-    true
-}
-
-pub fn default_advisory_only() -> bool {
-    false
-}
-
-pub fn default_reuse_cache() -> bool {
-    true
-}
-
 pub fn default_allow_override_explicit_microbatch() -> bool {
     false
 }
@@ -24,10 +12,6 @@ pub fn default_warmup_steps() -> usize {
 
 pub fn default_measure_steps() -> usize {
     2
-}
-
-pub fn default_safety_backoff_rungs() -> usize {
-    0
 }
 
 pub fn default_required_successes() -> usize {
@@ -47,54 +31,30 @@ pub fn default_min_microbatch_size() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ProbeOnlyConfig {
-    pub kind: ProbeKind,
-    pub candidate_microbatch: usize,
-    pub warmup_steps: Option<usize>,
-    pub measure_steps: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct PreflightConfig {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default = "default_advisory_only")]
-    pub advisory_only: bool,
-    #[serde(default = "default_reuse_cache")]
-    pub reuse_cache: bool,
     #[serde(default = "default_allow_override_explicit_microbatch")]
     pub allow_override_explicit_microbatch: bool,
     #[serde(default = "default_warmup_steps")]
     pub warmup_steps: usize,
     #[serde(default = "default_measure_steps")]
     pub measure_steps: usize,
-    #[serde(default = "default_safety_backoff_rungs")]
-    pub safety_backoff_rungs: usize,
     #[serde(default = "default_required_successes")]
     pub required_successes: usize,
     #[serde(default = "default_min_microbatch_size")]
     pub min_microbatch_size: usize,
     #[serde(default = "default_candidate_microbatches")]
     pub candidate_microbatches: Vec<usize>,
-    #[serde(default)]
-    pub probe_only: Option<ProbeOnlyConfig>,
 }
 
 impl Default for PreflightConfig {
     fn default() -> Self {
         Self {
-            enabled: default_enabled(),
-            advisory_only: default_advisory_only(),
-            reuse_cache: default_reuse_cache(),
             allow_override_explicit_microbatch: default_allow_override_explicit_microbatch(),
             warmup_steps: default_warmup_steps(),
             measure_steps: default_measure_steps(),
-            safety_backoff_rungs: default_safety_backoff_rungs(),
             required_successes: default_required_successes(),
             min_microbatch_size: default_min_microbatch_size(),
             candidate_microbatches: default_candidate_microbatches(),
-            probe_only: None,
         }
     }
 }
@@ -109,6 +69,14 @@ pub struct HardwareFingerprint {
 pub struct WorkloadFingerprint {
     pub batch_size: usize,
     pub augment: bool,
+    pub train_fraction_bits: u32,
+    pub buffer_games: usize,
+    pub buffer_samples: usize,
+    pub num_threads: Option<usize>,
+    pub archive_queue_bound: usize,
+    pub max_skip_logs_per_source: usize,
+    pub max_validation_batches: Option<usize>,
+    pub max_validation_samples: Option<usize>,
     pub model_signature: String,
     pub code_signature: String,
     pub advanced_loss_signature: String,
@@ -159,19 +127,6 @@ pub struct ExplicitSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreflightReport {
-    pub schema_version: u32,
-    pub cache_key: PreflightCacheKey,
-    pub selected: SelectedRuntimeConfig,
-    pub explicit: ExplicitSettings,
-    pub advisory_only: bool,
-    pub cache_hit: bool,
-    pub train_probe_results: Vec<ProbeResult>,
-    pub validation_probe_results: Vec<ProbeResult>,
-    pub notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PreflightCacheEntry {
     pub cache_key: PreflightCacheKey,
     pub selected: SelectedRuntimeConfig,
@@ -206,19 +161,6 @@ pub fn resolve_runtime_config(
     }
 }
 
-pub fn default_notes() -> Vec<String> {
-    vec![
-        "preflight tunes runtime microbatch sizing for measured throughput while keeping batch_size semantics fixed"
-            .to_string(),
-        "resolved settings should remain fixed across resume for comparable BC runs".to_string(),
-        "throughput and rough ETA are advisory, not guaranteed".to_string(),
-    ]
-}
-
-pub fn default_report_name() -> PathBuf {
-    PathBuf::from("preflight_report.json")
-}
-
 pub fn default_cache_name() -> PathBuf {
     PathBuf::from("preflight_cache.json")
 }
@@ -235,16 +177,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(candidate_ladder(&config, 256), vec![256, 64, 8]);
-    }
-
-    #[test]
-    fn default_notes_describe_throughput_target() {
-        let config = PreflightConfig {
-            safety_backoff_rungs: 0,
-            ..Default::default()
-        };
-        assert_eq!(config.safety_backoff_rungs, 0);
-        assert!(default_notes()[0].contains("measured throughput"));
     }
 
     #[test]

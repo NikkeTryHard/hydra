@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use burn::backend::libtorch::LibTorchDevice;
-use hydra_train::preflight::PreflightConfig;
+use hydra_train::preflight::{PreflightConfig, ProbeKind};
 use hydra_train::training::bc::BCTrainerConfig;
 use hydra_train::model::HydraModelConfig;
 use rayon::ThreadPoolBuilder;
@@ -62,6 +62,28 @@ pub(crate) struct TrainConfig {
     pub(crate) max_validation_samples: Option<usize>,
     #[serde(default)]
     pub(crate) preflight: PreflightConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProbeCliRequest {
+    pub(crate) kind: ProbeKind,
+    pub(crate) candidate_microbatch: usize,
+    pub(crate) warmup_steps: Option<usize>,
+    pub(crate) measure_steps: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProbeChildRequest {
+    pub(crate) request: ProbeCliRequest,
+    pub(crate) result_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrainCli {
+    pub(crate) config_path: PathBuf,
+    pub(crate) preflight: bool,
+    pub(crate) probe_only: Option<ProbeCliRequest>,
+    pub(crate) probe_child: Option<ProbeChildRequest>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -182,18 +204,115 @@ pub(crate) fn default_max_validation_samples() -> Option<usize> {
 }
 
 pub(crate) fn usage(program: &str) -> String {
-    format!("Usage: {program} <config.yaml>")
+    format!(
+        "Usage: {program} <config.yaml> [--preflight] [--probe-kind <train|validation> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]]"
+    )
 }
 
-pub(crate) fn parse_args<I>(args: I) -> Result<PathBuf, String>
+fn parse_probe_kind(value: &str) -> Result<ProbeKind, String> {
+    match value {
+        "train" => Ok(ProbeKind::Train),
+        "validation" => Ok(ProbeKind::Validation),
+        _ => Err(format!(
+            "unsupported --probe-kind value '{value}'; expected train or validation"
+        )),
+    }
+}
+
+fn parse_usize_flag(flag: &str, value: Option<String>) -> Result<usize, String> {
+    let raw = value.ok_or_else(|| format!("missing value for {flag}"))?;
+    raw.parse::<usize>()
+        .map_err(|err| format!("invalid {flag} value '{raw}': {err}"))
+}
+
+pub(crate) fn parse_args<I>(args: I) -> Result<TrainCli, String>
 where
     I: IntoIterator<Item = String>,
 {
     let mut args = args.into_iter();
     let program = args.next().unwrap_or_else(|| "train".to_string());
-    match (args.next(), args.next()) {
-        (Some(config), None) => Ok(PathBuf::from(config)),
-        _ => Err(usage(&program)),
+    let config = args.next().ok_or_else(|| usage(&program))?;
+    let mut probe_kind = None;
+    let mut candidate_microbatch = None;
+    let mut warmup_steps = None;
+    let mut measure_steps = None;
+    let mut probe_result_path = None;
+    let mut preflight = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--preflight" => {
+                preflight = true;
+            }
+            "--probe-kind" => {
+                let value = args.next().ok_or_else(|| "missing value for --probe-kind".to_string())?;
+                probe_kind = Some(parse_probe_kind(&value)?);
+            }
+            "--probe-candidate-microbatch" => {
+                candidate_microbatch = Some(parse_usize_flag(
+                    "--probe-candidate-microbatch",
+                    args.next(),
+                )?);
+            }
+            "--probe-warmup-steps" => {
+                warmup_steps = Some(parse_usize_flag("--probe-warmup-steps", args.next())?);
+            }
+            "--probe-measure-steps" => {
+                measure_steps = Some(parse_usize_flag("--probe-measure-steps", args.next())?);
+            }
+            "--probe-result-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --probe-result-path".to_string())?;
+                probe_result_path = Some(PathBuf::from(value));
+            }
+            _ => return Err(usage(&program)),
+        }
+    }
+
+    let config_path = PathBuf::from(config);
+    if preflight && (probe_kind.is_some() || probe_result_path.is_some()) {
+        return Err(format!(
+            "{}\n--preflight cannot be combined with probe-only flags",
+            usage(&program)
+        ));
+    }
+    match (probe_kind, candidate_microbatch, probe_result_path) {
+        (None, None, None) => Ok(TrainCli {
+            config_path,
+            preflight,
+            probe_only: None,
+            probe_child: None,
+        }),
+        (Some(kind), Some(candidate_microbatch), None) => Ok(TrainCli {
+            config_path,
+            preflight: false,
+            probe_only: Some(ProbeCliRequest {
+                kind,
+                candidate_microbatch,
+                warmup_steps,
+                measure_steps,
+            }),
+            probe_child: None,
+        }),
+        (Some(kind), Some(candidate_microbatch), Some(result_path)) => Ok(TrainCli {
+            config_path,
+            preflight: false,
+            probe_only: None,
+            probe_child: Some(ProbeChildRequest {
+                request: ProbeCliRequest {
+                    kind,
+                    candidate_microbatch,
+                    warmup_steps,
+                    measure_steps,
+                },
+                result_path,
+            }),
+        }),
+        _ => Err(format!(
+            "{}\nprobe mode requires both --probe-kind and --probe-candidate-microbatch",
+            usage(&program)
+        )),
     }
 }
 
