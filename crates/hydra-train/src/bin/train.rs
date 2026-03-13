@@ -30,12 +30,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use burn::backend::{Autodiff, LibTorch};
 use colored::Colorize;
 
-use self::presentation::print_banner;
+use self::presentation::{
+    explicit_preflight_summary, format_probe_results_table, manual_runtime_warning, print_banner,
+};
 use self::artifacts::BcArtifactPaths;
 use self::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
 use self::config::{configure_threads, parse_args, read_config, validate_config};
 use self::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use self::preflight_runtime::{probe_kind_name, probe_request_from_config, run_probe_only};
+use self::preflight_runtime::{
+    best_probe_result, format_probe_result_summary, load_saved_preflight_entry,
+    preflight_cache_key, probe_kind_name, probe_request_from_cli, run_preflight,
+    run_probe_child_mode, run_probe_ladder_only, training_runtime_warning,
+};
 
 #[cfg(test)]
 use self::config::{
@@ -55,18 +61,53 @@ type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
 
 fn run() -> Result<(), String> {
-    let config_path = parse_args(env::args())?;
-    let config = read_config(&config_path)?;
-    if let Some(request) = probe_request_from_config(&config)? {
+    let cli = parse_args(env::args())?;
+    let config = read_config(&cli.config_path)?;
+    if run_probe_child_mode(&config, cli.probe_child.clone())? {
+        return Ok(());
+    }
+    if cli.preflight {
         validate_config(&config)?;
         configure_threads(config.num_threads)?;
         let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
-        artifacts.create_dirs()?;
-        let result_path = artifacts.root.join(format!(
-            "probe_only_{}_{}.json",
-            probe_kind_name(request.kind),
-            request.candidate_microbatch
-        ));
+        artifacts.create_root_dir()?;
+        let preflight = run_preflight(
+            &cli.config_path,
+            &config,
+            &hydra_train::model::HydraModelConfig::learner(),
+            &self::config::device_label(&config.device),
+            &artifacts,
+        )?;
+        println!(
+            "{} {}",
+            "Preflight:".bold().cyan(),
+            explicit_preflight_summary(preflight.selected, preflight.explicit).yellow()
+        );
+        println!(
+            "{}\n{}",
+            "Preflight train table".bold().cyan(),
+            format_probe_results_table(
+                hydra_train::preflight::ProbeKind::Train,
+                &preflight.train_probe_results,
+                Some(preflight.selected.train_microbatch_size),
+            )
+        );
+        println!(
+            "{}\n{}",
+            "Preflight validation table".bold().cyan(),
+            format_probe_results_table(
+                hydra_train::preflight::ProbeKind::Validation,
+                &preflight.validation_probe_results,
+                Some(preflight.selected.validation_microbatch_size),
+            )
+        );
+        return Ok(());
+    }
+    if let Some(request) = probe_request_from_cli(&config, cli.probe_only.clone())? {
+        validate_config(&config)?;
+        configure_threads(config.num_threads)?;
+        let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
+        artifacts.create_root_dir()?;
         println!(
             "{} {} {} {} {}",
             "Probe-only:".bold().cyan(),
@@ -75,14 +116,27 @@ fn run() -> Result<(), String> {
             format!("warmup_steps={}", request.warmup_steps).yellow(),
             format!("measure_steps={}", request.measure_steps).yellow(),
         );
-        run_probe_only(&config, request, &result_path)?;
-        let result = std::fs::read_to_string(&result_path)
-            .map_err(|err| format!("failed to read probe result {}: {err}", result_path.display()))?;
-        println!("{} {}", "Probe result: ".bold().cyan(), result);
-        println!("{} {}", "Probe artifact:".bold().cyan(), result_path.display());
+        let (selected, results) = run_probe_ladder_only(&cli.config_path, &config, &artifacts, request)?;
+        let selected_result = best_probe_result(&results)
+            .ok_or_else(|| format!("no stable {} probe result found", probe_kind_name(request.kind)))?;
+        println!(
+            "{} {}",
+            "Probe selected:".bold().cyan(),
+            format_probe_result_summary(selected_result).green()
+        );
+        println!(
+            "{} {}",
+            "Probe best candidate:".bold().cyan(),
+            format!("{}={}", probe_kind_name(request.kind), selected).yellow()
+        );
+        println!(
+            "{}\n{}",
+            "Probe final table".bold().cyan(),
+            format_probe_results_table(request.kind, &results, Some(selected))
+        );
         return Ok(());
     }
-    let (bootstrap, runtime) = initialize_training_bootstrap(&config_path, config)?;
+    let (bootstrap, runtime) = initialize_training_bootstrap(&cli.config_path, config)?;
     let TrainingBootstrap {
         config,
         resume,
@@ -91,7 +145,6 @@ fn run() -> Result<(), String> {
         manifest,
         train_cfg,
         model_config,
-        preflight,
         device_name,
         train_device,
         current_runtime,
@@ -122,17 +175,17 @@ fn run() -> Result<(), String> {
         &train_cfg,
     );
 
-    println!(
-        "{} {} {} {}",
-        "Preflight:".bold().cyan(),
-        format!("train_mb={}", preflight.selected.train_microbatch_size).yellow(),
-        format!("val_mb={}", preflight.selected.validation_microbatch_size).yellow(),
-        if preflight.report.cache_hit {
-            "cache=hit".green()
-        } else {
-            "cache=miss".yellow()
-        }
-    );
+    let saved_preflight = load_saved_preflight_entry(&artifacts)?;
+    let expected_preflight_key = preflight_cache_key(&config, &model_config, &device_name);
+    if let Some(warning) =
+        training_runtime_warning(&config, saved_preflight.as_ref(), &expected_preflight_key)
+    {
+        println!(
+            "{} {}",
+            "Warning:".bold().yellow(),
+            manual_runtime_warning(warning.configured, warning.saved).yellow()
+        );
+    }
 
     resume.print_banner();
 
@@ -228,7 +281,10 @@ mod tests {
     fn parse_args_accepts_single_config_path() {
         let args = vec!["train".to_string(), "config.yaml".to_string()];
         let parsed = parse_args(args).expect("single config arg should parse");
-        assert_eq!(parsed, PathBuf::from("config.yaml"));
+        assert_eq!(parsed.config_path, PathBuf::from("config.yaml"));
+        assert!(!parsed.preflight);
+        assert!(parsed.probe_only.is_none());
+        assert!(parsed.probe_child.is_none());
     }
 
     #[test]
@@ -247,6 +303,69 @@ mod tests {
         ];
         let err = parse_args(args).expect_err("extra args should fail");
         assert!(err.contains("Usage:"));
+    }
+
+    #[test]
+    fn parse_args_accepts_probe_only_flags() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+            "--probe-warmup-steps".to_string(),
+            "4".to_string(),
+            "--probe-measure-steps".to_string(),
+            "8".to_string(),
+        ];
+        let parsed = parse_args(args).expect("probe args should parse");
+        let probe = parsed.probe_only.expect("probe_only should be present");
+        assert_eq!(probe.kind, hydra_train::preflight::ProbeKind::Train);
+        assert_eq!(probe.candidate_microbatch, 192);
+        assert_eq!(probe.warmup_steps, Some(4));
+        assert_eq!(probe.measure_steps, Some(8));
+        assert!(!parsed.preflight);
+    }
+
+    #[test]
+    fn parse_args_accepts_preflight_flag() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--preflight".to_string(),
+        ];
+        let parsed = parse_args(args).expect("preflight arg should parse");
+        assert!(parsed.preflight);
+        assert!(parsed.probe_only.is_none());
+        assert!(parsed.probe_child.is_none());
+    }
+
+    #[test]
+    fn parse_args_rejects_preflight_with_probe_flags() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--preflight".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+        ];
+        let err = parse_args(args).expect_err("mixed preflight/probe flags should fail");
+        assert!(err.contains("--preflight cannot be combined"));
+    }
+
+    #[test]
+    fn parse_args_rejects_partial_probe_flags() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+        ];
+        let err = parse_args(args).expect_err("partial probe args should fail");
+        assert!(err.contains("probe mode requires both --probe-kind and --probe-candidate-microbatch"));
     }
 
     #[test]
@@ -620,7 +739,7 @@ old_field: true
     }
 
     #[test]
-    fn read_config_accepts_preflight_probe_only_block() {
+    fn read_config_rejects_legacy_preflight_probe_only_block() {
         let dir = std::env::temp_dir();
         let yaml_path = dir.join(format!(
             "hydra_train_probe_only_{}_{}.yaml",
@@ -630,7 +749,7 @@ old_field: true
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
-preflight:
+        preflight:
   probe_only:
     kind: train
     candidate_microbatch: 256
@@ -638,12 +757,8 @@ preflight:
     measure_steps: 7
 "#;
         std::fs::write(&yaml_path, yaml).expect("write yaml config");
-        let config = read_config(&yaml_path).expect("probe-only config should parse");
-        let probe = config.preflight.probe_only.expect("probe_only should exist");
-        assert_eq!(probe.kind, hydra_train::preflight::ProbeKind::Train);
-        assert_eq!(probe.candidate_microbatch, 256);
-        assert_eq!(probe.warmup_steps, Some(5));
-        assert_eq!(probe.measure_steps, Some(7));
+        let err = read_config(&yaml_path).expect_err("legacy probe-only config should fail");
+        assert!(err.contains("probe_only"));
         std::fs::remove_file(yaml_path).ok();
     }
 
@@ -697,7 +812,7 @@ bc:
     }
 
     #[test]
-    fn read_config_rejects_unknown_probe_only_fields() {
+    fn read_config_rejects_probe_only_block_entirely() {
         let dir = std::env::temp_dir();
         let yaml_path = dir.join(format!(
             "hydra_train_probe_only_unknown_{}_{}.yaml",
@@ -714,8 +829,88 @@ preflight:
     mystery_field: true
 "#;
         std::fs::write(&yaml_path, yaml).expect("write yaml config");
-        let err = read_config(&yaml_path).expect_err("unknown probe_only field should fail");
+        let err = read_config(&yaml_path).expect_err("probe_only block should fail");
         assert!(err.contains("failed to parse yaml config"));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_removed_preflight_enabled_field() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_preflight_enabled_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  enabled: true
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let err = read_config(&yaml_path).expect_err("removed enabled field should fail");
+        assert!(err.contains("enabled"));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_removed_preflight_reuse_cache_field() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_preflight_reuse_cache_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  reuse_cache: true
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let err = read_config(&yaml_path).expect_err("removed reuse_cache field should fail");
+        assert!(err.contains("reuse_cache"));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_removed_preflight_advisory_only_field() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_preflight_advisory_only_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  advisory_only: true
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let err = read_config(&yaml_path).expect_err("removed advisory_only field should fail");
+        assert!(err.contains("advisory_only"));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_removed_preflight_safety_backoff_rungs_field() {
+        let dir = std::env::temp_dir();
+        let yaml_path = dir.join(format!(
+            "hydra_train_preflight_safety_backoff_{}_{}.yaml",
+            std::process::id(),
+            default_seed()
+        ));
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  safety_backoff_rungs: 1
+"#;
+        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let err = read_config(&yaml_path).expect_err("removed safety_backoff_rungs should fail");
+        assert!(err.contains("safety_backoff_rungs"));
         std::fs::remove_file(yaml_path).ok();
     }
 

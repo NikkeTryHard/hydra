@@ -23,7 +23,6 @@ use super::config::{
     trainer_config_from_train_config, validate_config, TrainConfig,
 };
 use super::loss_policy::build_loss_config;
-use super::preflight_runtime::{apply_preflight_selection, run_preflight, PreflightRuntime};
 use super::progress::BannerStats;
 use super::resume::{
     runtime_resume_contract, validate_resume_runtime_compatibility, ResumeContext,
@@ -39,7 +38,6 @@ pub(super) struct TrainingBootstrap {
     pub(super) manifest: DataManifest,
     pub(super) train_cfg: BCTrainerConfig,
     pub(super) model_config: HydraModelConfig,
-    pub(super) preflight: PreflightRuntime,
     pub(super) device_name: String,
     pub(super) train_device: LibTorchDevice,
     pub(super) current_runtime: super::resume::RuntimeResumeContract,
@@ -63,8 +61,8 @@ pub(super) struct TrainingRuntime {
 }
 
 pub(super) fn initialize_training_bootstrap(
-    config_path: &Path,
-    mut config: TrainConfig,
+    _config_path: &Path,
+    config: TrainConfig,
 ) -> Result<(TrainingBootstrap, TrainingRuntime), String> {
     validate_config(&config)?;
     configure_threads(config.num_threads)?;
@@ -72,7 +70,7 @@ pub(super) fn initialize_training_bootstrap(
     let resume = ResumeContext::load(&config)?;
     let session_start_global_step = resume.session_start_global_step;
     let artifacts = BcArtifactPaths::new(&config.output_dir, session_start_global_step);
-    artifacts.create_dirs()?;
+    artifacts.create_root_dir()?;
 
     let loader_config = StreamingLoaderConfig {
         buffer_games: config.buffer_games,
@@ -129,14 +127,6 @@ pub(super) fn initialize_training_bootstrap(
 
     let device_name = device_label(&config.device);
     let model_config = HydraModelConfig::learner();
-    let preflight = run_preflight(
-        config_path,
-        &config,
-        &model_config,
-        &device_name,
-        &artifacts,
-    )?;
-    config = apply_preflight_selection(&config, preflight.selected);
     let current_runtime = runtime_resume_contract(&config);
     if let Some(state) = resume.state.as_ref() {
         validate_resume_runtime_compatibility(state, current_runtime)?;
@@ -194,6 +184,7 @@ pub(super) fn initialize_training_bootstrap(
     let last_log_step = global_step;
     let last_log_time = run_start;
     let tb = if config.tensorboard {
+        artifacts.create_tensorboard_dirs()?;
         Some(
             EventWriter::create(&artifacts.tb_session_dir)
                 .map_err(|err| format!("tensorboard init: {err}"))?,
@@ -220,7 +211,6 @@ pub(super) fn initialize_training_bootstrap(
             manifest,
             train_cfg,
             model_config,
-            preflight,
             device_name,
             train_device,
             current_runtime,

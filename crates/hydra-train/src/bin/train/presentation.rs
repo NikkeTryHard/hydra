@@ -4,6 +4,9 @@ use std::time::Duration;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use hydra_train::model::HydraModelConfig;
+use hydra_train::preflight::{
+    ExplicitSettings, ProbeKind, ProbeResult, ProbeStatus, SelectedRuntimeConfig,
+};
 
 use super::artifacts::BcArtifactPaths;
 use super::config::TrainConfig;
@@ -65,6 +68,101 @@ pub(super) fn bc_hyperparam_summary(train_cfg: &BCTrainerConfig) -> String {
         train_cfg.weight_decay,
         train_cfg.grad_clip_norm,
         train_cfg.warmup_steps,
+    )
+}
+
+fn probe_status_label(status: &ProbeStatus) -> &'static str {
+    match status {
+        ProbeStatus::Success => "success",
+        ProbeStatus::Oom => "oom",
+        ProbeStatus::BackendError => "backend_error",
+        ProbeStatus::DataError => "data_error",
+    }
+}
+
+pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
+    match result.status {
+        ProbeStatus::Success => format!(
+            "[{}] candidate_mb={} status=success throughput={:.2} samples/s",
+            match result.kind {
+                ProbeKind::Train => "train",
+                ProbeKind::Validation => "validation",
+            },
+            result.candidate_microbatch,
+            result.measured_samples_per_second.unwrap_or(0.0)
+        ),
+        _ => format!(
+            "[{}] candidate_mb={} status={}",
+            match result.kind {
+                ProbeKind::Train => "train",
+                ProbeKind::Validation => "validation",
+            },
+            result.candidate_microbatch,
+            probe_status_label(&result.status)
+        ),
+    }
+}
+
+pub(super) fn format_probe_results_table(
+    kind: ProbeKind,
+    results: &[ProbeResult],
+    selected_candidate: Option<usize>,
+) -> String {
+    let kind_label = match kind {
+        ProbeKind::Train => "train",
+        ProbeKind::Validation => "validation",
+    };
+    let mut lines = vec![format!(
+        "kind         selected  candidate_mb  status         throughput(samples/s)"
+    )];
+    lines.push(
+        "------------ ---------  ------------  -------------  ---------------------".to_string(),
+    );
+    for result in results {
+        let selected = if selected_candidate == Some(result.candidate_microbatch) {
+            "yes"
+        } else {
+            "no"
+        };
+        let throughput = result
+            .measured_samples_per_second
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "-".to_string());
+        lines.push(format!(
+            "{kind_label:<12} {selected:<9} {candidate:<12} {status:<13} {throughput:>21}",
+            candidate = result.candidate_microbatch,
+            status = probe_status_label(&result.status),
+        ));
+    }
+    lines.join("\n")
+}
+
+pub(super) fn explicit_preflight_summary(
+    selected: SelectedRuntimeConfig,
+    explicit: ExplicitSettings,
+) -> String {
+    format!(
+        "saved train_mb={} val_mb={} accum_steps={} explicit(train={}, val={})",
+        selected.train_microbatch_size,
+        selected.validation_microbatch_size,
+        selected.accum_steps,
+        explicit.train_microbatch_explicit,
+        explicit.validation_microbatch_explicit,
+    )
+}
+
+pub(super) fn manual_runtime_warning(
+    configured: SelectedRuntimeConfig,
+    saved: SelectedRuntimeConfig,
+) -> String {
+    format!(
+        "manual runtime values in use; configured train_mb={} val_mb={} accum_steps={} instead of saved preflight train_mb={} val_mb={} accum_steps={}",
+        configured.train_microbatch_size,
+        configured.validation_microbatch_size,
+        configured.accum_steps,
+        saved.train_microbatch_size,
+        saved.validation_microbatch_size,
+        saved.accum_steps,
     )
 }
 
