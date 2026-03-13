@@ -694,18 +694,27 @@ fn refine_probe_winner_locally(
             )
         )
     );
+    let successful_summaries = summaries
+        .iter()
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .cloned()
+        .collect::<Vec<_>>();
     for candidate in candidates {
-        let base = candidate_average(results, candidate).unwrap_or(0.0);
-        let seconds_per_step = if base > 0.0 {
-            summarize_probe_results(results)
-                .into_iter()
-                .find(|summary| summary.candidate_microbatch == candidate)
-                .and_then(|summary| summary.average_elapsed_seconds)
-                .unwrap_or(0.0)
-                / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
-        } else {
-            0.0
-        };
+        let seconds_per_step = successful_summaries
+            .iter()
+            .min_by_key(|summary| {
+                summary
+                    .candidate_microbatch
+                    .abs_diff(candidate)
+            })
+            .and_then(|summary| summary.average_elapsed_seconds)
+            .map(|elapsed| {
+                elapsed / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
+            })
+            .unwrap_or_else(|| {
+                config.preflight.target_measure_seconds
+                    / config.preflight.measure_steps.max(1) as f64
+            });
         let (warmup_steps, measure_steps) = adaptive_probe_steps(config, seconds_per_step);
         rerun_candidate_attempts(
             config_path,
