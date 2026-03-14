@@ -550,33 +550,36 @@ pub fn generate_self_play_batch_source<B: Backend>(
 
 /// Generates self-play trajectories in parallel using owned model clones.
 ///
-/// Each game runs on a Rayon worker with its own cloned model, so there
-/// is no shared-reference requirement (`HydraModel` is `Clone` + `Send`
-/// but not `Sync` due to Burn's `Param<OnceCell>` storage).
+/// Each game runs on a Rayon worker with its own cloned model on the
+/// inference device. `HydraModel` is `Clone` + `Send` but not `Sync`
+/// (Burn's `Param<OnceCell>` storage), so models are pre-cloned on the
+/// calling thread then moved into the parallel closure.
 ///
-/// Models are pre-cloned on the calling thread before dispatch to avoid
-/// capturing `&HydraModel` in the parallel closure (which would require
-/// `Sync`). Value baselines are computed serially after all games finish
-/// using the original model reference.
+/// When `inference_device` differs from the training device (e.g. CPU
+/// vs CUDA), each clone is forked to the inference device to avoid
+/// multiplying VRAM usage per worker. Value baselines are computed
+/// serially on the original model/device after all games finish.
 pub fn generate_self_play_batch_source_parallel<B: Backend>(
     game_seeds: &[u64],
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
     device: &B::Device,
+    inference_device: &B::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource
 where
     B::Device: Clone + Send + Sync,
 {
-    // Pre-clone models on the calling thread. This avoids capturing
-    // `&HydraModel` in the Rayon closure (which requires Sync).
+    // Pre-clone models on the calling thread then fork to inference
+    // device. This avoids capturing `&HydraModel` in the Rayon closure
+    // (which requires Sync) and keeps VRAM for training only.
     let worker_inputs: Vec<_> = game_seeds
         .iter()
         .enumerate()
         .map(|(idx, &seed)| {
-            let worker_model = model.clone();
-            let worker_device = device.clone();
+            let worker_model = model.clone().fork(inference_device);
+            let worker_device = inference_device.clone();
             let game_rng = rng_seed.wrapping_add(idx as u64);
             let exit_cfg = live_exit_cfg.clone();
             (idx, seed, worker_model, worker_device, game_rng, exit_cfg)
@@ -649,7 +652,8 @@ where
 /// * `temperature` - Exploration temperature for action sampling
 /// * `rng_seed` - Base RNG seed for per-game derivation
 /// * `model` - Current model for inference and value estimation
-/// * `device` - Burn backend device
+/// * `device` - Burn backend device for training
+/// * `inference_device` - Device for self-play inference workers (typically CPU to conserve VRAM)
 /// * `gae_config` - GAE hyperparameters for advantage computation
 /// * `live_exit_cfg` - ExIt producer configuration from the maintenance plan
 pub fn generate_self_play_rl_batch<B: Backend>(
@@ -658,6 +662,7 @@ pub fn generate_self_play_rl_batch<B: Backend>(
     rng_seed: u64,
     model: &HydraModel<B>,
     device: &B::Device,
+    inference_device: &B::Device,
     gae_config: &GaeConfig,
     live_exit_cfg: LiveExitConfig,
 ) -> RlBatch<B>
@@ -670,6 +675,7 @@ where
         rng_seed,
         model,
         device,
+        inference_device,
         live_exit_cfg,
     );
     trajectories_to_rl_batch(&source.trajectories, &source.values, gae_config, device)
@@ -1036,8 +1042,9 @@ mod tests {
 
         let serial =
             generate_self_play_batch_source(&seeds, 1.0, 100, &model, &device, cfg.clone());
-        let parallel =
-            generate_self_play_batch_source_parallel(&seeds, 1.0, 100, &model, &device, cfg);
+        let parallel = generate_self_play_batch_source_parallel(
+            &seeds, 1.0, 100, &model, &device, &device, cfg,
+        );
 
         assert_eq!(serial.trajectories.len(), parallel.trajectories.len());
         assert_eq!(serial.values.len(), parallel.values.len());
@@ -1117,7 +1124,8 @@ mod tests {
             lambda: GAE_LAMBDA,
         };
 
-        let batch = generate_self_play_rl_batch(&seeds, 1.0, 100, &model, &device, &gae, cfg);
+        let batch =
+            generate_self_play_rl_batch(&seeds, 1.0, 100, &model, &device, &device, &gae, cfg);
         let [steps, action_dim] = batch.targets.policy_target.dims();
         assert!(steps > 0);
         assert_eq!(action_dim, HYDRA_ACTION_SPACE);
