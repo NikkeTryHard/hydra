@@ -196,7 +196,7 @@ Current code reality is broader than the original 9-head bootstrap plan. The liv
 | 13 | DeltaQHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
 | 14 | SafetyResidualHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
 
-Current activation note: the advanced heads above are structurally live, but their target paths are not all equally closed. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, while `delta_q_target` and `opponent_hand_type_target` still remain absent in the standard sample-to-target conversion.
+Current activation note: the advanced heads above are structurally live, but their target paths are not all equally closed. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, replay/sample ExIt now flows through a separate sidecar-backed carrier path, while `delta_q_target` and `opponent_hand_type_target` still remain absent in the standard sample-to-target conversion.
 
 ### 3.2 Struct Definitions
 
@@ -762,7 +762,7 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 - Safety valve: skip if visit_count < min_visits OR KL(exit||base) > max_kl.
 - Combined loss: `L = L_ach + exit_weight*L_exit + saf_weight*L_saf + aux_weight*L_aux`
 
-> **Implementation status (2026-03-09):** The ExIt helper/consumer path (`ExitConfig`, `build_exit_from_afbs_tree`, `collate_exit_targets`, `exit_target`/`exit_mask` in `RlBatch`) and the live AFBS ExIt producer (`live_exit.rs`) are both implemented and tested. The live self-play/RL lane is real; the normal replay/sample path still does not emit `exit_target`.
+> **Implementation status (2026-03-13):** The ExIt helper/consumer path (`ExitConfig`, `build_exit_from_afbs_tree`, `collate_exit_targets`, `exit_target`/`exit_mask` in `RlBatch`) and the live AFBS ExIt producer (`live_exit.rs`) are both implemented and tested. The live self-play/RL lane is real, and the normal replay/sample lane now supports a sidecar-first search-derived ExIt path: replay ExIt labels can be generated offline, joined back into replay samples with provenance/version checks, and consumed by BC as a separate optional ExIt loss.
 >
 > **Live producer details:** `hydra-train/src/training/live_exit.rs` implements the Agent 22 blueprint -- learner-only, root-only AFBS with the public model value head as leaf scorer, all-legal discard seeding (bypasses `TOP_K=5`), and visit-based labels via `build_exit_from_afbs_tree`. `LiveExitConfig::default().enabled` is now `true`; disable explicitly when you want the producer off. The self-play hook in `selfplay.rs` passes `&SafetyInfo` to support the `ExitSearchAdapter` trait.
 >

@@ -118,7 +118,7 @@ All use SE-ResNet with GroupNorm(32) and Mish. Target deployment precision is bf
 
 **Search distillation heads:** (9) $\Delta Q$ regression (predict search advantage over baseline). (10) Safety bound residual (predict conservatism gap).
 
-Current implementation note: the live model already exposes these advanced output families structurally in one output contract (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`). The replay-derived `safety_residual` lane is now closed narrowly enough to train through the BC path, and the learner BC loop now supports hardware-agnostic microbatch accumulation; activation still remains staged overall because `delta_q`, replay/sample `exit_target`, and stronger public-teacher belief semantics are not equally closed today.
+Current implementation note: the live model already exposes these advanced output families structurally in one output contract (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`). The replay-derived `safety_residual` lane is now closed narrowly enough to train through the BC path, and the learner BC loop now supports hardware-agnostic microbatch accumulation. Replay/sample `exit_target` is now closed through a sidecar-first search-derived path: offline replay ExIt labels can be generated, validated, joined back into replay samples with provenance/version checks, and consumed as a separate BC ExIt loss. Activation still remains staged overall because `delta_q` and stronger public-teacher belief semantics are not equally closed today.
 
 ---
 
