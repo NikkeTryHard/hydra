@@ -1,14 +1,16 @@
 use burn::prelude::*;
 use hydra_core::action::{
-    ActionPhase, GameContext, HYDRA_ACTION_SPACE, HydraAction, build_legal_mask,
-    hydra_to_riichienv, riichienv_to_hydra,
+    build_legal_mask, hydra_to_riichienv, riichienv_to_hydra, ActionPhase, GameContext,
+    HydraAction, HYDRA_ACTION_SPACE,
 };
 use hydra_core::arena::{
-    Trajectory, TrajectoryExitLabel, TrajectoryStep, sample_action_with_temperature,
+    sample_action_with_temperature, Trajectory, TrajectoryDeltaQLabel, TrajectoryExitLabel,
+    TrajectoryStep,
 };
 use hydra_core::bridge::encode_observation;
-use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE, ObservationEncoder};
+use hydra_core::encoder::{ObservationEncoder, NUM_CHANNELS, OBS_SIZE};
 use hydra_core::safety::SafetyInfo;
+use rayon::prelude::*;
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::observation::Observation;
 use riichienv_core::rule::GameRule;
@@ -16,9 +18,9 @@ use riichienv_core::state::GameState;
 
 use crate::config::{GAE_GAMMA, GAE_LAMBDA};
 use crate::model::HydraModel;
-use crate::training::exit::collate_exit_targets;
-use crate::training::gae::{GaeConfig, compute_per_player_gae, normalize_advantages};
-use crate::training::live_exit::{LiveExitConfig, make_live_exit_fn};
+use crate::training::exit::{collate_delta_q_targets, collate_exit_targets};
+use crate::training::gae::{compute_per_player_gae, normalize_advantages, GaeConfig};
+use crate::training::live_exit::{make_live_exit_fn, LiveExitConfig, TrajectorySearchLabels};
 use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;
 
@@ -282,7 +284,7 @@ where
         &StepRecord,
         &SafetyInfo,
         u32,
-    ) -> Option<TrajectoryExitLabel>,
+    ) -> Option<TrajectorySearchLabels>,
 {
     let rule = GameRule::default_tenhou();
     let mut state = GameState::new(DEFAULT_GAME_MODE, true, Some(game_seed), 0, rule);
@@ -375,6 +377,7 @@ pub fn trajectories_to_rl_batch<B: Backend>(
     let mut score_cdf_target = vec![0.0f32; total_steps * SCORE_BINS];
     let base_logits = vec![0.0f32; total_steps * HYDRA_ACTION_SPACE];
     let mut exit_samples = Vec::with_capacity(total_steps);
+    let mut delta_q_samples = Vec::with_capacity(total_steps);
 
     let mut global_step = 0usize;
     for (trajectory_idx, trajectory) in trajectories.iter().enumerate() {
@@ -396,6 +399,7 @@ pub fn trajectories_to_rl_batch<B: Backend>(
                 });
             }
             exit_samples.push(step.exit_label.map(TrajectoryExitLabel::to_vec_pair));
+            delta_q_samples.push(step.delta_q_label.map(TrajectoryDeltaQLabel::to_vec_pair));
 
             policy_target[global_step * HYDRA_ACTION_SPACE + step.action as usize] = 1.0;
             value_target.push(step.reward);
@@ -422,6 +426,7 @@ pub fn trajectories_to_rl_batch<B: Backend>(
 
     normalize_advantages(&mut advantages);
     let (exit_target, exit_mask) = collate_exit_targets::<B>(&exit_samples, device);
+    let (delta_q_target, delta_q_mask) = collate_delta_q_targets::<B>(&delta_q_samples, device);
 
     RlBatch {
         obs: Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([
@@ -466,7 +471,8 @@ pub fn trajectories_to_rl_batch<B: Backend>(
             mixture_weight_target: None,
             mixture_weight_mask: None,
             opponent_hand_type_target: None,
-            delta_q_target: None,
+            delta_q_target,
+            delta_q_mask,
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
@@ -542,11 +548,100 @@ pub fn generate_self_play_batch_source<B: Backend>(
     }
 }
 
+/// Generates self-play trajectories in parallel using owned model clones.
+///
+/// Each game runs on a Rayon worker with its own cloned model, so there
+/// is no shared-reference requirement (`HydraModel` is `Clone` + `Send`
+/// but not `Sync` due to Burn's `Param<OnceCell>` storage).
+///
+/// Models are pre-cloned on the calling thread before dispatch to avoid
+/// capturing `&HydraModel` in the parallel closure (which would require
+/// `Sync`). Value baselines are computed serially after all games finish
+/// using the original model reference.
+pub fn generate_self_play_batch_source_parallel<B: Backend>(
+    game_seeds: &[u64],
+    temperature: f32,
+    rng_seed: u64,
+    model: &HydraModel<B>,
+    device: &B::Device,
+    live_exit_cfg: LiveExitConfig,
+) -> SelfPlayBatchSource
+where
+    B::Device: Clone + Send + Sync,
+{
+    // Pre-clone models on the calling thread. This avoids capturing
+    // `&HydraModel` in the Rayon closure (which requires Sync).
+    let worker_inputs: Vec<_> = game_seeds
+        .iter()
+        .enumerate()
+        .map(|(idx, &seed)| {
+            let worker_model = model.clone();
+            let worker_device = device.clone();
+            let game_rng = rng_seed.wrapping_add(idx as u64);
+            let exit_cfg = live_exit_cfg.clone();
+            (idx, seed, worker_model, worker_device, game_rng, exit_cfg)
+        })
+        .collect();
+
+    let mut game_results: Vec<(usize, Trajectory)> = worker_inputs
+        .into_par_iter()
+        .map(
+            |(idx, seed, worker_model, worker_device, game_rng, exit_cfg)| {
+                let infer_fn = |obs: &[f32; OBS_SIZE]| -> [f32; HYDRA_ACTION_SPACE] {
+                    let (logits, _) = worker_model.policy_value_cpu(obs, &worker_device);
+                    logits
+                };
+
+                let exit_fn = make_live_exit_fn(exit_cfg, |obs: &[f32; OBS_SIZE]| {
+                    worker_model.policy_value_cpu(obs, &worker_device)
+                });
+
+                let trajectory = run_self_play_game_with_exit_labels(
+                    seed,
+                    temperature,
+                    game_rng,
+                    infer_fn,
+                    exit_fn,
+                );
+                (idx, trajectory)
+            },
+        )
+        .collect();
+
+    // par_iter collect preserves index order, but sort defensively
+    // since the blueprint requires seed-stable trajectory ordering.
+    game_results.sort_unstable_by_key(|(idx, _)| *idx);
+    let trajectories: Vec<Trajectory> = game_results.into_iter().map(|(_, traj)| traj).collect();
+
+    let all_values: Vec<Vec<f32>> = trajectories
+        .iter()
+        .map(|trajectory| {
+            trajectory
+                .steps
+                .iter()
+                .map(|step| {
+                    let (_, value) = model.policy_value_cpu(&step.obs, device);
+                    value
+                })
+                .collect()
+        })
+        .collect();
+
+    SelfPlayBatchSource {
+        trajectories,
+        values: all_values,
+    }
+}
+
 /// Generates a complete RL training batch from self-play games.
 ///
 /// This is the main entry point for the training loop's data generation
 /// phase. It combines trajectory generation (with optional ExIt labels)
 /// and GAE-based advantage computation into a single [`RlBatch`].
+///
+/// Uses parallel self-play when multiple games are requested to maximize
+/// hardware utilization. Each game runs on its own Rayon worker with an
+/// owned model clone, preserving seed-to-trajectory determinism.
 ///
 /// # Arguments
 ///
@@ -565,8 +660,11 @@ pub fn generate_self_play_rl_batch<B: Backend>(
     device: &B::Device,
     gae_config: &GaeConfig,
     live_exit_cfg: LiveExitConfig,
-) -> RlBatch<B> {
-    let source = generate_self_play_batch_source(
+) -> RlBatch<B>
+where
+    B::Device: Clone + Send + Sync,
+{
+    let source = generate_self_play_batch_source_parallel(
         game_seeds,
         temperature,
         rng_seed,
@@ -590,7 +688,7 @@ fn run_player_decision<F, E>(
         &StepRecord,
         &SafetyInfo,
         u32,
-    ) -> Option<TrajectoryExitLabel>,
+    ) -> Option<TrajectorySearchLabels>,
 {
     let obs = env.state.get_observation(pid);
     if obs.legal_actions_ref().is_empty() {
@@ -619,13 +717,15 @@ fn run_player_decision<F, E>(
 
     if let Some(step_record) = env.selector.take_last_step() {
         let player_safety = env.selector.safety(pid);
-        let exit_label = exit_label_fn(env.state, &obs, &step_record, player_safety, turn);
+        let search_labels =
+            exit_label_fn(env.state, &obs, &step_record, player_safety, turn).unwrap_or_default();
         env.trajectory.steps.push(TrajectoryStep {
             obs: step_record.obs,
             action: step_record.action,
             pi_old: step_record.pi_old,
             legal_mask: step_record.legal_mask,
-            exit_label,
+            exit_label: search_labels.exit,
+            delta_q_label: search_labels.delta_q,
             reward: 0.0,
             done: false,
             player_id: step_record.player_id,
@@ -773,6 +873,7 @@ mod tests {
                     legal_mask
                 },
                 exit_label: None,
+                delta_q_label: None,
                 reward: if idx % 2 == 0 { 1.0 } else { -1.0 },
                 done: idx == 3,
                 player_id: idx % 4,
@@ -916,6 +1017,88 @@ mod tests {
         for (traj, vals) in source.trajectories.iter().zip(source.values.iter()) {
             assert_eq!(traj.steps.len(), vals.len());
             assert!(traj.steps.iter().all(|s| s.exit_label.is_none()));
+        }
+    }
+
+    #[test]
+    fn test_parallel_batch_source_matches_serial() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<B>(&device);
+        let seeds = [42u64, 43, 44];
+        let cfg = LiveExitConfig {
+            enabled: false,
+            ..LiveExitConfig::default()
+        };
+
+        let serial =
+            generate_self_play_batch_source(&seeds, 1.0, 100, &model, &device, cfg.clone());
+        let parallel =
+            generate_self_play_batch_source_parallel(&seeds, 1.0, 100, &model, &device, cfg);
+
+        assert_eq!(serial.trajectories.len(), parallel.trajectories.len());
+        assert_eq!(serial.values.len(), parallel.values.len());
+
+        for (idx, (s_traj, p_traj)) in serial
+            .trajectories
+            .iter()
+            .zip(parallel.trajectories.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                s_traj.steps.len(),
+                p_traj.steps.len(),
+                "trajectory {idx} step count mismatch"
+            );
+            assert_eq!(s_traj.seed, p_traj.seed, "trajectory {idx} seed mismatch");
+            assert_eq!(
+                s_traj.final_scores, p_traj.final_scores,
+                "trajectory {idx} final_scores mismatch"
+            );
+            for (step_idx, (s_step, p_step)) in
+                s_traj.steps.iter().zip(p_traj.steps.iter()).enumerate()
+            {
+                assert_eq!(
+                    s_step.action, p_step.action,
+                    "trajectory {idx} step {step_idx} action mismatch"
+                );
+                assert_eq!(
+                    s_step.player_id, p_step.player_id,
+                    "trajectory {idx} step {step_idx} player_id mismatch"
+                );
+                assert_eq!(
+                    s_step.legal_mask, p_step.legal_mask,
+                    "trajectory {idx} step {step_idx} legal_mask mismatch"
+                );
+                assert_eq!(
+                    s_step.exit_label.is_some(),
+                    p_step.exit_label.is_some(),
+                    "trajectory {idx} step {step_idx} exit_label presence mismatch"
+                );
+                assert_eq!(
+                    s_step.delta_q_label.is_some(),
+                    p_step.delta_q_label.is_some(),
+                    "trajectory {idx} step {step_idx} delta_q_label presence mismatch"
+                );
+            }
+        }
+
+        for (idx, (s_vals, p_vals)) in serial.values.iter().zip(parallel.values.iter()).enumerate()
+        {
+            assert_eq!(
+                s_vals.len(),
+                p_vals.len(),
+                "trajectory {idx} value count mismatch"
+            );
+            for (step_idx, (s_val, p_val)) in s_vals.iter().zip(p_vals.iter()).enumerate() {
+                assert!(
+                    (s_val - p_val).abs() < 1e-5,
+                    "trajectory {idx} step {step_idx} value mismatch: serial={s_val} parallel={p_val}"
+                );
+            }
         }
     }
 
@@ -1089,16 +1272,19 @@ mod tests {
                 target[legal_actions[1]] = 0.5;
                 mask[legal_actions[0]] = 1.0;
                 mask[legal_actions[1]] = 1.0;
-                TrajectoryExitLabel::from_slices(&target, &mask)
+                TrajectoryExitLabel::from_slices(&target, &mask).map(|exit| {
+                    crate::training::live_exit::TrajectorySearchLabels {
+                        exit: Some(exit),
+                        delta_q: None,
+                    }
+                })
             },
         );
 
-        assert!(
-            trajectory
-                .steps
-                .iter()
-                .any(|step| step.exit_label.is_some())
-        );
+        assert!(trajectory
+            .steps
+            .iter()
+            .any(|step| step.exit_label.is_some()));
         assert!(trajectory.validate().is_ok());
     }
 }
