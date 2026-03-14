@@ -4,9 +4,9 @@ use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 
 use super::artifacts::BcArtifactPaths;
-use super::bootstrap::{initialize_training_bootstrap, TrainingBootstrap, TrainingRuntime};
-use super::config::{configure_threads, device_label, validate_config, TrainConfig};
-use super::epoch_runner::{run_epoch, EpochRunnerContext, EpochRuntimeMut};
+use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
+use super::config::{TrainConfig, configure_threads, device_label, validate_config};
+use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only};
 use super::presentation::{
     explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
@@ -130,6 +130,7 @@ pub(super) fn handle_training_mode(
         banner_stats,
         loss_fn,
         valid_loss_fn,
+        bc_exit_cfg,
     } = bootstrap;
     let TrainingRuntime {
         mut model,
@@ -163,6 +164,7 @@ pub(super) fn handle_training_mode(
                 train_cfg: &train_cfg,
                 loss_fn: &loss_fn,
                 valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &bc_exit_cfg,
                 train_device: &train_device,
                 session_start_global_step,
                 steps_to_skip: resume.steps_to_skip_for_epoch(epoch),

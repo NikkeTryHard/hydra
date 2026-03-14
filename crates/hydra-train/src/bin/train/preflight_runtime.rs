@@ -8,21 +8,21 @@ use burn::module::AutodiffModule;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use colored::Colorize;
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, stream_train_epoch, stream_val_pass, DataManifest,
-    StreamingLoaderConfig,
+    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
+    stream_val_pass,
 };
-use hydra_train::data::sample::{collate_samples, MjaiSample};
+use hydra_train::data::sample::{MjaiSample, collate_samples};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    candidate_ladder, resolve_runtime_config, EffectiveRuntimeConfig, ExplicitSettings,
-    PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
+    EffectiveRuntimeConfig, ExplicitSettings, PreflightCacheEntry, ProbeKind, ProbeResult,
+    ProbeStatus, candidate_ladder, resolve_runtime_config,
 };
 use hydra_train::training::losses::HydraLoss;
 
-use super::artifacts::{write_preflight_cache, BcArtifactPaths, PreflightPaths};
+use super::artifacts::{BcArtifactPaths, PreflightPaths, write_preflight_cache};
 use super::config::{
-    configure_threads, default_num_threads_for_system, train_device,
-    trainer_config_from_train_config, ProbeChildRequest, TrainConfig,
+    ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
+    train_device, trainer_config_from_train_config,
 };
 use super::loss_policy::build_loss_config;
 use super::preflight_fingerprint::preflight_cache_key;
@@ -36,7 +36,7 @@ use super::probe_ladder::{
     local_refinement_candidates, probe_only_candidate_ladder,
 };
 use super::probe_process::{probe_result_path, write_probe_result};
-use super::probe_request::{probe_child_request_from_cli, ProbeRequest};
+use super::probe_request::{ProbeRequest, probe_child_request_from_cli};
 use super::probe_summary::{
     best_probe_summary, format_probe_selection_summary, probe_kind_name, summarize_probe_results,
 };
@@ -689,12 +689,23 @@ pub(super) fn probe_validation_candidate(
         let buffer =
             buffer_result.map_err(|err| format!("preflight validation stream failed: {err}"))?;
         for chunk in buffer.chunks(microbatch_size) {
-            let Some((obs, targets)) = collate_samples::<ValidBackend>(chunk, false, train_device)
-            else {
+            let Some((obs, batch)) = hydra_train::data::sample::collate_batch_samples::<ValidBackend>(
+                chunk,
+                false,
+                train_device,
+            ) else {
                 continue;
             };
+            let targets = batch.to_hydra_targets();
             let output = model_valid.forward(obs);
-            let _ = validation_batch_stats(chunk.len(), &output, &targets, &loss_fn);
+            let _ = validation_batch_stats(
+                chunk.len(),
+                &output,
+                &batch,
+                &targets,
+                &loss_fn,
+                &hydra_train::training::bc::BcExitConfig::default(),
+            );
             emit_probe_step_progress(
                 ProbeKind::Validation,
                 microbatch_size,
@@ -745,6 +756,9 @@ pub(super) fn run_probe_only(
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
+        exit_sidecar: None,
+        exit_sidecar_source_net_hash: None,
+        exit_sidecar_source_version: None,
     };
     emit_probe_progress(&format!(
         "probe_progress kind={} candidate_mb={} phase=scan_start data_dir={}",
@@ -1121,6 +1135,7 @@ mod tests {
             batch_size: 256,
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

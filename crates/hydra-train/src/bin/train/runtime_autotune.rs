@@ -8,16 +8,20 @@ use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
 use hydra_train::preflight::LoaderRuntimeConfig;
 
 use super::config::{TrainConfig, loader_runtime_config};
+use super::preflight_runtime::measure_samples_per_second;
 use super::presentation::{
     format_preflight_summary_line, format_runtime_tuning_message, format_timed_phase_message,
     make_bar,
 };
-use super::preflight_runtime::measure_samples_per_second;
 use super::schedule::effective_lr;
 
 pub(super) fn autotune_buffer_samples_candidates(config: &TrainConfig) -> Vec<usize> {
     let current = config.buffer_samples.max(1);
-    let mut candidates = vec![current, current.saturating_mul(2), current.saturating_mul(4)];
+    let mut candidates = vec![
+        current,
+        current.saturating_mul(2),
+        current.saturating_mul(4),
+    ];
     candidates.retain(|value| *value > 0);
     candidates.sort_unstable();
     candidates.dedup();
@@ -51,6 +55,9 @@ pub(super) fn runtime_probe_loader_config(config: &TrainConfig) -> StreamingLoad
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
+        exit_sidecar: None,
+        exit_sidecar_source_net_hash: None,
+        exit_sidecar_source_version: None,
     }
 }
 
@@ -61,7 +68,8 @@ pub(super) fn measure_train_runtime_throughput(
     train_device: &LibTorchDevice,
 ) -> Result<f64, String> {
     let train_cfg = super::config::trainer_config_from_train_config(config);
-    let mut model = hydra_train::model::HydraModelConfig::learner().init::<super::TrainBackend>(train_device);
+    let mut model =
+        hydra_train::model::HydraModelConfig::learner().init::<super::TrainBackend>(train_device);
     let mut optimizer = train_cfg.optimizer_config().init();
     let loss_fn = hydra_train::training::losses::HydraLoss::<super::TrainBackend>::new(
         super::loss_policy::build_loss_config(config.advanced_loss.as_ref())?,
@@ -78,21 +86,22 @@ pub(super) fn measure_train_runtime_throughput(
     let mut pending_samples = std::collections::VecDeque::new();
     let mut measure_start = None;
 
-    for buffer_result in hydra_train::data::pipeline::stream_train_epoch(manifest, loader_config, 0, None) {
+    for buffer_result in
+        hydra_train::data::pipeline::stream_train_epoch(manifest, loader_config, 0, None)
+    {
         let buffer = buffer_result.map_err(|err| format!("runtime train stream failed: {err}"))?;
         pending_samples.extend(buffer);
         while pending_samples.len() >= config.batch_size {
             let logical_batch: Vec<hydra_train::data::sample::MjaiSample> =
                 pending_samples.drain(..config.batch_size).collect();
             let logical_batch_len = logical_batch.len().max(1) as f32;
-            let mut accumulator: GradientsAccumulator<hydra_train::model::HydraModel<super::TrainBackend>> =
-                GradientsAccumulator::new();
+            let mut accumulator: GradientsAccumulator<
+                hydra_train::model::HydraModel<super::TrainBackend>,
+            > = GradientsAccumulator::new();
             for chunk in logical_batch.chunks(microbatch_size) {
-                let Some((obs, targets)) = hydra_train::data::sample::collate_samples::<super::TrainBackend>(
-                    chunk,
-                    config.augment,
-                    train_device,
-                ) else {
+                let Some((obs, targets)) = hydra_train::data::sample::collate_samples::<
+                    super::TrainBackend,
+                >(chunk, config.augment, train_device) else {
                     continue;
                 };
                 let output = model.forward(obs);
@@ -110,7 +119,9 @@ pub(super) fn measure_train_runtime_throughput(
                 measure_start = Some(Instant::now());
             }
             if completed_steps >= target_steps {
-                let elapsed = measure_start.map(|start| start.elapsed()).unwrap_or_default();
+                let elapsed = measure_start
+                    .map(|start| start.elapsed())
+                    .unwrap_or_default();
                 return Ok(measure_samples_per_second(
                     measure_steps * config.batch_size,
                     elapsed,
@@ -342,8 +353,12 @@ pub(super) fn autotune_loader_runtime(
             candidate.buffer_samples = tuple.1;
             candidate.buffer_games = tuple.2;
             for _ in 0..config.preflight.loader_tuple_extra_samples.max(1) {
-                let averaged =
-                    push_runtime_tuple_sample(&candidate, manifest, train_device, &mut score_cache)?;
+                let averaged = push_runtime_tuple_sample(
+                    &candidate,
+                    manifest,
+                    train_device,
+                    &mut score_cache,
+                )?;
                 if averaged > best_score {
                     best_score = averaged;
                     best_tuple = *tuple;

@@ -13,9 +13,13 @@ use rayon::prelude::*;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::data::mjai_loader::{MjaiDataset, MjaiGame, load_game_from_path, load_game_from_stream};
+use crate::data::mjai_loader::{
+    MjaiDataset, MjaiGame, load_game_from_path, load_game_from_stream,
+    load_game_from_stream_with_sidecar,
+};
 use crate::data::sample::{MjaiSample, collate_sample_refs};
 use crate::training::losses::HydraTargets;
+use crate::training::replay_exit::ExitSidecarIndex;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 const MJAI_ARCHIVE_QUEUE_BOUND: usize = 128;
@@ -37,6 +41,9 @@ pub struct StreamingLoaderConfig {
     pub archive_queue_bound: usize,
     pub max_skip_logs_per_source: usize,
     pub aggregate_skip_logs: bool,
+    pub exit_sidecar: Option<Arc<ExitSidecarIndex>>,
+    pub exit_sidecar_source_net_hash: Option<u64>,
+    pub exit_sidecar_source_version: Option<u32>,
 }
 
 impl Default for StreamingLoaderConfig {
@@ -49,6 +56,9 @@ impl Default for StreamingLoaderConfig {
             archive_queue_bound: MJAI_ARCHIVE_QUEUE_BOUND,
             max_skip_logs_per_source: 32,
             aggregate_skip_logs: false,
+            exit_sidecar: None,
+            exit_sidecar_source_net_hash: None,
+            exit_sidecar_source_version: None,
         }
     }
 }
@@ -375,6 +385,9 @@ fn spawn_archive_stream(
     let max_skip_logs_per_source = config.max_skip_logs_per_source;
     let (tx, rx) = mpsc::sync_channel::<MjaiGame>(archive_queue_bound);
     let path_for_thread = path.clone();
+    let exit_sidecar = config.exit_sidecar.clone();
+    let exit_sidecar_source_net_hash = config.exit_sidecar_source_net_hash;
+    let exit_sidecar_source_version = config.exit_sidecar_source_version;
     let path_for_logs = path.display().to_string();
     let skip_state = Arc::new(SkipLogState::new(
         path_for_logs,
@@ -411,9 +424,19 @@ fn spawn_archive_stream(
                 .spawn(move || -> io::Result<()> {
                     pool.install(|| {
                         job_rx.into_iter().par_bridge().try_for_each(|job| {
-                            let result = load_game_from_stream(BufReader::new(
-                                std::io::Cursor::new(job.data),
-                            ));
+                            let result = if let Some(sidecar) = exit_sidecar.as_ref() {
+                                load_game_from_stream_with_sidecar(
+                                    &job.display_name,
+                                    exit_sidecar_source_net_hash.unwrap_or_default(),
+                                    exit_sidecar_source_version.unwrap_or_default(),
+                                    BufReader::new(std::io::Cursor::new(job.data)),
+                                    Some(sidecar.as_ref()),
+                                )
+                            } else {
+                                load_game_from_stream(BufReader::new(std::io::Cursor::new(
+                                    job.data,
+                                )))
+                            };
                             parsed_tx_for_parse
                                 .send(ParsedArchiveGame {
                                     sequence: job.sequence,
@@ -603,7 +626,16 @@ impl StreamEpochIterator {
                     if let Some(pb) = &self.progress {
                         pb.inc(1);
                     }
-                    let result = load_game_from_path(&path);
+                    let result = if let Some(sidecar) = self.config.exit_sidecar.as_ref() {
+                        crate::data::mjai_loader::load_game_from_path_with_sidecar(
+                            &path,
+                            self.config.exit_sidecar_source_net_hash.unwrap_or_default(),
+                            self.config.exit_sidecar_source_version.unwrap_or_default(),
+                            Some(sidecar.as_ref()),
+                        )
+                    } else {
+                        load_game_from_path(&path)
+                    };
                     match result {
                         Ok(game) => return Ok(Some(game)),
                         Err(err) => {
@@ -783,7 +815,7 @@ fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset
 
                 let mut data = Vec::with_capacity(entry.size() as usize);
                 std::io::Read::read_to_end(&mut entry, &mut data)?;
-                let display_name = format!("{} in {}", entry_path.display(), path_buf.display());
+                let display_name = identity_for_archive_entry(&path_buf, &entry_path)?;
 
                 if job_tx
                     .send(ArchiveEntryJob {
@@ -1004,6 +1036,8 @@ mod tests {
             danger_mask: [1.0; 102],
             safety_residual: None,
             safety_residual_mask: None,
+            exit_target: None,
+            exit_mask: None,
             belief_fields: None,
             mixture_weights: None,
             belief_fields_present: false,

@@ -5,6 +5,7 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_type};
 
+use crate::training::exit::collate_exit_targets;
 use crate::training::losses::HydraTargets;
 
 use crate::data::augment::{
@@ -57,6 +58,8 @@ pub struct MjaiSample {
     pub danger_mask: [f32; 102],
     pub safety_residual: Option<[f32; HYDRA_ACTION_SPACE]>,
     pub safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    pub exit_target: Option<[f32; HYDRA_ACTION_SPACE]>,
+    pub exit_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
     pub belief_fields: Option<[f32; 16 * 34]>,
     pub mixture_weights: Option<[f32; 4]>,
     pub belief_fields_present: bool,
@@ -149,6 +152,8 @@ pub struct MjaiBatch<B: Backend> {
     pub danger_mask: Tensor<B, 3>,
     pub safety_residual_target: Option<Tensor<B, 2>>,
     pub safety_residual_mask: Option<Tensor<B, 2>>,
+    pub exit_target: Option<Tensor<B, 2>>,
+    pub exit_mask: Option<Tensor<B, 2>>,
     pub belief_fields_target: Option<Tensor<B, 3>>,
     pub mixture_weight_target: Option<Tensor<B, 2>>,
     pub belief_fields_mask: Option<Tensor<B, 1>>,
@@ -172,6 +177,7 @@ struct CollateBuffers {
     safety_residual_flat: Vec<f32>,
     safety_residual_mask_flat: Vec<f32>,
     any_safety_residual: bool,
+    exit_samples: Vec<Option<(Vec<f32>, Vec<f32>)>>,
     belief_fields_flat: Vec<f32>,
     mixture_weights_flat: Vec<f32>,
     any_belief_fields: bool,
@@ -199,6 +205,7 @@ impl CollateBuffers {
             safety_residual_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
             safety_residual_mask_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
             any_safety_residual: false,
+            exit_samples: vec![None; batch],
             belief_fields_flat: vec![0.0f32; batch * 16 * 34],
             mixture_weights_flat: vec![0.0f32; batch * 4],
             any_belief_fields: false,
@@ -243,6 +250,16 @@ impl CollateBuffers {
             (Some(values), None) => Some(values),
             (None, _) => None,
         };
+        let exit_target = match (sample.exit_target, perm) {
+            (Some(values), Some(perm)) => Some(augment_action_vector_suit(&values, perm)),
+            (Some(values), None) => Some(values),
+            (None, _) => None,
+        };
+        let exit_mask = match (sample.exit_mask, perm) {
+            (Some(values), Some(perm)) => Some(augment_action_vector_suit(&values, perm)),
+            (Some(values), None) => Some(values),
+            (None, _) => None,
+        };
 
         self.obs_flat[index * OBS_SIZE..(index + 1) * OBS_SIZE].copy_from_slice(&obs);
         self.actions[index] = action as i64;
@@ -270,6 +287,10 @@ impl CollateBuffers {
                 .copy_from_slice(&values);
             self.any_safety_residual = true;
         }
+        self.exit_samples[index] = match (exit_target, exit_mask) {
+            (Some(target), Some(mask)) => Some((target.to_vec(), mask.to_vec())),
+            _ => None,
+        };
         if let Some(values) = belief_fields {
             self.belief_fields_flat[index * 16 * 34..(index + 1) * 16 * 34]
                 .copy_from_slice(&values);
@@ -299,6 +320,7 @@ impl CollateBuffers {
     }
 
     fn into_batch<B: Backend>(self, batch: usize, device: &B::Device) -> MjaiBatch<B> {
+        let (exit_target, exit_mask) = collate_exit_targets::<B>(&self.exit_samples, device);
         MjaiBatch {
             obs: Tensor::<B, 1>::from_floats(self.obs_flat.as_slice(), device).reshape([
                 batch,
@@ -342,6 +364,8 @@ impl CollateBuffers {
             } else {
                 None
             },
+            exit_target,
+            exit_mask,
             belief_fields_target: if self.any_belief_fields {
                 Some(
                     Tensor::<B, 1>::from_floats(self.belief_fields_flat.as_slice(), device)
@@ -498,6 +522,15 @@ pub fn collate_sample_refs<B: Backend>(
     augment: bool,
     device: &B::Device,
 ) -> Option<(Tensor<B, 3>, HydraTargets<B>)> {
+    let (obs, batch) = collate_sample_refs_with_batch::<B>(samples, augment, device)?;
+    Some((obs, batch.into_hydra_targets()))
+}
+
+pub fn collate_sample_refs_with_batch<B: Backend>(
+    samples: &[&MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> Option<(Tensor<B, 3>, MjaiBatch<B>)> {
     if samples.is_empty() {
         return None;
     }
@@ -522,7 +555,7 @@ pub fn collate_sample_refs<B: Backend>(
         buffers.into_batch(batch, device)
     };
     let obs = batch.obs.clone();
-    Some((obs, batch.into_hydra_targets()))
+    Some((obs, batch))
 }
 
 pub fn collate_samples<B: Backend>(
@@ -530,6 +563,15 @@ pub fn collate_samples<B: Backend>(
     augment: bool,
     device: &B::Device,
 ) -> Option<(Tensor<B, 3>, HydraTargets<B>)> {
+    let (obs, batch) = collate_batch_samples::<B>(samples, augment, device)?;
+    Some((obs, batch.into_hydra_targets()))
+}
+
+pub fn collate_batch_samples<B: Backend>(
+    samples: &[MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> Option<(Tensor<B, 3>, MjaiBatch<B>)> {
     if samples.is_empty() {
         return None;
     }
@@ -540,7 +582,7 @@ pub fn collate_samples<B: Backend>(
         collate_batch(samples, device)
     };
     let obs = batch.obs.clone();
-    Some((obs, batch.into_hydra_targets()))
+    Some((obs, batch))
 }
 
 pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
@@ -572,6 +614,12 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
                     .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
                 safety_residual_mask: sample
                     .safety_residual_mask
+                    .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
+                exit_target: sample
+                    .exit_target
+                    .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
+                exit_mask: sample
+                    .exit_mask
                     .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
                 belief_fields: sample
                     .belief_fields
@@ -610,6 +658,8 @@ mod tests {
             danger_mask: [1.0; 102],
             safety_residual: None,
             safety_residual_mask: None,
+            exit_target: None,
+            exit_mask: None,
             belief_fields: None,
             mixture_weights: None,
             belief_fields_present: false,

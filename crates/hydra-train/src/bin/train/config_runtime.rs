@@ -152,6 +152,18 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
     if config.bc.warmup_steps == 0 {
         return Err("bc.warmup_steps must be greater than 0".to_string());
     }
+    if config
+        .advanced_loss
+        .as_ref()
+        .and_then(|loss| loss.exit)
+        .is_some_and(|weight| weight > 0.0)
+        && config.exit_sidecar_path.is_none()
+    {
+        return Err(
+            "advanced_loss.exit requires exit_sidecar_path so replay ExIt labels are present"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 

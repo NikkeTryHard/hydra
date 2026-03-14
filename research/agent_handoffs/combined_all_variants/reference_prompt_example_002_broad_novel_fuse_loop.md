@@ -20,9 +20,11 @@ Work toward the strongest exact blueprint for a hard problem where adjacent-fiel
 We want a detailed answer that makes clear:
 - what the current artifact set supports
 - what the current framing gets right and wrong
+- what confidence level each major conclusion deserves
 - whether a stronger adjacent-field formulation exists
 - whether useful fragments from multiple fields can be fused into a better formulation
 - what survives after those fused ideas are validated against the artifacts
+- why the confident parts of the answer are actually justified
 - what the narrowest buildable surviving path is
 
 Use the artifacts below to derive your conclusions.
@@ -32,6 +34,8 @@ Use the artifacts below to derive your conclusions.
 - no high-level survey
 - no vague answer
 - include reasoning
+- when you sound confident, show the justification for that confidence level
+- for every important claim, make the validation path visible enough that a reviewer can test it later
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
@@ -41,6 +45,8 @@ Use the artifacts below to derive your conclusions.
 - after grounding in the artifacts, explore many adjacent fields for competing formulations of the same problem, keep searching for interesting fragments worth fusing together, and continue the explore -> think hard -> validate loop until the strongest fused formulation either survives or is killed by the artifact constraints
 - use the bash tool to run Python for calculations, math checks, and validation when rigor matters
 - do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
+- if you claim a path works, survives, or is implementation-ready, show why that confidence is justified and how the claim can be validated or falsified later
+- inspect your own draft before finishing: if a confident claim is not objectively justified by visible evidence, downgrade it to inference, proposal, or blocked
 - do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
 </style>
 

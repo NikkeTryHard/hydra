@@ -1,3 +1,5 @@
+WARNING! You do not need to write the artifacts on your own since normally prompts are around 8000 lines and that is too much. Use the prompting tool at ### 12.1 Tool location of this document to learn how to prompt with the tool.
+
 # Hydra Prompt Style Guide — Artifact-First Batch Prompting Doctrine
 
 This file is the doctrine for writing Hydra’s new batch prompts.
@@ -206,6 +208,18 @@ The answer should separate:
 - proposal
 - blocked / missing surface
 
+When confidence is high, the answer must also show why that confidence level is warranted.
+Do not let a confident tone do the work of evidence.
+
+For every major recommendation, architecture move, threshold, or implementation claim, the answer should make visible:
+
+- what directly supports it
+- what is inferred rather than directly supported
+- why the inference is still justified
+- how a reviewer could validate or falsify it later
+
+If those pieces are missing, the claim should be downgraded to a weaker confidence label.
+
 ### 4.4 External paper discipline
 
 When papers matter:
@@ -233,6 +247,26 @@ then the prompt should explicitly allow Python in bash for validation.
 ### 4.6 Saturation before finish
 
 The prompt should make it hard for the model to stop after the first plausible answer.
+
+### 4.7 Confidence requires justification and validation
+
+Prompts should force the model to justify confidence, not just conclusions.
+
+If the answer claims that something works, survives, is the best plan, or is implementation-ready, it should also explain:
+
+1. why that claim is warranted by the evidence bucket it belongs to
+2. how that claim could be validated later by a reviewer or implementer
+3. what evidence would have to appear for the claim to be downgraded or killed
+
+This matters most for architecture choices, file-level plans, thresholds, and “smallest decisive unblocker” claims.
+
+The model should actively inspect its own draft and ask:
+
+- can I point to enough evidence for this confidence level?
+- is this directly supported, or am I silently upgrading a proposal into a settled plan?
+- could another reviewer reproduce or falsify this conclusion from the visible reasoning?
+
+If the answer cannot pass that self-check, it should relabel the claim as inference, proposal, or blocked.
 
 ---
 
@@ -390,12 +424,21 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 - no high-level survey
 - no vague answer
 - include reasoning
+- when you sound confident, show the justification for that confidence level
+- for every important claim, make the validation path visible enough that a reviewer can test it later
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
 - include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
 - distinguish direct artifact support from your own inference
 - do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
+```
+
+### Confidence-and-validation line
+
+```xml
+- if you claim a path works, survives, or is implementation-ready, show why that confidence is justified and how the claim can be validated or falsified later
+- inspect your own draft before finishing: if a confident claim is not objectively justified by visible evidence, downgrade it to inference, proposal, or blocked
 ```
 
 ---
@@ -504,6 +547,20 @@ Ban with:
 - explicit anti-dump-in-logic rule
 - require that important logic be inferable from artifacts or explicit blueprint content
 - require enough visible derivation that a reviewer can reproduce the conclusion
+
+### Failure mode 9 — Confidence without proof of confidence level
+
+Symptoms:
+
+- answer sounds highly certain, but the confidence level is not justified
+- proposal-level architecture is written like settled doctrine
+- validation plan exists, but justification for why the plan itself is the right one is weak
+
+Ban with:
+
+- require justification for confidence, not just the claim
+- require visible validation or falsification path for every major confident statement
+- require the model to self-audit its own draft and downgrade unsupported certainty
 
 ---
 

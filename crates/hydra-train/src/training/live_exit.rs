@@ -35,7 +35,7 @@ use crate::training::exit::{
 /// and re-encodes without leaking hidden state.
 pub trait ExitSearchAdapter {
     /// Returns the info-state hash for the root player at the current state.
-    fn root_hash(&self, state: &GameState, player: u8, step: &StepRecord) -> u64;
+    fn root_hash(&self, state: &GameState, player: u8, obs_encoded: &[f32; OBS_SIZE]) -> u64;
 
     /// Produces the public observation after the root player discards `action`.
     ///
@@ -78,8 +78,8 @@ impl Default for SelfPlayExitAdapter {
 }
 
 impl ExitSearchAdapter for SelfPlayExitAdapter {
-    fn root_hash(&self, _state: &GameState, _player: u8, step: &StepRecord) -> u64 {
-        obs_hash(&step.obs)
+    fn root_hash(&self, _state: &GameState, _player: u8, obs_encoded: &[f32; OBS_SIZE]) -> u64 {
+        obs_hash(obs_encoded)
     }
 
     fn child_public_obs_after_discard(
@@ -116,7 +116,7 @@ impl ExitSearchAdapter for SelfPlayExitAdapter {
 ///
 /// Samples every 8th float for speed while maintaining enough
 /// entropy for distinct observations at self-play scale.
-fn obs_hash(obs: &[f32; OBS_SIZE]) -> u64 {
+pub fn obs_hash(obs: &[f32; OBS_SIZE]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for chunk in obs.chunks(8) {
         let bits = chunk[0].to_bits() as u64;
@@ -152,6 +152,30 @@ pub fn base_pi_from_logits(step: &StepRecord) -> [f32; HYDRA_ACTION_SPACE] {
 pub fn budget_from_legal_count(cfg: &ExitConfig, n_legal: usize) -> u32 {
     cfg.min_visits
         .max((MIN_EXIT_AVG_ROOT_VISITS_PER_LEGAL_DISCARD * n_legal as f32).ceil() as u32)
+}
+
+/// Minimal root-decision context required by the ExIt producer.
+///
+/// This keeps the canonical teacher-building logic reusable across live and
+/// future offline producer paths without forcing those paths to construct a
+/// full [`StepRecord`].
+#[derive(Clone, Copy, Debug)]
+pub struct RootDecisionContext {
+    pub obs_encoded: [f32; OBS_SIZE],
+    pub legal_mask: [bool; HYDRA_ACTION_SPACE],
+    pub policy_logits: [f32; HYDRA_ACTION_SPACE],
+    pub player_id: u8,
+}
+
+impl RootDecisionContext {
+    pub fn from_step(step: &StepRecord) -> Self {
+        Self {
+            obs_encoded: step.obs,
+            legal_mask: step.legal_mask,
+            policy_logits: step.policy_logits,
+            player_id: step.player_id,
+        }
+    }
 }
 
 /// Seeds all legal discard children onto an AFBS tree root node.
@@ -204,20 +228,43 @@ where
     M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
     A: ExitSearchAdapter,
 {
+    let ctx = RootDecisionContext::from_step(step);
+    try_exit_label_from_context(state, obs, &ctx, safety, cfg, model_pv, adapter)
+}
+
+/// Attempts to produce an ExIt label from a reusable root-decision context.
+///
+/// This preserves the live producer semantics while decoupling the canonical
+/// teacher-building path from self-play-specific carrier types.
+pub fn try_exit_label_from_context<M, A>(
+    state: &GameState,
+    obs: &Observation,
+    ctx: &RootDecisionContext,
+    safety: &SafetyInfo,
+    cfg: &ExitConfig,
+    model_pv: &mut M,
+    adapter: &mut A,
+) -> Option<TrajectoryExitLabel>
+where
+    M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
+    A: ExitSearchAdapter,
+{
     // Step 1: state compatibility gate
-    let legal_f32 = step.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
+    let legal_f32 = ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
     if !compatible_discard_state(&legal_f32) {
         return None;
     }
 
     // Step 2: minimum legal discards gate
-    let legal_discards = legal_discard_actions(step);
+    let legal_discards = (0..=DISCARD_END as usize)
+        .filter(|&a| ctx.legal_mask[a])
+        .collect::<Vec<_>>();
     if legal_discards.len() < 2 {
         return None;
     }
 
     // Step 3: base policy from raw logits (not exploration temperature)
-    let base_pi = base_pi_from_logits(step);
+    let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
 
     // Step 4: hard-state gate
     let hard_slice: Vec<f32> = legal_discards.iter().map(|&a| base_pi[a]).collect();
@@ -229,7 +276,7 @@ where
     let budget = budget_from_legal_count(cfg, legal_discards.len());
 
     // Step 6: build AFBS tree with all legal discard children
-    let root_hash = adapter.root_hash(state, step.player_id, step);
+    let root_hash = adapter.root_hash(state, ctx.player_id, &ctx.obs_encoded);
     let mut tree = AfbsTree::new();
     let root = tree.add_node(root_hash, 1.0, false);
 
@@ -244,7 +291,7 @@ where
     let mut value_by_child = std::collections::HashMap::<NodeIdx, f32>::new();
     for &(action, child_idx) in &tree.nodes[root as usize].children.clone() {
         let child_obs =
-            adapter.child_public_obs_after_discard(state, obs, step.player_id, action, safety)?;
+            adapter.child_public_obs_after_discard(state, obs, ctx.player_id, action, safety)?;
         let (_child_logits, v_child) = model_pv(&child_obs);
         if !v_child.is_finite() {
             return None;
@@ -338,8 +385,8 @@ mod tests {
     }
 
     impl ExitSearchAdapter for StubAdapter {
-        fn root_hash(&self, _state: &GameState, _player: u8, _step: &StepRecord) -> u64 {
-            12345
+        fn root_hash(&self, _state: &GameState, _player: u8, obs_encoded: &[f32; OBS_SIZE]) -> u64 {
+            obs_hash(obs_encoded)
         }
 
         fn child_public_obs_after_discard(
@@ -958,12 +1005,76 @@ mod tests {
         let mut step_b = step_a;
         step_b.obs = [2.0; OBS_SIZE];
 
-        let hash_a = adapter.root_hash(&state, pid, &step_a);
-        let hash_b = adapter.root_hash(&state, pid, &step_b);
+        let hash_a = adapter.root_hash(&state, pid, &step_a.obs);
+        let hash_b = adapter.root_hash(&state, pid, &step_b.obs);
         assert_ne!(
             hash_a, hash_b,
             "different obs should produce different hashes"
         );
+    }
+
+    #[test]
+    fn root_decision_context_from_step_matches_step_fields() {
+        let step = make_discard_only_step(&[1, 5, 10]);
+        let ctx = RootDecisionContext::from_step(&step);
+
+        assert_eq!(ctx.obs_encoded, step.obs);
+        assert_eq!(ctx.legal_mask, step.legal_mask);
+        assert_eq!(ctx.policy_logits, step.policy_logits);
+        assert_eq!(ctx.player_id, step.player_id);
+    }
+
+    #[test]
+    fn try_exit_label_from_context_matches_try_live_exit_label_on_selfplay_fixture() {
+        let (state, obs, _pid) = make_real_game_at_discard_phase();
+        let safety = SafetyInfo::new();
+
+        let hand = hydra_core::bridge::extract_hand(&obs);
+        let legal_tiles: Vec<usize> = hand
+            .iter()
+            .enumerate()
+            .filter(|&(_, c)| *c > 0)
+            .map(|(i, _)| i)
+            .collect();
+
+        if legal_tiles.len() < 2 {
+            return;
+        }
+
+        let step = make_discard_only_step(&legal_tiles[..legal_tiles.len().min(13)]);
+        let ctx = RootDecisionContext::from_step(&step);
+        let cfg = ExitConfig::default_phase3();
+        let values: Vec<(u8, f32)> = legal_tiles
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| (t as u8, 0.5 - i as f32 * 0.05))
+            .collect();
+
+        let mut model_a = make_stub_model(&values);
+        let mut model_b = make_stub_model(&values);
+        let mut adapter_a = SelfPlayExitAdapter::new();
+        let mut adapter_b = SelfPlayExitAdapter::new();
+
+        let via_step = try_live_exit_label(
+            &state,
+            &obs,
+            &step,
+            &safety,
+            &cfg,
+            &mut model_a,
+            &mut adapter_a,
+        );
+        let via_ctx = try_exit_label_from_context(
+            &state,
+            &obs,
+            &ctx,
+            &safety,
+            &cfg,
+            &mut model_b,
+            &mut adapter_b,
+        );
+
+        assert_eq!(via_ctx, via_step);
     }
 
     #[test]

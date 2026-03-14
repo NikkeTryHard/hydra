@@ -4,8 +4,11 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::config::{OracleGuidingConfig, PipelineState, TrainingPhase};
+use crate::data::sample::MjaiBatch;
 use crate::model::HydraModel;
-use crate::training::bc::{bc_train_step, oracle_guiding_train_step, phase_learning_rate};
+use crate::training::bc::{
+    BcExitConfig, bc_train_step, oracle_guiding_train_step, phase_learning_rate,
+};
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
 use crate::training::exit::ExitConfig;
@@ -219,6 +222,34 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
     max_importance_weight: f32,
     rng_values: &[f32],
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
+    let batch_size = obs.dims()[0];
+    let device = obs.device();
+    let empty_batch = MjaiBatch {
+        obs: Tensor::zeros([batch_size, crate::config::INPUT_CHANNELS, 34], &device),
+        actions: Tensor::zeros([batch_size], &device),
+        legal_mask: targets.legal_mask.clone(),
+        value_target: targets.value_target.clone(),
+        grp_target: targets.grp_target.clone(),
+        oracle_target: targets.oracle_target.clone(),
+        oracle_target_mask: targets
+            .oracle_guidance_mask
+            .clone()
+            .unwrap_or_else(|| Tensor::zeros([batch_size], &device)),
+        tenpai_target: targets.tenpai_target.clone(),
+        danger_target: targets.danger_target.clone(),
+        danger_mask: targets.danger_mask.clone(),
+        safety_residual_target: targets.safety_residual_target.clone(),
+        safety_residual_mask: targets.safety_residual_mask.clone(),
+        exit_target: None,
+        exit_mask: None,
+        belief_fields_target: targets.belief_fields_target.clone(),
+        mixture_weight_target: targets.mixture_weight_target.clone(),
+        belief_fields_mask: targets.belief_fields_mask.clone(),
+        mixture_weight_mask: targets.mixture_weight_mask.clone(),
+        opp_next_target: targets.opp_next_target.clone(),
+        score_pdf_target: targets.score_pdf_target.clone(),
+        score_cdf_target: targets.score_cdf_target.clone(),
+    };
     match state.phase {
         TrainingPhase::BenchmarkGates => Ok((
             model,
@@ -234,7 +265,16 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
         )),
         TrainingPhase::BcWarmStart => {
             let lr = phase_learning_rate(state.phase, step, total_steps);
-            let (model, loss) = bc_train_step(model, obs, targets, loss_fn, lr, optimizer);
+            let (model, loss) = bc_train_step(
+                model,
+                obs,
+                &empty_batch,
+                targets,
+                loss_fn,
+                &BcExitConfig::default(),
+                lr,
+                optimizer,
+            );
             Ok((
                 model,
                 PhaseTrainReport {
