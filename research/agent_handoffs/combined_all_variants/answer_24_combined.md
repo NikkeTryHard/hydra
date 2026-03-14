@@ -1,6 +1,7 @@
 <combined_run_record run_id="answer_24" variant_id="prompt_config_answer_compact" schema_version="1">
   <metadata>
     <notes>Compact self-contained combined record for Agent 24 replay/sample ExIt producer-path research. It preserves the prompt shell reconstructed from the authoritative generator config, the full generator config inline, and the preserved Agent 24 answer.</notes>
+    <notes>Historical notice: this artifact preserves the Agent 24 answer at the time it was generated. Current repo state has since moved forward: the replay/sample ExIt sidecar-first lane is now implemented in code, active docs have been updated, and canonical archive status surfaces have been truth-aligned. Treat any statements below claiming the replay/sample path is still unimplemented as preserved historical answer content rather than current repo truth.</notes>
     <layout>single_markdown_file_prompt_shell_manifest_config_then_answer</layout>
   </metadata>
 

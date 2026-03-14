@@ -106,7 +106,7 @@ What is only partially true:
 - Advanced supervision hooks exist, but target closure is uneven rather than absent:
   - `hydra-train/src/data/sample.rs` / `hydra-train/src/data/mjai_loader.rs` already carry replay-derived `safety_residual` and can emit Stage A `belief_fields` / `mixture_weight` targets
   - `hydra-train/src/training/rl.rs` can already consume `exit_target`, and the self-play/live producer path now carries `exit_target` / `exit_mask` through `TrajectoryExitLabel` into `RlBatch`
-  - the normal replay/sample batch path still does not emit `exit_target`, so ExIt closure is real in the live self-play lane but still uneven across training data paths
+- the normal replay/sample batch path now emits `exit_target` through a sidecar-first search-derived path rather than a direct replay-derived builder, so ExIt closure is now real in both the live self-play lane and the replay/sample sidecar lane while still remaining distinct by provenance
   - `delta_q_target` and `opponent_hand_type_target` still remain absent in the normal sample-to-target path
 - AFBS exists as a search shell, but not as a fully integrated public-belief search runtime:
   - `hydra-core/src/afbs.rs`
@@ -432,18 +432,18 @@ Use this as the concrete coding handoff for the first tranche.
 #### `hydra-train/src/data/mjai_loader.rs`
 - **Current state**
   - already builds replay-derived `safety_residual_target` plus Stage A projected `belief_fields_target` / `mixture_weight_target`
-  - still has no normal production path for `exit_target`, `delta_q_target`, or `opponent_hand_type_target`
+  - now has a normal replay/sample `exit_target` production path via a separate search-derived sidecar producer plus replay-time join; `delta_q_target` and `opponent_hand_type_target` still remain absent
   - `safety_residual_target` now uses signed replay-derived correction semantics: `exact_safety - public_score` on legal discard actions only
   - `hydra-train/src/training/exit.rs` now carries the narrowed ExIt teacher semantics and gates: compatible discard-only state check, child-visit-count target construction, subset mask, coverage gate, and KL / visit safety valve
 - **Required changes**
   1. separate targets that are already produced but semantically weak from targets that still have no producer path at all
   2. keep `safety_residual_target` replay-derived and narrow; do not drift it into search-derived semantics
-  3. add a real upstream producer path for `exit_target` / `exit_mask`; the teacher object and RL consumer are now ready, but the normal training producer seam is still missing
+  3. completed: add a real upstream producer path for `exit_target` / `exit_mask` via a separate search-derived replay sidecar, with replay-time join and provenance/version enforcement
   4. leave clearly unavailable targets as absent rather than fabricating weak labels
   5. document provenance inline: replay-derived, bridge-derived, or search-derived
 - **Preferred order**
   - first completed: truth-align and patch `safety_residual_target` to signed replay-derived residual semantics, keeping activation narrow and conservative
-  - next: finish the real upstream producer path for masked child-visit `exit_target`, then close `delta_q_target`
+  - next: close `delta_q_target`
   - keep `belief_fields_target` / `mixture_weight_target` default-off until the teacher object is stronger than the current Stage A projection
   - `opponent_hand_type_target` stays blocked on ontology / mapping / builder closure
 
@@ -534,7 +534,7 @@ Use this as the concrete coding handoff for the first tranche.
 
 Current tranche-status note:
 - completed for the narrow supervised BC lane: replay-derived `safety_residual` now reaches the train binary with explicit staged activation controls, and full-learner BC now has hardware-agnostic microbatch accumulation rather than assuming one machine's VRAM shape
-- still open before Recommendation 1 is fully complete: normal replay/sample `exit_target` production, `delta_q` closure, and stronger public-teacher belief semantics
+- still open before Recommendation 1 is fully complete: `delta_q` closure and stronger public-teacher belief semantics
 
 ## 7. Final handoff / progress report
 
