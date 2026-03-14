@@ -14,15 +14,18 @@ use hydra_train::data::pipeline::{
     DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
 };
 use hydra_train::model::{HydraModel, HydraModelConfig};
-use hydra_train::training::bc::BCTrainerConfig;
+use hydra_train::training::bc::{BCTrainerConfig, BcExitConfig};
 use hydra_train::training::losses::HydraLoss;
+use hydra_train::training::replay_exit::{
+    ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
+};
 
 use super::artifacts::BcArtifactPaths;
 use super::config::{
     TrainConfig, configure_threads, device_label, train_device, train_microbatch_size,
     trainer_config_from_train_config, validate_config,
 };
-use super::loss_policy::build_loss_config;
+use super::loss_policy::{build_bc_exit_config, build_loss_config};
 use super::progress::BannerStats;
 use super::resume::{
     ResumeContext, runtime_resume_contract, validate_resume_runtime_compatibility,
@@ -47,6 +50,7 @@ pub(super) struct TrainingBootstrap {
     pub(super) banner_stats: BannerStats,
     pub(super) loss_fn: HydraLoss<TrainBackend>,
     pub(super) valid_loss_fn: HydraLoss<ValidBackend>,
+    pub(super) bc_exit_cfg: BcExitConfig,
 }
 
 pub(super) struct TrainingRuntime {
@@ -72,6 +76,19 @@ pub(super) fn initialize_training_bootstrap(
     let artifacts = BcArtifactPaths::new(&config.output_dir, session_start_global_step);
     artifacts.create_root_dir()?;
 
+    let exit_sidecar = if let Some(path) = config.exit_sidecar_path.as_ref() {
+        Some(std::sync::Arc::new(
+            ExitSidecarIndex::from_jsonl_path(path).map_err(|err| {
+                format!(
+                    "failed to load replay ExIt sidecar {}: {err}",
+                    path.display()
+                )
+            })?,
+        ))
+    } else {
+        None
+    };
+
     let loader_config = StreamingLoaderConfig {
         buffer_games: config.buffer_games,
         buffer_samples: config.buffer_samples,
@@ -80,6 +97,9 @@ pub(super) fn initialize_training_bootstrap(
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: false,
+        exit_sidecar,
+        exit_sidecar_source_net_hash: None,
+        exit_sidecar_source_version: None,
     };
 
     let scan_sources_len = if config.data_dir.is_file() {
@@ -135,6 +155,13 @@ pub(super) fn initialize_training_bootstrap(
     let train_device = train_device(&config.device);
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     let mut model = model_config.init::<TrainBackend>(&train_device);
+    let checkpoint_identity = resume
+        .checkpoint_base
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "latest_model".to_string());
+    let exit_sidecar_source_net_hash =
+        source_net_hash_from_checkpoint_identity(&checkpoint_identity);
     if let Some(checkpoint_base) = resume.checkpoint_base.as_ref() {
         model = model
             .load_file(checkpoint_base, &recorder, &train_device)
@@ -145,6 +172,11 @@ pub(super) fn initialize_training_bootstrap(
                 )
             })?;
     }
+    let loader_config = StreamingLoaderConfig {
+        exit_sidecar_source_net_hash: Some(exit_sidecar_source_net_hash),
+        exit_sidecar_source_version: Some(1),
+        ..loader_config
+    };
 
     let optimizer = if resume.restores_optimizer_state() {
         let optimizer_base = resume.optimizer_base.as_ref().ok_or_else(|| {
@@ -177,6 +209,7 @@ pub(super) fn initialize_training_bootstrap(
     let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let valid_loss_fn =
         HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let bc_exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
     let total_steps = schedule_total_steps(&config, session_start_global_step);
     let microbatch_size = train_microbatch_size(&config);
     let best_validation = resume.best_validation();
@@ -221,6 +254,7 @@ pub(super) fn initialize_training_bootstrap(
             banner_stats,
             loss_fn,
             valid_loss_fn,
+            bc_exit_cfg,
         },
         TrainingRuntime {
             model,

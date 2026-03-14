@@ -7,9 +7,9 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::config::OracleGuidingConfig;
-use crate::data::pipeline::collate_sample_chunk;
-use crate::data::sample::MjaiSample;
+use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_with_batch};
 use crate::model::{HydraModel, HydraModelConfig};
+use crate::training::exit::exit_loss;
 use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub fn phase_learning_rate(
@@ -101,6 +101,38 @@ pub struct OracleGuidingStepStats {
     pub loss: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BcExitConfig {
+    pub exit_weight: f32,
+}
+
+impl Default for BcExitConfig {
+    fn default() -> Self {
+        Self { exit_weight: 0.0 }
+    }
+}
+
+pub fn bc_total_with_exit<B: Backend>(
+    output: &crate::model::HydraOutput<B>,
+    batch: &MjaiBatch<B>,
+    targets: &HydraTargets<B>,
+    loss_fn: &HydraLoss<B>,
+    exit_cfg: &BcExitConfig,
+) -> Tensor<B, 1> {
+    let breakdown = loss_fn.total_loss(output, targets);
+    let mut total = breakdown.total;
+    if let (Some(exit_target), Some(exit_mask)) = (&batch.exit_target, &batch.exit_mask) {
+        total = total
+            + exit_loss(
+                output.policy_logits.clone(),
+                exit_target.clone(),
+                exit_mask.clone(),
+                exit_cfg.exit_weight,
+            );
+    }
+    total
+}
+
 pub fn policy_agreement<B: Backend>(
     logits: Tensor<B, 2>,
     mask: Tensor<B, 2>,
@@ -132,15 +164,17 @@ pub fn target_actions_from_policy_target<B: Backend>(
 pub fn bc_train_step<B: AutodiffBackend>(
     model: HydraModel<B>,
     obs: Tensor<B, 3>,
+    batch: &MjaiBatch<B>,
     targets: &HydraTargets<B>,
     loss_fn: &HydraLoss<B>,
+    exit_cfg: &BcExitConfig,
     lr: f64,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
     let output = model.forward(obs);
-    let breakdown = loss_fn.total_loss(&output, targets);
-    let loss_val = breakdown.total.clone().into_scalar().elem::<f64>();
-    let grads = breakdown.total.backward();
+    let total = bc_total_with_exit(&output, batch, targets, loss_fn, exit_cfg);
+    let loss_val = total.clone().into_scalar().elem::<f64>();
+    let grads = total.backward();
     let grads = GradientsParams::from_grads(grads, &model);
     let model = optimizer.step(lr, model, grads);
     (model, loss_val)
@@ -213,12 +247,40 @@ pub fn oracle_guiding_train_step<B: AutodiffBackend>(
         oracle_mask.clone().sum().into_scalar().elem::<f32>() / batch_size as f32;
     let mut masked_targets = targets.clone();
     masked_targets.oracle_guidance_mask = Some(oracle_mask);
+    let empty_batch = MjaiBatch {
+        obs: Tensor::zeros([batch_size, crate::config::INPUT_CHANNELS, 34], &device),
+        actions: Tensor::zeros([batch_size], &device),
+        legal_mask: targets.legal_mask.clone(),
+        value_target: targets.value_target.clone(),
+        grp_target: targets.grp_target.clone(),
+        oracle_target: targets.oracle_target.clone(),
+        oracle_target_mask: masked_targets
+            .oracle_guidance_mask
+            .clone()
+            .unwrap_or_else(|| Tensor::zeros([batch_size], &device)),
+        tenpai_target: targets.tenpai_target.clone(),
+        danger_target: targets.danger_target.clone(),
+        danger_mask: targets.danger_mask.clone(),
+        safety_residual_target: targets.safety_residual_target.clone(),
+        safety_residual_mask: targets.safety_residual_mask.clone(),
+        exit_target: None,
+        exit_mask: None,
+        belief_fields_target: targets.belief_fields_target.clone(),
+        mixture_weight_target: targets.mixture_weight_target.clone(),
+        belief_fields_mask: targets.belief_fields_mask.clone(),
+        mixture_weight_mask: targets.mixture_weight_mask.clone(),
+        opp_next_target: targets.opp_next_target.clone(),
+        score_pdf_target: targets.score_pdf_target.clone(),
+        score_cdf_target: targets.score_cdf_target.clone(),
+    };
 
     let (model, loss) = bc_train_step(
         model,
         obs,
+        &empty_batch,
         &masked_targets,
         loss_fn,
+        &BcExitConfig::default(),
         effective_lr,
         optimizer,
     );
@@ -360,18 +422,20 @@ where
     let mut accum_agreement = 0.0;
 
     for chunk in samples.chunks(microbatch_size) {
-        let Some((obs, targets)) = collate_sample_chunk::<B>(chunk, augment, device) else {
+        let Some((obs, batch)) = collate_sample_refs_with_batch::<B>(chunk, augment, device) else {
             continue;
         };
+        let targets = batch.to_hydra_targets();
         let output = m.forward(obs.clone());
         accum_agreement += policy_agreement(
             output.policy_logits.clone(),
             targets.legal_mask.clone(),
             target_actions_from_policy_target(targets.policy_target.clone()),
         );
-        let breakdown = loss_fn.total_loss(&output, &targets);
-        let loss = breakdown.total.clone().into_scalar().elem::<f64>();
-        let grads = breakdown.total.backward();
+        let total =
+            bc_total_with_exit(&output, &batch, &targets, loss_fn, &BcExitConfig::default());
+        let loss = total.clone().into_scalar().elem::<f64>();
+        let grads = total.backward();
         let grads = GradientsParams::from_grads(grads, &m);
         accumulator.accumulate(&m, grads);
         accum_loss += loss;
@@ -471,6 +535,7 @@ impl CheckpointMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::sample::MjaiBatch;
     use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
@@ -483,6 +548,35 @@ mod tests {
         AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
             .init()
+    }
+
+    fn empty_batch(
+        device: &<TestBackend as Backend>::Device,
+        batch: usize,
+    ) -> MjaiBatch<TestBackend> {
+        MjaiBatch {
+            obs: Tensor::zeros([batch, crate::config::INPUT_CHANNELS, 34], device),
+            actions: Tensor::zeros([batch], device),
+            legal_mask: Tensor::ones([batch, 46], device),
+            value_target: Tensor::zeros([batch], device),
+            grp_target: Tensor::zeros([batch, 24], device),
+            oracle_target: None,
+            oracle_target_mask: Tensor::zeros([batch], device),
+            tenpai_target: Tensor::zeros([batch, 3], device),
+            danger_target: Tensor::zeros([batch, 3, 34], device),
+            danger_mask: Tensor::zeros([batch, 3, 34], device),
+            safety_residual_target: None,
+            safety_residual_mask: None,
+            exit_target: None,
+            exit_mask: None,
+            belief_fields_target: None,
+            mixture_weight_target: None,
+            belief_fields_mask: None,
+            mixture_weight_mask: None,
+            opp_next_target: Tensor::zeros([batch, 3, 34], device),
+            score_pdf_target: Tensor::zeros([batch, 64], device),
+            score_cdf_target: Tensor::zeros([batch, 64], device),
+        }
     }
 
     #[test]
@@ -517,7 +611,17 @@ mod tests {
         let targets = make_dummy_targets::<TestBackend>(&device, 4);
         let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
         let mut optimizer = bc_optimizer();
-        let (_, loss1) = bc_train_step(model, obs, &targets, &loss_fn, 1e-3, &mut optimizer);
+        let batch = empty_batch(&device, 4);
+        let (_, loss1) = bc_train_step(
+            model,
+            obs,
+            &batch,
+            &targets,
+            &loss_fn,
+            &BcExitConfig::default(),
+            1e-3,
+            &mut optimizer,
+        );
         assert!(loss1.is_finite(), "loss should be finite: {loss1}");
         assert!(loss1 > 0.0, "loss should be positive: {loss1}");
     }
@@ -538,10 +642,19 @@ mod tests {
         let targets = make_dummy_targets::<TestBackend>(&device, 10);
         let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
         let mut optimizer = bc_optimizer();
+        let batch = empty_batch(&device, 10);
         let mut last_loss = f64::MAX;
         for _ in 0..100 {
-            let (m, loss) =
-                bc_train_step(model, obs.clone(), &targets, &loss_fn, 1e-3, &mut optimizer);
+            let (m, loss) = bc_train_step(
+                model,
+                obs.clone(),
+                &batch,
+                &targets,
+                &loss_fn,
+                &BcExitConfig::default(),
+                1e-3,
+                &mut optimizer,
+            );
             model = m;
             last_loss = loss;
         }
@@ -728,11 +841,14 @@ mod tests {
         let baseline_targets = make_dummy_targets::<TestBackend>(&device, 4);
         let baseline_loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
         let mut opt1 = bc_optimizer();
+        let baseline_batch = empty_batch(&device, 4);
         let (_, loss_baseline) = bc_train_step(
             model1,
             obs.clone(),
+            &baseline_batch,
             &baseline_targets,
             &baseline_loss_fn,
+            &BcExitConfig::default(),
             1e-3,
             &mut opt1,
         );
@@ -771,11 +887,14 @@ mod tests {
                 .with_w_delta_q(0.05),
         );
         let mut opt2 = bc_optimizer();
+        let advanced_batch = empty_batch(&device, 4);
         let (_, loss_advanced) = bc_train_step(
             model2,
             obs,
+            &advanced_batch,
             &advanced_targets,
             &advanced_loss_fn,
+            &BcExitConfig::default(),
             1e-3,
             &mut opt2,
         );
@@ -822,7 +941,17 @@ mod tests {
                 .with_w_delta_q(0.05),
         );
         let mut optimizer = bc_optimizer();
-        let (_, stats) = bc_train_step(model, obs, &targets, &loss_fn, 1e-3, &mut optimizer);
+        let batch = empty_batch(&device, 4);
+        let (_, stats) = bc_train_step(
+            model,
+            obs,
+            &batch,
+            &targets,
+            &loss_fn,
+            &BcExitConfig::default(),
+            1e-3,
+            &mut optimizer,
+        );
 
         assert!(stats.is_finite(), "loss should be finite");
         assert!(stats > 0.0, "loss should be positive with advanced targets");

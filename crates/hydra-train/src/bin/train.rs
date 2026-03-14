@@ -12,26 +12,26 @@ mod epoch_runner;
 mod loss_policy;
 #[path = "train/modes.rs"]
 mod modes;
-#[path = "train/preflight_runtime.rs"]
-mod preflight_runtime;
 #[path = "train/preflight_fingerprint.rs"]
 mod preflight_fingerprint;
-#[path = "train/probe_request.rs"]
-mod probe_request;
-#[path = "train/probe_process.rs"]
-mod probe_process;
-#[path = "train/probe_ladder.rs"]
-mod probe_ladder;
-#[path = "train/probe_summary.rs"]
-mod probe_summary;
+#[path = "train/preflight_runtime.rs"]
+mod preflight_runtime;
 #[path = "train/presentation.rs"]
 mod presentation;
+#[path = "train/probe_ladder.rs"]
+mod probe_ladder;
+#[path = "train/probe_process.rs"]
+mod probe_process;
+#[path = "train/probe_request.rs"]
+mod probe_request;
+#[path = "train/probe_summary.rs"]
+mod probe_summary;
 #[path = "train/progress.rs"]
 mod progress;
-#[path = "train/runtime_autotune.rs"]
-mod runtime_autotune;
 #[path = "train/resume.rs"]
 mod resume;
+#[path = "train/runtime_autotune.rs"]
+mod runtime_autotune;
 #[path = "train/schedule.rs"]
 mod schedule;
 #[path = "train/status.rs"]
@@ -400,6 +400,7 @@ unexpected_field: true
             batch_size: 256,
             microbatch_size: Some(64),
             validation_microbatch_size: Some(16),
+            exit_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -880,6 +881,7 @@ preflight:
             batch_size: 256,
             microbatch_size: Some(64),
             validation_microbatch_size: None,
+            exit_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -927,6 +929,7 @@ preflight:
             batch_size: 256,
             microbatch_size: Some(64),
             validation_microbatch_size: Some(0),
+            exit_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1074,6 +1077,7 @@ advanced_loss:
             batch_size: 256,
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1104,6 +1108,45 @@ advanced_loss:
         };
         let err = validate_config(&cfg).expect_err("invalid bc ranges should fail");
         assert!(err.contains("bc.min_learning_rate"));
+    }
+
+    #[test]
+    fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
+        let cfg = TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: Some(AdvancedLossConfig {
+                exit: Some(0.1),
+                ..Default::default()
+            }),
+            bc: BcHyperparamConfig::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: None,
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: PreflightConfig::default(),
+        };
+        let err = validate_config(&cfg).expect_err("exit loss without sidecar should fail");
+        assert!(err.contains("exit_sidecar_path"));
     }
 
     #[test]

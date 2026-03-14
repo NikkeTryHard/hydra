@@ -20,8 +20,10 @@ Work toward the strongest exact blueprint for a narrow task, but do not treat th
 We want a detailed answer that makes clear:
 - what the artifacts directly support
 - what is only inference
+- what confidence level each major conclusion deserves
 - what simpler or stronger local alternatives exist inside the same lane
 - what should be kept, narrowed, or removed
+- why the confident parts of the answer are actually justified
 - how to implement or validate the surviving path with minimal guesswork
 
 Use the artifacts below to derive your conclusions.
@@ -31,6 +33,8 @@ Use the artifacts below to derive your conclusions.
 - no high-level survey
 - no vague answer
 - include reasoning
+- when you sound confident, show the justification for that confidence level
+- for every important claim, make the validation path visible enough that a reviewer can test it later
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
@@ -39,6 +43,8 @@ Use the artifacts below to derive your conclusions.
 - use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
 - use the bash tool to run Python for calculations, math checks, and validation when rigor matters
 - do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
+- if you claim a path works, survives, or is implementation-ready, show why that confidence is justified and how the claim can be validated or falsified later
+- inspect your own draft before finishing: if a confident claim is not objectively justified by visible evidence, downgrade it to inference, proposal, or blocked
 - do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
 </style>
 

@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use hydra_train::preflight::{candidate_ladder, ProbeKind, ProbeResult, ProbeStatus};
+use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus, candidate_ladder};
 
 use super::config::TrainConfig;
-use super::probe_request::{probe_candidate_ceiling, ProbeRequest};
-use super::probe_summary::{summarize_probe_results, ProbeCandidateSummary};
+use super::probe_request::{ProbeRequest, probe_candidate_ceiling};
+use super::probe_summary::{ProbeCandidateSummary, summarize_probe_results};
 
 const MAX_DYNAMIC_PROBE_CANDIDATE: usize = 8192;
 
@@ -196,6 +196,7 @@ mod tests {
             batch_size: 256,
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

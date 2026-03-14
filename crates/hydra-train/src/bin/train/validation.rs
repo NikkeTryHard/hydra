@@ -3,9 +3,11 @@ use burn::prelude::*;
 use indicatif::ProgressBar;
 
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_pass};
-use hydra_train::data::sample::collate_samples;
+use hydra_train::data::sample::collate_batch_samples;
 use hydra_train::model::{HydraModel, HydraOutput};
-use hydra_train::training::bc::{policy_agreement, target_actions_from_policy_target};
+use hydra_train::training::bc::{
+    BcExitConfig, bc_total_with_exit, policy_agreement, target_actions_from_policy_target,
+};
 use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
@@ -24,8 +26,10 @@ pub(super) struct ValidationSummary {
 pub(super) fn validation_batch_stats<B: Backend>(
     sample_count: usize,
     output: &HydraOutput<B>,
+    batch: &hydra_train::data::sample::MjaiBatch<B>,
     targets: &HydraTargets<B>,
     loss_fn: &HydraLoss<B>,
+    exit_cfg: &BcExitConfig,
 ) -> BatchStats {
     let target_actions = target_actions_from_policy_target(targets.policy_target.clone());
     let agreement = policy_agreement(
@@ -34,7 +38,11 @@ pub(super) fn validation_batch_stats<B: Backend>(
         target_actions,
     );
     let breakdown = loss_fn.total_loss(output, targets);
-    batch_stats_from_breakdown(sample_count, agreement, &breakdown)
+    let mut stats = batch_stats_from_breakdown(sample_count, agreement, &breakdown);
+    stats.total_loss = bc_total_with_exit(output, batch, targets, loss_fn, exit_cfg)
+        .into_scalar()
+        .elem::<f64>();
+    stats
 }
 
 pub(super) fn is_better_validation(
@@ -58,6 +66,7 @@ pub(super) fn run_validation(
     manifest: &DataManifest,
     device: &<ValidBackend as Backend>::Device,
     loss_fn: &HydraLoss<ValidBackend>,
+    exit_cfg: &BcExitConfig,
     progress: Option<&ProgressBar>,
 ) -> Result<ValidationSummary, String> {
     let model_valid = model.valid();
@@ -83,13 +92,21 @@ pub(super) fn run_validation(
             if capped_chunk.is_empty() {
                 break;
             }
-            let Some((obs, targets)) = collate_samples::<ValidBackend>(capped_chunk, false, device)
+            let Some((obs, batch)) =
+                collate_batch_samples::<ValidBackend>(capped_chunk, false, device)
             else {
                 continue;
             };
+            let targets = batch.to_hydra_targets();
             let output = model_valid.forward(obs);
-            let batch_stats =
-                validation_batch_stats(capped_chunk.len(), &output, &targets, loss_fn);
+            let batch_stats = validation_batch_stats(
+                capped_chunk.len(),
+                &output,
+                &batch,
+                &targets,
+                loss_fn,
+                exit_cfg,
+            );
             stats.record_batch(batch_stats);
             total_samples += capped_chunk.len();
         }

@@ -3,6 +3,9 @@
 use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
 use crate::teacher::belief::{StageABeliefConfig, build_stage_a_teacher};
 use crate::training::losses::oracle_target_from_scores;
+use crate::training::replay_exit::{
+    ExitSidecarIndex, ReplayDecisionKey, source_hash_from_identity,
+};
 use flate2::read::GzDecoder;
 use hydra_core::action::{
     AKA_5M, AKA_5P, AKA_5S, ActionPhase, DISCARD_END, HYDRA_ACTION_SPACE, build_legal_mask,
@@ -54,12 +57,12 @@ fn normalized_train_fraction(train_fraction: f32) -> f32 {
 }
 
 #[inline]
-fn invalid_data(message: impl Into<String>) -> io::Error {
+pub(crate) fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 #[inline]
-fn tile136_to_type(tile136: u8) -> u8 {
+pub(crate) fn tile136_to_type(tile136: u8) -> u8 {
     tile136 / 4
 }
 
@@ -80,7 +83,7 @@ fn abs_opp(observer: usize, rel: usize) -> usize {
     (observer + rel + 1) % 4
 }
 
-fn update_safety(safety: &mut [SafetyInfo; 4], event: &MjaiEvent) -> io::Result<()> {
+pub(crate) fn update_safety(safety: &mut [SafetyInfo; 4], event: &MjaiEvent) -> io::Result<()> {
     match event {
         MjaiEvent::StartKyoku { dora_marker, .. } => {
             *safety = array::from_fn(|_| SafetyInfo::default());
@@ -151,7 +154,7 @@ fn update_safety(safety: &mut [SafetyInfo; 4], event: &MjaiEvent) -> io::Result<
     Ok(())
 }
 
-fn next_discards_after(events: &[MjaiEvent]) -> io::Result<Vec<[Option<u8>; 4]>> {
+pub(crate) fn next_discards_after(events: &[MjaiEvent]) -> io::Result<Vec<[Option<u8>; 4]>> {
     let mut out = vec![[None; 4]; events.len()];
     let mut next = [None; 4];
     for (idx, event) in events.iter().enumerate().rev() {
@@ -163,7 +166,7 @@ fn next_discards_after(events: &[MjaiEvent]) -> io::Result<Vec<[Option<u8>; 4]>>
     Ok(out)
 }
 
-fn final_scores(events: &[MjaiEvent]) -> [i32; 4] {
+pub(crate) fn final_scores(events: &[MjaiEvent]) -> [i32; 4] {
     let mut scores = [25_000; 4];
     for event in events {
         match event {
@@ -236,7 +239,7 @@ fn exact_waits(state: &GameState, player: usize) -> ([f32; 34], bool) {
     (waits, true)
 }
 
-fn bool_mask_to_f32(mask: [bool; HYDRA_ACTION_SPACE]) -> [f32; HYDRA_ACTION_SPACE] {
+pub(crate) fn bool_mask_to_f32(mask: [bool; HYDRA_ACTION_SPACE]) -> [f32; HYDRA_ACTION_SPACE] {
     mask.map(|is_legal| if is_legal { 1.0 } else { 0.0 })
 }
 
@@ -331,7 +334,7 @@ fn build_stage_a_belief_targets(
     }
 }
 
-fn should_sample_replay_event(event: &MjaiEvent) -> bool {
+pub(crate) fn should_sample_replay_event(event: &MjaiEvent) -> bool {
     matches!(
         event,
         MjaiEvent::Dahai { .. }
@@ -343,7 +346,13 @@ fn should_sample_replay_event(event: &MjaiEvent) -> bool {
     )
 }
 
-fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
+fn load_game_from_events_internal(
+    source_hash: Option<u64>,
+    source_net_hash: Option<u64>,
+    source_version: Option<u32>,
+    events: Vec<MjaiEvent>,
+    exit_sidecar: Option<&ExitSidecarIndex>,
+) -> io::Result<MjaiGame> {
     let final_scores = final_scores(&events);
     let oracle_target = oracle_target_from_scores(final_scores);
     let next_discards = next_discards_after(&events)?;
@@ -404,6 +413,27 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                         belief_fields_present,
                         mixture_weights_present,
                     ) = build_stage_a_belief_targets(&state, actor, &obs);
+                    let replay_key = source_hash.map(|source_hash| ReplayDecisionKey {
+                        source_hash,
+                        event_index: idx as u32,
+                        actor: actor as u8,
+                        obs_hash: crate::training::live_exit::obs_hash(&obs_encoded),
+                    });
+                    let joined_exit = replay_key.and_then(|key| {
+                        exit_sidecar.and_then(|sidecar| {
+                            source_net_hash.zip(source_version).and_then(
+                                |(source_net_hash, source_version)| {
+                                    sidecar.lookup_label(
+                                        &key,
+                                        hydra_action.id(),
+                                        &legal_mask,
+                                        source_net_hash,
+                                        source_version,
+                                    )
+                                },
+                            )
+                        })
+                    });
                     samples.push(MjaiSample {
                         obs: obs_encoded,
                         action: hydra_action.id(),
@@ -418,6 +448,8 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                         danger_mask,
                         safety_residual: Some(safety_residual),
                         safety_residual_mask: Some(safety_residual_mask),
+                        exit_target: joined_exit.map(|(target, _)| target),
+                        exit_mask: joined_exit.map(|(_, mask)| mask),
                         belief_fields,
                         mixture_weights,
                         belief_fields_present,
@@ -437,10 +469,49 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     })
 }
 
+fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
+    load_game_from_events_internal(None, None, None, events, None)
+}
+
+pub fn load_game_from_events_with_sidecar(
+    source_identity: &str,
+    source_net_hash: u64,
+    source_version: u32,
+    events: Vec<MjaiEvent>,
+    exit_sidecar: Option<&ExitSidecarIndex>,
+) -> io::Result<MjaiGame> {
+    let source_hash = source_hash_from_identity(source_identity);
+    load_game_from_events_internal(
+        Some(source_hash),
+        Some(source_net_hash),
+        Some(source_version),
+        events,
+        exit_sidecar,
+    )
+}
+
 pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
     let events = read_mjai_events(reader)
         .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
     load_game_from_events(events)
+}
+
+pub fn load_game_from_reader_with_sidecar<R: BufRead>(
+    source_identity: &str,
+    source_net_hash: u64,
+    source_version: u32,
+    reader: R,
+    exit_sidecar: Option<&ExitSidecarIndex>,
+) -> io::Result<MjaiGame> {
+    let events = read_mjai_events(reader)
+        .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+    load_game_from_events_with_sidecar(
+        source_identity,
+        source_net_hash,
+        source_version,
+        events,
+        exit_sidecar,
+    )
 }
 
 pub fn load_game_from_stream<R: Read>(reader: R) -> io::Result<MjaiGame> {
@@ -459,10 +530,66 @@ pub fn load_game_from_stream<R: Read>(reader: R) -> io::Result<MjaiGame> {
     load_game_from_reader(reader)
 }
 
+pub fn load_game_from_stream_with_sidecar<R: Read>(
+    source_identity: &str,
+    source_net_hash: u64,
+    source_version: u32,
+    reader: R,
+    exit_sidecar: Option<&ExitSidecarIndex>,
+) -> io::Result<MjaiGame> {
+    let mut reader = BufReader::new(reader);
+    let is_gzip = {
+        let buf = reader
+            .fill_buf()
+            .map_err(|err| invalid_data(format!("failed to inspect MJAI stream: {err}")))?;
+        buf.starts_with(&[0x1f, 0x8b])
+    };
+
+    if is_gzip {
+        return load_game_from_reader_with_sidecar(
+            source_identity,
+            source_net_hash,
+            source_version,
+            BufReader::new(GzDecoder::new(reader)),
+            exit_sidecar,
+        );
+    }
+
+    load_game_from_reader_with_sidecar(
+        source_identity,
+        source_net_hash,
+        source_version,
+        reader,
+        exit_sidecar,
+    )
+}
+
 pub fn load_game_from_path(path: impl AsRef<Path>) -> io::Result<MjaiGame> {
     let events = load_mjai_events_from_path(path)
         .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))?;
     load_game_from_events(events)
+}
+
+pub fn load_game_from_path_with_sidecar(
+    path: impl AsRef<Path>,
+    source_net_hash: u64,
+    source_version: u32,
+    exit_sidecar: Option<&ExitSidecarIndex>,
+) -> io::Result<MjaiGame> {
+    let path = path.as_ref();
+    let identity = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid_data(format!("invalid filename {}", path.display())))?;
+    let events = load_mjai_events_from_path(path)
+        .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))?;
+    load_game_from_events_with_sidecar(
+        identity,
+        source_net_hash,
+        source_version,
+        events,
+        exit_sidecar,
+    )
 }
 
 pub fn load_dataset_from_paths<P: AsRef<Path>>(

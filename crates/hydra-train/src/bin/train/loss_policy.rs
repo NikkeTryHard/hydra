@@ -1,3 +1,4 @@
+use hydra_train::training::bc::BcExitConfig;
 use hydra_train::training::losses::HydraLossConfig;
 
 use super::config::AdvancedLossConfig;
@@ -30,4 +31,9 @@ pub(super) fn build_loss_config(
         .validate()
         .map_err(|err| format!("invalid loss config: {err}"))?;
     Ok(loss_config)
+}
+
+pub(super) fn build_bc_exit_config(advanced_loss: Option<&AdvancedLossConfig>) -> BcExitConfig {
+    let exit_weight = advanced_loss.and_then(|cfg| cfg.exit).unwrap_or(0.0);
+    BcExitConfig { exit_weight }
 }

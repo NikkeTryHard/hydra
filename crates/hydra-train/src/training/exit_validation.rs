@@ -21,7 +21,7 @@ use crate::training::live_exit::{LiveExitConfig, budget_from_legal_count};
 /// Each field corresponds to one criterion from the Agent 22/9/16
 /// blueprint. The harness collects these by running the live producer
 /// on self-play states without using the labels for training.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExitValidationReport {
     /// Total decision states examined.
     pub total_states: u64,

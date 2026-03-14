@@ -8,7 +8,7 @@ use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
 use std::sync::Arc;
 
 use crate::model::ActorNet;
-use crate::saf::{apply_saf_logit, saf_tensor_from_observation, SafConfig, SafMlp};
+use crate::saf::{SafConfig, SafMlp, apply_saf_logit, saf_tensor_from_observation};
 
 pub const OBS_FLAT_SIZE: usize = NUM_CHANNELS * NUM_TILES;
 
@@ -655,9 +655,11 @@ mod tests {
         // learner-only lookup should find it
         assert!(server.lookup_ponder(hash).is_some());
         // trusted lookup for Authoritative should not
-        assert!(server
-            .lookup_ponder_trusted(hash, TrustLevel::Authoritative)
-            .is_none());
+        assert!(
+            server
+                .lookup_ponder_trusted(hash, TrustLevel::Authoritative)
+                .is_none()
+        );
 
         let mut legal = [false; HYDRA_ACTION_SPACE];
         legal[0] = true;
@@ -680,9 +682,11 @@ mod tests {
         let mut result = PonderResult::learner_only_stub([0.0f32; HYDRA_ACTION_SPACE], 0.5, 4, 100);
         result.trust_level = TrustLevel::Authoritative;
         server.cache_ponder_result(hash, result);
-        assert!(server
-            .lookup_ponder_trusted(hash, TrustLevel::Authoritative)
-            .is_some());
+        assert!(
+            server
+                .lookup_ponder_trusted(hash, TrustLevel::Authoritative)
+                .is_some()
+        );
 
         server.invalidate_cache();
         assert!(

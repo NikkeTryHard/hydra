@@ -22,6 +22,8 @@ pub(crate) struct TrainConfig {
     pub(crate) microbatch_size: Option<usize>,
     #[serde(default)]
     pub(crate) validation_microbatch_size: Option<usize>,
+    #[serde(default)]
+    pub(crate) exit_sidecar_path: Option<PathBuf>,
     #[serde(default = "default_train_fraction")]
     pub(crate) train_fraction: f32,
     #[serde(default = "default_augment")]
@@ -117,6 +119,7 @@ impl Default for BcHyperparamConfig {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AdvancedLossConfig {
+    pub(crate) exit: Option<f32>,
     pub(crate) safety_residual: Option<f32>,
     pub(crate) belief_fields: Option<f32>,
     pub(crate) mixture_weight: Option<f32>,

@@ -8,27 +8,28 @@ use colored::Colorize;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
-use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
-use hydra_train::data::sample::{collate_samples, MjaiSample};
+use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
+use hydra_train::data::sample::{MjaiSample, collate_batch_samples};
 use hydra_train::model::HydraModel;
 use hydra_train::training::bc::{
-    policy_agreement, target_actions_from_policy_target, BCTrainerConfig,
+    BCTrainerConfig, BcExitConfig, bc_total_with_exit, policy_agreement,
+    target_actions_from_policy_target,
 };
 use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::{
-    append_step_log, append_training_log, log_tensorboard, save_checkpoint,
-    save_latest_checkpoint_and_state, BcArtifactPaths,
+    BcArtifactPaths, append_step_log, append_training_log, log_tensorboard, save_checkpoint,
+    save_latest_checkpoint_and_state,
 };
-use super::config::{validation_sample_limit, TrainConfig};
+use super::config::{TrainConfig, validation_sample_limit};
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
 use super::progress::{
-    batch_stats_from_breakdown, BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry,
+    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_stats_from_breakdown,
 };
 use super::resume::{
-    paused_training_message, BestValidation, EpochContinuation, RuntimeResumeContract,
+    BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
@@ -47,6 +48,7 @@ pub(super) struct EpochRunnerContext<'a> {
     pub(super) train_cfg: &'a BCTrainerConfig,
     pub(super) loss_fn: &'a HydraLoss<TrainBackend>,
     pub(super) valid_loss_fn: &'a HydraLoss<ValidBackend>,
+    pub(super) bc_exit_cfg: &'a BcExitConfig,
     pub(super) train_device: &'a LibTorchDevice,
     pub(super) session_start_global_step: usize,
     pub(super) steps_to_skip: usize,
@@ -100,6 +102,7 @@ fn train_logical_batch<O>(
     augment: bool,
     train_device: &LibTorchDevice,
     loss_fn: &HydraLoss<TrainBackend>,
+    bc_exit_cfg: &BcExitConfig,
     model: &mut HydraModel<TrainBackend>,
     optimizer: &mut O,
     lr: f64,
@@ -117,10 +120,12 @@ where
     let logical_batch_len = logical_batch.len().max(1) as f32;
 
     for chunk in logical_batch.chunks(microbatch_size.max(1)) {
-        let Some((obs, targets)) = collate_samples::<TrainBackend>(chunk, augment, train_device)
+        let Some((obs, batch)) =
+            collate_batch_samples::<TrainBackend>(chunk, augment, train_device)
         else {
             continue;
         };
+        let targets = batch.to_hydra_targets();
         let output = model.forward(obs.clone());
         let agreement = policy_agreement(
             output.policy_logits.clone(),
@@ -128,6 +133,7 @@ where
             target_actions_from_policy_target(targets.policy_target.clone()),
         );
         let breakdown = loss_fn.total_loss(&output, &targets);
+        let total = bc_total_with_exit(&output, &batch, &targets, loss_fn, bc_exit_cfg);
         batch_stats.push(batch_stats_from_breakdown(
             chunk.len(),
             agreement,
@@ -135,7 +141,7 @@ where
         ));
 
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
-        let grads = (breakdown.total * chunk_weight).backward();
+        let grads = (total * chunk_weight).backward();
         let grads = GradientsParams::from_grads(grads, model);
         accumulator.accumulate(model, grads);
     }
@@ -167,6 +173,7 @@ fn maybe_run_interval_validation<O>(
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     valid_loss_fn: &HydraLoss<ValidBackend>,
+    bc_exit_cfg: &BcExitConfig,
     artifacts: &BcArtifactPaths,
     best_validation: &mut Option<BestValidation>,
     global_step: usize,
@@ -205,6 +212,7 @@ where
         manifest,
         train_device,
         valid_loss_fn,
+        bc_exit_cfg,
         None,
     )?;
     if is_better_validation(summary, *best_validation) {
@@ -404,6 +412,7 @@ fn run_epoch_end_validation(
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     valid_loss_fn: &HydraLoss<ValidBackend>,
+    bc_exit_cfg: &BcExitConfig,
     artifacts: &BcArtifactPaths,
     best_validation: &mut Option<BestValidation>,
     train_total_loss: f64,
@@ -431,6 +440,7 @@ fn run_epoch_end_validation(
         manifest,
         train_device,
         valid_loss_fn,
+        bc_exit_cfg,
         None,
     )?;
     if is_better_validation(summary, *best_validation) {
@@ -564,6 +574,7 @@ where
         train_cfg,
         loss_fn,
         valid_loss_fn,
+        bc_exit_cfg,
         train_device,
         session_start_global_step,
         steps_to_skip,
@@ -662,6 +673,7 @@ where
                 config.augment,
                 train_device,
                 loss_fn,
+                bc_exit_cfg,
                 model,
                 optimizer,
                 lr,
@@ -692,6 +704,7 @@ where
                 manifest,
                 train_device,
                 valid_loss_fn,
+                bc_exit_cfg,
                 artifacts,
                 best_validation,
                 *global_step,
@@ -769,6 +782,7 @@ where
             config.augment,
             train_device,
             loss_fn,
+            bc_exit_cfg,
             model,
             optimizer,
             lr,
@@ -821,6 +835,7 @@ where
         manifest,
         train_device,
         valid_loss_fn,
+        bc_exit_cfg,
         artifacts,
         best_validation,
         train_stats.total_loss,
