@@ -12,6 +12,7 @@ research/papers/
 __pycache__/
 *.pyc
 .tmp_archive_claims/
+python/hydra_phase0_tpu/tests/.tmp_*/
 
 # Local funding / outreach drafts
 /email_draft_*.txt

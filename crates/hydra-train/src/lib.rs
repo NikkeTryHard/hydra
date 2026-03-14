@@ -4,6 +4,7 @@
 //! Implements the full training pipeline from HYDRA_FINAL.md.
 
 pub mod backbone;
+pub mod bridge_import;
 pub mod config;
 pub mod data;
 pub mod eval;

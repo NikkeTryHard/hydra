@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: hydra-phase0-tpu
+Version: 0.1.0
+Summary: Hydra Phase 0 TPU behavioral cloning trainer
+Requires-Python: >=3.11
+Requires-Dist: jax>=0.9.1
+Requires-Dist: flax>=0.12.5
+Requires-Dist: optax>=0.2.6
+Requires-Dist: orbax-checkpoint>=0.11.33
+Requires-Dist: numpy>=1.26
+Requires-Dist: pydantic>=2.7
+Requires-Dist: pydantic-settings>=2.2
+Requires-Dist: PyYAML>=6.0

@@ -21,9 +21,14 @@ path = "src/bin/mjai_audit.rs"
 name = "recompress"
 path = "src/bin/recompress.rs"
 
+[[bin]]
+name = "export_bc_phase0"
+path = "src/bin/export_bc_phase0.rs"
+
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 burn = { version = "0.20", features = ["train", "tch"] }
+burn-store = { version = "0.20", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 dashmap = "6.1.0"
 flate2 = "1.1.9"
@@ -38,6 +43,8 @@ tar = "0.4"
 zstd = "0.13"
 ctrlc = "3.4"
 time = { version = "0.3", features = ["formatting"] }
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 burn = { version = "0.20", features = ["ndarray"] }
