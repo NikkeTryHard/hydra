@@ -763,6 +763,48 @@ pub(super) fn probe_validation_candidate(
     ))
 }
 
+fn run_rl_probe_only(
+    config: &TrainConfig,
+    request: ProbeRequest,
+    result_path: &Path,
+) -> Result<(), String> {
+    let train_device = train_device(&config.device);
+    let rl = config
+        .rl
+        .as_ref()
+        .ok_or_else(|| "RL probe requested without rl config block".to_string())?;
+    let mut tuned = rl.clone();
+    tuned.games_per_batch = request.candidate_microbatch;
+    if tuned.microbatch_size.is_none() {
+        tuned.microbatch_size = Some(hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE);
+    }
+    emit_probe_progress(&format!(
+        "probe_progress kind=rl_games candidate_mb={} phase=rl_selfplay",
+        request.candidate_microbatch,
+    ))?;
+    let started_at = Instant::now();
+    let measured_samples_per_second =
+        super::runtime_autotune::measure_rl_runtime_throughput(config, &tuned, &train_device)?;
+    let elapsed_seconds = started_at.elapsed().as_secs_f64();
+    emit_probe_progress(&format!(
+        "probe_progress kind=rl_games candidate_mb={} phase=done throughput={:.2} samples/s elapsed={:.2}s",
+        request.candidate_microbatch,
+        measured_samples_per_second,
+        elapsed_seconds,
+    ))?;
+    write_probe_result(
+        result_path,
+        &ProbeResult {
+            kind: request.kind,
+            candidate_microbatch: request.candidate_microbatch,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: Some(measured_samples_per_second),
+            elapsed_seconds: Some(elapsed_seconds),
+            detail: String::new(),
+        },
+    )
+}
+
 pub(super) fn run_probe_only(
     config: &TrainConfig,
     request: ProbeRequest,
@@ -770,6 +812,11 @@ pub(super) fn run_probe_only(
 ) -> Result<(), String> {
     configure_threads(config.num_threads)
         .map_err(|err| format!("failed to configure rayon threads for probe child: {err}"))?;
+
+    if request.kind == ProbeKind::RlGames {
+        return run_rl_probe_only(config, request, result_path);
+    }
+
     let loader_config = StreamingLoaderConfig {
         buffer_games: config.buffer_games,
         buffer_samples: config.buffer_samples,
@@ -814,18 +861,7 @@ pub(super) fn run_probe_only(
         ProbeKind::Validation => {
             probe_validation_candidate(config, request, &loader_config, &manifest, &train_device)?
         }
-        ProbeKind::RlGames => {
-            let rl = config
-                .rl
-                .as_ref()
-                .ok_or_else(|| "RL probe requested without rl config block".to_string())?;
-            let mut tuned = rl.clone();
-            tuned.games_per_batch = request.candidate_microbatch;
-            if tuned.microbatch_size.is_none() {
-                tuned.microbatch_size = Some(hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE);
-            }
-            super::runtime_autotune::measure_rl_runtime_throughput(config, &tuned, &train_device)?
-        }
+        ProbeKind::RlGames => unreachable!("RL probes handled by run_rl_probe_only"),
     };
     let elapsed_seconds = started_at.elapsed().as_secs_f64();
     emit_probe_progress(&format!(
