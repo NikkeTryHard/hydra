@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import queue
@@ -119,13 +120,17 @@ def _verify_shard_hashes(shard: ShardRecord, file_names: list[str]) -> None:
         raise ValueError(
             f"shard file set mismatch for {shard.shard_name}: expected {sorted(expected_names)}, got {sorted(actual_names)}"
         )
-    for file_name in file_names:
+
+    def _check(file_name: str) -> None:
         digest = hashlib.sha256((shard.root / file_name).read_bytes()).hexdigest()
         expected_digest = expected[file_name]
         if digest != expected_digest:
             raise ValueError(
                 f"hash mismatch for {shard.shard_name}/{file_name}: expected {expected_digest}, got {digest}"
             )
+
+    with ThreadPoolExecutor(max_workers=min(8, len(file_names))) as pool:
+        list(pool.map(_check, file_names))
 
 
 def load_shard_arrays(shard: ShardRecord) -> dict[str, np.ndarray]:
@@ -180,7 +185,13 @@ def load_shard_arrays(shard: ShardRecord) -> dict[str, np.ndarray]:
         "mixture_weight_present.npy",
     ]
     _verify_shard_hashes(shard, hashed_file_names)
-    arrays = {name[:-4]: np.load(shard.root / name) for name in npy_file_names}
+
+    def _load_array(file_name: str) -> tuple[str, np.ndarray]:
+        return file_name[:-4], np.load(shard.root / file_name)
+
+    with ThreadPoolExecutor(max_workers=min(8, len(npy_file_names))) as pool:
+        arrays = dict(pool.map(_load_array, npy_file_names))
+
     sample_count = shard.sample_count
     offsets = arrays["game_sample_offsets"]
     if offsets.ndim != 1:
@@ -376,21 +387,19 @@ def _yield_buffer_batches(
 ) -> Iterator[dict[str, np.ndarray]]:
     if not buffer:
         return
-    samples = []
-    for game in buffer:
-        game_len = int(game["obs"].shape[0])
-        for i in range(game_len):
-            samples.append({key: value[i : i + 1] for key, value in game.items()})
-    sample_order = _shuffle_indices(
-        len(samples), _stream_shuffle_seed(seed, epoch, yield_index)
+    keys = list(buffer[0].keys())
+    stacked = {
+        key: np.concatenate([game[key] for game in buffer], axis=0) for key in keys
+    }
+    total = int(stacked["obs"].shape[0])
+    rng = np.random.RandomState(
+        _stream_shuffle_seed(seed, epoch, yield_index) & 0xFFFFFFFF
     )
-    shuffled = [samples[idx] for idx in sample_order]
-    for start in range(0, len(shuffled), logical_batch_size):
-        chunk = shuffled[start : start + logical_batch_size]
-        yield {
-            key: np.concatenate([sample[key] for sample in chunk], axis=0)
-            for key in chunk[0].keys()
-        }
+    permutation = rng.permutation(total)
+    shuffled = {key: value[permutation] for key, value in stacked.items()}
+    for start in range(0, total, logical_batch_size):
+        end = min(start + logical_batch_size, total)
+        yield {key: value[start:end] for key, value in shuffled.items()}
 
 
 _PREFETCH_DONE: dict[str, np.ndarray] = {}
