@@ -1,2 +1,0 @@
-hydra_phase0_tpu
-tests

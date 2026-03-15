@@ -15,6 +15,171 @@ use crate::manifest::{
 };
 use crate::shard_writer::{ExportGame, PendingShard};
 
+struct SplitShardBuffer {
+    split: ExportSplit,
+    shard_index: usize,
+    games: Vec<ExportGame>,
+    sample_count: usize,
+    total_games: usize,
+    total_samples: usize,
+}
+
+impl SplitShardBuffer {
+    fn new(split: ExportSplit) -> Self {
+        Self {
+            split,
+            shard_index: 0,
+            games: Vec::new(),
+            sample_count: 0,
+            total_games: 0,
+            total_samples: 0,
+        }
+    }
+
+    fn push(
+        &mut self,
+        export_root: &Path,
+        game: ExportGame,
+        max_samples_per_shard: usize,
+        max_games_per_shard: usize,
+        shards: &mut Vec<ShardManifestEntry>,
+    ) -> io::Result<()> {
+        let sample_count = game.samples.len();
+        let would_exceed_games = self.games.len() >= max_games_per_shard.max(1);
+        let would_exceed_samples = !self.games.is_empty()
+            && self.sample_count.saturating_add(sample_count) > max_samples_per_shard.max(1);
+        if would_exceed_games || would_exceed_samples {
+            self.flush(export_root, shards)?;
+        }
+
+        self.sample_count += sample_count;
+        self.games.push(game);
+        self.total_games += 1;
+        self.total_samples += sample_count;
+        Ok(())
+    }
+
+    fn flush(
+        &mut self,
+        export_root: &Path,
+        shards: &mut Vec<ShardManifestEntry>,
+    ) -> io::Result<()> {
+        if self.games.is_empty() {
+            return Ok(());
+        }
+
+        let shard = PendingShard::new(
+            export_root,
+            self.split.clone(),
+            self.shard_index,
+            self.games.len(),
+            self.sample_count,
+        )?;
+        shard.write_metadata()?;
+        shard.write_games(&self.games)?;
+        let hashes = shard.hash_files()?;
+        shards.push(ShardManifestEntry {
+            split: self.split.clone(),
+            shard_name: shard.shard_name,
+            game_count: self.games.len(),
+            sample_count: self.sample_count,
+            hashes,
+        });
+
+        self.shard_index += 1;
+        self.games.clear();
+        self.sample_count = 0;
+        Ok(())
+    }
+}
+
+struct StreamingAccumulatorOutput {
+    split_counts: SplitCounts,
+    target_presence_counts: TargetPresenceCounts,
+    shards: Vec<ShardManifestEntry>,
+}
+
+struct StreamingShardAccumulator<'a> {
+    export_root: &'a Path,
+    train_fraction: f32,
+    max_samples_per_shard: usize,
+    max_games_per_shard: usize,
+    train: SplitShardBuffer,
+    validation: SplitShardBuffer,
+    target_presence_counts: TargetPresenceCounts,
+    shards: Vec<ShardManifestEntry>,
+}
+
+impl<'a> StreamingShardAccumulator<'a> {
+    fn new(
+        export_root: &'a Path,
+        train_fraction: f32,
+        max_samples_per_shard: usize,
+        max_games_per_shard: usize,
+    ) -> Self {
+        Self {
+            export_root,
+            train_fraction,
+            max_samples_per_shard,
+            max_games_per_shard,
+            train: SplitShardBuffer::new(ExportSplit::Train),
+            validation: SplitShardBuffer::new(ExportSplit::Validation),
+            target_presence_counts: TargetPresenceCounts {
+                oracle_target: 0,
+                safety_residual_target: 0,
+                belief_fields_target: 0,
+                mixture_weight_target: 0,
+            },
+            shards: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, game: ExportGame) -> io::Result<()> {
+        for sample in &game.samples {
+            if sample.oracle_target.is_some() {
+                self.target_presence_counts.oracle_target += 1;
+            }
+            if sample.safety_residual.is_some() {
+                self.target_presence_counts.safety_residual_target += 1;
+            }
+            if sample.belief_fields_present {
+                self.target_presence_counts.belief_fields_target += 1;
+            }
+            if sample.mixture_weights_present {
+                self.target_presence_counts.mixture_weight_target += 1;
+            }
+        }
+
+        let target = if is_train_game(&game.identity, self.train_fraction) {
+            &mut self.train
+        } else {
+            &mut self.validation
+        };
+        target.push(
+            self.export_root,
+            game,
+            self.max_samples_per_shard,
+            self.max_games_per_shard,
+            &mut self.shards,
+        )
+    }
+
+    fn finish(mut self) -> io::Result<StreamingAccumulatorOutput> {
+        self.train.flush(self.export_root, &mut self.shards)?;
+        self.validation.flush(self.export_root, &mut self.shards)?;
+        Ok(StreamingAccumulatorOutput {
+            split_counts: SplitCounts {
+                train_games: self.train.total_games,
+                train_samples: self.train.total_samples,
+                validation_games: self.validation.total_games,
+                validation_samples: self.validation.total_samples,
+            },
+            target_presence_counts: self.target_presence_counts,
+            shards: self.shards,
+        })
+    }
+}
+
 pub(crate) fn run_export(config: &ExportConfig) -> io::Result<()> {
     let export_root = config.output_dir.join("bc_phase0_export");
     if export_root.exists() {
@@ -23,68 +188,18 @@ pub(crate) fn run_export(config: &ExportConfig) -> io::Result<()> {
     fs::create_dir_all(&export_root)?;
 
     let progress = ProgressBar::new_spinner();
-    progress.set_message("collecting canonical export games");
-    let export_games =
-        collect_export_games(&config.data_dir, config.train_fraction, Some(&progress))?;
+    progress.set_message("streaming canonical export games");
+    let mut accumulator = StreamingShardAccumulator::new(
+        &export_root,
+        config.train_fraction,
+        config.max_samples_per_shard,
+        config.max_games_per_shard,
+    );
+    collect_export_games(&config.data_dir, Some(&progress), |game| {
+        accumulator.push(game)
+    })?;
+    let accumulator = accumulator.finish()?;
     progress.finish_and_clear();
-
-    let mut train_games = Vec::new();
-    let mut validation_games = Vec::new();
-    let mut train_samples = 0usize;
-    let mut validation_samples = 0usize;
-    let mut target_presence = TargetPresenceCounts {
-        oracle_target: 0,
-        safety_residual_target: 0,
-        belief_fields_target: 0,
-        mixture_weight_target: 0,
-    };
-
-    for game in export_games {
-        let sample_count = game.samples.len();
-        for sample in &game.samples {
-            if sample.oracle_target.is_some() {
-                target_presence.oracle_target += 1;
-            }
-            if sample.safety_residual.is_some() {
-                target_presence.safety_residual_target += 1;
-            }
-            if sample.belief_fields_present {
-                target_presence.belief_fields_target += 1;
-            }
-            if sample.mixture_weights_present {
-                target_presence.mixture_weight_target += 1;
-            }
-        }
-
-        if is_train_game(&game.identity, config.train_fraction) {
-            train_samples += sample_count;
-            train_games.push(game);
-        } else {
-            validation_samples += sample_count;
-            validation_games.push(game);
-        }
-    }
-
-    let mut shards = Vec::new();
-    let train_game_count = train_games.len();
-    let validation_game_count = validation_games.len();
-
-    write_split_shards(
-        &export_root,
-        ExportSplit::Train,
-        train_games,
-        config.max_samples_per_shard,
-        config.max_games_per_shard,
-        &mut shards,
-    )?;
-    write_split_shards(
-        &export_root,
-        ExportSplit::Validation,
-        validation_games,
-        config.max_samples_per_shard,
-        config.max_games_per_shard,
-        &mut shards,
-    )?;
 
     let mut manifest = ExportManifest {
         schema_version: SCHEMA_VERSION.to_string(),
@@ -94,18 +209,13 @@ pub(crate) fn run_export(config: &ExportConfig) -> io::Result<()> {
         seed: config.seed,
         augment_policy: AUGMENT_POLICY.to_string(),
         source_paths: collect_source_paths(&config.data_dir)?,
-        split_counts: SplitCounts {
-            train_games: train_game_count,
-            train_samples,
-            validation_games: validation_game_count,
-            validation_samples,
-        },
+        split_counts: accumulator.split_counts,
         counts_exact: CountsExact {
             source_scan_exact: false,
             export_counts_exact: true,
         },
-        target_presence_counts: target_presence,
-        shards,
+        target_presence_counts: accumulator.target_presence_counts,
+        shards: accumulator.shards,
         config_snapshot: ConfigSnapshot {
             buffer_games: config.buffer_games,
             buffer_samples: config.buffer_samples,
@@ -122,22 +232,30 @@ pub(crate) fn run_export(config: &ExportConfig) -> io::Result<()> {
     Ok(())
 }
 
-fn collect_export_games(
+fn collect_export_games<F>(
     data_path: &Path,
-    train_fraction: f32,
     progress: Option<&ProgressBar>,
-) -> io::Result<Vec<ExportGame>> {
-    let mut out = Vec::new();
+    mut on_game: F,
+) -> io::Result<()>
+where
+    F: FnMut(ExportGame) -> io::Result<()>,
+{
     if data_path.is_file() {
         if is_tar_zst_file(data_path) {
-            load_archive_games(data_path, progress, &mut out)?;
+            load_archive_games(data_path, progress, &mut on_game)?;
         } else if is_mjai_file(data_path) {
             let identity = identity_for_loose_file(data_path)?;
-            let game = load_game_from_path(data_path)?;
-            out.push(ExportGame {
-                identity,
-                samples: game.samples,
-            });
+            match load_game_from_path(data_path) {
+                Ok(game) => {
+                    on_game(ExportGame {
+                        identity,
+                        samples: game.samples,
+                    })?;
+                }
+                Err(err) => {
+                    eprintln!("Skipping {}: {}", identity, err);
+                }
+            }
             if let Some(pb) = progress {
                 pb.inc(1);
             }
@@ -150,16 +268,15 @@ fn collect_export_games(
                 ),
             ));
         }
-        return Ok(out);
+        return Ok(());
     }
 
     let mut loose_files = Vec::new();
     let mut archives = Vec::new();
     for entry in fs::read_dir(data_path)? {
         let entry = entry?;
-        let file_type = entry.file_type()?;
         let path = entry.path();
-        if !file_type.is_file() {
+        if !fs::metadata(&path)?.is_file() {
             continue;
         }
         if is_mjai_file(&path) {
@@ -173,29 +290,37 @@ fn collect_export_games(
 
     for path in loose_files {
         let identity = identity_for_loose_file(&path)?;
-        let game = load_game_from_path(&path)?;
-        out.push(ExportGame {
-            identity,
-            samples: game.samples,
-        });
+        match load_game_from_path(&path) {
+            Ok(game) => {
+                on_game(ExportGame {
+                    identity,
+                    samples: game.samples,
+                })?;
+            }
+            Err(err) => {
+                eprintln!("Skipping {}: {}", identity, err);
+            }
+        }
         if let Some(pb) = progress {
             pb.inc(1);
         }
     }
 
     for archive in archives {
-        load_archive_games(&archive, progress, &mut out)?;
+        load_archive_games(&archive, progress, &mut on_game)?;
     }
 
-    let _ = train_fraction;
-    Ok(out)
+    Ok(())
 }
 
-fn load_archive_games(
+fn load_archive_games<F>(
     archive_path: &Path,
     progress: Option<&ProgressBar>,
-    out: &mut Vec<ExportGame>,
-) -> io::Result<()> {
+    on_game: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(ExportGame) -> io::Result<()>,
+{
     let file = fs::File::open(archive_path)?;
     let zstd = zstd::Decoder::new(file).map_err(|err| {
         io::Error::other(format!(
@@ -213,11 +338,17 @@ fn load_archive_games(
         let identity = identity_for_archive_entry(archive_path, &entry_path)?;
         let mut data = Vec::with_capacity(entry.size() as usize);
         std::io::Read::read_to_end(&mut entry, &mut data)?;
-        let game = load_game_from_stream(BufReader::new(std::io::Cursor::new(data)))?;
-        out.push(ExportGame {
-            identity,
-            samples: game.samples,
-        });
+        match load_game_from_stream(BufReader::new(std::io::Cursor::new(data))) {
+            Ok(game) => {
+                on_game(ExportGame {
+                    identity,
+                    samples: game.samples,
+                })?;
+            }
+            Err(err) => {
+                eprintln!("Skipping {}: {}", identity, err);
+            }
+        }
         if let Some(pb) = progress {
             pb.inc(1);
         }
@@ -304,9 +435,8 @@ fn collect_source_paths(data_path: &Path) -> io::Result<Vec<PathBuf>> {
     let mut sources = Vec::new();
     for entry in fs::read_dir(data_path)? {
         let entry = entry?;
-        let file_type = entry.file_type()?;
         let path = entry.path();
-        if !file_type.is_file() {
+        if !fs::metadata(&path)?.is_file() {
             continue;
         }
         if is_mjai_file(&path) || is_tar_zst_file(&path) {
@@ -527,5 +657,29 @@ mod tests {
         let b = is_train_game("b_valid.json", 0.9);
         assert_eq!(a, is_train_game("a_valid.json", 0.9));
         assert_eq!(b, is_train_game("b_valid.json", 0.9));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_source_paths_includes_symlinked_files() {
+        use std::os::unix::fs::symlink;
+
+        let temp =
+            std::env::temp_dir().join(format!("hydra_phase0_sources_{}_{}", std::process::id(), 1));
+        if temp.exists() {
+            fs::remove_dir_all(&temp).ok();
+        }
+        fs::create_dir_all(&temp).expect("create temp dir");
+
+        let target = temp.join("game.json");
+        fs::write(&target, b"[]").expect("write target file");
+        let link = temp.join("linked_game.json");
+        symlink(&target, &link).expect("create symlink");
+
+        let sources = collect_source_paths(&temp).expect("collect source paths");
+        assert!(sources.contains(&target));
+        assert!(sources.contains(&link));
+
+        fs::remove_dir_all(temp).ok();
     }
 }
