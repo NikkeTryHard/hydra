@@ -354,7 +354,8 @@ fn load_archive_games(
     sender: &SyncSender<ArchiveMessage>,
 ) -> io::Result<()> {
     let file = fs::File::open(archive_path)?;
-    let zstd = zstd::Decoder::new(file).map_err(|err| {
+    let reader = BufReader::with_capacity(1 << 20, file);
+    let zstd = zstd::Decoder::new(reader).map_err(|err| {
         io::Error::other(format!(
             "failed to open zstd archive {}: {err}",
             archive_path.display()

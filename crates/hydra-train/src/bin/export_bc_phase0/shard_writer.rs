@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use hydra_core::action::HYDRA_ACTION_SPACE;
@@ -291,35 +292,37 @@ impl PendingShard {
     }
 
     pub(crate) fn hash_files(&self) -> io::Result<ShardArtifactHashes> {
-        let mut hashes = BTreeMap::new();
         let mut entries = fs::read_dir(&self.root)?.collect::<Result<Vec<_>, _>>()?;
         entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let bytes = fs::read(&path)?;
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            let digest = format!("{:x}", hasher.finalize());
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "invalid shard file name")
-                })?
-                .to_string();
-            hashes.insert(name, digest);
-        }
+        let hashes = entries
+            .par_iter()
+            .filter_map(|entry| {
+                let path = entry.path();
+                path.is_file().then_some(path)
+            })
+            .map(|path| -> io::Result<(String, String)> {
+                let file = fs::File::open(&path)?;
+                let mut reader = BufReader::with_capacity(1 << 20, file);
+                let mut hasher = Sha256::new();
+                io::copy(&mut reader, &mut hasher)?;
+                let digest = format!("{:x}", hasher.finalize());
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid shard file name")
+                    })?
+                    .to_string();
+                Ok((name, digest))
+            })
+            .collect::<io::Result<BTreeMap<_, _>>>()?;
         Ok(ShardArtifactHashes { files: hashes })
     }
 }
 
-fn write_magic(file: &mut Vec<u8>) {
-    file.extend_from_slice(b"\x93NUMPY");
-    file.push(1);
-    file.push(0);
+fn write_magic<W: Write>(writer: &mut W) -> io::Result<()> {
+    writer.write_all(b"\x93NUMPY")?;
+    writer.write_all(&[1, 0])
 }
 
 fn build_header(descr: &str, fortran_order: bool, shape: &[usize]) -> Vec<u8> {
@@ -350,18 +353,30 @@ fn build_header(descr: &str, fortran_order: bool, shape: &[usize]) -> Vec<u8> {
 }
 
 fn write_npy_bytes(path: &Path, descr: &str, shape: &[usize], data: &[u8]) -> io::Result<()> {
-    let mut file = Vec::new();
-    write_magic(&mut file);
+    let file = fs::File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    write_magic(&mut writer)?;
     let header = build_header(descr, false, shape);
     let header_len = u16::try_from(header.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "npy header too large"))?;
-    file.extend_from_slice(&header_len.to_le_bytes());
-    file.extend_from_slice(&header);
-    file.extend_from_slice(data);
-    fs::write(path, file)
+    writer.write_all(&header_len.to_le_bytes())?;
+    writer.write_all(&header)?;
+    writer.write_all(data)?;
+    writer.flush()
 }
 
-fn f32_to_le_bytes(values: &[f32]) -> Vec<u8> {
+#[cfg(target_endian = "little")]
+fn f32_as_le_bytes(values: &[f32]) -> &[u8] {
+    let ptr = values.as_ptr().cast::<u8>();
+    let len = std::mem::size_of_val(values);
+    // SAFETY: f32 has no padding, the source slice remains alive for the returned borrow,
+    // and reading through u8 removes alignment concerns. On little-endian targets the
+    // in-memory representation already matches the .npy <f4 byte order.
+    unsafe { std::slice::from_raw_parts(ptr, len) }
+}
+
+#[cfg(not(target_endian = "little"))]
+fn f32_as_le_bytes(values: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
@@ -369,7 +384,17 @@ fn f32_to_le_bytes(values: &[f32]) -> Vec<u8> {
     out
 }
 
-fn i32_to_le_bytes(values: &[i32]) -> Vec<u8> {
+#[cfg(target_endian = "little")]
+fn i32_as_le_bytes(values: &[i32]) -> &[u8] {
+    let ptr = values.as_ptr().cast::<u8>();
+    let len = std::mem::size_of_val(values);
+    // SAFETY: i32 has no padding, the source slice outlives the returned borrow, and
+    // u8 reads are alignment-agnostic. Little-endian memory already matches .npy <i4.
+    unsafe { std::slice::from_raw_parts(ptr, len) }
+}
+
+#[cfg(not(target_endian = "little"))]
+fn i32_as_le_bytes(values: &[i32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
@@ -377,7 +402,17 @@ fn i32_to_le_bytes(values: &[i32]) -> Vec<u8> {
     out
 }
 
-fn i64_to_le_bytes(values: &[i64]) -> Vec<u8> {
+#[cfg(target_endian = "little")]
+fn i64_as_le_bytes(values: &[i64]) -> &[u8] {
+    let ptr = values.as_ptr().cast::<u8>();
+    let len = std::mem::size_of_val(values);
+    // SAFETY: i64 has no padding, the source slice outlives the returned borrow, and
+    // u8 reads are alignment-agnostic. Little-endian memory already matches .npy <i8.
+    unsafe { std::slice::from_raw_parts(ptr, len) }
+}
+
+#[cfg(not(target_endian = "little"))]
+fn i64_as_le_bytes(values: &[i64]) -> Vec<u8> {
     let mut out = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
@@ -386,15 +421,15 @@ fn i64_to_le_bytes(values: &[i64]) -> Vec<u8> {
 }
 
 fn write_npy_f32_1d(path: &Path, values: &[f32]) -> io::Result<()> {
-    write_npy_bytes(path, "<f4", &[values.len()], &f32_to_le_bytes(values))
+    write_npy_bytes(path, "<f4", &[values.len()], f32_as_le_bytes(values))
 }
 
 fn write_npy_f32_2d(path: &Path, values: &[f32], shape: [usize; 2]) -> io::Result<()> {
-    write_npy_bytes(path, "<f4", &shape, &f32_to_le_bytes(values))
+    write_npy_bytes(path, "<f4", &shape, f32_as_le_bytes(values))
 }
 
 fn write_npy_f32_3d(path: &Path, values: &[f32], shape: [usize; 3]) -> io::Result<()> {
-    write_npy_bytes(path, "<f4", &shape, &f32_to_le_bytes(values))
+    write_npy_bytes(path, "<f4", &shape, f32_as_le_bytes(values))
 }
 
 fn write_npy_u8_1d(path: &Path, values: &[u8]) -> io::Result<()> {
@@ -402,11 +437,11 @@ fn write_npy_u8_1d(path: &Path, values: &[u8]) -> io::Result<()> {
 }
 
 fn write_npy_i32_1d(path: &Path, values: &[i32]) -> io::Result<()> {
-    write_npy_bytes(path, "<i4", &[values.len()], &i32_to_le_bytes(values))
+    write_npy_bytes(path, "<i4", &[values.len()], i32_as_le_bytes(values))
 }
 
 fn write_npy_i64_1d(path: &Path, values: &[i64]) -> io::Result<()> {
-    write_npy_bytes(path, "<i8", &[values.len()], &i64_to_le_bytes(values))
+    write_npy_bytes(path, "<i8", &[values.len()], i64_as_le_bytes(values))
 }
 
 #[cfg(test)]
