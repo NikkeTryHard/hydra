@@ -3,6 +3,7 @@ use hydra_core::action::{
     build_legal_mask, hydra_to_riichienv, riichienv_to_hydra, ActionPhase, GameContext,
     HydraAction, HYDRA_ACTION_SPACE,
 };
+use hydra_core::afbs::{AfbsTree, NodeIdx};
 use hydra_core::arena::{
     sample_action_with_temperature, Trajectory, TrajectoryDeltaQLabel, TrajectoryExitLabel,
     TrajectoryStep,
@@ -17,9 +18,16 @@ use riichienv_core::state::GameState;
 
 use crate::config::{GAE_GAMMA, GAE_LAMBDA};
 use crate::model::HydraModel;
-use crate::training::exit::{collate_delta_q_targets, collate_exit_targets};
+use crate::training::exit::{
+    build_delta_q_from_afbs_tree, build_exit_from_afbs_tree, collate_delta_q_targets,
+    collate_exit_targets, compatible_discard_state, is_hard_state,
+};
 use crate::training::gae::{compute_per_player_gae, normalize_advantages, GaeConfig};
-use crate::training::live_exit::{make_live_exit_fn, LiveExitConfig, TrajectorySearchLabels};
+use crate::training::live_exit::{
+    base_pi_from_logits, budget_from_legal_count, legal_discard_actions, make_live_exit_fn,
+    seed_root_children_all_legal, ExitSearchAdapter, LiveExitConfig, RootDecisionContext,
+    SelfPlayExitAdapter, TrajectorySearchLabels,
+};
 use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;
 
@@ -501,6 +509,311 @@ pub struct SelfPlayBatchSource {
 ///
 /// The returned [`SelfPlayBatchSource`] contains raw trajectories and
 /// per-step value baselines suitable for [`trajectories_to_rl_batch`].
+#[derive(Clone)]
+struct PendingPolicyRequest {
+    pid: u8,
+    obs: Observation,
+    drawn_tile_before_action: Option<u8>,
+    turn: u32,
+}
+
+struct PendingTurnState {
+    chosen_actions: [Option<Action>; 4],
+    players: Vec<u8>,
+    next_index: usize,
+    turn: u32,
+}
+
+enum GameAdvance {
+    NeedPolicy([f32; OBS_SIZE]),
+    Finished,
+}
+
+struct BatchedSelfPlayGame {
+    state: GameState,
+    selector: NnActionSelector,
+    legal_buf: Vec<Action>,
+    trajectory: Trajectory,
+    total_steps: u32,
+    pending_turn: Option<PendingTurnState>,
+    pending_policy: Option<PendingPolicyRequest>,
+    exit_adapter: SelfPlayExitAdapter,
+    live_exit_cfg: LiveExitConfig,
+    finished: bool,
+}
+
+impl BatchedSelfPlayGame {
+    fn new(game_seed: u64, temperature: f32, rng_seed: u64, live_exit_cfg: LiveExitConfig) -> Self {
+        let rule = GameRule::default_tenhou();
+        Self {
+            state: GameState::new(DEFAULT_GAME_MODE, true, Some(game_seed), 0, rule),
+            selector: NnActionSelector::new(temperature, rng_seed),
+            legal_buf: Vec::with_capacity(HYDRA_ACTION_SPACE),
+            trajectory: Trajectory::new(0, game_seed),
+            total_steps: 0,
+            pending_turn: None,
+            pending_policy: None,
+            exit_adapter: SelfPlayExitAdapter::new(),
+            live_exit_cfg,
+            finished: false,
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn into_trajectory(self) -> Trajectory {
+        self.trajectory
+    }
+
+    fn advance_until_policy_request(&mut self) -> GameAdvance {
+        loop {
+            if self.finished {
+                return GameAdvance::Finished;
+            }
+
+            if self.state.is_done || self.total_steps >= MAX_SELF_PLAY_STEPS {
+                self.finalize();
+                return GameAdvance::Finished;
+            }
+
+            debug_assert!(
+                self.pending_policy.is_none(),
+                "policy result must be provided before advancing again"
+            );
+
+            if self.state.needs_initialize_next_round {
+                self.state.step_unchecked(&[None; 4]);
+                self.selector.reset_safety();
+                continue;
+            }
+
+            if self.pending_turn.is_none() {
+                let players = match self.state.phase {
+                    Phase::WaitAct => vec![self.state.current_player],
+                    Phase::WaitResponse => self.state.active_player_slice().to_vec(),
+                };
+                self.pending_turn = Some(PendingTurnState {
+                    chosen_actions: [None; 4],
+                    players,
+                    next_index: 0,
+                    turn: self.total_steps,
+                });
+            }
+
+            if self
+                .pending_turn
+                .as_ref()
+                .is_some_and(|turn| turn.next_index >= turn.players.len())
+            {
+                let chosen_actions = self
+                    .pending_turn
+                    .take()
+                    .expect("pending turn state")
+                    .chosen_actions;
+                self.state.step_unchecked(&chosen_actions);
+                self.total_steps = self.total_steps.saturating_add(1);
+                continue;
+            }
+
+            let (pid, turn) = {
+                let turn_state = self.pending_turn.as_ref().expect("pending turn state");
+                (turn_state.players[turn_state.next_index], turn_state.turn)
+            };
+
+            let obs = self.state.get_observation(pid);
+            if obs.legal_actions_ref().is_empty() {
+                self.pending_turn
+                    .as_mut()
+                    .expect("pending turn state")
+                    .next_index += 1;
+                continue;
+            }
+
+            let drawn_tile = self.state.drawn_tile.map(|tile| tile / 4);
+            let encoded = self.selector.encode_observation(&obs, pid, drawn_tile);
+            self.pending_policy = Some(PendingPolicyRequest {
+                pid,
+                obs,
+                drawn_tile_before_action: self.state.drawn_tile,
+                turn,
+            });
+            return GameAdvance::NeedPolicy(encoded);
+        }
+    }
+
+    fn provide_policy_result<B: Backend>(
+        &mut self,
+        logits: [f32; HYDRA_ACTION_SPACE],
+        model: &HydraModel<B>,
+        device: &B::Device,
+    ) {
+        let pending = self.pending_policy.take().expect("pending policy request");
+        self.selector.set_logits(logits);
+
+        self.state
+            .get_legal_actions_into(pending.pid, &mut self.legal_buf);
+        if self.legal_buf.is_empty() {
+            self.pending_turn
+                .as_mut()
+                .expect("pending turn state")
+                .next_index += 1;
+            return;
+        }
+
+        let action = <NnActionSelector as hydra_core::game_loop::ActionSelector>::select_action(
+            &mut self.selector,
+            pending.pid,
+            &self.legal_buf,
+        );
+        self.selector
+            .track_action(pending.pid, pending.drawn_tile_before_action, &action);
+
+        let turn_state = self.pending_turn.as_mut().expect("pending turn state");
+        turn_state.chosen_actions[pending.pid as usize] = Some(action);
+        turn_state.next_index += 1;
+
+        if let Some(step_record) = self.selector.take_last_step() {
+            let search_labels =
+                self.search_labels_for_step(&pending.obs, &step_record, model, device);
+            self.trajectory.steps.push(TrajectoryStep {
+                obs: step_record.obs,
+                action: step_record.action,
+                pi_old: step_record.pi_old,
+                legal_mask: step_record.legal_mask,
+                exit_label: search_labels.exit,
+                delta_q_label: search_labels.delta_q,
+                reward: 0.0,
+                done: false,
+                player_id: step_record.player_id,
+                game_id: self.trajectory.game_id,
+                turn: pending.turn.min(u16::MAX as u32) as u16,
+                temperature: self.selector.temperature(),
+            });
+        }
+    }
+
+    fn search_labels_for_step<B: Backend>(
+        &mut self,
+        obs: &Observation,
+        step_record: &StepRecord,
+        model: &HydraModel<B>,
+        device: &B::Device,
+    ) -> TrajectorySearchLabels {
+        if !self.live_exit_cfg.enabled {
+            return TrajectorySearchLabels::default();
+        }
+
+        let mut model_pv = |encoded: &[f32; OBS_SIZE]| model.policy_value_cpu(encoded, device);
+        let safety = self.selector.safety(step_record.player_id);
+        try_live_search_labels(
+            &self.state,
+            obs,
+            step_record,
+            safety,
+            &self.live_exit_cfg.exit_config,
+            &mut model_pv,
+            &mut self.exit_adapter,
+        )
+        .unwrap_or_default()
+    }
+
+    fn finalize(&mut self) {
+        if self.finished {
+            return;
+        }
+
+        self.trajectory.final_scores = std::array::from_fn(|idx| self.state.players[idx].score);
+        finalize_rewards(&mut self.trajectory);
+        if let Some(last_step) = self.trajectory.steps.last_mut() {
+            last_step.done = true;
+        }
+        self.finished = true;
+    }
+}
+
+fn batch_policy_value_cpu<B: Backend>(
+    model: &HydraModel<B>,
+    observations: &[[f32; OBS_SIZE]],
+    device: &B::Device,
+) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
+    if observations.is_empty() {
+        return Vec::new();
+    }
+
+    let mut obs_flat = Vec::with_capacity(observations.len() * OBS_SIZE);
+    for obs in observations {
+        obs_flat.extend_from_slice(obs);
+    }
+
+    let output = model.forward(
+        Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([
+            observations.len(),
+            NUM_CHANNELS,
+            NUM_TILES,
+        ]),
+    );
+    let policy_data = output
+        .policy_logits
+        .to_data()
+        .as_slice::<f32>()
+        .expect("policy logits extraction failed")
+        .to_vec();
+    let value_data = output
+        .value
+        .to_data()
+        .as_slice::<f32>()
+        .expect("value extraction failed")
+        .to_vec();
+
+    let mut results = Vec::with_capacity(observations.len());
+    for batch_idx in 0..observations.len() {
+        let offset = batch_idx * HYDRA_ACTION_SPACE;
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits.copy_from_slice(&policy_data[offset..offset + HYDRA_ACTION_SPACE]);
+        let value = *value_data.get(batch_idx).expect("value length mismatch");
+        results.push((logits, value));
+    }
+    results
+}
+
+fn batched_trajectory_values<B: Backend>(
+    trajectories: &[Trajectory],
+    model: &HydraModel<B>,
+    device: &B::Device,
+) -> Vec<Vec<f32>> {
+    let total_steps: usize = trajectories
+        .iter()
+        .map(|trajectory| trajectory.steps.len())
+        .sum();
+    if total_steps == 0 {
+        return trajectories.iter().map(|_| Vec::new()).collect();
+    }
+
+    let mut observations = Vec::with_capacity(total_steps);
+    let mut step_counts = Vec::with_capacity(trajectories.len());
+    for trajectory in trajectories {
+        step_counts.push(trajectory.steps.len());
+        for step in &trajectory.steps {
+            observations.push(step.obs);
+        }
+    }
+
+    let outputs = batch_policy_value_cpu(model, &observations, device);
+    let mut values = Vec::with_capacity(trajectories.len());
+    let mut offset = 0usize;
+    for step_count in step_counts {
+        let mut per_trajectory = Vec::with_capacity(step_count);
+        for (_, value) in &outputs[offset..offset + step_count] {
+            per_trajectory.push(*value);
+        }
+        values.push(per_trajectory);
+        offset += step_count;
+    }
+    values
+}
+
 pub fn generate_self_play_batch_source<B: Backend>(
     game_seeds: &[u64],
     temperature: f32,
@@ -559,52 +872,53 @@ pub fn generate_self_play_batch_source_batched<B: Backend>(
     rng_seed: u64,
     model: &HydraModel<B>,
     device: &B::Device,
+    inference_device: &B::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource {
-    let trajectories: Vec<Trajectory> = game_seeds
+    let _ = inference_device;
+
+    let mut games: Vec<BatchedSelfPlayGame> = game_seeds
         .iter()
         .enumerate()
         .map(|(idx, &seed)| {
-            let game_rng = rng_seed.wrapping_add(idx as u64);
-            let cfg = live_exit_cfg.clone();
-
-            let infer_fn = |obs: &[f32; OBS_SIZE]| -> [f32; HYDRA_ACTION_SPACE] {
-                let (logits, _) = model.policy_value_cpu(obs, device);
-                logits
-            };
-
-            let exit_fn = make_live_exit_fn(cfg, |obs: &[f32; OBS_SIZE]| {
-                model.policy_value_cpu(obs, device)
-            });
-
-            run_self_play_game_with_exit_labels(seed, temperature, game_rng, infer_fn, exit_fn)
+            BatchedSelfPlayGame::new(
+                seed,
+                temperature,
+                rng_seed.wrapping_add(idx as u64),
+                live_exit_cfg.clone(),
+            )
         })
         .collect();
 
-    // Batch all trajectory observations into one GPU forward pass for
-    // value baselines instead of N*steps individual calls.
-    let total_steps: usize = trajectories.iter().map(|t| t.steps.len()).sum();
-    let mut all_obs: Vec<[f32; OBS_SIZE]> = Vec::with_capacity(total_steps);
-    let mut step_counts: Vec<usize> = Vec::with_capacity(trajectories.len());
-    for trajectory in &trajectories {
-        step_counts.push(trajectory.steps.len());
-        for step in &trajectory.steps {
-            all_obs.push(step.obs);
+    while games.iter().any(|game| !game.is_finished()) {
+        let mut batch_game_indices = Vec::new();
+        let mut batch_observations = Vec::new();
+
+        for (game_idx, game) in games.iter_mut().enumerate() {
+            match game.advance_until_policy_request() {
+                GameAdvance::NeedPolicy(obs) => {
+                    batch_game_indices.push(game_idx);
+                    batch_observations.push(obs);
+                }
+                GameAdvance::Finished => {}
+            }
+        }
+
+        if batch_game_indices.is_empty() {
+            break;
+        }
+
+        let batch_outputs = batch_policy_value_cpu(model, &batch_observations, device);
+        for (game_idx, (policy_logits, _)) in batch_game_indices.into_iter().zip(batch_outputs) {
+            games[game_idx].provide_policy_result(policy_logits, model, device);
         }
     }
 
-    let all_results = model.batch_policy_value_cpu(&all_obs, device);
-
-    let mut all_values: Vec<Vec<f32>> = Vec::with_capacity(trajectories.len());
-    let mut offset = 0;
-    for &count in &step_counts {
-        let values: Vec<f32> = all_results[offset..offset + count]
-            .iter()
-            .map(|(_, value)| *value)
-            .collect();
-        all_values.push(values);
-        offset += count;
-    }
+    let trajectories = games
+        .into_iter()
+        .map(BatchedSelfPlayGame::into_trajectory)
+        .collect::<Vec<_>>();
+    let all_values = batched_trajectory_values(&trajectories, model, device);
 
     SelfPlayBatchSource {
         trajectories,
@@ -632,6 +946,7 @@ pub fn generate_self_play_rl_batch<B: Backend>(
         temperature,
         rng_seed,
         model,
+        device,
         device,
         live_exit_cfg,
     );
@@ -999,8 +1314,9 @@ mod tests {
 
         let serial =
             generate_self_play_batch_source(&seeds, 1.0, 100, &model, &device, cfg.clone());
-        let batched =
-            generate_self_play_batch_source_batched(&seeds, 1.0, 100, &model, &device, cfg);
+        let batched = generate_self_play_batch_source_batched(
+            &seeds, 1.0, 100, &model, &device, &device, cfg,
+        );
 
         assert_eq!(serial.trajectories.len(), batched.trajectories.len());
         assert_eq!(serial.values.len(), batched.values.len());
