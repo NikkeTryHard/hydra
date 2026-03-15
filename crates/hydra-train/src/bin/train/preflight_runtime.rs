@@ -8,21 +8,23 @@ use burn::module::AutodiffModule;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use colored::Colorize;
 use hydra_train::data::pipeline::{
-    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
-    stream_val_pass,
+    scan_data_sources_with_progress, stream_train_epoch, stream_val_pass, DataManifest,
+    StreamingLoaderConfig,
 };
-use hydra_train::data::sample::{MjaiSample, collate_samples};
+use hydra_train::data::sample::{collate_samples, MjaiSample};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, PreflightCacheEntry, ProbeKind, ProbeResult,
-    ProbeStatus, candidate_ladder, resolve_runtime_config,
+    candidate_ladder, resolve_runtime_config, EffectiveRuntimeConfig, ExplicitSettings,
+    PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
 };
 use hydra_train::training::losses::HydraLoss;
 
-use super::artifacts::{BcArtifactPaths, PreflightPaths, write_preflight_cache};
+use super::artifacts::{
+    write_preflight_cache, BcArtifactPaths, PreflightPaths, RlArtifactPaths, RlPreflightPaths,
+};
 use super::config::{
-    ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
-    train_device, trainer_config_from_train_config,
+    configure_threads, default_num_threads_for_system, train_device,
+    trainer_config_from_train_config, ProbeChildRequest, TrainConfig,
 };
 use super::loss_policy::build_loss_config;
 use super::preflight_fingerprint::preflight_cache_key;
@@ -35,8 +37,8 @@ use super::probe_ladder::{
     candidate_average, close_probe_finalists, dynamic_probe_ceiling, dynamic_probe_ladder,
     local_refinement_candidates, probe_only_candidate_ladder,
 };
-use super::probe_process::{probe_result_path, write_probe_result};
-use super::probe_request::{ProbeRequest, probe_child_request_from_cli};
+use super::probe_process::{probe_result_path, rl_probe_result_path, write_probe_result};
+use super::probe_request::{probe_child_request_from_cli, ProbeRequest};
 use super::probe_summary::{
     best_probe_summary, format_probe_selection_summary, probe_kind_name, summarize_probe_results,
 };
@@ -50,6 +52,10 @@ pub(super) struct PreflightRuntime {
     pub(super) train_probe_results: Vec<ProbeResult>,
     pub(super) validation_probe_results: Vec<ProbeResult>,
     pub(super) explicit: ExplicitSettings,
+}
+
+pub(super) struct RlPreflightRuntime {
+    pub(super) selected_games_per_batch: usize,
 }
 
 fn emit_probe_progress(line: &str) -> Result<(), String> {
@@ -98,14 +104,17 @@ fn emit_probe_step_progress(
     }
 }
 
-fn rerun_probe_finalists(
+fn rerun_probe_finalists<F>(
     config_path: &Path,
-    artifacts: &BcArtifactPaths,
+    mut result_path_for: F,
     kind: ProbeKind,
     config: &TrainConfig,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
+{
     let finalists = close_probe_finalists(
         results,
         config.preflight.finalist_margin_ratio,
@@ -138,7 +147,7 @@ fn rerun_probe_finalists(
         let (warmup_steps, measure_steps) = adaptive_probe_steps(config, seconds_per_step);
         rerun_candidate_attempts(
             config_path,
-            artifacts,
+            &mut result_path_for,
             kind,
             summary.candidate_microbatch,
             extra_attempts,
@@ -151,14 +160,17 @@ fn rerun_probe_finalists(
     Ok(())
 }
 
-fn refine_probe_winner_locally(
+fn refine_probe_winner_locally<F>(
     config_path: &Path,
-    artifacts: &BcArtifactPaths,
+    mut result_path_for: F,
     kind: ProbeKind,
     config: &TrainConfig,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
+{
     if !config.preflight.local_refinement_enabled {
         return Ok(());
     }
@@ -212,7 +224,7 @@ fn refine_probe_winner_locally(
         let (warmup_steps, measure_steps) = adaptive_probe_steps(config, seconds_per_step);
         rerun_candidate_attempts(
             config_path,
-            artifacts,
+            &mut result_path_for,
             kind,
             candidate,
             1,
@@ -246,9 +258,9 @@ fn adaptive_probe_steps(config: &TrainConfig, seconds_per_step: f64) -> (usize, 
     (warmup_steps, measure_steps)
 }
 
-fn rerun_candidate_attempts(
+fn rerun_candidate_attempts<F>(
     config_path: &Path,
-    artifacts: &BcArtifactPaths,
+    result_path_for: &mut F,
     kind: ProbeKind,
     candidate: usize,
     attempts: usize,
@@ -256,10 +268,13 @@ fn rerun_candidate_attempts(
     measure_steps: usize,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
+{
     run_candidate_attempts(
         config_path,
-        artifacts,
+        result_path_for,
         kind,
         candidate,
         attempts,
@@ -275,9 +290,9 @@ fn should_continue_validation_growth(best: f64, challenger: f64, tolerance_ratio
     challenger >= best * (1.0 - tolerance_ratio.max(0.0))
 }
 
-fn run_candidate_attempts(
+fn run_candidate_attempts<F>(
     config_path: &Path,
-    artifacts: &BcArtifactPaths,
+    result_path_for: &mut F,
     kind: ProbeKind,
     candidate: usize,
     attempts: usize,
@@ -285,7 +300,10 @@ fn run_candidate_attempts(
     measure_steps: usize,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
-) -> Result<bool, String> {
+) -> Result<bool, String>
+where
+    F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
+{
     for attempt in 0..attempts.max(1) {
         let attempt_number = attempt + 1;
         progress.set_message(format_probe_attempt_message(
@@ -300,7 +318,7 @@ fn run_candidate_attempts(
             warmup_steps,
             measure_steps,
         };
-        let result_path = probe_result_path(artifacts, kind, candidate, attempt);
+        let result_path = result_path_for(kind, candidate, attempt);
         println!(
             "{}",
             format_status_line(
@@ -357,9 +375,11 @@ fn search_train_microbatch(
 
     for candidate in candidates {
         let stable_start = results.len();
+        let mut result_path_for =
+            |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
         let passed = run_candidate_attempts(
             config_path,
-            artifacts,
+            &mut result_path_for,
             ProbeKind::Train,
             candidate,
             config.preflight.required_successes.max(1),
@@ -393,7 +413,7 @@ fn search_train_microbatch(
     progress.finish_with_message("preflight train ladder complete".green().to_string());
     refine_probe_winner_locally(
         config_path,
-        artifacts,
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         ProbeKind::Train,
         config,
         &mut results,
@@ -406,7 +426,7 @@ fn search_train_microbatch(
         .collect();
     rerun_probe_finalists(
         config_path,
-        artifacts,
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         ProbeKind::Train,
         config,
         &mut stable_results,
@@ -468,9 +488,11 @@ fn search_validation_microbatch(
     while index < candidates.len() {
         let candidate = candidates[index];
         let stable_start = results.len();
+        let mut result_path_for =
+            |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
         let passed = run_candidate_attempts(
             config_path,
-            artifacts,
+            &mut result_path_for,
             ProbeKind::Validation,
             candidate,
             config.preflight.required_successes.max(1),
@@ -541,7 +563,7 @@ fn search_validation_microbatch(
     progress.finish_with_message("preflight validation ladder complete".green().to_string());
     refine_probe_winner_locally(
         config_path,
-        artifacts,
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         ProbeKind::Validation,
         config,
         &mut results,
@@ -554,7 +576,7 @@ fn search_validation_microbatch(
         .collect();
     rerun_probe_finalists(
         config_path,
-        artifacts,
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         ProbeKind::Validation,
         config,
         &mut stable_results,
@@ -792,6 +814,18 @@ pub(super) fn run_probe_only(
         ProbeKind::Validation => {
             probe_validation_candidate(config, request, &loader_config, &manifest, &train_device)?
         }
+        ProbeKind::RlGames => {
+            let rl = config
+                .rl
+                .as_ref()
+                .ok_or_else(|| "RL probe requested without rl config block".to_string())?;
+            let mut tuned = rl.clone();
+            tuned.games_per_batch = request.candidate_microbatch;
+            if tuned.microbatch_size.is_none() {
+                tuned.microbatch_size = Some(hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE);
+            }
+            super::runtime_autotune::measure_rl_runtime_throughput(config, &tuned, &train_device)?
+        }
     };
     let elapsed_seconds = started_at.elapsed().as_secs_f64();
     emit_probe_progress(&format!(
@@ -870,6 +904,7 @@ pub(super) fn probe_candidate_ladder(
     let explicit_candidate = match kind {
         ProbeKind::Train => config.microbatch_size,
         ProbeKind::Validation => config.validation_microbatch_size,
+        ProbeKind::RlGames => config.rl.as_ref().map(|rl| rl.games_per_batch),
     };
     let use_explicit_only =
         explicit_candidate.is_some() && !config.preflight.allow_override_explicit_microbatch;
@@ -901,6 +936,8 @@ pub(super) fn probe_candidate_ladder(
         let mut stable = true;
         let stable_start = results.len();
         let attempts = config.preflight.required_successes.max(1);
+        let mut result_path_for =
+            |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
         for attempt in 0..attempts {
             let attempt_number = attempt + 1;
             println!(
@@ -925,7 +962,7 @@ pub(super) fn probe_candidate_ladder(
                 warmup_steps: config.preflight.warmup_steps,
                 measure_steps: config.preflight.measure_steps,
             };
-            let result_path = probe_result_path(artifacts, kind, candidate, attempt);
+            let result_path = result_path_for(kind, candidate, attempt);
             println!(
                 "{}",
                 format_status_line(
@@ -968,6 +1005,28 @@ pub(super) fn probe_candidate_ladder(
             .green()
             .to_string(),
     );
+
+    refine_probe_winner_locally(
+        config_path,
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
+        kind,
+        config,
+        &mut results,
+        &progress,
+    )?;
+    stable_results = results
+        .iter()
+        .filter(|result| result.status == ProbeStatus::Success)
+        .cloned()
+        .collect();
+    rerun_probe_finalists(
+        config_path,
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
+        kind,
+        config,
+        &mut stable_results,
+        &progress,
+    )?;
 
     if use_explicit_only {
         return Err(format!(
@@ -1119,6 +1178,119 @@ pub(super) fn run_preflight(
     })
 }
 
+pub(super) fn run_rl_preflight(
+    config_path: &Path,
+    config: &TrainConfig,
+    _train_device: &LibTorchDevice,
+) -> Result<RlPreflightRuntime, String> {
+    let rl = config
+        .rl
+        .as_ref()
+        .ok_or_else(|| "RL preflight requested without rl config block".to_string())?;
+    let started = Instant::now();
+    let artifacts = RlArtifactPaths::new(&config.output_dir, 0);
+    artifacts.create_root_dir()?;
+    let paths = RlPreflightPaths::new(&artifacts);
+    let cache_key = preflight_cache_key(
+        config,
+        &HydraModelConfig::learner(),
+        &config.device,
+        default_num_threads_for_system(),
+    );
+    println!(
+        "{}",
+        format_timed_phase_message("rl_runtime_tuning", "starting", 0.0)
+    );
+    let candidates = super::runtime_autotune::autotune_rl_games_per_batch_candidates(rl);
+    let progress = make_bar(
+        (candidates.len() * config.preflight.required_successes.max(1)) as u64,
+        "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
+    )?;
+    let mut results = Vec::new();
+    for candidate in &candidates {
+        let _ = run_candidate_attempts(
+            config_path,
+            &mut |kind, candidate, attempt| {
+                rl_probe_result_path(&artifacts, kind, candidate, attempt)
+            },
+            ProbeKind::RlGames,
+            *candidate,
+            config.preflight.required_successes.max(1),
+            config.preflight.warmup_steps,
+            config.preflight.measure_steps,
+            &mut results,
+            &progress,
+        )?;
+    }
+    progress.finish_with_message("preflight rl_games ladder complete".green().to_string());
+    refine_probe_winner_locally(
+        config_path,
+        |kind, candidate, attempt| rl_probe_result_path(&artifacts, kind, candidate, attempt),
+        ProbeKind::RlGames,
+        config,
+        &mut results,
+        &progress,
+    )?;
+    let mut stable_results = results
+        .iter()
+        .filter(|result| result.status == ProbeStatus::Success)
+        .cloned()
+        .collect::<Vec<_>>();
+    rerun_probe_finalists(
+        config_path,
+        |kind, candidate, attempt| rl_probe_result_path(&artifacts, kind, candidate, attempt),
+        ProbeKind::RlGames,
+        config,
+        &mut stable_results,
+        &progress,
+    )?;
+    let selected_summary = best_probe_summary(&stable_results)
+        .ok_or_else(|| "no stable rl_games candidate found in preflight".to_string())?;
+    let selected_games_per_batch = selected_summary.candidate_microbatch;
+    write_preflight_cache(
+        &paths.cache_path,
+        &PreflightCacheEntry {
+            cache_key,
+            runtime: EffectiveRuntimeConfig {
+                selected: hydra_train::preflight::SelectedRuntimeConfig {
+                    train_microbatch_size: config.batch_size,
+                    validation_microbatch_size: config
+                        .validation_microbatch_size
+                        .unwrap_or(config.batch_size),
+                    accum_steps: 1,
+                },
+                loader: hydra_train::preflight::LoaderRuntimeConfig {
+                    num_threads: config.num_threads,
+                    buffer_games: selected_games_per_batch,
+                    buffer_samples: config.buffer_samples,
+                    archive_queue_bound: config.archive_queue_bound,
+                },
+            },
+        },
+    )?;
+    println!(
+        "{}",
+        format_preflight_summary_line(
+            "RL Preflight:",
+            format!(
+                "selected games_per_batch={} (stored in preflight cache buffer_games field for RL runtime reuse)",
+                selected_games_per_batch
+            )
+        )
+    );
+    println!(
+        "{}",
+        format_timed_phase_message(
+            "rl_runtime_tuning",
+            "complete",
+            started.elapsed().as_secs_f64(),
+        )
+    );
+    Ok(RlPreflightRuntime {
+        selected_games_per_batch,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1141,6 +1313,7 @@ mod tests {
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            rl: None,
             bc: Default::default(),
             device: "cpu".to_string(),
             buffer_games: 16,

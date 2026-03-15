@@ -220,7 +220,10 @@ pub(crate) fn rl_config_from_train_config(rl: &RlTrainConfig) -> RlConfig {
     if let Some(aux_weight) = rl.aux_weight {
         cfg = cfg.with_aux_weight(aux_weight);
     }
-    cfg.microbatch_size = rl.microbatch_size;
+    cfg.microbatch_size = Some(
+        rl.microbatch_size
+            .unwrap_or(hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE),
+    );
     cfg
 }
 
