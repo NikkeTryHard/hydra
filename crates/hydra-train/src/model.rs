@@ -396,6 +396,101 @@ impl<B: Backend> HydraModel<B> {
         (policy_logits, value)
     }
 
+    /// Forward pass that detaches outputs of zero-weight heads.
+    ///
+    /// All heads still run their forward pass (shapes must match), but
+    /// heads with zero loss weight have their outputs detached from the
+    /// autograd graph. This prevents gradient computation and reduces
+    /// VRAM usage for activations that won't contribute to the loss.
+    pub fn forward_active(
+        &self,
+        x: Tensor<B, 3>,
+        loss_cfg: &crate::training::losses::HydraLossConfig,
+    ) -> HydraOutput<B> {
+        let (spatial, pooled) = self.backbone.forward(x);
+        let oracle_input = pooled.clone().detach();
+
+        let policy_logits = self.policy.forward(pooled.clone());
+        let value = self.value.forward(pooled.clone());
+        let score_pdf = self.score_pdf.forward(pooled.clone());
+        let score_cdf = self.score_cdf.forward(pooled.clone());
+        let opp_tenpai = self.opp_tenpai.forward(pooled.clone());
+        let grp = self.grp.forward(pooled.clone());
+        let opp_next_discard = self.opp_next_discard.forward(spatial.clone());
+        let danger = self.danger.forward(spatial.clone());
+        let oracle_critic = self.oracle_critic.forward(oracle_input);
+        let belief_fields = self.belief_field.forward(spatial);
+        let mixture_weight_logits = self.mixture_weight.forward(pooled.clone());
+        let opponent_hand_type = self.opponent_hand_type.forward(pooled.clone());
+        let delta_q = self.delta_q.forward(pooled.clone());
+        let safety_residual = self.safety_residual.forward(pooled);
+
+        HydraOutput {
+            policy_logits,
+            value,
+            score_pdf: if loss_cfg.w_score > 0.0 {
+                score_pdf
+            } else {
+                score_pdf.detach()
+            },
+            score_cdf: if loss_cfg.w_score > 0.0 {
+                score_cdf
+            } else {
+                score_cdf.detach()
+            },
+            opp_tenpai: if loss_cfg.w_tenpai > 0.0 {
+                opp_tenpai
+            } else {
+                opp_tenpai.detach()
+            },
+            grp: if loss_cfg.w_grp > 0.0 {
+                grp
+            } else {
+                grp.detach()
+            },
+            opp_next_discard: if loss_cfg.w_opp > 0.0 {
+                opp_next_discard
+            } else {
+                opp_next_discard.detach()
+            },
+            danger: if loss_cfg.w_danger > 0.0 {
+                danger
+            } else {
+                danger.detach()
+            },
+            oracle_critic: if loss_cfg.w_oracle_critic > 0.0 {
+                oracle_critic
+            } else {
+                oracle_critic.detach()
+            },
+            belief_fields: if loss_cfg.w_belief_fields > 0.0 {
+                belief_fields
+            } else {
+                belief_fields.detach()
+            },
+            mixture_weight_logits: if loss_cfg.w_mixture_weight > 0.0 {
+                mixture_weight_logits
+            } else {
+                mixture_weight_logits.detach()
+            },
+            opponent_hand_type: if loss_cfg.w_opponent_hand_type > 0.0 {
+                opponent_hand_type
+            } else {
+                opponent_hand_type.detach()
+            },
+            delta_q: if loss_cfg.w_delta_q > 0.0 {
+                delta_q
+            } else {
+                delta_q.detach()
+            },
+            safety_residual: if loss_cfg.w_safety_residual > 0.0 {
+                safety_residual
+            } else {
+                safety_residual.detach()
+            },
+        }
+    }
+
     pub fn forward(&self, x: Tensor<B, 3>) -> HydraOutput<B> {
         let (spatial, pooled) = self.backbone.forward(x);
         let oracle_input = pooled.clone().detach();
