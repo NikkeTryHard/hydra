@@ -1,8 +1,10 @@
 use std::fs;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, SyncSender};
 
 use indicatif::ProgressBar;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
@@ -195,9 +197,12 @@ pub(crate) fn run_export(config: &ExportConfig) -> io::Result<()> {
         config.max_samples_per_shard,
         config.max_games_per_shard,
     );
-    collect_export_games(&config.data_dir, Some(&progress), |game| {
-        accumulator.push(game)
-    })?;
+    collect_export_games(
+        &config.data_dir,
+        config.archive_queue_bound,
+        Some(&progress),
+        |game| accumulator.push(game),
+    )?;
     let accumulator = accumulator.finish()?;
     progress.finish_and_clear();
 
@@ -234,6 +239,7 @@ pub(crate) fn run_export(config: &ExportConfig) -> io::Result<()> {
 
 fn collect_export_games<F>(
     data_path: &Path,
+    archive_queue_bound: usize,
     progress: Option<&ProgressBar>,
     mut on_game: F,
 ) -> io::Result<()>
@@ -242,7 +248,10 @@ where
 {
     if data_path.is_file() {
         if is_tar_zst_file(data_path) {
-            load_archive_games(data_path, progress, &mut on_game)?;
+            let (tx, rx) = mpsc::sync_channel(archive_queue_bound.max(1));
+            load_archive_games(data_path, 0, progress.cloned(), &tx)?;
+            drop(tx);
+            consume_archive_messages(rx, 1, &mut on_game)?;
         } else if is_mjai_file(data_path) {
             let identity = identity_for_loose_file(data_path)?;
             match load_game_from_path(data_path) {
@@ -301,26 +310,49 @@ where
                 eprintln!("Skipping {}: {}", identity, err);
             }
         }
-        if let Some(pb) = progress {
+        if let Some(pb) = &progress {
             pb.inc(1);
         }
     }
 
-    for archive in archives {
-        load_archive_games(&archive, progress, &mut on_game)?;
+    if archives.is_empty() {
+        return Ok(());
     }
+
+    let archive_count = archives.len();
+    let (tx, rx) = mpsc::sync_channel(archive_queue_bound.max(1));
+    let progress_owned = progress.cloned();
+
+    // Producers run on a background thread so the main thread can consume
+    // from the bounded channel concurrently. Without this, try_for_each_with
+    // blocks until all archives finish, but the sync_channel would fill up
+    // and deadlock because nobody is draining the receiver yet.
+    let producer_handle = std::thread::spawn(move || -> io::Result<()> {
+        let result = archives.into_par_iter().enumerate().try_for_each_with(
+            tx.clone(),
+            |sender, (archive_index, archive)| {
+                load_archive_games(&archive, archive_index, progress_owned.clone(), sender)
+            },
+        );
+        drop(tx);
+        result
+    });
+
+    consume_archive_messages(rx, archive_count, &mut on_game)?;
+
+    producer_handle
+        .join()
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "archive producer thread panicked"))??;
 
     Ok(())
 }
 
-fn load_archive_games<F>(
+fn load_archive_games(
     archive_path: &Path,
-    progress: Option<&ProgressBar>,
-    on_game: &mut F,
-) -> io::Result<()>
-where
-    F: FnMut(ExportGame) -> io::Result<()>,
-{
+    archive_index: usize,
+    progress: Option<ProgressBar>,
+    sender: &SyncSender<ArchiveMessage>,
+) -> io::Result<()> {
     let file = fs::File::open(archive_path)?;
     let zstd = zstd::Decoder::new(file).map_err(|err| {
         io::Error::other(format!(
@@ -340,20 +372,133 @@ where
         std::io::Read::read_to_end(&mut entry, &mut data)?;
         match load_game_from_stream(BufReader::new(std::io::Cursor::new(data))) {
             Ok(game) => {
-                on_game(ExportGame {
-                    identity,
-                    samples: game.samples,
-                })?;
+                sender
+                    .send(ArchiveMessage::Game {
+                        archive_index,
+                        game: ExportGame {
+                            identity,
+                            samples: game.samples,
+                        },
+                    })
+                    .map_err(channel_send_error)?;
             }
             Err(err) => {
                 eprintln!("Skipping {}: {}", identity, err);
             }
         }
-        if let Some(pb) = progress {
+        if let Some(pb) = &progress {
             pb.inc(1);
         }
     }
+    sender
+        .send(ArchiveMessage::ArchiveComplete { archive_index })
+        .map_err(channel_send_error)?;
     Ok(())
+}
+
+enum ArchiveMessage {
+    Game {
+        archive_index: usize,
+        game: ExportGame,
+    },
+    ArchiveComplete {
+        archive_index: usize,
+    },
+}
+
+fn consume_archive_messages<F>(
+    receiver: mpsc::Receiver<ArchiveMessage>,
+    archive_count: usize,
+    mut on_game: F,
+) -> io::Result<()>
+where
+    F: FnMut(ExportGame) -> io::Result<()>,
+{
+    let mut buffered_games = std::collections::BTreeMap::<usize, Vec<ExportGame>>::new();
+    let mut completed_archives = std::collections::BTreeSet::new();
+    let mut next_archive_index = 0usize;
+
+    while completed_archives.len() < archive_count {
+        match receiver.recv() {
+            Ok(ArchiveMessage::Game {
+                archive_index,
+                game,
+            }) => {
+                if archive_index == next_archive_index {
+                    on_game(game)?;
+                } else {
+                    buffered_games.entry(archive_index).or_default().push(game);
+                }
+            }
+            Ok(ArchiveMessage::ArchiveComplete { archive_index }) => {
+                completed_archives.insert(archive_index);
+                flush_ready_archives(
+                    &mut buffered_games,
+                    &completed_archives,
+                    &mut next_archive_index,
+                    &mut on_game,
+                )?;
+            }
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "archive worker channel closed before all archives completed",
+                ));
+            }
+        }
+    }
+
+    flush_ready_archives(
+        &mut buffered_games,
+        &completed_archives,
+        &mut next_archive_index,
+        &mut on_game,
+    )?;
+
+    if buffered_games.is_empty() && next_archive_index == archive_count {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "archive worker channel ended with unflushed buffered games",
+        ))
+    }
+}
+
+fn flush_ready_archives<F>(
+    buffered_games: &mut std::collections::BTreeMap<usize, Vec<ExportGame>>,
+    completed_archives: &std::collections::BTreeSet<usize>,
+    next_archive_index: &mut usize,
+    on_game: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(ExportGame) -> io::Result<()>,
+{
+    loop {
+        let Some(mut games) = buffered_games.remove(next_archive_index) else {
+            if completed_archives.contains(next_archive_index) {
+                *next_archive_index += 1;
+                continue;
+            }
+            break;
+        };
+        for game in games.drain(..) {
+            on_game(game)?;
+        }
+        if completed_archives.contains(next_archive_index) {
+            *next_archive_index += 1;
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn channel_send_error(_: mpsc::SendError<ArchiveMessage>) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "archive worker channel closed while exporting games",
+    )
 }
 
 fn write_split_shards(
