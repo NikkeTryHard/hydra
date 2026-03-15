@@ -7,7 +7,7 @@ use colored::Colorize;
 use hydra_train::config::PipelineState;
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
 use hydra_train::model::HydraModelConfig;
-use hydra_train::preflight::{LoaderRuntimeConfig, ProbeKind};
+use hydra_train::preflight::LoaderRuntimeConfig;
 use hydra_train::selfplay::generate_self_play_rl_batch;
 use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
@@ -16,7 +16,6 @@ use hydra_train::training::orchestrator::{
     live_exit_config_from_plan, maintenance_plan, rl_phase_train_step_with_controller,
 };
 
-use super::artifacts::RlArtifactPaths;
 use super::config::{RlTrainConfig, TrainConfig, loader_runtime_config};
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::build_rl_loss_config;
@@ -25,9 +24,6 @@ use super::presentation::{
     format_preflight_summary_line, format_runtime_tuning_message, format_timed_phase_message,
     make_bar,
 };
-use super::probe_process::{execute_probe_request, rl_probe_result_path};
-use super::probe_request::ProbeRequest;
-use super::probe_summary::{best_probe_summary, format_probe_selection_summary};
 use super::schedule::effective_lr;
 
 pub(super) fn autotune_buffer_samples_candidates(config: &TrainConfig) -> Vec<usize> {
@@ -57,17 +53,6 @@ pub(super) fn autotune_archive_queue_candidates(config: &TrainConfig) -> Vec<usi
     let mut candidates = vec![current / 2, current, current.saturating_mul(2)];
     candidates.retain(|value| *value > 0);
     candidates.sort_unstable();
-    candidates.dedup();
-    candidates
-}
-
-pub(super) fn autotune_rl_games_per_batch_candidates(rl: &RlTrainConfig) -> Vec<usize> {
-    let current = rl.games_per_batch.max(1);
-    let mut candidates: Vec<usize> = vec![128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1];
-    if !candidates.contains(&current) {
-        candidates.push(current);
-    }
-    candidates.sort_unstable_by(|a, b| b.cmp(a));
     candidates.dedup();
     candidates
 }
@@ -246,132 +231,15 @@ pub(super) fn measure_rl_runtime_throughput(
     Ok(measure_samples_per_second(measure_samples, elapsed))
 }
 
-pub(super) fn autotune_rl_games_per_batch(
-    config_path: &std::path::Path,
-    config: &TrainConfig,
-    artifacts: &RlArtifactPaths,
-    rl: &RlTrainConfig,
-) -> Result<usize, String> {
-    let candidates = autotune_rl_games_per_batch_candidates(rl);
-    let progress = make_bar(
-        candidates.len() as u64,
-        "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
-    )?;
-    let mut best = *candidates
-        .first()
-        .ok_or_else(|| "no RL games_per_batch candidates available".to_string())?;
-    let mut best_score = f64::NEG_INFINITY;
-    for &candidate in &candidates {
-        progress.set_message(format_runtime_tuning_message(
-            "rl_games_per_batch",
-            candidate.to_string(),
-            progress.position() as usize,
-            progress.length().unwrap_or(1) as usize,
-        ));
-        let request = ProbeRequest {
-            kind: ProbeKind::RlGames,
-            candidate_microbatch: candidate,
-            warmup_steps: config.preflight.warmup_steps,
-            measure_steps: config.preflight.measure_steps,
-        };
-        let result_path = rl_probe_result_path(artifacts, ProbeKind::RlGames, candidate, 0);
-        let result = execute_probe_request(
-            config_path,
-            request,
-            &result_path,
-            super::preflight_runtime::classify_probe_detail,
-        )?;
-        progress.inc(1);
-        println!(
-            "{}",
-            super::presentation::format_probe_status_line(&result)
-        );
-        if result.status != hydra_train::preflight::ProbeStatus::Success {
-            continue;
-        }
-        let score = result.measured_samples_per_second.unwrap_or(0.0);
-        if score > best_score {
-            best = candidate;
-            best_score = score;
-        }
-        println!(
-            "{}",
-            format_runtime_tuning_message(
-                "rl_games_per_batch",
-                format!(
-                    "candidate={} throughput={:.2} games/s best={} ({:.2} games/s)",
-                    candidate, score, best, best_score
-                ),
-                progress.position() as usize,
-                progress.length().unwrap_or(1) as usize,
-            )
-        );
-    }
-    progress.finish_with_message("runtime tuning rl_games_per_batch complete".green().to_string());
-    let summaries = candidates
-        .iter()
-        .copied()
-        .map(|candidate| hydra_train::preflight::ProbeResult {
-            kind: ProbeKind::RlGames,
-            candidate_microbatch: candidate,
-            status: if candidate == best && best_score.is_finite() {
-                hydra_train::preflight::ProbeStatus::Success
-            } else {
-                hydra_train::preflight::ProbeStatus::Oom
-            },
-            measured_samples_per_second: if candidate == best && best_score.is_finite() {
-                Some(best_score)
-            } else {
-                None
-            },
-            elapsed_seconds: None,
-            detail: String::new(),
-        })
-        .collect::<Vec<_>>();
-    if let Some(summary) = best_probe_summary(&summaries) {
-        println!(
-            "{}",
-            format_preflight_summary_line(
-                "RL Preflight:",
-                format_probe_selection_summary(ProbeKind::RlGames, &summary)
-            )
-        );
-    }
-    Ok(best)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::autotune_rl_games_per_batch_candidates;
-    use crate::config::RlTrainConfig;
     use crate::preflight_runtime::classify_probe_detail;
     use hydra_train::preflight::ProbeStatus;
-
-    #[test]
-    fn rl_games_per_batch_candidates_are_sorted_and_include_current() {
-        let candidates = autotune_rl_games_per_batch_candidates(&RlTrainConfig {
-            games_per_batch: 4,
-            ..Default::default()
-        });
-        assert_eq!(candidates, vec![128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]);
-    }
 
     #[test]
     fn rl_runtime_autotune_uses_probe_oom_classification() {
         assert_eq!(classify_probe_detail("CUDA out of memory"), ProbeStatus::Oom);
         assert_eq!(classify_probe_detail("oom while probing rl batch"), ProbeStatus::Oom);
-    }
-
-    #[test]
-    fn rl_candidates_include_non_standard_current_value() {
-        let candidates = autotune_rl_games_per_batch_candidates(&RlTrainConfig {
-            games_per_batch: 6,
-            ..Default::default()
-        });
-        assert!(candidates.contains(&6));
-        assert!(candidates.contains(&128));
-        assert!(candidates.contains(&1));
-        assert_eq!(candidates.first(), Some(&128));
     }
 }
 

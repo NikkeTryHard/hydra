@@ -2,8 +2,8 @@ use colored::Colorize;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::{
@@ -11,8 +11,8 @@ use hydra_train::preflight::{
 };
 
 use super::artifacts::BcArtifactPaths;
-use super::config::TrainConfig;
 use super::config::display_num_threads;
+use super::config::TrainConfig;
 use super::probe_summary::summarize_probe_results;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
@@ -179,6 +179,32 @@ fn probe_status_label(status: &ProbeStatus) -> &'static str {
     }
 }
 
+fn probe_failure_reason(result: &ProbeResult) -> &'static str {
+    let detail = result.detail.to_ascii_lowercase();
+    match result.status {
+        ProbeStatus::Success => "success",
+        ProbeStatus::Oom => {
+            if detail.contains("cuda") || detail.contains("libtorch") || detail.contains("cudnn") {
+                "oom(cuda)"
+            } else if detail.contains("host-ram guard") || detail.contains("host ram guard") {
+                "oom(host_ram_guard)"
+            } else {
+                "oom(generic)"
+            }
+        }
+        ProbeStatus::BackendError => {
+            if detail.contains("host-ram guard") || detail.contains("host ram guard") {
+                "backend_error(host_ram_guard)"
+            } else if detail.contains("probe process status") || detail.contains("child") {
+                "backend_error(child_exit)"
+            } else {
+                "backend_error(generic)"
+            }
+        }
+        ProbeStatus::DataError => "data_error",
+    }
+}
+
 fn parse_probe_progress_fields(line: &str) -> Option<std::collections::BTreeMap<&str, &str>> {
     let trimmed = line.trim();
     let payload = trimmed.strip_prefix("probe_progress ")?;
@@ -258,6 +284,12 @@ pub(super) fn format_probe_progress_line(line: &str) -> Option<String> {
             )
             .dimmed()
         ),
+        "rl_selfplay" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=rl_selfplay running cooperative self-play + learner step".bright_blue()
+        ),
         "done" => format!(
             "{} {} {}",
             prefix,
@@ -309,6 +341,8 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
                 match result.kind {
                     ProbeKind::Train => "train",
                     ProbeKind::Validation => "validation",
+                    ProbeKind::RlGames => "rl_games",
+                    ProbeKind::RlMicrobatch => "rl_microbatch",
                 },
                 result.candidate_microbatch,
                 result.measured_samples_per_second.unwrap_or(0.0),
@@ -319,12 +353,20 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
         ),
         ProbeStatus::Oom => with_utc_timestamp(
             format!(
-                "[{}] candidate_mb={} outcome=oom next=smaller_microbatch",
+                "[{}] candidate_mb={} outcome={} next=smaller_microbatch detail={}",
                 match result.kind {
                     ProbeKind::Train => "train",
                     ProbeKind::Validation => "validation",
+                    ProbeKind::RlGames => "rl_games",
+                    ProbeKind::RlMicrobatch => "rl_microbatch",
                 },
                 result.candidate_microbatch,
+                probe_failure_reason(result),
+                if result.detail.is_empty() {
+                    "n/a"
+                } else {
+                    &result.detail
+                },
             )
             .red()
             .to_string(),
@@ -335,9 +377,11 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
                 match result.kind {
                     ProbeKind::Train => "train",
                     ProbeKind::Validation => "validation",
+                    ProbeKind::RlGames => "rl_games",
+                    ProbeKind::RlMicrobatch => "rl_microbatch",
                 },
                 result.candidate_microbatch,
-                probe_status_label(&result.status),
+                probe_failure_reason(result),
                 result.detail
             )
             .red()
@@ -354,13 +398,15 @@ pub(super) fn format_probe_results_table(
     let kind_label = match kind {
         ProbeKind::Train => "train",
         ProbeKind::Validation => "validation",
+        ProbeKind::RlGames => "rl_games",
+        ProbeKind::RlMicrobatch => "rl_microbatch",
     };
     let summaries = summarize_probe_results(results);
     let mut lines = vec![format!(
-        "kind         selected  candidate_mb  attempts  status         avg_throughput(samples/s)  avg_elapsed(s)"
+        "kind         selected  candidate_mb  attempts  status                       avg_throughput(samples/s)  avg_elapsed(s)"
     )];
     lines.push(
-        "------------ ---------  ------------  --------  -------------  -------------------------  --------------".to_string(),
+        "------------ ---------  ------------  --------  ---------------------------  -------------------------  --------------".to_string(),
     );
     for summary in summaries {
         let selected = if selected_candidate == Some(summary.candidate_microbatch) {
@@ -368,6 +414,11 @@ pub(super) fn format_probe_results_table(
         } else {
             "no"
         };
+        let status = results
+            .iter()
+            .find(|result| result.candidate_microbatch == summary.candidate_microbatch)
+            .map(probe_failure_reason)
+            .unwrap_or_else(|| probe_status_label(&summary.status));
         let throughput = summary
             .average_samples_per_second
             .map(|value| format!("{value:.2}"))
@@ -377,10 +428,10 @@ pub(super) fn format_probe_results_table(
             .map(|value| format!("{value:.2}"))
             .unwrap_or_else(|| "-".to_string());
         lines.push(format!(
-            "{kind_label:<12} {selected:<9} {candidate:<12} {attempts:<8} {status:<13} {throughput:>25} {elapsed:>15}",
+            "{kind_label:<12} {selected:<9} {candidate:<12} {attempts:<8} {status:<27} {throughput:>25} {elapsed:>15}",
             candidate = summary.candidate_microbatch,
             attempts = summary.attempts,
-            status = probe_status_label(&summary.status),
+            status = status,
         ));
     }
     lines.join("\n")

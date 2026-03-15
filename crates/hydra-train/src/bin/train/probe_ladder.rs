@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus, candidate_ladder};
+use hydra_train::preflight::{candidate_ladder, ProbeKind, ProbeResult, ProbeStatus};
 
 use super::config::TrainConfig;
-use super::probe_request::{ProbeRequest, probe_candidate_ceiling};
-use super::probe_summary::{ProbeCandidateSummary, summarize_probe_results};
+use super::probe_request::{probe_candidate_ceiling, ProbeRequest};
+use super::probe_summary::{summarize_probe_results, ProbeCandidateSummary};
 
 const MAX_DYNAMIC_PROBE_CANDIDATE: usize = 8192;
 
@@ -118,6 +118,102 @@ pub(super) fn local_refinement_candidates(
     refined.into_iter().take(max_candidates.max(1)).collect()
 }
 
+pub(super) fn top_k_refinement_candidates(
+    summaries: &[ProbeCandidateSummary],
+    margin_ratio: f64,
+    top_k: usize,
+    min_gap: usize,
+    max_candidates: usize,
+    ceiling: usize,
+) -> Vec<usize> {
+    let finalists = close_probe_finalists_from_summaries(summaries, margin_ratio, top_k);
+    let mut successful = summaries
+        .iter()
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .filter_map(|summary| {
+            summary
+                .average_samples_per_second
+                .map(|score| (summary.candidate_microbatch, score))
+        })
+        .collect::<Vec<_>>();
+    successful.sort_by_key(|(candidate, _)| *candidate);
+    successful.dedup_by_key(|(candidate, _)| *candidate);
+    let all_candidates = successful
+        .iter()
+        .map(|(candidate, _)| *candidate)
+        .collect::<Vec<_>>();
+
+    let mut refined = BTreeSet::new();
+    for finalist in finalists {
+        let Some(index) = all_candidates
+            .iter()
+            .position(|candidate| *candidate == finalist.candidate_microbatch)
+        else {
+            continue;
+        };
+        let lower = index
+            .checked_sub(1)
+            .and_then(|idx| all_candidates.get(idx).copied());
+        let upper = all_candidates.get(index + 1).copied();
+        let failed_above = summaries
+            .iter()
+            .filter(|summary| {
+                summary.candidate_microbatch > finalist.candidate_microbatch
+                    && summary.status != ProbeStatus::Success
+            })
+            .map(|summary| summary.candidate_microbatch)
+            .min();
+        for neighbor in [lower, upper, failed_above].into_iter().flatten() {
+            let lo = neighbor.min(finalist.candidate_microbatch);
+            let hi = neighbor.max(finalist.candidate_microbatch);
+            if hi.saturating_sub(lo) < min_gap.max(1) {
+                continue;
+            }
+            let midpoint = lo + (hi - lo) / 2;
+            if midpoint != lo && midpoint != hi && midpoint <= ceiling {
+                refined.insert(midpoint);
+            }
+        }
+    }
+
+    refined.into_iter().take(max_candidates.max(1)).collect()
+}
+
+fn close_probe_finalists_from_summaries(
+    summaries: &[ProbeCandidateSummary],
+    margin_ratio: f64,
+    max_candidates: usize,
+) -> Vec<ProbeCandidateSummary> {
+    let mut successful = summaries
+        .iter()
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .cloned()
+        .collect::<Vec<_>>();
+    successful.sort_by(|left, right| {
+        right
+            .average_samples_per_second
+            .unwrap_or(0.0)
+            .partial_cmp(&left.average_samples_per_second.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let Some(best) = successful
+        .first()
+        .and_then(|summary| summary.average_samples_per_second)
+    else {
+        return Vec::new();
+    };
+    successful
+        .into_iter()
+        .filter(|summary| {
+            summary
+                .average_samples_per_second
+                .map(|score| score >= best * (1.0 - margin_ratio.max(0.0)))
+                .unwrap_or(false)
+        })
+        .take(max_candidates.max(1))
+        .collect()
+}
+
 pub(super) fn dynamic_probe_ceiling(config: &TrainConfig, kind: ProbeKind, seed: usize) -> usize {
     match kind {
         ProbeKind::Train => config.batch_size.max(seed),
@@ -125,6 +221,8 @@ pub(super) fn dynamic_probe_ceiling(config: &TrainConfig, kind: ProbeKind, seed:
             .max_validation_samples
             .unwrap_or(MAX_DYNAMIC_PROBE_CANDIDATE.saturating_mul(8))
             .max(config.batch_size.max(seed).saturating_mul(8)),
+        ProbeKind::RlGames => MAX_DYNAMIC_PROBE_CANDIDATE.max(seed),
+        ProbeKind::RlMicrobatch => config.batch_size.max(seed),
     }
 }
 
@@ -167,7 +265,8 @@ pub(super) fn dynamic_probe_ladder(
     kind: ProbeKind,
     seed: usize,
 ) -> Vec<usize> {
-    let mut lower = candidate_ladder(&config.preflight, config.batch_size)
+    let candidate_limit = dynamic_probe_ceiling(config, kind, seed.max(1));
+    let mut lower = candidate_ladder(&config.preflight, candidate_limit)
         .into_iter()
         .filter(|candidate| *candidate < seed)
         .collect::<Vec<_>>();
@@ -202,6 +301,7 @@ mod tests {
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            rl: None,
             bc: Default::default(),
             device: "cpu".to_string(),
             buffer_games: 16,
@@ -387,5 +487,20 @@ mod tests {
         assert_eq!(finalists.len(), 2);
         assert_eq!(finalists[0].candidate_microbatch, 64);
         assert_eq!(finalists[1].candidate_microbatch, 48);
+    }
+
+    #[test]
+    fn dynamic_rl_games_ladder_grows_unbounded_from_seed() {
+        let config = dummy_config();
+        let ladder = dynamic_probe_ladder(&config, ProbeKind::RlGames, 4);
+        assert_eq!(ladder.first(), Some(&4));
+        assert!(ladder.contains(&4), "must contain seed");
+        assert!(ladder.contains(&8), "must grow past seed");
+        assert!(ladder.contains(&256), "must reach 256+");
+        let max = ladder.iter().copied().max().unwrap_or(0);
+        assert!(
+            max >= 4096,
+            "RL ceiling should allow growth to at least 4096, got {max}"
+        );
     }
 }

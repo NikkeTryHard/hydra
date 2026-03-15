@@ -4,10 +4,11 @@ use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 
 use super::artifacts::BcArtifactPaths;
-use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
-use super::config::{TrainConfig, configure_threads, device_label, validate_config};
-use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use super::preflight_runtime::{run_preflight, run_probe_ladder_only};
+use super::bootstrap::{initialize_rl_training_bootstrap, RlTrainingBootstrap, RlTrainingRuntime};
+use super::bootstrap::{initialize_training_bootstrap, TrainingBootstrap, TrainingRuntime};
+use super::config::{configure_threads, device_label, validate_config, TrainConfig};
+use super::epoch_runner::{run_epoch, EpochRunnerContext, EpochRuntimeMut};
+use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use super::presentation::{
     explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
     format_preflight_summary_line, format_probe_results_table, format_status_line,
@@ -15,6 +16,7 @@ use super::presentation::{
 };
 use super::probe_request::ProbeRequest;
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
+use super::rl_runner::run_rl_training_loop;
 
 pub(super) fn handle_preflight_mode(
     config_path: &std::path::Path,
@@ -22,6 +24,35 @@ pub(super) fn handle_preflight_mode(
 ) -> Result<(), String> {
     validate_config(config)?;
     configure_threads(config.num_threads)?;
+    if config.rl.is_some() {
+        let train_device = super::config::train_device(&config.device);
+        let device_name = device_label(&config.device);
+        print_preflight_banner("Hydra RL preflight", config, &device_name);
+        let preflight = run_rl_preflight(config_path, config, &train_device)?;
+        println!(
+            "{}",
+            format_preflight_summary_line(
+                "Preflight:",
+                format!(
+                    "selected rl.games_per_batch={} rl.microbatch_size={}",
+                    preflight.selected_games_per_batch, preflight.selected_microbatch_size,
+                )
+            )
+        );
+        print_probe_table(
+            "RL preflight games table",
+            ProbeKind::RlGames,
+            &preflight.rl_games_probe_results,
+            preflight.selected_games_per_batch,
+        );
+        print_probe_table(
+            "RL preflight microbatch table",
+            ProbeKind::RlMicrobatch,
+            &preflight.rl_microbatch_probe_results,
+            preflight.selected_microbatch_size,
+        );
+        return Ok(());
+    }
     let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
     artifacts.create_root_dir()?;
     let device_name = device_label(&config.device);
@@ -112,6 +143,35 @@ pub(super) fn handle_training_mode(
         "{}",
         format_warning_line(explicit_preflight_recommendation())
     );
+    if let Some(rl_cfg) = config.rl.clone() {
+        let (bootstrap, runtime) = initialize_rl_training_bootstrap(config_path, config, rl_cfg)?;
+        let RlTrainingBootstrap {
+            config: _,
+            rl_config,
+            artifacts,
+            model_config,
+            device_name,
+            ..
+        } = &bootstrap;
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} mode=rl phase={:?} games_per_batch={} device={} artifacts={} model={} ",
+                "Hydra RL training".bold().cyan(),
+                rl_config.phase,
+                rl_config.games_per_batch,
+                device_name,
+                artifacts.root.display(),
+                if model_config.is_learner() {
+                    "learner"
+                } else {
+                    "actor"
+                },
+            ))
+        );
+        let _runtime: RlTrainingRuntime = runtime;
+        return run_rl_training_loop(bootstrap, _runtime);
+    }
     let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
     let TrainingBootstrap {
         config,

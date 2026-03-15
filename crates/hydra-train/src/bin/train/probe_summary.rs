@@ -23,6 +23,8 @@ pub(super) fn probe_kind_name(kind: ProbeKind) -> &'static str {
     match kind {
         ProbeKind::Train => "train",
         ProbeKind::Validation => "validation",
+        ProbeKind::RlGames => "rl_games",
+        ProbeKind::RlMicrobatch => "rl_microbatch",
     }
 }
 
@@ -167,5 +169,10 @@ mod tests {
         .expect("best summary should exist");
         assert_eq!(summary.candidate_microbatch, 48);
         assert_eq!(summary.average_samples_per_second, Some(475.0));
+    }
+
+    #[test]
+    fn probe_kind_name_supports_rl_microbatch() {
+        assert_eq!(probe_kind_name(ProbeKind::RlMicrobatch), "rl_microbatch");
     }
 }

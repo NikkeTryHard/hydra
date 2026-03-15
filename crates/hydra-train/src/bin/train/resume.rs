@@ -5,7 +5,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
 
-use super::config::{TrainConfig, train_microbatch_size, validation_microbatch_size};
+use hydra_train::config::PipelineState;
+
+use super::config::{RlPhaseConfig, RlTrainConfig};
+
+use super::config::{train_microbatch_size, validation_microbatch_size, TrainConfig};
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +51,36 @@ pub(crate) struct ResumeContext {
     pub(crate) optimizer_base: Option<PathBuf>,
     pub(crate) session_start_global_step: usize,
     pub(crate) start_epoch: usize,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub(crate) struct RlRuntimeResumeContract {
+    pub(crate) games_per_batch: usize,
+    pub(crate) microbatch_size: usize,
+    pub(crate) phase: RlPhaseConfig,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub(crate) enum RlResumeSemantics {
+    RestoreOptimizerFreshSelfPlay,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RlResumeState {
+    pub(crate) schema_version: u32,
+    pub(crate) resume_semantics: RlResumeSemantics,
+    pub(crate) global_step: usize,
+    pub(crate) pipeline_state: PipelineState,
+    pub(crate) runtime: RlRuntimeResumeContract,
+    pub(crate) saved_at_unix_s: u64,
+}
+
+pub(crate) struct RlResumeContext {
+    pub(crate) checkpoint_base: Option<PathBuf>,
+    pub(crate) state: Option<RlResumeState>,
+    pub(crate) optimizer_base: Option<PathBuf>,
+    pub(crate) session_start_global_step: usize,
 }
 
 impl ResumeContext {
@@ -96,6 +130,49 @@ impl ResumeContext {
                     "{} {}",
                     "Resume:".bold().cyan(),
                     resume_banner_message(state).yellow(),
+                ))
+            );
+        }
+    }
+}
+
+impl RlResumeContext {
+    pub(crate) fn load(config: &TrainConfig) -> Result<Self, String> {
+        let checkpoint_base = config
+            .resume_checkpoint
+            .as_ref()
+            .map(|path| checkpoint_base_from_path(path));
+        let state = checkpoint_base
+            .as_ref()
+            .and_then(|base| latest_state_path_for_checkpoint_base(base))
+            .filter(|path| path.exists())
+            .map(|path| read_rl_resume_state(&path))
+            .transpose()?;
+        let optimizer_base = checkpoint_base
+            .as_ref()
+            .and_then(|base| latest_optimizer_base_for_checkpoint_base(base))
+            .filter(|path| path.with_extension("bin").exists());
+        let session_start_global_step = state.as_ref().map(|state| state.global_step).unwrap_or(0);
+        Ok(Self {
+            checkpoint_base,
+            state,
+            optimizer_base,
+            session_start_global_step,
+        })
+    }
+
+    pub(crate) fn restores_optimizer_state(&self) -> bool {
+        self.state.is_some()
+    }
+
+    pub(crate) fn print_banner(&self) {
+        if let Some(state) = self.state.as_ref() {
+            println!(
+                "{}",
+                timestamped(format!(
+                    "{} {}",
+                    "RL Resume:".bold().cyan(),
+                    rl_resume_banner_message(state).yellow(),
                 ))
             );
         }
@@ -166,6 +243,21 @@ pub(crate) fn read_resume_state(path: &Path) -> Result<BcResumeState, String> {
     Ok(state)
 }
 
+pub(crate) fn read_rl_resume_state(path: &Path) -> Result<RlResumeState, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read RL resume state {}: {err}", path.display()))?;
+    let state: RlResumeState = serde_yaml::from_str(&raw)
+        .map_err(|err| format!("failed to parse RL resume state {}: {err}", path.display()))?;
+    if state.schema_version != 1 {
+        return Err(format!(
+            "unsupported RL resume schema_version {} in {}; expected 1",
+            state.schema_version,
+            path.display()
+        ));
+    }
+    Ok(state)
+}
+
 pub(crate) fn runtime_resume_contract(config: &TrainConfig) -> RuntimeResumeContract {
     let train_microbatch_size = train_microbatch_size(config);
     RuntimeResumeContract {
@@ -174,6 +266,34 @@ pub(crate) fn runtime_resume_contract(config: &TrainConfig) -> RuntimeResumeCont
         validation_microbatch_size: validation_microbatch_size(config),
         accum_steps: config.batch_size.div_ceil(train_microbatch_size).max(1),
     }
+}
+
+pub(crate) fn rl_runtime_resume_contract(rl: &RlTrainConfig) -> RlRuntimeResumeContract {
+    RlRuntimeResumeContract {
+        games_per_batch: rl.games_per_batch,
+        microbatch_size: rl
+            .microbatch_size
+            .unwrap_or(hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE),
+        phase: rl.phase,
+    }
+}
+
+pub(crate) fn validate_rl_resume_runtime_compatibility(
+    state: &RlResumeState,
+    current: RlRuntimeResumeContract,
+) -> Result<(), String> {
+    if state.runtime != current {
+        return Err(format!(
+            "RL resume runtime mismatch: checkpoint games_per_batch={} microbatch_size={} phase={:?} current games_per_batch={} microbatch_size={} phase={:?}",
+            state.runtime.games_per_batch,
+            state.runtime.microbatch_size,
+            state.runtime.phase,
+            current.games_per_batch,
+            current.microbatch_size,
+            current.phase,
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_resume_runtime_compatibility(
@@ -242,6 +362,21 @@ pub(crate) fn build_resume_state(
     }
 }
 
+pub(crate) fn build_rl_resume_state(
+    global_step: usize,
+    pipeline_state: PipelineState,
+    runtime: RlRuntimeResumeContract,
+) -> RlResumeState {
+    RlResumeState {
+        schema_version: 1,
+        resume_semantics: RlResumeSemantics::RestoreOptimizerFreshSelfPlay,
+        global_step,
+        pipeline_state,
+        runtime,
+        saved_at_unix_s: current_timestamp_s(),
+    }
+}
+
 pub(crate) fn paused_training_message(continuation: &EpochContinuation) -> String {
     format!(
         "resume_epoch={} skipped_optimizer_steps_in_epoch={} optimizer_state=restored sample_cursor=reconstructed_from_logical_batch_count partial_epoch_requires_matching_runtime",
@@ -273,5 +408,18 @@ pub(crate) fn resume_banner_message(state: &BcResumeState) -> String {
             state.runtime.accum_steps,
         )
     }
+}
+
+pub(crate) fn rl_resume_banner_message(state: &RlResumeState) -> String {
+    format!(
+        "global_step={} semantics={:?} phase={:?} games={} samples={} runtime=games_per_batch:{} microbatch_size:{}",
+        state.global_step,
+        state.resume_semantics,
+        state.pipeline_state.phase,
+        state.pipeline_state.total_games,
+        state.pipeline_state.total_samples,
+        state.runtime.games_per_batch,
+        state.runtime.microbatch_size,
+    )
 }
 use super::presentation::timestamped;

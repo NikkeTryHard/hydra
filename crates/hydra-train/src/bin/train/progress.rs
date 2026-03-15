@@ -78,6 +78,20 @@ pub(super) struct StepLogEntry {
     pub(super) best_val_agreement: Option<f64>,
 }
 
+#[derive(serde::Serialize)]
+pub(super) struct RlStepLogEntry {
+    pub(super) global_step: usize,
+    pub(super) phase: String,
+    pub(super) loss: f64,
+    pub(super) effective_lr: f64,
+    pub(super) exit_weight: f32,
+    pub(super) games_per_batch: usize,
+    pub(super) samples_in_batch: usize,
+    pub(super) total_games: u64,
+    pub(super) total_samples: u64,
+    pub(super) delta_q_state: String,
+}
+
 pub(super) struct BannerStats {
     pub(super) total_sources: usize,
     pub(super) total_games: usize,
