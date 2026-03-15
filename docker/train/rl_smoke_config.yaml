@@ -1,0 +1,24 @@
+data_dir: /tmp/data
+output_dir: /tmp/hydra-rl-smoke
+num_epochs: 1
+batch_size: 256
+microbatch_size: 64
+validation_microbatch_size: 32
+train_fraction: 0.9
+augment: true
+seed: 0
+device: cpu
+buffer_games: 16
+buffer_samples: 128
+archive_queue_bound: 8
+validation_every_n_epochs: 1
+max_skip_logs_per_source: 4
+log_every_n_steps: 1
+validate_every_n_steps: 10
+checkpoint_every_n_steps: 1
+max_train_steps: 1
+tensorboard: false
+rl:
+  games_per_batch: 1
+  temperature: 1.0
+  phase: drda_ach_self_play

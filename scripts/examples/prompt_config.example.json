@@ -5,51 +5,11 @@
     "title": "Hydra generated prompt",
     "artifact_container_tag": "artifacts",
     "artifact_ids": [
-      "style-guide-shell",
       "generator-script"
     ],
-    "shell_sections": [
-      {
-        "tag": "role",
-        "lines": [
-          "Produce an implementation-ready blueprint.",
-          "Do not give a memo.",
-          "Your answer itself must be the blueprint."
-        ]
-      },
-      {
-        "tag": "style",
-        "lines": [
-          "- no high-level survey",
-          "- no vague answer",
-          "- include reasoning",
-          "- distinguish direct artifact support from your own inference",
-          "- do not finish prematurely; keep looping until information is saturated or blocked"
-        ]
-      },
-      {
-        "tag": "artifact_note",
-        "lines": [
-          "The artifacts below reflect what the current codebase/docs appear to say right now.",
-          "They are not guaranteed to be fully correct.",
-          "Treat them as evidence to inspect and critique, not truth to inherit."
-        ]
-      }
-    ]
+    "shell_sections": []
   },
   "artifacts": [
-    {
-      "id": "style-guide-shell",
-      "type": "file_range",
-      "path": "research/agent_handoffs/PROMPT_STYLE_GUIDE.md",
-      "start_line": 110,
-      "end_line": 155,
-      "label": "Canonical Hydra prompt shell",
-      "explanation": "Use this to keep the generated prompt aligned with Hydra's artifact-first doctrine.",
-      "source_label": "STYLE",
-      "fence_language": "text",
-      "show_line_numbers": true
-    },
     {
       "id": "generator-script",
       "type": "file_full",
@@ -89,6 +49,7 @@
     {
       "name": "narrow-focused",
       "title": "Hydra prompt — narrow focused variant",
+      "shell_source_path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_001_narrow_focused.md",
       "output_file": "narrow-focused.md",
       "artifact_ids": [
         "narrow-reminder"
@@ -107,24 +68,12 @@
             "Use the artifacts below to derive your conclusions."
           ]
         }
-      ],
-      "artifacts": [
-        {
-          "type": "file_range",
-          "path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_001_narrow_focused.md",
-          "start_line": 1,
-          "end_line": 60,
-          "label": "Reference narrow prompt example",
-          "explanation": "Concrete example of a narrow artifact-first prompt shape.",
-          "source_label": "NARROW",
-          "fence_language": "text",
-          "show_line_numbers": true
-        }
       ]
     },
     {
       "name": "broad-fuse-loop",
       "title": "Hydra prompt — broad novelty fuse-loop variant",
+      "shell_source_path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_002_broad_novel_fuse_loop.md",
       "output_file": "broad-fuse-loop.md",
       "artifact_ids": [
         "broad-novelty-reminder"
@@ -144,18 +93,33 @@
             "Use the artifacts below to derive your conclusions."
           ]
         }
+      ]
+    },
+    {
+      "name": "balanced-narrow",
+      "title": "Hydra prompt — balanced narrow variant",
+      "shell_source_path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_003_balanced_narrow_not_overconstrained.md",
+      "output_file": "balanced-narrow.md",
+      "artifact_ids": [
+        "narrow-reminder"
       ],
-      "artifacts": [
+      "shell_sections": [
         {
-          "type": "file_range",
-          "path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_002_broad_novel_fuse_loop.md",
-          "start_line": 1,
-          "end_line": 62,
-          "label": "Reference broad prompt example",
-          "explanation": "Concrete example of the broad novelty prompt family.",
-          "source_label": "BROAD",
-          "fence_language": "text",
-          "show_line_numbers": true
+          "tag": "direction",
+          "lines": [
+            "Work toward the strongest exact blueprint for a narrow task, but do not treat the current framing as automatically complete or correct.",
+            "",
+            "We want a detailed answer that makes clear:",
+            "- what the artifacts directly support",
+            "- what is only inference",
+            "- what confidence level each major conclusion deserves",
+            "- what simpler or stronger local alternatives exist inside the same lane",
+            "- what should be kept, narrowed, or removed",
+            "- why the confident parts of the answer are actually justified",
+            "- how to implement or validate the surviving path with minimal guesswork",
+            "",
+            "Use the artifacts below to derive your conclusions."
+          ]
         }
       ]
     }

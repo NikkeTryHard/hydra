@@ -432,7 +432,8 @@ Use this as the concrete coding handoff for the first tranche.
 #### `hydra-train/src/data/mjai_loader.rs`
 - **Current state**
   - already builds replay-derived `safety_residual_target` plus Stage A projected `belief_fields_target` / `mixture_weight_target`
-  - now has a normal replay/sample `exit_target` production path via a separate search-derived sidecar producer plus replay-time join; `delta_q_target` and `opponent_hand_type_target` still remain absent
+  - now has a normal replay/sample `exit_target` production path via a separate search-derived sidecar producer plus replay-time join; replay/sample `delta_q_target` and `opponent_hand_type_target` still remain absent
+  - live self-play RL now has a narrower `delta_q` lane via the shared root-search producer: masked discard-compatible `Q(child)-Q(root)` labels can flow into `RlBatch.targets.delta_q_target` / `delta_q_mask` without changing replay purity or train-bin activation policy
   - `safety_residual_target` now uses signed replay-derived correction semantics: `exact_safety - public_score` on legal discard actions only
   - `hydra-train/src/training/exit.rs` now carries the narrowed ExIt teacher semantics and gates: compatible discard-only state check, child-visit-count target construction, subset mask, coverage gate, and KL / visit safety valve
 - **Required changes**
@@ -441,6 +442,7 @@ Use this as the concrete coding handoff for the first tranche.
   3. completed: add a real upstream producer path for `exit_target` / `exit_mask` via a separate search-derived replay sidecar, with replay-time join and provenance/version enforcement
   4. leave clearly unavailable targets as absent rather than fabricating weak labels
   5. document provenance inline: replay-derived, bridge-derived, or search-derived
+  6. keep `delta_q` staging explicit: self-play RL search-derived lane may exist before replay/offline provenance and train-bin activation do
 - **Preferred order**
   - first completed: truth-align and patch `safety_residual_target` to signed replay-derived residual semantics, keeping activation narrow and conservative
   - next: close `delta_q_target`
@@ -451,6 +453,7 @@ Use this as the concrete coding handoff for the first tranche.
 - **Current state**
   - `HydraTargets` already exposes all advanced target slots
   - advanced weights default to `0.0`
+  - `delta_q` now uses masked regression when target+mask exist, but BC/train-bin activation remains blocked until a separate staged validation/provenance tranche is approved
 - **Required changes**
   1. add a single, clear activation policy for advanced losses
   2. ensure each optional target contributes loss only when target data exists
@@ -464,6 +467,7 @@ Use this as the concrete coding handoff for the first tranche.
 - **Current state**
   - BC already routes through `HydraTargets`
   - it now consumes replay-derived `safety_residual` targets through the supervised path and supports hardware-agnostic microbatch accumulation for full-learner BC runs
+  - `advanced_loss.delta_q` remains intentionally rejected in `train.rs`; the new self-play RL `delta_q` lane does not change BC replay provenance requirements
 - **Required changes**
   1. completed: add tranche-specific tests showing BC consumes replay-derived `safety_residual` targets when present
   2. completed: confirm policy-agreement remains sane with optional advanced targets present and that the BC path supports staged `advanced_loss.safety_residual` activation through `src/bin/train.rs`
@@ -473,7 +477,7 @@ Use this as the concrete coding handoff for the first tranche.
 #### `hydra-train/src/training/rl.rs`
 - **Current state**
   - `RlBatch` can already carry `targets: HydraTargets` and `exit_target: Option<Tensor<...>>`
-  - RL only gets ExIt signal if upstream code produces it
+  - RL now gets ExIt and narrow self-play `delta_q` signal only if the shared root-search producer emits them upstream
 - **Required changes**
   1. make upstream production of `exit_target` part of the tranche, not a future assumption
   2. add tests for mixed cases:
@@ -530,11 +534,12 @@ Use this as the concrete coding handoff for the first tranche.
 - `HydraTargets` fields used in the tranche are populated by real code paths, not left as always-`None`
 - at least one train path produces nonzero advanced auxiliary loss contributions in tests
 - `exit_target` is produced by a real upstream path, not just by unit-test fixtures
+- the current `delta_q` lane stays provenance-explicit: live self-play RL may carry masked search-derived labels while replay/sample `delta_q` remains absent until a separate closure tranche
 - no new heads, no broad AFBS rewrite, no duplicated belief stack
 
 Current tranche-status note:
 - completed for the narrow supervised BC lane: replay-derived `safety_residual` now reaches the train binary with explicit staged activation controls, and full-learner BC now has hardware-agnostic microbatch accumulation rather than assuming one machine's VRAM shape
-- still open before Recommendation 1 is fully complete: `delta_q` closure and stronger public-teacher belief semantics
+- still open before Recommendation 1 is fully complete: replay/offline `delta_q` provenance + staged activation closure, and stronger public-teacher belief semantics
 
 ## 7. Final handoff / progress report
 

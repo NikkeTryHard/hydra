@@ -40,6 +40,170 @@ class PromptGeneratorTests(unittest.TestCase):
     def load_config(self, config_path: Path):
         return generate_prompt._parse_config(config_path)
 
+    def test_extract_prompt_body_from_wrapped_reference_example(self) -> None:
+        wrapped = """<combined_run_record>
+  <prompt_section>
+  <prompt_text status=\"preserved\"><![CDATA[# Title
+
+<role>
+Body
+</role>
+
+<artifacts>
+...
+</artifacts>]]></prompt_text>
+  </prompt_section>
+</combined_run_record>
+"""
+
+        extracted = generate_prompt.extract_prompt_body(wrapped)
+
+        self.assertTrue(extracted.startswith("# Title\n"))
+        self.assertIn("<role>", extracted)
+        self.assertIn("<artifacts>", extracted)
+
+    def test_parse_prompt_template_reads_title_order_and_artifact_tag(self) -> None:
+        template = generate_prompt.parse_prompt_template(
+            """# Template title
+
+<role>
+Role body
+</role>
+
+<direction>
+Direction body
+</direction>
+
+<style>
+Style body
+</style>
+
+<artifact_note>
+Artifact note
+</artifact_note>
+
+<artifacts>
+...
+</artifacts>
+"""
+        )
+
+        self.assertEqual(template.title, "# Template title")
+        self.assertEqual(
+            [section.tag for section in template.shell_sections],
+            ["role", "direction", "style", "artifact_note"],
+        )
+        self.assertEqual(template.artifact_container_tag, "artifacts")
+
+    def test_render_prompt_uses_shell_source_order(self) -> None:
+        repo_root = self.make_repo()
+        canonical = repo_root / "docs/reference.md"
+        canonical.write_text(
+            """# Canonical title
+
+<role>
+Canonical role
+</role>
+
+<direction>
+Canonical direction
+</direction>
+
+<style>
+Canonical style
+</style>
+
+<artifact_note>
+Canonical note
+</artifact_note>
+
+<artifacts>
+...
+</artifacts>
+""",
+            encoding="utf-8",
+        )
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "title": "Fallback title",
+                    "shell_sections": [
+                        {"tag": "role", "lines": ["Default role"]},
+                        {"tag": "style", "lines": ["Default style"]},
+                    ],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {
+                        "name": "main",
+                        "title": "Rendered title",
+                        "shell_source_path": "docs/reference.md",
+                        "shell_sections": [
+                            {"tag": "direction", "lines": ["Variant direction"]},
+                            {"tag": "style", "lines": ["Variant style"]},
+                        ],
+                        "artifact_ids": [],
+                    }
+                ],
+            },
+        )
+
+        config = self.load_config(config_path)
+        rendered = generate_prompt.render_prompt(config, "main")
+
+        role_index = rendered.index("<role>")
+        direction_index = rendered.index("<direction>")
+        style_index = rendered.index("<style>")
+        artifact_note_index = rendered.index("<artifact_note>")
+        artifacts_index = rendered.index("<artifacts>")
+
+        self.assertTrue(
+            role_index
+            < direction_index
+            < style_index
+            < artifact_note_index
+            < artifacts_index
+        )
+        self.assertIn("Variant direction", rendered)
+        self.assertIn("Variant style", rendered)
+        self.assertIn("Canonical note", rendered)
+        self.assertTrue(rendered.startswith("# Rendered title\n"))
+
+    def test_validation_rejects_unparseable_shell_source(self) -> None:
+        repo_root = self.make_repo()
+        (repo_root / "docs/bad.md").write_text("not a prompt shell\n", encoding="utf-8")
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {
+                        "name": "main",
+                        "shell_source_path": "docs/bad.md",
+                        "shell_sections": [],
+                        "artifact_ids": [],
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaises(generate_prompt.ValidationError) as ctx:
+            self.load_config(config_path)
+
+        self.assertTrue(
+            any("shell_source_path" in error for error in ctx.exception.errors)
+        )
+
     def test_render_file_range_includes_expected_lines(self) -> None:
         repo_root = self.make_repo()
         config_path = self.write_config(
@@ -386,6 +550,20 @@ class PromptGeneratorTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertTrue((output_dir / "first.md").exists())
         self.assertTrue((output_dir / "second-variant.md").exists())
+
+    def test_example_config_declares_all_reference_variants(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        config = generate_prompt._parse_config(
+            repo_root / "scripts/examples/prompt_config.example.json"
+        )
+
+        self.assertEqual(
+            [variant.name for variant in config.variants],
+            ["narrow-focused", "broad-fuse-loop", "balanced-narrow"],
+        )
+        self.assertTrue(
+            all(variant.shell_source_path is not None for variant in config.variants)
+        )
 
 
 if __name__ == "__main__":
