@@ -1,6 +1,6 @@
 //! Full RL training step: DRDA-wrapped ACH with auxiliary losses.
 
-use burn::optim::GradientsParams;
+use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
@@ -11,6 +11,7 @@ use crate::training::head_gates::{extract_target_presence, HeadActivationControl
 use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub const MAX_RL_BATCH_SIZE: usize = 512;
+pub const DEFAULT_RL_MICROBATCH_SIZE: usize = 128;
 pub const ONE_EPOCH_ONLY: bool = true;
 pub const DEFAULT_EXIT_WEIGHT: f32 = 0.5;
 pub const DEFAULT_AUX_WEIGHT: f32 = 0.1;
@@ -102,6 +103,24 @@ impl<B: Backend> RlBatch<B> {
             && self.base_logits.dims()[0] == b
             && self.targets.legal_mask.dims()[0] == b
     }
+
+    /// Slice all batch tensors along dim 0 to produce `[start..end)`.
+    pub fn slice(&self, start: usize, end: usize) -> Self {
+        let r1 = [start..end];
+        Self {
+            obs: self.obs.clone().slice(r1.clone()),
+            actions: self.actions.clone().slice(r1.clone()),
+            pi_old: self.pi_old.clone().slice(r1.clone()),
+            advantages: self.advantages.clone().slice(r1.clone()),
+            base_logits: self.base_logits.clone().slice(r1.clone()),
+            targets: self.targets.slice_batch(start, end),
+            exit_target: self
+                .exit_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            exit_mask: self.exit_mask.as_ref().map(|t| t.clone().slice(r1)),
+        }
+    }
 }
 
 pub struct RlConfig {
@@ -110,6 +129,7 @@ pub struct RlConfig {
     pub lr: f64,
     pub exit_weight: f32,
     pub aux_weight: f32,
+    pub microbatch_size: Option<usize>,
 }
 
 impl RlConfig {
@@ -120,6 +140,7 @@ impl RlConfig {
             lr: 2.5e-4,
             exit_weight: DEFAULT_EXIT_WEIGHT,
             aux_weight: 0.1,
+            microbatch_size: None,
         }
     }
 
@@ -143,6 +164,7 @@ impl RlConfig {
             lr: 1e-4,
             exit_weight: 0.5,
             aux_weight: 0.1,
+            microbatch_size: None,
         }
     }
 
@@ -193,6 +215,12 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
     )
 }
 
+/// Single RL training step with gradient accumulation across microbatches.
+///
+/// Advantages are normalized over the full batch before splitting so the
+/// statistics match the non-microbatched path exactly. Each microbatch
+/// runs forward+backward independently; gradients are accumulated and
+/// applied in one optimizer step at the end.
 pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch: &RlBatch<B>,
@@ -203,25 +231,6 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
     mut controller: Option<&mut HeadActivationController>,
 ) -> (HydraModel<B>, f64) {
-    let output = model.forward_active(batch.obs.clone(), &loss_fn.config);
-    let combined = drda::combined_logits(
-        batch.base_logits.clone(),
-        output.policy_logits.clone(),
-        cfg.tau_drda,
-    );
-    let adv = batch.advantages.clone();
-    let adv_mean = adv.clone().mean();
-    let adv_var = (adv.clone() - adv_mean.clone()).powf_scalar(2.0).mean();
-    let adv_std = (adv_var + 1e-8).sqrt();
-    let advantages_normed = (adv - adv_mean) / adv_std;
-    let ach_loss = ach_policy_loss(
-        combined,
-        batch.targets.legal_mask.clone(),
-        batch.actions.clone(),
-        batch.pi_old.clone(),
-        advantages_normed,
-        &cfg.ach_cfg,
-    );
     let effective_loss_fn;
     let active_loss_fn = if let Some(ctrl) = controller.as_mut() {
         let (effective_cfg, _) = apply_head_gating_to_batch(ctrl, &loss_fn.config, &batch.targets)
@@ -231,7 +240,120 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     } else {
         loss_fn
     };
-    let aux = active_loss_fn.total_loss(&output, &batch.targets);
+
+    // Normalize advantages over the full batch before splitting.
+    let adv = batch.advantages.clone();
+    let adv_mean = adv.clone().mean();
+    let adv_var = (adv.clone() - adv_mean.clone()).powf_scalar(2.0).mean();
+    let adv_std = (adv_var + 1e-8).sqrt();
+    let advantages_normed = (adv - adv_mean) / adv_std;
+
+    let total_samples = batch.batch_size();
+    let mb_size = cfg.microbatch_size.unwrap_or(total_samples);
+
+    if mb_size >= total_samples {
+        // Fast path: entire batch fits in one shot (original behavior).
+        return rl_microbatch_forward(
+            model,
+            batch,
+            &advantages_normed,
+            0,
+            total_samples,
+            cfg,
+            phase,
+            progress,
+            active_loss_fn,
+            optimizer,
+        );
+    }
+
+    // Microbatch accumulation path.
+    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
+    let mut total_loss = 0.0;
+    let mut num_chunks = 0usize;
+    let mut m = model;
+
+    let mut start = 0;
+    while start < total_samples {
+        let end = (start + mb_size).min(total_samples);
+        let mb_batch = batch.slice(start, end);
+        let mb_adv = advantages_normed.clone().slice([start..end]);
+
+        let output = m.forward_active(mb_batch.obs.clone(), &active_loss_fn.config);
+        let combined = drda::combined_logits(
+            mb_batch.base_logits.clone(),
+            output.policy_logits.clone(),
+            cfg.tau_drda,
+        );
+        let ach_loss = ach_policy_loss(
+            combined,
+            mb_batch.targets.legal_mask.clone(),
+            mb_batch.actions.clone(),
+            mb_batch.pi_old.clone(),
+            mb_adv,
+            &cfg.ach_cfg,
+        );
+        let aux = active_loss_fn.total_loss(&output, &mb_batch.targets);
+        let mut chunk_total = ach_loss + aux.total * cfg.aux_weight;
+        if let (Some(exit_target), Some(exit_mask)) = (&mb_batch.exit_target, &mb_batch.exit_mask) {
+            let exit_weight = cfg.effective_exit_weight(phase, progress);
+            let exit_loss = crate::training::exit::exit_loss(
+                output.policy_logits,
+                exit_target.clone(),
+                exit_mask.clone(),
+                exit_weight,
+            );
+            chunk_total = chunk_total + exit_loss;
+        }
+
+        let loss_val: f64 = chunk_total.clone().into_scalar().elem();
+        let grads = chunk_total.backward();
+        let grads = GradientsParams::from_grads(grads, &m);
+        accumulator.accumulate(&m, grads);
+        total_loss += loss_val;
+        num_chunks += 1;
+        start = end;
+    }
+
+    let grads = accumulator.grads();
+    m = optimizer.step(cfg.lr, m, grads);
+    let avg_loss = if num_chunks > 0 {
+        total_loss / num_chunks as f64
+    } else {
+        0.0
+    };
+    (m, avg_loss)
+}
+
+/// Run a single (micro)batch forward+backward+step. Used for the fast
+/// path when the entire batch fits in VRAM without splitting.
+fn rl_microbatch_forward<B: AutodiffBackend>(
+    model: HydraModel<B>,
+    batch: &RlBatch<B>,
+    advantages_normed: &Tensor<B, 1>,
+    _start: usize,
+    _end: usize,
+    cfg: &RlConfig,
+    phase: u8,
+    progress: f32,
+    loss_fn: &HydraLoss<B>,
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+) -> (HydraModel<B>, f64) {
+    let output = model.forward_active(batch.obs.clone(), &loss_fn.config);
+    let combined = drda::combined_logits(
+        batch.base_logits.clone(),
+        output.policy_logits.clone(),
+        cfg.tau_drda,
+    );
+    let ach_loss = ach_policy_loss(
+        combined,
+        batch.targets.legal_mask.clone(),
+        batch.actions.clone(),
+        batch.pi_old.clone(),
+        advantages_normed.clone(),
+        &cfg.ach_cfg,
+    );
+    let aux = loss_fn.total_loss(&output, &batch.targets);
     let mut total = ach_loss + aux.total * cfg.aux_weight;
     if let (Some(exit_target), Some(exit_mask)) = (&batch.exit_target, &batch.exit_mask) {
         let exit_weight = cfg.effective_exit_weight(phase, progress);
@@ -285,6 +407,7 @@ mod tests {
             lr: 1e-4,
             exit_weight: 0.5,
             aux_weight: 0.1,
+            microbatch_size: None,
         };
         let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
         let mut optimizer = AdamConfig::new().init();
@@ -320,6 +443,7 @@ mod tests {
             lr: 1e-3,
             exit_weight: 0.5,
             aux_weight: 0.1,
+            microbatch_size: None,
         };
         let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
         let mut opt = AdamConfig::new().init();
@@ -364,6 +488,7 @@ mod tests {
             lr: 1e-4,
             exit_weight: 0.5,
             aux_weight: 0.1,
+            microbatch_size: None,
         };
         let baseline_loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
         let mut opt1 = AdamConfig::new().init();
@@ -647,5 +772,64 @@ mod tests {
             controller.head_state(AdvancedHead::DeltaQ),
             crate::training::head_gates::HeadState::Warmup
         );
+    }
+
+    #[test]
+    fn test_rl_step_microbatched_finite() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let batch = RlBatch {
+            obs: Tensor::<AB, 3>::zeros([4, crate::config::INPUT_CHANNELS, 34], &device),
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1, 2, 3][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3, 0.4, 0.6], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5, 0.3, -0.8], &device),
+            base_logits: Tensor::<AB, 2>::zeros([4, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 4),
+            exit_target: None,
+            exit_mask: None,
+        };
+        let cfg = RlConfig {
+            tau_drda: 4.0,
+            ach_cfg: AchConfig::new(),
+            lr: 1e-4,
+            exit_weight: 0.5,
+            aux_weight: 0.1,
+            microbatch_size: Some(2),
+        };
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let mut optimizer = AdamConfig::new().init();
+        let (_, loss) = rl_step(model, &batch, &cfg, &loss_fn, &mut optimizer);
+        assert!(
+            loss.is_finite(),
+            "microbatched RL loss should be finite: {loss}"
+        );
+    }
+
+    #[test]
+    fn test_rl_batch_slice_shapes() {
+        let device = Default::default();
+        let batch = RlBatch::<AB> {
+            obs: Tensor::zeros([6, crate::config::INPUT_CHANNELS, 34], &device),
+            actions: Tensor::from_ints(&[0i32, 1, 2, 3, 4, 5][..], &device),
+            pi_old: Tensor::from_floats([0.5, 0.3, 0.4, 0.6, 0.2, 0.1], &device),
+            advantages: Tensor::from_floats([1.0, -0.5, 0.3, -0.8, 0.1, -0.2], &device),
+            base_logits: Tensor::zeros([6, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 6),
+            exit_target: None,
+            exit_mask: None,
+        };
+        let sub = batch.slice(1, 4);
+        assert_eq!(sub.obs.dims()[0], 3);
+        assert_eq!(sub.actions.dims()[0], 3);
+        assert_eq!(sub.pi_old.dims()[0], 3);
+        assert_eq!(sub.advantages.dims()[0], 3);
+        assert_eq!(sub.base_logits.dims(), [3, 46]);
+        assert_eq!(sub.targets.policy_target.dims(), [3, 46]);
+        assert_eq!(sub.targets.value_target.dims(), [3]);
+        assert!(sub.shapes_consistent());
     }
 }

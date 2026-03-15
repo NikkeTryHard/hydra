@@ -5,9 +5,10 @@ use burn::backend::libtorch::LibTorchDevice;
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::LoaderRuntimeConfig;
 use hydra_train::training::bc::BCTrainerConfig;
+use hydra_train::training::rl::RlConfig;
 use rayon::ThreadPoolBuilder;
 
-use super::config::TrainConfig;
+use super::config::{RlTrainConfig, TrainConfig};
 
 pub(crate) fn parse_train_device(value: &str) -> LibTorchDevice {
     let value = value.trim().to_ascii_lowercase();
@@ -152,6 +153,9 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
     if config.bc.warmup_steps == 0 {
         return Err("bc.warmup_steps must be greater than 0".to_string());
     }
+    if let Some(rl) = config.rl.as_ref() {
+        validate_rl_config(rl)?;
+    }
     if config
         .advanced_loss
         .as_ref()
@@ -167,6 +171,31 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_rl_config(rl: &RlTrainConfig) -> Result<(), String> {
+    if rl.games_per_batch == 0 {
+        return Err("rl.games_per_batch must be greater than 0".to_string());
+    }
+    if rl.temperature <= 0.0 {
+        return Err("rl.temperature must be greater than 0".to_string());
+    }
+    if let Some(lr) = rl.learning_rate
+        && lr <= 0.0
+    {
+        return Err("rl.learning_rate must be greater than 0 when set".to_string());
+    }
+    if let Some(exit_weight) = rl.exit_weight
+        && exit_weight < 0.0
+    {
+        return Err("rl.exit_weight must be non-negative".to_string());
+    }
+    if let Some(aux_weight) = rl.aux_weight
+        && aux_weight < 0.0
+    {
+        return Err("rl.aux_weight must be non-negative".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn trainer_config_from_train_config(config: &TrainConfig) -> BCTrainerConfig {
     BCTrainerConfig::new(HydraModelConfig::learner())
         .with_batch_size(config.batch_size)
@@ -175,6 +204,24 @@ pub(crate) fn trainer_config_from_train_config(config: &TrainConfig) -> BCTraine
         .with_weight_decay(config.bc.weight_decay)
         .with_grad_clip_norm(config.bc.grad_clip_norm)
         .with_warmup_steps(config.bc.warmup_steps)
+}
+
+pub(crate) fn rl_config_from_train_config(rl: &RlTrainConfig) -> RlConfig {
+    let mut cfg = match rl.phase {
+        super::config::RlPhaseConfig::DrdaAchSelfPlay => RlConfig::default_phase2(),
+        super::config::RlPhaseConfig::ExitPondering => RlConfig::default_phase3(),
+    };
+    if let Some(lr) = rl.learning_rate {
+        cfg = cfg.with_lr(lr);
+    }
+    if let Some(exit_weight) = rl.exit_weight {
+        cfg = cfg.with_exit_weight(exit_weight);
+    }
+    if let Some(aux_weight) = rl.aux_weight {
+        cfg = cfg.with_aux_weight(aux_weight);
+    }
+    cfg.microbatch_size = rl.microbatch_size;
+    cfg
 }
 
 pub(crate) fn loader_runtime_config(config: &TrainConfig) -> LoaderRuntimeConfig {

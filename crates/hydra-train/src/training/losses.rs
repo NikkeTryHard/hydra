@@ -25,9 +25,78 @@ pub struct HydraTargets<B: Backend> {
     pub mixture_weight_mask: Option<Tensor<B, 1>>,
     pub opponent_hand_type_target: Option<Tensor<B, 2>>,
     pub delta_q_target: Option<Tensor<B, 2>>,
+    pub delta_q_mask: Option<Tensor<B, 2>>,
     pub safety_residual_target: Option<Tensor<B, 2>>,
     pub safety_residual_mask: Option<Tensor<B, 2>>,
     pub oracle_guidance_mask: Option<Tensor<B, 1>>,
+}
+
+impl<B: Backend> HydraTargets<B> {
+    /// Slice all target tensors along the batch dimension (dim 0).
+    ///
+    /// Produces a sub-batch covering `[start..end)`. Used by microbatch
+    /// accumulation to split a full RL batch into VRAM-friendly chunks.
+    pub fn slice_batch(&self, start: usize, end: usize) -> Self {
+        let r1 = [start..end];
+        let r2 = [start..end];
+        let r3 = [start..end];
+        Self {
+            policy_target: self.policy_target.clone().slice(r1.clone()),
+            legal_mask: self.legal_mask.clone().slice(r1.clone()),
+            value_target: self.value_target.clone().slice(r2.clone()),
+            grp_target: self.grp_target.clone().slice(r1.clone()),
+            tenpai_target: self.tenpai_target.clone().slice(r1.clone()),
+            danger_target: self.danger_target.clone().slice(r3.clone()),
+            danger_mask: self.danger_mask.clone().slice(r3.clone()),
+            opp_next_target: self.opp_next_target.clone().slice(r3.clone()),
+            score_pdf_target: self.score_pdf_target.clone().slice(r1.clone()),
+            score_cdf_target: self.score_cdf_target.clone().slice(r1.clone()),
+            oracle_target: self
+                .oracle_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            belief_fields_target: self
+                .belief_fields_target
+                .as_ref()
+                .map(|t| t.clone().slice(r3.clone())),
+            belief_fields_mask: self
+                .belief_fields_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r2.clone())),
+            mixture_weight_target: self
+                .mixture_weight_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            mixture_weight_mask: self
+                .mixture_weight_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r2.clone())),
+            opponent_hand_type_target: self
+                .opponent_hand_type_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            delta_q_target: self
+                .delta_q_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            delta_q_mask: self
+                .delta_q_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            safety_residual_target: self
+                .safety_residual_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            safety_residual_mask: self
+                .safety_residual_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            oracle_guidance_mask: self
+                .oracle_guidance_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r2)),
+        }
+    }
 }
 
 #[derive(Config, Debug)]
@@ -546,9 +615,11 @@ impl<B: Backend> HydraLoss<B> {
             ),
             None => zero.clone(),
         };
-        let l_delta_q = match &targets.delta_q_target {
-            Some(target) => dense_regression_mse(outputs.delta_q.clone(), target.clone()),
-            None => zero.clone(),
+        let l_delta_q = match (&targets.delta_q_target, &targets.delta_q_mask) {
+            (Some(target), Some(mask)) => {
+                masked_action_mse(outputs.delta_q.clone(), target.clone(), mask.clone())
+            }
+            _ => zero.clone(),
         };
         let l_safety_residual = match (
             &targets.safety_residual_target,
@@ -1106,25 +1177,19 @@ pub mod tests {
 
     #[test]
     fn test_validate_rejects_negative_primary_weights() {
-        assert!(
-            HydraLossConfig::new()
-                .with_w_tenpai(-0.1)
-                .validate()
-                .is_err()
-        );
-        assert!(
-            HydraLossConfig::new()
-                .with_w_danger(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_tenpai(-0.1)
+            .validate()
+            .is_err());
+        assert!(HydraLossConfig::new()
+            .with_w_danger(-0.1)
+            .validate()
+            .is_err());
         assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
-        assert!(
-            HydraLossConfig::new()
-                .with_w_score(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_score(-0.1)
+            .validate()
+            .is_err());
     }
 
     #[test]
@@ -1213,6 +1278,7 @@ pub mod tests {
             mixture_weight_mask: None,
             opponent_hand_type_target: None,
             delta_q_target: None,
+            delta_q_mask: None,
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,

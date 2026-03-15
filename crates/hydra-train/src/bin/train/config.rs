@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use hydra_train::config::TrainingPhase as PipelineTrainingPhase;
 use hydra_train::preflight::{PreflightConfig, ProbeKind};
 
 pub(crate) use super::config_runtime::{
@@ -34,6 +35,8 @@ pub(crate) struct TrainConfig {
     #[serde(default)]
     pub(crate) advanced_loss: Option<AdvancedLossConfig>,
     #[serde(default)]
+    pub(crate) rl: Option<RlTrainConfig>,
+    #[serde(default)]
     pub(crate) bc: BcHyperparamConfig,
     #[serde(default = "default_device")]
     pub(crate) device: String,
@@ -65,6 +68,55 @@ pub(crate) struct TrainConfig {
     pub(crate) max_validation_samples: Option<usize>,
     #[serde(default)]
     pub(crate) preflight: PreflightConfig,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RlPhaseConfig {
+    DrdaAchSelfPlay,
+    ExitPondering,
+}
+
+impl RlPhaseConfig {
+    pub(crate) fn to_training_phase(self) -> PipelineTrainingPhase {
+        match self {
+            Self::DrdaAchSelfPlay => PipelineTrainingPhase::DrdaAchSelfPlay,
+            Self::ExitPondering => PipelineTrainingPhase::ExitPondering,
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RlTrainConfig {
+    #[serde(default = "default_rl_games_per_batch")]
+    pub(crate) games_per_batch: usize,
+    #[serde(default = "default_rl_temperature")]
+    pub(crate) temperature: f32,
+    #[serde(default = "default_rl_phase")]
+    pub(crate) phase: RlPhaseConfig,
+    #[serde(default)]
+    pub(crate) learning_rate: Option<f64>,
+    #[serde(default)]
+    pub(crate) exit_weight: Option<f32>,
+    #[serde(default)]
+    pub(crate) aux_weight: Option<f32>,
+    #[serde(default)]
+    pub(crate) microbatch_size: Option<usize>,
+}
+
+impl Default for RlTrainConfig {
+    fn default() -> Self {
+        Self {
+            games_per_batch: default_rl_games_per_batch(),
+            temperature: default_rl_temperature(),
+            phase: default_rl_phase(),
+            learning_rate: None,
+            exit_weight: None,
+            aux_weight: None,
+            microbatch_size: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +181,18 @@ pub(crate) struct AdvancedLossConfig {
 
 pub(crate) fn default_batch_size() -> usize {
     2048
+}
+
+pub(crate) fn default_rl_games_per_batch() -> usize {
+    4
+}
+
+pub(crate) fn default_rl_temperature() -> f32 {
+    1.0
+}
+
+pub(crate) fn default_rl_phase() -> RlPhaseConfig {
+    RlPhaseConfig::DrdaAchSelfPlay
 }
 
 pub(crate) fn default_bc_learning_rate() -> f64 {
@@ -217,8 +281,9 @@ fn parse_probe_kind(value: &str) -> Result<ProbeKind, String> {
     match value {
         "train" => Ok(ProbeKind::Train),
         "validation" => Ok(ProbeKind::Validation),
+        "rl_games" => Ok(ProbeKind::RlGames),
         _ => Err(format!(
-            "unsupported --probe-kind value '{value}'; expected train or validation"
+            "unsupported --probe-kind value '{value}'; expected train, validation, or rl_games"
         )),
     }
 }
