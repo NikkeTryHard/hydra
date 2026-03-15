@@ -6,6 +6,7 @@ pub const BELIEF_COMPONENTS: usize = 4;
 pub const BELIEF_ZONES: usize = 4;
 pub const BELIEF_TILES: usize = 34;
 pub const BELIEF_FIELDS_SIZE: usize = BELIEF_COMPONENTS * BELIEF_ZONES * BELIEF_TILES;
+const UNIFORM_KERNEL: [f64; BELIEF_TILES * BELIEF_ZONES] = [1.0; BELIEF_TILES * BELIEF_ZONES];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StageABeliefTarget {
@@ -75,7 +76,7 @@ impl Default for StageABeliefConfig {
 }
 
 pub fn build_uniform_kernel() -> [f64; BELIEF_TILES * BELIEF_ZONES] {
-    [1.0; BELIEF_TILES * BELIEF_ZONES]
+    UNIFORM_KERNEL
 }
 
 pub fn project_public_remaining_to_row_sums(
@@ -168,12 +169,10 @@ mod tests {
         let target = build_stage_a_teacher(&remaining, 40, StageABeliefConfig::default())
             .expect("teacher target");
         assert!(target.trust >= StageABeliefConfig::default().trust_threshold);
-        assert!(
-            target
-                .belief_fields
-                .iter()
-                .all(|v| v.is_finite() && *v >= 0.0)
-        );
+        assert!(target
+            .belief_fields
+            .iter()
+            .all(|v| v.is_finite() && *v >= 0.0));
     }
 
     #[test]
