@@ -513,8 +513,50 @@ pub struct SelfPlayBatchSource {
 struct PendingPolicyRequest {
     pid: u8,
     obs: Observation,
+    obs_encoded: [f32; OBS_SIZE],
     drawn_tile_before_action: Option<u8>,
     turn: u32,
+}
+
+struct ExitChildRequest {
+    child_idx: NodeIdx,
+    obs: [f32; OBS_SIZE],
+}
+
+struct PendingExitStep {
+    step_record: StepRecord,
+    turn: u32,
+    tree: AfbsTree,
+    root: NodeIdx,
+    base_pi: [f32; HYDRA_ACTION_SPACE],
+    legal_f32: [f32; HYDRA_ACTION_SPACE],
+    budget: u32,
+    child_offset: usize,
+    child_count: usize,
+    output_index: usize,
+}
+
+struct ExitSearchState {
+    steps: Vec<PendingExitStep>,
+    child_requests: Vec<ExitChildRequest>,
+}
+
+impl ExitSearchState {
+    fn new() -> Self {
+        Self {
+            steps: Vec::new(),
+            child_requests: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+}
+
+struct PreparedExitSearch {
+    step: PendingExitStep,
+    child_requests: Vec<(NodeIdx, [f32; OBS_SIZE])>,
 }
 
 struct PendingTurnState {
@@ -522,66 +564,88 @@ struct PendingTurnState {
     players: Vec<u8>,
     next_index: usize,
     turn: u32,
+    pending_steps: Vec<Option<TrajectoryStep>>,
+    pending_values: Vec<f32>,
 }
 
-enum GameAdvance {
-    NeedPolicy([f32; OBS_SIZE]),
-    Finished,
+impl PendingTurnState {
+    fn new(players: Vec<u8>, turn: u32) -> Self {
+        let pending_steps = Vec::with_capacity(players.len());
+        Self {
+            chosen_actions: [None; 4],
+            players,
+            next_index: 0,
+            turn,
+            pending_steps,
+            pending_values: Vec::new(),
+        }
+    }
 }
 
-struct BatchedSelfPlayGame {
+#[derive(Clone, Copy, Debug, Default)]
+struct GameAdvance {
+    needs_policy: bool,
+}
+
+struct CooperativeGameRunner {
     state: GameState,
     selector: NnActionSelector,
-    legal_buf: Vec<Action>,
     trajectory: Trajectory,
+    legal_buf: Vec<Action>,
     total_steps: u32,
-    pending_turn: Option<PendingTurnState>,
-    pending_policy: Option<PendingPolicyRequest>,
+    done: bool,
+    pending_policy_obs: Option<PendingPolicyRequest>,
+    pending_exit_search: Option<ExitSearchState>,
+    turn_state: Option<PendingTurnState>,
     exit_adapter: SelfPlayExitAdapter,
     live_exit_cfg: LiveExitConfig,
-    finished: bool,
+    step_values: Vec<f32>,
 }
 
-impl BatchedSelfPlayGame {
+impl CooperativeGameRunner {
     fn new(game_seed: u64, temperature: f32, rng_seed: u64, live_exit_cfg: LiveExitConfig) -> Self {
         let rule = GameRule::default_tenhou();
         Self {
             state: GameState::new(DEFAULT_GAME_MODE, true, Some(game_seed), 0, rule),
             selector: NnActionSelector::new(temperature, rng_seed),
-            legal_buf: Vec::with_capacity(HYDRA_ACTION_SPACE),
             trajectory: Trajectory::new(0, game_seed),
+            legal_buf: Vec::with_capacity(HYDRA_ACTION_SPACE),
             total_steps: 0,
-            pending_turn: None,
-            pending_policy: None,
+            done: false,
+            pending_policy_obs: None,
+            pending_exit_search: None,
+            turn_state: None,
             exit_adapter: SelfPlayExitAdapter::new(),
             live_exit_cfg,
-            finished: false,
+            step_values: Vec::new(),
         }
     }
 
     fn is_finished(&self) -> bool {
-        self.finished
+        self.done
     }
 
-    fn into_trajectory(self) -> Trajectory {
-        self.trajectory
+    fn into_trajectory_and_values(mut self) -> (Trajectory, Vec<f32>) {
+        if !self.done {
+            self.finalize();
+        }
+        (self.trajectory, self.step_values)
     }
 
-    fn advance_until_policy_request(&mut self) -> GameAdvance {
+    fn advance_until_inference_needed(&mut self) -> GameAdvance {
         loop {
-            if self.finished {
-                return GameAdvance::Finished;
+            if self.done {
+                return GameAdvance::default();
+            }
+
+            if self.pending_policy_obs.is_some() {
+                return GameAdvance { needs_policy: true };
             }
 
             if self.state.is_done || self.total_steps >= MAX_SELF_PLAY_STEPS {
                 self.finalize();
-                return GameAdvance::Finished;
+                return GameAdvance::default();
             }
-
-            debug_assert!(
-                self.pending_policy.is_none(),
-                "policy result must be provided before advancing again"
-            );
 
             if self.state.needs_initialize_next_round {
                 self.state.step_unchecked(&[None; 4]);
@@ -589,42 +653,34 @@ impl BatchedSelfPlayGame {
                 continue;
             }
 
-            if self.pending_turn.is_none() {
+            if self.turn_state.is_none() {
                 let players = match self.state.phase {
                     Phase::WaitAct => vec![self.state.current_player],
                     Phase::WaitResponse => self.state.active_player_slice().to_vec(),
                 };
-                self.pending_turn = Some(PendingTurnState {
-                    chosen_actions: [None; 4],
-                    players,
-                    next_index: 0,
-                    turn: self.total_steps,
-                });
+                self.turn_state = Some(PendingTurnState::new(players, self.total_steps));
             }
 
             if self
-                .pending_turn
+                .turn_state
                 .as_ref()
                 .is_some_and(|turn| turn.next_index >= turn.players.len())
             {
-                let chosen_actions = self
-                    .pending_turn
-                    .take()
-                    .expect("pending turn state")
-                    .chosen_actions;
-                self.state.step_unchecked(&chosen_actions);
-                self.total_steps = self.total_steps.saturating_add(1);
+                if self.has_pending_exit_search() {
+                    return GameAdvance::default();
+                }
+                self.flush_turn();
                 continue;
             }
 
             let (pid, turn) = {
-                let turn_state = self.pending_turn.as_ref().expect("pending turn state");
+                let turn_state = self.turn_state.as_ref().expect("pending turn state");
                 (turn_state.players[turn_state.next_index], turn_state.turn)
             };
 
             let obs = self.state.get_observation(pid);
             if obs.legal_actions_ref().is_empty() {
-                self.pending_turn
+                self.turn_state
                     .as_mut()
                     .expect("pending turn state")
                     .next_index += 1;
@@ -632,30 +688,55 @@ impl BatchedSelfPlayGame {
             }
 
             let drawn_tile = self.state.drawn_tile.map(|tile| tile / 4);
-            let encoded = self.selector.encode_observation(&obs, pid, drawn_tile);
-            self.pending_policy = Some(PendingPolicyRequest {
+            let obs_encoded = self.selector.encode_observation(&obs, pid, drawn_tile);
+            self.pending_policy_obs = Some(PendingPolicyRequest {
                 pid,
                 obs,
+                obs_encoded,
                 drawn_tile_before_action: self.state.drawn_tile,
                 turn,
             });
-            return GameAdvance::NeedPolicy(encoded);
+            return GameAdvance { needs_policy: true };
         }
     }
 
-    fn provide_policy_result<B: Backend>(
-        &mut self,
-        logits: [f32; HYDRA_ACTION_SPACE],
-        model: &HydraModel<B>,
-        device: &B::Device,
-    ) {
-        let pending = self.pending_policy.take().expect("pending policy request");
+    fn pending_policy_obs(&self) -> Option<[f32; OBS_SIZE]> {
+        self.pending_policy_obs
+            .as_ref()
+            .map(|pending| pending.obs_encoded)
+    }
+
+    fn has_pending_exit_search(&self) -> bool {
+        self.pending_exit_search
+            .as_ref()
+            .is_some_and(|pending| !pending.is_empty())
+    }
+
+    fn pending_exit_child_count(&self) -> usize {
+        self.pending_exit_search
+            .as_ref()
+            .map_or(0, |pending| pending.child_requests.len())
+    }
+
+    fn append_pending_exit_obs(&self, batch_observations: &mut Vec<[f32; OBS_SIZE]>) {
+        if let Some(pending) = &self.pending_exit_search {
+            for child in &pending.child_requests {
+                batch_observations.push(child.obs);
+            }
+        }
+    }
+
+    fn provide_policy_result(&mut self, logits: [f32; HYDRA_ACTION_SPACE], value: f32) {
+        let pending = self
+            .pending_policy_obs
+            .take()
+            .expect("pending policy request");
         self.selector.set_logits(logits);
 
         self.state
             .get_legal_actions_into(pending.pid, &mut self.legal_buf);
         if self.legal_buf.is_empty() {
-            self.pending_turn
+            self.turn_state
                 .as_mut()
                 .expect("pending turn state")
                 .next_index += 1;
@@ -670,57 +751,238 @@ impl BatchedSelfPlayGame {
         self.selector
             .track_action(pending.pid, pending.drawn_tile_before_action, &action);
 
-        let turn_state = self.pending_turn.as_mut().expect("pending turn state");
-        turn_state.chosen_actions[pending.pid as usize] = Some(action);
-        turn_state.next_index += 1;
+        {
+            let turn_state = self.turn_state.as_mut().expect("pending turn state");
+            turn_state.chosen_actions[pending.pid as usize] = Some(action);
+            turn_state.next_index += 1;
+        }
 
         if let Some(step_record) = self.selector.take_last_step() {
-            let search_labels =
-                self.search_labels_for_step(&pending.obs, &step_record, model, device);
-            self.trajectory.steps.push(TrajectoryStep {
-                obs: step_record.obs,
-                action: step_record.action,
-                pi_old: step_record.pi_old,
-                legal_mask: step_record.legal_mask,
-                exit_label: search_labels.exit,
-                delta_q_label: search_labels.delta_q,
-                reward: 0.0,
-                done: false,
-                player_id: step_record.player_id,
-                game_id: self.trajectory.game_id,
-                turn: pending.turn.min(u16::MAX as u32) as u16,
-                temperature: self.selector.temperature(),
-            });
+            let output_index = {
+                let turn_state = self.turn_state.as_mut().expect("pending turn state");
+                turn_state.pending_steps.push(None);
+                turn_state.pending_values.push(value);
+                turn_state.pending_steps.len() - 1
+            };
+
+            if let Some(prepared) =
+                self.prepare_exit_search(&pending.obs, &step_record, pending.turn)
+            {
+                let pending_exit = self
+                    .pending_exit_search
+                    .get_or_insert_with(ExitSearchState::new);
+                let child_offset = pending_exit.child_requests.len();
+                let child_count = prepared.child_requests.len();
+
+                for (child_idx, obs) in prepared.child_requests {
+                    pending_exit
+                        .child_requests
+                        .push(ExitChildRequest { child_idx, obs });
+                }
+
+                let mut step = prepared.step;
+                step.child_offset = child_offset;
+                step.child_count = child_count;
+                step.output_index = output_index;
+                pending_exit.steps.push(step);
+            } else {
+                let trajectory_step = self.build_trajectory_step(
+                    step_record,
+                    pending.turn,
+                    TrajectorySearchLabels::default(),
+                );
+                self.turn_state
+                    .as_mut()
+                    .expect("pending turn state")
+                    .pending_steps[output_index] = Some(trajectory_step);
+            }
         }
     }
 
-    fn search_labels_for_step<B: Backend>(
+    fn finalize_pending_exit_search(&mut self, child_values: &[f32]) {
+        let Some(pending_exit) = self.pending_exit_search.take() else {
+            return;
+        };
+
+        let mut finalized_steps = Vec::with_capacity(pending_exit.steps.len());
+        for mut exit_step in pending_exit.steps {
+            let start = exit_step.child_offset;
+            let end = start + exit_step.child_count;
+            let mut labels = TrajectorySearchLabels::default();
+
+            if let (Some(child_slice), Some(value_slice)) = (
+                pending_exit.child_requests.get(start..end),
+                child_values.get(start..end),
+            ) {
+                let mut value_by_child = std::collections::HashMap::<NodeIdx, f32>::new();
+                let mut valid = true;
+
+                for (child, &value) in child_slice.iter().zip(value_slice.iter()) {
+                    if !value.is_finite() {
+                        valid = false;
+                        break;
+                    }
+                    value_by_child.insert(child.child_idx, value);
+                }
+
+                if valid {
+                    exit_step.tree.run_search_iterations(
+                        exit_step.root,
+                        exit_step.budget,
+                        &|child_idx| value_by_child.get(&child_idx).copied().unwrap_or(0.0),
+                    );
+
+                    let exit = build_exit_from_afbs_tree(
+                        &exit_step.tree,
+                        exit_step.root,
+                        &exit_step.base_pi,
+                        &exit_step.legal_f32,
+                        exit_step.budget,
+                        self.live_exit_cfg.exit_config.safety_valve_max_kl,
+                    )
+                    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
+                    let delta_q = build_delta_q_from_afbs_tree(
+                        &exit_step.tree,
+                        exit_step.root,
+                        &exit_step.legal_f32,
+                    )
+                    .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
+
+                    if exit.is_some() || delta_q.is_some() {
+                        labels = TrajectorySearchLabels { exit, delta_q };
+                    }
+                }
+            }
+
+            finalized_steps.push((
+                exit_step.output_index,
+                self.build_trajectory_step(exit_step.step_record, exit_step.turn, labels),
+            ));
+        }
+
+        let turn_state = self.turn_state.as_mut().expect("pending turn state");
+        for (output_index, step) in finalized_steps {
+            turn_state.pending_steps[output_index] = Some(step);
+        }
+    }
+
+    fn prepare_exit_search(
         &mut self,
         obs: &Observation,
         step_record: &StepRecord,
-        model: &HydraModel<B>,
-        device: &B::Device,
-    ) -> TrajectorySearchLabels {
+        turn: u32,
+    ) -> Option<PreparedExitSearch> {
         if !self.live_exit_cfg.enabled {
-            return TrajectorySearchLabels::default();
+            return None;
         }
 
-        let mut model_pv = |encoded: &[f32; OBS_SIZE]| model.policy_value_cpu(encoded, device);
-        let safety = self.selector.safety(step_record.player_id);
-        try_live_search_labels(
-            &self.state,
-            obs,
-            step_record,
-            safety,
-            &self.live_exit_cfg.exit_config,
-            &mut model_pv,
-            &mut self.exit_adapter,
-        )
-        .unwrap_or_default()
+        let ctx = RootDecisionContext::from_step(step_record);
+        let legal_f32 = ctx
+            .legal_mask
+            .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
+        if !compatible_discard_state(&legal_f32) {
+            return None;
+        }
+
+        let legal_discards = legal_discard_actions(step_record);
+        if legal_discards.len() < 2 {
+            return None;
+        }
+
+        let base_pi = base_pi_from_logits(step_record);
+        let hard_slice: Vec<f32> = legal_discards
+            .iter()
+            .map(|&action| base_pi[action])
+            .collect();
+        if !is_hard_state(
+            &hard_slice,
+            self.live_exit_cfg.exit_config.hard_state_threshold,
+        ) {
+            return None;
+        }
+
+        let budget = budget_from_legal_count(&self.live_exit_cfg.exit_config, legal_discards.len());
+        let root_hash = self
+            .exit_adapter
+            .root_hash(&self.state, ctx.player_id, &ctx.obs_encoded);
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(root_hash, 1.0, false);
+        let priors: Vec<(u8, f32)> = legal_discards
+            .iter()
+            .map(|&action| (action as u8, base_pi[action]))
+            .collect();
+        seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
+
+        let player_safety = self.selector.safety(step_record.player_id).clone();
+        let mut child_requests = Vec::with_capacity(tree.nodes[root as usize].children.len());
+        for &(action, child_idx) in &tree.nodes[root as usize].children.clone() {
+            let child_obs = self.exit_adapter.child_public_obs_after_discard(
+                &self.state,
+                obs,
+                ctx.player_id,
+                action,
+                &player_safety,
+            )?;
+            child_requests.push((child_idx, child_obs));
+        }
+
+        Some(PreparedExitSearch {
+            step: PendingExitStep {
+                step_record: *step_record,
+                turn,
+                tree,
+                root,
+                base_pi,
+                legal_f32,
+                budget,
+                child_offset: 0,
+                child_count: 0,
+                output_index: 0,
+            },
+            child_requests,
+        })
+    }
+
+    fn build_trajectory_step(
+        &self,
+        step_record: StepRecord,
+        turn: u32,
+        search_labels: TrajectorySearchLabels,
+    ) -> TrajectoryStep {
+        TrajectoryStep {
+            obs: step_record.obs,
+            action: step_record.action,
+            pi_old: step_record.pi_old,
+            legal_mask: step_record.legal_mask,
+            exit_label: search_labels.exit,
+            delta_q_label: search_labels.delta_q,
+            reward: 0.0,
+            done: false,
+            player_id: step_record.player_id,
+            game_id: self.trajectory.game_id,
+            turn: turn.min(u16::MAX as u32) as u16,
+            temperature: self.selector.temperature(),
+        }
+    }
+
+    fn flush_turn(&mut self) {
+        debug_assert!(self.pending_policy_obs.is_none());
+        debug_assert!(!self.has_pending_exit_search());
+
+        let turn_state = self.turn_state.take().expect("pending turn state");
+        self.trajectory.steps.extend(
+            turn_state
+                .pending_steps
+                .into_iter()
+                .map(|step| step.expect("pending turn step must be finalized before flush")),
+        );
+        self.step_values.extend(turn_state.pending_values);
+        self.state.step_unchecked(&turn_state.chosen_actions);
+        self.total_steps = self.total_steps.saturating_add(1);
     }
 
     fn finalize(&mut self) {
-        if self.finished {
+        if self.done {
             return;
         }
 
@@ -729,7 +991,10 @@ impl BatchedSelfPlayGame {
         if let Some(last_step) = self.trajectory.steps.last_mut() {
             last_step.done = true;
         }
-        self.finished = true;
+        self.pending_policy_obs = None;
+        self.pending_exit_search = None;
+        self.turn_state = None;
+        self.done = true;
     }
 }
 
@@ -738,44 +1003,7 @@ fn batch_policy_value_cpu<B: Backend>(
     observations: &[[f32; OBS_SIZE]],
     device: &B::Device,
 ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
-    if observations.is_empty() {
-        return Vec::new();
-    }
-
-    let mut obs_flat = Vec::with_capacity(observations.len() * OBS_SIZE);
-    for obs in observations {
-        obs_flat.extend_from_slice(obs);
-    }
-
-    let output = model.forward(
-        Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([
-            observations.len(),
-            NUM_CHANNELS,
-            NUM_TILES,
-        ]),
-    );
-    let policy_data = output
-        .policy_logits
-        .to_data()
-        .as_slice::<f32>()
-        .expect("policy logits extraction failed")
-        .to_vec();
-    let value_data = output
-        .value
-        .to_data()
-        .as_slice::<f32>()
-        .expect("value extraction failed")
-        .to_vec();
-
-    let mut results = Vec::with_capacity(observations.len());
-    for batch_idx in 0..observations.len() {
-        let offset = batch_idx * HYDRA_ACTION_SPACE;
-        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
-        logits.copy_from_slice(&policy_data[offset..offset + HYDRA_ACTION_SPACE]);
-        let value = *value_data.get(batch_idx).expect("value length mismatch");
-        results.push((logits, value));
-    }
-    results
+    model.batch_policy_value_cpu(observations, device)
 }
 
 fn batched_trajectory_values<B: Backend>(
@@ -860,28 +1088,19 @@ pub fn generate_self_play_batch_source<B: Backend>(
     }
 }
 
-/// Generates self-play trajectories with batched value baseline computation.
-///
-/// Games run sequentially through the single GPU model (no clones needed).
-/// After all games complete, value baselines for all trajectory steps are
-/// computed in a single batched forward pass instead of one-at-a-time,
-/// amortizing GPU kernel launch overhead.
-pub fn generate_self_play_batch_source_batched<B: Backend>(
+pub fn generate_self_play_batch_source_cooperative<B: Backend>(
     game_seeds: &[u64],
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
     device: &B::Device,
-    inference_device: &B::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource {
-    let _ = inference_device;
-
-    let mut games: Vec<BatchedSelfPlayGame> = game_seeds
+    let mut games: Vec<CooperativeGameRunner> = game_seeds
         .iter()
         .enumerate()
         .map(|(idx, &seed)| {
-            BatchedSelfPlayGame::new(
+            CooperativeGameRunner::new(
                 seed,
                 temperature,
                 rng_seed.wrapping_add(idx as u64),
@@ -890,40 +1109,99 @@ pub fn generate_self_play_batch_source_batched<B: Backend>(
         })
         .collect();
 
-    while games.iter().any(|game| !game.is_finished()) {
-        let mut batch_game_indices = Vec::new();
-        let mut batch_observations = Vec::new();
+    let n = games.len();
+    let mut batch_game_indices: Vec<usize> = Vec::with_capacity(n);
+    let mut batch_observations: Vec<[f32; OBS_SIZE]> = Vec::with_capacity(n);
+    let mut exit_game_indices: Vec<usize> = Vec::with_capacity(n);
+    let mut exit_counts: Vec<usize> = Vec::with_capacity(n);
+    let mut exit_observations: Vec<[f32; OBS_SIZE]> = Vec::with_capacity(n * 14);
 
-        for (game_idx, game) in games.iter_mut().enumerate() {
-            match game.advance_until_policy_request() {
-                GameAdvance::NeedPolicy(obs) => {
-                    batch_game_indices.push(game_idx);
-                    batch_observations.push(obs);
+    while games.iter().any(|game| !game.is_finished()) {
+        loop {
+            batch_game_indices.clear();
+            batch_observations.clear();
+
+            for (game_idx, game) in games.iter_mut().enumerate() {
+                let advance = game.advance_until_inference_needed();
+                if advance.needs_policy {
+                    if let Some(obs) = game.pending_policy_obs() {
+                        batch_game_indices.push(game_idx);
+                        batch_observations.push(obs);
+                    }
                 }
-                GameAdvance::Finished => {}
+            }
+
+            if batch_game_indices.is_empty() {
+                break;
+            }
+
+            let batch_outputs = batch_policy_value_cpu(model, &batch_observations, device);
+            for (game_idx, (policy_logits, value)) in
+                batch_game_indices.drain(..).zip(batch_outputs)
+            {
+                games[game_idx].provide_policy_result(policy_logits, value);
             }
         }
 
-        if batch_game_indices.is_empty() {
-            break;
+        exit_game_indices.clear();
+        exit_counts.clear();
+        exit_observations.clear();
+        for (game_idx, game) in games.iter().enumerate() {
+            let child_count = game.pending_exit_child_count();
+            if child_count > 0 {
+                exit_game_indices.push(game_idx);
+                exit_counts.push(child_count);
+                game.append_pending_exit_obs(&mut exit_observations);
+            }
         }
 
-        let batch_outputs = batch_policy_value_cpu(model, &batch_observations, device);
-        for (game_idx, (policy_logits, _)) in batch_game_indices.into_iter().zip(batch_outputs) {
-            games[game_idx].provide_policy_result(policy_logits, model, device);
+        if exit_game_indices.is_empty() {
+            continue;
+        }
+
+        let exit_outputs = batch_policy_value_cpu(model, &exit_observations, device);
+        let mut offset = 0usize;
+        for (game_idx, child_count) in exit_game_indices.drain(..).zip(exit_counts.drain(..)) {
+            let child_values: Vec<f32> = exit_outputs[offset..offset + child_count]
+                .iter()
+                .map(|(_, value)| *value)
+                .collect();
+            games[game_idx].finalize_pending_exit_search(&child_values);
+            offset += child_count;
         }
     }
 
-    let trajectories = games
-        .into_iter()
-        .map(BatchedSelfPlayGame::into_trajectory)
-        .collect::<Vec<_>>();
-    let all_values = batched_trajectory_values(&trajectories, model, device);
+    let mut trajectories = Vec::with_capacity(games.len());
+    let mut all_values = Vec::with_capacity(games.len());
+    for game in games {
+        let (trajectory, values) = game.into_trajectory_and_values();
+        trajectories.push(trajectory);
+        all_values.push(values);
+    }
 
     SelfPlayBatchSource {
         trajectories,
         values: all_values,
     }
+}
+
+pub fn generate_self_play_batch_source_batched<B: Backend>(
+    game_seeds: &[u64],
+    temperature: f32,
+    rng_seed: u64,
+    model: &HydraModel<B>,
+    device: &B::Device,
+    _inference_device: &B::Device,
+    live_exit_cfg: LiveExitConfig,
+) -> SelfPlayBatchSource {
+    generate_self_play_batch_source_cooperative(
+        game_seeds,
+        temperature,
+        rng_seed,
+        model,
+        device,
+        live_exit_cfg,
+    )
 }
 
 /// Generates a complete RL training batch from self-play games.
@@ -941,12 +1219,11 @@ pub fn generate_self_play_rl_batch<B: Backend>(
     gae_config: &GaeConfig,
     live_exit_cfg: LiveExitConfig,
 ) -> RlBatch<B> {
-    let source = generate_self_play_batch_source_batched(
+    let source = generate_self_play_batch_source_cooperative(
         game_seeds,
         temperature,
         rng_seed,
         model,
-        device,
         device,
         live_exit_cfg,
     );
