@@ -19,6 +19,7 @@ use riichienv_core::rule::GameRule;
 use riichienv_core::shanten::calc_shanten_from_counts;
 use riichienv_core::state::GameState;
 use std::array;
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
@@ -236,6 +237,18 @@ fn exact_waits(state: &GameState, player: usize) -> ([f32; 34], bool) {
     (waits, true)
 }
 
+fn exact_waits_inputs(state: &GameState, player: usize) -> ([u8; 34], [bool; 34]) {
+    let mut counts = [0u8; 34];
+    for &tile in state.players[player].hand_slice() {
+        counts[tile136_to_type(tile) as usize] += 1;
+    }
+    let mut discarded = [false; 34];
+    for &discard in state.players[player].discards_slice() {
+        discarded[tile136_to_type(discard) as usize] = true;
+    }
+    (counts, discarded)
+}
+
 fn bool_mask_to_f32(mask: [bool; HYDRA_ACTION_SPACE]) -> [f32; HYDRA_ACTION_SPACE] {
     mask.map(|is_legal| if is_legal { 1.0 } else { 0.0 })
 }
@@ -308,6 +321,7 @@ fn build_stage_a_belief_targets(
     state: &GameState,
     actor: usize,
     obs: &riichienv_core::observation::Observation,
+    config: &StageABeliefConfig,
 ) -> (Option<[f32; 16 * 34]>, Option<[f32; 4]>, bool, bool) {
     let hand = hydra_core::bridge::extract_hand(obs);
     let discards = hydra_core::bridge::extract_discards(obs);
@@ -322,7 +336,7 @@ fn build_stage_a_belief_targets(
         .map(|(_, p)| p.hand_len as usize)
         .sum::<usize>()
         + state.wall.remaining();
-    let target = build_stage_a_teacher(&remaining, hidden_tiles, StageABeliefConfig::default());
+    let target = build_stage_a_teacher(&remaining, hidden_tiles, *config);
     match target {
         Some(target) => (
             Some(target.belief_fields),
@@ -332,6 +346,28 @@ fn build_stage_a_belief_targets(
         ),
         None => (None, None, false, false),
     }
+}
+
+fn belief_target_inputs(
+    state: &GameState,
+    actor: usize,
+    obs: &riichienv_core::observation::Observation,
+) -> ([u8; 34], usize) {
+    let hand = hydra_core::bridge::extract_hand(obs);
+    let discards = hydra_core::bridge::extract_discards(obs);
+    let melds = hydra_core::bridge::extract_melds(obs);
+    let dora = hydra_core::bridge::extract_dora(obs);
+    let remaining = extract_public_remaining_counts(&hand, &discards, &melds, &dora)
+        .map(|value| value.max(0.0).round() as u8);
+    let hidden_tiles = state
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != actor)
+        .map(|(_, p)| p.hand_len as usize)
+        .sum::<usize>()
+        + state.wall.remaining();
+    (remaining, hidden_tiles)
 }
 
 fn should_sample_replay_event(event: &MjaiEvent) -> bool {
@@ -351,10 +387,20 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     let oracle_target = oracle_target_from_scores(final_scores);
     let next_discards = next_discards_after(&events)?;
     let grp_label = scores_to_grp_index(final_scores).map_err(invalid_data)?;
+    let placements = [
+        score_to_placement(final_scores, 0),
+        score_to_placement(final_scores, 1),
+        score_to_placement(final_scores, 2),
+        score_to_placement(final_scores, 3),
+    ];
+    let belief_config = StageABeliefConfig::default();
     let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
     let mut safety = array::from_fn(|_| SafetyInfo::default());
     let mut encoder = ObservationEncoder::new();
     let mut samples = Vec::with_capacity(events.len());
+    let mut waits_cache: HashMap<([u8; 34], [bool; 34]), ([f32; 34], bool)> = HashMap::new();
+    let mut belief_cache: HashMap<([u8; 34], usize), (Option<[f32; 16 * 34]>, Option<[f32; 4]>, bool, bool)> =
+        HashMap::new();
 
     for (idx, event) in events.iter().enumerate() {
         if should_sample_replay_event(event) {
@@ -389,7 +435,10 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                     let mut wait_sets = [[0.0f32; 34]; 3];
                     for rel in 0..3usize {
                         let opp = abs_opp(actor, rel);
-                        let (waits, is_tenpai) = exact_waits(&state, opp);
+                        let cache_key = exact_waits_inputs(&state, opp);
+                        let (waits, is_tenpai) = *waits_cache
+                            .entry(cache_key)
+                            .or_insert_with(|| exact_waits(&state, opp));
                         wait_sets[rel] = waits;
                         tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
                         opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
@@ -406,12 +455,17 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                         mixture_weights,
                         belief_fields_present,
                         mixture_weights_present,
-                    ) = build_stage_a_belief_targets(&state, actor, &obs);
+                    ) = belief_cache
+                        .entry(belief_target_inputs(&state, actor, &obs))
+                        .or_insert_with(|| {
+                            build_stage_a_belief_targets(&state, actor, &obs, &belief_config)
+                        })
+                        .to_owned();
                     samples.push(MjaiSample {
                         obs: obs_encoded,
                         action: hydra_action.id(),
                         legal_mask,
-                        placement: score_to_placement(final_scores, actor as u8),
+                        placement: placements[actor],
                         score_delta: final_scores[actor] - state.players[actor].score,
                         grp_label,
                         oracle_target: Some(oracle_target),
