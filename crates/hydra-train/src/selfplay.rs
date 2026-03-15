@@ -1,4 +1,6 @@
+use burn::module::AutodiffModule;
 use burn::prelude::*;
+use burn::tensor::backend::AutodiffBackend;
 use hydra_core::action::{
     build_legal_mask, hydra_to_riichienv, riichienv_to_hydra, ActionPhase, GameContext,
     HydraAction, HYDRA_ACTION_SPACE,
@@ -1115,6 +1117,7 @@ pub fn generate_self_play_batch_source_cooperative<B: Backend>(
     let mut exit_game_indices: Vec<usize> = Vec::with_capacity(n);
     let mut exit_counts: Vec<usize> = Vec::with_capacity(n);
     let mut exit_observations: Vec<[f32; OBS_SIZE]> = Vec::with_capacity(n * 14);
+    let mut flat_buf: Vec<f32> = Vec::with_capacity(n * OBS_SIZE);
 
     while games.iter().any(|game| !game.is_finished()) {
         loop {
@@ -1135,7 +1138,8 @@ pub fn generate_self_play_batch_source_cooperative<B: Backend>(
                 break;
             }
 
-            let batch_outputs = batch_policy_value_cpu(model, &batch_observations, device);
+            let batch_outputs =
+                model.batch_policy_value_cpu_reuse(&batch_observations, device, &mut flat_buf);
             for (game_idx, (policy_logits, value)) in
                 batch_game_indices.drain(..).zip(batch_outputs)
             {
@@ -1159,7 +1163,8 @@ pub fn generate_self_play_batch_source_cooperative<B: Backend>(
             continue;
         }
 
-        let exit_outputs = batch_policy_value_cpu(model, &exit_observations, device);
+        let exit_outputs =
+            model.batch_policy_value_cpu_reuse(&exit_observations, device, &mut flat_buf);
         let mut offset = 0usize;
         for (game_idx, child_count) in exit_game_indices.drain(..).zip(exit_counts.drain(..)) {
             let child_values: Vec<f32> = exit_outputs[offset..offset + child_count]
@@ -1206,11 +1211,10 @@ pub fn generate_self_play_batch_source_batched<B: Backend>(
 
 /// Generates a complete RL training batch from self-play games.
 ///
-/// Uses a single GPU model for all games (no clones). Per-step policy
-/// and exit-search inference runs on GPU through the shared model.
-/// Value baselines are computed in one batched forward pass after all
-/// games complete.
-pub fn generate_self_play_rl_batch<B: Backend>(
+/// Self-play inference runs on the inner (non-autodiff) backend via
+/// `model.valid()` to skip autograd graph construction. The final
+/// `RlBatch` tensors are built on the autodiff backend for backprop.
+pub fn generate_self_play_rl_batch<B: AutodiffBackend>(
     game_seeds: &[u64],
     temperature: f32,
     rng_seed: u64,
@@ -1219,11 +1223,12 @@ pub fn generate_self_play_rl_batch<B: Backend>(
     gae_config: &GaeConfig,
     live_exit_cfg: LiveExitConfig,
 ) -> RlBatch<B> {
+    let valid_model = model.valid();
     let source = generate_self_play_batch_source_cooperative(
         game_seeds,
         temperature,
         rng_seed,
-        model,
+        &valid_model,
         device,
         live_exit_cfg,
     );
@@ -1659,12 +1664,13 @@ mod tests {
 
     #[test]
     fn test_generate_self_play_rl_batch_produces_valid_batch() {
+        type AB = burn::backend::Autodiff<B>;
         let device = Default::default();
         let model = HydraModelConfig::new(2)
             .with_hidden_channels(32)
             .with_se_bottleneck(8)
             .with_num_groups(4)
-            .init::<B>(&device);
+            .init::<AB>(&device);
         let seeds = [42u64];
         let cfg = LiveExitConfig::default();
         let gae = GaeConfig {
