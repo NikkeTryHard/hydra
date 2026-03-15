@@ -1,12 +1,12 @@
 data_dir: /data
 output_dir: /output
 num_epochs: 1
-batch_size: 64
-microbatch_size: 8
-validation_microbatch_size: 8
+batch_size: 256
+microbatch_size: 64
+validation_microbatch_size: 32
 train_fraction: 0.9
 augment: true
-seed: 42
+seed: 0
 device: cuda:0
 buffer_games: 16
 buffer_samples: 128
@@ -16,7 +16,7 @@ max_skip_logs_per_source: 4
 log_every_n_steps: 1
 validate_every_n_steps: 10
 checkpoint_every_n_steps: 1
-max_train_steps: 3
+max_train_steps: 1
 tensorboard: false
 preflight:
   warmup_steps: 1
@@ -27,11 +27,7 @@ preflight:
   local_refinement_enabled: false
   finalist_extra_successes: 1
   finalist_extra_measure_steps: 1
-  candidate_microbatches: [64, 128, 256]
-  rl_probe_min_free_memory_bytes: 2147483648
-  rl_probe_memory_headroom_ratio: 0.05
-  rl_probe_growth_safety_factor: 1.35
 rl:
-  games_per_batch: 4
+  games_per_batch: 1
   temperature: 1.0
   phase: drda_ach_self_play

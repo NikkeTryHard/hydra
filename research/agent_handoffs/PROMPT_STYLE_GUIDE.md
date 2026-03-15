@@ -1,6 +1,58 @@
-WARNING! You do not need to write the artifacts on your own since normally prompts are around 8000 lines and that is too much. Use the prompting tool at ### 12.1 Tool location of this document to learn how to prompt with the tool.
-
 # Hydra Prompt Style Guide — Artifact-First Batch Prompting Doctrine
+
+> [!WARNING]
+> You usually should not hand-write the full artifact packet. Serious Hydra prompts are often thousands of lines long, so use `scripts/generate_prompt.py` to assemble the shell and artifact dump, then inspect the rendered result before sending it.
+
+## 1. Prompt generator quickstart
+
+For repeated prompt authoring, use `scripts/generate_prompt.py` instead of hand-assembling every long prompt from scratch.
+
+- script: `scripts/generate_prompt.py`
+- example config: `scripts/examples/prompt_config.example.json`
+- tests: `scripts/tests/test_generate_prompt.py`
+
+The tool is not a prompt framework.
+It is a small JSON-driven utility for generating Hydra-style artifact-first prompts faster and more consistently.
+
+Use it when:
+
+- you want multiple prompt variants from one shared artifact packet
+- you want line-ranged code/doc excerpts without manual copy-paste
+- you want per-artifact labels and explanations so the artifact body has useful context
+- you want to regenerate prompts quickly after changing the artifact set
+- you want variant shells to stay aligned with the canonical reference examples
+
+The current source-of-truth split is:
+
+- the reference examples define the canonical shell shape for each prompt family
+- the config defines the task-specific variant title, direction overrides, and artifact packet
+- the generator validates and renders against that example-backed shell shape
+
+Typical workflow:
+
+1. copy `scripts/examples/prompt_config.example.json`
+2. pick the canonical example family your variant should follow
+3. set `shell_source_path` to that reference example file
+4. add reusable artifacts to the top-level `artifacts` array
+5. add one or more `variants`
+6. validate the config
+7. generate one prompt or all variants
+8. inspect the rendered prompt before sending it to an agent
+
+Useful commands:
+
+```bash
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --list-variants
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --validate-only
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --variant narrow-focused
+python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --all-variants --output-dir /tmp/hydra-generated-prompts
+```
+
+Do not use the generator as an excuse to stop thinking about prompt quality.
+It speeds up assembly.
+It does not decide what artifacts belong in the prompt.
+
+---
 
 This file is the doctrine for writing Hydra’s new batch prompts.
 
@@ -19,7 +71,7 @@ The whole point is simple:
 
 ---
 
-## 1. Core doctrine
+## 2. Core doctrine
 
 ### 1.1 The answer must be a blueprint
 
@@ -109,7 +161,7 @@ If the logic cannot be retraced, it should not be presented as settled.
 
 ---
 
-## 2. Default top-of-prompt shell
+## 3. Default top-of-prompt shell
 
 Use this shell for most serious Hydra prompts.
 
@@ -161,7 +213,7 @@ The bulk should be the artifacts.
 
 ---
 
-## 3. What changed from the old doctrine
+## 4. What changed from the old doctrine
 
 Old style:
 
@@ -182,7 +234,7 @@ New style:
 
 ---
 
-## 4. What prompts must force
+## 5. What prompts must force
 
 ### 4.1 Blueprint over memo
 
@@ -270,7 +322,7 @@ If the answer cannot pass that self-check, it should relabel the claim as infere
 
 ---
 
-## 5. What prompts must not force
+## 6. What prompts must not force
 
 Do not over-constrain output structure so hard that the model becomes a bureaucrat.
 
@@ -294,7 +346,7 @@ The right balance is:
 
 ---
 
-## 6. How much explanation should sit above the artifacts
+## 7. How much explanation should sit above the artifacts
 
 Very little.
 
@@ -320,7 +372,7 @@ The prompt should not explain the evidence too much before the model has looked 
 
 ---
 
-## 7. Novelty rules
+## 8. Novelty rules
 
 The new prompt style is mostly implementation-first and anti-drift.
 That means most prompts should not encourage broad novelty.
@@ -359,7 +411,7 @@ Do not add novelty clauses everywhere.
 
 ---
 
-## 8. The right stance toward references
+## 9. The right stance toward references
 
 We do not want:
 
@@ -380,7 +432,7 @@ Good prompt references should include enough context to understand why the sourc
 
 ---
 
-## 9. Reusable wording patterns
+## 10. Reusable wording patterns
 
 ### Role block
 
@@ -443,7 +495,7 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 
 ---
 
-## 10. Failure modes to ban explicitly
+## 11. Failure modes to ban explicitly
 
 ### Failure mode 1 — Memo mode
 
@@ -564,7 +616,7 @@ Ban with:
 
 ---
 
-## 11. Reference example prompts
+## 12. Reference example prompts
 
 Use these archive examples as the canonical naming and shape references for the new prompt style:
 
@@ -582,32 +634,9 @@ Use them like this:
 
 ---
 
-## 12. Prompt generator tool
+## 13. Prompt generator details
 
-For repeated prompt authoring, use `scripts/generate_prompt.py` instead of hand-assembling every long prompt from scratch.
-
-The tool is not a prompt framework.
-It is a small JSON-driven utility for generating Hydra-style artifact-first prompts faster and more consistently.
-
-Use it when:
-
-- you want multiple prompt variants from one shared artifact packet
-- you want reusable shell blocks like `role`, `direction`, `style`, and `artifact_note`
-- you want line-ranged code/doc excerpts without manual copy-paste
-- you want per-artifact labels and explanations so the artifact body has useful context
-- you want to regenerate prompts quickly after changing the artifact set
-
-Do not use it as an excuse to stop thinking about prompt quality.
-The generator speeds up assembly.
-It does not decide what artifacts belong in the prompt.
-
-### 12.1 Tool location
-
-- script: `scripts/generate_prompt.py`
-- example config: `scripts/examples/prompt_config.example.json`
-- tests: `scripts/tests/test_generate_prompt.py`
-
-### 12.2 What the generator supports
+### 13.1 What the generator supports
 
 The generator currently supports:
 
@@ -631,13 +660,13 @@ Supported artifact types:
 This is enough for most Hydra prompt work.
 Keep the tool simple unless real author pain proves otherwise.
 
-### 12.3 Config shape
+### 13.2 Config shape
 
 The config is JSON and follows a simple pattern:
 
 - top-level `defaults` for shared shell sections and shared artifacts
 - top-level `artifacts` registry for reusable artifact definitions
-- `variants` for prompt-specific direction blocks and extra artifacts
+- `variants` for prompt-specific direction blocks, extra artifacts, and canonical example linkage
 
 The shell is built from tagged sections such as:
 
@@ -647,6 +676,12 @@ The shell is built from tagged sections such as:
 - `artifact_note`
 
 Those tags are rendered as XML-style blocks in the output prompt.
+
+Each variant should also declare:
+
+- `shell_source_path` -> the canonical reference example whose shell order and container placement this variant should follow
+
+That keeps generated output aligned with the maintained example family instead of duplicating shell structure in the config.
 
 Artifact entries can carry:
 
@@ -658,28 +693,7 @@ Artifact entries can carry:
 
 That means the generated artifact body can say what the artifact is, where it came from, and why it matters, instead of dumping bare snippets.
 
-### 12.4 Minimal workflow
-
-Typical workflow:
-
-1. copy `scripts/examples/prompt_config.example.json`
-2. define the shared shell sections you want in `defaults`
-3. add reusable artifacts to the top-level `artifacts` array
-4. add one or more `variants`
-5. validate the config
-6. generate one prompt or all variants
-7. inspect the rendered prompt before sending it to an agent
-
-Useful commands:
-
-```bash
-python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --list-variants
-python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --validate-only
-python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --variant narrow-focused
-python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --all-variants --output-dir /tmp/hydra-generated-prompts
-```
-
-### 12.5 Authoring rules when using the generator
+### 13.3 Authoring rules when using the generator
 
 The same doctrine still applies:
 
@@ -704,7 +718,7 @@ Good generated prompt:
 - enough explanation to orient the reader
 - variant-specific direction only where it meaningfully changes the task
 
-### 12.6 What the generator does not do
+### 13.4 What the generator does not do
 
 The generator does not:
 
@@ -718,7 +732,7 @@ Always inspect the generated output before using it.
 
 ---
 
-## 13. Long-prompt rule
+## 14. Long-prompt rule
 
 The guide does not need to be huge.
 The prompts should be.
@@ -764,7 +778,7 @@ The prompts carry the bulk.
 
 ---
 
-## 14. Final checklist for prompt writers
+## 15. Final checklist for prompt writers
 
 Before shipping a prompt, check:
 

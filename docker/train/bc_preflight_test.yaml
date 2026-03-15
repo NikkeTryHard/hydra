@@ -1,0 +1,29 @@
+data_dir: /data
+output_dir: /output
+num_epochs: 1
+batch_size: 256
+train_fraction: 0.9
+augment: true
+seed: 42
+device: cuda:0
+buffer_games: 128
+buffer_samples: 2048
+tensorboard: false
+archive_queue_bound: 64
+validation_every_n_epochs: 1
+max_skip_logs_per_source: 4
+log_every_n_steps: 25
+validate_every_n_steps: 200
+checkpoint_every_n_steps: 200
+max_train_steps: 100
+max_validation_samples: 2048
+preflight:
+  warmup_steps: 1
+  measure_steps: 1
+  required_successes: 1
+  local_refinement_enabled: true
+  finalist_extra_successes: 1
+  finalist_extra_measure_steps: 1
+  rl_probe_min_free_memory_bytes: 2147483648
+  rl_probe_memory_headroom_ratio: 0.05
+  rl_probe_growth_safety_factor: 1.35

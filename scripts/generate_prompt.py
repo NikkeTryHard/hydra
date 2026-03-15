@@ -24,10 +24,21 @@ class ValidationError(PromptGeneratorError):
         super().__init__("\n".join(errors))
 
 
+class PromptTemplateParseError(PromptGeneratorError):
+    pass
+
+
 @dataclass(frozen=True)
 class ShellSection:
     tag: str
     lines: list[str]
+
+
+@dataclass(frozen=True)
+class PromptTemplate:
+    title: str | None
+    shell_sections: list[ShellSection]
+    artifact_container_tag: str
 
 
 @dataclass(frozen=True)
@@ -57,6 +68,7 @@ class DefaultsSpec:
 class VariantSpec:
     name: str
     title: str | None
+    shell_source_path: Path | None
     shell_sections: list[ShellSection]
     artifact_ids: list[str]
     extra_artifacts: list[ArtifactSpec]
@@ -122,6 +134,18 @@ def _ensure_int(
         return value
     errors.append(_config_error(config_path, f"{location}: expected integer"))
     return None
+
+
+def _resolve_repo_path(
+    path_str: str | None,
+    location: str,
+    errors: list[str],
+    config_path: Path,
+    repo_root: Path,
+) -> Path | None:
+    if path_str is None:
+        return None
+    return (repo_root / path_str).resolve()
 
 
 def _parse_shell_sections(
@@ -268,8 +292,9 @@ def _parse_artifact(
             errors,
             config_path,
         )
-        if path_str is not None:
-            path = (repo_root / path_str).resolve()
+        path = _resolve_repo_path(
+            path_str, f"{location}.path", errors, config_path, repo_root
+        )
     elif kind == "file_full":
         path_str = _ensure_string(
             artifact_obj.get("path"),
@@ -277,8 +302,9 @@ def _parse_artifact(
             errors,
             config_path,
         )
-        if path_str is not None:
-            path = (repo_root / path_str).resolve()
+        path = _resolve_repo_path(
+            path_str, f"{location}.path", errors, config_path, repo_root
+        )
     elif kind == "literal":
         if "content_lines" in artifact_obj:
             raw_content_lines = _ensure_list(
@@ -470,6 +496,22 @@ def _parse_config(
             if "title" in variant_obj
             else None
         )
+        shell_source_path = (
+            _resolve_repo_path(
+                _ensure_string(
+                    variant_obj.get("shell_source_path"),
+                    f"variants[{index}].shell_source_path",
+                    errors,
+                    config_path,
+                ),
+                f"variants[{index}].shell_source_path",
+                errors,
+                config_path,
+                repo_root,
+            )
+            if "shell_source_path" in variant_obj
+            else None
+        )
         shell_sections = _parse_shell_sections(
             variant_obj.get("shell_sections", []),
             f"variants[{index}].shell_sections",
@@ -528,6 +570,7 @@ def _parse_config(
                 VariantSpec(
                     name=name,
                     title=title,
+                    shell_source_path=shell_source_path,
                     shell_sections=shell_sections,
                     artifact_ids=artifact_ids,
                     extra_artifacts=extra_artifacts,
@@ -594,6 +637,15 @@ def _validate_config(config: PromptConfig) -> list[str]:
                     repo_root,
                     f"variants[{variant_index}].artifacts[{artifact_index}]",
                     artifact,
+                )
+            )
+        if variant.shell_source_path is not None:
+            errors.extend(
+                _validate_shell_source(
+                    config.config_path,
+                    repo_root,
+                    f"variants[{variant_index}].shell_source_path",
+                    variant.shell_source_path,
                 )
             )
     return errors
@@ -690,6 +742,120 @@ def _validate_artifact(
     return errors
 
 
+def _validate_shell_source(
+    config_path: Path,
+    repo_root: Path,
+    location: str,
+    shell_source_path: Path,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        shell_source_path.relative_to(repo_root)
+    except ValueError:
+        errors.append(
+            _config_error(
+                config_path,
+                f"{location}: resolved path {shell_source_path} escapes repo root {repo_root}",
+            )
+        )
+        return errors
+    if not shell_source_path.exists():
+        errors.append(
+            _config_error(
+                config_path,
+                f"{location}: file not found at {shell_source_path}",
+            )
+        )
+        return errors
+    if not shell_source_path.is_file():
+        errors.append(
+            _config_error(
+                config_path,
+                f"{location}: expected file, got {shell_source_path}",
+            )
+        )
+        return errors
+    try:
+        load_prompt_template(shell_source_path)
+    except PromptTemplateParseError as exc:
+        errors.append(_config_error(config_path, f"{location}: {exc}"))
+    return errors
+
+
+def extract_prompt_body(text: str) -> str:
+    match = re.search(
+        r"<prompt_text\b[^>]*>\s*<!\[CDATA\[(.*?)\]\]>\s*</prompt_text>",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        return match.group(1)
+    return text
+
+
+def parse_prompt_template(prompt_text: str) -> PromptTemplate:
+    lines = prompt_text.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
+    title: str | None = None
+    if lines and lines[0].startswith("# "):
+        title = lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+
+    shell_sections: list[ShellSection] = []
+    artifact_container_tag: str | None = None
+    index = 0
+    tag_pattern = re.compile(r"<([a-zA-Z0-9_]+)>")
+
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            index += 1
+            continue
+        match = tag_pattern.fullmatch(line)
+        if match is None:
+            raise PromptTemplateParseError(
+                f"expected section tag while parsing prompt shell, got {line!r}"
+            )
+        tag = match.group(1)
+        closing_tag = f"</{tag}>"
+        index += 1
+        block_lines: list[str] = []
+        while index < len(lines) and lines[index].strip() != closing_tag:
+            block_lines.append(lines[index])
+            index += 1
+        if index >= len(lines):
+            raise PromptTemplateParseError(
+                f"missing closing tag {closing_tag!r} while parsing prompt shell"
+            )
+        if artifact_container_tag is not None:
+            raise PromptTemplateParseError(
+                f"found section <{tag}> after artifact container <{artifact_container_tag}>"
+            )
+        if tag == "artifacts":
+            artifact_container_tag = tag
+        else:
+            shell_sections.append(ShellSection(tag=tag, lines=block_lines))
+        index += 1
+
+    if artifact_container_tag is None:
+        raise PromptTemplateParseError(
+            "prompt shell is missing an <artifacts> container"
+        )
+
+    return PromptTemplate(
+        title=title,
+        shell_sections=shell_sections,
+        artifact_container_tag=artifact_container_tag,
+    )
+
+
+def load_prompt_template(path: Path) -> PromptTemplate:
+    return parse_prompt_template(extract_prompt_body(path.read_text(encoding="utf-8")))
+
+
 def merge_shell_sections(
     default_sections: list[ShellSection], override_sections: list[ShellSection]
 ) -> list[ShellSection]:
@@ -715,10 +881,23 @@ def slugify(value: str) -> str:
 
 def render_prompt(config: PromptConfig, variant_name: str) -> str:
     variant = get_variant(config, variant_name)
-    title = variant.title or config.defaults.title or variant.name
-    shell_sections = merge_shell_sections(
-        config.defaults.shell_sections, variant.shell_sections
+    template = (
+        load_prompt_template(variant.shell_source_path)
+        if variant.shell_source_path is not None
+        else None
     )
+    title = (
+        variant.title
+        or (template.title if template is not None else None)
+        or config.defaults.title
+        or variant.name
+    )
+    base_shell_sections = (
+        template.shell_sections
+        if template is not None
+        else config.defaults.shell_sections
+    )
+    shell_sections = merge_shell_sections(base_shell_sections, variant.shell_sections)
     artifact_specs = resolve_variant_artifacts(config, variant)
 
     lines: list[str] = []
@@ -732,7 +911,11 @@ def render_prompt(config: PromptConfig, variant_name: str) -> str:
         lines.append(f"</{section.tag}>")
         lines.append("")
 
-    container_tag = config.defaults.artifact_container_tag
+    container_tag = (
+        template.artifact_container_tag
+        if template is not None
+        else config.defaults.artifact_container_tag
+    )
     lines.append(f"<{container_tag}>")
     lines.append("")
     for index, artifact in enumerate(artifact_specs, start=1):
