@@ -1,9 +1,9 @@
 data_dir: /data
 output_dir: /output
 num_epochs: 1
-batch_size: 256
-microbatch_size: 64
-validation_microbatch_size: 32
+batch_size: 64
+microbatch_size: 8
+validation_microbatch_size: 8
 train_fraction: 0.9
 augment: true
 seed: 0

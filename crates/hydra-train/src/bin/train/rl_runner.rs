@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use burn::backend::libtorch::LibTorchDevice;
 use colored::Colorize;
 
 use hydra_train::selfplay::generate_self_play_rl_batch;
@@ -52,7 +51,6 @@ pub(super) fn run_rl_training_loop(
     let mut rebase_tracker = RebaseTracker::default_phase2();
     let distill_state = DistillState::default();
     let distill_cfg = DistillConfig::fast_distill();
-    let inference_device = LibTorchDevice::Cpu;
 
     while runtime.global_step < total_steps {
         let elapsed_secs = runtime.run_start.elapsed().as_secs();
@@ -77,7 +75,6 @@ pub(super) fn run_rl_training_loop(
             base_seed,
             &runtime.model,
             &train_device,
-            &inference_device,
             &gae_config,
             live_exit_cfg,
         );

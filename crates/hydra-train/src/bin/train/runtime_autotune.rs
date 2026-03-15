@@ -192,7 +192,6 @@ pub(super) fn measure_rl_runtime_throughput(
     let target_steps = warmup_steps + measure_steps;
     let mut completed_steps = 0usize;
     let mut measure_start = None;
-    let inference_device = LibTorchDevice::Cpu;
 
     while completed_steps < target_steps {
         let elapsed_secs = completed_steps as u64;
@@ -215,7 +214,6 @@ pub(super) fn measure_rl_runtime_throughput(
             base_seed,
             &model,
             train_device,
-            &inference_device,
             &hydra_train::training::gae::GaeConfig::default(),
             live_exit_cfg,
         );
