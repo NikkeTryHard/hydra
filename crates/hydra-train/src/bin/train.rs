@@ -32,6 +32,8 @@ mod progress;
 mod resume;
 #[path = "train/runtime_autotune.rs"]
 mod runtime_autotune;
+#[path = "train/rl_runner.rs"]
+mod rl_runner;
 #[path = "train/schedule.rs"]
 mod schedule;
 #[path = "train/status.rs"]
@@ -406,6 +408,7 @@ unexpected_field: true
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
             buffer_games: 16,
@@ -887,6 +890,7 @@ preflight:
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
             buffer_games: 16,
@@ -935,6 +939,7 @@ preflight:
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
             buffer_games: 16,
@@ -967,6 +972,43 @@ preflight:
         assert!((loss.w_mixture_weight - 0.0).abs() < f32::EPSILON);
         assert!((loss.w_opponent_hand_type - 0.0).abs() < f32::EPSILON);
         assert!((loss.w_delta_q - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn validate_config_accepts_basic_rl_block() {
+        let cfg = TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: None,
+            rl: Some(crate::config::RlTrainConfig::default()),
+            bc: BcHyperparamConfig::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: None,
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: Some(4),
+            max_validation_batches: None,
+            max_validation_samples: Some(64),
+            preflight: PreflightConfig::default(),
+        };
+
+        validate_config(&cfg).expect("basic rl block should validate");
     }
 
     #[test]
@@ -1050,6 +1092,17 @@ preflight:
     }
 
     #[test]
+    fn build_loss_config_rejects_delta_q_even_at_zero_weight() {
+        let advanced = AdvancedLossConfig {
+            delta_q: Some(0.0),
+            ..Default::default()
+        };
+        let err = build_loss_config(Some(&advanced))
+            .expect_err("blocked delta_q key should be rejected even at zero");
+        assert!(err.contains("advanced_loss.delta_q"));
+    }
+
+    #[test]
     fn read_config_rejects_unknown_advanced_loss_field() {
         let base = std::env::temp_dir().join(format!(
             "hydra_train_bad_advanced_loss_{}_{}.yaml",
@@ -1083,6 +1136,7 @@ advanced_loss:
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            rl: None,
             bc: BcHyperparamConfig {
                 learning_rate: 1e-4,
                 min_learning_rate: 2e-4,
@@ -1128,6 +1182,7 @@ advanced_loss:
                 exit: Some(0.1),
                 ..Default::default()
             }),
+            rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
             buffer_games: 16,

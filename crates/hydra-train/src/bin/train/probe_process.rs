@@ -6,12 +6,12 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
-use super::artifacts::BcArtifactPaths;
-use super::presentation::format_probe_progress_line;
+use super::artifacts::{BcArtifactPaths, RlArtifactPaths};
+use super::presentation::{format_probe_progress_line, with_utc_timestamp};
 use super::probe_request::ProbeRequest;
 use super::probe_summary::probe_kind_name;
 
@@ -102,6 +102,30 @@ where
     })
 }
 
+fn spawn_probe_heartbeat(
+    interrupted: Arc<AtomicBool>,
+    kind: ProbeKind,
+    candidate_microbatch: usize,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let started = Instant::now();
+        while !interrupted.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_secs(5));
+            if interrupted.load(Ordering::SeqCst) {
+                break;
+            }
+            let line = with_utc_timestamp(format!(
+                "[preflight:{}] candidate_mb={} phase=heartbeat elapsed={:.1}s still_running",
+                probe_kind_name(kind),
+                candidate_microbatch,
+                started.elapsed().as_secs_f64(),
+            ));
+            let _ = writeln!(std::io::stdout(), "{line}");
+            let _ = std::io::stdout().flush();
+        }
+    })
+}
+
 fn summarize_probe_failure_output(output: &str) -> String {
     let mut lines = Vec::new();
     for line in output.lines() {
@@ -165,6 +189,39 @@ fn child_output(status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>) -> std::pr
     }
 }
 
+pub(super) fn mem_available_bytes() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo
+        .lines()
+        .find(|line| line.starts_with("MemAvailable:"))?;
+    let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    Some(kb.saturating_mul(1024))
+}
+
+pub(super) fn mem_total_bytes() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|line| line.starts_with("MemTotal:"))?;
+    let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    Some(kb.saturating_mul(1024))
+}
+
+pub(super) fn rl_probe_required_free_bytes(config: &super::config::TrainConfig) -> Option<u64> {
+    if config.preflight.rl_probe_min_free_memory_bytes == 0
+        && config.preflight.rl_probe_memory_headroom_ratio <= 0.0
+    {
+        return None;
+    }
+    let total = mem_total_bytes()?;
+    let ratio_floor =
+        ((total as f64) * config.preflight.rl_probe_memory_headroom_ratio.max(0.0)).ceil() as u64;
+    Some(
+        config
+            .preflight
+            .rl_probe_min_free_memory_bytes
+            .max(ratio_floor),
+    )
+}
+
 fn wait_for_probe_child(
     child: &mut Child,
     interrupted: &AtomicBool,
@@ -217,12 +274,27 @@ pub(super) fn probe_result_path(
     ))
 }
 
+pub(super) fn rl_probe_result_path(
+    artifacts: &RlArtifactPaths,
+    kind: ProbeKind,
+    candidate_microbatch: usize,
+    attempt: usize,
+) -> PathBuf {
+    artifacts.root.join(format!(
+        "preflight_probe_{}_{}_{}.json",
+        probe_kind_name(kind),
+        candidate_microbatch,
+        attempt
+    ))
+}
+
 pub(super) fn execute_probe_request(
     config_path: &Path,
     request: ProbeRequest,
     result_path: &Path,
     classify_probe_detail: impl Fn(&str) -> ProbeStatus,
 ) -> Result<ProbeResult, String> {
+    let _config = super::config::read_config(config_path)?;
     fs::remove_file(result_path).ok();
     let interrupted = interrupt_flag()?;
     interrupted.store(false, Ordering::SeqCst);
@@ -252,8 +324,15 @@ pub(super) fn execute_probe_request(
         .stderr
         .take()
         .map(|stderr| spawn_output_forwarder(stderr, true));
+    let heartbeat_handle = spawn_probe_heartbeat(
+        interrupted.clone(),
+        request.kind,
+        request.candidate_microbatch,
+    );
     if wait_for_probe_child(&mut child, interrupted.as_ref())?.is_none() {
         fs::remove_file(result_path).ok();
+        interrupted.store(true, Ordering::SeqCst);
+        let _ = heartbeat_handle.join();
         if let Some(handle) = stdout_handle {
             let _ = join_output_forwarder(handle, "stdout");
         }
@@ -262,6 +341,8 @@ pub(super) fn execute_probe_request(
         }
         return Err("preflight interrupted; probe child terminated".to_string());
     }
+    interrupted.store(true, Ordering::SeqCst);
+    let _ = heartbeat_handle.join();
     let stdout = match stdout_handle {
         Some(handle) => join_output_forwarder(handle, "stdout")?,
         None => Vec::new(),

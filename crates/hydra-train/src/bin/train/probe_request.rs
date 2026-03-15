@@ -87,6 +87,7 @@ mod tests {
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            rl: None,
             bc: Default::default(),
             device: "cpu".to_string(),
             buffer_games: 16,

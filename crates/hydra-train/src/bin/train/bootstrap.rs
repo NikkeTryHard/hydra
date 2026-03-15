@@ -333,6 +333,7 @@ pub(super) fn initialize_rl_training_bootstrap(
     if let Some(cached) = read_preflight_cache(&preflight_paths.cache_path)? {
         if cached.cache_key == cache_key {
             let tuned_games = cached.runtime.loader.buffer_games;
+            let tuned_microbatch = cached.runtime.selected.train_microbatch_size;
             if tuned_games != rl_config.games_per_batch {
                 println!(
                     "{}",
@@ -345,13 +346,26 @@ pub(super) fn initialize_rl_training_bootstrap(
                 );
                 rl_config.games_per_batch = tuned_games;
             }
+            if rl_config.microbatch_size != Some(tuned_microbatch) {
+                println!(
+                    "{}",
+                    timestamped(format!(
+                        "{} rl.microbatch_size={:?} -> {} (from preflight cache)",
+                        "RL preflight override:".bold().cyan(),
+                        rl_config.microbatch_size,
+                        tuned_microbatch,
+                    ))
+                );
+                rl_config.microbatch_size = Some(tuned_microbatch);
+            }
         } else {
             println!(
                 "{}",
                 timestamped(format!(
-                    "{} cache fingerprint mismatch, using config games_per_batch={}",
+                    "{} cache fingerprint mismatch, using config games_per_batch={} rl.microbatch_size={:?}",
                     "RL preflight skip:".bold().yellow(),
                     rl_config.games_per_batch,
+                    rl_config.microbatch_size,
                 ))
             );
         }
@@ -558,17 +572,18 @@ mod tests {
             crate::config::default_num_threads_for_system(),
         );
         let tuned_games = 16;
+        let tuned_microbatch = 32;
         write_preflight_cache(
             &paths.cache_path,
             &PreflightCacheEntry {
                 cache_key: key,
                 runtime: EffectiveRuntimeConfig {
                     selected: SelectedRuntimeConfig {
-                        train_microbatch_size: config.batch_size,
+                        train_microbatch_size: tuned_microbatch,
                         validation_microbatch_size: config
                             .validation_microbatch_size
                             .unwrap_or(config.batch_size),
-                        accum_steps: 1,
+                        accum_steps: config.batch_size.div_ceil(tuned_microbatch).max(1),
                     },
                     loader: LoaderRuntimeConfig {
                         num_threads: config.num_threads,
@@ -587,6 +602,11 @@ mod tests {
         assert_eq!(
             bootstrap.rl_config.games_per_batch, tuned_games,
             "bootstrap should apply preflight-cached games_per_batch"
+        );
+        assert_eq!(
+            bootstrap.rl_config.microbatch_size,
+            Some(tuned_microbatch),
+            "bootstrap should apply preflight-cached rl.microbatch_size"
         );
         fs::remove_dir_all(output_dir).ok();
     }

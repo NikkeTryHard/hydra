@@ -100,6 +100,26 @@ pub fn default_local_refinement_extra_measure_steps() -> usize {
     2
 }
 
+pub fn default_search_coordinate_rounds() -> usize {
+    2
+}
+
+pub fn default_search_top_k() -> usize {
+    3
+}
+
+pub fn default_rl_probe_min_free_memory_bytes() -> u64 {
+    0
+}
+
+pub fn default_rl_probe_memory_headroom_ratio() -> f64 {
+    0.0
+}
+
+pub fn default_rl_probe_growth_safety_factor() -> f64 {
+    1.35
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightConfig {
@@ -151,6 +171,16 @@ pub struct PreflightConfig {
     pub local_refinement_min_gap: usize,
     #[serde(default = "default_local_refinement_extra_measure_steps")]
     pub local_refinement_extra_measure_steps: usize,
+    #[serde(default = "default_search_coordinate_rounds")]
+    pub search_coordinate_rounds: usize,
+    #[serde(default = "default_search_top_k")]
+    pub search_top_k: usize,
+    #[serde(default = "default_rl_probe_min_free_memory_bytes")]
+    pub rl_probe_min_free_memory_bytes: u64,
+    #[serde(default = "default_rl_probe_memory_headroom_ratio")]
+    pub rl_probe_memory_headroom_ratio: f64,
+    #[serde(default = "default_rl_probe_growth_safety_factor")]
+    pub rl_probe_growth_safety_factor: f64,
 }
 
 impl Default for PreflightConfig {
@@ -180,6 +210,11 @@ impl Default for PreflightConfig {
             local_refinement_max_candidates: default_local_refinement_max_candidates(),
             local_refinement_min_gap: default_local_refinement_min_gap(),
             local_refinement_extra_measure_steps: default_local_refinement_extra_measure_steps(),
+            search_coordinate_rounds: default_search_coordinate_rounds(),
+            search_top_k: default_search_top_k(),
+            rl_probe_min_free_memory_bytes: default_rl_probe_min_free_memory_bytes(),
+            rl_probe_memory_headroom_ratio: default_rl_probe_memory_headroom_ratio(),
+            rl_probe_growth_safety_factor: default_rl_probe_growth_safety_factor(),
         }
     }
 }
@@ -225,6 +260,8 @@ pub enum ProbeStatus {
 pub enum ProbeKind {
     Train,
     Validation,
+    RlGames,
+    RlMicrobatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -344,5 +381,10 @@ mod tests {
         assert_eq!(config.local_refinement_max_candidates, 3);
         assert_eq!(config.local_refinement_min_gap, 8);
         assert_eq!(config.local_refinement_extra_measure_steps, 2);
+        assert_eq!(config.search_coordinate_rounds, 2);
+        assert_eq!(config.search_top_k, 3);
+        assert_eq!(config.rl_probe_min_free_memory_bytes, 0);
+        assert!((config.rl_probe_memory_headroom_ratio - 0.0).abs() < f64::EPSILON);
+        assert!((config.rl_probe_growth_safety_factor - 1.35).abs() < f64::EPSILON);
     }
 }

@@ -282,8 +282,9 @@ fn parse_probe_kind(value: &str) -> Result<ProbeKind, String> {
         "train" => Ok(ProbeKind::Train),
         "validation" => Ok(ProbeKind::Validation),
         "rl_games" => Ok(ProbeKind::RlGames),
+        "rl_microbatch" => Ok(ProbeKind::RlMicrobatch),
         _ => Err(format!(
-            "unsupported --probe-kind value '{value}'; expected train, validation, or rl_games"
+            "unsupported --probe-kind value '{value}'; expected train, validation, rl_games, or rl_microbatch"
         )),
     }
 }
