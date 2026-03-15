@@ -7,14 +7,15 @@ use crate::config::{OracleGuidingConfig, PipelineState, TrainingPhase};
 use crate::data::sample::MjaiBatch;
 use crate::model::HydraModel;
 use crate::training::bc::{
-    BcExitConfig, bc_train_step, oracle_guiding_train_step, phase_learning_rate,
+    bc_train_step, oracle_guiding_train_step, phase_learning_rate, BcExitConfig,
 };
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
 use crate::training::exit::ExitConfig;
+use crate::training::head_gates::HeadActivationController;
 use crate::training::live_exit::LiveExitConfig;
 use crate::training::losses::{HydraLoss, HydraTargets};
-use crate::training::rl::{RlBatch, RlConfig, rl_step_with_phase_progress};
+use crate::training::rl::{rl_step_with_phase_progress_and_controller, RlBatch, RlConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchmarkGateMetrics {
@@ -244,6 +245,8 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
         exit_mask: None,
         belief_fields_target: targets.belief_fields_target.clone(),
         mixture_weight_target: targets.mixture_weight_target.clone(),
+        delta_q_target: targets.delta_q_target.clone(),
+        delta_q_mask: targets.delta_q_mask.clone(),
         belief_fields_mask: targets.belief_fields_mask.clone(),
         mixture_weight_mask: targets.mixture_weight_mask.clone(),
         opp_next_target: targets.opp_next_target.clone(),
@@ -328,13 +331,25 @@ pub fn rl_phase_train_step<B: AutodiffBackend>(
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
+    rl_phase_train_step_with_controller(state, model, batch, cfg, loss_fn, optimizer, None)
+}
+
+pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
+    state: &PipelineState,
+    model: HydraModel<B>,
+    batch: &RlBatch<B>,
+    cfg: &RlConfig,
+    loss_fn: &HydraLoss<B>,
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+    controller: Option<&mut HeadActivationController>,
+) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
     match state.phase {
         TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
             let exit_phase = state.phase.exit_schedule_phase();
             let progress = state.phase_progress();
             let exit_weight = cfg.effective_exit_weight(exit_phase, progress);
-            let (model, loss) = rl_step_with_phase_progress(
-                model, batch, cfg, exit_phase, progress, loss_fn, optimizer,
+            let (model, loss) = rl_step_with_phase_progress_and_controller(
+                model, batch, cfg, exit_phase, progress, loss_fn, optimizer, controller,
             );
             Ok((
                 model,
@@ -358,6 +373,9 @@ mod tests {
     use super::*;
     use crate::config::INPUT_CHANNELS;
     use crate::model::HydraModelConfig;
+    use crate::training::head_gates::{
+        AdvancedHead, HeadActivationConfig, HeadActivationController, HeadState,
+    };
     use crate::training::losses::HydraLossConfig;
     use burn::backend::Autodiff;
     use burn::optim::AdamConfig;
@@ -383,6 +401,7 @@ mod tests {
             mixture_weight_mask: None,
             opponent_hand_type_target: None,
             delta_q_target: None,
+            delta_q_mask: None,
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
@@ -551,6 +570,107 @@ mod tests {
             rl_phase_train_step(&state, model, &batch, &cfg, &loss_fn, &mut optimizer)
                 .expect("rl step");
         assert!((report.exit_weight.expect("exit weight") - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rl_phase_with_controller_keeps_delta_q_off_by_default() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let mut batch = RlBatch {
+            obs: Tensor::<AB, 3>::zeros([2, INPUT_CHANNELS, 34], &device),
+            actions: Tensor::<AB, 1, Int>::zeros([2], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.5], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -1.0], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: dummy_targets::<AB>(&device, 2),
+            exit_target: None,
+            exit_mask: None,
+        };
+        batch.targets.delta_q_target = Some(Tensor::<AB, 2>::ones([2, 46], &device));
+        batch.targets.delta_q_mask = Some(Tensor::<AB, 2>::ones([2, 46], &device));
+        let cfg = RlConfig::default_phase3();
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new().with_w_delta_q(0.25));
+        let mut optimizer = AdamConfig::new().init();
+        let state = PipelineState {
+            phase: TrainingPhase::ExitPondering,
+            gpu_hours_used: 1500.0,
+            ..PipelineState::default()
+        };
+        let mut controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        let (_, report) = rl_phase_train_step_with_controller(
+            &state,
+            model,
+            &batch,
+            &cfg,
+            &loss_fn,
+            &mut optimizer,
+            Some(&mut controller),
+        )
+        .expect("rl step with controller");
+
+        assert!(!report.skipped);
+        assert_eq!(controller.head_state(AdvancedHead::DeltaQ), HeadState::Off);
+    }
+
+    #[test]
+    fn rl_phase_with_controller_can_enter_delta_q_warmup() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let mut batch = RlBatch {
+            obs: Tensor::<AB, 3>::zeros([2, INPUT_CHANNELS, 34], &device),
+            actions: Tensor::<AB, 1, Int>::zeros([2], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.5], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -1.0], &device),
+            base_logits: Tensor::<AB, 2>::zeros([2, 46], &device),
+            targets: dummy_targets::<AB>(&device, 2),
+            exit_target: None,
+            exit_mask: None,
+        };
+        batch.targets.delta_q_target = Some(Tensor::<AB, 2>::ones([2, 46], &device));
+        batch.targets.delta_q_mask = Some(Tensor::<AB, 2>::ones([2, 46], &device));
+        let cfg = RlConfig::default_phase3();
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new().with_w_delta_q(0.25));
+        let mut optimizer = AdamConfig::new().init();
+        let state = PipelineState {
+            phase: TrainingPhase::ExitPondering,
+            gpu_hours_used: 1500.0,
+            ..PipelineState::default()
+        };
+        let mut gate_cfg = HeadActivationConfig::default_with_params(1);
+        gate_cfg.min_eval_samples = 1;
+        gate_cfg.min_sparse_spp = 1.0;
+        gate_cfg.warmup_steps = 1;
+        let mut controller = HeadActivationController::new(gate_cfg);
+        let presence = crate::training::head_gates::extract_target_presence(&batch.targets);
+        controller.record_batch(&presence);
+        controller.try_activate(AdvancedHead::DeltaQ);
+
+        let (_, report) = rl_phase_train_step_with_controller(
+            &state,
+            model,
+            &batch,
+            &cfg,
+            &loss_fn,
+            &mut optimizer,
+            Some(&mut controller),
+        )
+        .expect("rl step with controller");
+
+        assert!(!report.skipped);
+        assert_eq!(
+            controller.head_state(AdvancedHead::DeltaQ),
+            HeadState::Warmup
+        );
     }
 
     #[test]

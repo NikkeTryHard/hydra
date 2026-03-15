@@ -131,6 +131,7 @@ fn full_pipeline_integration() {
                     legal_mask
                 },
                 exit_label: None,
+                delta_q_label: None,
                 reward: 0.0,
                 done: turn == 4,
                 player_id: (turn % 4) as u8,
@@ -161,6 +162,21 @@ fn full_pipeline_integration() {
         },
     )
     .expect("valid trajectory exit label");
+    let delta_q_label = hydra_core::arena::TrajectoryDeltaQLabel::from_slices(
+        &{
+            let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+            target[1] = 0.4;
+            target[2] = -0.3;
+            target
+        },
+        &{
+            let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+            mask[1] = 1.0;
+            mask[2] = 1.0;
+            mask
+        },
+    )
+    .expect("valid trajectory delta_q label");
     rl_traj.final_scores = [31000, 27000, 23000, 19000];
     rl_traj.steps.push(TrajectoryStep {
         obs: [0.2; OBS_SIZE],
@@ -178,6 +194,7 @@ fn full_pipeline_integration() {
             legal_mask
         },
         exit_label: Some(exit_label),
+        delta_q_label: Some(delta_q_label),
         reward: 0.5,
         done: true,
         player_id: 0,
@@ -209,6 +226,28 @@ fn full_pipeline_integration() {
     assert!((exit_target_data[2] - 0.45).abs() < 1e-6);
     assert_eq!(exit_mask_data[1], 1.0);
     assert_eq!(exit_mask_data[2], 1.0);
+    let delta_q_target = rl_batch
+        .targets
+        .delta_q_target
+        .expect("trajectory delta_q target");
+    let delta_q_mask = rl_batch
+        .targets
+        .delta_q_mask
+        .expect("trajectory delta_q mask");
+    let delta_q_target_data = delta_q_target
+        .to_data()
+        .as_slice::<f32>()
+        .expect("delta_q target data")
+        .to_vec();
+    let delta_q_mask_data = delta_q_mask
+        .to_data()
+        .as_slice::<f32>()
+        .expect("delta_q mask data")
+        .to_vec();
+    assert!((delta_q_target_data[1] - 0.4).abs() < 1e-6);
+    assert!((delta_q_target_data[2] + 0.3).abs() < 1e-6);
+    assert_eq!(delta_q_mask_data[1], 1.0);
+    assert_eq!(delta_q_mask_data[2], 1.0);
 
     use hydra_core::afbs::{AfbsTree, TOP_K};
     let mut tree = AfbsTree::new();
@@ -529,6 +568,7 @@ fn make_test_targets(
         mixture_weight_mask: None,
         opponent_hand_type_target: None,
         delta_q_target: None,
+        delta_q_mask: None,
         safety_residual_target: None,
         safety_residual_mask: None,
         oracle_guidance_mask: None,

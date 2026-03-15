@@ -3,6 +3,7 @@
 pub mod ach;
 pub mod bc;
 pub mod distill;
+pub mod delta_q_validation;
 pub mod drda;
 pub mod exit;
 pub mod exit_validation;

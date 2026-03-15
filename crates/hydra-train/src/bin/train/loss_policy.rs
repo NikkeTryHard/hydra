@@ -37,3 +37,23 @@ pub(super) fn build_bc_exit_config(advanced_loss: Option<&AdvancedLossConfig>) -
     let exit_weight = advanced_loss.and_then(|cfg| cfg.exit).unwrap_or(0.0);
     BcExitConfig { exit_weight }
 }
+
+pub(super) fn build_rl_loss_config(
+    advanced_loss: Option<&AdvancedLossConfig>,
+) -> Result<HydraLossConfig, String> {
+    if let Some(cfg) = advanced_loss {
+        reject_blocked_advanced_loss_presence("belief_fields", cfg.belief_fields)?;
+        reject_blocked_advanced_loss_presence("mixture_weight", cfg.mixture_weight)?;
+        reject_blocked_advanced_loss_presence("opponent_hand_type", cfg.opponent_hand_type)?;
+    }
+
+    let mut loss = HydraLossConfig::new();
+    if let Some(cfg) = advanced_loss {
+        loss = loss
+            .with_w_safety_residual(cfg.safety_residual.unwrap_or(0.0))
+            .with_w_delta_q(cfg.delta_q.unwrap_or(0.0));
+    }
+    loss.validate()
+        .map_err(|err| format!("invalid RL loss config: {err}"))?;
+    Ok(loss)
+}

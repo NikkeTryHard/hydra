@@ -3,7 +3,7 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_type};
+use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
 
 use crate::training::exit::collate_exit_targets;
 use crate::training::losses::HydraTargets;
@@ -60,6 +60,8 @@ pub struct MjaiSample {
     pub safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
     pub exit_target: Option<[f32; HYDRA_ACTION_SPACE]>,
     pub exit_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    pub delta_q_target: Option<[f32; HYDRA_ACTION_SPACE]>,
+    pub delta_q_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
     pub belief_fields: Option<[f32; 16 * 34]>,
     pub mixture_weights: Option<[f32; 4]>,
     pub belief_fields_present: bool,
@@ -154,6 +156,8 @@ pub struct MjaiBatch<B: Backend> {
     pub safety_residual_mask: Option<Tensor<B, 2>>,
     pub exit_target: Option<Tensor<B, 2>>,
     pub exit_mask: Option<Tensor<B, 2>>,
+    pub delta_q_target: Option<Tensor<B, 2>>,
+    pub delta_q_mask: Option<Tensor<B, 2>>,
     pub belief_fields_target: Option<Tensor<B, 3>>,
     pub mixture_weight_target: Option<Tensor<B, 2>>,
     pub belief_fields_mask: Option<Tensor<B, 1>>,
@@ -178,6 +182,9 @@ struct CollateBuffers {
     safety_residual_mask_flat: Vec<f32>,
     any_safety_residual: bool,
     exit_samples: Vec<Option<(Vec<f32>, Vec<f32>)>>,
+    delta_q_flat: Vec<f32>,
+    delta_q_mask_flat: Vec<f32>,
+    any_delta_q: bool,
     belief_fields_flat: Vec<f32>,
     mixture_weights_flat: Vec<f32>,
     any_belief_fields: bool,
@@ -206,6 +213,9 @@ impl CollateBuffers {
             safety_residual_mask_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
             any_safety_residual: false,
             exit_samples: vec![None; batch],
+            delta_q_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
+            delta_q_mask_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
+            any_delta_q: false,
             belief_fields_flat: vec![0.0f32; batch * 16 * 34],
             mixture_weights_flat: vec![0.0f32; batch * 4],
             any_belief_fields: false,
@@ -260,6 +270,16 @@ impl CollateBuffers {
             (Some(values), None) => Some(values),
             (None, _) => None,
         };
+        let delta_q_target = match (sample.delta_q_target, perm) {
+            (Some(values), Some(perm)) => Some(augment_action_vector_suit(&values, perm)),
+            (Some(values), None) => Some(values),
+            (None, _) => None,
+        };
+        let delta_q_mask = match (sample.delta_q_mask, perm) {
+            (Some(values), Some(perm)) => Some(augment_action_vector_suit(&values, perm)),
+            (Some(values), None) => Some(values),
+            (None, _) => None,
+        };
 
         self.obs_flat[index * OBS_SIZE..(index + 1) * OBS_SIZE].copy_from_slice(&obs);
         self.actions[index] = action as i64;
@@ -291,6 +311,16 @@ impl CollateBuffers {
             (Some(target), Some(mask)) => Some((target.to_vec(), mask.to_vec())),
             _ => None,
         };
+        if let Some(values) = delta_q_target {
+            self.delta_q_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+            self.any_delta_q = true;
+        }
+        if let Some(values) = delta_q_mask {
+            self.delta_q_mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+            self.any_delta_q = true;
+        }
         if let Some(values) = belief_fields {
             self.belief_fields_flat[index * 16 * 34..(index + 1) * 16 * 34]
                 .copy_from_slice(&values);
@@ -366,6 +396,22 @@ impl CollateBuffers {
             },
             exit_target,
             exit_mask,
+            delta_q_target: if self.any_delta_q {
+                Some(
+                    Tensor::<B, 1>::from_floats(self.delta_q_flat.as_slice(), device)
+                        .reshape([batch, HYDRA_ACTION_SPACE]),
+                )
+            } else {
+                None
+            },
+            delta_q_mask: if self.any_delta_q {
+                Some(
+                    Tensor::<B, 1>::from_floats(self.delta_q_mask_flat.as_slice(), device)
+                        .reshape([batch, HYDRA_ACTION_SPACE]),
+                )
+            } else {
+                None
+            },
             belief_fields_target: if self.any_belief_fields {
                 Some(
                     Tensor::<B, 1>::from_floats(self.belief_fields_flat.as_slice(), device)
@@ -433,7 +479,8 @@ impl<B: Backend> MjaiBatch<B> {
             belief_fields_target: self.belief_fields_target,
             mixture_weight_target: self.mixture_weight_target,
             opponent_hand_type_target: None,
-            delta_q_target: None,
+            delta_q_target: self.delta_q_target,
+            delta_q_mask: self.delta_q_mask,
             safety_residual_mask: self.safety_residual_mask,
             belief_fields_mask: self.belief_fields_mask,
             mixture_weight_mask: self.mixture_weight_mask,
@@ -465,7 +512,8 @@ impl<B: Backend> MjaiBatch<B> {
             belief_fields_target: self.belief_fields_target.clone(),
             mixture_weight_target: self.mixture_weight_target.clone(),
             opponent_hand_type_target: None,
-            delta_q_target: None,
+            delta_q_target: self.delta_q_target.clone(),
+            delta_q_mask: self.delta_q_mask.clone(),
             safety_residual_mask: self.safety_residual_mask.clone(),
             belief_fields_mask: self.belief_fields_mask.clone(),
             mixture_weight_mask: self.mixture_weight_mask.clone(),
@@ -621,6 +669,12 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
                 exit_mask: sample
                     .exit_mask
                     .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
+                delta_q_target: sample
+                    .delta_q_target
+                    .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
+                delta_q_mask: sample
+                    .delta_q_mask
+                    .map(|values| crate::data::augment::augment_action_vector_suit(&values, perm)),
                 belief_fields: sample
                     .belief_fields
                     .map(|values| augment_belief_fields_suit(&values, perm)),
@@ -660,6 +714,8 @@ mod tests {
             safety_residual_mask: None,
             exit_target: None,
             exit_mask: None,
+            delta_q_target: None,
+            delta_q_mask: None,
             belief_fields: None,
             mixture_weights: None,
             belief_fields_present: false,
@@ -906,6 +962,7 @@ mod tests {
         assert!(targets.mixture_weight_target.is_none());
         assert!(targets.opponent_hand_type_target.is_none());
         assert!(targets.delta_q_target.is_none());
+        assert!(targets.delta_q_mask.is_none());
         assert!(targets.safety_residual_target.is_none());
     }
 
@@ -947,6 +1004,33 @@ mod tests {
         assert!((values[34] - 0.7).abs() < 1e-6);
         assert!((mask_values[0] - 1.0).abs() < 1e-6);
         assert!((mask_values[34] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batch_to_hydra_targets_carries_delta_q_with_mask() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[0] = 0.6;
+        target[9] = -0.25;
+        mask[0] = 1.0;
+        mask[9] = 1.0;
+        sample.delta_q_target = Some(target);
+        sample.delta_q_mask = Some(mask);
+
+        let batch = collate_batch::<B>(&[sample], &device);
+        let targets = batch.into_hydra_targets();
+        let dq = targets.delta_q_target.expect("delta_q target");
+        let dqm = targets.delta_q_mask.expect("delta_q mask");
+        assert_eq!(dq.dims(), [1, HYDRA_ACTION_SPACE]);
+        assert_eq!(dqm.dims(), [1, HYDRA_ACTION_SPACE]);
+        let values = dq.to_data().as_slice::<f32>().expect("f32").to_vec();
+        let mask_values = dqm.to_data().as_slice::<f32>().expect("f32").to_vec();
+        assert!((values[0] - 0.6).abs() < 1e-6);
+        assert!((values[9] + 0.25).abs() < 1e-6);
+        assert!((mask_values[0] - 1.0).abs() < 1e-6);
+        assert!((mask_values[9] - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1119,6 +1203,14 @@ mod tests {
         safety_residual_mask[1] = 1.0;
         sample.safety_residual = Some(safety_residual);
         sample.safety_residual_mask = Some(safety_residual_mask);
+        let mut delta_q_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut delta_q_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        delta_q_target[0] = 0.6;
+        delta_q_target[1] = -0.25;
+        delta_q_mask[0] = 1.0;
+        delta_q_mask[1] = 1.0;
+        sample.delta_q_target = Some(delta_q_target);
+        sample.delta_q_mask = Some(delta_q_mask);
 
         let refs = vec![&sample];
         let (obs, targets) =
@@ -1173,6 +1265,23 @@ mod tests {
             owned_targets
                 .safety_residual_mask
                 .expect("owned safety residual mask")
+                .to_data()
+        );
+        assert_eq!(
+            targets.delta_q_target.expect("borrowed delta_q").to_data(),
+            owned_targets
+                .delta_q_target
+                .expect("owned delta_q")
+                .to_data()
+        );
+        assert_eq!(
+            targets
+                .delta_q_mask
+                .expect("borrowed delta_q mask")
+                .to_data(),
+            owned_targets
+                .delta_q_mask
+                .expect("owned delta_q mask")
                 .to_data()
         );
     }

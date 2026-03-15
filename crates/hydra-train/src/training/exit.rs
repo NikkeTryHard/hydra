@@ -260,6 +260,48 @@ pub fn build_exit_from_afbs_tree(
     )
 }
 
+pub fn build_delta_q_from_afbs_tree(
+    tree: &AfbsTree,
+    root_idx: NodeIdx,
+    legal_mask: &[f32],
+) -> Option<(Vec<f32>, Vec<f32>)> {
+    if legal_mask.len() != HYDRA_ACTION_SPACE || !compatible_discard_state(legal_mask) {
+        return None;
+    }
+    let root = tree.nodes.get(root_idx as usize)?;
+    if root.visit_count == 0 {
+        return None;
+    }
+    let root_q = tree.node_q_value(root_idx);
+    if !root_q.is_finite() {
+        return None;
+    }
+
+    let mut target = vec![0.0f32; HYDRA_ACTION_SPACE];
+    let mut mask = vec![0.0f32; HYDRA_ACTION_SPACE];
+    let mut any_supported = false;
+
+    for &(action, child_idx) in &root.children {
+        let idx = action as usize;
+        if idx > DISCARD_END as usize || idx >= HYDRA_ACTION_SPACE || legal_mask[idx] <= 0.0 {
+            continue;
+        }
+        let child = tree.nodes.get(child_idx as usize)?;
+        if child.visit_count == 0 {
+            continue;
+        }
+        let child_q = tree.node_q_value(child_idx);
+        if !child_q.is_finite() {
+            return None;
+        }
+        target[idx] = child_q - root_q;
+        mask[idx] = 1.0;
+        any_supported = true;
+    }
+
+    any_supported.then_some((target, mask))
+}
+
 /// Collates per-sample exit targets into batch tensors for `RlBatch`.
 ///
 /// Takes a slice of per-sample results from [`build_exit_from_afbs_tree`]
@@ -267,6 +309,30 @@ pub fn build_exit_from_afbs_tree(
 /// returns `(None, None)`. Otherwise, samples without targets get zero
 /// target and zero mask rows, ensuring per-sample masking in the loss.
 pub fn collate_exit_targets<B: Backend>(
+    samples: &[Option<(Vec<f32>, Vec<f32>)>],
+    device: &B::Device,
+) -> (Option<Tensor<B, 2>>, Option<Tensor<B, 2>>) {
+    if samples.is_empty() || samples.iter().all(|s| s.is_none()) {
+        return (None, None);
+    }
+    let batch = samples.len();
+    let mut target_data = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
+    let mut mask_data = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
+    for (i, sample) in samples.iter().enumerate() {
+        if let Some((target, mask)) = sample {
+            let offset = i * HYDRA_ACTION_SPACE;
+            target_data[offset..offset + HYDRA_ACTION_SPACE].copy_from_slice(target);
+            mask_data[offset..offset + HYDRA_ACTION_SPACE].copy_from_slice(mask);
+        }
+    }
+    let target_tensor = Tensor::<B, 1>::from_floats(target_data.as_slice(), device)
+        .reshape([batch, HYDRA_ACTION_SPACE]);
+    let mask_tensor = Tensor::<B, 1>::from_floats(mask_data.as_slice(), device)
+        .reshape([batch, HYDRA_ACTION_SPACE]);
+    (Some(target_tensor), Some(mask_tensor))
+}
+
+pub fn collate_delta_q_targets<B: Backend>(
     samples: &[Option<(Vec<f32>, Vec<f32>)>],
     device: &B::Device,
 ) -> (Option<Tensor<B, 2>>, Option<Tensor<B, 2>>) {
@@ -312,6 +378,10 @@ pub fn safety_valve_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn::backend::NdArray;
+    use hydra_core::afbs::predicted_child_hash;
+
+    type B = NdArray<f32>;
 
     #[test]
     fn exit_safety_valve_skips_low_visits() {
@@ -536,6 +606,72 @@ mod tests {
         let base_pi = vec![1e-6f32; HYDRA_ACTION_SPACE];
         let legal = vec![0.0f32; HYDRA_ACTION_SPACE];
         assert!(build_exit_from_afbs_tree(&tree, 999, &base_pi, &legal, 8, 5.0).is_none());
+    }
+
+    #[test]
+    fn build_delta_q_from_tree_uses_root_child_q_delta() {
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(7, 1.0, false);
+        let c1 = tree.add_node(predicted_child_hash(7, 1), 0.45, false);
+        let c2 = tree.add_node(predicted_child_hash(7, 2), 0.35, false);
+        tree.nodes[root as usize].children.push((1, c1));
+        tree.nodes[root as usize].children.push((2, c2));
+        tree.nodes[root as usize].visit_count = 10;
+        tree.nodes[root as usize].total_value = 4.0;
+        tree.nodes[c1 as usize].visit_count = 4;
+        tree.nodes[c1 as usize].total_value = 3.2;
+        tree.nodes[c2 as usize].visit_count = 4;
+        tree.nodes[c2 as usize].total_value = 0.4;
+
+        let mut legal = [0.0f32; HYDRA_ACTION_SPACE];
+        legal[1] = 1.0;
+        legal[2] = 1.0;
+        let (target, mask) =
+            build_delta_q_from_afbs_tree(&tree, root, &legal).expect("delta_q target");
+        assert!((target[1] - 0.4).abs() < 1e-6);
+        assert!((target[2] + 0.3).abs() < 1e-6);
+        assert_eq!(mask[1], 1.0);
+        assert_eq!(mask[2], 1.0);
+        assert_eq!(mask[3], 0.0);
+    }
+
+    #[test]
+    fn build_delta_q_from_tree_rejects_empty_support() {
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(7, 1.0, false);
+        let child = tree.add_node(predicted_child_hash(7, 1), 1.0, false);
+        tree.nodes[root as usize].children.push((1, child));
+        tree.nodes[root as usize].visit_count = 10;
+        tree.nodes[root as usize].total_value = 4.0;
+        tree.nodes[child as usize].visit_count = 0;
+
+        let mut legal = [0.0f32; HYDRA_ACTION_SPACE];
+        legal[1] = 1.0;
+        assert!(build_delta_q_from_afbs_tree(&tree, root, &legal).is_none());
+    }
+
+    #[test]
+    fn collate_delta_q_targets_mixed_batch() {
+        let device = Default::default();
+        let mut target = vec![0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = vec![0.0f32; HYDRA_ACTION_SPACE];
+        target[1] = 0.4;
+        target[2] = -0.3;
+        mask[1] = 1.0;
+        mask[2] = 1.0;
+        let samples = vec![Some((target, mask)), None];
+        let (target, mask) = collate_delta_q_targets::<B>(&samples, &device);
+        let target = target.expect("target");
+        let mask = mask.expect("mask");
+        assert_eq!(target.dims(), [2, HYDRA_ACTION_SPACE]);
+        assert_eq!(mask.dims(), [2, HYDRA_ACTION_SPACE]);
+        let target_data = target.to_data().as_slice::<f32>().expect("f32").to_vec();
+        let mask_data = mask.to_data().as_slice::<f32>().expect("f32").to_vec();
+        assert!((target_data[1] - 0.4).abs() < 1e-6);
+        assert!((target_data[2] + 0.3).abs() < 1e-6);
+        assert_eq!(mask_data[1], 1.0);
+        assert_eq!(mask_data[2], 1.0);
+        assert_eq!(mask_data[HYDRA_ACTION_SPACE + 1], 0.0);
     }
 
     #[test]

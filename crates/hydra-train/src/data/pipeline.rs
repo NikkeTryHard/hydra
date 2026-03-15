@@ -1038,6 +1038,8 @@ mod tests {
             safety_residual_mask: None,
             exit_target: None,
             exit_mask: None,
+            delta_q_target: None,
+            delta_q_mask: None,
             belief_fields: None,
             mixture_weights: None,
             belief_fields_present: false,

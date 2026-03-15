@@ -75,7 +75,7 @@ pub const PONDER_BEAM_W: usize = 256;
 pub const PONDER_DEPTH: u8 = 10;
 pub const PONDER_PARTICLES: usize = 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TrainingPhase {
     BenchmarkGates,
     BcWarmStart,
@@ -258,6 +258,7 @@ pub fn validate_all_configs(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PipelineState {
     pub phase: TrainingPhase,
     pub gpu_hours_used: f32,

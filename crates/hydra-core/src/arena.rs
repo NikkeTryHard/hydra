@@ -9,6 +9,32 @@ pub struct TrajectoryExitLabel {
     pub mask: [f32; HYDRA_ACTION_SPACE],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrajectoryDeltaQLabel {
+    pub target: [f32; HYDRA_ACTION_SPACE],
+    pub mask: [f32; HYDRA_ACTION_SPACE],
+}
+
+impl TrajectoryDeltaQLabel {
+    pub fn from_slices(target: &[f32], mask: &[f32]) -> Option<Self> {
+        if target.len() != HYDRA_ACTION_SPACE || mask.len() != HYDRA_ACTION_SPACE {
+            return None;
+        }
+        let mut target_arr = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask_arr = [0.0f32; HYDRA_ACTION_SPACE];
+        target_arr.copy_from_slice(target);
+        mask_arr.copy_from_slice(mask);
+        Some(Self {
+            target: target_arr,
+            mask: mask_arr,
+        })
+    }
+
+    pub fn to_vec_pair(self) -> (Vec<f32>, Vec<f32>) {
+        (self.target.to_vec(), self.mask.to_vec())
+    }
+}
+
 impl TrajectoryExitLabel {
     pub fn from_slices(target: &[f32], mask: &[f32]) -> Option<Self> {
         if target.len() != HYDRA_ACTION_SPACE || mask.len() != HYDRA_ACTION_SPACE {
@@ -129,6 +155,7 @@ pub struct TrajectoryStep {
     pub pi_old: [f32; HYDRA_ACTION_SPACE],
     pub legal_mask: [bool; HYDRA_ACTION_SPACE],
     pub exit_label: Option<TrajectoryExitLabel>,
+    pub delta_q_label: Option<TrajectoryDeltaQLabel>,
     pub reward: f32,
     pub done: bool,
     pub player_id: u8,
@@ -529,6 +556,48 @@ impl Trajectory {
                     ));
                 }
             }
+            if let Some(delta_q_label) = step.delta_q_label {
+                let mut saw_masked_action = false;
+                for action_idx in 0..HYDRA_ACTION_SPACE {
+                    let mask_value = delta_q_label.mask[action_idx];
+                    if mask_value < -1e-6 || (mask_value - 1.0).abs() > 1e-3 && mask_value > 1e-6 {
+                        return Err(format!(
+                            "step {i}: delta_q mask at action {action_idx} is not approximately binary ({mask_value})"
+                        ));
+                    }
+                    let target_value = delta_q_label.target[action_idx];
+                    if !target_value.is_finite() {
+                        return Err(format!(
+                            "step {i}: delta_q target at action {action_idx} is not finite ({target_value})"
+                        ));
+                    }
+                    if mask_value > 0.5 {
+                        saw_masked_action = true;
+                        if !step.legal_mask[action_idx] {
+                            return Err(format!(
+                                "step {i}: delta_q label masks illegal action {action_idx}"
+                            ));
+                        }
+                        if action_idx > DISCARD_END as usize {
+                            return Err(format!(
+                                "step {i}: delta_q label masks non-discard action {action_idx}"
+                            ));
+                        }
+                        if matches!(action_idx as u8, AKA_5M | AKA_5P | AKA_5S) {
+                            return Err(format!(
+                                "step {i}: delta_q label includes aka discard action {action_idx}"
+                            ));
+                        }
+                    } else if target_value.abs() > 1e-5 {
+                        return Err(format!(
+                            "step {i}: delta_q target has non-zero value outside mask at action {action_idx}"
+                        ));
+                    }
+                }
+                if !saw_masked_action {
+                    return Err(format!("step {i}: delta_q label mask is empty"));
+                }
+            }
         }
         Ok(())
     }
@@ -755,6 +824,7 @@ mod tests {
                 mask
             },
             exit_label: None,
+            delta_q_label: None,
             reward: 0.0,
             done: false,
             player_id: 0,
@@ -785,6 +855,7 @@ mod tests {
                 mask
             },
             exit_label: None,
+            delta_q_label: None,
             reward: 1.5,
             done: false,
             player_id: 2,
@@ -825,6 +896,7 @@ mod tests {
                     mask
                 },
                 exit_label: None,
+                delta_q_label: None,
                 reward: 0.0,
                 done: true,
                 player_id: 0,
@@ -910,6 +982,7 @@ mod tests {
                 mask
             },
             exit_label: None,
+            delta_q_label: None,
             reward: 0.0,
             done: true,
             player_id: 5,
@@ -937,6 +1010,7 @@ mod tests {
                 mask
             },
             exit_label: None,
+            delta_q_label: None,
             reward: 0.0,
             done: true,
             player_id: 0,
@@ -972,6 +1046,7 @@ mod tests {
                         mask
                     },
                     exit_label: None,
+                    delta_q_label: None,
                     reward: 0.0,
                     done: turn == 9,
                     player_id: (turn % 4) as u8,
