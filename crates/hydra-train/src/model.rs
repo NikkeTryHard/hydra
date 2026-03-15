@@ -285,6 +285,57 @@ impl<B: Backend> HydraModel<B> {
         (logits, value)
     }
 
+    /// Runs a batch of observations through the full model and returns
+    /// per-sample policy logits and value scalars on the CPU.
+    ///
+    /// This amortizes GPU kernel launch overhead across N samples. The
+    /// input observations are concatenated into a single `[N, C, T]` tensor
+    /// for one forward pass, then results are sliced per sample.
+    pub fn batch_policy_value_cpu(
+        &self,
+        observations: &[[f32; OBS_SIZE]],
+        device: &B::Device,
+    ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
+        if observations.is_empty() {
+            return Vec::new();
+        }
+        let n = observations.len();
+        let mut flat = Vec::with_capacity(n * OBS_SIZE);
+        for obs in observations {
+            flat.extend_from_slice(obs);
+        }
+        let input = Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([
+            n as i32,
+            NUM_CHANNELS as i32,
+            NUM_TILES as i32,
+        ]);
+        let output = self.forward(input);
+        let logits_flat = output
+            .policy_logits
+            .to_data()
+            .as_slice::<f32>()
+            .expect("batch policy logits extraction failed")
+            .to_vec();
+        let values_flat = output
+            .value
+            .to_data()
+            .as_slice::<f32>()
+            .expect("batch value extraction failed")
+            .to_vec();
+
+        (0..n)
+            .map(|i| {
+                let logits_start = i * HYDRA_ACTION_SPACE;
+                let logits: [f32; HYDRA_ACTION_SPACE] = logits_flat
+                    [logits_start..logits_start + HYDRA_ACTION_SPACE]
+                    .try_into()
+                    .expect("logits slice length mismatch");
+                let value = values_flat[i];
+                (logits, value)
+            })
+            .collect()
+    }
+
     pub fn forward(&self, x: Tensor<B, 3>) -> HydraOutput<B> {
         let (spatial, pooled) = self.backbone.forward(x);
         let oracle_input = pooled.clone().detach();

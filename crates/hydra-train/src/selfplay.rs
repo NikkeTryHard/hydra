@@ -10,7 +10,6 @@ use hydra_core::arena::{
 use hydra_core::bridge::encode_observation;
 use hydra_core::encoder::{ObservationEncoder, NUM_CHANNELS, OBS_SIZE};
 use hydra_core::safety::SafetyInfo;
-use rayon::prelude::*;
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::observation::Observation;
 use riichienv_core::rule::GameRule;
@@ -548,87 +547,64 @@ pub fn generate_self_play_batch_source<B: Backend>(
     }
 }
 
-/// Generates self-play trajectories in parallel using owned model clones.
+/// Generates self-play trajectories with batched value baseline computation.
 ///
-/// Each game runs on a Rayon worker with its own cloned model on the
-/// inference device. `HydraModel` is `Clone` + `Send` but not `Sync`
-/// (Burn's `Param<OnceCell>` storage), so models are pre-cloned on the
-/// calling thread then moved into the parallel closure.
-///
-/// When `inference_device` differs from the training device (e.g. CPU
-/// vs CUDA), each clone is forked to the inference device to avoid
-/// multiplying VRAM usage per worker. Value baselines are computed
-/// serially on the original model/device after all games finish.
-pub fn generate_self_play_batch_source_parallel<B: Backend>(
+/// Games run sequentially through the single GPU model (no clones needed).
+/// After all games complete, value baselines for all trajectory steps are
+/// computed in a single batched forward pass instead of one-at-a-time,
+/// amortizing GPU kernel launch overhead.
+pub fn generate_self_play_batch_source_batched<B: Backend>(
     game_seeds: &[u64],
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
     device: &B::Device,
-    inference_device: &B::Device,
     live_exit_cfg: LiveExitConfig,
-) -> SelfPlayBatchSource
-where
-    B::Device: Clone + Send + Sync,
-{
-    // Pre-clone models on the calling thread then fork to inference
-    // device. This avoids capturing `&HydraModel` in the Rayon closure
-    // (which requires Sync) and keeps VRAM for training only.
-    let worker_inputs: Vec<_> = game_seeds
+) -> SelfPlayBatchSource {
+    let trajectories: Vec<Trajectory> = game_seeds
         .iter()
         .enumerate()
         .map(|(idx, &seed)| {
-            let worker_model = model.clone().fork(inference_device);
-            let worker_device = inference_device.clone();
             let game_rng = rng_seed.wrapping_add(idx as u64);
-            let exit_cfg = live_exit_cfg.clone();
-            (idx, seed, worker_model, worker_device, game_rng, exit_cfg)
+            let cfg = live_exit_cfg.clone();
+
+            let infer_fn = |obs: &[f32; OBS_SIZE]| -> [f32; HYDRA_ACTION_SPACE] {
+                let (logits, _) = model.policy_value_cpu(obs, device);
+                logits
+            };
+
+            let exit_fn = make_live_exit_fn(cfg, |obs: &[f32; OBS_SIZE]| {
+                model.policy_value_cpu(obs, device)
+            });
+
+            run_self_play_game_with_exit_labels(seed, temperature, game_rng, infer_fn, exit_fn)
         })
         .collect();
 
-    let mut game_results: Vec<(usize, Trajectory)> = worker_inputs
-        .into_par_iter()
-        .map(
-            |(idx, seed, worker_model, worker_device, game_rng, exit_cfg)| {
-                let infer_fn = |obs: &[f32; OBS_SIZE]| -> [f32; HYDRA_ACTION_SPACE] {
-                    let (logits, _) = worker_model.policy_value_cpu(obs, &worker_device);
-                    logits
-                };
+    // Batch all trajectory observations into one GPU forward pass for
+    // value baselines instead of N*steps individual calls.
+    let total_steps: usize = trajectories.iter().map(|t| t.steps.len()).sum();
+    let mut all_obs: Vec<[f32; OBS_SIZE]> = Vec::with_capacity(total_steps);
+    let mut step_counts: Vec<usize> = Vec::with_capacity(trajectories.len());
+    for trajectory in &trajectories {
+        step_counts.push(trajectory.steps.len());
+        for step in &trajectory.steps {
+            all_obs.push(step.obs);
+        }
+    }
 
-                let exit_fn = make_live_exit_fn(exit_cfg, |obs: &[f32; OBS_SIZE]| {
-                    worker_model.policy_value_cpu(obs, &worker_device)
-                });
+    let all_results = model.batch_policy_value_cpu(&all_obs, device);
 
-                let trajectory = run_self_play_game_with_exit_labels(
-                    seed,
-                    temperature,
-                    game_rng,
-                    infer_fn,
-                    exit_fn,
-                );
-                (idx, trajectory)
-            },
-        )
-        .collect();
-
-    // par_iter collect preserves index order, but sort defensively
-    // since the blueprint requires seed-stable trajectory ordering.
-    game_results.sort_unstable_by_key(|(idx, _)| *idx);
-    let trajectories: Vec<Trajectory> = game_results.into_iter().map(|(_, traj)| traj).collect();
-
-    let all_values: Vec<Vec<f32>> = trajectories
-        .iter()
-        .map(|trajectory| {
-            trajectory
-                .steps
-                .iter()
-                .map(|step| {
-                    let (_, value) = model.policy_value_cpu(&step.obs, device);
-                    value
-                })
-                .collect()
-        })
-        .collect();
+    let mut all_values: Vec<Vec<f32>> = Vec::with_capacity(trajectories.len());
+    let mut offset = 0;
+    for &count in &step_counts {
+        let values: Vec<f32> = all_results[offset..offset + count]
+            .iter()
+            .map(|(_, value)| *value)
+            .collect();
+        all_values.push(values);
+        offset += count;
+    }
 
     SelfPlayBatchSource {
         trajectories,
@@ -638,44 +614,25 @@ where
 
 /// Generates a complete RL training batch from self-play games.
 ///
-/// This is the main entry point for the training loop's data generation
-/// phase. It combines trajectory generation (with optional ExIt labels)
-/// and GAE-based advantage computation into a single [`RlBatch`].
-///
-/// Uses parallel self-play when multiple games are requested to maximize
-/// hardware utilization. Each game runs on its own Rayon worker with an
-/// owned model clone, preserving seed-to-trajectory determinism.
-///
-/// # Arguments
-///
-/// * `game_seeds` - One seed per game to generate
-/// * `temperature` - Exploration temperature for action sampling
-/// * `rng_seed` - Base RNG seed for per-game derivation
-/// * `model` - Current model for inference and value estimation
-/// * `device` - Burn backend device for training
-/// * `inference_device` - Device for self-play inference workers (typically CPU to conserve VRAM)
-/// * `gae_config` - GAE hyperparameters for advantage computation
-/// * `live_exit_cfg` - ExIt producer configuration from the maintenance plan
+/// Uses a single GPU model for all games (no clones). Per-step policy
+/// and exit-search inference runs on GPU through the shared model.
+/// Value baselines are computed in one batched forward pass after all
+/// games complete.
 pub fn generate_self_play_rl_batch<B: Backend>(
     game_seeds: &[u64],
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
     device: &B::Device,
-    inference_device: &B::Device,
     gae_config: &GaeConfig,
     live_exit_cfg: LiveExitConfig,
-) -> RlBatch<B>
-where
-    B::Device: Clone + Send + Sync,
-{
-    let source = generate_self_play_batch_source_parallel(
+) -> RlBatch<B> {
+    let source = generate_self_play_batch_source_batched(
         game_seeds,
         temperature,
         rng_seed,
         model,
         device,
-        inference_device,
         live_exit_cfg,
     );
     trajectories_to_rl_batch(&source.trajectories, &source.values, gae_config, device)
@@ -1027,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parallel_batch_source_matches_serial() {
+    fn test_batched_source_matches_serial() {
         let device = Default::default();
         let model = HydraModelConfig::new(2)
             .with_hidden_channels(32)
@@ -1042,68 +999,66 @@ mod tests {
 
         let serial =
             generate_self_play_batch_source(&seeds, 1.0, 100, &model, &device, cfg.clone());
-        let parallel = generate_self_play_batch_source_parallel(
-            &seeds, 1.0, 100, &model, &device, &device, cfg,
-        );
+        let batched =
+            generate_self_play_batch_source_batched(&seeds, 1.0, 100, &model, &device, cfg);
 
-        assert_eq!(serial.trajectories.len(), parallel.trajectories.len());
-        assert_eq!(serial.values.len(), parallel.values.len());
+        assert_eq!(serial.trajectories.len(), batched.trajectories.len());
+        assert_eq!(serial.values.len(), batched.values.len());
 
-        for (idx, (s_traj, p_traj)) in serial
+        for (idx, (s_traj, b_traj)) in serial
             .trajectories
             .iter()
-            .zip(parallel.trajectories.iter())
+            .zip(batched.trajectories.iter())
             .enumerate()
         {
             assert_eq!(
                 s_traj.steps.len(),
-                p_traj.steps.len(),
+                b_traj.steps.len(),
                 "trajectory {idx} step count mismatch"
             );
-            assert_eq!(s_traj.seed, p_traj.seed, "trajectory {idx} seed mismatch");
+            assert_eq!(s_traj.seed, b_traj.seed, "trajectory {idx} seed mismatch");
             assert_eq!(
-                s_traj.final_scores, p_traj.final_scores,
+                s_traj.final_scores, b_traj.final_scores,
                 "trajectory {idx} final_scores mismatch"
             );
-            for (step_idx, (s_step, p_step)) in
-                s_traj.steps.iter().zip(p_traj.steps.iter()).enumerate()
+            for (step_idx, (s_step, b_step)) in
+                s_traj.steps.iter().zip(b_traj.steps.iter()).enumerate()
             {
                 assert_eq!(
-                    s_step.action, p_step.action,
+                    s_step.action, b_step.action,
                     "trajectory {idx} step {step_idx} action mismatch"
                 );
                 assert_eq!(
-                    s_step.player_id, p_step.player_id,
+                    s_step.player_id, b_step.player_id,
                     "trajectory {idx} step {step_idx} player_id mismatch"
                 );
                 assert_eq!(
-                    s_step.legal_mask, p_step.legal_mask,
+                    s_step.legal_mask, b_step.legal_mask,
                     "trajectory {idx} step {step_idx} legal_mask mismatch"
                 );
                 assert_eq!(
                     s_step.exit_label.is_some(),
-                    p_step.exit_label.is_some(),
+                    b_step.exit_label.is_some(),
                     "trajectory {idx} step {step_idx} exit_label presence mismatch"
                 );
                 assert_eq!(
                     s_step.delta_q_label.is_some(),
-                    p_step.delta_q_label.is_some(),
+                    b_step.delta_q_label.is_some(),
                     "trajectory {idx} step {step_idx} delta_q_label presence mismatch"
                 );
             }
         }
 
-        for (idx, (s_vals, p_vals)) in serial.values.iter().zip(parallel.values.iter()).enumerate()
-        {
+        for (idx, (s_vals, b_vals)) in serial.values.iter().zip(batched.values.iter()).enumerate() {
             assert_eq!(
                 s_vals.len(),
-                p_vals.len(),
+                b_vals.len(),
                 "trajectory {idx} value count mismatch"
             );
-            for (step_idx, (s_val, p_val)) in s_vals.iter().zip(p_vals.iter()).enumerate() {
+            for (step_idx, (s_val, b_val)) in s_vals.iter().zip(b_vals.iter()).enumerate() {
                 assert!(
-                    (s_val - p_val).abs() < 1e-5,
-                    "trajectory {idx} step {step_idx} value mismatch: serial={s_val} parallel={p_val}"
+                    (s_val - b_val).abs() < 1e-5,
+                    "trajectory {idx} step {step_idx} value mismatch: serial={s_val} batched={b_val}"
                 );
             }
         }
@@ -1124,8 +1079,7 @@ mod tests {
             lambda: GAE_LAMBDA,
         };
 
-        let batch =
-            generate_self_play_rl_batch(&seeds, 1.0, 100, &model, &device, &device, &gae, cfg);
+        let batch = generate_self_play_rl_batch(&seeds, 1.0, 100, &model, &device, &gae, cfg);
         let [steps, action_dim] = batch.targets.policy_target.dims();
         assert!(steps > 0);
         assert_eq!(action_dim, HYDRA_ACTION_SPACE);
