@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import queue
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -391,6 +393,36 @@ def _yield_buffer_batches(
         }
 
 
+_PREFETCH_DONE: dict[str, np.ndarray] = {}
+
+
+def _prefetch_shards(
+    shards: list[ShardRecord],
+    shard_order: list[int],
+    prefetch_depth: int,
+) -> Iterator[dict[str, np.ndarray]]:
+    buf: queue.Queue[dict[str, np.ndarray]] = queue.Queue(maxsize=prefetch_depth)
+
+    def _loader() -> None:
+        for shard_idx in shard_order:
+            try:
+                arrays = load_shard_arrays(shards[shard_idx])
+                buf.put(arrays)
+            except Exception:
+                buf.put(_PREFETCH_DONE)
+                return
+        buf.put(_PREFETCH_DONE)
+
+    thread = threading.Thread(target=_loader, daemon=True)
+    thread.start()
+    while True:
+        arrays = buf.get()
+        if arrays is _PREFETCH_DONE:
+            break
+        yield arrays
+    thread.join()
+
+
 def iter_train_epoch_batches(
     dataset: ExportDataset,
     *,
@@ -399,6 +431,7 @@ def iter_train_epoch_batches(
     buffer_games: int,
     buffer_samples: int,
     logical_batch_size: int,
+    prefetch_depth: int = 2,
 ) -> Iterator[dict[str, np.ndarray]]:
     train_shards = dataset.shards("train")
     if not train_shards:
@@ -409,9 +442,22 @@ def iter_train_epoch_batches(
     buffered_samples = 0
     yield_index = 0
 
-    for shard_idx in shard_order:
+    for shard_idx, shard_arrays in zip(
+        shard_order,
+        _prefetch_shards(train_shards, shard_order, prefetch_depth),
+    ):
         shard = train_shards[shard_idx]
-        shard_games = list(iter_games(shard))
+        offsets = shard_arrays["game_sample_offsets"]
+        shard_games = []
+        for start_off, end_off in zip(offsets[:-1], offsets[1:], strict=True):
+            s, e = int(start_off), int(end_off)
+            shard_games.append(
+                {
+                    key: value[s:e]
+                    for key, value in shard_arrays.items()
+                    if key != "game_sample_offsets"
+                }
+            )
         game_order = _shuffle_indices(
             len(shard_games), _stream_shuffle_seed(seed, epoch, shard_idx)
         )
