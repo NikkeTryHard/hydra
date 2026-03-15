@@ -16,7 +16,7 @@ max_skip_logs_per_source: 4
 log_every_n_steps: 1
 validate_every_n_steps: 10
 checkpoint_every_n_steps: 1
-max_train_steps: 2
+max_train_steps: 10
 tensorboard: false
 preflight:
   warmup_steps: 1
@@ -28,6 +28,6 @@ preflight:
   finalist_extra_successes: 1
   finalist_extra_measure_steps: 1
 rl:
-  games_per_batch: 2
+  games_per_batch: 4
   temperature: 1.0
   phase: drda_ach_self_play

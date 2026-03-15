@@ -288,6 +288,53 @@ impl<B: Backend> HydraModel<B> {
         (logits, value_scalar)
     }
 
+    /// Batch inference using a caller-provided flat buffer to avoid
+    /// per-call allocation. The buffer is cleared and reused each call.
+    pub fn batch_policy_value_cpu_reuse(
+        &self,
+        observations: &[[f32; OBS_SIZE]],
+        device: &B::Device,
+        flat_buf: &mut Vec<f32>,
+    ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
+        if observations.is_empty() {
+            return Vec::new();
+        }
+        let n = observations.len();
+        flat_buf.clear();
+        flat_buf.reserve(n * OBS_SIZE);
+        for obs in observations {
+            flat_buf.extend_from_slice(obs);
+        }
+        let input = Tensor::<B, 1>::from_floats(flat_buf.as_slice(), device).reshape([
+            n as i32,
+            NUM_CHANNELS as i32,
+            NUM_TILES as i32,
+        ]);
+        let (policy_logits, value) = self.forward_policy_value(input);
+        let logits_flat = policy_logits
+            .to_data()
+            .as_slice::<f32>()
+            .expect("batch policy logits extraction failed")
+            .to_vec();
+        let values_flat = value
+            .to_data()
+            .as_slice::<f32>()
+            .expect("batch value extraction failed")
+            .to_vec();
+
+        (0..n)
+            .map(|i| {
+                let logits_start = i * HYDRA_ACTION_SPACE;
+                let logits: [f32; HYDRA_ACTION_SPACE] = logits_flat
+                    [logits_start..logits_start + HYDRA_ACTION_SPACE]
+                    .try_into()
+                    .expect("logits slice length mismatch");
+                let value = values_flat[i];
+                (logits, value)
+            })
+            .collect()
+    }
+
     /// Runs a batch of observations through the full model and returns
     /// per-sample policy logits and value scalars on the CPU.
     ///
