@@ -208,6 +208,10 @@ fn exact_waits(state: &GameState, player: usize) -> ([f32; 34], bool) {
     for &tile in state.players[player].hand_slice() {
         counts[tile136_to_type(tile) as usize] += 1;
     }
+    let mut discarded = [false; 34];
+    for &discard in state.players[player].discards_slice() {
+        discarded[tile136_to_type(discard) as usize] = true;
+    }
     let hand_total: u8 = counts.iter().sum();
     let tenpai = calc_shanten_from_counts(&counts, hand_total / 3) == 0;
     if !tenpai {
@@ -219,11 +223,7 @@ fn exact_waits(state: &GameState, player: usize) -> ([f32; 34], bool) {
         if counts[tile] >= 4 {
             continue;
         }
-        if state.players[player]
-            .discards_slice()
-            .iter()
-            .any(|&discard| tile136_to_type(discard) as usize == tile)
-        {
+        if discarded[tile] {
             continue;
         }
         counts[tile] += 1;
@@ -281,6 +281,12 @@ fn build_safety_residual_targets(
 ) -> ([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE]) {
     let mut target = [0.0f32; HYDRA_ACTION_SPACE];
     let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut public_scores = [0.0f32; 34];
+    let mut exact_safety = [1.0f32; 34];
+    for tile in 0..34u8 {
+        public_scores[tile as usize] = public_safety_score(safety, tile);
+        exact_safety[tile as usize] = 1.0 - exact_dealin_event_from_waits(wait_sets, tile);
+    }
     for action in 0..=DISCARD_END {
         let action_idx = action as usize;
         if legal_mask[action_idx] <= 0.0 {
@@ -292,10 +298,7 @@ fn build_safety_residual_targets(
             AKA_5S => 22,
             _ => action,
         };
-        let public_score = public_safety_score(safety, tile);
-        let exact_dealin = exact_dealin_event_from_waits(wait_sets, tile);
-        let exact_safety = 1.0 - exact_dealin;
-        target[action_idx] = exact_safety - public_score;
+        target[action_idx] = exact_safety[tile as usize] - public_scores[tile as usize];
         mask[action_idx] = 1.0;
     }
     (target, mask)
