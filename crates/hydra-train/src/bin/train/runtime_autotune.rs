@@ -63,15 +63,11 @@ pub(super) fn autotune_archive_queue_candidates(config: &TrainConfig) -> Vec<usi
 
 pub(super) fn autotune_rl_games_per_batch_candidates(rl: &RlTrainConfig) -> Vec<usize> {
     let current = rl.games_per_batch.max(1);
-    let mut candidates = vec![
-        current.saturating_mul(8),
-        current.saturating_mul(4),
-        current.saturating_mul(2),
-        current,
-        current / 2,
-        1,
-    ];
-    candidates.retain(|value| *value > 0);
+    let mut candidates: Vec<usize> = vec![128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1];
+    if !candidates.contains(&current) {
+        candidates.push(current);
+    }
+    candidates.sort_unstable_by(|a, b| b.cmp(a));
     candidates.dedup();
     candidates
 }
@@ -192,6 +188,7 @@ pub(super) fn measure_rl_runtime_throughput(
     let target_steps = warmup_steps + measure_steps;
     let mut completed_steps = 0usize;
     let mut measure_start = None;
+    let mut measure_samples = 0usize;
 
     while completed_steps < target_steps {
         let elapsed_secs = completed_steps as u64;
@@ -219,6 +216,7 @@ pub(super) fn measure_rl_runtime_throughput(
         );
 
         controller.try_activate(hydra_train::training::head_gates::AdvancedHead::DeltaQ);
+        let batch_samples = batch.batch_size();
         let (next_model, _) = rl_phase_train_step_with_controller(
             &state,
             model,
@@ -233,16 +231,19 @@ pub(super) fn measure_rl_runtime_throughput(
         controller.tick_warmup();
         completed_steps += 1;
         state.total_games += rl.games_per_batch as u64;
-        state.total_samples += batch.batch_size() as u64;
+        state.total_samples += batch_samples as u64;
         state.increment_learner_version();
         rebase_tracker.tick(1.0);
         if completed_steps == warmup_steps {
             measure_start = Some(Instant::now());
         }
+        if completed_steps > warmup_steps {
+            measure_samples += batch_samples;
+        }
     }
 
     let elapsed = measure_start.map(|start| start.elapsed()).unwrap_or_default();
-    Ok(measure_samples_per_second(measure_steps * rl.games_per_batch, elapsed))
+    Ok(measure_samples_per_second(measure_samples, elapsed))
 }
 
 pub(super) fn autotune_rl_games_per_batch(
@@ -352,13 +353,25 @@ mod tests {
             games_per_batch: 4,
             ..Default::default()
         });
-        assert_eq!(candidates, vec![32, 16, 8, 4, 2, 1]);
+        assert_eq!(candidates, vec![128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]);
     }
 
     #[test]
     fn rl_runtime_autotune_uses_probe_oom_classification() {
         assert_eq!(classify_probe_detail("CUDA out of memory"), ProbeStatus::Oom);
         assert_eq!(classify_probe_detail("oom while probing rl batch"), ProbeStatus::Oom);
+    }
+
+    #[test]
+    fn rl_candidates_include_non_standard_current_value() {
+        let candidates = autotune_rl_games_per_batch_candidates(&RlTrainConfig {
+            games_per_batch: 6,
+            ..Default::default()
+        });
+        assert!(candidates.contains(&6));
+        assert!(candidates.contains(&128));
+        assert!(candidates.contains(&1));
+        assert_eq!(candidates.first(), Some(&128));
     }
 }
 
