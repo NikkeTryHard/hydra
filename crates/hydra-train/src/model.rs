@@ -272,17 +272,20 @@ impl<B: Backend> HydraModel<B> {
             NUM_CHANNELS,
             NUM_TILES,
         ]);
-        let output = self.forward(input);
-        let logits_vec = output
-            .policy_logits_cpu()
-            .expect("policy logits extraction failed");
+        let (policy_logits, value) = self.forward_policy_value(input);
+        let logits_vec = policy_logits
+            .to_data()
+            .as_slice::<f32>()
+            .expect("policy logits extraction failed")
+            .to_vec();
         let logits: [f32; HYDRA_ACTION_SPACE] = logits_vec
             .try_into()
             .expect("policy logits length mismatch");
-        let value = output
-            .value_scalar()
-            .expect("value scalar extraction failed");
-        (logits, value)
+        let value_scalar = value
+            .to_data()
+            .as_slice::<f32>()
+            .expect("value extraction failed")[0];
+        (logits, value_scalar)
     }
 
     /// Runs a batch of observations through the full model and returns
@@ -309,15 +312,13 @@ impl<B: Backend> HydraModel<B> {
             NUM_CHANNELS as i32,
             NUM_TILES as i32,
         ]);
-        let output = self.forward(input);
-        let logits_flat = output
-            .policy_logits
+        let (policy_logits, value) = self.forward_policy_value(input);
+        let logits_flat = policy_logits
             .to_data()
             .as_slice::<f32>()
             .expect("batch policy logits extraction failed")
             .to_vec();
-        let values_flat = output
-            .value
+        let values_flat = value
             .to_data()
             .as_slice::<f32>()
             .expect("batch value extraction failed")
@@ -334,6 +335,18 @@ impl<B: Backend> HydraModel<B> {
                 (logits, value)
             })
             .collect()
+    }
+
+    /// Runs only backbone + policy + value heads.
+    ///
+    /// Self-play inference only needs logits and value. Skipping the
+    /// other 12 heads avoids ~12 unnecessary matmuls and their VRAM
+    /// allocations per forward pass.
+    pub fn forward_policy_value(&self, x: Tensor<B, 3>) -> (Tensor<B, 2>, Tensor<B, 2>) {
+        let (_, pooled) = self.backbone.forward(x);
+        let policy_logits = self.policy.forward(pooled.clone());
+        let value = self.value.forward(pooled);
+        (policy_logits, value)
     }
 
     pub fn forward(&self, x: Tensor<B, 3>) -> HydraOutput<B> {

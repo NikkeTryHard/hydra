@@ -11,10 +11,10 @@
 //! not q-softmax via `root_exit_policy()`.
 
 use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
-use hydra_core::afbs::{AfbsTree, NodeIdx, predicted_child_hash};
-use hydra_core::arena::{TrajectoryExitLabel, softmax_temperature};
+use hydra_core::afbs::{predicted_child_hash, AfbsTree, NodeIdx};
+use hydra_core::arena::{softmax_temperature, TrajectoryDeltaQLabel, TrajectoryExitLabel};
 use hydra_core::bridge::encode_observation;
-use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
+use hydra_core::encoder::{ObservationEncoder, OBS_SIZE};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action, ActionType};
 use riichienv_core::observation::Observation;
@@ -22,9 +22,15 @@ use riichienv_core::state::GameState;
 
 use crate::selfplay::StepRecord;
 use crate::training::exit::{
-    ExitConfig, MIN_EXIT_AVG_ROOT_VISITS_PER_LEGAL_DISCARD, build_exit_from_afbs_tree,
-    compatible_discard_state, is_hard_state,
+    build_delta_q_from_afbs_tree, build_exit_from_afbs_tree, compatible_discard_state,
+    is_hard_state, ExitConfig, MIN_EXIT_AVG_ROOT_VISITS_PER_LEGAL_DISCARD,
 };
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TrajectorySearchLabels {
+    pub exit: Option<TrajectoryExitLabel>,
+    pub delta_q: Option<TrajectoryDeltaQLabel>,
+}
 
 /// Adapter trait for generating child public observations after a discard.
 ///
@@ -61,12 +67,14 @@ pub trait ExitSearchAdapter {
 /// post-discard state.
 pub struct SelfPlayExitAdapter {
     encoder: ObservationEncoder,
+    scratch_state: Option<GameState>,
 }
 
 impl SelfPlayExitAdapter {
     pub fn new() -> Self {
         Self {
             encoder: ObservationEncoder::new(),
+            scratch_state: None,
         }
     }
 }
@@ -98,7 +106,8 @@ impl ExitSearchAdapter for SelfPlayExitAdapter {
         let tile136 = hand.iter().find(|&&t| t / 4 == action)?;
         let riichienv_action = Action::new(ActionType::Discard, Some(*tile136), &[], None);
 
-        let mut child_state = state.clone();
+        let child_state = self.scratch_state.get_or_insert_with(|| state.clone());
+        child_state.clone_from(state);
         child_state.skip_mjai_logging = true;
 
         let mut actions = [None; 4];
@@ -228,8 +237,24 @@ where
     M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
     A: ExitSearchAdapter,
 {
+    try_live_search_labels(state, obs, step, safety, cfg, model_pv, adapter).and_then(|l| l.exit)
+}
+
+pub fn try_live_search_labels<M, A>(
+    state: &GameState,
+    obs: &Observation,
+    step: &StepRecord,
+    safety: &SafetyInfo,
+    cfg: &ExitConfig,
+    model_pv: &mut M,
+    adapter: &mut A,
+) -> Option<TrajectorySearchLabels>
+where
+    M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
+    A: ExitSearchAdapter,
+{
     let ctx = RootDecisionContext::from_step(step);
-    try_exit_label_from_context(state, obs, &ctx, safety, cfg, model_pv, adapter)
+    try_search_labels_from_context(state, obs, &ctx, safety, cfg, model_pv, adapter)
 }
 
 /// Attempts to produce an ExIt label from a reusable root-decision context.
@@ -245,6 +270,23 @@ pub fn try_exit_label_from_context<M, A>(
     model_pv: &mut M,
     adapter: &mut A,
 ) -> Option<TrajectoryExitLabel>
+where
+    M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
+    A: ExitSearchAdapter,
+{
+    try_search_labels_from_context(state, obs, ctx, safety, cfg, model_pv, adapter)
+        .and_then(|l| l.exit)
+}
+
+pub fn try_search_labels_from_context<M, A>(
+    state: &GameState,
+    obs: &Observation,
+    ctx: &RootDecisionContext,
+    safety: &SafetyInfo,
+    cfg: &ExitConfig,
+    model_pv: &mut M,
+    adapter: &mut A,
+) -> Option<TrajectorySearchLabels>
 where
     M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
     A: ExitSearchAdapter,
@@ -305,16 +347,23 @@ where
     });
 
     // Step 9: build the label using the canonical visit-based teacher
-    let (target, mask) = build_exit_from_afbs_tree(
+    let exit = build_exit_from_afbs_tree(
         &tree,
         root,
         &base_pi,
         &legal_f32,
         budget,
         cfg.safety_valve_max_kl,
-    )?;
+    )
+    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
+    let delta_q = build_delta_q_from_afbs_tree(&tree, root, &legal_f32)
+        .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
 
-    TrajectoryExitLabel::from_slices(&target, &mask)
+    if exit.is_none() && delta_q.is_none() {
+        None
+    } else {
+        Some(TrajectorySearchLabels { exit, delta_q })
+    }
 }
 
 /// Configuration for the live ExIt producer.
@@ -346,7 +395,7 @@ impl Default for LiveExitConfig {
 pub fn make_live_exit_fn<M>(
     cfg: LiveExitConfig,
     mut model_pv: M,
-) -> impl FnMut(&GameState, &Observation, &StepRecord, &SafetyInfo, u32) -> Option<TrajectoryExitLabel>
+) -> impl FnMut(&GameState, &Observation, &StepRecord, &SafetyInfo, u32) -> Option<TrajectorySearchLabels>
 where
     M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
 {
@@ -358,7 +407,7 @@ where
         if !enabled {
             return None;
         }
-        try_live_exit_label(
+        try_live_search_labels(
             state,
             obs,
             step,
@@ -707,6 +756,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn produces_delta_q_label_on_good_input() {
+        let step = make_discard_only_step(&[1, 5, 10]);
+        let state = make_test_game();
+        let obs = make_test_obs();
+        let safety = SafetyInfo::new();
+        let cfg = ExitConfig::default_phase3();
+        let values = vec![(1u8, 0.8), (5, 0.5), (10, 0.2)];
+        let mut model = make_stub_model(&values);
+        let mut adapter = StubAdapter { fail_obs: false };
+
+        let labels =
+            try_live_search_labels(&state, &obs, &step, &safety, &cfg, &mut model, &mut adapter)
+                .expect("search labels");
+        let delta_q = labels.delta_q.expect("delta_q label");
+        assert_eq!(delta_q.mask[1], 1.0);
+        assert_eq!(delta_q.mask[5], 1.0);
+        assert_eq!(delta_q.mask[10], 1.0);
+        assert!(delta_q.target[1] > delta_q.target[5]);
+        assert!(delta_q.target[5] > delta_q.target[10]);
     }
 
     #[test]
