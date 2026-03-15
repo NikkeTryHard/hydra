@@ -1,13 +1,11 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use hydra_core::action::HYDRA_ACTION_SPACE;
-use hydra_core::encoder::OBS_SIZE;
 use hydra_train::data::sample::{
     score_delta_to_cdf, score_delta_to_pdf, score_delta_to_value, MjaiSample,
 };
@@ -29,6 +27,8 @@ pub(crate) struct PendingShard {
     pub(crate) game_count: usize,
     pub(crate) sample_count: usize,
 }
+
+pub(crate) type FileHashes = BTreeMap<String, String>;
 
 impl PendingShard {
     pub(crate) fn new(
@@ -59,18 +59,21 @@ impl PendingShard {
         &self,
         file_name: &str,
         value: &T,
-    ) -> io::Result<()> {
-        let path = self.root.join(file_name);
+    ) -> io::Result<(String, String)> {
         let json = serde_json::to_vec_pretty(value)
             .map_err(|err| io::Error::other(format!("failed to serialize {file_name}: {err}")))?;
-        fs::write(path, json)
+        write_tracked_file(&self.root.join(file_name), &json)
     }
 
-    pub(crate) fn write_text(&self, file_name: &str, content: &str) -> io::Result<()> {
-        fs::write(self.root.join(file_name), content)
+    pub(crate) fn write_text(
+        &self,
+        file_name: &str,
+        content: &str,
+    ) -> io::Result<(String, String)> {
+        write_tracked_file(&self.root.join(file_name), content.as_bytes())
     }
 
-    pub(crate) fn write_metadata(&self) -> io::Result<()> {
+    pub(crate) fn write_metadata(&self) -> io::Result<(String, String)> {
         let shard = ShardMetadata {
             schema_version: SCHEMA_VERSION.to_string(),
             split: self.split.clone(),
@@ -81,7 +84,7 @@ impl PendingShard {
         self.write_json("shard.json", &shard)
     }
 
-    pub(crate) fn write_games(&self, games: &[ExportGame]) -> io::Result<()> {
+    pub(crate) fn write_games(&self, games: &[ExportGame]) -> io::Result<FileHashes> {
         let total_samples = games.iter().map(|game| game.samples.len()).sum::<usize>();
         if total_samples != self.sample_count {
             return Err(io::Error::new(
@@ -98,7 +101,9 @@ impl PendingShard {
             .map(|game| game.identity.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        self.write_text("game_identities.txt", &identities)?;
+        let mut hashes = FileHashes::new();
+        let (name, digest) = self.write_text("game_identities.txt", &identities)?;
+        hashes.insert(name, digest);
 
         let mut offsets = Vec::with_capacity(games.len() + 1);
         offsets.push(0i64);
@@ -107,222 +112,319 @@ impl PendingShard {
             running += game.samples.len() as i64;
             offsets.push(running);
         }
-        write_npy_i64_1d(&self.root.join("game_sample_offsets.npy"), &offsets)?;
+        let (name, digest) =
+            write_npy_i64_1d(&self.root.join("game_sample_offsets.npy"), &offsets)?;
+        hashes.insert(name, digest);
 
-        let mut obs = Vec::with_capacity(self.sample_count * OBS_SIZE);
-        let mut action = Vec::with_capacity(self.sample_count);
-        let mut legal_mask = Vec::with_capacity(self.sample_count * HYDRA_ACTION_SPACE);
-        let mut score_delta = Vec::with_capacity(self.sample_count);
-        let mut value_target = Vec::with_capacity(self.sample_count);
-        let mut grp_target = Vec::with_capacity(self.sample_count * 24);
-        let mut tenpai_target = Vec::with_capacity(self.sample_count * 3);
-        let mut danger_target = Vec::with_capacity(self.sample_count * 3 * 34);
-        let mut danger_mask = Vec::with_capacity(self.sample_count * 3 * 34);
-        let mut opp_next_target = Vec::with_capacity(self.sample_count * 3 * 34);
-        let mut score_pdf_target = Vec::with_capacity(self.sample_count * SCORE_BINS);
-        let mut score_cdf_target = Vec::with_capacity(self.sample_count * SCORE_BINS);
-        let mut oracle_target = Vec::with_capacity(self.sample_count * 4);
-        let mut oracle_present = Vec::with_capacity(self.sample_count);
-        let mut safety_residual_target = Vec::with_capacity(self.sample_count * HYDRA_ACTION_SPACE);
-        let mut safety_residual_present = Vec::with_capacity(self.sample_count);
-        let mut safety_residual_mask = Vec::with_capacity(self.sample_count * HYDRA_ACTION_SPACE);
-        let mut belief_fields_target = Vec::with_capacity(self.sample_count * BELIEF_FIELD_SIZE);
-        let mut belief_fields_present = Vec::with_capacity(self.sample_count);
-        let mut mixture_weight_target = Vec::with_capacity(self.sample_count * 4);
-        let mut mixture_weight_present = Vec::with_capacity(self.sample_count);
-
+        let mut writer = ShardTensorWriters::new(&self.root, self.sample_count)?;
         for game in games {
             for sample in &game.samples {
-                obs.extend_from_slice(&sample.obs);
-                action.push(sample.action);
-                legal_mask.extend_from_slice(&sample.legal_mask);
-                score_delta.push(sample.score_delta);
-                value_target.push(score_delta_to_value(sample.score_delta));
-
-                let mut grp = [0.0f32; 24];
-                if (sample.grp_label as usize) < grp.len() {
-                    grp[sample.grp_label as usize] = 1.0;
-                }
-                grp_target.extend_from_slice(&grp);
-
-                tenpai_target.extend_from_slice(&sample.tenpai);
-                danger_target.extend_from_slice(&sample.danger);
-                danger_mask.extend_from_slice(&sample.danger_mask);
-
-                let mut opp = [0.0f32; 3 * 34];
-                for (idx, tile) in sample.opp_next.iter().copied().enumerate() {
-                    if tile < 34 {
-                        opp[idx * 34 + tile as usize] = 1.0;
-                    }
-                }
-                opp_next_target.extend_from_slice(&opp);
-
-                score_pdf_target.extend_from_slice(&score_delta_to_pdf(sample.score_delta));
-                score_cdf_target.extend_from_slice(&score_delta_to_cdf(sample.score_delta));
-
-                if let Some(target) = sample.oracle_target {
-                    oracle_target.extend_from_slice(&target);
-                    oracle_present.push(1);
-                } else {
-                    oracle_target.extend_from_slice(&[0.0; 4]);
-                    oracle_present.push(0);
-                }
-
-                if let Some(target) = sample.safety_residual {
-                    safety_residual_target.extend_from_slice(&target);
-                    safety_residual_present.push(1);
-                } else {
-                    safety_residual_target.extend_from_slice(&[0.0; HYDRA_ACTION_SPACE]);
-                    safety_residual_present.push(0);
-                }
-
-                if let Some(mask) = sample.safety_residual_mask {
-                    safety_residual_mask.extend_from_slice(&mask);
-                } else {
-                    safety_residual_mask.extend_from_slice(&[0.0; HYDRA_ACTION_SPACE]);
-                }
-
-                if let Some(target) = sample.belief_fields {
-                    belief_fields_target.extend_from_slice(&target);
-                } else {
-                    belief_fields_target.extend_from_slice(&[0.0; BELIEF_FIELD_SIZE]);
-                }
-                belief_fields_present.push(u8::from(sample.belief_fields_present));
-
-                if let Some(target) = sample.mixture_weights {
-                    mixture_weight_target.extend_from_slice(&target);
-                } else {
-                    mixture_weight_target.extend_from_slice(&[0.0; 4]);
-                }
-                mixture_weight_present.push(u8::from(sample.mixture_weights_present));
+                writer.write_sample(sample)?;
             }
         }
+        hashes.extend(writer.finish()?);
 
-        write_npy_f32_3d(
-            &self.root.join("obs.npy"),
-            &obs,
-            [self.sample_count, 192, 34],
-        )?;
-        write_npy_u8_1d(&self.root.join("action.npy"), &action)?;
-        write_npy_f32_2d(
-            &self.root.join("legal_mask.npy"),
-            &legal_mask,
-            [self.sample_count, HYDRA_ACTION_SPACE],
-        )?;
-        write_npy_i32_1d(&self.root.join("score_delta.npy"), &score_delta)?;
-        write_npy_f32_1d(&self.root.join("value_target.npy"), &value_target)?;
-        write_npy_f32_2d(
-            &self.root.join("grp_target.npy"),
-            &grp_target,
-            [self.sample_count, 24],
-        )?;
-        write_npy_f32_2d(
-            &self.root.join("tenpai_target.npy"),
-            &tenpai_target,
-            [self.sample_count, 3],
-        )?;
-        write_npy_f32_3d(
-            &self.root.join("danger_target.npy"),
-            &danger_target,
-            [self.sample_count, 3, 34],
-        )?;
-        write_npy_f32_3d(
-            &self.root.join("danger_mask.npy"),
-            &danger_mask,
-            [self.sample_count, 3, 34],
-        )?;
-        write_npy_f32_3d(
-            &self.root.join("opp_next_target.npy"),
-            &opp_next_target,
-            [self.sample_count, 3, 34],
-        )?;
-        write_npy_f32_2d(
-            &self.root.join("score_pdf_target.npy"),
-            &score_pdf_target,
-            [self.sample_count, SCORE_BINS],
-        )?;
-        write_npy_f32_2d(
-            &self.root.join("score_cdf_target.npy"),
-            &score_cdf_target,
-            [self.sample_count, SCORE_BINS],
-        )?;
-        write_npy_f32_2d(
-            &self.root.join("oracle_target.npy"),
-            &oracle_target,
-            [self.sample_count, 4],
-        )?;
-        write_npy_u8_1d(
-            &self.root.join("oracle_target_present.npy"),
-            &oracle_present,
-        )?;
-        write_npy_f32_2d(
-            &self.root.join("safety_residual_target.npy"),
-            &safety_residual_target,
-            [self.sample_count, HYDRA_ACTION_SPACE],
-        )?;
-        write_npy_u8_1d(
-            &self.root.join("safety_residual_present.npy"),
-            &safety_residual_present,
-        )?;
-        write_npy_f32_2d(
-            &self.root.join("safety_residual_mask.npy"),
-            &safety_residual_mask,
-            [self.sample_count, HYDRA_ACTION_SPACE],
-        )?;
-        write_npy_f32_3d(
-            &self.root.join("belief_fields_target.npy"),
-            &belief_fields_target,
-            [self.sample_count, 16, 34],
-        )?;
-        write_npy_u8_1d(
-            &self.root.join("belief_fields_present.npy"),
-            &belief_fields_present,
-        )?;
-        write_npy_f32_2d(
-            &self.root.join("mixture_weight_target.npy"),
-            &mixture_weight_target,
-            [self.sample_count, 4],
-        )?;
-        write_npy_u8_1d(
-            &self.root.join("mixture_weight_present.npy"),
-            &mixture_weight_present,
-        )?;
+        Ok(hashes)
+    }
+
+    pub(crate) fn hash_files(&self, files: FileHashes) -> ShardArtifactHashes {
+        ShardArtifactHashes { files }
+    }
+}
+
+struct NpyWriter {
+    writer: BufWriter<fs::File>,
+    hasher: Sha256,
+    file_name: String,
+}
+
+impl NpyWriter {
+    fn new(path: &Path, descr: &str, shape: &[usize]) -> io::Result<Self> {
+        let file = fs::File::create(path)?;
+        let mut writer = BufWriter::new(file);
+        write_magic(&mut writer)?;
+        let header = build_header(descr, false, shape);
+        let header_len = u16::try_from(header.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "npy header too large"))?;
+        writer.write_all(&header_len.to_le_bytes())?;
+        writer.write_all(&header)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"\x93NUMPY");
+        hasher.update([1, 0]);
+        hasher.update(header_len.to_le_bytes());
+        hasher.update(&header);
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid npy file name"))?
+            .to_string();
+        Ok(Self {
+            writer,
+            hasher,
+            file_name,
+        })
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.hasher.update(bytes);
+        self.writer.write_all(bytes)
+    }
+
+    fn finish(mut self) -> io::Result<(String, String)> {
+        self.writer.flush()?;
+        Ok((self.file_name, format!("{:x}", self.hasher.finalize())))
+    }
+}
+
+struct ShardTensorWriters {
+    obs: NpyWriter,
+    action: NpyWriter,
+    legal_mask: NpyWriter,
+    score_delta: NpyWriter,
+    value_target: NpyWriter,
+    grp_target: NpyWriter,
+    tenpai_target: NpyWriter,
+    danger_target: NpyWriter,
+    danger_mask: NpyWriter,
+    opp_next_target: NpyWriter,
+    score_pdf_target: NpyWriter,
+    score_cdf_target: NpyWriter,
+    oracle_target: NpyWriter,
+    oracle_present: NpyWriter,
+    safety_residual_target: NpyWriter,
+    safety_residual_present: NpyWriter,
+    safety_residual_mask: NpyWriter,
+    belief_fields_target: NpyWriter,
+    belief_fields_present: NpyWriter,
+    mixture_weight_target: NpyWriter,
+    mixture_weight_present: NpyWriter,
+}
+
+impl ShardTensorWriters {
+    fn new(root: &Path, sample_count: usize) -> io::Result<Self> {
+        Ok(Self {
+            obs: NpyWriter::new(&root.join("obs.npy"), "<f4", &[sample_count, 192, 34])?,
+            action: NpyWriter::new(&root.join("action.npy"), "|u1", &[sample_count])?,
+            legal_mask: NpyWriter::new(
+                &root.join("legal_mask.npy"),
+                "<f4",
+                &[sample_count, HYDRA_ACTION_SPACE],
+            )?,
+            score_delta: NpyWriter::new(&root.join("score_delta.npy"), "<i4", &[sample_count])?,
+            value_target: NpyWriter::new(&root.join("value_target.npy"), "<f4", &[sample_count])?,
+            grp_target: NpyWriter::new(&root.join("grp_target.npy"), "<f4", &[sample_count, 24])?,
+            tenpai_target: NpyWriter::new(
+                &root.join("tenpai_target.npy"),
+                "<f4",
+                &[sample_count, 3],
+            )?,
+            danger_target: NpyWriter::new(
+                &root.join("danger_target.npy"),
+                "<f4",
+                &[sample_count, 3, 34],
+            )?,
+            danger_mask: NpyWriter::new(
+                &root.join("danger_mask.npy"),
+                "<f4",
+                &[sample_count, 3, 34],
+            )?,
+            opp_next_target: NpyWriter::new(
+                &root.join("opp_next_target.npy"),
+                "<f4",
+                &[sample_count, 3, 34],
+            )?,
+            score_pdf_target: NpyWriter::new(
+                &root.join("score_pdf_target.npy"),
+                "<f4",
+                &[sample_count, SCORE_BINS],
+            )?,
+            score_cdf_target: NpyWriter::new(
+                &root.join("score_cdf_target.npy"),
+                "<f4",
+                &[sample_count, SCORE_BINS],
+            )?,
+            oracle_target: NpyWriter::new(
+                &root.join("oracle_target.npy"),
+                "<f4",
+                &[sample_count, 4],
+            )?,
+            oracle_present: NpyWriter::new(
+                &root.join("oracle_target_present.npy"),
+                "|u1",
+                &[sample_count],
+            )?,
+            safety_residual_target: NpyWriter::new(
+                &root.join("safety_residual_target.npy"),
+                "<f4",
+                &[sample_count, HYDRA_ACTION_SPACE],
+            )?,
+            safety_residual_present: NpyWriter::new(
+                &root.join("safety_residual_present.npy"),
+                "|u1",
+                &[sample_count],
+            )?,
+            safety_residual_mask: NpyWriter::new(
+                &root.join("safety_residual_mask.npy"),
+                "<f4",
+                &[sample_count, HYDRA_ACTION_SPACE],
+            )?,
+            belief_fields_target: NpyWriter::new(
+                &root.join("belief_fields_target.npy"),
+                "<f4",
+                &[sample_count, 16, 34],
+            )?,
+            belief_fields_present: NpyWriter::new(
+                &root.join("belief_fields_present.npy"),
+                "|u1",
+                &[sample_count],
+            )?,
+            mixture_weight_target: NpyWriter::new(
+                &root.join("mixture_weight_target.npy"),
+                "<f4",
+                &[sample_count, 4],
+            )?,
+            mixture_weight_present: NpyWriter::new(
+                &root.join("mixture_weight_present.npy"),
+                "|u1",
+                &[sample_count],
+            )?,
+        })
+    }
+
+    fn write_sample(&mut self, sample: &MjaiSample) -> io::Result<()> {
+        self.obs.write_bytes(f32_as_le_bytes(&sample.obs))?;
+        self.action.write_bytes(&[sample.action])?;
+        self.legal_mask
+            .write_bytes(f32_as_le_bytes(&sample.legal_mask))?;
+        self.score_delta
+            .write_bytes(i32_as_le_bytes(std::slice::from_ref(&sample.score_delta)))?;
+
+        let value_target = [score_delta_to_value(sample.score_delta)];
+        self.value_target
+            .write_bytes(f32_as_le_bytes(&value_target))?;
+
+        let mut grp = [0.0f32; 24];
+        if (sample.grp_label as usize) < grp.len() {
+            grp[sample.grp_label as usize] = 1.0;
+        }
+        self.grp_target.write_bytes(f32_as_le_bytes(&grp))?;
+
+        self.tenpai_target
+            .write_bytes(f32_as_le_bytes(&sample.tenpai))?;
+        self.danger_target
+            .write_bytes(f32_as_le_bytes(&sample.danger))?;
+        self.danger_mask
+            .write_bytes(f32_as_le_bytes(&sample.danger_mask))?;
+
+        let mut opp = [0.0f32; 3 * 34];
+        for (idx, tile) in sample.opp_next.iter().copied().enumerate() {
+            if tile < 34 {
+                opp[idx * 34 + tile as usize] = 1.0;
+            }
+        }
+        self.opp_next_target.write_bytes(f32_as_le_bytes(&opp))?;
+
+        let score_pdf = score_delta_to_pdf(sample.score_delta);
+        self.score_pdf_target
+            .write_bytes(f32_as_le_bytes(&score_pdf))?;
+        let score_cdf = score_delta_to_cdf(sample.score_delta);
+        self.score_cdf_target
+            .write_bytes(f32_as_le_bytes(&score_cdf))?;
+
+        if let Some(target) = sample.oracle_target {
+            self.oracle_target.write_bytes(f32_as_le_bytes(&target))?;
+            self.oracle_present.write_bytes(&[1])?;
+        } else {
+            self.oracle_target.write_bytes(f32_as_le_bytes(&[0.0; 4]))?;
+            self.oracle_present.write_bytes(&[0])?;
+        }
+
+        if let Some(target) = sample.safety_residual {
+            self.safety_residual_target
+                .write_bytes(f32_as_le_bytes(&target))?;
+            self.safety_residual_present.write_bytes(&[1])?;
+        } else {
+            self.safety_residual_target
+                .write_bytes(f32_as_le_bytes(&[0.0; HYDRA_ACTION_SPACE]))?;
+            self.safety_residual_present.write_bytes(&[0])?;
+        }
+
+        if let Some(mask) = sample.safety_residual_mask {
+            self.safety_residual_mask
+                .write_bytes(f32_as_le_bytes(&mask))?;
+        } else {
+            self.safety_residual_mask
+                .write_bytes(f32_as_le_bytes(&[0.0; HYDRA_ACTION_SPACE]))?;
+        }
+
+        if let Some(target) = sample.belief_fields {
+            self.belief_fields_target
+                .write_bytes(f32_as_le_bytes(&target))?;
+        } else {
+            self.belief_fields_target
+                .write_bytes(f32_as_le_bytes(&[0.0; BELIEF_FIELD_SIZE]))?;
+        }
+        self.belief_fields_present
+            .write_bytes(&[u8::from(sample.belief_fields_present)])?;
+
+        if let Some(target) = sample.mixture_weights {
+            self.mixture_weight_target
+                .write_bytes(f32_as_le_bytes(&target))?;
+        } else {
+            self.mixture_weight_target
+                .write_bytes(f32_as_le_bytes(&[0.0; 4]))?;
+        }
+        self.mixture_weight_present
+            .write_bytes(&[u8::from(sample.mixture_weights_present)])?;
 
         Ok(())
     }
 
-    pub(crate) fn hash_files(&self) -> io::Result<ShardArtifactHashes> {
-        let mut entries = fs::read_dir(&self.root)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        let hashes = entries
-            .par_iter()
-            .filter_map(|entry| {
-                let path = entry.path();
-                path.is_file().then_some(path)
-            })
-            .map(|path| -> io::Result<(String, String)> {
-                let file = fs::File::open(&path)?;
-                let mut reader = BufReader::with_capacity(1 << 20, file);
-                let mut hasher = Sha256::new();
-                io::copy(&mut reader, &mut hasher)?;
-                let digest = format!("{:x}", hasher.finalize());
-                let name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidData, "invalid shard file name")
-                    })?
-                    .to_string();
-                Ok((name, digest))
-            })
-            .collect::<io::Result<BTreeMap<_, _>>>()?;
-        Ok(ShardArtifactHashes { files: hashes })
+    fn finish(self) -> io::Result<FileHashes> {
+        let mut hashes = FileHashes::new();
+        let mut insert = |entry: (String, String)| {
+            hashes.insert(entry.0, entry.1);
+        };
+        insert(self.obs.finish()?);
+        insert(self.action.finish()?);
+        insert(self.legal_mask.finish()?);
+        insert(self.score_delta.finish()?);
+        insert(self.value_target.finish()?);
+        insert(self.grp_target.finish()?);
+        insert(self.tenpai_target.finish()?);
+        insert(self.danger_target.finish()?);
+        insert(self.danger_mask.finish()?);
+        insert(self.opp_next_target.finish()?);
+        insert(self.score_pdf_target.finish()?);
+        insert(self.score_cdf_target.finish()?);
+        insert(self.oracle_target.finish()?);
+        insert(self.oracle_present.finish()?);
+        insert(self.safety_residual_target.finish()?);
+        insert(self.safety_residual_present.finish()?);
+        insert(self.safety_residual_mask.finish()?);
+        insert(self.belief_fields_target.finish()?);
+        insert(self.belief_fields_present.finish()?);
+        insert(self.mixture_weight_target.finish()?);
+        insert(self.mixture_weight_present.finish()?);
+        Ok(hashes)
     }
 }
 
 fn write_magic<W: Write>(writer: &mut W) -> io::Result<()> {
     writer.write_all(b"\x93NUMPY")?;
     writer.write_all(&[1, 0])
+}
+
+fn write_tracked_file(path: &Path, bytes: &[u8]) -> io::Result<(String, String)> {
+    fs::write(path, bytes)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid tracked file name"))?
+        .to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok((name, format!("{:x}", hasher.finalize())))
 }
 
 fn build_header(descr: &str, fortran_order: bool, shape: &[usize]) -> Vec<u8> {
@@ -352,7 +454,12 @@ fn build_header(descr: &str, fortran_order: bool, shape: &[usize]) -> Vec<u8> {
     header
 }
 
-fn write_npy_bytes(path: &Path, descr: &str, shape: &[usize], data: &[u8]) -> io::Result<()> {
+fn write_npy_bytes(
+    path: &Path,
+    descr: &str,
+    shape: &[usize],
+    data: &[u8],
+) -> io::Result<(String, String)> {
     let file = fs::File::create(path)?;
     let mut writer = BufWriter::new(file);
     write_magic(&mut writer)?;
@@ -362,7 +469,20 @@ fn write_npy_bytes(path: &Path, descr: &str, shape: &[usize], data: &[u8]) -> io
     writer.write_all(&header_len.to_le_bytes())?;
     writer.write_all(&header)?;
     writer.write_all(data)?;
-    writer.flush()
+    writer.flush()?;
+
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid npy file name"))?
+        .to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(b"\x93NUMPY");
+    hasher.update([1, 0]);
+    hasher.update(header_len.to_le_bytes());
+    hasher.update(&header);
+    hasher.update(data);
+    Ok((name, format!("{:x}", hasher.finalize())))
 }
 
 #[cfg(target_endian = "little")]
@@ -420,33 +540,14 @@ fn i64_as_le_bytes(values: &[i64]) -> Vec<u8> {
     out
 }
 
-fn write_npy_f32_1d(path: &Path, values: &[f32]) -> io::Result<()> {
-    write_npy_bytes(path, "<f4", &[values.len()], f32_as_le_bytes(values))
-}
-
-fn write_npy_f32_2d(path: &Path, values: &[f32], shape: [usize; 2]) -> io::Result<()> {
-    write_npy_bytes(path, "<f4", &shape, f32_as_le_bytes(values))
-}
-
-fn write_npy_f32_3d(path: &Path, values: &[f32], shape: [usize; 3]) -> io::Result<()> {
-    write_npy_bytes(path, "<f4", &shape, f32_as_le_bytes(values))
-}
-
-fn write_npy_u8_1d(path: &Path, values: &[u8]) -> io::Result<()> {
-    write_npy_bytes(path, "|u1", &[values.len()], values)
-}
-
-fn write_npy_i32_1d(path: &Path, values: &[i32]) -> io::Result<()> {
-    write_npy_bytes(path, "<i4", &[values.len()], i32_as_le_bytes(values))
-}
-
-fn write_npy_i64_1d(path: &Path, values: &[i64]) -> io::Result<()> {
+fn write_npy_i64_1d(path: &Path, values: &[i64]) -> io::Result<(String, String)> {
     write_npy_bytes(path, "<i8", &[values.len()], i64_as_le_bytes(values))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hydra_core::encoder::OBS_SIZE;
 
     fn dummy_sample(action: u8, score_delta: i32) -> MjaiSample {
         let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];

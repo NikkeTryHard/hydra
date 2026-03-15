@@ -1,10 +1,11 @@
 use std::fs;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc;
+use std::thread;
 
 use indicatif::ProgressBar;
-use rayon::prelude::*;
+use rayon::{prelude::*, ThreadPoolBuilder};
 use sha2::{Digest, Sha256};
 
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
@@ -77,9 +78,11 @@ impl SplitShardBuffer {
             self.games.len(),
             self.sample_count,
         )?;
-        shard.write_metadata()?;
-        shard.write_games(&self.games)?;
-        let hashes = shard.hash_files()?;
+        let mut file_hashes = crate::shard_writer::FileHashes::new();
+        let (metadata_name, metadata_hash) = shard.write_metadata()?;
+        file_hashes.insert(metadata_name, metadata_hash);
+        file_hashes.extend(shard.write_games(&self.games)?);
+        let hashes = shard.hash_files(file_hashes);
         shards.push(ShardManifestEntry {
             split: self.split.clone(),
             shard_name: shard.shard_name,
@@ -248,10 +251,12 @@ where
 {
     if data_path.is_file() {
         if is_tar_zst_file(data_path) {
-            let (tx, rx) = mpsc::sync_channel(archive_queue_bound.max(1));
-            load_archive_games(data_path, 0, progress.cloned(), &tx)?;
-            drop(tx);
-            consume_archive_messages(rx, 1, &mut on_game)?;
+            load_archive_games(
+                data_path,
+                archive_queue_bound,
+                progress.cloned(),
+                &mut on_game,
+            )?;
         } else if is_mjai_file(data_path) {
             let identity = identity_for_loose_file(data_path)?;
             match load_game_from_path(data_path) {
@@ -319,187 +324,222 @@ where
         return Ok(());
     }
 
-    let archive_count = archives.len();
-    let (tx, rx) = mpsc::sync_channel(archive_queue_bound.max(1));
-    let progress_owned = progress.cloned();
-
-    // Producers run on a background thread so the main thread can consume
-    // from the bounded channel concurrently. Without this, try_for_each_with
-    // blocks until all archives finish, but the sync_channel would fill up
-    // and deadlock because nobody is draining the receiver yet.
-    let producer_handle = std::thread::spawn(move || -> io::Result<()> {
-        let result = archives.into_par_iter().enumerate().try_for_each_with(
-            tx.clone(),
-            |sender, (archive_index, archive)| {
-                load_archive_games(&archive, archive_index, progress_owned.clone(), sender)
-            },
-        );
-        drop(tx);
-        result
-    });
-
-    consume_archive_messages(rx, archive_count, &mut on_game)?;
-
-    producer_handle
-        .join()
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "archive producer thread panicked"))??;
+    for archive in archives {
+        load_archive_games(
+            &archive,
+            archive_queue_bound,
+            progress.cloned(),
+            &mut on_game,
+        )?;
+    }
 
     Ok(())
+}
+
+struct ArchiveEntryJob {
+    sequence: usize,
+    display_name: String,
+    data: Vec<u8>,
+}
+
+struct ParsedArchiveGame {
+    sequence: usize,
+    display_name: String,
+    result: io::Result<ExportGame>,
 }
 
 fn load_archive_games(
     archive_path: &Path,
-    archive_index: usize,
+    archive_queue_bound: usize,
     progress: Option<ProgressBar>,
-    sender: &SyncSender<ArchiveMessage>,
+    on_game: &mut impl FnMut(ExportGame) -> io::Result<()>,
 ) -> io::Result<()> {
-    let file = fs::File::open(archive_path)?;
-    let reader = BufReader::with_capacity(1 << 20, file);
-    let zstd = zstd::Decoder::new(reader).map_err(|err| {
-        io::Error::other(format!(
-            "failed to open zstd archive {}: {err}",
-            archive_path.display()
-        ))
-    })?;
-    let mut archive = tar::Archive::new(zstd);
-    for entry_result in archive.entries()? {
-        let mut entry = entry_result?;
-        let entry_path = entry.path()?.into_owned();
-        if !is_mjai_archive_entry(&entry_path) {
-            continue;
-        }
-        let identity = identity_for_archive_entry(archive_path, &entry_path)?;
-        let mut data = Vec::with_capacity(entry.size() as usize);
-        std::io::Read::read_to_end(&mut entry, &mut data)?;
-        match load_game_from_stream(BufReader::new(std::io::Cursor::new(data))) {
-            Ok(game) => {
-                sender
-                    .send(ArchiveMessage::Game {
-                        archive_index,
-                        game: ExportGame {
-                            identity,
-                            samples: game.samples,
-                        },
+    let archive_path = archive_path.to_path_buf();
+    let archive_path_for_thread = archive_path.clone();
+    let queue_bound = archive_queue_bound.max(1);
+    let (ordered_tx, ordered_rx) = mpsc::sync_channel::<ExportGame>(queue_bound);
+    let handle = thread::Builder::new()
+        .name(format!("export-archive-{}", archive_path.display()))
+        .spawn(move || -> io::Result<()> {
+            let pool = ThreadPoolBuilder::new().build().map_err(|err| {
+                io::Error::other(format!(
+                    "failed to build archive parse thread pool for {}: {err}",
+                    archive_path_for_thread.display()
+                ))
+            })?;
+
+            let file = fs::File::open(&archive_path_for_thread)?;
+            let reader = BufReader::with_capacity(1 << 20, file);
+            let zstd = zstd::Decoder::new(reader).map_err(|err| {
+                io::Error::other(format!(
+                    "failed to open zstd archive {}: {err}",
+                    archive_path_for_thread.display()
+                ))
+            })?;
+            let mut archive = tar::Archive::new(zstd);
+
+            let (job_tx, job_rx) = mpsc::sync_channel::<ArchiveEntryJob>(queue_bound);
+            let (parsed_tx, parsed_rx) = mpsc::sync_channel::<ParsedArchiveGame>(queue_bound);
+
+            let parsed_tx_for_parse = parsed_tx.clone();
+            let archive_path_for_parse = archive_path_for_thread.clone();
+            let parser =
+                thread::Builder::new()
+                    .name(format!("export-parse-{}", archive_path_for_parse.display()))
+                    .spawn(move || -> io::Result<()> {
+                        pool.install(|| {
+                            job_rx.into_iter().par_bridge().try_for_each(|job| {
+                                let result = load_game_from_stream(std::io::Cursor::new(job.data))
+                                    .map(|game| ExportGame {
+                                        identity: job.display_name.clone(),
+                                        samples: game.samples,
+                                    });
+                                parsed_tx_for_parse
+                                    .send(ParsedArchiveGame {
+                                        sequence: job.sequence,
+                                        display_name: job.display_name,
+                                        result,
+                                    })
+                                    .map_err(|_| {
+                                        io::Error::new(
+                                            io::ErrorKind::BrokenPipe,
+                                            "archive parse receiver dropped while exporting",
+                                        )
+                                    })
+                            })
+                        })
                     })
-                    .map_err(channel_send_error)?;
-            }
-            Err(err) => {
-                eprintln!("Skipping {}: {}", identity, err);
-            }
-        }
-        if let Some(pb) = &progress {
-            pb.inc(1);
-        }
-    }
-    sender
-        .send(ArchiveMessage::ArchiveComplete { archive_index })
-        .map_err(channel_send_error)?;
-    Ok(())
-}
+                    .map_err(|err| {
+                        io::Error::other(format!(
+                            "failed to spawn archive parse thread {}: {err}",
+                            archive_path_for_thread.display()
+                        ))
+                    })?;
+            drop(parsed_tx);
 
-enum ArchiveMessage {
-    Game {
-        archive_index: usize,
-        game: ExportGame,
-    },
-    ArchiveComplete {
-        archive_index: usize,
-    },
-}
+            let collector = thread::Builder::new()
+                .name(format!(
+                    "export-order-{}",
+                    archive_path_for_thread.display()
+                ))
+                .spawn(move || -> io::Result<()> {
+                    let mut next_sequence = 0usize;
+                    let mut pending = std::collections::BTreeMap::new();
+                    for parsed in parsed_rx {
+                        pending.insert(parsed.sequence, parsed);
+                        while let Some(parsed) = pending.remove(&next_sequence) {
+                            match parsed.result {
+                                Ok(game) => ordered_tx.send(game).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::BrokenPipe,
+                                        "archive ordered receiver dropped while exporting",
+                                    )
+                                })?,
+                                Err(err) => {
+                                    eprintln!("Skipping {}: {}", parsed.display_name, err);
+                                }
+                            }
+                            next_sequence += 1;
+                        }
+                    }
+                    Ok(())
+                })
+                .map_err(|err| {
+                    io::Error::other(format!(
+                        "failed to spawn archive ordering thread {}: {err}",
+                        archive_path_for_thread.display()
+                    ))
+                })?;
 
-fn consume_archive_messages<F>(
-    receiver: mpsc::Receiver<ArchiveMessage>,
-    archive_count: usize,
-    mut on_game: F,
-) -> io::Result<()>
-where
-    F: FnMut(ExportGame) -> io::Result<()>,
-{
-    let mut buffered_games = std::collections::BTreeMap::<usize, Vec<ExportGame>>::new();
-    let mut completed_archives = std::collections::BTreeSet::new();
-    let mut next_archive_index = 0usize;
-
-    while completed_archives.len() < archive_count {
-        match receiver.recv() {
-            Ok(ArchiveMessage::Game {
-                archive_index,
-                game,
-            }) => {
-                if archive_index == next_archive_index {
-                    on_game(game)?;
-                } else {
-                    buffered_games.entry(archive_index).or_default().push(game);
+            let mut sequence = 0usize;
+            for entry_result in archive.entries()? {
+                let mut entry = entry_result?;
+                let entry_path = entry.path()?.into_owned();
+                if !is_mjai_archive_entry(&entry_path) {
+                    continue;
+                }
+                let identity = identity_for_archive_entry(&archive_path_for_thread, &entry_path)?;
+                let entry_size = usize::try_from(entry.size()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("archive entry too large to buffer: {identity}"),
+                    )
+                })?;
+                let mut data = vec![0u8; entry_size];
+                if let Err(err) = std::io::Read::read_exact(&mut entry, &mut data) {
+                    eprintln!("Skipping {}: {}", identity, err);
+                    continue;
+                }
+                if job_tx
+                    .send(ArchiveEntryJob {
+                        sequence,
+                        display_name: identity,
+                        data,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                sequence += 1;
+                if let Some(pb) = &progress {
+                    pb.inc(1);
                 }
             }
-            Ok(ArchiveMessage::ArchiveComplete { archive_index }) => {
-                completed_archives.insert(archive_index);
-                flush_ready_archives(
-                    &mut buffered_games,
-                    &completed_archives,
-                    &mut next_archive_index,
-                    &mut on_game,
-                )?;
-            }
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "archive worker channel closed before all archives completed",
-                ));
-            }
-        }
+            drop(job_tx);
+
+            parser.join().map_err(|_| {
+                io::Error::other(format!(
+                    "archive parse thread panicked for {}",
+                    archive_path_for_thread.display()
+                ))
+            })??;
+            collector.join().map_err(|_| {
+                io::Error::other(format!(
+                    "archive ordering thread panicked for {}",
+                    archive_path_for_thread.display()
+                ))
+            })??;
+
+            Ok(())
+        })
+        .map_err(|err| {
+            io::Error::other(format!(
+                "failed to spawn archive export thread {}: {err}",
+                archive_path.display()
+            ))
+        })?;
+
+    for game in ordered_rx {
+        on_game(game)?;
     }
 
-    flush_ready_archives(
-        &mut buffered_games,
-        &completed_archives,
-        &mut next_archive_index,
-        &mut on_game,
-    )?;
-
-    if buffered_games.is_empty() && next_archive_index == archive_count {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "archive worker channel ended with unflushed buffered games",
+    handle.join().map_err(|_| {
+        io::Error::other(format!(
+            "archive export thread panicked for {}",
+            archive_path.display()
         ))
-    }
-}
+    })??;
 
-fn flush_ready_archives<F>(
-    buffered_games: &mut std::collections::BTreeMap<usize, Vec<ExportGame>>,
-    completed_archives: &std::collections::BTreeSet<usize>,
-    next_archive_index: &mut usize,
-    on_game: &mut F,
-) -> io::Result<()>
-where
-    F: FnMut(ExportGame) -> io::Result<()>,
-{
-    loop {
-        let Some(mut games) = buffered_games.remove(next_archive_index) else {
-            if completed_archives.contains(next_archive_index) {
-                *next_archive_index += 1;
-                continue;
-            }
-            break;
-        };
-        for game in games.drain(..) {
-            on_game(game)?;
-        }
-        if completed_archives.contains(next_archive_index) {
-            *next_archive_index += 1;
-        } else {
-            break;
-        }
-    }
     Ok(())
 }
 
-fn channel_send_error(_: mpsc::SendError<ArchiveMessage>) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::BrokenPipe,
-        "archive worker channel closed while exporting games",
-    )
+fn collect_source_paths(data_path: &Path) -> io::Result<Vec<PathBuf>> {
+    if data_path.is_file() {
+        return Ok(vec![data_path.to_path_buf()]);
+    }
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(data_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !fs::metadata(&path)?.is_file() {
+            continue;
+        }
+        if is_mjai_file(&path) || is_tar_zst_file(&path) {
+            sources.push(path);
+        }
+    }
+    sources.sort();
+    Ok(sources)
 }
 
 fn write_split_shards(
@@ -530,9 +570,11 @@ fn write_split_shards(
             current_games.len(),
             current_sample_count,
         )?;
-        shard.write_metadata()?;
-        shard.write_games(current_games)?;
-        let hashes = shard.hash_files()?;
+        let mut file_hashes = crate::shard_writer::FileHashes::new();
+        let (metadata_name, metadata_hash) = shard.write_metadata()?;
+        file_hashes.insert(metadata_name, metadata_hash);
+        file_hashes.extend(shard.write_games(current_games)?);
+        let hashes = shard.hash_files(file_hashes);
         out.push(ShardManifestEntry {
             split: split.clone(),
             shard_name: shard.shard_name,
@@ -572,25 +614,6 @@ fn write_split_shards(
         out,
     )?;
     Ok(())
-}
-
-fn collect_source_paths(data_path: &Path) -> io::Result<Vec<PathBuf>> {
-    if data_path.is_file() {
-        return Ok(vec![data_path.to_path_buf()]);
-    }
-    let mut sources = Vec::new();
-    for entry in fs::read_dir(data_path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !fs::metadata(&path)?.is_file() {
-            continue;
-        }
-        if is_mjai_file(&path) || is_tar_zst_file(&path) {
-            sources.push(path);
-        }
-    }
-    sources.sort();
-    Ok(sources)
 }
 
 fn identity_for_loose_file(path: &Path) -> io::Result<String> {
