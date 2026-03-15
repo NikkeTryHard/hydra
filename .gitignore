@@ -13,6 +13,7 @@ __pycache__/
 *.pyc
 .tmp_archive_claims/
 python/hydra_phase0_tpu/tests/.tmp_*/
+python/hydra_phase0_tpu/*.egg-info/
 
 # Local funding / outreach drafts
 /email_draft_*.txt

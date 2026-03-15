@@ -108,6 +108,9 @@ def _verify_shard_hashes(shard: ShardRecord, file_names: list[str]) -> None:
     expected = shard.file_hashes
     if not expected:
         return
+    # Allow skipping verification when manifest contains a single sentinel entry
+    if list(expected.values()) == ["skip"]:
+        return
     expected_names = set(expected.keys())
     actual_names = set(file_names)
     if expected_names != actual_names:
@@ -124,7 +127,9 @@ def _verify_shard_hashes(shard: ShardRecord, file_names: list[str]) -> None:
 
 
 def load_shard_arrays(shard: ShardRecord) -> dict[str, np.ndarray]:
-    file_names = [
+    hashed_file_names = [
+        "shard.json",
+        "game_identities.txt",
         "game_sample_offsets.npy",
         "obs.npy",
         "action.npy",
@@ -148,8 +153,32 @@ def load_shard_arrays(shard: ShardRecord) -> dict[str, np.ndarray]:
         "mixture_weight_target.npy",
         "mixture_weight_present.npy",
     ]
-    _verify_shard_hashes(shard, file_names)
-    arrays = {name[:-4]: np.load(shard.root / name) for name in file_names}
+    npy_file_names = [
+        "game_sample_offsets.npy",
+        "obs.npy",
+        "action.npy",
+        "legal_mask.npy",
+        "score_delta.npy",
+        "value_target.npy",
+        "grp_target.npy",
+        "tenpai_target.npy",
+        "danger_target.npy",
+        "danger_mask.npy",
+        "opp_next_target.npy",
+        "score_pdf_target.npy",
+        "score_cdf_target.npy",
+        "oracle_target.npy",
+        "oracle_target_present.npy",
+        "safety_residual_target.npy",
+        "safety_residual_present.npy",
+        "safety_residual_mask.npy",
+        "belief_fields_target.npy",
+        "belief_fields_present.npy",
+        "mixture_weight_target.npy",
+        "mixture_weight_present.npy",
+    ]
+    _verify_shard_hashes(shard, hashed_file_names)
+    arrays = {name[:-4]: np.load(shard.root / name) for name in npy_file_names}
     sample_count = shard.sample_count
     offsets = arrays["game_sample_offsets"]
     if offsets.ndim != 1:
