@@ -7,7 +7,7 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::config::OracleGuidingConfig;
-use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_with_batch};
+use crate::data::sample::{collate_sample_refs_with_batch, MjaiBatch, MjaiSample};
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::exit::exit_loss;
 use crate::training::losses::{HydraLoss, HydraTargets};
@@ -188,7 +188,11 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob { 1.0 } else { 0.0 }
+            if sample < keep_prob {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -265,6 +269,8 @@ pub fn oracle_guiding_train_step<B: AutodiffBackend>(
         safety_residual_mask: targets.safety_residual_mask.clone(),
         exit_target: None,
         exit_mask: None,
+        delta_q_target: targets.delta_q_target.clone(),
+        delta_q_mask: targets.delta_q_mask.clone(),
         belief_fields_target: targets.belief_fields_target.clone(),
         mixture_weight_target: targets.mixture_weight_target.clone(),
         belief_fields_mask: targets.belief_fields_mask.clone(),
@@ -536,7 +542,7 @@ impl CheckpointMeta {
 mod tests {
     use super::*;
     use crate::data::sample::MjaiBatch;
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
@@ -569,6 +575,8 @@ mod tests {
             safety_residual_mask: None,
             exit_target: None,
             exit_mask: None,
+            delta_q_target: None,
+            delta_q_mask: None,
             belief_fields_target: None,
             mixture_weight_target: None,
             belief_fields_mask: None,

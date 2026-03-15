@@ -248,10 +248,10 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
         };
     }
 
-    // Delta Q: if present, all samples have it.
-    if targets.delta_q_target.is_some() {
-        counts[AdvancedHead::DeltaQ.index()] = batch_size;
-    }
+    counts[AdvancedHead::DeltaQ.index()] = match (&targets.delta_q_target, &targets.delta_q_mask) {
+        (Some(_), Some(mask)) => count_nonzero_rows_2d(mask),
+        _ => 0,
+    };
 
     // Safety residual: if present, all samples have it. The per-action mask
     // determines which actions contribute to loss, not which samples.
@@ -266,6 +266,17 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
 fn count_nonzero_1d<B: Backend>(tensor: &Tensor<B, 1>) -> usize {
     match tensor.to_data().as_slice::<f32>() {
         Ok(data) => data.iter().filter(|&&v| v > 0.0).count(),
+        Err(_) => 0,
+    }
+}
+
+fn count_nonzero_rows_2d<B: Backend>(tensor: &Tensor<B, 2>) -> usize {
+    let [_rows, cols] = tensor.dims();
+    match tensor.to_data().as_slice::<f32>() {
+        Ok(data) => data
+            .chunks(cols)
+            .filter(|row| row.iter().any(|&v| v > 0.0))
+            .count(),
         Err(_) => 0,
     }
 }
@@ -1268,6 +1279,7 @@ mod tests {
             mixture_weight_mask: None,
             opponent_hand_type_target: None,
             delta_q_target: None,
+            delta_q_mask: None,
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
@@ -1319,13 +1331,28 @@ mod tests {
     }
 
     #[test]
-    fn extract_presence_delta_q_all_present() {
+    fn extract_presence_delta_q_counts_only_nonzero_mask_rows() {
         let device = Default::default();
         let mut targets = dummy_targets(8);
         targets.delta_q_target = Some(Tensor::zeros([8, 46], &device));
+        let mut mask = [[0.0f32; 46]; 8];
+        mask[0][1] = 1.0;
+        mask[2][3] = 1.0;
+        mask[7][10] = 1.0;
+        targets.delta_q_mask = Some(Tensor::from_floats(mask, &device));
 
         let presence = extract_target_presence(&targets);
-        assert_eq!(presence.count(AdvancedHead::DeltaQ), 8);
+        assert_eq!(presence.count(AdvancedHead::DeltaQ), 3);
+    }
+
+    #[test]
+    fn extract_presence_delta_q_invalid_pair_counts_zero() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.delta_q_target = Some(Tensor::zeros([4, 46], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::DeltaQ), 0);
     }
 
     // -- Full integration: controller with extract_target_presence ----------

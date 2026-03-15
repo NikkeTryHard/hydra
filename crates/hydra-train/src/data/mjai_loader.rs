@@ -450,6 +450,8 @@ fn load_game_from_events_internal(
                         safety_residual_mask: Some(safety_residual_mask),
                         exit_target: joined_exit.map(|(target, _)| target),
                         exit_mask: joined_exit.map(|(_, mask)| mask),
+                        delta_q_target: None,
+                        delta_q_mask: None,
                         belief_fields,
                         mixture_weights,
                         belief_fields_present,
@@ -776,6 +778,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn load_game_from_reader_keeps_delta_q_absent_in_replay_samples() {
+        let (log, _) = play_game_with_mjai_log(23);
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+        assert!(
+            !game.samples.is_empty(),
+            "expected replay loader to produce samples"
+        );
+        assert!(game.samples.iter().all(|sample| sample.delta_q_target.is_none()));
+        assert!(game.samples.iter().all(|sample| sample.delta_q_mask.is_none()));
     }
 
     #[test]
