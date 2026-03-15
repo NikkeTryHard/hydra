@@ -323,6 +323,13 @@ def main() -> int:
     config = load_config(args.config)
     run = _effective_run_config(config, args.smoke_test)
     config = config.model_copy(update={"run": run})
+
+    if run.xla_cache_dir is not None:
+        run.xla_cache_dir.mkdir(parents=True, exist_ok=True)
+        jax.config.update("jax_compilation_cache_dir", str(run.xla_cache_dir))
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+
     output_dir = run.output_dir / "bc_tpu_phase0"
     output_dir.mkdir(parents=True, exist_ok=True)
     ensure_logging_dirs(output_dir)

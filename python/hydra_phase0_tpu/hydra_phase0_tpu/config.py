@@ -41,6 +41,7 @@ class RunConfig(BaseModel):
     init_weights_from: Path | None = None
     smoke_test: bool = False
     required_backend: Literal["any", "cpu", "gpu", "tpu"] = "any"
+    xla_cache_dir: Path | None = None
 
     @model_validator(mode="after")
     def apply_batch_defaults(self) -> Self:
