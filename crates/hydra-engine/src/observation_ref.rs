@@ -18,6 +18,7 @@ pub struct ObservationRef<'a> {
     pub melds: [&'a [Meld]; 4],
     /// Discard piles for each player in 136-format.
     pub discards: [&'a [u8]; 4],
+    pub discard_from_hand: [&'a [bool]; 4],
     /// Dora indicator tiles in 136-format.
     pub dora_indicators: &'a [u8],
     /// Current scores for each player.

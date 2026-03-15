@@ -8,7 +8,7 @@ use hydra_core::action::{
     AKA_5M, AKA_5P, AKA_5S, ActionPhase, DISCARD_END, HYDRA_ACTION_SPACE, build_legal_mask,
     riichienv_to_hydra,
 };
-use hydra_core::bridge::{encode_observation, extract_public_remaining_counts};
+use hydra_core::bridge::{encode_observation_ref, extract_public_remaining_counts_ref};
 use hydra_core::encoder::ObservationEncoder;
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::parser::mjai_to_tid;
@@ -320,14 +320,14 @@ fn build_safety_residual_targets(
 fn build_stage_a_belief_targets(
     state: &GameState,
     actor: usize,
-    obs: &riichienv_core::observation::Observation,
+    obs: &riichienv_core::observation_ref::ObservationRef<'_>,
     config: &StageABeliefConfig,
 ) -> (Option<[f32; 16 * 34]>, Option<[f32; 4]>, bool, bool) {
-    let hand = hydra_core::bridge::extract_hand(obs);
-    let discards = hydra_core::bridge::extract_discards(obs);
-    let melds = hydra_core::bridge::extract_melds(obs);
-    let dora = hydra_core::bridge::extract_dora(obs);
-    let remaining = extract_public_remaining_counts(&hand, &discards, &melds, &dora);
+    let hand = hydra_core::bridge::extract_hand_ref(obs);
+    let discards = hydra_core::bridge::extract_discards_ref(obs);
+    let melds = hydra_core::bridge::extract_melds_ref(obs);
+    let dora = hydra_core::bridge::extract_dora_ref(obs);
+    let remaining = extract_public_remaining_counts_ref(&hand, &discards, &melds, &dora);
     let hidden_tiles = state
         .players
         .iter()
@@ -351,13 +351,13 @@ fn build_stage_a_belief_targets(
 fn belief_target_inputs(
     state: &GameState,
     actor: usize,
-    obs: &riichienv_core::observation::Observation,
+    obs: &riichienv_core::observation_ref::ObservationRef<'_>,
 ) -> ([u8; 34], usize) {
-    let hand = hydra_core::bridge::extract_hand(obs);
-    let discards = hydra_core::bridge::extract_discards(obs);
-    let melds = hydra_core::bridge::extract_melds(obs);
-    let dora = hydra_core::bridge::extract_dora(obs);
-    let remaining = extract_public_remaining_counts(&hand, &discards, &melds, &dora)
+    let hand = hydra_core::bridge::extract_hand_ref(obs);
+    let discards = hydra_core::bridge::extract_discards_ref(obs);
+    let melds = hydra_core::bridge::extract_melds_ref(obs);
+    let dora = hydra_core::bridge::extract_dora_ref(obs);
+    let remaining = extract_public_remaining_counts_ref(&hand, &discards, &melds, &dora)
         .map(|value| value.max(0.0).round() as u8);
     let hidden_tiles = state
         .players
@@ -401,18 +401,24 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
     let mut waits_cache: HashMap<([u8; 34], [bool; 34]), ([f32; 34], bool)> = HashMap::new();
     let mut belief_cache: HashMap<([u8; 34], usize), (Option<[f32; 16 * 34]>, Option<[f32; 4]>, bool, bool)> =
         HashMap::new();
+    let mut legal_actions = Vec::new();
 
     for (idx, event) in events.iter().enumerate() {
         if should_sample_replay_event(event) {
             let env_action = mjai_event_to_action(event)
                 .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
             if let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) {
-                let obs = state
-                    .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
+                state
+                    .replay_legal_actions_into(
+                        actor as u8,
+                        &env_action,
+                        &env_action.to_mjai(),
+                        &mut legal_actions,
+                    )
                     .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
                 let hydra_action = riichienv_to_hydra(&env_action)
                     .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
-                let legal = obs.legal_actions_method();
+                let obs = state.observe(actor as u8);
                 let phase = if matches!(event, MjaiEvent::Dahai { .. })
                     && state.players[actor].riichi_declared
                 {
@@ -420,14 +426,9 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
                 } else {
                     ActionPhase::Normal
                 };
-                let legal_mask = bool_mask_to_f32(build_legal_mask(&legal, phase));
+                let legal_mask = bool_mask_to_f32(build_legal_mask(&legal_actions, phase));
                 if legal_mask[hydra_action.id() as usize] > 0.0 {
-                    let obs_encoded = encode_observation(
-                        &mut encoder,
-                        &obs,
-                        &safety[actor],
-                        state.drawn_tile.map(tile136_to_type),
-                    );
+                    let obs_encoded = encode_observation_ref(&mut encoder, &obs, &safety[actor]);
                     let mut tenpai = [0.0; 3];
                     let mut opp_next = [MISSING_TILE_TARGET; 3];
                     let mut danger = [0.0; 102];

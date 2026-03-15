@@ -465,19 +465,18 @@ pub fn extract_hand_ref(obs: &ObservationRef<'_>) -> [u8; NUM_TILE_TYPES] {
 /// Extract discard info for all 4 players from an ObservationRef.
 ///
 /// Player indices are RELATIVE to the observer (index 0 = observer).
-/// Note: tsumogiri flags are not available on ObservationRef, so all
-/// discards default to tedashi=true (conservative for safety encoding).
 #[inline]
 pub fn extract_discards_ref(obs: &ObservationRef<'_>) -> [PlayerDiscards; 4] {
     let observer = obs.player_id as usize;
     std::array::from_fn(|relative_idx| {
         let abs = (observer + relative_idx) % 4;
         let disc = obs.discards[abs];
+        let from_hand = obs.discard_from_hand[abs];
         let mut pd = PlayerDiscards::new();
         for (turn, &tile136) in disc.iter().enumerate() {
             pd.push(DiscardEntry {
                 tile: (tile136 / 4),
-                is_tedashi: true,
+                is_tedashi: from_hand.get(turn).copied().unwrap_or(false),
                 turn: turn as u16,
             });
         }

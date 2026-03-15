@@ -379,6 +379,9 @@ impl GameState {
             observer_hand: self.players[pid].hand_slice(),
             melds: std::array::from_fn(|i| self.players[i].melds_slice()),
             discards: std::array::from_fn(|i| self.players[i].discards_slice()),
+            discard_from_hand: std::array::from_fn(|i| {
+                &self.players[i].discard_from_hand[..self.players[i].discard_len as usize]
+            }),
             dora_indicators: self.wall.dora_indicator_slice(),
             scores: std::array::from_fn(|i| self.players[i].score),
             riichi_declared: std::array::from_fn(|i| self.players[i].riichi_declared),
@@ -564,6 +567,78 @@ impl GameState {
         }
 
         Ok(obs)
+    }
+
+    pub fn replay_legal_actions_into(
+        &mut self,
+        pid: u8,
+        env_action: &Action,
+        log_action_str: &str,
+        legal_buf: &mut Vec<Action>,
+    ) -> RiichiResult<()> {
+        let original_phase = self.phase;
+        let original_active_players = self.active_players;
+        let original_active_player_count = self.active_player_count;
+        let original_claims = self.current_claims;
+        let original_claim_counts = self.current_claim_counts;
+        let original_riichi = self.players[pid as usize].riichi_declared;
+
+        match env_action.action_type {
+            ActionType::Ron | ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
+                self.phase = Phase::WaitResponse;
+                self.set_single_active_player(pid);
+                self.push_claim(pid as usize, *env_action);
+            }
+            _ => {}
+        }
+
+        self.get_legal_actions_into(pid, legal_buf);
+        let mut exists = legal_buf
+            .iter()
+            .any(|a| Self::replay_action_matches_legal(a, env_action));
+
+        if !exists
+            && env_action.action_type == ActionType::Discard
+            && self.players[pid as usize].riichi_declared
+        {
+            self.players[pid as usize].riichi_declared = false;
+            self.get_legal_actions_into(pid, legal_buf);
+            let is_legal_retry = legal_buf.iter().any(|a| {
+                a.action_type == ActionType::Discard
+                    && match (a.tile, env_action.tile) {
+                        (Some(legal_tile), Some(replay_tile)) => {
+                            Self::replay_tile_matches_mjai_semantics(legal_tile, replay_tile)
+                        }
+                        _ => false,
+                    }
+            });
+
+            if is_legal_retry {
+                exists = true;
+            } else {
+                self.players[pid as usize].riichi_declared = original_riichi;
+            }
+        }
+
+        self.phase = original_phase;
+        self.active_players = original_active_players;
+        self.active_player_count = original_active_player_count;
+        self.current_claims = original_claims;
+        self.current_claim_counts = original_claim_counts;
+
+        if !exists {
+            return Err(RiichiError::InvalidState {
+                message: format!(
+                    "Replay desync:\n  Env action: {:?}\n  Log action: {}\n  Self state:\n    phase: {:?}\n    drawn: {:?}",
+                    env_action,
+                    log_action_str,
+                    self.phase,
+                    self.drawn_tile
+                ),
+            });
+        }
+
+        Ok(())
     }
 
     /// Advance the game by one step, validating all player actions.
