@@ -505,6 +505,18 @@ fn masked_mean<B: Backend>(per_sample: Tensor<B, 1>, mask: Option<Tensor<B, 1>>)
     }
 }
 
+fn combine_sample_masks<B: Backend>(
+    primary: Option<Tensor<B, 1>>,
+    secondary: Option<Tensor<B, 1>>,
+) -> Option<Tensor<B, 1>> {
+    match (primary, secondary) {
+        (Some(primary), Some(secondary)) => Some(primary * secondary),
+        (Some(primary), None) => Some(primary),
+        (None, Some(secondary)) => Some(secondary),
+        (None, None) => None,
+    }
+}
+
 pub struct LossBreakdown<B: Backend> {
     pub policy: Tensor<B, 1>,
     pub value: Tensor<B, 1>,
@@ -594,14 +606,14 @@ impl<B: Backend> HydraLoss<B> {
         let l_belief = match (&targets.belief_fields_target, &targets.belief_fields_mask) {
             (Some(target), Some(mask)) => masked_mean(
                 belief_fields_bce_per_sample(outputs.belief_fields.clone(), target.clone()),
-                Some(mask.clone()),
+                combine_sample_masks(Some(mask.clone()), oracle_mask.clone()),
             ),
             _ => zero.clone(),
         };
         let l_mix = match (&targets.mixture_weight_target, &targets.mixture_weight_mask) {
             (Some(target), Some(mask)) => masked_mean(
                 mixture_weight_ce_per_sample(outputs.mixture_weight_logits.clone(), target.clone()),
-                Some(mask.clone()),
+                combine_sample_masks(Some(mask.clone()), oracle_mask.clone()),
             ),
             _ => zero.clone(),
         };
@@ -845,6 +857,91 @@ pub mod tests {
                 .abs()
                 < 1e-8
         );
+    }
+
+    #[test]
+    fn test_oracle_guidance_mask_intersects_belief_and_mixture_masks() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let mut first_only = make_dummy_targets::<B>(&device, 1);
+        first_only.belief_fields_target = Some(Tensor::<B, 3>::ones([1, 16, 34], &device));
+        first_only.belief_fields_mask = Some(Tensor::<B, 1>::ones([1], &device));
+        first_only.mixture_weight_target =
+            Some(Tensor::<B, 2>::from_floats([[1.0, 0.0, 0.0, 0.0]], &device));
+        first_only.mixture_weight_mask = Some(Tensor::<B, 1>::ones([1], &device));
+
+        let mut masked_targets = make_dummy_targets::<B>(&device, 2);
+        masked_targets.belief_fields_target = Some(Tensor::<B, 3>::ones([2, 16, 34], &device));
+        masked_targets.belief_fields_mask = Some(Tensor::<B, 1>::ones([2], &device));
+        masked_targets.mixture_weight_target = Some(Tensor::<B, 2>::from_floats(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+            &device,
+        ));
+        masked_targets.mixture_weight_mask = Some(Tensor::<B, 1>::ones([2], &device));
+        masked_targets.oracle_guidance_mask =
+            Some(Tensor::<B, 1>::from_floats([1.0, 0.0], &device));
+
+        let loss_fn = HydraLoss::<B>::new(
+            HydraLossConfig::new()
+                .with_w_belief_fields(1.0)
+                .with_w_mixture_weight(1.0),
+        );
+
+        let first_outputs = HydraOutput {
+            policy_logits: outputs.policy_logits.clone().slice([0..1]),
+            value: outputs.value.clone().slice([0..1]),
+            grp: outputs.grp.clone().slice([0..1]),
+            opp_tenpai: outputs.opp_tenpai.clone().slice([0..1]),
+            danger: outputs.danger.clone().slice([0..1]),
+            opp_next_discard: outputs.opp_next_discard.clone().slice([0..1]),
+            score_pdf: outputs.score_pdf.clone().slice([0..1]),
+            score_cdf: outputs.score_cdf.clone().slice([0..1]),
+            oracle_critic: outputs.oracle_critic.clone().slice([0..1]),
+            belief_fields: outputs.belief_fields.clone().slice([0..1]),
+            mixture_weight_logits: outputs.mixture_weight_logits.clone().slice([0..1]),
+            opponent_hand_type: outputs.opponent_hand_type.clone().slice([0..1]),
+            delta_q: outputs.delta_q.clone().slice([0..1]),
+            safety_residual: outputs.safety_residual.clone().slice([0..1]),
+        };
+
+        let first_breakdown = loss_fn.total_loss(&first_outputs, &first_only);
+        let masked_breakdown = loss_fn.total_loss(&outputs, &masked_targets);
+        let belief_first: f32 = first_breakdown.belief_fields.into_scalar().elem();
+        let mixture_first: f32 = first_breakdown.mixture_weight.into_scalar().elem();
+        let belief_with: f32 = masked_breakdown.belief_fields.into_scalar().elem();
+        let mixture_with: f32 = masked_breakdown.mixture_weight.into_scalar().elem();
+
+        assert!(belief_first.is_finite() && belief_first > 0.0);
+        assert!(mixture_first.is_finite() && mixture_first > 0.0);
+        assert!(belief_with.is_finite() && belief_with > 0.0);
+        assert!(mixture_with.is_finite() && mixture_with > 0.0);
+        assert!((belief_with - belief_first).abs() < 1e-6);
+        assert!((mixture_with - mixture_first).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_optional_belief_losses_require_presence_masks() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x);
+        let loss_fn = HydraLoss::<B>::new(
+            HydraLossConfig::new()
+                .with_w_belief_fields(1.0)
+                .with_w_mixture_weight(1.0),
+        );
+        let mut targets = make_dummy_targets::<B>(&device, 2);
+        targets.belief_fields_target = Some(Tensor::<B, 3>::ones([2, 16, 34], &device));
+        targets.mixture_weight_target = Some(Tensor::<B, 2>::from_floats(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+            &device,
+        ));
+
+        let breakdown = loss_fn.total_loss(&outputs, &targets);
+        assert!(breakdown.belief_fields.into_scalar().elem::<f32>().abs() < 1e-8);
+        assert!(breakdown.mixture_weight.into_scalar().elem::<f32>().abs() < 1e-8);
     }
 
     #[test]
