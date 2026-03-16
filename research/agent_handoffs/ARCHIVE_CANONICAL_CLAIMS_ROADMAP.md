@@ -111,8 +111,8 @@ Additional narrowing from `answer_22.md`: now that Hydra has closed the live AFB
 
 | Rank | Lane | Doctrine status | Repo status | Promotion gate | Refs |
 |---|---|---|---|---|---|
-| 6 | Public-posterior belief teacher closure | Immediate next supervision lane after completed `delta_q` closure | Current Stage-A path is semantically weak and duplicates one aggregate object across the component axis | Must replace Stage-A projection with a credible public teacher object before any belief/mix activation. The first honest closure is belief-before-mixture with repaired row-conditional belief loss; `mixture_weight` stays off until canonical component identity exists. | canonical rows 25, 26, 27, 28, 61, 62; `answer_15_combined.md`, `answer_18_combined.md`, `answer_27_combined.md`, `answer_28_combined.md`, `answer_3-1_combined.md` |
-| 7 | H1a Hand-EV semantic repair on the current 42-plane surface | Fits current sequencing; still proposal-level | Strong live seam | Must beat current Hand-EV on exact-one-step oracle slices and stay within encode-cost limits. | canonical rows 36, 37, 38; `answer_14_combined.md`, `answer_17_combined.md` |
+| 6 | Public-posterior belief teacher closure | Stronger baseline tranche shipped; fuller closure still later | Current Stage-A path is still semantically weaker than the archive’s final public-posterior target object, but the stronger baseline belief tranche is now shipped in code | Keep belief-before-mixture discipline, preserve staged `mixture_weight`, and only promote the fuller public-posterior / row-conditional closure when that narrower target object actually lands. | canonical rows 25, 26, 27, 28, 61, 62; `answer_15_combined.md`, `answer_18_combined.md`, `answer_27_combined.md`, `answer_28_combined.md`, `answer_3-1_combined.md` |
+| 7 | H1a Hand-EV semantic repair on the current 42-plane surface | Stronger realism baseline shipped; fuller H1a benchmark/promotion still later | Strong live seam with materially stronger shipped local evaluation already in repo | Use exact-one-step oracle benchmarking only for the remaining H1a promotion question, not as evidence that the baseline tranche is still missing. | canonical rows 36, 37, 38; `answer_14_combined.md`, `answer_17_combined.md` |
 | 8 | Tile-aware spatial/global head routing correction | Strong archive architecture survivor; not current doctrine | Narrow problem is visible in repo now | Route tile-indexed outputs from spatial features first; do not auto-promote the whole history-sidecar package. | canonical row 56; `answer_21.md` |
 | 9 | World-aware CT-SMC Hand-EV (H1b) | Later selective lane only | Runtime seam exists; train/infer parity blocked | H1a must win first, CT-SMC quality gates must pass, and training-time matching search-context observations must exist. | canonical rows 39, 40, 41; `answer_14_combined.md`, `answer_1-1_combined.md` |
 | 10 | Specialist endgame leaf exactification | Later/narrower than Hand-EV | Host shell exists, stronger leaf absent | Keep it as a specialist late-game lane, likely via pondering/search-side deployment, not fast-path identity. | canonical rows 42, 43; `answer_14_combined.md`, `answer_3-1_combined.md` |
@@ -168,8 +168,8 @@ Historical-note warning:
 | Replay-indexed ExIt sidecar closure | Yes | Keep replay/sample ExIt search-derived and sidecar-first; do not collapse it into ordinary replay truth | Completed in code |
 | Advanced-head activation discipline | Yes (gate pack complete) | Orchestrator integration + trunk detachment for warmup heads | Completed (core); orchestrator wiring after self-play loop |
 | `delta_q` | Yes | Closed for the current learner-only replay/offline + BC/train lane; keep provenance explicit and do not broaden belief-style lanes by analogy | Completed in code |
-| Belief supervision | Partial | Weak Stage-A teacher; no credible public posterior object in the current path | After public-teacher closure |
-| H1a Hand-EV | Yes | Needs exact-one-step benchmark win | After benchmark pass |
+| Belief supervision | Yes (stronger baseline shipped) | Full public-posterior teacher object and row-conditional loss repair remain later than the shipped baseline tranche; `mixture_weight` stays staged | After fuller public-teacher closure |
+| H1a Hand-EV | Yes (stronger baseline shipped) | Exact-one-step benchmark still decides whether the archive’s fuller H1a target is promoted beyond the shipped realism tranche | After benchmark pass |
 | H1b world-aware Hand-EV | Runtime seam only | Train/infer parity + representative-world gates | After H1a + parity + CT-SMC gates |
 | Endgame leaf exactification | Host shell only | Stronger leaf and explicit caller value | After offline late-game utility win |
 | Tiny learned ponder scorer | Yes | Cache/provenance and label logging must be trustworthy first | After provenance hardening (done) + label logging |
@@ -182,11 +182,11 @@ Historical-note warning:
 3. Close real `exit_target` carrier/provenance plumbing for the live self-play lane. **(done)**
 4. Add activation-density / transfer gates before broad advanced-head activation. **(done)**
 5. Harden runtime ponder/cache provenance and admission boundaries. **(done)**
-6. Strengthen public-teacher belief semantics before any belief/mix activation.
-7. Run H1a Hand-EV exact-one-step benchmark; promote only if it clears the gate.
-8. Evaluate tile-aware spatial/global head routing correction before broader architecture changes.
-9. Revisit H1b and other later selective lanes only from the stronger base above.
-10. Keep reserve-shelf items alive, but do not let them compete with the mainline before the earlier gates close.
+6. Treat the shipped stronger belief baseline and Hand-EV realism baseline as the new floor, not as still-open next work.
+7. If belief work resumes, target the fuller public-posterior / row-conditional closure while keeping `mixture_weight` staged.
+8. If Hand-EV work resumes, run the H1a exact-one-step benchmark and promote only if it clears the gate.
+9. Evaluate tile-aware spatial/global head routing correction before broader architecture changes.
+10. Revisit H1b and other later selective lanes only from the stronger base above, and keep reserve-shelf items alive without letting them compete with the mainline prematurely.
 
 ## Source map
 
