@@ -205,6 +205,88 @@ fn immediate_win_probability(
     (waits / total_remaining).clamp(0.0, 1.0)
 }
 
+#[derive(Clone, Copy, Default)]
+struct FollowUpQuality {
+    tenpai_prob: f32,
+    win_prob: f32,
+}
+
+#[inline]
+fn best_follow_up_quality(
+    after_draw: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    shanten_fn: &dyn Fn(&[u8; NUM_TILE_TYPES]) -> i8,
+) -> FollowUpQuality {
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return FollowUpQuality::default();
+    }
+
+    let mut best = FollowUpQuality::default();
+    for discard in 0..NUM_TILE_TYPES {
+        if after_draw[discard] == 0 {
+            continue;
+        }
+        let mut after_rediscard = *after_draw;
+        after_rediscard[discard] -= 1;
+        let shanten_after = shanten_fn(&after_rediscard);
+        let uke = compute_ukeire(&after_rediscard, remaining, shanten_fn);
+        let acceptance_ratio = (uke.iter().sum::<f32>() / total_remaining).clamp(0.0, 1.0);
+        let tenpai_prob = if shanten_after <= 0 {
+            1.0
+        } else {
+            acceptance_ratio
+        };
+        let win_prob = if shanten_after < 0 {
+            1.0
+        } else {
+            immediate_win_probability(&after_rediscard, remaining, shanten_after, shanten_fn)
+                .max((acceptance_ratio * 0.35).clamp(0.0, 1.0))
+        };
+
+        if win_prob > best.win_prob || (win_prob == best.win_prob && tenpai_prob > best.tenpai_prob)
+        {
+            best = FollowUpQuality {
+                tenpai_prob,
+                win_prob,
+            };
+        }
+    }
+    best
+}
+
+#[inline]
+fn expected_follow_up_quality(
+    after_discard: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    shanten_fn: &dyn Fn(&[u8; NUM_TILE_TYPES]) -> i8,
+) -> FollowUpQuality {
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return FollowUpQuality::default();
+    }
+
+    let mut weighted = FollowUpQuality::default();
+    for draw in 0..NUM_TILE_TYPES {
+        if remaining[draw] <= 0.0 || after_discard[draw] >= 4 {
+            continue;
+        }
+
+        let mut after_draw = *after_discard;
+        after_draw[draw] += 1;
+
+        let mut remaining_after_draw = *remaining;
+        remaining_after_draw[draw] = (remaining_after_draw[draw] - 1.0).max(0.0);
+
+        let draw_prob = remaining[draw] / total_remaining;
+        let best = best_follow_up_quality(&after_draw, &remaining_after_draw, shanten_fn);
+        weighted.tenpai_prob += draw_prob * best.tenpai_prob;
+        weighted.win_prob += draw_prob * best.win_prob;
+    }
+
+    weighted
+}
+
 #[inline]
 fn continuation_boost(horizon: usize, shanten_after: i8, acceptance_ratio: f32) -> f32 {
     let horizon_scale = match horizon {
@@ -280,6 +362,8 @@ pub fn compute_hand_ev_with_shanten_fn(
         let acceptance: f32 = uke.iter().sum();
         if total_remaining > 0.0 {
             let acceptance_ratio = (acceptance / total_remaining).clamp(0.0, 1.0);
+            let follow_up_quality =
+                expected_follow_up_quality(&after_discard, remaining, shanten_fn);
             let immediate_tenpai_draw_prob = if shanten_after <= 0 {
                 1.0
             } else {
@@ -293,8 +377,10 @@ pub fn compute_hand_ev_with_shanten_fn(
             let base_win = immediate_win_draw_prob.max((acceptance_ratio * 0.35).clamp(0.0, 1.0));
             for horizon in 0..3 {
                 let draws = (horizon + 1) as u32;
-                let tenpai_continue = continuation_boost(horizon, shanten_after, acceptance_ratio);
-                let win_continue = continuation_boost(horizon, shanten_after - 1, acceptance_ratio);
+                let tenpai_continue = continuation_boost(horizon, shanten_after, acceptance_ratio)
+                    .max(follow_up_quality.tenpai_prob * if horizon == 0 { 0.0 } else { 1.0 });
+                let win_continue = continuation_boost(horizon, shanten_after - 1, acceptance_ratio)
+                    .max(follow_up_quality.win_prob * if horizon == 0 { 0.0 } else { 1.0 });
                 let tenpai_miss = 1.0 - immediate_tenpai_draw_prob;
                 let win_miss = 1.0 - base_win;
                 features.tenpai_prob[discard][horizon] = (1.0
@@ -328,7 +414,13 @@ mod tests {
     fn ukeire_counts_improving_tiles() {
         let hand = [0u8; NUM_TILE_TYPES];
         let remaining = [4.0f32; NUM_TILE_TYPES];
-        let improves_on_tile_0 = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] > 0 { 0 } else { 1 } };
+        let improves_on_tile_0 = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            if h[0] > 0 {
+                0
+            } else {
+                1
+            }
+        };
         let uke = compute_ukeire(&hand, &remaining, &improves_on_tile_0);
         assert!((uke[0] - 4.0).abs() < 1e-5);
         assert!(uke[1..].iter().all(|&v| v == 0.0));
@@ -342,7 +434,11 @@ mod tests {
         let remaining = [4.0f32; NUM_TILE_TYPES];
         let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
             let total: u8 = h.iter().sum();
-            if total >= 4 { 0 } else { 1 }
+            if total >= 4 {
+                0
+            } else {
+                1
+            }
         };
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &shanten_fn);
         assert!(
@@ -357,7 +453,13 @@ mod tests {
         hand[0] = 2;
         hand[1] = 1;
         let remaining = [3.0f32; NUM_TILE_TYPES];
-        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] >= 3 { -1 } else { 0 } };
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            if h[0] >= 3 {
+                -1
+            } else {
+                0
+            }
+        };
         let uke = compute_ukeire(&hand, &remaining, &shanten_fn);
         let acceptance: f32 = uke.iter().sum();
         assert!((acceptance - 3.0).abs() < 1e-5, "tile 0 has 3 remaining");
@@ -368,12 +470,10 @@ mod tests {
         let hand = [0u8; NUM_TILE_TYPES];
         let remaining = [4.0f32; NUM_TILE_TYPES];
         let features = compute_hand_ev(&hand, &remaining);
-        assert!(
-            features
-                .tenpai_prob
-                .iter()
-                .all(|p| p.iter().all(|&v| v == 0.0))
-        );
+        assert!(features
+            .tenpai_prob
+            .iter()
+            .all(|p| p.iter().all(|&v| v == 0.0)));
         assert!(features.expected_score.iter().all(|&v| v == 0.0));
     }
 
@@ -395,7 +495,13 @@ mod tests {
         remaining[0] = 1.0;
         remaining[2] = 3.0;
 
-        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 { if h[0] > 0 { 0 } else { 1 } };
+        let shanten_fn = |h: &[u8; NUM_TILE_TYPES]| -> i8 {
+            if h[0] > 0 {
+                0
+            } else {
+                1
+            }
+        };
 
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &shanten_fn);
         let tenpai = features.tenpai_prob[1];
@@ -455,7 +561,11 @@ mod tests {
         after[1] -= 1;
         let p = immediate_win_probability(&after, &remaining, 0, &|counts| {
             let total: u8 = counts.iter().sum();
-            if counts[0] >= 4 && total >= 4 { -1 } else { 0 }
+            if counts[0] >= 4 && total >= 4 {
+                -1
+            } else {
+                0
+            }
         });
         assert!(p > 0.0);
     }
@@ -469,10 +579,62 @@ mod tests {
         remaining[0] = 3.0;
         let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &|counts| {
             let total: u8 = counts.iter().sum();
-            if counts[0] >= 4 && total >= 4 { -1 } else { 0 }
+            if counts[0] >= 4 && total >= 4 {
+                -1
+            } else {
+                0
+            }
         });
         assert!(features.expected_score[1] > 0.0);
         assert!(features.win_prob[1][2] > 0.0);
+    }
+
+    #[test]
+    fn later_horizon_prefers_discard_with_stronger_follow_up_line() {
+        let mut hand = [0u8; NUM_TILE_TYPES];
+        hand[0] = 1;
+        hand[1] = 1;
+
+        let mut remaining = [0.0f32; NUM_TILE_TYPES];
+        remaining[2] = 2.0;
+        remaining[3] = 2.0;
+        remaining[4] = 4.0;
+
+        let shanten_fn = |counts: &[u8; NUM_TILE_TYPES]| -> i8 {
+            let total: u8 = counts.iter().sum();
+            match total {
+                1 => {
+                    if counts[2] == 1 || counts[3] == 1 {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                2 => {
+                    if counts[2] == 1 && counts[4] == 1 {
+                        -1
+                    } else if (counts[1] == 1 && counts[2] == 1)
+                        || (counts[0] == 1 && counts[3] == 1)
+                    {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                _ => 1,
+            }
+        };
+
+        let features = compute_hand_ev_with_shanten_fn(&hand, &remaining, &shanten_fn);
+
+        assert!(
+            features.win_prob[0][2] > features.win_prob[1][2],
+            "discarding 0 should rank above discarding 1 once the stronger next discard line is considered"
+        );
+        assert!(
+            features.expected_score[0] > features.expected_score[1],
+            "better downstream line should also raise expected score"
+        );
     }
 
     #[test]

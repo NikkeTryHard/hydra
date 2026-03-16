@@ -260,7 +260,7 @@ pub fn compute_public_hand_ev(
     compute_hand_ev(hand, &remaining)
 }
 
-/// Compute belief-weighted remaining tile counts from a CT-SMC posterior.
+/// Compute wall-weighted remaining tile counts from a CT-SMC posterior.
 #[inline]
 pub fn extract_ct_smc_remaining_counts(ct_smc: &CtSmc) -> [f32; NUM_TILE_TYPES] {
     let mut remaining = [0.0f32; NUM_TILE_TYPES];
@@ -268,9 +268,7 @@ pub fn extract_ct_smc_remaining_counts(ct_smc: &CtSmc) -> [f32; NUM_TILE_TYPES] 
         return remaining;
     }
     for (tile, slot) in remaining.iter_mut().enumerate() {
-        *slot = (0..4)
-            .map(|col| ct_smc.weighted_mean_tile_count(tile as u8, col as u8))
-            .sum();
+        *slot = ct_smc.weighted_mean_tile_count(tile as u8, 3);
     }
     remaining
 }
@@ -816,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_ct_smc_remaining_counts_sums_weighted_hidden_columns() {
+    fn extract_ct_smc_remaining_counts_uses_wall_column_only() {
         let mut smc = CtSmc::new(crate::ct_smc::CtSmcConfig::default().with_particles(2));
         smc.particles = vec![
             crate::ct_smc::Particle {
@@ -839,8 +837,8 @@ mod tests {
         ];
 
         let remaining = extract_ct_smc_remaining_counts(&smc);
-        assert!((remaining[3] - 2.5).abs() < 1e-6);
-        assert!((remaining[7] - 0.5).abs() < 1e-6);
+        assert!((remaining[3] - 0.5).abs() < 1e-6);
+        assert_eq!(remaining[7], 0.0);
         assert_eq!(remaining[2], 0.0);
     }
 
