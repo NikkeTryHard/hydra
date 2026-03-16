@@ -403,6 +403,7 @@ unexpected_field: true
             microbatch_size: Some(64),
             validation_microbatch_size: Some(16),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -885,6 +886,7 @@ preflight:
             microbatch_size: Some(64),
             validation_microbatch_size: None,
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -934,6 +936,7 @@ preflight:
             microbatch_size: Some(64),
             validation_microbatch_size: Some(0),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -984,6 +987,7 @@ preflight:
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1081,25 +1085,24 @@ preflight:
     }
 
     #[test]
-    fn build_loss_config_rejects_delta_q_activation() {
+    fn build_loss_config_allows_delta_q_activation() {
         let advanced = AdvancedLossConfig {
             delta_q: Some(0.1),
             ..Default::default()
         };
-        let err = build_loss_config(Some(&advanced))
-            .expect_err("delta_q should remain blocked in train.rs");
-        assert!(err.contains("advanced_loss.delta_q"));
+        let cfg = build_loss_config(Some(&advanced)).expect("delta_q should be allowed in train.rs");
+        assert_eq!(cfg.w_delta_q, 0.1);
     }
 
     #[test]
-    fn build_loss_config_rejects_delta_q_even_at_zero_weight() {
+    fn build_loss_config_allows_delta_q_even_at_zero_weight() {
         let advanced = AdvancedLossConfig {
             delta_q: Some(0.0),
             ..Default::default()
         };
-        let err = build_loss_config(Some(&advanced))
-            .expect_err("blocked delta_q key should be rejected even at zero");
-        assert!(err.contains("advanced_loss.delta_q"));
+        let cfg = build_loss_config(Some(&advanced))
+            .expect("delta_q key should be accepted even at zero weight");
+        assert_eq!(cfg.w_delta_q, 0.0);
     }
 
     #[test]
@@ -1131,6 +1134,7 @@ advanced_loss:
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1174,6 +1178,7 @@ advanced_loss:
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1202,6 +1207,47 @@ advanced_loss:
         };
         let err = validate_config(&cfg).expect_err("exit loss without sidecar should fail");
         assert!(err.contains("exit_sidecar_path"));
+    }
+
+    #[test]
+    fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
+        let cfg = TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: Some(AdvancedLossConfig {
+                delta_q: Some(0.1),
+                ..Default::default()
+            }),
+            rl: None,
+            bc: BcHyperparamConfig::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: None,
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: PreflightConfig::default(),
+        };
+        let err = validate_config(&cfg).expect_err("delta_q loss without sidecar should fail");
+        assert!(err.contains("delta_q_sidecar_path"));
     }
 
     #[test]

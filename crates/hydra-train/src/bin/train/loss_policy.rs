@@ -19,14 +19,16 @@ pub(super) fn build_loss_config(
         reject_blocked_advanced_loss_presence("belief_fields", cfg.belief_fields)?;
         reject_blocked_advanced_loss_presence("mixture_weight", cfg.mixture_weight)?;
         reject_blocked_advanced_loss_presence("opponent_hand_type", cfg.opponent_hand_type)?;
-        reject_blocked_advanced_loss_presence("delta_q", cfg.delta_q)?;
     }
 
     let safety_residual = advanced_loss
         .and_then(|cfg| cfg.safety_residual)
         .unwrap_or(0.0);
+    let delta_q = advanced_loss.and_then(|cfg| cfg.delta_q).unwrap_or(0.0);
 
-    let loss_config = HydraLossConfig::new().with_w_safety_residual(safety_residual);
+    let loss_config = HydraLossConfig::new()
+        .with_w_safety_residual(safety_residual)
+        .with_w_delta_q(delta_q);
     loss_config
         .validate()
         .map_err(|err| format!("invalid loss config: {err}"))?;

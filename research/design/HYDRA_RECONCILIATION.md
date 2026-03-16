@@ -1,8 +1,10 @@
 # Hydra Reconciliation
 
-> **Current execution doctrine.**
+> **Promoted execution doctrine summary.**
 >
-> If any implementation/reference doc conflicts with this file on sequencing, tranche priority, or active-vs-reserve status, this file wins.
+> This file compresses the current build order and active-vs-reserve split after reconciling the canonical archive SSOT with current repository state.
+> If a downstream implementation/reference doc conflicts with this file on sequencing, tranche priority, or active-vs-reserve status, this file wins.
+> If this file drifts from `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` or current code/runtime, refresh it instead of treating the drift as a demotion of the upstream source.
 
 This memo reconciles the strongest design inputs, the actual repository state, and the best immediate next move.
 
@@ -12,9 +14,10 @@ It is intentionally opinionated:
 - define the clearest version of Hydra to build right now
 
 Scope:
-- Target architecture authority: `research/design/HYDRA_FINAL.md`
+- Canonical archive SSOT: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`
+- Target architecture summary: `research/design/HYDRA_FINAL.md`
 - Verified code reality: `crates/hydra-core/`, `crates/hydra-train/`
-- Deep-agent inputs: `ANSWER_1.md`, `ANSWER_2.md`, `ANSWER_3.md`
+- Archive prioritization view: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`
 - High-impact drift only; not a full doc rewrite
 
 ## 1. Executive synthesis
@@ -63,14 +66,16 @@ Working principle for this memo:
 
 | Need | Primary file |
 |---|---|
-| Architecture north star | `HYDRA_FINAL.md` |
-| Current execution doctrine | `HYDRA_RECONCILIATION.md` |
+| Canonical archive SSOT | `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` |
+| Archive prioritization view | `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` |
+| Promoted architecture doctrine | `HYDRA_FINAL.md` |
+| Promoted execution doctrine | `HYDRA_RECONCILIATION.md` |
 | Current runtime reality | `docs/GAME_ENGINE.md` |
 | Historical / reserve-only planning surfaces | `HYDRA_ARCHIVE.md` |
 
 Workflow helper note:
-- Any short-form next-step triage helper must read the authority chain above, bias toward the safest highest-impact next task, and explicitly report which noisy research surfaces were checked.
-- It is workflow tooling, not doctrine, and it never outranks this file.
+- Any short-form next-step triage helper must read the canonical archive SSOT first, then check promoted doctrine summaries and runtime reality, bias toward the safest highest-impact next task, and explicitly report which noisy research surfaces were checked.
+- It is workflow tooling, not doctrine, and it never outranks the JSONL source ledger or current code/runtime truth.
 
 ## 2. Verified repo reality
 
@@ -107,7 +112,7 @@ What is only partially true:
   - `hydra-train/src/data/sample.rs` / `hydra-train/src/data/mjai_loader.rs` already carry replay-derived `safety_residual` and can emit Stage A `belief_fields` / `mixture_weight` targets
   - `hydra-train/src/training/rl.rs` can already consume `exit_target`, and the self-play/live producer path now carries `exit_target` / `exit_mask` through `TrajectoryExitLabel` into `RlBatch`
 - the normal replay/sample batch path now emits `exit_target` through a sidecar-first search-derived path rather than a direct replay-derived builder, so ExIt closure is now real in both the live self-play lane and the replay/sample sidecar lane while still remaining distinct by provenance
-  - `delta_q_target` and `opponent_hand_type_target` still remain absent in the normal sample-to-target path
+  - `opponent_hand_type_target` still remains absent in the normal sample-to-target path
 - AFBS exists as a search shell, but not as a fully integrated public-belief search runtime:
   - `hydra-core/src/afbs.rs`
 - Hand-EV exists, but is still heuristic rather than a full offensive oracle:
@@ -419,10 +424,10 @@ Use this as the concrete coding handoff for the first tranche.
 #### `hydra-train/src/data/sample.rs`
 - **Current state**
   - `MjaiSample` already stores `safety_residual`, `belief_fields`, and `mixture_weights` in addition to the baseline targets
-  - `MjaiBatch` already collates those advanced tensors and forwards them into `HydraTargets`, while `delta_q_target` and `opponent_hand_type_target` still remain `None`
+  - `MjaiBatch` already collates those advanced tensors and forwards them into `HydraTargets`, while `opponent_hand_type_target` still remains `None`
 - **Required changes**
   1. audit the existing advanced carriers before adding new ones
-  2. extend batch collation only for still-missing tranche targets such as a future `delta_q_target` or explicit `exit_target` carrier
+  2. extend batch collation only for still-missing tranche targets such as `opponent_hand_type_target` or other later promoted lanes
   3. keep augmentation behavior correct for any tile-indexed advanced targets
 - **Do not do**
   - do not invent new model heads here
@@ -432,8 +437,8 @@ Use this as the concrete coding handoff for the first tranche.
 #### `hydra-train/src/data/mjai_loader.rs`
 - **Current state**
   - already builds replay-derived `safety_residual_target` plus Stage A projected `belief_fields_target` / `mixture_weight_target`
-  - now has a normal replay/sample `exit_target` production path via a separate search-derived sidecar producer plus replay-time join; replay/sample `delta_q_target` and `opponent_hand_type_target` still remain absent
-  - live self-play RL now has a narrower `delta_q` lane via the shared root-search producer: masked discard-compatible `Q(child)-Q(root)` labels can flow into `RlBatch.targets.delta_q_target` / `delta_q_mask` without changing replay purity or train-bin activation policy
+  - now has a normal replay/sample `exit_target` production path via a separate search-derived sidecar producer plus replay-time join; replay/sample `delta_q_target` is now also available through a parallel search-derived sidecar path, while `opponent_hand_type_target` still remains absent
+  - live self-play RL now has a narrower `delta_q` lane via the shared root-search producer, and replay/offline BC now shares the same masked discard-compatible `Q(child)-Q(root)` object through replay-sidecar generation/join and BC/train activation-hook closure
   - `safety_residual_target` now uses signed replay-derived correction semantics: `exact_safety - public_score` on legal discard actions only
   - `hydra-train/src/training/exit.rs` now carries the narrowed ExIt teacher semantics and gates: compatible discard-only state check, child-visit-count target construction, subset mask, coverage gate, and KL / visit safety valve
 - **Required changes**
@@ -442,10 +447,10 @@ Use this as the concrete coding handoff for the first tranche.
   3. completed: add a real upstream producer path for `exit_target` / `exit_mask` via a separate search-derived replay sidecar, with replay-time join and provenance/version enforcement
   4. leave clearly unavailable targets as absent rather than fabricating weak labels
   5. document provenance inline: replay-derived, bridge-derived, or search-derived
-  6. keep `delta_q` staging explicit: self-play RL search-derived lane may exist before replay/offline provenance and train-bin activation do
+  6. keep `delta_q` provenance explicit: both live RL and replay/offline BC now use search-derived labels rather than replay-built loader semantics
 - **Preferred order**
   - first completed: truth-align and patch `safety_residual_target` to signed replay-derived residual semantics, keeping activation narrow and conservative
-  - next: close `delta_q_target`
+  - next: strengthen `belief_fields_target` / `mixture_weight_target` semantics before any activation
   - keep `belief_fields_target` / `mixture_weight_target` default-off until the teacher object is stronger than the current Stage A projection
   - `opponent_hand_type_target` stays blocked on ontology / mapping / builder closure
 
@@ -453,7 +458,7 @@ Use this as the concrete coding handoff for the first tranche.
 - **Current state**
   - `HydraTargets` already exposes all advanced target slots
   - advanced weights default to `0.0`
-  - `delta_q` now uses masked regression when target+mask exist, but BC/train-bin activation remains blocked until a separate staged validation/provenance tranche is approved
+  - `delta_q` now uses masked regression when target+mask exist, and BC/train now shares the same gated activation/warmup discipline as RL for the replay/offline sidecar lane
 - **Required changes**
   1. add a single, clear activation policy for advanced losses
   2. ensure each optional target contributes loss only when target data exists
@@ -467,12 +472,12 @@ Use this as the concrete coding handoff for the first tranche.
 - **Current state**
   - BC already routes through `HydraTargets`
   - it now consumes replay-derived `safety_residual` targets through the supervised path and supports hardware-agnostic microbatch accumulation for full-learner BC runs
-  - `advanced_loss.delta_q` remains intentionally rejected in `train.rs`; the new self-play RL `delta_q` lane does not change BC replay provenance requirements
+  - `advanced_loss.delta_q` is now accepted in `train.rs` only when replay/offline `delta_q` sidecars are configured, while belief/mix/opponent-hand-type remain blocked
 - **Required changes**
   1. completed: add tranche-specific tests showing BC consumes replay-derived `safety_residual` targets when present
   2. completed: confirm policy-agreement remains sane with optional advanced targets present and that the BC path supports staged `advanced_loss.safety_residual` activation through `src/bin/train.rs`
   3. completed: add hardware-agnostic microbatch accumulation so full-learner BC keeps the same effective batch semantics without hardcoding machine-specific GPU assumptions
-  4. later: keep extending the BC/RL surface only for semantically credible targets that are still actually missing (`exit_target` replay/sample production, `delta_q`, stronger belief teachers)
+  4. later: keep extending the BC/RL surface only for semantically credible targets that are still actually missing (stronger belief teachers, richer opponent targets)
 
 #### `hydra-train/src/training/rl.rs`
 - **Current state**
@@ -534,12 +539,12 @@ Use this as the concrete coding handoff for the first tranche.
 - `HydraTargets` fields used in the tranche are populated by real code paths, not left as always-`None`
 - at least one train path produces nonzero advanced auxiliary loss contributions in tests
 - `exit_target` is produced by a real upstream path, not just by unit-test fixtures
-- the current `delta_q` lane stays provenance-explicit: live self-play RL may carry masked search-derived labels while replay/sample `delta_q` remains absent until a separate closure tranche
+- the current `delta_q` lane stays provenance-explicit across both live self-play RL and replay/offline BC: labels are search-derived, masked, discard-compatible, and sidecar-backed in replay rather than fabricated in the plain loader
 - no new heads, no broad AFBS rewrite, no duplicated belief stack
 
 Current tranche-status note:
 - completed for the narrow supervised BC lane: replay-derived `safety_residual` now reaches the train binary with explicit staged activation controls, and full-learner BC now has hardware-agnostic microbatch accumulation rather than assuming one machine's VRAM shape
-- still open before Recommendation 1 is fully complete: replay/offline `delta_q` provenance + staged activation closure, and stronger public-teacher belief semantics
+- still open before Recommendation 1 is fully complete: stronger public-teacher belief semantics and any later realism/benchmark tranche that follows completed `delta_q` closure
 
 ## 7. Final handoff / progress report
 

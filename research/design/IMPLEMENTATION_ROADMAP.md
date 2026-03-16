@@ -5,7 +5,7 @@
 
 **End state**: `cargo build --release && cargo nextest run --release && cargo clippy -- -D warnings` all green. Every HYDRA_FINAL component implemented and tested.
 
-> **Current sequencing note:** This roadmap is an implementation-detail reference, not the sole authority on what to build next. For the immediate execution order, `research/design/HYDRA_RECONCILIATION.md` wins when it conflicts with this roadmap's broader full-stack sequencing.
+> **Current sequencing note:** This roadmap is an implementation-detail reference, not the upstream source of truth on what to build next. Start with `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`, use `ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` for archive prioritization, and treat `research/design/HYDRA_FINAL.md` / `research/design/HYDRA_RECONCILIATION.md` as promoted doctrine summaries that may need refresh when archive canon or code moves.
 >
 > **Demotion note:** Treat this file as a reference/backlog map, not as the default build order for the strongest current Hydra. Any section that conflicts with reconciliation or current runtime reality should be treated as archived or future-use material, not immediate marching orders.
 
@@ -19,11 +19,11 @@
 - Do NOT skip steps or proceed without passing the gate
 - Do NOT invent your own approach -- follow the spec EXACTLY
 
-**Design SSOT**: `research/design/HYDRA_FINAL.md`.
+**Promoted architecture doctrine summary**: `research/design/HYDRA_FINAL.md`.
 
-**Current execution authority**: `research/design/HYDRA_RECONCILIATION.md` for immediate tranche ordering.
+**Promoted execution doctrine summary**: `research/design/HYDRA_RECONCILIATION.md` for immediate tranche ordering.
 
-> **Workflow helper note:** Any short-form “what should I build next?” helper for this repo should name the safest highest-impact next task, say whether it is documented/safe, and report checked/not-checked coverage across authority docs, source, tests, and noisier research surfaces. It is workflow tooling only and does not outrank this roadmap or `HYDRA_RECONCILIATION.md`.
+> **Workflow helper note:** Any short-form “what should I build next?” helper for this repo should name the safest highest-impact next task, say whether it is documented/safe, and report checked/not-checked coverage across the canonical archive SSOT, promoted doctrine summaries, source, tests, and noisier research surfaces. It is workflow tooling only and does not outrank the archive source ledger, promoted doctrine summaries, runtime reality, or this roadmap.
 
 ---
 
@@ -72,9 +72,9 @@ Historical note: the original bootstrap work from this step is done. Use the res
 
 ### 1.4 Constants (in `config.rs`)
 
-**Canonical SSOT note:** `HYDRA_FINAL.md` is the governing architecture doc, and `HYDRA_RECONCILIATION.md` is the current repo-wide execution memo. The old `85 x 34` tensor describes the baseline prefix, not the full live encoder. The current code already uses the **fixed-shape 192 x 34 superset** of Groups A/B/C/D from `HYDRA_FINAL`, with zero-filled dynamic features plus presence-mask channels when search/belief/Hand-EV features are unavailable.
+**Routing note:** `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` is Hydra's canonical archive SSOT for upstream research conclusions. `HYDRA_FINAL.md` and `HYDRA_RECONCILIATION.md` are promoted doctrine summaries built from that archive canon plus repo validation. The old `85 x 34` tensor describes the baseline prefix, not the full live encoder. The current code already uses the **fixed-shape 192 x 34 superset** of Groups A/B/C/D from `HYDRA_FINAL`, with zero-filled dynamic features plus presence-mask channels when search/belief/Hand-EV features are unavailable.
 
-These are the exact defaults for the **current live implementation snapshot**, but this roadmap remains subordinate to `HYDRA_FINAL.md` and `HYDRA_RECONCILIATION.md` when they disagree on overall direction or priority:
+These are the exact defaults for the **current live implementation snapshot**, but this roadmap remains subordinate to the archive source ledger, promoted doctrine summaries, and runtime reality when they disagree on overall direction or priority:
 
 | Constant | Value | Source |
 |----------|-------|--------|
@@ -196,7 +196,7 @@ Current code reality is broader than the original 9-head bootstrap plan. The liv
 | 13 | DeltaQHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
 | 14 | SafetyResidualHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
 
-Current activation note: the advanced heads above are structurally live, but their target paths are not all equally closed. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, replay/sample ExIt now flows through a separate sidecar-backed carrier path, while `delta_q_target` and `opponent_hand_type_target` still remain absent in the standard sample-to-target conversion.
+Current activation note: the advanced heads above are structurally live, but their target paths are not all equally closed. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, replay/sample ExIt now flows through a separate sidecar-backed carrier path, replay/offline `delta_q` now also flows through a parallel sidecar-backed carrier path plus BC/train activation-hook closure, while `opponent_hand_type_target` still remains absent in the standard sample-to-target conversion.
 
 ### 3.2 Struct Definitions
 
@@ -780,7 +780,7 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 > - `collect_validation_metrics_for_step`: per-step metric collection with gate-level rejection attribution (incompatible state, too few discards, not hard state, other)
 > - 12 tests covering report defaults, merge, metric calculations, all pass/fail criterion paths, zero-label edge case, Display formatting, and the shadow validation integration test
 >
-> **Validation run (2026-03-09):** Shadow harness executed on 20 self-play games (1759 decision states). Infrastructure criteria passed 5/6: sample_size=1759, emission_rate=64.13%, mean_coverage=1.000, mean_supported_actions=9.8, mean_kl=0.0034. Top-1 agreement was 73.7% vs 95% threshold -- structurally unachievable with random weights since the 95% number targets trained-model policy/value coherence (not an Agent blueprint number). Fixed `SelfPlayExitAdapter::child_public_obs_after_discard` bug: tile136 was computed as `action*4+copy` instead of looking up the player's actual hand. Flipped `LiveExitConfig::default().enabled` to `true`. Re-validate top-1 agreement with trained weights after BC warm-start. `delta_q_target` no longer stays wholly absent: the live self-play RL lane now carries masked discard-compatible `Q(child)-Q(root)` labels through the shared root-search producer, while replay/sample `delta_q` and train-bin activation remain deferred (`keep-off-blocked` for broader activation until a separate provenance/validation tranche closes).
+> **Validation run (2026-03-09):** Shadow harness executed on 20 self-play games (1759 decision states). Infrastructure criteria passed 5/6: sample_size=1759, emission_rate=64.13%, mean_coverage=1.000, mean_supported_actions=9.8, mean_kl=0.0034. Top-1 agreement was 73.7% vs 95% threshold -- structurally unachievable with random weights since the 95% number targets trained-model policy/value coherence (not an Agent blueprint number). Fixed `SelfPlayExitAdapter::child_public_obs_after_discard` bug: tile136 was computed as `action*4+copy` instead of looking up the player's actual hand. Flipped `LiveExitConfig::default().enabled` to `true`. Re-validate top-1 agreement with trained weights after BC warm-start. `delta_q_target` no longer stays partly deferred: the live self-play RL lane carries masked discard-compatible `Q(child)-Q(root)` labels through the shared root-search producer, and the replay/offline BC lane now also closes through sidecar generation, replay/sample join, BC/train activation-hook wiring, and warmup-time trunk detachment.
 
 ### 11.5 Tests
 

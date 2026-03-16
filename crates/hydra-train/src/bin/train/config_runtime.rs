@@ -168,6 +168,18 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
                 .to_string(),
         );
     }
+    if config
+        .advanced_loss
+        .as_ref()
+        .and_then(|loss| loss.delta_q)
+        .is_some_and(|weight| weight > 0.0)
+        && config.delta_q_sidecar_path.is_none()
+    {
+        return Err(
+            "advanced_loss.delta_q requires delta_q_sidecar_path so replay delta_q labels are present"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 

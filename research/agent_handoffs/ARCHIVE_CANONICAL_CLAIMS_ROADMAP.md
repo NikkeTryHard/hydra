@@ -1,17 +1,26 @@
 # Archive Canonical Claims Roadmap
 
-> Non-SSOT handoff artifact.
+> Derived archive prioritization view.
 >
-> This file ranks archive-derived research lanes from `ARCHIVE_CANONICAL_CLAIMS.jsonl`.
-> It does **not** promote archive claims into current Hydra doctrine by itself.
+> This file ranks archive-derived research lanes from `ARCHIVE_CANONICAL_CLAIMS.jsonl`,
+> which is the source ledger for Hydra's canonical archive SSOT.
+> It does **not** by itself settle promoted doctrine or runtime truth.
 >
-> Authority order remains:
-> 1. `research/design/HYDRA_FINAL.md`
-> 2. `research/design/HYDRA_RECONCILIATION.md`
-> 3. `docs/GAME_ENGINE.md`
+> Layered routing is:
+> 1. `README.md`
+> 2. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`
+> 3. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md` and this roadmap
+> 4. `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md`
+> 5. `docs/GAME_ENGINE.md` and current code
 >
-> If this file conflicts with `HYDRA_RECONCILIATION.md` on sequencing, tranche priority,
-> or active-vs-reserve status, `HYDRA_RECONCILIATION.md` wins.
+> If this file conflicts with the JSONL source ledger, the JSONL wins.
+> If either archive view or promoted doctrine drifts from current code/runtime,
+> refresh the lagging summary instead of demoting the upstream source.
+>
+> Warning:
+> this archive roadmap intentionally preserves archive triage and can lag current repo truth.
+> Known drift is updated in-place when found, but future code/docs may still move faster than this file.
+> Read any ExIt, `delta_q`, or belief-teacher status here through current code/runtime and the promoted docs before claiming something is live.
 
 ## Scope
 
@@ -23,19 +32,20 @@ This roadmap exists to answer one narrow question:
 - what belongs on the **reserve shelf**,
 - and what should remain **blocked, rejected, or not active path**.
 
-This file is an archive triage map, not a replacement build-order memo.
-Use it after reading `README.md` authority routing and `HYDRA_RECONCILIATION.md`.
+This file is an archive prioritization layer, not a self-executing build-order memo.
+Use it after reading the JSONL source ledger and before trusting or refreshing downstream doctrine summaries.
 
 ## Workflow note
 
-When using any short-form next-step triage helper for this repo, keep it subordinate to the main authority chain.
+When using any short-form next-step triage helper for this repo, start from the canonical archive layer and then check promoted doctrine plus runtime reality before implementing.
 
 That helper should:
-- read the main authority chain first
+- read `ARCHIVE_CANONICAL_CLAIMS.jsonl` first
+- check whether promoted doctrine and runtime docs were refreshed afterward
 - bias toward the safest highest-impact next step
 - report whether noisy archive surfaces were actually checked
 
-It does **not** promote archive material into doctrine, and it does **not** outrank `HYDRA_RECONCILIATION.md`.
+It does **not** turn a derived archive view into self-executing doctrine, and it does **not** outrank the JSONL source ledger.
 
 ## Inputs and interpretation rules
 
@@ -57,9 +67,9 @@ Primary evidence base:
 
 Interpretation rules:
 
-1. Archive artifacts are evidence, not truth.
-2. A surviving archive claim is **not** automatically doctrine.
-3. A live seam is **not** the same thing as an active-path commitment.
+1. Canonical archive claims are upstream research truth, but they are not automatic proof of code/runtime reality.
+2. Raw combined answers are **not** the same thing as canonical archive claims.
+3. A surviving archive claim is **not** automatically an already-implemented active-path commitment.
 4. Proposal-level rows must stay visibly proposal-level.
 5. Reject/block rows must stay visibly rejected or blocked.
 
@@ -80,9 +90,8 @@ Interpretation rules:
 - Completed (rank 2): `safety_residual` semantic repair in code.
 - Completed (supporting tranche infrastructure): learner BC now supports hardware-agnostic microbatch accumulation, and `src/bin/train.rs` can stage narrow replay-derived `safety_residual` activation without opening the weaker advanced-target lanes.
 - Completed (rank 3): ExIt self-play loop (`generate_self_play_rl_batch`) and producer (`SelfPlayExitAdapter`) wired. Validation harness ran on 1759 states (5/6 infrastructure criteria passed; top-1 agreement requires trained weights). `LiveExitConfig::default().enabled` flipped to `true`. `SelfPlayExitAdapter` tile-lookup bug fixed.
-- `delta_q_target` closure deferred (`keep-off-blocked` per answer_23 doctrine)
-- orchestrator integration for head gates (wiring controller into training step functions)
-- trunk detachment for warmup heads (requires model forward modification)
+- Completed (rank 3 supporting lane): replay/sample ExIt sidecar-first producer/join path is in code with provenance/version checks and BC-side optional ExIt loss support.
+- Completed (rank 6): `delta_q` closure across replay/offline sidecar provenance, BC/train activation, and warmup detach.
 - feature-ablation gate (Gate 5 from archive, requires evaluation arena)
 - full ProvenanceKey/PonderMeta/CacheDecisionAudit from answer_20 are aspirational and depend on infrastructure that does not yet exist (belief digest, policy assumption digest, CompressedAfbsTree, evaluation arena for G0-G3 re-entry gates)
 
@@ -94,7 +103,7 @@ Interpretation rules:
 | 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end, with BC-path staged activation and microbatch accumulation available for learner training | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; the train binary can enable only this narrow advanced loss while keeping weaker lanes blocked, and BC no longer assumes one machine's VRAM shape. Keep this lane replay-derived and narrow. | canonical rows 22, 23, 24; `answer_18_combined.md` |
 | 3 | ExIt carrier closure across live self-play and replay/sample sidecar lane | Completed in code | Live self-play loop, replay/sample sidecar producer/join, BC consumption, default-on live producer | ExIt now has bridge helpers, consumer mask support, a live self-play loop (`generate_self_play_rl_batch`) with search-derived labels via `SelfPlayExitAdapter`, plus a replay/sample sidecar-first lane that generates replay-indexed search-derived labels, joins them back into replay samples with provenance/version checks, and feeds BC as a separate optional ExIt loss. | canonical rows 34, 35, 51, 52; `answer_9_combined.md`, `answer_15_combined.md`, `answer_24_combined.md` |
 
-Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt producer, the surviving archive verdict is now narrower than the older broad ExIt discussion. Teacher semantics should remain root child visits, `root_exit_policy()` / q-softmax should not be promoted into the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement deferred to trained-model re-validation). Read this as a live self-play/producer status update, not as a claim that every training data path in the repo now carries `exit_target`.
+Additional narrowing from `answer_22.md`: now that Hydra has closed the live AFBS ExIt producer lane, the surviving archive verdict is narrower than the older broad ExIt discussion. Teacher semantics stay root child visits, `root_exit_policy()` / q-softmax do not become the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement still needs trained-model re-validation). Read this as a live self-play/producer status update, not as a claim that every training data path in the repo now carries `exit_target`.
 | 4 | Advanced-head activation discipline | Completed in code | Gate pack implemented: density, conflict, warmup | `HeadActivationController` with density gates (`rho >= 0.8` dense, `spp >= 5` sparse), gradient conflict tracking (cosine < 30% negative), warmup protocol (Off->Warmup->Active), and `approved_loss_config` integration. 36 tests pass. | canonical row 55; `answer_13_combined.md`, `answer_3-1_combined.md` |
 | 5 | Runtime ponder/cache provenance hardening | Completed in code | Provenance fields, generation tracking, trust gating implemented | `PonderResult` carries `source_net_hash`, `source_version`, `TrustLevel`, `CacheNamespace`, `generation`. `PonderCache` enforces generation freshness. `InferenceServer` gates runtime cache hits behind `Authoritative` trust (nothing qualifies, keeping everything learner-only). 10 new tests. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 
@@ -102,19 +111,19 @@ Additional narrowing from `answer_22.md`: if Hydra closes the live AFBS ExIt pro
 
 | Rank | Lane | Doctrine status | Repo status | Promotion gate | Refs |
 |---|---|---|---|---|---|
-| 6 | H1a Hand-EV semantic repair on the current 42-plane surface | Fits current sequencing; still proposal-level | Strong live seam | Must beat current Hand-EV on exact-one-step oracle slices and stay within encode-cost limits. | canonical rows 36, 37, 38; `answer_14_combined.md`, `answer_17_combined.md` |
-| 7 | Tile-aware spatial/global head routing correction | Strong archive architecture survivor; not current doctrine | Narrow problem is visible in repo now | Route tile-indexed outputs from spatial features first; do not auto-promote the whole history-sidecar package. | canonical row 56; `answer_21.md` |
-| 8 | Replay-indexed ExIt sidecar closure | Completed in code | Replay/sample sidecar producer/join now exists; keep replay-pure boundary | `mjai_loader.rs` stays replay-pure while replay-indexed ExIt remains search-derived rather than replay-derived. The separate offline root-search sidecar producer, supervised-batch join, provenance/version checks, and BC-side optional ExIt loss path are now implemented. | canonical rows 68, 69; `answer_24_combined.md` |
-| 9 | `delta_q` closure | Doctrinally interesting, not semantically closed | Narrow RL lane exists, but activation accounting and validation closure remain open | Needs a masked `[46]` root-child q-delta object, explicit `[46]` support mask, shared root-search producer, mask-row-based sparse-head accounting for mixed batches, and validation-backed training path before activation. | canonical rows 40, 41, 73; `answer_15_combined.md`, `answer_18_combined.md`, `answer_7-1_combined.md`, `answer_23_combined.md`, `answer_25_combined.md` |
-| 10 | Public-posterior belief teacher closure | Doctrine-compatible later lane | Current Stage-A path is semantically weak | Must replace Stage-A projection with a credible public teacher object before any belief/mix activation. | canonical rows 25, 26, 27, 28; `answer_15_combined.md`, `answer_18_combined.md`, `answer_3-1_combined.md` |
-| 11 | World-aware CT-SMC Hand-EV (H1b) | Later selective lane only | Runtime seam exists; train/infer parity blocked | H1a must win first, CT-SMC quality gates must pass, and training-time matching search-context observations must exist. | canonical rows 39, 40, 41; `answer_14_combined.md`, `answer_1-1_combined.md` |
-| 12 | Specialist endgame leaf exactification | Later/narrower than Hand-EV | Host shell exists, stronger leaf absent | Keep it as a specialist late-game lane, likely via pondering/search-side deployment, not fast-path identity. | canonical rows 42, 43; `answer_14_combined.md`, `answer_3-1_combined.md` |
+| 6 | Public-posterior belief teacher closure | Immediate next supervision lane after completed `delta_q` closure | Current Stage-A path is semantically weak | Must replace Stage-A projection with a credible public teacher object before any belief/mix activation. | canonical rows 25, 26, 27, 28; `answer_15_combined.md`, `answer_18_combined.md`, `answer_3-1_combined.md` |
+| 7 | H1a Hand-EV semantic repair on the current 42-plane surface | Fits current sequencing; still proposal-level | Strong live seam | Must beat current Hand-EV on exact-one-step oracle slices and stay within encode-cost limits. | canonical rows 36, 37, 38; `answer_14_combined.md`, `answer_17_combined.md` |
+| 8 | Tile-aware spatial/global head routing correction | Strong archive architecture survivor; not current doctrine | Narrow problem is visible in repo now | Route tile-indexed outputs from spatial features first; do not auto-promote the whole history-sidecar package. | canonical row 56; `answer_21.md` |
+| 9 | World-aware CT-SMC Hand-EV (H1b) | Later selective lane only | Runtime seam exists; train/infer parity blocked | H1a must win first, CT-SMC quality gates must pass, and training-time matching search-context observations must exist. | canonical rows 39, 40, 41; `answer_14_combined.md`, `answer_1-1_combined.md` |
+| 10 | Specialist endgame leaf exactification | Later/narrower than Hand-EV | Host shell exists, stronger leaf absent | Keep it as a specialist late-game lane, likely via pondering/search-side deployment, not fast-path identity. | canonical rows 42, 43; `answer_14_combined.md`, `answer_3-1_combined.md` |
 
-Additional narrowing from `answer_23_combined.md`: current doctrine still keeps `delta_q_target` off. The only surviving honest closure lane is learner-only, root-only, search-derived `Q(child) - Q(root)` supervision over discard-compatible actions, preserved in the existing `[46]` head space via an explicit `[46]` mask. Hydra should not zero-extend the bridge/runtime `[34]` plane into training supervision; it should first close one shared ExIt/`delta_q` producer, provenance contract, and validation envelope.
+Additional narrowing from `answer_23_combined.md`: the surviving honest `delta_q` object was learner-only, root-only, search-derived `Q(child) - Q(root)` supervision over discard-compatible actions, preserved in the existing `[46]` head space via an explicit `[46]` mask. That closure is now implemented in code across replay/offline sidecar provenance, sample/batch carriage, and BC/train activation, and the archive warning against zero-extending the bridge/runtime `[34]` plane remains the right reading of what was shipped.
 
-Additional narrowing from `answer_25_combined.md`: the narrow RL-only `delta_q` lane is real enough to validate, but sparse-head activation accounting must count only rows whose `[46]` `delta_q_mask` has nonzero support. Mixed batches can legitimately carry `Some(target), Some(mask)` at batch scope while still containing absent all-zero-mask rows, so counting `batch_size` overstates `delta_q` coverage and can approve the head too early. Invalid `(Some, None)` / `(None, Some)` target-mask pairs should stay explicit keep-off plumbing failures rather than silently degrading into zero-loss behavior.
+Additional narrowing from `answer_25_combined.md`: the RL-only validation follow-up survives as a correctness requirement on the now-implemented lane. Sparse-head activation accounting must count only rows whose `[46]` `delta_q_mask` has nonzero support, and invalid `(Some, None)` / `(None, Some)` target-mask pairs stay explicit plumbing failures rather than silently degrading into zero-loss behavior. Those pair-safety constraints are now reflected in code and should be treated as completed narrowing, not future doctrine.
 
-Additional narrowing from `answer_24_combined.md`: the normal replay/sample loader should stay replay-pure for ExIt. The surviving future lane is not replay-derived-now and not “put search inside `mjai_loader.rs`”; it is a replay-indexed, search-derived offline sidecar producer that reuses the live ExIt kernel and only later joins `exit_target` / `exit_mask` into supervised replay/sample batches.
+Additional narrowing from `answer_26_combined.md`: replay/offline `delta_q` did correctly close through the replay-indexed search-derived sidecar pattern rather than a replay-built loader path, and the separate BC/train activation-hook blocker is now also closed in code through caller-side `HeadActivationController` integration plus warmup-time trunk detachment for `DeltaQ`. Keep that archive split as the historical explanation for the implementation order, not as a current blocker.
+
+Additional narrowing from `answer_24_combined.md`: the normal replay/sample loader should stay replay-pure for ExIt. That lane is now closed in code through a replay-indexed, search-derived offline sidecar producer plus supervised join path, and it should now be treated as the pattern for provenance-explicit search-derived labels rather than as unfinished future work.
 
 ### Reserve shelf
 
@@ -125,9 +134,9 @@ These survive as preserved options, but they should not steer the current active
 | 12 | Tiny learned scorer for the next ponder quantum | Narrow compute-allocation seam exists and the current heuristic is replaceable | Should come after cache/provenance cleanup and should stay tiny, not grow into a runtime router | canonical rows 44, 45; `answer_19_combined.md`, `answer_10_combined.md`, `answer_5-1_combined.md` |
 | 13 | Dedicated public-history path / asymmetric actor-learner package | Strongest surviving architecture challenger | Exact GRU-actor / transformer-learner package remains proposal-level; history path must earn promotion via collision/order tests | canonical row 56; `answer_21.md` |
 | 14 | Action-sufficient CT-SMC world compression | Narrow benchmark-first survivor | Worth testing only as a runtime-only equal-budget falsification project | canonical row 51; `answer_11_combined.md`, `answer_8-2_combined.md`, `answer_6-1_combined.md` |
-| 16 | Stronger endgame exactification | Reserve-shelf technique explicitly preserved in current archive doctrine | Narrower and later than supervision closure and Hand-EV realism | `HYDRA_ARCHIVE.md`; canonical rows 42, 43; `answer_14_combined.md` |
-| 17 | Robust-opponent search backups / richer latent opponent posterior work | Preserved as last-mile strength ideas | Reconciliation keeps them reserve-only while target-generation and realism work remain open | `HYDRA_ARCHIVE.md`; canonical row 53; `HYDRA_RECONCILIATION.md` |
-| 18 | DRDA/ACH as stronger optimizer/game-theory branch | Preserved as later optimizer direction | Should not compete with current target-pipeline closure | `HYDRA_ARCHIVE.md`; `HYDRA_RECONCILIATION.md` |
+| 15 | Stronger endgame exactification | Reserve-shelf technique explicitly preserved in current archive doctrine | Narrower and later than supervision closure and Hand-EV realism | `HYDRA_ARCHIVE.md`; canonical rows 42, 43; `answer_14_combined.md` |
+| 16 | Robust-opponent search backups / richer latent opponent posterior work | Preserved as last-mile strength ideas | Reconciliation keeps them reserve-only while target-generation and realism work remain open | `HYDRA_ARCHIVE.md`; canonical row 53; `HYDRA_RECONCILIATION.md` |
+| 17 | DRDA/ACH as stronger optimizer/game-theory branch | Preserved as later optimizer direction | Should not compete with current target-pipeline closure | `HYDRA_ARCHIVE.md`; `HYDRA_RECONCILIATION.md` |
 
 ### Blocked / reject / not active path
 
@@ -146,13 +155,17 @@ These survive as preserved options, but they should not steer the current active
 
 ## Dependency closure table
 
+Historical-note warning:
+- this table preserves archive-derived closure shapes and may still lag future repo updates.
+- rows in this table have been truth-aligned where known drift was found, but current authority docs/code still win if this table falls behind again.
+
 | Lane | Live seam now? | Main blocker | Earliest honest promotion |
 |---|---|---|---|
 | `safety_residual` repair | Yes | Closed for the current replay-derived lane; keep activation/provenance narrow | Completed |
-| `exit_target` / conservative ExIt | Yes | Self-play/live-producer lane is closed; replay/sample path still separate | Completed for the live self-play lane |
-| Replay-indexed ExIt sidecar closure | Partial | Normal replay/sample path stays absent; shared offline root-search producer and supervised-batch join are still missing | After sidecar producer + provenance contract + validation-backed join closure |
+| `exit_target` / conservative ExIt | Yes | Live self-play and replay/sample lanes are both closed, but provenance must stay explicit and replay-pure boundary intact | Completed in code |
+| Replay-indexed ExIt sidecar closure | Yes | Keep replay/sample ExIt search-derived and sidecar-first; do not collapse it into ordinary replay truth | Completed in code |
 | Advanced-head activation discipline | Yes (gate pack complete) | Orchestrator integration + trunk detachment for warmup heads | Completed (core); orchestrator wiring after self-play loop |
-| `delta_q` | Partial | Dense `[46]` training surface and discard-only `[34]` runtime surface are not one closed object; mixed-batch sparse-head accounting is still overstated, and shared validation closure is still missing | After masked object + shared producer + corrected target-presence accounting + validation closure |
+| `delta_q` | Yes | Closed for the current learner-only replay/offline + BC/train lane; keep provenance explicit and do not broaden belief-style lanes by analogy | Completed in code |
 | Belief supervision | Partial | Weak Stage-A teacher; no credible public posterior object in the current path | After public-teacher closure |
 | H1a Hand-EV | Yes | Needs exact-one-step benchmark win | After benchmark pass |
 | H1b world-aware Hand-EV | Runtime seam only | Train/infer parity + representative-world gates | After H1a + parity + CT-SMC gates |
@@ -167,10 +180,10 @@ These survive as preserved options, but they should not steer the current active
 3. Close real `exit_target` carrier/provenance plumbing for the live self-play lane. **(done)**
 4. Add activation-density / transfer gates before broad advanced-head activation. **(done)**
 5. Harden runtime ponder/cache provenance and admission boundaries. **(done)**
-6. Run H1a Hand-EV exact-one-step benchmark; promote only if it clears the gate.
-7. Close replay-indexed ExIt sidecar production without breaking the replay-pure loader boundary.
+6. Strengthen public-teacher belief semantics before any belief/mix activation.
+7. Run H1a Hand-EV exact-one-step benchmark; promote only if it clears the gate.
 8. Evaluate tile-aware spatial/global head routing correction before broader architecture changes.
-9. Revisit `delta_q`, belief teacher closure, and H1b only from the stronger base above.
+9. Revisit H1b and other later selective lanes only from the stronger base above.
 10. Keep reserve-shelf items alive, but do not let them compete with the mainline before the earlier gates close.
 
 ## Source map
@@ -178,17 +191,18 @@ These survive as preserved options, but they should not steer the current active
 High-signal archive answers behind this roadmap:
 
 - `answer_18_combined.md` — strongest target-semantic audit and narrow `safety_residual`-first reading
-- `answer_15_combined.md` — target-provenance taxonomy, ExIt carrier gap, keep-off doctrine for belief/mix/hand-type
+- `answer_15_combined.md` — target-provenance taxonomy, historical ExIt carrier gap, keep-off doctrine for belief/mix/hand-type
 - `answer_14_combined.md` — H1a first, H1b later, endgame as later specialist lane
 - `answer_13_combined.md` — density/interference risk and conservative staged-budget reading
 - `answer_16-1_combined.md` — stricter rollout trust boundary and threshold cleanup
 - `answer_20_combined.md` — cache/provenance authority critique and learner-only safe-policy recommendation
 - `answer_19_combined.md` — narrow learned ponder-scorer seam
 - `answer_21.md` — strongest surviving architecture lane: static compatibility path + head-routing correction + later history path
-- `answer_22.md` — narrow live-AFBS ExIt evaluator verdict: visits stay the teacher object; public value head is the only surviving narrow evaluator; producer now default-on after infrastructure validation
-- `answer_23_combined.md` — delta_q closure blueprint: keep the lane off today; surviving future object is masked `[46]` root-child q-delta over discard-compatible actions with shared ExIt/search-label producer, provenance, and validation closure
-- `answer_24_combined.md` — replay/sample ExIt producer-path narrowing: keep the ordinary loader replay-pure, classify replay-indexed offline ExIt as search-derived, and close the lane through a separate shared root-search sidecar producer
+- `answer_22.md` — narrow live-AFBS ExIt evaluator verdict: visits stay the teacher object; public value head is the only surviving narrow evaluator; producer now default-on after infrastructure validation (older default-off wording is historical)
+- `answer_23_combined.md` — delta_q closure blueprint: masked `[46]` root-child q-delta over discard-compatible actions with shared ExIt/search-label producer, provenance, and validation closure; the keep-off wording is now historical for the completed lane
+- `answer_24_combined.md` — replay/sample ExIt producer-path narrowing: keep the ordinary loader replay-pure, classify replay-indexed offline ExIt as search-derived, and treat the sidecar-first lane as completed in current code
 - `answer_25_combined.md` — RL-only delta_q validation narrowing: mixed masked batches must use nonzero-mask row counting for sparse-head activation accounting, and invalid target/mask pair states stay keep-off plumbing failures
+- `answer_26_combined.md` — replay/offline delta_q provenance narrowing: close replay/offline labels only through a replay-indexed search-derived sidecar contract; the later BC/train activation-hook blocker is now historical for the completed lane
 
 Canonical rows used most heavily:
 
@@ -196,6 +210,7 @@ Canonical rows used most heavily:
 - 25-31: belief / mixture / opponent-hand-type keep-off logic
 - 40-41: `delta_q` blocker plus masked future closure object
 - 73: RL-only `delta_q` validation narrowing for mask-row target-presence accounting and invalid pair keep-off behavior
+- 81: replay/offline `delta_q` provenance narrowing: sidecar-first/search-derived closure, with BC/train activation-hook closure still separate
 - 34-35: ExIt doctrine versus missing carrier
 - 68-69: replay-pure loader boundary plus replay-indexed ExIt search-derived provenance / sidecar closure lane
 - 41: live-AFBS ExIt evaluator semantics (visit teacher, reject q-softmax teacher, value-head evaluator under learner-only root-only AFBS)
@@ -206,15 +221,16 @@ Canonical rows used most heavily:
 
 ## Do not overread this file
 
-- `Do now` here means “best archive-derived lane consistent with current doctrine,” not “new SSOT build order.”
+- `Do now` here means “best archive-derived lane from the canonical archive layer,” not “proof that downstream doctrine and runtime docs were already refreshed.”
 - `Phase-next` means “promising but still gated.”
 - `Reserve shelf` means “preserve, do not forget,” not “quietly promote later without re-validation.”
 - `Blocked / reject / not active` mixes three different statuses on purpose only when the practical instruction is the same: do not let that lane consume current mainline attention.
 
 When in doubt, re-read:
 
-1. `README.md`
-2. `research/design/HYDRA_RECONCILIATION.md`
-3. `docs/GAME_ENGINE.md`
+1. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`
+2. `research/design/HYDRA_FINAL.md`
+3. `research/design/HYDRA_RECONCILIATION.md`
+4. `docs/GAME_ENGINE.md`
 
 Only then use this file as the archive-derived prioritization layer.

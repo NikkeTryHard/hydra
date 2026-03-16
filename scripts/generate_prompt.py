@@ -32,6 +32,8 @@ class PromptTemplateParseError(PromptGeneratorError):
 class ShellSection:
     tag: str
     lines: list[str]
+    mode: str = "replace"
+    mode_explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,24 @@ def _parse_shell_sections(
             errors,
             config_path,
         )
+        mode_explicit = "mode" in section_obj
+        mode = "replace"
+        if mode_explicit:
+            parsed_mode = _ensure_string(
+                section_obj.get("mode"),
+                f"{location}[{index}].mode",
+                errors,
+                config_path,
+            )
+            if parsed_mode in {"replace", "append", "delete"}:
+                mode = parsed_mode
+            elif parsed_mode is not None:
+                errors.append(
+                    _config_error(
+                        config_path,
+                        f"{location}[{index}].mode: unsupported mode {parsed_mode!r} (expected replace, append, or delete)",
+                    )
+                )
         raw_lines = _ensure_list(
             section_obj.get("lines"),
             f"{location}[{index}].lines",
@@ -188,7 +208,14 @@ def _parse_shell_sections(
             if line is not None:
                 lines.append(line)
         if tag is not None:
-            sections.append(ShellSection(tag=tag, lines=lines))
+            sections.append(
+                ShellSection(
+                    tag=tag,
+                    lines=lines,
+                    mode=mode,
+                    mode_explicit=mode_explicit,
+                )
+            )
     return sections
 
 
@@ -648,6 +675,55 @@ def _validate_config(config: PromptConfig) -> list[str]:
                     variant.shell_source_path,
                 )
             )
+            try:
+                template = load_prompt_template(variant.shell_source_path)
+            except PromptTemplateParseError:
+                continue
+            errors.extend(
+                _validate_template_shell_sections(
+                    config.config_path,
+                    f"variants[{variant_index}]",
+                    template,
+                    variant.shell_sections,
+                )
+            )
+    return errors
+
+
+def _validate_template_shell_sections(
+    config_path: Path,
+    location: str,
+    template: PromptTemplate,
+    sections: list[ShellSection],
+) -> list[str]:
+    errors: list[str] = []
+    template_tags = {section.tag for section in template.shell_sections}
+
+    for index, section in enumerate(sections):
+        section_location = f"{location}.shell_sections[{index}]"
+        if not section.mode_explicit:
+            errors.append(
+                _config_error(
+                    config_path,
+                    f"{section_location}.mode: explicit mode is required when shell_source_path is used; template text is preserved by default",
+                )
+            )
+            continue
+        if section.mode not in {"append", "delete"}:
+            errors.append(
+                _config_error(
+                    config_path,
+                    f"{section_location}.mode: expected 'append' or 'delete' when shell_source_path is used",
+                )
+            )
+        if section.mode == "delete" and section.tag not in template_tags:
+            errors.append(
+                _config_error(
+                    config_path,
+                    f"{section_location}.tag: cannot delete non-template section {section.tag!r}",
+                )
+            )
+
     return errors
 
 
@@ -859,19 +935,74 @@ def load_prompt_template(path: Path) -> PromptTemplate:
 def merge_shell_sections(
     default_sections: list[ShellSection], override_sections: list[ShellSection]
 ) -> list[ShellSection]:
-    merged: list[ShellSection] = [
+    merged: list[ShellSection | None] = [
         ShellSection(tag=section.tag, lines=list(section.lines))
         for section in default_sections
     ]
-    index_by_tag = {section.tag: index for index, section in enumerate(merged)}
+    index_by_tag = {
+        section.tag: index
+        for index, section in enumerate(merged)
+        if section is not None
+    }
+    deleted_positions: dict[str, int] = {}
+
     for section in override_sections:
-        replacement = ShellSection(tag=section.tag, lines=list(section.lines))
-        if section.tag in index_by_tag:
-            merged[index_by_tag[section.tag]] = replacement
+        if section.mode == "append":
+            if section.tag in index_by_tag:
+                index = index_by_tag[section.tag]
+                current = merged[index]
+                if current is None:
+                    raise RuntimeError(
+                        f"shell section index for {section.tag!r} points to deleted slot"
+                    )
+                merged[index] = ShellSection(
+                    tag=current.tag,
+                    lines=[*current.lines, *section.lines],
+                )
+            elif (
+                section.tag in deleted_positions
+                and merged[deleted_positions[section.tag]] is None
+            ):
+                index = deleted_positions.pop(section.tag)
+                merged[index] = ShellSection(tag=section.tag, lines=list(section.lines))
+                index_by_tag[section.tag] = index
+            else:
+                index_by_tag[section.tag] = len(merged)
+                merged.append(ShellSection(tag=section.tag, lines=list(section.lines)))
+        elif section.mode == "delete":
+            index = index_by_tag.get(section.tag)
+            if index is None:
+                continue
+            current = merged[index]
+            if current is None:
+                continue
+            if section.lines:
+                lines_to_delete = set(section.lines)
+                remaining_lines = [
+                    line for line in current.lines if line not in lines_to_delete
+                ]
+                if remaining_lines:
+                    merged[index] = ShellSection(
+                        tag=current.tag,
+                        lines=remaining_lines,
+                    )
+                else:
+                    merged[index] = None
+                    deleted_positions[section.tag] = index
+                    del index_by_tag[section.tag]
+            else:
+                merged[index] = None
+                deleted_positions[section.tag] = index
+                del index_by_tag[section.tag]
         else:
-            index_by_tag[section.tag] = len(merged)
-            merged.append(replacement)
-    return merged
+            replacement = ShellSection(tag=section.tag, lines=list(section.lines))
+            if section.tag in index_by_tag:
+                merged[index_by_tag[section.tag]] = replacement
+            else:
+                index_by_tag[section.tag] = len(merged)
+                merged.append(replacement)
+
+    return [section for section in merged if section is not None]
 
 
 def slugify(value: str) -> str:

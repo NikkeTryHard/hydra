@@ -95,7 +95,9 @@ Artifact note
         )
         self.assertEqual(template.artifact_container_tag, "artifacts")
 
-    def test_render_prompt_uses_shell_source_order(self) -> None:
+    def test_render_prompt_uses_shell_source_order_and_appends_to_template(
+        self,
+    ) -> None:
         repo_root = self.make_repo()
         canonical = repo_root / "docs/reference.md"
         canonical.write_text(
@@ -143,8 +145,16 @@ Canonical note
                         "title": "Rendered title",
                         "shell_source_path": "docs/reference.md",
                         "shell_sections": [
-                            {"tag": "direction", "lines": ["Variant direction"]},
-                            {"tag": "style", "lines": ["Variant style"]},
+                            {
+                                "tag": "direction",
+                                "mode": "append",
+                                "lines": ["Variant direction"],
+                            },
+                            {
+                                "tag": "style",
+                                "mode": "append",
+                                "lines": ["Variant style"],
+                            },
                         ],
                         "artifact_ids": [],
                     }
@@ -169,7 +179,9 @@ Canonical note
             < artifacts_index
         )
         self.assertIn("Variant direction", rendered)
+        self.assertIn("Canonical direction", rendered)
         self.assertIn("Variant style", rendered)
+        self.assertIn("Canonical style", rendered)
         self.assertIn("Canonical note", rendered)
         self.assertTrue(rendered.startswith("# Rendered title\n"))
 
@@ -287,7 +299,9 @@ Canonical note
         self.assertIn("line two", rendered)
         self.assertIn("Type: `literal`", rendered)
 
-    def test_variant_shell_section_overrides_default_by_tag(self) -> None:
+    def test_variant_shell_section_overrides_default_by_tag_without_template(
+        self,
+    ) -> None:
         repo_root = self.make_repo()
         config_path = self.write_config(
             repo_root,
@@ -349,6 +363,119 @@ Canonical note
                 for error in ctx.exception.errors
             )
         )
+
+    def test_validation_requires_explicit_mode_when_template_is_used(self) -> None:
+        repo_root = self.make_repo()
+        canonical = repo_root / "docs/reference.md"
+        canonical.write_text(
+            """# Canonical title
+
+<role>
+Canonical role
+</role>
+
+<direction>
+Canonical direction
+</direction>
+
+<artifacts>
+...
+</artifacts>
+""",
+            encoding="utf-8",
+        )
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {
+                        "name": "main",
+                        "shell_source_path": "docs/reference.md",
+                        "shell_sections": [
+                            {"tag": "direction", "lines": ["Variant direction"]}
+                        ],
+                        "artifact_ids": [],
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaises(generate_prompt.ValidationError) as ctx:
+            self.load_config(config_path)
+
+        self.assertTrue(
+            any(
+                "explicit mode is required when shell_source_path is used" in error
+                for error in ctx.exception.errors
+            )
+        )
+
+    def test_template_variant_can_delete_specific_lines(self) -> None:
+        repo_root = self.make_repo()
+        canonical = repo_root / "docs/reference.md"
+        canonical.write_text(
+            """# Canonical title
+
+<role>
+Canonical role
+</role>
+
+<style>
+- keep this
+- drop this
+</style>
+
+<artifacts>
+...
+</artifacts>
+""",
+            encoding="utf-8",
+        )
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {
+                        "name": "main",
+                        "shell_source_path": "docs/reference.md",
+                        "shell_sections": [
+                            {
+                                "tag": "style",
+                                "mode": "delete",
+                                "lines": ["- drop this"],
+                            },
+                            {
+                                "tag": "style",
+                                "mode": "append",
+                                "lines": ["- add this"],
+                            },
+                        ],
+                        "artifact_ids": [],
+                    }
+                ],
+            },
+        )
+
+        config = self.load_config(config_path)
+        rendered = generate_prompt.render_prompt(config, "main")
+
+        self.assertIn("- keep this", rendered)
+        self.assertNotIn("- drop this", rendered)
+        self.assertIn("- add this", rendered)
 
     def test_validation_reports_out_of_bounds_range(self) -> None:
         repo_root = self.make_repo()

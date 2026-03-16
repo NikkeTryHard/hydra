@@ -19,6 +19,7 @@ use crate::data::mjai_loader::{
 };
 use crate::data::sample::{MjaiSample, collate_sample_refs};
 use crate::training::losses::HydraTargets;
+use crate::training::replay_delta_q::DeltaQSidecarIndex;
 use crate::training::replay_exit::ExitSidecarIndex;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -44,6 +45,9 @@ pub struct StreamingLoaderConfig {
     pub exit_sidecar: Option<Arc<ExitSidecarIndex>>,
     pub exit_sidecar_source_net_hash: Option<u64>,
     pub exit_sidecar_source_version: Option<u32>,
+    pub delta_q_sidecar: Option<Arc<DeltaQSidecarIndex>>,
+    pub delta_q_sidecar_source_net_hash: Option<u64>,
+    pub delta_q_sidecar_source_version: Option<u32>,
 }
 
 impl Default for StreamingLoaderConfig {
@@ -59,6 +63,9 @@ impl Default for StreamingLoaderConfig {
             exit_sidecar: None,
             exit_sidecar_source_net_hash: None,
             exit_sidecar_source_version: None,
+            delta_q_sidecar: None,
+            delta_q_sidecar_source_net_hash: None,
+            delta_q_sidecar_source_version: None,
         }
     }
 }
@@ -388,6 +395,9 @@ fn spawn_archive_stream(
     let exit_sidecar = config.exit_sidecar.clone();
     let exit_sidecar_source_net_hash = config.exit_sidecar_source_net_hash;
     let exit_sidecar_source_version = config.exit_sidecar_source_version;
+    let delta_q_sidecar = config.delta_q_sidecar.clone();
+    let delta_q_sidecar_source_net_hash = config.delta_q_sidecar_source_net_hash;
+    let delta_q_sidecar_source_version = config.delta_q_sidecar_source_version;
     let path_for_logs = path.display().to_string();
     let skip_state = Arc::new(SkipLogState::new(
         path_for_logs,
@@ -424,13 +434,18 @@ fn spawn_archive_stream(
                 .spawn(move || -> io::Result<()> {
                     pool.install(|| {
                         job_rx.into_iter().par_bridge().try_for_each(|job| {
-                            let result = if let Some(sidecar) = exit_sidecar.as_ref() {
+                            let result = if exit_sidecar.is_some() || delta_q_sidecar.is_some() {
                                 load_game_from_stream_with_sidecar(
                                     &job.display_name,
-                                    exit_sidecar_source_net_hash.unwrap_or_default(),
-                                    exit_sidecar_source_version.unwrap_or_default(),
+                                    exit_sidecar_source_net_hash
+                                        .or(delta_q_sidecar_source_net_hash)
+                                        .unwrap_or_default(),
+                                    exit_sidecar_source_version
+                                        .or(delta_q_sidecar_source_version)
+                                        .unwrap_or_default(),
                                     BufReader::new(std::io::Cursor::new(job.data)),
-                                    Some(sidecar.as_ref()),
+                                    exit_sidecar.as_deref(),
+                                    delta_q_sidecar.as_deref(),
                                 )
                             } else {
                                 load_game_from_stream(BufReader::new(std::io::Cursor::new(
@@ -626,12 +641,21 @@ impl StreamEpochIterator {
                     if let Some(pb) = &self.progress {
                         pb.inc(1);
                     }
-                    let result = if let Some(sidecar) = self.config.exit_sidecar.as_ref() {
+                    let result = if self.config.exit_sidecar.is_some()
+                        || self.config.delta_q_sidecar.is_some()
+                    {
                         crate::data::mjai_loader::load_game_from_path_with_sidecar(
                             &path,
-                            self.config.exit_sidecar_source_net_hash.unwrap_or_default(),
-                            self.config.exit_sidecar_source_version.unwrap_or_default(),
-                            Some(sidecar.as_ref()),
+                            self.config
+                                .exit_sidecar_source_net_hash
+                                .or(self.config.delta_q_sidecar_source_net_hash)
+                                .unwrap_or_default(),
+                            self.config
+                                .exit_sidecar_source_version
+                                .or(self.config.delta_q_sidecar_source_version)
+                                .unwrap_or_default(),
+                            self.config.exit_sidecar.as_deref(),
+                            self.config.delta_q_sidecar.as_deref(),
                         )
                     } else {
                         load_game_from_path(&path)

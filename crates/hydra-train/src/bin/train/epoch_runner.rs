@@ -8,28 +8,29 @@ use colored::Colorize;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
-use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
-use hydra_train::data::sample::{MjaiSample, collate_batch_samples};
+use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
+use hydra_train::data::sample::{collate_batch_samples, MjaiSample};
 use hydra_train::model::HydraModel;
 use hydra_train::training::bc::{
-    BCTrainerConfig, BcExitConfig, bc_total_with_exit, policy_agreement,
-    target_actions_from_policy_target,
+    bc_total_with_exit, gated_bc_context, policy_agreement, target_actions_from_policy_target,
+    BCTrainerConfig, BcExitConfig,
 };
+use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::{
-    BcArtifactPaths, append_step_log, append_training_log, log_tensorboard, save_checkpoint,
-    save_latest_checkpoint_and_state,
+    append_step_log, append_training_log, log_tensorboard, save_checkpoint,
+    save_latest_checkpoint_and_state, BcArtifactPaths,
 };
-use super::config::{TrainConfig, validation_sample_limit};
+use super::config::{validation_sample_limit, TrainConfig};
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
 use super::progress::{
-    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_stats_from_breakdown,
+    batch_stats_from_breakdown, BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry,
 };
 use super::resume::{
-    BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
+    paused_training_message, BestValidation, EpochContinuation, RuntimeResumeContract,
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
@@ -56,6 +57,7 @@ pub(super) struct EpochRunnerContext<'a> {
     pub(super) total_steps: usize,
     pub(super) current_runtime: RuntimeResumeContract,
     pub(super) run_start: &'a Instant,
+    pub(super) head_controller: &'a mut HeadActivationController,
 }
 
 pub(super) struct EpochRuntimeMut<'a, O, W>
@@ -103,6 +105,7 @@ fn train_logical_batch<O>(
     train_device: &LibTorchDevice,
     loss_fn: &HydraLoss<TrainBackend>,
     bc_exit_cfg: &BcExitConfig,
+    head_controller: &mut HeadActivationController,
     model: &mut HydraModel<TrainBackend>,
     optimizer: &mut O,
     lr: f64,
@@ -126,14 +129,16 @@ where
             continue;
         };
         let targets = batch.to_hydra_targets();
-        let output = model.forward(obs.clone());
+        let (active_loss_fn, warmup_heads) =
+            gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let output = model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
         let agreement = policy_agreement(
             output.policy_logits.clone(),
             targets.legal_mask.clone(),
             target_actions_from_policy_target(targets.policy_target.clone()),
         );
-        let breakdown = loss_fn.total_loss(&output, &targets);
-        let total = bc_total_with_exit(&output, &batch, &targets, loss_fn, bc_exit_cfg);
+        let breakdown = active_loss_fn.total_loss(&output, &targets);
+        let total = bc_total_with_exit(&output, &batch, &targets, &active_loss_fn, bc_exit_cfg);
         batch_stats.push(batch_stats_from_breakdown(
             chunk.len(),
             agreement,
@@ -149,6 +154,7 @@ where
     if !batch_stats.is_empty() {
         let grads = accumulator.grads();
         *model = optimizer.step(lr, model.clone(), grads);
+        head_controller.tick_warmup();
     }
 
     Ok(batch_stats)
@@ -174,6 +180,7 @@ fn maybe_run_interval_validation<O>(
     train_device: &LibTorchDevice,
     valid_loss_fn: &HydraLoss<ValidBackend>,
     bc_exit_cfg: &BcExitConfig,
+    head_controller: Option<&mut HeadActivationController>,
     artifacts: &BcArtifactPaths,
     best_validation: &mut Option<BestValidation>,
     global_step: usize,
@@ -213,6 +220,7 @@ where
         train_device,
         valid_loss_fn,
         bc_exit_cfg,
+        head_controller,
         None,
     )?;
     if is_better_validation(summary, *best_validation) {
@@ -413,6 +421,7 @@ fn run_epoch_end_validation(
     train_device: &LibTorchDevice,
     valid_loss_fn: &HydraLoss<ValidBackend>,
     bc_exit_cfg: &BcExitConfig,
+    head_controller: Option<&mut HeadActivationController>,
     artifacts: &BcArtifactPaths,
     best_validation: &mut Option<BestValidation>,
     train_total_loss: f64,
@@ -441,6 +450,7 @@ fn run_epoch_end_validation(
         train_device,
         valid_loss_fn,
         bc_exit_cfg,
+        head_controller,
         None,
     )?;
     if is_better_validation(summary, *best_validation) {
@@ -582,6 +592,7 @@ where
         total_steps,
         current_runtime,
         run_start,
+        head_controller,
     } = context;
     let EpochRuntimeMut {
         model,
@@ -674,6 +685,7 @@ where
                 train_device,
                 loss_fn,
                 bc_exit_cfg,
+                head_controller,
                 model,
                 optimizer,
                 lr,
@@ -705,6 +717,7 @@ where
                 train_device,
                 valid_loss_fn,
                 bc_exit_cfg,
+                Some(head_controller),
                 artifacts,
                 best_validation,
                 *global_step,
@@ -783,6 +796,7 @@ where
             train_device,
             loss_fn,
             bc_exit_cfg,
+            head_controller,
             model,
             optimizer,
             lr,
@@ -836,6 +850,7 @@ where
         train_device,
         valid_loss_fn,
         bc_exit_cfg,
+        Some(head_controller),
         artifacts,
         best_validation,
         train_stats.total_loss,

@@ -3,6 +3,7 @@
 use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
 use crate::teacher::belief::{StageABeliefConfig, build_stage_a_teacher};
 use crate::training::losses::oracle_target_from_scores;
+use crate::training::replay_delta_q::DeltaQSidecarIndex;
 use crate::training::replay_exit::{
     ExitSidecarIndex, ReplayDecisionKey, source_hash_from_identity,
 };
@@ -352,6 +353,7 @@ fn load_game_from_events_internal(
     source_version: Option<u32>,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
+    delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
     let final_scores = final_scores(&events);
     let oracle_target = oracle_target_from_scores(final_scores);
@@ -434,6 +436,21 @@ fn load_game_from_events_internal(
                             )
                         })
                     });
+                    let joined_delta_q = replay_key.and_then(|key| {
+                        delta_q_sidecar.and_then(|sidecar| {
+                            source_net_hash.zip(source_version).and_then(
+                                |(source_net_hash, source_version)| {
+                                    sidecar.lookup_label(
+                                        &key,
+                                        hydra_action.id(),
+                                        &legal_mask,
+                                        source_net_hash,
+                                        source_version,
+                                    )
+                                },
+                            )
+                        })
+                    });
                     samples.push(MjaiSample {
                         obs: obs_encoded,
                         action: hydra_action.id(),
@@ -450,8 +467,8 @@ fn load_game_from_events_internal(
                         safety_residual_mask: Some(safety_residual_mask),
                         exit_target: joined_exit.map(|(target, _)| target),
                         exit_mask: joined_exit.map(|(_, mask)| mask),
-                        delta_q_target: None,
-                        delta_q_mask: None,
+                        delta_q_target: joined_delta_q.map(|(target, _)| target),
+                        delta_q_mask: joined_delta_q.map(|(_, mask)| mask),
                         belief_fields,
                         mixture_weights,
                         belief_fields_present,
@@ -472,7 +489,7 @@ fn load_game_from_events_internal(
 }
 
 fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
-    load_game_from_events_internal(None, None, None, events, None)
+    load_game_from_events_internal(None, None, None, events, None, None)
 }
 
 pub fn load_game_from_events_with_sidecar(
@@ -481,6 +498,7 @@ pub fn load_game_from_events_with_sidecar(
     source_version: u32,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
+    delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
     let source_hash = source_hash_from_identity(source_identity);
     load_game_from_events_internal(
@@ -489,6 +507,7 @@ pub fn load_game_from_events_with_sidecar(
         Some(source_version),
         events,
         exit_sidecar,
+        delta_q_sidecar,
     )
 }
 
@@ -504,6 +523,7 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
     source_version: u32,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
+    delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
     let events = read_mjai_events(reader)
         .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
@@ -513,6 +533,7 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
         source_version,
         events,
         exit_sidecar,
+        delta_q_sidecar,
     )
 }
 
@@ -538,6 +559,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
     source_version: u32,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
+    delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
     let mut reader = BufReader::new(reader);
     let is_gzip = {
@@ -554,6 +576,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
             source_version,
             BufReader::new(GzDecoder::new(reader)),
             exit_sidecar,
+            delta_q_sidecar,
         );
     }
 
@@ -563,6 +586,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
         source_version,
         reader,
         exit_sidecar,
+        delta_q_sidecar,
     )
 }
 
@@ -577,6 +601,7 @@ pub fn load_game_from_path_with_sidecar(
     source_net_hash: u64,
     source_version: u32,
     exit_sidecar: Option<&ExitSidecarIndex>,
+    delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
     let path = path.as_ref();
     let identity = path
@@ -591,6 +616,7 @@ pub fn load_game_from_path_with_sidecar(
         source_version,
         events,
         exit_sidecar,
+        delta_q_sidecar,
     )
 }
 
@@ -788,6 +814,22 @@ mod tests {
             !game.samples.is_empty(),
             "expected replay loader to produce samples"
         );
+        assert!(game.samples.iter().all(|sample| sample.delta_q_target.is_none()));
+        assert!(game.samples.iter().all(|sample| sample.delta_q_mask.is_none()));
+    }
+
+    #[test]
+    fn load_game_from_reader_with_sidecar_keeps_delta_q_absent_when_sidecar_not_configured() {
+        let (log, _) = play_game_with_mjai_log(29);
+        let game = load_game_from_reader_with_sidecar(
+            "game-29",
+            123,
+            1,
+            Cursor::new(log.join("\n")),
+            None,
+            None,
+        )
+        .expect("load game");
         assert!(game.samples.iter().all(|sample| sample.delta_q_target.is_none()));
         assert!(game.samples.iter().all(|sample| sample.delta_q_mask.is_none()));
     }

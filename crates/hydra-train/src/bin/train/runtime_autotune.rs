@@ -69,6 +69,9 @@ pub(super) fn runtime_probe_loader_config(config: &TrainConfig) -> StreamingLoad
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
+        delta_q_sidecar: None,
+        delta_q_sidecar_source_net_hash: None,
+        delta_q_sidecar_source_version: None,
     }
 }
 

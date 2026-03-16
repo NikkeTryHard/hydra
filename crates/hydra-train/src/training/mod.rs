@@ -12,5 +12,6 @@ pub mod head_gates;
 pub mod live_exit;
 pub mod losses;
 pub mod orchestrator;
+pub mod replay_delta_q;
 pub mod replay_exit;
 pub mod rl;

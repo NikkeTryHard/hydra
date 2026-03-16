@@ -1,6 +1,6 @@
 # Hydra Testing Strategy
 
-> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. Current truth for tensor shape and runtime structure comes from `README.md` -> `research/design/HYDRA_FINAL.md` -> `research/design/HYDRA_RECONCILIATION.md` -> `docs/GAME_ENGINE.md`.
+> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. Hydra now routes in layers: `README.md` for entry routing, `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` plus its roadmap/rendered views for canonical archive intake, `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` for promoted doctrine summaries, and `docs/GAME_ENGINE.md` plus current code for runtime reality.
 >
 > The live encoder/model contract is `192x34`. The old `85x34` view is still useful only as the baseline prefix (`channels 0..84`) and should be tested as such.
 

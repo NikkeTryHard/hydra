@@ -20,6 +20,7 @@ use hydra_train::training::bc::{BCTrainerConfig, BcExitConfig};
 use hydra_train::training::gae::GaeConfig;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::losses::HydraLoss;
+use hydra_train::training::replay_delta_q::DeltaQSidecarIndex;
 use hydra_train::training::replay_exit::{
     source_net_hash_from_checkpoint_identity, ExitSidecarIndex,
 };
@@ -72,6 +73,7 @@ pub(super) struct TrainingRuntime {
     pub(super) last_log_step: usize,
     pub(super) last_log_time: Instant,
     pub(super) tb: Option<EventWriter<std::fs::File>>,
+    pub(super) head_controller: HeadActivationController,
 }
 
 pub(super) struct RlTrainingBootstrap {
@@ -126,6 +128,18 @@ pub(super) fn initialize_training_bootstrap(
     } else {
         None
     };
+    let delta_q_sidecar = if let Some(path) = config.delta_q_sidecar_path.as_ref() {
+        Some(std::sync::Arc::new(
+            DeltaQSidecarIndex::from_jsonl_path(path).map_err(|err| {
+                format!(
+                    "failed to load replay delta_q sidecar {}: {err}",
+                    path.display()
+                )
+            })?,
+        ))
+    } else {
+        None
+    };
 
     let loader_config = StreamingLoaderConfig {
         buffer_games: config.buffer_games,
@@ -138,6 +152,9 @@ pub(super) fn initialize_training_bootstrap(
         exit_sidecar,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
+        delta_q_sidecar,
+        delta_q_sidecar_source_net_hash: None,
+        delta_q_sidecar_source_version: None,
     };
 
     let scan_sources_len = if config.data_dir.is_file() {
@@ -210,9 +227,12 @@ pub(super) fn initialize_training_bootstrap(
                 )
             })?;
     }
+    let learner_params = model.num_params();
     let loader_config = StreamingLoaderConfig {
         exit_sidecar_source_net_hash: Some(exit_sidecar_source_net_hash),
         exit_sidecar_source_version: Some(1),
+        delta_q_sidecar_source_net_hash: Some(exit_sidecar_source_net_hash),
+        delta_q_sidecar_source_version: Some(1),
         ..loader_config
     };
 
@@ -303,6 +323,9 @@ pub(super) fn initialize_training_bootstrap(
             last_log_step,
             last_log_time,
             tb,
+            head_controller: HeadActivationController::new(
+                HeadActivationConfig::default_with_params(learner_params),
+            ),
         },
     ))
 }
@@ -503,6 +526,7 @@ mod tests {
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

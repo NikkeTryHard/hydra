@@ -57,6 +57,7 @@
       "shell_sections": [
         {
           "tag": "direction",
+          "mode": "append",
           "lines": [
             "Work toward the strongest exact blueprint for a narrow local task.",
             "We want a detailed answer that makes clear:",
@@ -81,6 +82,7 @@
       "shell_sections": [
         {
           "tag": "direction",
+          "mode": "append",
           "lines": [
             "Work toward the strongest exact blueprint for a hard problem where adjacent-field or cross-field formulations might beat the current framing.",
             "We want a detailed answer that makes clear:",
@@ -106,6 +108,7 @@
       "shell_sections": [
         {
           "tag": "direction",
+          "mode": "append",
           "lines": [
             "Work toward the strongest exact blueprint for a narrow task, but do not treat the current framing as automatically complete or correct.",
             "",

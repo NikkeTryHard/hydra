@@ -1,14 +1,15 @@
 # Hydra Infrastructure Specification
 
-> **Reconciliation note:** This document still contains legacy infrastructure planning from the earlier 40-block / PPO-centered Hydra plan. For active architectural direction, treat these as the governing entrypoints in this order:
+> **Routing note:** This document still contains legacy infrastructure planning from the earlier 40-block / PPO-centered Hydra plan. For live architecture/process routing, use these layers:
 >
-> 1. `research/design/HYDRA_FINAL.md` — target architecture SSOT
-> 2. `research/design/HYDRA_RECONCILIATION.md` — current repo reality, active path, reserve shelf, dropped shelf
-> 3. `research/design/IMPLEMENTATION_ROADMAP.md` — staged execution plan
+> 1. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` — canonical archive SSOT
+> 2. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` / `ARCHIVE_CANONICAL_CLAIMS_RENDERED.md` — derived archive views
+> 3. `research/design/HYDRA_FINAL.md` / `research/design/HYDRA_RECONCILIATION.md` — promoted doctrine summaries
+> 4. `docs/GAME_ENGINE.md` and current code — runtime reality
 >
 > Keep this document as implementation/infrastructure reference, not as the top-level architecture authority.
 >
-> **Interpretation rule:** if a later section sounds more specific than the active doctrine but conflicts with the current two-tier / `192x34` / supervision-first Hydra path, treat that later section as legacy planning context unless it matches `HYDRA_RECONCILIATION.md`, `HYDRA_FINAL.md`, and `docs/GAME_ENGINE.md`.
+> **Interpretation rule:** if a later section sounds more specific than the current promoted doctrine but conflicts with the current two-tier / `192x34` / supervision-first Hydra path, treat that later section as legacy planning context unless it matches the canonical archive SSOT, promoted doctrine summaries, and current code/runtime.
 
 ## Overview
 
@@ -16,9 +17,10 @@ Hydra uses a 100% Rust architecture. Burn framework with burn-tch (libtorch/cuDN
 
 ## Related Documents
 
-- [../design/HYDRA_FINAL.md](../design/HYDRA_FINAL.md) — target architecture SSOT
-- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — current repo reality and next implementation tranche
-- [../design/HYDRA_ARCHIVE.md](../design/HYDRA_ARCHIVE.md) — archive / reserve-only planning surfaces
+- [../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl](../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / upstream research intake
+- [../design/HYDRA_FINAL.md](../design/HYDRA_FINAL.md) — promoted architecture doctrine summary
+- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — promoted execution doctrine summary and next implementation tranche
+- [../design/HYDRA_ARCHIVE.md](../design/HYDRA_ARCHIVE.md) — reserve-only design/archive planning
 - [../design/HYDRA_SPEC.md](../design/HYDRA_SPEC.md) — legacy architecture spec (historical only)
 - [../design/SEEDING.md](../design/SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
 - [CHECKPOINTING.md](CHECKPOINTING.md) — Checkpoint format, save protocol, retention policy

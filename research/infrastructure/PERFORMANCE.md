@@ -437,6 +437,6 @@ For training throughput, encode N observations into a single contiguous buffer (
 | Hydra benchmarks | `hydra-core/benches/simulator_bench.rs` | Criterion benchmarks: single_game, batch_100, encode_observation |
 | Hydra bridge | `hydra-core/src/bridge.rs` | Observation extraction layer (extract_* functions) |
 | Hydra safety | `hydra-core/src/safety.rs` | Safety channel computation (genbutsu, suji, kabe) |
-| HYDRA_FINAL.md | `research/design/HYDRA_FINAL.md` | Target architecture SSOT |
+| HYDRA_FINAL.md | `research/design/HYDRA_FINAL.md` | Promoted architecture doctrine summary |
 | INFRASTRUCTURE.md | `research/infrastructure/INFRASTRUCTURE.md` | Stack decisions, throughput targets, batch simulation design |
 | TESTING.md | `research/design/TESTING.md` | Golden encoder tests, property-based tests, correctness verification |
