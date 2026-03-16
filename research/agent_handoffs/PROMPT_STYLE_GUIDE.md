@@ -3,7 +3,8 @@
 > [!WARNING]
 > Do not hand-build large Hydra prompt packets.
 > Use `scripts/generate_prompt.py`, then inspect the rendered prompt before you send it to an agent.
-> The research agent is the most intelligent LLM on the planet, and the more artifacts you throw at it, the better it performs. Make sure you have squeezed as much LOC as possible for the prompt.
+> Do not stop after one packing pass. Render, inspect the line count, add more high-signal artifacts, rerender, and repeat until you are genuinely out of useful local context or the task is truly small.
+> The research agent is the most intelligent LLM on the planet, and the more useful artifacts you throw at it, the better it performs. For serious Hydra research, bias hard toward squeezing as much useful LOC as possible into the prompt.
 
 ## 1. What this guide is for
 
@@ -21,6 +22,7 @@ The job of this file is simple:
 - explain how to keep prompts clear, dense, and useful
 
 If a rule in here does not help you build a better prompt, cut the rule instead of preserving ceremony.
+But do not casually strip away instructions that increase search depth, validation pressure, or useful tool freedom just because a task is narrow.
 
 ---
 
@@ -77,8 +79,10 @@ Typical flow:
 5. add one or more `variants`
 6. if a variant uses `shell_source_path`, keep inherited shell text by default and use explicit `mode: "append"` / `mode: "delete"` entries for edits
 7. validate the config
-8. generate the prompt
-9. inspect the rendered result before using it
+8. generate the prompt and inspect the reported line count
+9. if the prompt still looks light, do another packing pass with more high-signal local artifacts
+10. rerender and repeat until the prompt is dense enough for the task
+11. inspect the final rendered result before using it
 
 Useful commands:
 
@@ -91,6 +95,9 @@ python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.examp
 
 If the rendered prompt is wrong, fix the config or the template choice.
 Do not just shrug and ship it.
+
+If the rendered prompt is suspiciously short for a serious research task, that is not a cosmetic issue.
+Treat it as a packing failure until you have either added more high-signal context or can explain exactly why the task is truly narrow.
 
 ---
 
@@ -118,12 +125,12 @@ Important rule:
 - remove what conflicts
 - add what the task actually needs
 
-When a variant uses `shell_source_path`, the default should be to keep the example's `role`, `direction`, `style`, and other shell text.
+When a variant uses `shell_source_path`, the default should be to keep the example's `role`, `task`, `rules`, `style`, and other shell text.
 Do not silently replace a whole inherited section just because you want to tweak it.
 
 That means you should feel free to:
 
-- append extra guidance to inherited `direction` or `style` when the task needs it
+- append extra guidance to inherited `role`, `task`, `rules`, or `style` when the task needs it
 - delete inherited lines only when they are genuinely conflicting or harmful for the task
 - add new instructions when the task needs more guidance
 - remove conflicting or noisy wording when you can point to a real conflict
@@ -160,12 +167,20 @@ Do not ask for a memo when you want a buildable answer.
 The shell should usually be a few tight blocks such as:
 
 - `role`
-- `direction`
+- `task`
+- `rules`
 - `style`
-- `artifact_note`
+- `artifact_note` when you need an explicit evidence warning, or fold that warning into `rules` when the shell should stay tighter
 
 The shell should orient the task.
 It should not become the task.
+
+Recommended split:
+
+- `role` = who the agent is for this prompt, kept short and customizable
+- `task` = the actual job and required deliverable, also customizable per prompt
+- `rules` = hard requirements, must-do / must-not-do behavior, tool/search/validation pressure
+- `style` = softer presentation and reasoning guidance
 
 ### 5.3 Put the real weight in the artifacts
 
@@ -228,6 +243,29 @@ For important technical tasks, the prompt should push the agent to separate:
 Do this when it helps correctness.
 Do not force giant reporting rituals for tiny tasks.
 
+### 5.8 Preserve strong search, tool, and validation pressure by default
+
+Some inherited style lines look repetitive, but for Hydra research they are usually load-bearing rather than filler.
+
+By default, preserve and reuse instructions in this family unless they are genuinely conflicting or impossible for the task:
+
+- tell the agent to search broadly for papers, official docs, repos, and adjacent outside evidence when stronger external grounding could improve Hydra rather than merely describe Hydra's current state
+- tell the agent to prefer primary sources such as full papers or official docs over abstracts or shallow summaries whenever that evidence is available
+- tell the agent to use Python through the bash tool not only for math, but also for quick parsers, data inspection, sanity checks, small experiments, validation scripts, benchmark arithmetic, and other lightweight research support work
+- tell the agent to include enough concrete detail that a reviewer can validate, reproduce, or falsify the answer later
+- tell the agent not to stop after the first plausible pass when more discovery, validation, or tightening is still available inside scope
+
+Why this matters:
+
+- Hydra's goal is strength, not merely internal consistency with the current repo snapshot
+- stronger outside evidence can reveal better methods, failure cases, and tighter blueprints than local artifacts alone
+- Python-in-bash often helps an agent validate or sharpen a claim even when the task is not mainly mathematical
+- explicit validation language makes it harder for an agent to hide weak support behind polished prose
+- anti-premature-stop loop pressure helps prevent “one quick pass and done” behavior on tasks that still benefit from more falsification or sharpening
+
+If you delete one of these inherited instructions, be able to explain the concrete conflict.
+"This feels optional" is not a strong enough reason by itself.
+
 ---
 
 ## 6. Conflict cleanup rules
@@ -243,7 +281,8 @@ If inherited template text does not match the task, do one of these:
 Examples:
 
 - a narrow local fix prompt should not inherit broad novelty language
-- a practical repo task does not need giant “explore forever” filler if the task is already concrete
+- a practical repo task may not need broad novelty or cross-field fusion language if the task is already concrete
+- but persistent search/validation/loop pressure is usually still useful and should only be removed when it clearly creates conflict, duplication, or obvious waste
 - a short scoped task does not need a bloated output ritual
 - a hard research task may need extra instructions that the base template does not include
 
@@ -251,11 +290,12 @@ The goal is not to preserve every stock sentence.
 The goal is to produce the strongest prompt for the actual task.
 
 But the default bias is preserve-first, not rewrite-first.
-The examples carry important style and direction pressure, so do not strip them down unless you can explain why.
+The examples carry important role/task/rules/style pressure, so do not strip them down unless you can explain why.
 
 Recommended bias:
 
 - keep useful structure from the examples
+- especially keep strong search, Python-tool freedom, validation-detail, and anti-premature-stop lines unless you can name the concrete harm
 - drop boilerplate that adds noise
 - add missing constraints when they materially improve correctness
 
@@ -309,6 +349,28 @@ More context is bad when it becomes:
 - conflicting instructions
 - snippet overload that makes the agent guess harder instead of less
 
+### 7.5 Under-packed serious research prompts are a failure mode
+
+For serious Hydra research, it is usually better to overpack useful local evidence than to underpack and force the agent to rediscover obvious repo context.
+
+Default bias:
+
+- if multiple code paths, tests, doctrine layers, and archive surfaces are relevant, pack them
+- if a prompt for a serious multi-surface research task renders suspiciously short, treat that as a warning sign and ask what high-signal local evidence is still missing
+- squeeze in as much useful LOC as you can while the added context is still helping the agent reason more accurately
+- do not confuse "the prompt rendered successfully" with "the prompt is dense enough for Hydra-grade research"
+- do not settle for the first reasonable draft; do multiple packing passes by default on serious research tasks
+- use the generator's rendered line count and warning output as pressure to keep looking for more high-signal local evidence
+
+Practical rule of thumb:
+
+- a few hundred lines may be fine for a tiny local task
+- but for major Hydra research lanes, a prompt that is only a few hundred lines is often under-packed unless the task is truly narrow and the evidence surface is genuinely small
+- a generated prompt under roughly 3000 lines should trigger another packing pass by default unless you can explain why the task is genuinely small and already well-grounded
+
+The target is not prompt size for its own sake.
+The target is giving the agent enough evidence that it does not have to spend its first pass rediscovering repo reality you could have packed directly.
+
 ---
 
 ## 8. Long prompts are fine when justified
@@ -325,6 +387,7 @@ Good reasons for a long prompt:
 - you need code plus tests plus docs together
 - the method depends on formulas or paper excerpts
 - the agent needs enough surrounding context to critique artifacts instead of pattern-matching isolated snippets
+- you are trying to close a semantically delicate Hydra lane and there are multiple live docs, source files, tests, and archive artifacts that all sharpen the answer
 
 Bad reasons for a long prompt:
 
@@ -337,58 +400,14 @@ Good stopping rule:
 
 - keep squeezing in relevant context while it clearly improves grounding
 - stop when adding more context no longer helps enough to justify the noise or confusion risk
+- if you are unsure whether a serious Hydra research prompt is dense enough, your first move should usually be to look for more high-signal local artifacts before you decide it is done
+- do at least one explicit repack-and-rerender pass after the first generation for serious Hydra research prompts; do more when the generator warning or your own review says the packet still feels light
 
 Do not chase prompt size for its own sake.
 
 ---
 
-## 9. Recommended shell pattern
-
-Most serious prompts can start from a shell like this:
-
-```xml
-<role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
-</role>
-
-<direction>
-Work toward the strongest exact blueprint for [TASK].
-
-We want a detailed answer that makes clear:
-- [what the artifacts directly support]
-- [what is only inference]
-- [what should be kept, narrowed, deferred, or rejected]
-- [how to implement or validate the surviving path with minimal guesswork]
-
-Use the artifacts below to derive your conclusions.
-</direction>
-
-<style>
-- no high-level survey
-- no vague answer
-- distinguish direct support from inference
-- include formulas when needed
-- include code-like detail when helpful
-- keep the answer actionable and auditable
-</style>
-
-<artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit.
-</artifact_note>
-
-<artifacts>
-...
-</artifacts>
-```
-
-Treat this the same way as the reference examples: as a starting point.
-Adapt it to the task.
-
----
-
-## 10. Example config anatomy
+## 9. Example config anatomy
 
 The example config shows the intended pattern:
 
@@ -414,9 +433,15 @@ The current example variants show three normal usage patterns:
 
 Read `scripts/examples/prompt_config.example.json` when you want the quickest practical reminder of how the generator is meant to be used.
 
+Legacy note:
+
+- old prompts may still use `direction`
+- the generator already supports arbitrary shell tags, so legacy prompts remain valid
+- new examples should prefer `task` and use `rules` when you need a real split between hard requirements and softer style pressure
+
 ---
 
-## 11. Final checklist
+## 10. Final checklist
 
 Before shipping a prompt, check:
 
