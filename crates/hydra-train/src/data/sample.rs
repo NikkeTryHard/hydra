@@ -316,19 +316,25 @@ impl CollateBuffers {
         if let Some(values) = belief_fields {
             self.belief_fields_flat[index * 16 * 34..(index + 1) * 16 * 34]
                 .copy_from_slice(&values);
-            self.any_belief_fields = true;
         }
-        if sample.belief_fields_present {
-            self.belief_fields_mask[index] = 1.0;
-            self.any_belief_fields = true;
+        match (belief_fields, sample.belief_fields_present) {
+            (Some(_), true) => {
+                self.belief_fields_mask[index] = 1.0;
+                self.any_belief_fields = true;
+            }
+            (None, false) => {}
+            _ => panic!("belief_fields target/presence mismatch for sample collation"),
         }
         if let Some(values) = sample.mixture_weights {
             self.mixture_weights_flat[index * 4..(index + 1) * 4].copy_from_slice(&values);
-            self.any_mixture_weights = true;
         }
-        if sample.mixture_weights_present {
-            self.mixture_weight_mask[index] = 1.0;
-            self.any_mixture_weights = true;
+        match (sample.mixture_weights, sample.mixture_weights_present) {
+            (Some(_), true) => {
+                self.mixture_weight_mask[index] = 1.0;
+                self.any_mixture_weights = true;
+            }
+            (None, false) => {}
+            _ => panic!("mixture_weight target/presence mismatch for sample collation"),
         }
         for (opp, tile) in opp_next.iter().copied().enumerate() {
             if tile < 34 {
@@ -1081,6 +1087,42 @@ mod tests {
         assert!((mix_values[1] - 0.3).abs() < 1e-6);
         assert!((belief_mask_values[0] - 1.0).abs() < 1e-6);
         assert!((mixture_mask_values[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "belief_fields target/presence mismatch for sample collation")]
+    fn batch_to_hydra_targets_rejects_belief_target_without_presence() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        sample.belief_fields = Some([0.0; 16 * 34]);
+        let _ = collate_batch::<B>(&[sample], &device);
+    }
+
+    #[test]
+    #[should_panic(expected = "belief_fields target/presence mismatch for sample collation")]
+    fn batch_to_hydra_targets_rejects_belief_presence_without_target() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        sample.belief_fields_present = true;
+        let _ = collate_batch::<B>(&[sample], &device);
+    }
+
+    #[test]
+    #[should_panic(expected = "mixture_weight target/presence mismatch for sample collation")]
+    fn batch_to_hydra_targets_rejects_mixture_target_without_presence() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        sample.mixture_weights = Some([0.0; 4]);
+        let _ = collate_batch::<B>(&[sample], &device);
+    }
+
+    #[test]
+    #[should_panic(expected = "mixture_weight target/presence mismatch for sample collation")]
+    fn batch_to_hydra_targets_rejects_mixture_presence_without_target() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        sample.mixture_weights_present = true;
+        let _ = collate_batch::<B>(&[sample], &device);
     }
 
     #[test]

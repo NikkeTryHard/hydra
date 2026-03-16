@@ -227,7 +227,7 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
     // Belief fields: per-sample mask.
     if targets.belief_fields_target.is_some() {
         counts[AdvancedHead::BeliefFields.index()] = match &targets.belief_fields_mask {
-            Some(mask) => count_nonzero_1d(mask),
+            Some(mask) => count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref()),
             None => batch_size,
         };
     }
@@ -235,7 +235,7 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
     // Mixture weight: per-sample mask.
     if targets.mixture_weight_target.is_some() {
         counts[AdvancedHead::MixtureWeight.index()] = match &targets.mixture_weight_mask {
-            Some(mask) => count_nonzero_1d(mask),
+            Some(mask) => count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref()),
             None => batch_size,
         };
     }
@@ -253,11 +253,13 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
         _ => 0,
     };
 
-    // Safety residual: if present, all samples have it. The per-action mask
-    // determines which actions contribute to loss, not which samples.
-    if targets.safety_residual_target.is_some() {
-        counts[AdvancedHead::SafetyResidual.index()] = batch_size;
-    }
+    counts[AdvancedHead::SafetyResidual.index()] = match (
+        &targets.safety_residual_target,
+        &targets.safety_residual_mask,
+    ) {
+        (Some(_), Some(mask)) => count_nonzero_rows_2d(mask),
+        _ => 0,
+    };
 
     TargetPresence { counts, batch_size }
 }
@@ -268,6 +270,29 @@ fn count_nonzero_1d<B: Backend>(tensor: &Tensor<B, 1>) -> usize {
         Ok(data) => data.iter().filter(|&&v| v > 0.0).count(),
         Err(_) => 0,
     }
+}
+
+fn count_nonzero_1d_with_optional_gate<B: Backend>(
+    tensor: &Tensor<B, 1>,
+    gate: Option<&Tensor<B, 1>>,
+) -> usize {
+    let tensor_data = tensor.to_data();
+    let Ok(data) = tensor_data.as_slice::<f32>() else {
+        return 0;
+    };
+    let gate_owned = gate.and_then(|gate| {
+        let gate_data = gate.to_data();
+        gate_data.as_slice::<f32>().ok().map(|values| values.to_vec())
+    });
+    data.iter()
+        .enumerate()
+        .filter(|(idx, value)| {
+            **value > 0.0
+                && gate_owned
+                    .as_ref()
+                    .is_none_or(|gate| gate.get(*idx).copied().unwrap_or(0.0) > 0.0)
+        })
+        .count()
 }
 
 fn count_nonzero_rows_2d<B: Backend>(tensor: &Tensor<B, 2>) -> usize {
@@ -1308,6 +1333,20 @@ mod tests {
     }
 
     #[test]
+    fn extract_presence_safety_residual_counts_only_nonzero_mask_rows() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.safety_residual_target = Some(Tensor::zeros([4, 46], &device));
+        let mut mask = [[0.0f32; 46]; 4];
+        mask[0][0] = 1.0;
+        mask[2][7] = 1.0;
+        targets.safety_residual_mask = Some(Tensor::from_floats(mask, &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::SafetyResidual), 2);
+    }
+
+    #[test]
     fn extract_presence_oracle_with_mask() {
         let device = Default::default();
         let mut targets = dummy_targets(4);
@@ -1328,6 +1367,30 @@ mod tests {
 
         let presence = extract_target_presence(&targets);
         assert_eq!(presence.count(AdvancedHead::BeliefFields), 3);
+    }
+
+    #[test]
+    fn extract_presence_belief_respects_oracle_guidance_gate() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.belief_fields_target = Some(Tensor::zeros([4, 4, 34], &device));
+        targets.belief_fields_mask = Some(Tensor::from_floats([1.0, 1.0, 0.0, 1.0], &device));
+        targets.oracle_guidance_mask = Some(Tensor::from_floats([1.0, 0.0, 1.0, 0.0], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::BeliefFields), 1);
+    }
+
+    #[test]
+    fn extract_presence_mixture_respects_oracle_guidance_gate() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.mixture_weight_target = Some(Tensor::zeros([4, 4], &device));
+        targets.mixture_weight_mask = Some(Tensor::from_floats([1.0, 0.0, 1.0, 1.0], &device));
+        targets.oracle_guidance_mask = Some(Tensor::from_floats([0.0, 1.0, 1.0, 0.0], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::MixtureWeight), 1);
     }
 
     #[test]
