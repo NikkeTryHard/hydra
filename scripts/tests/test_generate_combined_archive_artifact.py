@@ -129,6 +129,57 @@ Canonical role
         self.assertIn("# answer\nreal stuff", rendered)
         self.assertIn("generated combined artifact at", stdout.getvalue())
 
+    def test_main_preserves_task_and_rules_sections_in_compact_prompt_shell(
+        self,
+    ) -> None:
+        repo_root = self.make_repo()
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "title": "Hydra prompt — schema",
+                    "artifact_container_tag": "artifacts",
+                    "shell_sections": [],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {
+                        "name": "schema",
+                        "shell_sections": [
+                            {"tag": "role", "lines": ["Schema role"]},
+                            {"tag": "task", "lines": ["Schema task"]},
+                            {"tag": "rules", "lines": ["- Schema rule"]},
+                            {"tag": "style", "lines": ["- Schema style"]},
+                        ],
+                        "artifact_ids": [],
+                    }
+                ],
+            },
+        )
+        answer_path = self.write_answer(repo_root, "agent_12.md", "schema answer\n")
+        output_path = repo_root / "out/answer_12_combined.md"
+
+        exit_code = generate_combined_archive_artifact.main(
+            [
+                "--answer",
+                str(answer_path),
+                "--config",
+                str(config_path),
+                "--output",
+                str(output_path),
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+
+        self.assertEqual(exit_code, 0)
+        rendered = output_path.read_text(encoding="utf-8")
+        self.assertIn("<task>\nSchema task\n</task>", rendered)
+        self.assertIn("<rules>\n- Schema rule\n</rules>", rendered)
+
     def test_main_rejects_empty_answer(self) -> None:
         repo_root = self.make_repo()
         config_path = self.write_config(
