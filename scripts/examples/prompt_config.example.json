@@ -56,7 +56,14 @@
       ],
       "shell_sections": [
         {
-          "tag": "direction",
+          "tag": "role",
+          "mode": "append",
+          "lines": [
+            "You are working on a narrow local Hydra task."
+          ]
+        },
+        {
+          "tag": "task",
           "mode": "append",
           "lines": [
             "Work toward the strongest exact blueprint for a narrow local task.",
@@ -81,7 +88,14 @@
       ],
       "shell_sections": [
         {
-          "tag": "direction",
+          "tag": "role",
+          "mode": "append",
+          "lines": [
+            "You are allowed to challenge the current framing if a stronger one survives validation."
+          ]
+        },
+        {
+          "tag": "task",
           "mode": "append",
           "lines": [
             "Work toward the strongest exact blueprint for a hard problem where adjacent-field or cross-field formulations might beat the current framing.",
@@ -107,7 +121,14 @@
       ],
       "shell_sections": [
         {
-          "tag": "direction",
+          "tag": "role",
+          "mode": "append",
+          "lines": [
+            "Use reasoning freedom, but stay inside the narrow lane defined by the task."
+          ]
+        },
+        {
+          "tag": "task",
           "mode": "append",
           "lines": [
             "Work toward the strongest exact blueprint for a narrow task, but do not treat the current framing as automatically complete or correct.",
