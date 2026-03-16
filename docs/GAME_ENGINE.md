@@ -10,7 +10,7 @@ Core responsibilities:
 
 - Tile representation and suit permutation for data augmentation
 - A 46-action space with bidirectional conversion to/from `riichienv` actions
-- A currently implemented **192-channel x 34-tile fixed-superset observation encoder**, whose first 85 channels preserve the original public+safety baseline while Groups C/D add search/belief and Hand-EV planes
+- A currently implemented **192-channel x 34-tile fixed-superset observation encoder**, whose first 85 channels preserve the original public+safety baseline while Groups C/D add live search/belief and Hand-EV planes
 - Tile safety analysis (genbutsu, suji, kabe, one-chance)
 - Deterministic seeding via SHA-256 KDF + ChaCha8Rng
 - Parallel batch simulation with `rayon`
@@ -329,6 +329,8 @@ Each `extract_*` function pulls one category of data from the riichienv observat
 ### Entry Point
 
 `encode_observation` is the main bridge function. It takes a riichienv `Observation`, calls all `extract_*` functions, and feeds the results into the `ObservationEncoder`. Returns the filled 192x34 fixed-superset float buffer ready for the model.
+
+Current runtime-status note: the bridge now carries two live Hand-EV paths on the same fixed surface. By default it computes Hand-EV from public remaining counts. When search context supplies a CT-SMC posterior, it upgrades that path to use wall-weighted remaining counts from the posterior while keeping the same encoder/runtime interface. The same bridge surface also populates fixed-shape Group C search/belief planes from live mixture/search/risk context when those signals are present and falls back to zero-filled planes plus presence masks otherwise. This file records that runtime reality only; promoted sequencing/doctrine still lives in `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md`.
 
 ## Testing
 

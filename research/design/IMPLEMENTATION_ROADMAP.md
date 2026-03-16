@@ -9,7 +9,7 @@
 >
 > **Demotion note:** Treat this file as a reference/backlog map, not as the default build order for the strongest current Hydra. Any section that conflicts with reconciliation or current runtime reality should be treated as archived or future-use material, not immediate marching orders.
 
-> **Current repo snapshot (2026-03 code reality):** `hydra-train` already exists as a substantial crate. The live tree now includes `data/`, `training/`, `teacher/`, `selfplay.rs`, `inference.rs`, `eval.rs`, `league.rs`, and the `src/bin/train.rs` binary in addition to the original backbone / heads / model surfaces. The model already exposes the advanced output family (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`), and the training stack already contains `live_exit.rs`, `exit_validation.rs`, `head_gates.rs`, and `orchestrator.rs`. Read the step-by-step bootstrap sections below as historical implementation context unless a section is explicitly updated to describe the current code snapshot.
+> **Current repo snapshot (2026-03 code reality):** `hydra-train` already exists as a substantial crate. The live tree now includes `data/`, `training/`, `teacher/`, `selfplay.rs`, `inference.rs`, `eval.rs`, `league.rs`, and the `src/bin/train.rs` binary in addition to the original backbone / heads / model surfaces. The model already exposes the advanced output family (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`), and the training stack already contains `live_exit.rs`, `exit_validation.rs`, `head_gates.rs`, and `orchestrator.rs`. The stronger public-teacher belief-semantics tranche and the current Hand-EV realism tranche are now also shipped as part of the live baseline, while mixture-weight promotion and representative-world CT-SMC Hand-EV remain staged/later. Read the step-by-step bootstrap sections below as historical implementation context unless a section is explicitly updated to describe the current code snapshot.
 
 **Dev agent rules**:
 - Every task ends with tests that PASS
@@ -196,7 +196,7 @@ Current code reality is broader than the original 9-head bootstrap plan. The liv
 | 13 | DeltaQHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
 | 14 | SafetyResidualHead | pooled [B,256] | Linear(256,46) | [B, 46] | none (raw) |
 
-Current activation note: the advanced heads above are structurally live, but their target paths are not all equally closed. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, replay/sample ExIt now flows through a separate sidecar-backed carrier path, replay/offline `delta_q` now also flows through a parallel sidecar-backed carrier path plus BC/train activation-hook closure, while `opponent_hand_type_target` still remains absent in the standard sample-to-target conversion.
+Current activation note: the advanced heads above are structurally live, and the current shipped baseline now includes the stronger public-teacher belief-semantics tranche across the belief carrier / loss / presence path. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, replay/sample ExIt now flows through a separate sidecar-backed carrier path, replay/offline `delta_q` now also flows through a parallel sidecar-backed carrier path plus BC/train activation-hook closure, while `opponent_hand_type_target` still remains absent in the standard sample-to-target conversion. `mixture_weight` promotion remains staged and should not be inferred from the stronger shipped belief carrier semantics.
 
 ### 3.2 Struct Definitions
 
@@ -758,7 +758,7 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 
 **ExitConfig**: `tau_exit: f32` (1.0), `exit_weight: f32` (0.5, annealed up in Phase 3), `min_visits: u32` (64), `hard_state_threshold: f32` (top-2 gap < 0.1), `safety_valve_max_kl: f32` (2.0)
 
-- ExIt policy: `pi_exit(a|I) = softmax(Q(I,a) / tau_exit)` from AFBS.
+- ExIt teacher: a visit-based masked target from AFBS child visit counts, built only on compatible discard states and guarded by coverage / visit / KL safety valves.
 - Safety valve: skip if visit_count < min_visits OR KL(exit||base) > max_kl.
 - Combined loss: `L = L_ach + exit_weight*L_exit + saf_weight*L_saf + aux_weight*L_aux`
 
