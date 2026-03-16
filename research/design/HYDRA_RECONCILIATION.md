@@ -115,7 +115,7 @@ What is only partially true:
   - `opponent_hand_type_target` still remains absent in the normal sample-to-target path
 - AFBS exists as a search shell, but not as a fully integrated public-belief search runtime:
   - `hydra-core/src/afbs.rs`
-- Hand-EV exists, but is still heuristic rather than a full offensive oracle:
+- Hand-EV now ships a materially stronger local evaluator on the live 42-plane surface, but it still remains a bounded local oracle rather than representative-world / per-particle offensive evaluation:
   - `hydra-core/src/hand_ev.rs`
 - Endgame exists, but as weighted particle/PIMC evaluation rather than true exactification:
   - `hydra-core/src/endgame.rs`
@@ -136,7 +136,7 @@ Doc drift that materially affects decisions:
 ## 3. Ranked next-step recommendations
 
 ### Recommendation 1
-- recommendation: Close advanced target generation and supervision loops
+- recommendation: Keep advanced target generation and supervision loops truthful after the shipped belief tranche
 - evidence basis:
   - strongest support from `ANSWER_2.md`
   - external evidence favors stronger teacher targets over immediate broad search expansion
@@ -144,25 +144,24 @@ Doc drift that materially affects decisions:
 - repo verification status:
   - model heads exist in `hydra-train/src/model.rs`
   - advanced loss support exists in `hydra-train/src/training/losses.rs`
-  - main data path still underpopulates advanced targets in `hydra-train/src/data/sample.rs`
+  - stronger public-teacher belief semantics are now shipped across the current belief target / loss / presence path, while `mixture_weight` and `opponent_hand_type_target` remain staged/off
 - expected upside: high
 - difficulty: medium
 - risk: medium-low
-- do now / later / drop: do now
+- do now / later / drop: shipped recently; keep the remaining staged sublanes truthful
 
 ### Recommendation 2
-- recommendation: Rework Hand-EV realism before deeper AFBS expansion
+- recommendation: Treat the shipped Hand-EV realism upgrade as baseline and move to the next selective strength tranche
 - evidence basis:
   - `ANSWER_1.md` and `ANSWER_2.md` both rank this as a cheaper, higher-ROI upgrade than broader search
   - external evidence says auxiliary/offensive target generation is a good medium-cost multiplier
 - support from answers: `ANSWER_1.md`, `ANSWER_2.md`, `ANSWER_3.md`
-- repo verification status:
-  - `hydra-core/src/hand_ev.rs` exists, but expected score and win modeling remain heuristic
-  - `hydra-core/src/bridge.rs` already threads Hand-EV into encoder paths
+  - `hydra-core/src/hand_ev.rs` now carries a stronger multi-horizon local evaluator
+  - `hydra-core/src/bridge.rs` threads both public-count and CT-SMC wall-weighted Hand-EV into encoder paths
 - expected upside: medium-high
 - difficulty: medium
 - risk: low-medium
-- do now / later / drop: do soon after recommendation 1
+- do now / later / drop: shipped recently; representative-world CT-SMC Hand-EV stays later
 
 ### Recommendation 3
 - recommendation: Keep AFBS specialist and hard-state gated
@@ -216,20 +215,18 @@ This is the strongest version of Hydra to code right now.
 - AFBS used selectively on hard states, not as the universal default engine
 
 #### What stays on the critical path
-1. **Advanced target-generation / supervision loop closure**
-   - because the heads and losses already exist in code, but are not fully fed or activated
-2. **Hand-EV realism improvements**
-   - because it is already wired into the bridge/encoder path and is cheaper than deeper search work
-3. **Selective endgame / AFBS improvement only after supervision is alive end-to-end**
+1. **Truthful advanced-target / activation discipline after the shipped supervision tranche**
+   - because the strongest belief carrier/loss/gating work is now shipped, while `mixture_weight` and richer opponent-target lanes still need staged promotion discipline
+2. **Selective endgame / AFBS improvement after the stronger baseline**
    - because deeper search without strong targets risks expensive confusion
-4. **Unified belief story**
+3. **Unified belief story**
    - Mixture-SIB for amortized belief, CT-SMC for search-grade posterior
 
 #### What this means in plain English
 Hydra should become:
 - a strong learned policy/value system
 - with real advanced auxiliary targets
-- with better public-belief-quality features
+- with stronger public-belief-quality features already shipped into the current baseline
 - and with selective search layered on top only where it clearly pays
 
 Not:
@@ -294,12 +291,12 @@ Why:
 
 ### Hand-EV earlier vs deeper AFBS earlier
 Decision:
-- Move Hand-EV realism earlier than deeper AFBS work.
+- Keep the shipped Hand-EV realism upgrade as baseline and move deeper AFBS work later.
 
 Why:
 - It is cheaper.
 - It already has plumbing in `hydra-core/src/bridge.rs` and `hydra-core/src/encoder.rs`.
-- The current Hand-EV is clearly under-realistic, so there is a high-confidence improvement path.
+- The shipped upgrade now provides a materially stronger local evaluator, so the remaining Hand-EV work is later representative-world / benchmark-driven refinement rather than the old baseline realism fix.
 
 ### AFBS broad vs AFBS specialist
 Decision:
@@ -337,7 +334,7 @@ Why:
 Must-have now:
 - reconciliation of doc authority
 - advanced target-generation / supervision loop closure
-- Hand-EV realism improvements
+- truthful post-ship baseline status for Hand-EV and belief semantics
 
 Strong multipliers later:
 - AFBS integration improvements
@@ -361,13 +358,13 @@ These should remain as fallback or phase-next material, not be deleted from proj
 
 Best immediate next move for Hydra:
 
-1. Reconcile the repo around one truthful planning artifact.
-2. Use that artifact to pin the first coding tranche as advanced target-generation / supervision loop closure.
+1. Refresh promoted doctrine and reference docs so they stop describing the shipped belief and Hand-EV tranches as future work.
+2. Use that truthful baseline to choose the next selective strength tranche rather than reopening pre-ship supervision closure language.
 
 Why this beats a direct broad implementation tranche:
 - The repo already contains a lot of the advanced surfaces.
-- The current highest-leverage missing piece is that those surfaces are not consistently fed real targets and active losses.
-- Fixing that gives the project learning signal now, with less architecture risk than a large AFBS rewrite.
+- The strongest belief-semantics tranche and Hand-EV realism upgrade are now shipped, so the most dangerous drift is stale doctrine that still routes people into already-finished work.
+- Fixing the docs first keeps the next coding tranche focused on genuinely open strength work instead of rerunning solved sequencing arguments.
 
 First concrete execution tranche:
 
@@ -544,7 +541,8 @@ Use this as the concrete coding handoff for the first tranche.
 
 Current tranche-status note:
 - completed for the narrow supervised BC lane: replay-derived `safety_residual` now reaches the train binary with explicit staged activation controls, and full-learner BC now has hardware-agnostic microbatch accumulation rather than assuming one machine's VRAM shape
-- still open before Recommendation 1 is fully complete: stronger public-teacher belief semantics and any later realism/benchmark tranche that follows completed `delta_q` closure
+- completed recently as the next shipped follow-up tranche: stronger public-teacher belief semantics across the current belief target / loss / presence path plus the current Hand-EV realism upgrade on the live runtime surface
+- still staged later: `mixture_weight` promotion, richer opponent-target closure, representative-world CT-SMC Hand-EV, and selective AFBS / endgame deepening
 
 ## 7. Final handoff / progress report
 
@@ -564,5 +562,5 @@ What was verified:
 - AFBS, Hand-EV, endgame, and robust-opponent modules present but not fully integrated end-to-end
 
 What remains next:
-- implement the first coding tranche described above
-- then reassess Hand-EV realism and selective AFBS improvements against that stronger supervision base
+- refresh the promoted/runtime/reference docs so they are truthful about the shipped baseline
+- then choose the next selective strength tranche from the remaining staged lanes (mixture promotion, selective AFBS/endgame, richer opponent targets, later world-aware Hand-EV)
