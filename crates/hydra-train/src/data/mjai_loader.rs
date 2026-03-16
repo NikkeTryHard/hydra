@@ -223,19 +223,21 @@ fn exact_waits(state: &GameState, player: usize) -> ([f32; 34], bool) {
         if counts[tile] >= 4 {
             continue;
         }
-        if state.players[player]
-            .discards_slice()
-            .iter()
-            .any(|&discard| tile136_to_type(discard) as usize == tile)
-        {
-            continue;
-        }
         counts[tile] += 1;
         let complete = calc_shanten_from_counts(&counts, (hand_total + 1) / 3) == -1;
         counts[tile] -= 1;
         if complete {
             waits[tile] = 1.0;
         }
+    }
+
+    let furiten = state.players[player]
+        .discards_slice()
+        .iter()
+        .map(|&discard| tile136_to_type(discard) as usize)
+        .any(|tile| waits[tile] > 0.0);
+    if furiten {
+        waits.fill(0.0);
     }
     (waits, true)
 }
@@ -315,15 +317,13 @@ fn build_stage_a_belief_targets(
     let melds = hydra_core::bridge::extract_melds(obs);
     let dora = hydra_core::bridge::extract_dora(obs);
     let remaining = extract_public_remaining_counts(&hand, &discards, &melds, &dora);
-    let hidden_tiles = state
-        .players
-        .iter()
-        .enumerate()
-        .filter(|(idx, _)| *idx != actor)
-        .map(|(_, p)| p.hand_len as usize)
-        .sum::<usize>()
-        + state.wall.remaining();
-    let target = build_stage_a_teacher(&remaining, hidden_tiles, StageABeliefConfig::default());
+    let hidden_counts = [
+        state.players[abs_opp(actor, 0)].hand_len as usize,
+        state.players[abs_opp(actor, 1)].hand_len as usize,
+        state.players[abs_opp(actor, 2)].hand_len as usize,
+        state.wall.remaining(),
+    ];
+    let target = build_stage_a_teacher(&remaining, &hidden_counts, StageABeliefConfig::default());
     match target {
         Some(target) => (
             Some(target.belief_fields),
@@ -936,17 +936,49 @@ mod tests {
     }
 
     #[test]
-    fn load_game_from_reader_can_emit_stage_a_belief_targets() {
-        let (log, _) = play_game_with_mjai_log(13);
+    fn exact_waits_returns_empty_waits_for_furiten_tenpai() {
+        let mut state = GameState::new(0, false, Some(0), 0, GameRule::default_tenhou());
+        let hand = [0u8, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76, 80, 108];
+        state.players[0].hand[..hand.len()].copy_from_slice(&hand);
+        state.players[0].hand_len = hand.len() as u8;
+        state.players[0].discards[0] = 109;
+        state.players[0].discard_len = 1;
+
+        let (waits, tenpai) = exact_waits(&state, 0);
+        assert!(tenpai, "furiten hand should still register as tenpai");
+        assert!(waits.iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn load_game_from_reader_keeps_stage_a_belief_targets_truthful_when_emitted() {
+        for seed in 0..32u64 {
+            let (log, _) = play_game_with_mjai_log(seed);
+            let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+            for sample in game.samples {
+                match sample.belief_fields {
+                    Some(belief) => {
+                        assert_eq!(belief.len(), 16 * 34);
+                        assert!(sample.belief_fields_present);
+                    }
+                    None => assert!(!sample.belief_fields_present),
+                }
+                assert!(sample.mixture_weights.is_none());
+                assert!(!sample.mixture_weights_present);
+            }
+        }
+    }
+
+    #[test]
+    fn load_game_from_reader_keeps_stage_a_mixture_targets_default_off() {
+        let (log, _) = play_game_with_mjai_log(19);
         let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
-        let sample = game
-            .samples
-            .iter()
-            .find(|s| s.belief_fields.is_some())
-            .expect("expected at least one belief-target sample");
-        let belief = sample.belief_fields.expect("belief fields");
-        assert_eq!(belief.len(), 16 * 34);
-        assert!(sample.belief_fields_present);
+        assert!(!game.samples.is_empty(), "expected replay to produce samples");
+        assert!(game.samples.iter().all(|sample| sample.mixture_weights.is_none()));
+        assert!(
+            game.samples
+                .iter()
+                .all(|sample| !sample.mixture_weights_present)
+        );
     }
 
     #[test]
