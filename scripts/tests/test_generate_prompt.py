@@ -40,6 +40,26 @@ class PromptGeneratorTests(unittest.TestCase):
     def load_config(self, config_path: Path):
         return generate_prompt._parse_config(config_path)
 
+    def make_cli_config(self, repo_root: Path) -> Path:
+        return self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [
+                        {"tag": "role", "lines": ["Example role."]},
+                        {"tag": "task", "lines": ["Example task."]},
+                    ],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {"name": "main", "shell_sections": [], "artifact_ids": []}
+                ],
+            },
+        )
+
     def test_extract_prompt_body_from_wrapped_reference_example(self) -> None:
         wrapped = """<combined_run_record>
   <prompt_section>
@@ -70,17 +90,17 @@ Body
 Role body
 </role>
 
-<direction>
-Direction body
-</direction>
+<task>
+Task body
+</task>
+
+<rules>
+Rules body
+</rules>
 
 <style>
 Style body
 </style>
-
-<artifact_note>
-Artifact note
-</artifact_note>
 
 <artifacts>
 ...
@@ -91,7 +111,7 @@ Artifact note
         self.assertEqual(template.title, "# Template title")
         self.assertEqual(
             [section.tag for section in template.shell_sections],
-            ["role", "direction", "style", "artifact_note"],
+            ["role", "task", "rules", "style"],
         )
         self.assertEqual(template.artifact_container_tag, "artifacts")
 
@@ -107,17 +127,17 @@ Artifact note
 Canonical role
 </role>
 
-<direction>
-Canonical direction
-</direction>
+<task>
+Canonical task
+</task>
+
+<rules>
+Canonical rules
+</rules>
 
 <style>
 Canonical style
 </style>
-
-<artifact_note>
-Canonical note
-</artifact_note>
 
 <artifacts>
 ...
@@ -146,9 +166,19 @@ Canonical note
                         "shell_source_path": "docs/reference.md",
                         "shell_sections": [
                             {
-                                "tag": "direction",
+                                "tag": "role",
                                 "mode": "append",
-                                "lines": ["Variant direction"],
+                                "lines": ["Variant role"],
+                            },
+                            {
+                                "tag": "task",
+                                "mode": "append",
+                                "lines": ["Variant task"],
+                            },
+                            {
+                                "tag": "rules",
+                                "mode": "append",
+                                "lines": ["Variant rules"],
                             },
                             {
                                 "tag": "style",
@@ -166,23 +196,22 @@ Canonical note
         rendered = generate_prompt.render_prompt(config, "main")
 
         role_index = rendered.index("<role>")
-        direction_index = rendered.index("<direction>")
+        task_index = rendered.index("<task>")
+        rules_index = rendered.index("<rules>")
         style_index = rendered.index("<style>")
-        artifact_note_index = rendered.index("<artifact_note>")
         artifacts_index = rendered.index("<artifacts>")
 
         self.assertTrue(
-            role_index
-            < direction_index
-            < style_index
-            < artifact_note_index
-            < artifacts_index
+            role_index < task_index < rules_index < style_index < artifacts_index
         )
-        self.assertIn("Variant direction", rendered)
-        self.assertIn("Canonical direction", rendered)
+        self.assertIn("Variant role", rendered)
+        self.assertIn("Canonical role", rendered)
+        self.assertIn("Variant task", rendered)
+        self.assertIn("Canonical task", rendered)
+        self.assertIn("Variant rules", rendered)
+        self.assertIn("Canonical rules", rendered)
         self.assertIn("Variant style", rendered)
         self.assertIn("Canonical style", rendered)
-        self.assertIn("Canonical note", rendered)
         self.assertTrue(rendered.startswith("# Rendered title\n"))
 
     def test_validation_rejects_unparseable_shell_source(self) -> None:
@@ -226,7 +255,7 @@ Canonical note
                 "defaults": {
                     "shell_sections": [
                         {"tag": "role", "lines": ["Produce a blueprint."]},
-                        {"tag": "direction", "lines": ["Use the artifacts below."]},
+                        {"tag": "task", "lines": ["Use the artifacts below."]},
                     ],
                     "artifact_ids": ["slice"],
                 },
@@ -275,7 +304,7 @@ Canonical note
                     {
                         "name": "main",
                         "shell_sections": [
-                            {"tag": "direction", "lines": ["Focus on a narrow task."]}
+                            {"tag": "task", "lines": ["Focus on a narrow task."]}
                         ],
                         "artifact_ids": [],
                         "artifacts": [
@@ -311,7 +340,7 @@ Canonical note
                 "defaults": {
                     "shell_sections": [
                         {"tag": "role", "lines": ["Produce a blueprint."]},
-                        {"tag": "direction", "lines": ["Default direction."]},
+                        {"tag": "task", "lines": ["Default task."]},
                     ],
                     "artifact_ids": [],
                 },
@@ -320,7 +349,7 @@ Canonical note
                     {
                         "name": "main",
                         "shell_sections": [
-                            {"tag": "direction", "lines": ["Variant direction."]},
+                            {"tag": "task", "lines": ["Variant task."]},
                             {"tag": "style", "lines": ["- no vague answer"]},
                         ],
                         "artifact_ids": [],
@@ -332,8 +361,8 @@ Canonical note
         config = self.load_config(config_path)
         rendered = generate_prompt.render_prompt(config, "main")
 
-        self.assertIn("Variant direction.", rendered)
-        self.assertNotIn("Default direction.", rendered)
+        self.assertIn("Variant task.", rendered)
+        self.assertNotIn("Default task.", rendered)
         self.assertIn("<style>", rendered)
 
     def test_validation_reports_missing_artifact_reference(self) -> None:
@@ -374,9 +403,9 @@ Canonical note
 Canonical role
 </role>
 
-<direction>
-Canonical direction
-</direction>
+<task>
+Canonical task
+</task>
 
 <artifacts>
 ...
@@ -398,9 +427,7 @@ Canonical direction
                     {
                         "name": "main",
                         "shell_source_path": "docs/reference.md",
-                        "shell_sections": [
-                            {"tag": "direction", "lines": ["Variant direction"]}
-                        ],
+                        "shell_sections": [{"tag": "task", "lines": ["Variant task"]}],
                         "artifact_ids": [],
                     }
                 ],
@@ -646,12 +673,12 @@ Canonical role
                     {
                         "name": "first variant",
                         "output_file": "first.md",
-                        "shell_sections": [{"tag": "direction", "lines": ["First."]}],
+                        "shell_sections": [{"tag": "task", "lines": ["First."]}],
                         "artifact_ids": [],
                     },
                     {
                         "name": "second variant",
-                        "shell_sections": [{"tag": "direction", "lines": ["Second."]}],
+                        "shell_sections": [{"tag": "task", "lines": ["Second."]}],
                         "artifact_ids": [],
                     },
                 ],
@@ -674,9 +701,169 @@ Canonical role
         )
 
         self.assertEqual(code, 0)
-        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("info: variant 'first variant' rendered at ", stderr.getvalue())
+        self.assertIn(
+            "warning: variant 'first variant' rendered at ", stderr.getvalue()
+        )
+        self.assertIn("info: variant 'second variant' rendered at ", stderr.getvalue())
+        self.assertIn(
+            "warning: variant 'second variant' rendered at ", stderr.getvalue()
+        )
         self.assertTrue((output_dir / "first.md").exists())
         self.assertTrue((output_dir / "second-variant.md").exists())
+
+    def test_count_rendered_lines_matches_splitlines_behavior(self) -> None:
+        self.assertEqual(generate_prompt.count_rendered_lines(""), 0)
+        self.assertEqual(generate_prompt.count_rendered_lines("alpha"), 1)
+        self.assertEqual(generate_prompt.count_rendered_lines("alpha\n"), 1)
+        self.assertEqual(generate_prompt.count_rendered_lines("alpha\n\nbeta\n"), 3)
+
+    def test_cli_single_variant_stdout_mode_reports_count_and_warning_to_stderr(
+        self,
+    ) -> None:
+        repo_root = self.make_repo()
+        config_path = self.make_cli_config(repo_root)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = generate_prompt.main(
+            [
+                "--config",
+                str(config_path),
+                "--warn-below-line-count",
+                "3000",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 0)
+        rendered = stdout.getvalue()
+        self.assertIn("<role>", rendered)
+        self.assertIn("<task>", rendered)
+        self.assertIn("info: variant 'main' rendered at ", stderr.getvalue())
+        self.assertIn("warning: variant 'main' rendered at ", stderr.getvalue())
+        self.assertIn("below threshold 3000", stderr.getvalue())
+
+    def test_cli_single_variant_output_mode_reports_count_on_stdout_and_warning_on_stderr(
+        self,
+    ) -> None:
+        repo_root = self.make_repo()
+        config_path = self.make_cli_config(repo_root)
+        output_path = repo_root / "out" / "prompt.md"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = generate_prompt.main(
+            [
+                "--config",
+                str(config_path),
+                "--output",
+                str(output_path),
+                "--warn-below-line-count",
+                "3000",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(output_path.exists())
+        self.assertIn("generated prompt at", stdout.getvalue())
+        self.assertIn("lines)", stdout.getvalue())
+        self.assertIn("warning: variant 'main' rendered at ", stderr.getvalue())
+
+    def test_cli_all_variants_reports_counts_and_warnings(self) -> None:
+        repo_root = self.make_repo()
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [
+                        {"tag": "role", "lines": ["Example role."]},
+                        {"tag": "task", "lines": ["Example task."]},
+                    ],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {"name": "first", "shell_sections": [], "artifact_ids": []},
+                    {"name": "second", "shell_sections": [], "artifact_ids": []},
+                ],
+            },
+        )
+        output_dir = repo_root / "generated"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = generate_prompt.main(
+            [
+                "--config",
+                str(config_path),
+                "--all-variants",
+                "--output-dir",
+                str(output_dir),
+                "--warn-below-line-count",
+                "3000",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("generated variant 'first'", stdout.getvalue())
+        self.assertIn("generated variant 'second'", stdout.getvalue())
+        self.assertIn("generated 2 prompt(s)", stdout.getvalue())
+        self.assertIn("warning: variant 'first' rendered at ", stderr.getvalue())
+        self.assertIn("warning: variant 'second' rendered at ", stderr.getvalue())
+
+    def test_cli_warning_threshold_zero_disables_warning(self) -> None:
+        repo_root = self.make_repo()
+        config_path = self.make_cli_config(repo_root)
+        output_path = repo_root / "out" / "prompt.md"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = generate_prompt.main(
+            [
+                "--config",
+                str(config_path),
+                "--output",
+                str(output_path),
+                "--warn-below-line-count",
+                "0",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("info: variant 'main' rendered at ", stderr.getvalue())
+        self.assertNotIn("warning:", stderr.getvalue())
+
+    def test_cli_validate_only_does_not_emit_line_info_or_warning(self) -> None:
+        repo_root = self.make_repo()
+        config_path = self.make_cli_config(repo_root)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = generate_prompt.main(
+            [
+                "--config",
+                str(config_path),
+                "--validate-only",
+                "--warn-below-line-count",
+                "3000",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "config is valid\n")
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_example_config_declares_all_reference_variants(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -691,6 +878,72 @@ Canonical role
         self.assertTrue(
             all(variant.shell_source_path is not None for variant in config.variants)
         )
+
+    def test_legacy_direction_tag_remains_supported_without_template(self) -> None:
+        repo_root = self.make_repo()
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [
+                        {"tag": "role", "lines": ["Produce a blueprint."]},
+                        {"tag": "direction", "lines": ["Legacy direction."]},
+                    ],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {"name": "main", "shell_sections": [], "artifact_ids": []}
+                ],
+            },
+        )
+
+        config = self.load_config(config_path)
+        rendered = generate_prompt.render_prompt(config, "main")
+
+        self.assertIn("<direction>", rendered)
+        self.assertIn("Legacy direction.", rendered)
+
+    def test_non_template_shell_sections_can_customize_role_and_task(self) -> None:
+        repo_root = self.make_repo()
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [
+                        {"tag": "role", "lines": ["Default role."]},
+                        {"tag": "task", "lines": ["Default task."]},
+                        {"tag": "rules", "lines": ["Default rules."]},
+                        {"tag": "style", "lines": ["- default style"]},
+                    ],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {
+                        "name": "main",
+                        "shell_sections": [
+                            {"tag": "role", "lines": ["Custom role."]},
+                            {"tag": "task", "lines": ["Custom task."]},
+                        ],
+                        "artifact_ids": [],
+                    }
+                ],
+            },
+        )
+
+        config = self.load_config(config_path)
+        rendered = generate_prompt.render_prompt(config, "main")
+
+        self.assertIn("Custom role.", rendered)
+        self.assertNotIn("Default role.", rendered)
+        self.assertIn("Custom task.", rendered)
+        self.assertNotIn("Default task.", rendered)
+        self.assertIn("Default rules.", rendered)
 
 
 if __name__ == "__main__":
