@@ -4,6 +4,25 @@
     <layout>single_markdown_file_prompt_then_answer</layout>
   </metadata>
 
+  <warning_note status="historical_partially_stale" added="2026-03-15">
+    <![CDATA[
+Warning: this combined archive artifact is still useful as evidence for target-provenance reasoning, but parts of its live-state framing are stale against current authority docs and current code.
+
+Known stale area:
+- ExIt status. This artifact treats ExIt as still later-only / not yet closed in mainline. Current Hydra now has both a replay/sample ExIt sidecar-first lane and a live self-play ExIt lane in code and docs.
+
+Use this file for:
+- provenance taxonomy
+- keep-absent / keep-off reasoning for semantically weak target families
+
+Do not use this file as current truth for:
+- present-tense ExIt implementation status
+
+Validate against the live authority chain before reuse:
+README.md -> research/design/HYDRA_FINAL.md -> research/design/HYDRA_RECONCILIATION.md -> docs/GAME_ENGINE.md
+    ]]>
+  </warning_note>
+
   <prompt_section>
   <prompt_text status="preserved" source_path="PROMPT_15_VALIDATE_ADVANCED_TARGET_PROVENANCE_AND_PUBLIC_TEACHERS.md">
   <![CDATA[# Hydra prompt — validate advanced target provenance and public-teacher belief supervision closure

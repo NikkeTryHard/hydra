@@ -201,6 +201,7 @@ pub(super) fn handle_training_mode(
         mut last_log_step,
         mut last_log_time,
         mut tb,
+        mut head_controller,
     } = runtime;
 
     print_banner(
@@ -232,6 +233,7 @@ pub(super) fn handle_training_mode(
                 total_steps,
                 current_runtime,
                 run_start: &run_start,
+                head_controller: &mut head_controller,
             },
             EpochRuntimeMut {
                 model: &mut model,

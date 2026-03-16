@@ -4,6 +4,25 @@
     <layout>single_markdown_file_prompt_then_answer</layout>
   </metadata>
 
+  <warning_note status="historical_partially_stale" added="2026-03-15">
+    <![CDATA[
+Warning: this combined archive artifact is still useful for narrow CT-SMC / Hand-EV benchmark reasoning, but some train-side `delta_q` claims are stale against current code.
+
+Known stale area:
+- The file speaks like masked RL-side `delta_q` handling/export is still future-only. Current Hydra already has a narrow RL-only masked `delta_q` lane, including target/mask carriage and masked-loss handling.
+
+Still useful here:
+- the caution that replay/offline `delta_q` closure is not solved by that RL-only lane
+- the discard-centric runtime-vs-[46]-head mismatch discussion
+
+Do not use this file as current truth for:
+- present-tense RL-side `delta_q` plumbing status
+
+Validate against the live authority chain before reuse:
+README.md -> research/design/HYDRA_FINAL.md -> research/design/HYDRA_RECONCILIATION.md -> docs/GAME_ENGINE.md
+    ]]>
+  </warning_note>
+
   <prompt_section>
   <prompt_text status="preserved" source_path="PROMPT_11_VALIDATE_ACTION_SUFFICIENT_WORLD_COMPRESSION.md">
   <![CDATA[# Hydra prompt — validate action-sufficient CT-SMC world compression

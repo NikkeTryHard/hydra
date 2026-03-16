@@ -8,7 +8,7 @@ Opponent modeling is Hydra's primary differentiator from existing Mahjong AIs. T
 
 ### Mortal's Blind Spot
 
-> **Ownership note:** This document is the authoritative source for detailed opponent-modeling rationale (safety encoding logic, tenpai/danger head behavior, and expected effects), but not for final implementation shape when the active SSOT differs. If this file conflicts with `HYDRA_FINAL.md` or `HYDRA_RECONCILIATION.md`, follow those files for current implementation direction and keep this document as rationale/reference.
+> **Ownership note:** This document is the authoritative source for detailed opponent-modeling rationale (safety encoding logic, tenpai/danger head behavior, and expected effects), but not for final implementation shape when the canonical archive SSOT, promoted doctrine summaries, or runtime reality differ. If this file conflicts with `ARCHIVE_CANONICAL_CLAIMS.jsonl`, `HYDRA_FINAL.md`, `HYDRA_RECONCILIATION.md`, or current code/runtime, treat this document as rationale/reference and refresh the lagging summary elsewhere.
 
 > **Reserve/future note:** Not everything in this document belongs to the active path right now. Core safety / tenpai / danger rationale is active. Heavier or more speculative extensions (for example wait-set belief heads, call-intent/FiLM conditioning, safety reserve, deception/RSA-style mechanisms, and other future extensions) should be treated as reserve-shelf material unless the reconciled doctrine explicitly promotes them.
 >

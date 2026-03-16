@@ -182,9 +182,7 @@ struct CollateBuffers {
     safety_residual_mask_flat: Vec<f32>,
     any_safety_residual: bool,
     exit_samples: Vec<Option<(Vec<f32>, Vec<f32>)>>,
-    delta_q_flat: Vec<f32>,
-    delta_q_mask_flat: Vec<f32>,
-    any_delta_q: bool,
+    delta_q_samples: Vec<Option<(Vec<f32>, Vec<f32>)>>,
     belief_fields_flat: Vec<f32>,
     mixture_weights_flat: Vec<f32>,
     any_belief_fields: bool,
@@ -213,9 +211,7 @@ impl CollateBuffers {
             safety_residual_mask_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
             any_safety_residual: false,
             exit_samples: vec![None; batch],
-            delta_q_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
-            delta_q_mask_flat: vec![0.0f32; batch * HYDRA_ACTION_SPACE],
-            any_delta_q: false,
+            delta_q_samples: vec![None; batch],
             belief_fields_flat: vec![0.0f32; batch * 16 * 34],
             mixture_weights_flat: vec![0.0f32; batch * 4],
             any_belief_fields: false,
@@ -309,18 +305,14 @@ impl CollateBuffers {
         }
         self.exit_samples[index] = match (exit_target, exit_mask) {
             (Some(target), Some(mask)) => Some((target.to_vec(), mask.to_vec())),
-            _ => None,
+            (None, None) => None,
+            _ => panic!("exit target/mask mismatch for sample collation"),
         };
-        if let Some(values) = delta_q_target {
-            self.delta_q_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&values);
-            self.any_delta_q = true;
-        }
-        if let Some(values) = delta_q_mask {
-            self.delta_q_mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&values);
-            self.any_delta_q = true;
-        }
+        self.delta_q_samples[index] = match (delta_q_target, delta_q_mask) {
+            (Some(target), Some(mask)) => Some((target.to_vec(), mask.to_vec())),
+            (None, None) => None,
+            _ => panic!("delta_q target/mask mismatch for sample collation"),
+        };
         if let Some(values) = belief_fields {
             self.belief_fields_flat[index * 16 * 34..(index + 1) * 16 * 34]
                 .copy_from_slice(&values);
@@ -351,6 +343,8 @@ impl CollateBuffers {
 
     fn into_batch<B: Backend>(self, batch: usize, device: &B::Device) -> MjaiBatch<B> {
         let (exit_target, exit_mask) = collate_exit_targets::<B>(&self.exit_samples, device);
+        let (delta_q_target, delta_q_mask) =
+            crate::training::exit::collate_delta_q_targets::<B>(&self.delta_q_samples, device);
         MjaiBatch {
             obs: Tensor::<B, 1>::from_floats(self.obs_flat.as_slice(), device).reshape([
                 batch,
@@ -396,22 +390,8 @@ impl CollateBuffers {
             },
             exit_target,
             exit_mask,
-            delta_q_target: if self.any_delta_q {
-                Some(
-                    Tensor::<B, 1>::from_floats(self.delta_q_flat.as_slice(), device)
-                        .reshape([batch, HYDRA_ACTION_SPACE]),
-                )
-            } else {
-                None
-            },
-            delta_q_mask: if self.any_delta_q {
-                Some(
-                    Tensor::<B, 1>::from_floats(self.delta_q_mask_flat.as_slice(), device)
-                        .reshape([batch, HYDRA_ACTION_SPACE]),
-                )
-            } else {
-                None
-            },
+            delta_q_target,
+            delta_q_mask,
             belief_fields_target: if self.any_belief_fields {
                 Some(
                     Tensor::<B, 1>::from_floats(self.belief_fields_flat.as_slice(), device)
@@ -1031,6 +1011,22 @@ mod tests {
         assert!((values[9] + 0.25).abs() < 1e-6);
         assert!((mask_values[0] - 1.0).abs() < 1e-6);
         assert!((mask_values[9] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "delta_q target/mask mismatch for sample collation")]
+    fn batch_to_hydra_targets_rejects_delta_q_when_pair_is_incomplete() {
+        let device = Default::default();
+        let mut target_only = dummy_sample(0, 0);
+        let mut mask_only = dummy_sample(1, 0);
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[0] = 0.6;
+        mask[1] = 1.0;
+        target_only.delta_q_target = Some(target);
+        mask_only.delta_q_mask = Some(mask);
+
+        let _ = collate_batch::<B>(&[target_only, mask_only], &device);
     }
 
     #[test]

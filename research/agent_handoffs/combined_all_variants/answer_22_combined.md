@@ -4,6 +4,26 @@
     <layout>exact_prompt_source_plus_partially_reconstructed_answer_record</layout>
   </metadata>
 
+  <warning_note status="historical_partially_stale" added="2026-03-15">
+    <![CDATA[
+Warning: the core evaluator/teacher-shape reasoning in this artifact is still useful, but the old live-lane status language is partially stale.
+
+Known stale area:
+- older default-off framing for the live ExIt producer. Current code/docs have already flipped the live self-play ExIt lane to default-on, while preserving the narrower visit-based teacher semantics and validation history.
+
+Use this file for:
+- learner-only, root-only AFBS evaluator reasoning
+- visit-based teacher semantics
+- rejection of `root_exit_policy()` / q-softmax as the teacher object
+
+Do not use this file as current truth for:
+- present-tense default-off / enablement status
+
+Validate against the live authority chain before reuse:
+README.md -> research/design/HYDRA_FINAL.md -> research/design/HYDRA_RECONCILIATION.md -> docs/GAME_ENGINE.md
+    ]]>
+  </warning_note>
+
   <prompt_section>
   <prompt_text status="exact_source_reference" source_path="agent22_exit_live_afbs_evaluator_blueprint.md">
   <![CDATA[# Hydra prompt — agent 22 ExIt live AFBS evaluator blueprint
@@ -77,7 +97,9 @@ The answer must separate:
 And it must end with one buildable surviving blueprint, not just a menu of options.
 </output_requirements>
 
-<artifacts>
+<artifacts_manifest>
+
+[Normalization note: the original inline artifact bodies are intentionally omitted here. Hydra combined artifacts now preserve compact manifest entries only, because the referenced files already exist locally and duplicating their full contents in this record is no longer the archive format.]
 
 ## Artifact 01 — Reference narrow prompt shape
 Artifact id: `reference-narrow-shape`
@@ -86,107 +108,12 @@ Type: `file_range`
 Source: `research/agent_handoffs/combined_all_variants/reference_prompt_example_001_narrow_focused.md:9-51`
 Why it matters: Canonical example of the narrow artifact-first blueprint family this prompt should resemble.
 
-```text
-[REF L0009]   <![CDATA[# Reference example — narrow focused artifact-first blueprint
-[REF L0010] 
-[REF L0011] <role>
-[REF L0012] Produce an implementation-ready blueprint.
-[REF L0013] Do not give a memo.
-[REF L0014] Your answer itself must be the blueprint.
-[REF L0015] </role>
-[REF L0016] 
-[REF L0017] <direction>
-[REF L0018] Work toward the strongest exact blueprint for a single narrow implementation or validation lane.
-[REF L0019] 
-[REF L0020] We want a detailed answer that makes clear:
-[REF L0021] - what the current quantities or mechanisms really mean
-[REF L0022] - what is semantically broken or misleading
-[REF L0023] - what the clean repaired meanings should be
-[REF L0024] - what should stay exact, what should stay approximate, and what should be dropped or demoted
-[REF L0025] - how to implement or validate the surviving path with minimal guesswork
-[REF L0026] 
-[REF L0027] Use the artifacts below to derive your conclusions.
-[REF L0028] </direction>
-[REF L0029] 
-[REF L0030] <style>
-[REF L0031] - no high-level survey
-[REF L0032] - no vague answer
-[REF L0033] - include reasoning
-[REF L0034] - include formulas when needed
-[REF L0035] - include code-like detail when helpful (python or rust)
-[REF L0036] - include worked examples when helpful
-[REF L0037] - include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-[REF L0038] - distinguish direct artifact support from your own inference
-[REF L0039] - use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-[REF L0040] - use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-[REF L0041] - do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
-[REF L0042] - do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
-[REF L0043] </style>
-[REF L0044] 
-[REF L0045] <artifact_note>
-[REF L0046] The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
-[REF L0047] </artifact_note>
-[REF L0048] 
-[REF L0049] <artifacts>
-[REF L0050] [Insert dense task-specific code/doc/test/formula artifacts here.]
-[REF L0051] </artifacts>]]>
-```
-
 ## Artifact 02 — Canonical shell doctrine
 Artifact id: `prompt-guide-shell`
 Source label: GUIDE
 Type: `file_range`
 Source: `research/agent_handoffs/PROMPT_STYLE_GUIDE.md:110-155`
 Why it matters: Use this to keep the prompt shell aligned with Hydra's artifact-first doctrine.
-
-```text
-[GUIDE L0110] ## 2. Default top-of-prompt shell
-[GUIDE L0111] 
-[GUIDE L0112] Use this shell for most serious Hydra prompts.
-[GUIDE L0113] 
-[GUIDE L0114] ```xml
-[GUIDE L0115] <role>
-[GUIDE L0116] Produce an implementation-ready blueprint.
-[GUIDE L0117] Do not give a memo.
-[GUIDE L0118] Your answer itself must be the blueprint.
-[GUIDE L0119] </role>
-[GUIDE L0120] 
-[GUIDE L0121] <direction>
-[GUIDE L0122] Work toward the strongest exact blueprint for [TASK].
-[GUIDE L0123] 
-[GUIDE L0124] We want a detailed answer that makes clear:
-[GUIDE L0125] - [decision point 1]
-[GUIDE L0126] - [decision point 2]
-[GUIDE L0127] - [decision point 3]
-[GUIDE L0128] - [what must stay narrow / deferred / rejected]
-[GUIDE L0129] - [how to implement or validate the surviving path with minimal guesswork]
-[GUIDE L0130] 
-[GUIDE L0131] Use the artifacts below to derive your conclusions.
-[GUIDE L0132] </direction>
-[GUIDE L0133] 
-[GUIDE L0134] <style>
-[GUIDE L0135] - no high-level survey
-[GUIDE L0136] - no vague answer
-[GUIDE L0137] - include reasoning
-[GUIDE L0138] - include formulas when needed
-[GUIDE L0139] - include code-like detail when helpful (python or rust)
-[GUIDE L0140] - include worked examples when helpful
-[GUIDE L0141] - include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-[GUIDE L0142] - distinguish direct artifact support from your own inference
-[GUIDE L0143] - use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-[GUIDE L0144] - use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-[GUIDE L0145] - do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
-[GUIDE L0146] </style>
-[GUIDE L0147] 
-[GUIDE L0148] <artifact_note>
-[GUIDE L0149] The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
-[GUIDE L0150] </artifact_note>
-[GUIDE L0151] 
-[GUIDE L0152] <artifacts>
-[GUIDE L0153] ...
-[GUIDE L0154] </artifacts>
-[GUIDE L0155] ```
-```
 
 ## Artifact 03 — Prompt generator workflow and authoring rules
 Artifact id: `prompt-guide-generator`
@@ -195,30 +122,8 @@ Type: `file_range`
 Source: `research/agent_handoffs/PROMPT_STYLE_GUIDE.md:528-724`
 Why it matters: Documents the intended JSON-driven workflow, artifact density requirements, and final checklist.
 
-```text
-[GUIDE L0528] ## 12. Prompt generator tool
-[GUIDE L0529] 
-[GUIDE L0530] For repeated prompt authoring, use `scripts/generate_prompt.py` instead of hand-assembling every long prompt from scratch.
-[GUIDE L0531] 
-[GUIDE L0532] The tool is not a prompt framework.
-[GUIDE L0533] It is a small JSON-driven utility for generating Hydra-style artifact-first prompts faster and more consistently.
-[GUIDE L0534] 
-[GUIDE L0535] Use it when:
-[GUIDE L0536] 
-[GUIDE L0537] - you want multiple prompt variants from one shared artifact packet
-[GUIDE L0538] - you want reusable shell blocks like `role`, `direction`, `style`, and `artifact_note`
-[GUIDE L0539] - you want line-ranged code/doc excerpts without manual copy-paste
-[GUIDE L0540] - you want per-artifact labels and explanations so the artifact body has useful context
-[GUIDE L0541] - you want to regenerate prompts quickly after changing the artifact set
-[GUIDE L0542] 
-[GUIDE L0543] Do not use it as an excuse to stop thinking about prompt quality.
-[GUIDE L0544] The generator speeds up assembly.
-[GUIDE L0545] It does not decide what artifacts belong in the prompt.
-```
-
-<artifacts>
 [Prompt source note: the full authoritative prompt can be regenerated exactly from `research/agent_handoffs/agent22_exit_eval_prompt_config.json` and matches the surviving rendered output at `research/agent_handoffs/agent22_exit_live_afbs_evaluator_blueprint.md`. This combined record keeps a prompt prefix plus exact source references rather than duplicating the full 4,957-line rendered prompt body inline.]
-</artifacts>]]>
+</artifacts_manifest>]]>
   </prompt_text>
   </prompt_section>
 

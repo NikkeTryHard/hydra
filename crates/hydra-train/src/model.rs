@@ -407,8 +407,19 @@ impl<B: Backend> HydraModel<B> {
         x: Tensor<B, 3>,
         loss_cfg: &crate::training::losses::HydraLossConfig,
     ) -> HydraOutput<B> {
+        self.forward_with_warmup(x, loss_cfg, &[])
+    }
+
+    pub fn forward_with_warmup(
+        &self,
+        x: Tensor<B, 3>,
+        loss_cfg: &crate::training::losses::HydraLossConfig,
+        warmup_heads: &[crate::training::head_gates::AdvancedHead],
+    ) -> HydraOutput<B> {
         let (spatial, pooled) = self.backbone.forward(x);
         let oracle_input = pooled.clone().detach();
+        let is_warmup =
+            |head: crate::training::head_gates::AdvancedHead| warmup_heads.contains(&head);
 
         let policy_logits = self.policy.forward(pooled.clone());
         let value = self.value.forward(pooled.clone());
@@ -458,32 +469,44 @@ impl<B: Backend> HydraModel<B> {
             } else {
                 danger.detach()
             },
-            oracle_critic: if loss_cfg.w_oracle_critic > 0.0 {
+            oracle_critic: if loss_cfg.w_oracle_critic > 0.0
+                && !is_warmup(crate::training::head_gates::AdvancedHead::OracleCritic)
+            {
                 oracle_critic
             } else {
                 oracle_critic.detach()
             },
-            belief_fields: if loss_cfg.w_belief_fields > 0.0 {
+            belief_fields: if loss_cfg.w_belief_fields > 0.0
+                && !is_warmup(crate::training::head_gates::AdvancedHead::BeliefFields)
+            {
                 belief_fields
             } else {
                 belief_fields.detach()
             },
-            mixture_weight_logits: if loss_cfg.w_mixture_weight > 0.0 {
+            mixture_weight_logits: if loss_cfg.w_mixture_weight > 0.0
+                && !is_warmup(crate::training::head_gates::AdvancedHead::MixtureWeight)
+            {
                 mixture_weight_logits
             } else {
                 mixture_weight_logits.detach()
             },
-            opponent_hand_type: if loss_cfg.w_opponent_hand_type > 0.0 {
+            opponent_hand_type: if loss_cfg.w_opponent_hand_type > 0.0
+                && !is_warmup(crate::training::head_gates::AdvancedHead::OpponentHandType)
+            {
                 opponent_hand_type
             } else {
                 opponent_hand_type.detach()
             },
-            delta_q: if loss_cfg.w_delta_q > 0.0 {
+            delta_q: if loss_cfg.w_delta_q > 0.0
+                && !is_warmup(crate::training::head_gates::AdvancedHead::DeltaQ)
+            {
                 delta_q
             } else {
                 delta_q.detach()
             },
-            safety_residual: if loss_cfg.w_safety_residual > 0.0 {
+            safety_residual: if loss_cfg.w_safety_residual > 0.0
+                && !is_warmup(crate::training::head_gates::AdvancedHead::SafetyResidual)
+            {
                 safety_residual
             } else {
                 safety_residual.detach()
@@ -657,6 +680,46 @@ mod tests {
         assert!(
             x.grad(&grads).is_none(),
             "oracle-only loss must not backpropagate through the shared backbone"
+        );
+    }
+
+    #[test]
+    fn delta_q_warmup_detaches_backbone_input() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<AB>(&device);
+        let x = Tensor::<AB, 3>::zeros([2, INPUT_CHANNELS, 34], &device).require_grad();
+        let loss_cfg = crate::training::losses::HydraLossConfig::new().with_w_delta_q(1.0);
+        let out = model.forward_with_warmup(
+            x.clone(),
+            &loss_cfg,
+            &[crate::training::head_gates::AdvancedHead::DeltaQ],
+        );
+        let target = Tensor::<AB, 2>::ones([2, HYDRA_ACTION_SPACE], &device);
+        let diff = out.delta_q - target;
+        let loss = (diff.clone() * diff).mean();
+        let grads = loss.backward();
+
+        assert!(
+            x.grad(&grads).is_none(),
+            "delta_q warmup loss must not backpropagate through the shared backbone"
+        );
+    }
+
+    #[test]
+    fn active_delta_q_backprops_to_backbone_input() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<AB>(&device);
+        let x = Tensor::<AB, 3>::zeros([2, INPUT_CHANNELS, 34], &device).require_grad();
+        let loss_cfg = crate::training::losses::HydraLossConfig::new().with_w_delta_q(1.0);
+        let out = model.forward_active(x.clone(), &loss_cfg);
+        let target = Tensor::<AB, 2>::ones([2, HYDRA_ACTION_SPACE], &device);
+        let diff = out.delta_q - target;
+        let loss = (diff.clone() * diff).mean();
+        let grads = loss.backward();
+
+        assert!(
+            x.grad(&grads).is_some(),
+            "active delta_q loss should backpropagate through the shared backbone"
         );
     }
 

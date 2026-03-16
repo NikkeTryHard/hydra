@@ -1,12 +1,13 @@
 # Hydra Archive and Demoted Planning Surfaces
 
-This document preserves weaker, older, broader, or reserve-only Hydra planning surfaces so they remain available for later review **without** competing with the current strongest doctrine.
+This document preserves weaker, older, broader, or reserve-only Hydra planning surfaces so they remain available for later review **without** competing with the canonical archive SSOT, promoted doctrine summaries, or runtime reality.
 
 ## How to use this file
 
-- Use `HYDRA_FINAL.md` for the architectural north star.
-- Use `HYDRA_RECONCILIATION.md` for current execution doctrine.
-- Use `docs/GAME_ENGINE.md` for current runtime reality.
+- Use `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` for the canonical archive SSOT.
+- Use `HYDRA_FINAL.md` for the promoted architecture doctrine summary.
+- Use `HYDRA_RECONCILIATION.md` for the promoted execution doctrine summary.
+- Use `docs/GAME_ENGINE.md` and current code for runtime reality.
 - Use this file only when you intentionally want:
   - historical context,
   - reserve-shelf ideas,
@@ -52,4 +53,4 @@ These ideas are not forbidden forever, but they should not re-enter current impl
 Hydra has enough strong ideas that simply deleting older or reserve-only material would be wasteful.
 But keeping all of it mixed into active docs creates doctrine drift.
 
-This archive keeps the strong-but-not-current material visible **without** letting it compete with the strongest current Hydra.
+This archive keeps the strong-but-not-current material visible **without** letting it compete with Hydra's canonical archive SSOT, promoted doctrine summaries, or current code/runtime reality.

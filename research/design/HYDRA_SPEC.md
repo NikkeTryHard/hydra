@@ -6,9 +6,9 @@
 >
 > Use these docs instead when coding:
 >
-> 1. `research/design/HYDRA_FINAL.md` — target architecture SSOT
-> 2. `research/design/HYDRA_RECONCILIATION.md` — current repo reality, active path, reserve shelf, dropped shelf
-> 3. `docs/GAME_ENGINE.md` and `crates/hydra-core/README.md` — current implemented engine/runtime baseline
+> 1. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` — canonical archive SSOT / upstream research intake
+> 2. `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` — promoted doctrine summaries
+> 3. `docs/GAME_ENGINE.md` and current code — current implemented engine/runtime baseline
 
 A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through a combination of proven techniques, novel opponent-aware features, and inference-time search. Intermediate milestone: surpass Mortal, Suphx, and NAGA.
 
@@ -16,8 +16,9 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through
 
 ## Related Documents
 
-- [HYDRA_FINAL.md](HYDRA_FINAL.md) — target architecture SSOT
-- [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — current repo reality and implementation priorities
+- [../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl](../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / upstream research intake
+- [HYDRA_FINAL.md](HYDRA_FINAL.md) — promoted architecture doctrine summary
+- [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — promoted execution doctrine summary and implementation priorities
 - [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — infrastructure reference (legacy sections clearly marked)
 
 - Historical MORL placement note — no standalone `MORL_PLACEMENT.md` file currently exists in this repo.

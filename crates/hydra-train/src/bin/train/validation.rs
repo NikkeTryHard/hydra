@@ -6,8 +6,10 @@ use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_va
 use hydra_train::data::sample::collate_batch_samples;
 use hydra_train::model::{HydraModel, HydraOutput};
 use hydra_train::training::bc::{
-    BcExitConfig, bc_total_with_exit, policy_agreement, target_actions_from_policy_target,
+    gated_bc_context, BcExitConfig, bc_total_with_exit, policy_agreement,
+    target_actions_from_policy_target,
 };
+use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
@@ -67,6 +69,7 @@ pub(super) fn run_validation(
     device: &<ValidBackend as Backend>::Device,
     loss_fn: &HydraLoss<ValidBackend>,
     exit_cfg: &BcExitConfig,
+    head_controller: Option<&mut HeadActivationController>,
     progress: Option<&ProgressBar>,
 ) -> Result<ValidationSummary, String> {
     let model_valid = model.valid();
@@ -74,6 +77,7 @@ pub(super) fn run_validation(
     let validation_sample_limit = validation_sample_limit(config);
     let mut stats = ScalarAverages::default();
     let mut total_samples = 0usize;
+    let mut head_controller = head_controller;
 
     for buffer_result in stream_val_pass(manifest, loader_config, progress) {
         let buffer = buffer_result.map_err(|err| format!("validation stream failed: {err}"))?;
@@ -98,13 +102,15 @@ pub(super) fn run_validation(
                 continue;
             };
             let targets = batch.to_hydra_targets();
-            let output = model_valid.forward(obs);
+            let (active_loss_fn, warmup_heads) =
+                gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
+            let output = model_valid.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads);
             let batch_stats = validation_batch_stats(
                 capped_chunk.len(),
                 &output,
                 &batch,
                 &targets,
-                loss_fn,
+                &active_loss_fn,
                 exit_cfg,
             );
             stats.record_batch(batch_stats);

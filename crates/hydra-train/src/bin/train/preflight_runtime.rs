@@ -1184,6 +1184,9 @@ pub(super) fn run_probe_only(
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
+        delta_q_sidecar: None,
+        delta_q_sidecar_source_net_hash: None,
+        delta_q_sidecar_source_version: None,
     };
     emit_probe_progress(&format!(
         "probe_progress kind={} candidate_mb={} phase=scan_start data_dir={}",
@@ -1683,6 +1686,7 @@ mod tests {
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

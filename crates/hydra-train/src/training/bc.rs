@@ -10,6 +10,9 @@ use crate::config::OracleGuidingConfig;
 use crate::data::sample::{collate_sample_refs_with_batch, MjaiBatch, MjaiSample};
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::exit::exit_loss;
+use crate::training::head_gates::{
+    extract_target_presence, AdvancedHead, HeadActivationController,
+};
 use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub fn phase_learning_rate(
@@ -131,6 +134,25 @@ pub fn bc_total_with_exit<B: Backend>(
             );
     }
     total
+}
+
+pub fn gated_bc_context<B: Backend>(
+    controller: Option<&mut HeadActivationController>,
+    base_loss_fn: &HydraLoss<B>,
+    targets: &HydraTargets<B>,
+) -> (HydraLoss<B>, Vec<AdvancedHead>) {
+    if let Some(ctrl) = controller {
+        if base_loss_fn.config.w_delta_q > 0.0 {
+            let presence = extract_target_presence(targets);
+            ctrl.record_batch(&presence);
+            ctrl.try_activate(AdvancedHead::DeltaQ);
+        }
+        let effective_cfg = ctrl.approved_loss_config(&base_loss_fn.config);
+        let warmup_heads = ctrl.warmup_heads();
+        (HydraLoss::<B>::new(effective_cfg), warmup_heads)
+    } else {
+        (HydraLoss::<B>::new(base_loss_fn.config.clone()), Vec::new())
+    }
 }
 
 pub fn policy_agreement<B: Backend>(

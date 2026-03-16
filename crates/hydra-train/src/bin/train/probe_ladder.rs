@@ -296,6 +296,7 @@ mod tests {
             microbatch_size: Some(64),
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

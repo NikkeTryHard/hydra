@@ -1,43 +1,84 @@
-# Hydra Prompt Style Guide — Artifact-First Batch Prompting Doctrine
+# Hydra Prompt Style Guide
 
 > [!WARNING]
-> You usually should not hand-write the full artifact packet. Serious Hydra prompts are often thousands of lines long, so use `scripts/generate_prompt.py` to assemble the shell and artifact dump, then inspect the rendered result before sending it.
+> Do not hand-build large Hydra prompt packets.
+> Use `scripts/generate_prompt.py`, then inspect the rendered prompt before you send it to an agent.
+> The research agent is the most intelligent LLM on the planet, and the more artifacts you throw at it, the better it performs. Make sure you have squeezed as much LOC as possible for the prompt.
 
-## 1. Prompt generator quickstart
+## 1. What this guide is for
 
-For repeated prompt authoring, use `scripts/generate_prompt.py` instead of hand-assembling every long prompt from scratch.
+This guide is for building good Hydra prompts with the current prompt generator.
+
+It is not a giant doctrine dump.
+It is not a prompt packet.
+It is not a rulebook for copying old example prompts word-for-word.
+
+The job of this file is simple:
+
+- explain how to use `scripts/generate_prompt.py`
+- explain how to choose and pack artifacts
+- explain how to adapt template shells to the actual task
+- explain how to keep prompts clear, dense, and useful
+
+If a rule in here does not help you build a better prompt, cut the rule instead of preserving ceremony.
+
+---
+
+## 2. What the generator actually does
+
+Main files:
 
 - script: `scripts/generate_prompt.py`
 - example config: `scripts/examples/prompt_config.example.json`
 - tests: `scripts/tests/test_generate_prompt.py`
 
-The tool is not a prompt framework.
-It is a small JSON-driven utility for generating Hydra-style artifact-first prompts faster and more consistently.
+The generator is a small JSON-driven prompt assembly tool.
+It is not a magical prompt framework.
 
-Use it when:
+What it does:
 
-- you want multiple prompt variants from one shared artifact packet
-- you want line-ranged code/doc excerpts without manual copy-paste
-- you want per-artifact labels and explanations so the artifact body has useful context
-- you want to regenerate prompts quickly after changing the artifact set
-- you want variant shells to stay aligned with the canonical reference examples
+- loads a reference prompt shell from `shell_source_path`
+- preserves that template's shell order and `<artifacts>` container placement
+- preserves template section text by default when `shell_source_path` is used
+- lets template-backed variants edit inherited shell text only through explicit `mode: "append"` or `mode: "delete"` entries
+- lets non-template variants replace shell sections by tag
+- lets variants append new shell sections when needed
+- combines shared and per-variant artifacts
+- renders artifact blocks with labels, explanations, source labels, fence language, and optional line numbers
 
-The current source-of-truth split is:
+Supported artifact kinds:
 
-- the reference examples define the canonical shell shape for each prompt family
-- the config defines the task-specific variant title, direction overrides, and artifact packet
-- the generator validates and renders against that example-backed shell shape
+- `file_range`
+- `file_full`
+- `literal`
 
-Typical workflow:
+What it does not do:
 
-1. copy `scripts/examples/prompt_config.example.json`
-2. pick the canonical example family your variant should follow
-3. set `shell_source_path` to that reference example file
-4. add reusable artifacts to the top-level `artifacts` array
+- pick the right task framing for you
+- decide what artifacts belong in the prompt
+- guarantee the prompt is narrow enough
+- guarantee the prompt is long enough
+- guarantee the artifacts are correct
+- replace manual review of the final rendered prompt
+
+The generator helps you assemble prompts faster.
+It does not replace prompt judgment.
+
+---
+
+## 3. Quickstart workflow
+
+Typical flow:
+
+1. start from `scripts/examples/prompt_config.example.json`
+2. choose the closest reference example family
+3. set `shell_source_path`
+4. add reusable artifacts to the top-level `artifacts` list
 5. add one or more `variants`
-6. validate the config
-7. generate one prompt or all variants
-8. inspect the rendered prompt before sending it to an agent
+6. if a variant uses `shell_source_path`, keep inherited shell text by default and use explicit `mode: "append"` / `mode: "delete"` entries for edits
+7. validate the config
+8. generate the prompt
+9. inspect the rendered result before using it
 
 Useful commands:
 
@@ -48,70 +89,103 @@ python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.examp
 python3 scripts/generate_prompt.py --config scripts/examples/prompt_config.example.json --all-variants --output-dir /tmp/hydra-generated-prompts
 ```
 
-Do not use the generator as an excuse to stop thinking about prompt quality.
-It speeds up assembly.
-It does not decide what artifacts belong in the prompt.
+If the rendered prompt is wrong, fix the config or the template choice.
+Do not just shrug and ship it.
 
 ---
 
-This file is the doctrine for writing Hydra’s new batch prompts.
+## 4. Reference examples are templates, not prisons
 
-It is not a giant prompt dossier.
-It is not where we dump 1000+ lines of code and paper artifacts.
-Those belong inside the actual prompts sent to agents.
+Reference examples are there to give you a good starting shell.
+They are not rigid copy targets.
 
-This guide should stay concise enough that an LLM or human can read it quickly and know exactly what to do.
+Use these example families as templates:
 
-The whole point is simple:
+- `reference_prompt_example_001_narrow_focused.md`
+- `reference_prompt_example_002_broad_novel_fuse_loop.md`
+- `reference_prompt_example_003_balanced_narrow_not_overconstrained.md`
 
-- prompts should be short at the top
-- prompts should be artifact-heavy in the body
-- artifacts should be treated as evidence, not truth
-- the answer should be a blueprint, not a memo
+Use them like this:
+
+- narrow implementation or validation task -> start from `reference_prompt_example_001_narrow_focused.md`
+- broad novelty or cross-field exploration task -> start from `reference_prompt_example_002_broad_novel_fuse_loop.md`
+- narrow task that still needs reasoning freedom -> start from `reference_prompt_example_003_balanced_narrow_not_overconstrained.md`
+
+Important rule:
+
+- keep what helps
+- change what does not fit
+- remove what conflicts
+- add what the task actually needs
+
+When a variant uses `shell_source_path`, the default should be to keep the example's `role`, `direction`, `style`, and other shell text.
+Do not silently replace a whole inherited section just because you want to tweak it.
+
+That means you should feel free to:
+
+- append extra guidance to inherited `direction` or `style` when the task needs it
+- delete inherited lines only when they are genuinely conflicting or harmful for the task
+- add new instructions when the task needs more guidance
+- remove conflicting or noisy wording when you can point to a real conflict
+
+The generator already supports this.
+For template-backed variants, shell edits must be explicit:
+
+- use `mode: "append"` to add lines onto an inherited section
+- use `mode: "delete"` to remove specific inherited lines or an entire inherited section
+
+If you do not explicitly append or delete, the example text stays.
+
+So treat the examples as maintained templates for structure, not as sacred prompt text.
+They are strong defaults, and they should survive unless you have an explicit reason to change them.
 
 ---
 
-## 2. Core doctrine
+## 5. Good prompting advice for Hydra work
 
-### 1.1 The answer must be a blueprint
+### 5.1 Be explicit about the job
 
-Do not ask for:
+Say what the agent is trying to produce.
 
-- a memo
-- a broad survey
-- a high-level recommendation note
-- a polished strategy essay
-
-Ask for:
+Usually that means one of:
 
 - an implementation-ready blueprint
 - a validation-ready blueprint
-- or a risk-audit blueprint
+- a debugging or risk-audit blueprint
 
-The answer should help the next engineer or reviewer act, not just admire the prose.
+Do not ask for a memo when you want a buildable answer.
 
-### 1.2 The prompt should carry the starting evidence
+### 5.2 Keep the shell lean
 
-Do not make the agent do all the first-mile rediscovery from nothing.
+The shell should usually be a few tight blocks such as:
 
-The prompt should already contain:
+- `role`
+- `direction`
+- `style`
+- `artifact_note`
 
-- low-level code excerpts
-- doc excerpts
+The shell should orient the task.
+It should not become the task.
+
+### 5.3 Put the real weight in the artifacts
+
+Good Hydra prompts usually win or lose on artifact quality, not on shell cleverness.
+
+Use the prompt body to carry:
+
+- code
+- docs
 - tests
-- structs
 - formulas
 - thresholds
 - comments
 - examples
 
-The point is not to pre-solve the task.
-The point is to give the agent a dense starting packet it can critique, validate, and build from.
+The prompt should give the agent a strong starting packet, not force first-mile rediscovery from nothing.
 
-### 1.3 The artifacts are not truth
+### 5.4 Treat artifacts as evidence, not truth
 
-The prompt must explicitly say the artifacts are only what the current codebase/docs appear to say.
-They may be:
+The prompt should explicitly tell the agent that artifacts may be:
 
 - stale
 - partial
@@ -119,51 +193,158 @@ They may be:
 - semantically wrong
 - misleading by omission
 
-The agent must treat them as evidence to inspect and critique, not truth to inherit.
+The agent should inspect and critique them, not inherit them blindly.
 
-### 1.4 Narrowness is good by default
+### 5.5 Reduce ambiguity and conflicts
 
-Most prompts should be narrow.
+If instructions fight each other, fix the conflict before you generate the final prompt.
 
-That is good for:
+Bad prompt behavior often comes from:
 
-- Hand-EV repair
-- target provenance decisions
-- tiny ponder scorers
-- rollout disable policy
-- conservative ExIt and delta-q validation
+- too many style bullets
+- old inherited wording that no longer matches the task
+- broad novelty instructions on narrow tasks
+- output contracts that do not match the actual decision you want
 
-Do not loosen a narrow implementation prompt into a broad invention prompt by accident.
+Clear prompts beat crowded prompts.
 
-### 1.5 The model must not stop early
+### 5.6 Use examples as steering tools, not scripts
 
-The prompt should explicitly force:
+The example prompts are useful because they show good families of structure.
+They are not a reason to copy every sentence.
 
-- discovery
-- thinking
-- testing
-- validation
-- repeated looping until saturation or blockage
+Start from the closest family, then adapt.
 
-We use aggressive looping language because the old failure mode was premature finish with weak evidence.
+### 5.7 Ask for visible reasoning when the task needs it
 
-### 1.6 No dump in any logic
+For important technical tasks, the prompt should push the agent to separate:
 
-The model must not hide important reasoning in black-box conclusions or polished assertions that cannot be reconstructed from the evidence packet or the explicit blueprint it writes.
+- direct artifact support
+- external support
+- inference
+- proposal
+- blocked or missing surface
 
-Every important mechanism, threshold, recommendation, or architecture move should be either:
-
-- directly inferable from the supplied artifacts
-- supported by cited external evidence
-- or made explicit inside the blueprint with enough visible derivation that we can validate and reproduce it ourselves
-
-If the logic cannot be retraced, it should not be presented as settled.
+Do this when it helps correctness.
+Do not force giant reporting rituals for tiny tasks.
 
 ---
 
-## 3. Default top-of-prompt shell
+## 6. Conflict cleanup rules
 
-Use this shell for most serious Hydra prompts.
+Before shipping a prompt, clean up template conflicts.
+
+If inherited template text does not match the task, do one of these:
+
+- append clarifying task-specific guidance
+- delete the conflicting inherited line(s)
+- delete the whole inherited section only when it is genuinely the wrong shape for the task
+
+Examples:
+
+- a narrow local fix prompt should not inherit broad novelty language
+- a practical repo task does not need giant “explore forever” filler if the task is already concrete
+- a short scoped task does not need a bloated output ritual
+- a hard research task may need extra instructions that the base template does not include
+
+The goal is not to preserve every stock sentence.
+The goal is to produce the strongest prompt for the actual task.
+
+But the default bias is preserve-first, not rewrite-first.
+The examples carry important style and direction pressure, so do not strip them down unless you can explain why.
+
+Recommended bias:
+
+- keep useful structure from the examples
+- drop boilerplate that adds noise
+- add missing constraints when they materially improve correctness
+
+---
+
+## 7. Artifact selection and packing
+
+### 7.1 Prefer dense, useful evidence
+
+Prefer:
+
+- relevant code excerpts
+- relevant docs
+- tests that show current behavior
+- formulas and thresholds when they matter
+- short literal reminders only when they are genuinely useful
+
+Avoid:
+
+- decorative links with no context
+- giant irrelevant file dumps
+- filler artifacts that exist only to make the prompt look serious
+
+### 7.2 Use the right artifact kind
+
+- use `file_range` when the useful surface is local
+- use `file_full` when the whole file matters
+- use `literal` for short task-specific guidance or compact context blocks
+
+### 7.3 Label and explain artifacts
+
+An artifact block is much more useful when the agent can tell:
+
+- what it is
+- where it came from
+- why it matters
+
+Use `label`, `explanation`, and `source_label` for that.
+
+### 7.4 Do not oversqueeze low-signal context
+
+Pack in as much relevant context as needed.
+Stop when extra context stops helping.
+
+More context is good when it makes the task easier to ground.
+More context is bad when it becomes:
+
+- repetition
+- stale doctrine spam
+- irrelevant code
+- conflicting instructions
+- snippet overload that makes the agent guess harder instead of less
+
+---
+
+## 8. Long prompts are fine when justified
+
+Large rendered prompts are normal for serious Hydra work.
+
+The output prompt can be very large when the task needs it, including many thousands of lines and sometimes up to around 10k lines.
+
+That is fine if the extra length is carrying real signal.
+
+Good reasons for a long prompt:
+
+- multiple code paths matter
+- you need code plus tests plus docs together
+- the method depends on formulas or paper excerpts
+- the agent needs enough surrounding context to critique artifacts instead of pattern-matching isolated snippets
+
+Bad reasons for a long prompt:
+
+- repeated doctrine blocks
+- decorative prose
+- boilerplate copied from examples just because it was there
+- redundant artifacts that do not sharpen the task
+
+Good stopping rule:
+
+- keep squeezing in relevant context while it clearly improves grounding
+- stop when adding more context no longer helps enough to justify the noise or confusion risk
+
+Do not chase prompt size for its own sake.
+
+---
+
+## 9. Recommended shell pattern
+
+Most serious prompts can start from a shell like this:
 
 ```xml
 <role>
@@ -176,10 +357,9 @@ Your answer itself must be the blueprint.
 Work toward the strongest exact blueprint for [TASK].
 
 We want a detailed answer that makes clear:
-- [decision point 1]
-- [decision point 2]
-- [decision point 3]
-- [what must stay narrow / deferred / rejected]
+- [what the artifacts directly support]
+- [what is only inference]
+- [what should be kept, narrowed, deferred, or rejected]
 - [how to implement or validate the surviving path with minimal guesswork]
 
 Use the artifacts below to derive your conclusions.
@@ -188,19 +368,14 @@ Use the artifacts below to derive your conclusions.
 <style>
 - no high-level survey
 - no vague answer
-- include reasoning
+- distinguish direct support from inference
 - include formulas when needed
-- include code-like detail when helpful (python or rust)
-- include worked examples when helpful
-- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-- distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- include code-like detail when helpful
+- keep the answer actionable and auditable
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit.
 </artifact_note>
 
 <artifacts>
@@ -208,588 +383,49 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 </artifacts>
 ```
 
-The top shell should stay lean.
-The bulk should be the artifacts.
+Treat this the same way as the reference examples: as a starting point.
+Adapt it to the task.
 
 ---
 
-## 4. What changed from the old doctrine
+## 10. Example config anatomy
 
-Old style:
+The example config shows the intended pattern:
 
-- read-order heavy
-- raw-link heavy
-- meta-heavy
-- lots of output-contract machinery
-- easy to turn into a polished audit memo
+- `defaults` for shared title, shell defaults, and shared artifacts
+- top-level `artifacts` as a reusable registry
+- `variants` for task-specific prompt versions
+- `shell_source_path` for the reference template family
+- `shell_sections` for explicit template edits or non-template overrides
+- `artifact_ids` for reusable artifact selection
+- `output_file` for the rendered prompt path
 
-New style:
+Template-backed edit rule:
 
-- short role / direction / style shell
-- explicit artifact skepticism
-- artifact-heavy body
-- blueprint answer
-- PDF-first paper handling
-- more visible reasoning, less inherited framing
+- if `shell_source_path` is set, inherited shell text stays unless a `shell_sections` entry explicitly declares `mode: "append"` or `mode: "delete"`
+- do not assume same-tag replacement for template-backed variants
+- use append most of the time; use delete only for real conflicts
 
----
+The current example variants show three normal usage patterns:
 
-## 5. What prompts must force
+- narrow-focused
+- broad-fuse-loop
+- balanced-narrow
 
-### 4.1 Blueprint over memo
-
-The answer should feel buildable or directly auditable.
-
-### 4.2 Anti-vagueness
-
-Punish these failure modes:
-
-- one-paragraph summaries
-- broad “best practice” talk
-- implementation claims with no mechanism
-- benchmark claims with no metrics
-- reasoning with no formulas where formulas matter
-
-### 4.3 Evidence buckets
-
-The answer should separate:
-
-- direct artifact support
-- external source support
-- inference
-- proposal
-- blocked / missing surface
-
-When confidence is high, the answer must also show why that confidence level is warranted.
-Do not let a confident tone do the work of evidence.
-
-For every major recommendation, architecture move, threshold, or implementation claim, the answer should make visible:
-
-- what directly supports it
-- what is inferred rather than directly supported
-- why the inference is still justified
-- how a reviewer could validate or falsify it later
-
-If those pieces are missing, the claim should be downgraded to a weaker confidence label.
-
-### 4.4 External paper discipline
-
-When papers matter:
-
-1. find the original paper
-2. inspect the full PDF
-3. use abstracts only for discovery
-4. say when support is direct vs analogy
-
-### 4.5 Math and calculation rigor
-
-If the task touches:
-
-- parameter count
-- compute budget
-- drift thresholds
-- expected value
-- throughput
-- weighting
-- confidence intervals
-- probabilities
-
-then the prompt should explicitly allow Python in bash for validation.
-
-### 4.6 Saturation before finish
-
-The prompt should make it hard for the model to stop after the first plausible answer.
-
-### 4.7 Confidence requires justification and validation
-
-Prompts should force the model to justify confidence, not just conclusions.
-
-If the answer claims that something works, survives, is the best plan, or is implementation-ready, it should also explain:
-
-1. why that claim is warranted by the evidence bucket it belongs to
-2. how that claim could be validated later by a reviewer or implementer
-3. what evidence would have to appear for the claim to be downgraded or killed
-
-This matters most for architecture choices, file-level plans, thresholds, and “smallest decisive unblocker” claims.
-
-The model should actively inspect its own draft and ask:
-
-- can I point to enough evidence for this confidence level?
-- is this directly supported, or am I silently upgrading a proposal into a settled plan?
-- could another reviewer reproduce or falsify this conclusion from the visible reasoning?
-
-If the answer cannot pass that self-check, it should relabel the claim as inference, proposal, or blocked.
+Read `scripts/examples/prompt_config.example.json` when you want the quickest practical reminder of how the generator is meant to be used.
 
 ---
 
-## 6. What prompts must not force
-
-Do not over-constrain output structure so hard that the model becomes a bureaucrat.
-
-The guide should stay concise, but actual prompts should still constrain output style enough to keep the model focused on a few concrete topics. The goal is not zero structure. The goal is enough structure to keep the answer narrow and useful without turning it into a rigid report generator.
-
-Avoid prompts that require:
-
-- twenty named sections in exact order
-- endless claim ledgers for narrow tasks
-- giant “prove you followed the prompt” output rituals
-- template prison instead of actual reasoning
-
-The right balance is:
-
-- strong role
-- clear direction
-- anti-vagueness rules
-- artifact skepticism
-- artifact-heavy body
-- enough output-style constraint to keep the answer focused on the actual lane
-
----
-
-## 7. How much explanation should sit above the artifacts
-
-Very little.
-
-Good:
-
-- role
-- direction
-- style
-- artifact note
-
-Sometimes:
-
-- one small scope note
-- one small novelty rule
-
-Bad:
-
-- giant system-context sermons
-- “important truths” sections that pre-solve the task
-- narrative walkthroughs of what the artifacts already say
-
-The prompt should not explain the evidence too much before the model has looked at it.
-
----
-
-## 8. Novelty rules
-
-The new prompt style is mostly implementation-first and anti-drift.
-That means most prompts should not encourage broad novelty.
-
-### Good places for novelty clauses
-
-- long-run risk audits
-- architecture reserve-shelf prompts
-- breakthrough prompts
-- prompts explicitly asking whether a stronger adjacent-field formulation exists
-
-### Bad places for novelty clauses
-
-- Hand-EV repair prompt
-- narrow provenance decision prompt
-- tiny ponder scorer prompt
-- rollout disable-policy prompt
-
-### Default novelty clause
-
-Use this when you want bounded adjacent-field exploration:
-
-```xml
-- after grounding in the artifacts, actively search adjacent fields for stronger alternative formulations of the same problem; keep them only if they survive validation against the artifacts
-```
-
-### Strong novelty add-on
-
-Use this only when you explicitly want broader cross-field synthesis:
-
-```xml
-- after grounding in the artifacts, explore many adjacent fields for competing formulations of the same problem, keep searching for interesting fragments worth fusing together, and continue the explore -> think hard -> validate loop until the strongest fused formulation either survives or is killed by the artifact constraints
-```
-
-Do not add novelty clauses everywhere.
-
----
-
-## 9. The right stance toward references
-
-We do not want:
-
-- pretty bibliography dressing
-- one-line paper name drops
-- abstract-only support
-- “paper X vibes like this idea” with no mechanism
-
-We do want:
-
-- actual formulas
-- actual method-defining wording
-- actual scope limits
-- actual caveats
-- actual places where the paper’s theory breaks or narrows
-
-Good prompt references should include enough context to understand why the source matters.
-
----
-
-## 10. Reusable wording patterns
-
-### Role block
-
-```xml
-<role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
-</role>
-```
-
-### Artifact skepticism block
-
-```xml
-<artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
-</artifact_note>
-```
-
-### Paper handling line
-
-```xml
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-```
-
-### Math rigor line
-
-```xml
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-```
-
-### Anti-premature-stop line
-
-```xml
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
-```
-
-### Anti-vagueness core
-
-```xml
-- no high-level survey
-- no vague answer
-- include reasoning
-- when you sound confident, show the justification for that confidence level
-- for every important claim, make the validation path visible enough that a reviewer can test it later
-- include formulas when needed
-- include code-like detail when helpful (python or rust)
-- include worked examples when helpful
-- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-- distinguish direct artifact support from your own inference
-- do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
-```
-
-### Confidence-and-validation line
-
-```xml
-- if you claim a path works, survives, or is implementation-ready, show why that confidence is justified and how the claim can be validated or falsified later
-- inspect your own draft before finishing: if a confident claim is not objectively justified by visible evidence, downgrade it to inference, proposal, or blocked
-```
-
----
-
-## 11. Failure modes to ban explicitly
-
-### Failure mode 1 — Memo mode
-
-Symptoms:
-
-- polished prose
-- broad conclusions
-- weak mechanism detail
-- feels smart but cannot be built from
-
-Ban with:
-
-- “do not give a memo”
-- “your answer itself must be the blueprint”
-
-### Failure mode 2 — Truth inheritance
-
-Symptoms:
-
-- model repeats stale docs confidently
-- model treats artifact dump as ground truth
-- model fails to critique semantics
-
-Ban with:
-
-- artifact note
-- direct-support vs inference distinction
-
-### Failure mode 3 — Abstract citation theater
-
-Symptoms:
-
-- references look impressive
-- support is shallow
-- full paper never checked
-
-Ban with:
-
-- PDF-first rule
-- direct vs analogy support requirement
-
-### Failure mode 4 — Parameterized overconfidence
-
-Symptoms:
-
-- exact thresholds appear with no calibration
-- exact constants sound authoritative without evidence
-
-Ban with:
-
-- Python-in-bash validation rule
-- explicit support vs proposal distinction
-
-### Failure mode 5 — Premature convergence
-
-Symptoms:
-
-- first plausible idea wins
-- no second-order search
-- no falsification
-
-Ban with:
-
-- long loop rule
-- saturation / blockage rule
-
-### Failure mode 6 — Survey drift
-
-Symptoms:
-
-- answers list many possibilities
-- no final blueprint
-- no pruning
-
-Ban with:
-
-- blueprint framing
-- narrow direction bullets
-
-### Failure mode 7 — Typed-hole confusion
-
-Symptoms:
-
-- model sees a head/field and assumes it is live, trained, or credible
-
-Ban with:
-
-- force artifact critique
-- make “typed surface vs active target vs semantically valid object” a central distinction
-
-### Failure mode 8 — Logic dump / black-box rigor theater
-
-Symptoms:
-
-- major decisions appear with no reconstructable reasoning path
-- the answer sounds rigorous but the rigor lives only in hidden reasoning
-- thresholds or architecture moves are asserted without enough visible support
-
-Ban with:
-
-- explicit anti-dump-in-logic rule
-- require that important logic be inferable from artifacts or explicit blueprint content
-- require enough visible derivation that a reviewer can reproduce the conclusion
-
-### Failure mode 9 — Confidence without proof of confidence level
-
-Symptoms:
-
-- answer sounds highly certain, but the confidence level is not justified
-- proposal-level architecture is written like settled doctrine
-- validation plan exists, but justification for why the plan itself is the right one is weak
-
-Ban with:
-
-- require justification for confidence, not just the claim
-- require visible validation or falsification path for every major confident statement
-- require the model to self-audit its own draft and downgrade unsupported certainty
-
----
-
-## 12. Reference example prompts
-
-Use these archive examples as the canonical naming and shape references for the new prompt style:
-
-- `reference_prompt_example_001_narrow_focused.md`
-- `reference_prompt_example_002_broad_novel_fuse_loop.md`
-- `reference_prompt_example_003_balanced_narrow_not_overconstrained.md`
-
-These are examples of the current artifact-first doctrine. New example prompts added to the archive should follow this naming family.
-
-Use them like this:
-
-- narrow implementation / validation prompt -> `reference_prompt_example_001_narrow_focused.md`
-- broad novelty / cross-field fusion prompt -> `reference_prompt_example_002_broad_novel_fuse_loop.md`
-- narrow but not over-constrained prompt -> `reference_prompt_example_003_balanced_narrow_not_overconstrained.md`
-
----
-
-## 13. Prompt generator details
-
-### 13.1 What the generator supports
-
-The generator currently supports:
-
-- multiple named variants in one config
-- shared default shell sections and shared default artifacts
-- per-variant shell overrides by tag
-- per-variant artifact references
-- per-variant one-off inline artifacts
-- artifact labels
-- artifact explanations
-- source labels for line-number prefixes
-- configurable fence language
-- optional line numbering
-
-Supported artifact types:
-
-- `file_range` -> include a file excerpt with inclusive `start_line` / `end_line`
-- `file_full` -> include a whole file
-- `literal` -> include literal text from the config itself
-
-This is enough for most Hydra prompt work.
-Keep the tool simple unless real author pain proves otherwise.
-
-### 13.2 Config shape
-
-The config is JSON and follows a simple pattern:
-
-- top-level `defaults` for shared shell sections and shared artifacts
-- top-level `artifacts` registry for reusable artifact definitions
-- `variants` for prompt-specific direction blocks, extra artifacts, and canonical example linkage
-
-The shell is built from tagged sections such as:
-
-- `role`
-- `direction`
-- `style`
-- `artifact_note`
-
-Those tags are rendered as XML-style blocks in the output prompt.
-
-Each variant should also declare:
-
-- `shell_source_path` -> the canonical reference example whose shell order and container placement this variant should follow
-
-That keeps generated output aligned with the maintained example family instead of duplicating shell structure in the config.
-
-Artifact entries can carry:
-
-- `label`
-- `explanation`
-- `source_label`
-- `fence_language`
-- `show_line_numbers`
-
-That means the generated artifact body can say what the artifact is, where it came from, and why it matters, instead of dumping bare snippets.
-
-### 13.3 Authoring rules when using the generator
-
-The same doctrine still applies:
-
-- keep the shell lean
-- let the body carry the evidence
-- treat artifacts as evidence, not truth
-- prefer dense excerpts over decorative links
-- add explanation around artifacts when the context would otherwise be unclear
-- do not bulk up prompts with filler just because the generator makes it easy
-
-Bad generated prompt:
-
-- huge because of `file_full` spam
-- many artifacts with no explanation of why they matter
-- variants that differ only cosmetically
-- copied doctrine blocks but weak task-specific artifacts
-
-Good generated prompt:
-
-- short shell
-- dense artifact packet
-- enough explanation to orient the reader
-- variant-specific direction only where it meaningfully changes the task
-
-### 13.4 What the generator does not do
-
-The generator does not:
-
-- decide the right task framing for you
-- guarantee the prompt is narrow enough
-- guarantee the prompt is long enough for hard tasks
-- guarantee the artifacts are semantically correct
-- replace manual review of the final rendered prompt
-
-Always inspect the generated output before using it.
-
----
-
-## 14. Long-prompt rule
-
-The guide does not need to be huge.
-The prompts should be.
-
-For serious external-agent work, default to prompts that are at least 2000 lines unless the task is genuinely too small to justify that much context.
-
-Those 2000+ lines should come from a real context dump, including:
-
-- real code
-- real docs
-- real tests
-- real formulas
-- real comments
-- real thresholds
-- references and quotes directly pulled from papers/PDFs
-- the method-defining words and formulas we actually use
-- enough surrounding context around every artifact block that the model can critique it instead of just pattern-matching on isolated lines
-
-Do not use links as the main evidence body inside prompts. Use the words, formulas, snippets, and context itself.
-
-Long prompts should be built like this:
-
-- real code
-- real docs
-- real tests
-- real formulas
-- real paper/PDF snippets with context
-- real constraints
-- useful context before each artifact block
-
-The artifact body should not be a pile of one-line texts with no context.
-Each artifact block should have enough title/comment/context around it that the model understands what it is looking at and why it matters.
-
-Do not bulk it up with:
-
-- one-line slogans
-- repeated meta-rules
-- broad filler prose
-- fake code
-
-The guide should stay concise.
-The prompts carry the bulk.
-
----
-
-## 15. Final checklist for prompt writers
+## 11. Final checklist
 
 Before shipping a prompt, check:
 
-- role is blueprint-first
-- direction is narrow and concrete
-- style includes anti-vagueness, PDF-first, Python-in-bash, and anti-premature-stop rules
-- artifact note says artifacts may be wrong
-- the body is mostly artifacts, not explanation
-- references are real support, not decoration
-- novelty appears only where useful
-- important logic is visible and reproducible
-- if the prompt is long, the length comes from artifact density, not filler
+- the chosen template family actually matches the task
+- conflicting inherited instructions were removed or rewritten
+- the shell is lean and clear
+- the body carries the real evidence
+- artifacts are framed as evidence, not truth
+- prompt length comes from useful context, not filler
+- the final rendered prompt was inspected before use
 
-If those conditions hold, the prompt is probably in the new doctrine.
+If those are true, the prompt is probably in good shape.

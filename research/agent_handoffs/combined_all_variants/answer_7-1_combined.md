@@ -4,6 +4,25 @@
     <layout>single_markdown_file_prompt_then_answer</layout>
   </metadata>
 
+  <warning_note status="historical_partially_stale" added="2026-03-15">
+    <![CDATA[
+Warning: this combined archive artifact is historically useful for conservative ExIt / teacher-shape ideas, but parts of its implementation-status framing are stale against current repo reality.
+
+Known stale area:
+- It talks like `exit_target` production paths are still missing in mainline loader/train paths. Current Hydra now has a live self-play ExIt lane and a replay/sample ExIt sidecar-first lane.
+
+Use this file for:
+- conservative teacher semantics
+- visit-based / masked ExIt reasoning
+
+Do not use this file as current truth for:
+- present-tense ExIt carrier/producer status
+
+Validate against the live authority chain before reuse:
+README.md -> research/design/HYDRA_FINAL.md -> research/design/HYDRA_RECONCILIATION.md -> docs/GAME_ENGINE.md
+    ]]>
+  </warning_note>
+
   <prompt_section>
   <prompt_text status="preserved" source_path="PROMPT_7_FRESH_CONTEXT_CROSS_FIELD_BREAKTHROUGH.md">
   <![CDATA[# Hydra fresh-context prompt — cross-field breakthrough to LuckyJ-level separator prototype

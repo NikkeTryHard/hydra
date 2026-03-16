@@ -3,7 +3,7 @@
 > Decision Record: Hydra will use a 100% Rust stack for training, inference,
 > and self-play. No Python dependency at any point in the pipeline.
 >
-> **Status note:** this is primarily a decision-record / rationale doc, not the current implementation SSOT. Current Hydra truth is routed by `README.md` -> `research/design/HYDRA_FINAL.md` -> `research/design/HYDRA_RECONCILIATION.md` -> `docs/GAME_ENGINE.md`.
+> **Status note:** this is primarily a decision-record / rationale doc, not the current implementation authority. Hydra now routes in layers: `README.md` for entry routing, `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` plus its roadmap/rendered views for canonical archive intake, `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` for promoted doctrine summaries, and `docs/GAME_ENGINE.md` plus current code for runtime reality.
 >
 > Keep the Rust-stack rationale here. Treat older `85x34`, monolithic-40-block, and PPO-loop-first language as legacy planning unless the active doctrine explicitly promotes it.
 
