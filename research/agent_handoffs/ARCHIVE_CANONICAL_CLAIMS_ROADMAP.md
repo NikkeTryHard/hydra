@@ -111,7 +111,7 @@ Additional narrowing from `answer_22.md`: now that Hydra has closed the live AFB
 
 | Rank | Lane | Doctrine status | Repo status | Promotion gate | Refs |
 |---|---|---|---|---|---|
-| 6 | Public-posterior belief teacher closure | Immediate next supervision lane after completed `delta_q` closure | Current Stage-A path is semantically weak | Must replace Stage-A projection with a credible public teacher object before any belief/mix activation. | canonical rows 25, 26, 27, 28; `answer_15_combined.md`, `answer_18_combined.md`, `answer_3-1_combined.md` |
+| 6 | Public-posterior belief teacher closure | Immediate next supervision lane after completed `delta_q` closure | Current Stage-A path is semantically weak and duplicates one aggregate object across the component axis | Must replace Stage-A projection with a credible public teacher object before any belief/mix activation. The first honest closure is belief-before-mixture with repaired row-conditional belief loss; `mixture_weight` stays off until canonical component identity exists. | canonical rows 25, 26, 27, 28, 61, 62; `answer_15_combined.md`, `answer_18_combined.md`, `answer_27_combined.md`, `answer_28_combined.md`, `answer_3-1_combined.md` |
 | 7 | H1a Hand-EV semantic repair on the current 42-plane surface | Fits current sequencing; still proposal-level | Strong live seam | Must beat current Hand-EV on exact-one-step oracle slices and stay within encode-cost limits. | canonical rows 36, 37, 38; `answer_14_combined.md`, `answer_17_combined.md` |
 | 8 | Tile-aware spatial/global head routing correction | Strong archive architecture survivor; not current doctrine | Narrow problem is visible in repo now | Route tile-indexed outputs from spatial features first; do not auto-promote the whole history-sidecar package. | canonical row 56; `answer_21.md` |
 | 9 | World-aware CT-SMC Hand-EV (H1b) | Later selective lane only | Runtime seam exists; train/infer parity blocked | H1a must win first, CT-SMC quality gates must pass, and training-time matching search-context observations must exist. | canonical rows 39, 40, 41; `answer_14_combined.md`, `answer_1-1_combined.md` |
@@ -122,6 +122,8 @@ Additional narrowing from `answer_23_combined.md`: the surviving honest `delta_q
 Additional narrowing from `answer_25_combined.md`: the RL-only validation follow-up survives as a correctness requirement on the now-implemented lane. Sparse-head activation accounting must count only rows whose `[46]` `delta_q_mask` has nonzero support, and invalid `(Some, None)` / `(None, Some)` target-mask pairs stay explicit plumbing failures rather than silently degrading into zero-loss behavior. Those pair-safety constraints are now reflected in code and should be treated as completed narrowing, not future doctrine.
 
 Additional narrowing from `answer_26_combined.md`: replay/offline `delta_q` did correctly close through the replay-indexed search-derived sidecar pattern rather than a replay-built loader path, and the separate BC/train activation-hook blocker is now also closed in code through caller-side `HeadActivationController` integration plus warmup-time trunk detachment for `DeltaQ`. Keep that archive split as the historical explanation for the implementation order, not as a current blocker.
+
+Additional narrowing from `answer_27_combined.md` and `answer_28_combined.md`: the sharper surviving belief reading is narrower than the older generic “Stage-A is weak” shorthand. Current Stage-A belief is one duplicated aggregate projection object cloned across the four component blocks rather than a real multimodal teacher, so the first honest closure is belief-before-mixture: repair the teacher object to a public-posterior expected hidden allocation, repair the loss/object pairing to row-conditional belief supervision, and keep `mixture_weight` off until canonical component identity exists.
 
 Additional narrowing from `answer_24_combined.md`: the normal replay/sample loader should stay replay-pure for ExIt. That lane is now closed in code through a replay-indexed, search-derived offline sidecar producer plus supervised join path, and it should now be treated as the pattern for provenance-explicit search-derived labels rather than as unfinished future work.
 
@@ -142,8 +144,8 @@ These survive as preserved options, but they should not steer the current active
 
 | Lane | Current status | Why off | Refs |
 |---|---|---|---|
-| Current Stage-A `belief_fields` activation | Off | Current teacher is a public projection, not a credible public posterior teacher | canonical rows 25, 26; `answer_15_combined.md`, `answer_18_combined.md` |
-| Current `mixture_weight` activation | Off | Inherits the same teacher weakness and lacks canonical component identity | canonical rows 27, 28; `answer_15_combined.md`, `answer_18_combined.md` |
+| Current Stage-A `belief_fields` activation | Off | Current teacher is a public projection, not a credible public posterior teacher; the current component axis is just repeated aggregate structure, and the loss/object pairing still needs row-conditional repair | canonical rows 25, 26, 61, 62; `answer_15_combined.md`, `answer_18_combined.md`, `answer_27_combined.md`, `answer_28_combined.md` |
+| Current `mixture_weight` activation | Off | Inherits the same teacher weakness, and the first honest closure keeps mixture off until canonical component identity exists | canonical rows 27, 28, 62; `answer_15_combined.md`, `answer_18_combined.md`, `answer_27_combined.md`, `answer_28_combined.md` |
 | Current `opponent_hand_type` activation | Off | Typed hole: head exists, but ontology, mapping, and builder do not | canonical rows 30, 31; `answer_15_combined.md`, `answer_18_combined.md`, `answer_13_combined.md` |
 | Treating `oracle_critic` as student-path closure | Off | Detached privileged branch is not evidence that public/student target closure is solved | canonical rows 32, 33; `answer_15_combined.md`, `answer_18_combined.md` |
 | Broad multi-arm learned router | Blocked | Current runtime is too narrow to justify a real multi-arm routing regime | canonical row 46; `answer_10_combined.md` |
@@ -203,11 +205,13 @@ High-signal archive answers behind this roadmap:
 - `answer_24_combined.md` — replay/sample ExIt producer-path narrowing: keep the ordinary loader replay-pure, classify replay-indexed offline ExIt as search-derived, and treat the sidecar-first lane as completed in current code
 - `answer_25_combined.md` — RL-only delta_q validation narrowing: mixed masked batches must use nonzero-mask row counting for sparse-head activation accounting, and invalid target/mask pair states stay keep-off plumbing failures
 - `answer_26_combined.md` — replay/offline delta_q provenance narrowing: close replay/offline labels only through a replay-indexed search-derived sidecar contract; the later BC/train activation-hook blocker is now historical for the completed lane
+- `answer_27_combined.md` — repo-grounded belief-closure narrowing: preserve current carrier surfaces and train-bin safety gates, allow belief before mixture only after stronger teacher plus row-conditional loss repair, and keep mixture off in v1
+- `answer_28_combined.md` — semantic-object belief narrowing: current Stage-A is one duplicated aggregate object, and the honest v1 teacher is the public posterior expected hidden allocation rather than a fake 4-component mixture
 
 Canonical rows used most heavily:
 
 - 22-24: `safety_residual`
-- 25-31: belief / mixture / opponent-hand-type keep-off logic
+- 25-31, 61-62: belief / mixture keep-off logic plus sharper Stage-A duplicated-object diagnosis and belief-before-mixture closure narrowing
 - 40-41: `delta_q` blocker plus masked future closure object
 - 73: RL-only `delta_q` validation narrowing for mask-row target-presence accounting and invalid pair keep-off behavior
 - 81: replay/offline `delta_q` provenance narrowing: sidecar-first/search-derived closure, with BC/train activation-hook closure still separate
