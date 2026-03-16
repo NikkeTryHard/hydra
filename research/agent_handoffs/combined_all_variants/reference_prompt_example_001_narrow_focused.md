@@ -9,15 +9,16 @@
   <![CDATA[# Reference example — narrow focused artifact-first blueprint
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
+Example role placeholder.
+Replace this with the role that fits your actual prompt.
+Keep it short and task-specific.
 </role>
 
-<direction>
-Work toward the strongest exact blueprint for a single narrow implementation or validation lane.
+<task>
+Example task placeholder.
+Replace this with the actual job the agent should do.
 
-We want a detailed answer that makes clear:
+An example task block might ask for:
 - what the current quantities or mechanisms really mean
 - what is semantically broken or misleading
 - what confidence level each major conclusion deserves
@@ -27,7 +28,18 @@ We want a detailed answer that makes clear:
 - how to implement or validate the surviving path with minimal guesswork
 
 Use the artifacts below to derive your conclusions.
-</direction>
+</task>
+
+<rules>
+- treat `role` and `task` as task-specific shell sections you may customize when the prompt needs it
+- distinguish direct artifact support from your own inference
+- use search/browse aggressively when it can strengthen the answer: find the original paper, adjacent papers, official docs, repos, and other primary sources; use abstracts or summaries mainly for discovery, not as the final evidence base
+- use the bash tool to run Python for lightweight research support work when helpful: calculations, math checks, parsers, data inspection, sanity checks, quick experiments, and validation
+- do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
+- if you claim a path works, survives, or is implementation-ready, show why that confidence is justified and how the claim can be validated or falsified later
+- inspect your own draft before finishing: if a confident claim is not objectively justified by visible evidence, downgrade it to inference, proposal, or blocked
+- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated, falsified, or truly blocked, and do not stop just because the first pass produced a plausible answer
+</rules>
 
 <style>
 - no high-level survey
@@ -38,14 +50,7 @@ Use the artifacts below to derive your conclusions.
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
-- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-- distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
-- if you claim a path works, survives, or is implementation-ready, show why that confidence is justified and how the claim can be validated or falsified later
-- inspect your own draft before finishing: if a confident claim is not objectively justified by visible evidence, downgrade it to inference, proposal, or blocked
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- include enough detail that we can validate, reproduce, or falsify it ourselves (pdfs, sources, links, similar projects, concrete checks)
 </style>
 
 <artifact_note>
