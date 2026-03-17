@@ -183,6 +183,7 @@ pub fn target_actions_from_policy_target<B: Backend>(
     policy_target.argmax(1).squeeze_dim::<1>(1)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn bc_train_step<B: AutodiffBackend>(
     model: HydraModel<B>,
     obs: Tensor<B, 3>,
@@ -450,7 +451,9 @@ where
     let mut accum_agreement = 0.0;
 
     for chunk in samples.chunks(microbatch_size) {
-        let Some((obs, batch)) = collate_sample_refs_with_batch::<B>(chunk, augment, device) else {
+        let Some((obs, batch)) = collate_sample_refs_with_batch::<B>(chunk, augment, device)
+            .expect("behavior cloning sample collation should be valid")
+        else {
             continue;
         };
         let targets = batch.to_hydra_targets();

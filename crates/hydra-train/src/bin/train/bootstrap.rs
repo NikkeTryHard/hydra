@@ -207,7 +207,7 @@ pub(super) fn initialize_training_bootstrap(
     if let Some(state) = resume.state.as_ref() {
         validate_resume_runtime_compatibility(state, current_runtime)?;
     }
-    let train_device = train_device(&config.device);
+    let train_device = train_device(&config.device)?;
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     let mut model = model_config.init::<TrainBackend>(&train_device);
     let checkpoint_identity = resume
@@ -398,7 +398,7 @@ pub(super) fn initialize_rl_training_bootstrap(
     if let Some(state) = resume.state.as_ref() {
         validate_rl_resume_runtime_compatibility(state, current_runtime)?;
     }
-    let train_device = train_device(&config.device);
+    let train_device = train_device(&config.device)?;
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     let mut model = model_config.init::<TrainBackend>(&train_device);
     if let Some(checkpoint_base) = resume.checkpoint_base.as_ref() {

@@ -33,7 +33,7 @@ pub(super) fn handle_preflight_mode(
     validate_config(config)?;
     configure_threads(config.num_threads)?;
     if config.rl.is_some() {
-        let train_device = super::config::train_device(&config.device);
+        let train_device = super::config::train_device(&config.device)?;
         let device_name = device_label(&config.device);
         print_preflight_banner("Hydra RL preflight", config, &device_name);
         let preflight = run_rl_preflight(config_path, config, &train_device)?;

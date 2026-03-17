@@ -195,8 +195,12 @@ pub(super) fn run_validation_with_policy_baseline(
             if capped_chunk.is_empty() {
                 break;
             }
-            let Some((obs, batch)) =
-                collate_batch_samples::<ValidBackend>(capped_chunk, false, device)
+            let Some((obs, batch)) = collate_batch_samples::<ValidBackend>(
+                capped_chunk,
+                false,
+                device,
+            )
+            .map_err(|err| format!("validation collation failed: {err}"))?
             else {
                 continue;
             };

@@ -10,24 +10,26 @@ use rayon::ThreadPoolBuilder;
 
 use super::config::{RlTrainConfig, TrainConfig};
 
-pub(crate) fn parse_train_device(value: &str) -> LibTorchDevice {
+pub(crate) fn parse_train_device(value: &str) -> Result<LibTorchDevice, String> {
     let value = value.trim().to_ascii_lowercase();
     if value == "cpu" {
-        return LibTorchDevice::Cpu;
+        return Ok(LibTorchDevice::Cpu);
     }
     if value == "cuda" {
-        return LibTorchDevice::Cuda(0);
+        return Ok(LibTorchDevice::Cuda(0));
     }
     if let Some(index) = value.strip_prefix("cuda:") {
-        let index = index.parse::<usize>().unwrap_or_else(|_| {
-            panic!("unsupported HYDRA_TRAIN_DEVICE={value}; expected cpu, cuda, or cuda:<index>")
-        });
-        return LibTorchDevice::Cuda(index);
+        let index = index.parse::<usize>().map_err(|_| {
+            format!("unsupported HYDRA_TRAIN_DEVICE={value}; expected cpu, cuda, or cuda:<index>")
+        })?;
+        return Ok(LibTorchDevice::Cuda(index));
     }
-    panic!("unsupported HYDRA_TRAIN_DEVICE={value}; expected cpu, cuda, or cuda:<index>");
+    Err(format!(
+        "unsupported HYDRA_TRAIN_DEVICE={value}; expected cpu, cuda, or cuda:<index>"
+    ))
 }
 
-pub(crate) fn train_device(config_device: &str) -> LibTorchDevice {
+pub(crate) fn train_device(config_device: &str) -> Result<LibTorchDevice, String> {
     match env::var("HYDRA_TRAIN_DEVICE") {
         Ok(value) => parse_train_device(&value),
         Err(_) => parse_train_device(config_device),

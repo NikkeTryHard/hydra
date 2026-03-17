@@ -115,7 +115,9 @@ pub(super) fn measure_train_runtime_throughput(
             for chunk in logical_batch.chunks(microbatch_size) {
                 let Some((obs, targets)) = hydra_train::data::sample::collate_samples::<
                     super::TrainBackend,
-                >(chunk, config.augment, train_device) else {
+                >(chunk, config.augment, train_device)
+                .map_err(|err| format!("runtime autotune collation failed: {err}"))?
+                else {
                     continue;
                 };
                 let output = model.forward(obs);
