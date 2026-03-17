@@ -126,6 +126,7 @@ where
     for chunk in logical_batch.chunks(microbatch_size.max(1)) {
         let Some((obs, batch)) =
             collate_batch_samples::<TrainBackend>(chunk, augment, train_device)
+                .map_err(|err| format!("training collation failed: {err}"))?
         else {
             continue;
         };
