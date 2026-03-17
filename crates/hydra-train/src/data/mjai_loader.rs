@@ -13,8 +13,9 @@ use hydra_core::action::{
     riichienv_to_hydra,
 };
 use hydra_core::bridge::{encode_observation, extract_public_remaining_counts};
-use hydra_core::encoder::ObservationEncoder;
+use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
+use riichienv_core::observation::Observation;
 use riichienv_core::parser::mjai_to_tid;
 use riichienv_core::replay::{
     MjaiEvent, load_mjai_events_from_path, mjai_event_actor, mjai_event_to_action, read_mjai_events,
@@ -347,10 +348,110 @@ pub(crate) fn should_sample_replay_event(event: &MjaiEvent) -> bool {
     )
 }
 
+pub(crate) struct PreparedReplayDecision {
+    pub actor: usize,
+    pub obs: Observation,
+    pub action_id: u8,
+    pub legal_mask: [bool; HYDRA_ACTION_SPACE],
+    pub obs_encoded: [f32; OBS_SIZE],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SidecarProvenance {
+    pub source_net_hash: Option<u64>,
+    pub source_version: Option<u32>,
+}
+
+impl SidecarProvenance {
+    pub const fn new(source_net_hash: Option<u64>, source_version: Option<u32>) -> Self {
+        Self {
+            source_net_hash,
+            source_version,
+        }
+    }
+
+    fn complete(self) -> Option<(u64, u32)> {
+        self.source_net_hash.zip(self.source_version)
+    }
+}
+
+pub(crate) fn prepare_replay_decision(
+    event: &MjaiEvent,
+    state: &mut GameState,
+    safety: &[SafetyInfo; 4],
+    encoder: &mut ObservationEncoder,
+) -> io::Result<Option<PreparedReplayDecision>> {
+    if !should_sample_replay_event(event) {
+        return Ok(None);
+    }
+
+    let env_action =
+        mjai_event_to_action(event).map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
+    let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) else {
+        return Ok(None);
+    };
+
+    let obs = state
+        .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
+        .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
+    let hydra_action = riichienv_to_hydra(&env_action)
+        .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
+    let phase = if matches!(event, MjaiEvent::Dahai { .. }) && state.players[actor].riichi_declared {
+        ActionPhase::RiichiSelect
+    } else {
+        ActionPhase::Normal
+    };
+    let legal = obs.legal_actions_method();
+    let legal_mask = build_legal_mask(&legal, phase);
+    if !legal_mask[hydra_action.id() as usize] {
+        return Ok(None);
+    }
+
+    let obs_encoded = encode_observation(
+        encoder,
+        &obs,
+        &safety[actor],
+        state.drawn_tile.map(tile136_to_type),
+    );
+
+    Ok(Some(PreparedReplayDecision {
+        actor,
+        obs,
+        action_id: hydra_action.id(),
+        legal_mask,
+        obs_encoded,
+    }))
+}
+
+fn lookup_joined_label<T, F>(
+    sidecar: Option<&T>,
+    replay_key: Option<ReplayDecisionKey>,
+    action: u8,
+    legal_mask: &[f32; HYDRA_ACTION_SPACE],
+    provenance: SidecarProvenance,
+    lookup: F,
+) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>
+where
+    F: FnOnce(&T, &ReplayDecisionKey, u8, &[f32; HYDRA_ACTION_SPACE], u64, u32)
+        -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>,
+{
+    let replay_key = replay_key?;
+    let (source_net_hash, source_version) = provenance.complete()?;
+    let sidecar = sidecar?;
+    lookup(
+        sidecar,
+        &replay_key,
+        action,
+        legal_mask,
+        source_net_hash,
+        source_version,
+    )
+}
+
 fn load_game_from_events_internal(
     source_hash: Option<u64>,
-    source_net_hash: Option<u64>,
-    source_version: Option<u32>,
+    exit_provenance: SidecarProvenance,
+    delta_q_provenance: SidecarProvenance,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -365,117 +466,83 @@ fn load_game_from_events_internal(
     let mut samples = Vec::with_capacity(events.len());
 
     for (idx, event) in events.iter().enumerate() {
-        if should_sample_replay_event(event) {
-            let env_action = mjai_event_to_action(event)
-                .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
-            if let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) {
-                let obs = state
-                    .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
-                    .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
-                let hydra_action = riichienv_to_hydra(&env_action)
-                    .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
-                let legal = obs.legal_actions_method();
-                let phase = if matches!(event, MjaiEvent::Dahai { .. })
-                    && state.players[actor].riichi_declared
-                {
-                    ActionPhase::RiichiSelect
-                } else {
-                    ActionPhase::Normal
-                };
-                let legal_mask = bool_mask_to_f32(build_legal_mask(&legal, phase));
-                if legal_mask[hydra_action.id() as usize] > 0.0 {
-                    let obs_encoded = encode_observation(
-                        &mut encoder,
-                        &obs,
-                        &safety[actor],
-                        state.drawn_tile.map(tile136_to_type),
-                    );
-                    let mut tenpai = [0.0; 3];
-                    let mut opp_next = [MISSING_TILE_TARGET; 3];
-                    let mut danger = [0.0; 102];
-                    let mut danger_mask = [0.0; 102];
-                    let mut wait_sets = [[0.0f32; 34]; 3];
-                    for rel in 0..3usize {
-                        let opp = abs_opp(actor, rel);
-                        let (waits, is_tenpai) = exact_waits(&state, opp);
-                        wait_sets[rel] = waits;
-                        tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
-                        opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
-                        let start = rel * 34;
-                        danger[start..start + 34].copy_from_slice(&wait_sets[rel]);
-                        if is_tenpai {
-                            danger_mask[start..start + 34].fill(1.0);
-                        }
-                    }
-                    let (safety_residual, safety_residual_mask) =
-                        build_safety_residual_targets(&legal_mask, &safety[actor], &wait_sets);
-                    let (
-                        belief_fields,
-                        mixture_weights,
-                        belief_fields_present,
-                        mixture_weights_present,
-                    ) = build_stage_a_belief_targets(&state, actor, &obs);
-                    let replay_key = source_hash.map(|source_hash| ReplayDecisionKey {
-                        source_hash,
-                        event_index: idx as u32,
-                        actor: actor as u8,
-                        obs_hash: crate::training::live_exit::obs_hash(&obs_encoded),
-                    });
-                    let joined_exit = replay_key.and_then(|key| {
-                        exit_sidecar.and_then(|sidecar| {
-                            source_net_hash.zip(source_version).and_then(
-                                |(source_net_hash, source_version)| {
-                                    sidecar.lookup_label(
-                                        &key,
-                                        hydra_action.id(),
-                                        &legal_mask,
-                                        source_net_hash,
-                                        source_version,
-                                    )
-                                },
-                            )
-                        })
-                    });
-                    let joined_delta_q = replay_key.and_then(|key| {
-                        delta_q_sidecar.and_then(|sidecar| {
-                            source_net_hash.zip(source_version).and_then(
-                                |(source_net_hash, source_version)| {
-                                    sidecar.lookup_label(
-                                        &key,
-                                        hydra_action.id(),
-                                        &legal_mask,
-                                        source_net_hash,
-                                        source_version,
-                                    )
-                                },
-                            )
-                        })
-                    });
-                    samples.push(MjaiSample {
-                        obs: obs_encoded,
-                        action: hydra_action.id(),
-                        legal_mask,
-                        placement: score_to_placement(final_scores, actor as u8),
-                        score_delta: final_scores[actor] - state.players[actor].score,
-                        grp_label,
-                        oracle_target: Some(oracle_target),
-                        tenpai,
-                        opp_next,
-                        danger,
-                        danger_mask,
-                        safety_residual: Some(safety_residual),
-                        safety_residual_mask: Some(safety_residual_mask),
-                        exit_target: joined_exit.map(|(target, _)| target),
-                        exit_mask: joined_exit.map(|(_, mask)| mask),
-                        delta_q_target: joined_delta_q.map(|(target, _)| target),
-                        delta_q_mask: joined_delta_q.map(|(_, mask)| mask),
-                        belief_fields,
-                        mixture_weights,
-                        belief_fields_present,
-                        mixture_weights_present,
-                    });
+        if let Some(decision) = prepare_replay_decision(event, &mut state, &safety, &mut encoder)? {
+            let actor = decision.actor;
+            let legal_mask = bool_mask_to_f32(decision.legal_mask);
+            let mut tenpai = [0.0; 3];
+            let mut opp_next = [MISSING_TILE_TARGET; 3];
+            let mut danger = [0.0; 102];
+            let mut danger_mask = [0.0; 102];
+            let mut wait_sets = [[0.0f32; 34]; 3];
+            for rel in 0..3usize {
+                let opp = abs_opp(actor, rel);
+                let (waits, is_tenpai) = exact_waits(&state, opp);
+                wait_sets[rel] = waits;
+                tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
+                opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
+                let start = rel * 34;
+                danger[start..start + 34].copy_from_slice(&wait_sets[rel]);
+                if is_tenpai {
+                    danger_mask[start..start + 34].fill(1.0);
                 }
             }
+            let (safety_residual, safety_residual_mask) =
+                build_safety_residual_targets(&legal_mask, &safety[actor], &wait_sets);
+            let (
+                belief_fields,
+                mixture_weights,
+                belief_fields_present,
+                mixture_weights_present,
+            ) = build_stage_a_belief_targets(&state, actor, &decision.obs);
+            let replay_key = source_hash.map(|source_hash| ReplayDecisionKey {
+                source_hash,
+                event_index: idx as u32,
+                actor: actor as u8,
+                obs_hash: crate::training::live_exit::obs_hash(&decision.obs_encoded),
+            });
+            let joined_exit = lookup_joined_label(
+                exit_sidecar,
+                replay_key,
+                decision.action_id,
+                &legal_mask,
+                exit_provenance,
+                |sidecar, key, action, legal_mask, source_net_hash, source_version| {
+                    sidecar.lookup_label(key, action, legal_mask, source_net_hash, source_version)
+                },
+            );
+            let joined_delta_q = lookup_joined_label(
+                delta_q_sidecar,
+                replay_key,
+                decision.action_id,
+                &legal_mask,
+                delta_q_provenance,
+                |sidecar, key, action, legal_mask, source_net_hash, source_version| {
+                    sidecar.lookup_label(key, action, legal_mask, source_net_hash, source_version)
+                },
+            );
+            samples.push(MjaiSample {
+                obs: decision.obs_encoded,
+                action: decision.action_id,
+                legal_mask,
+                placement: score_to_placement(final_scores, actor as u8),
+                score_delta: final_scores[actor] - state.players[actor].score,
+                grp_label,
+                oracle_target: Some(oracle_target),
+                tenpai,
+                opp_next,
+                danger,
+                danger_mask,
+                safety_residual: Some(safety_residual),
+                safety_residual_mask: Some(safety_residual_mask),
+                exit_target: joined_exit.map(|(target, _)| target),
+                exit_mask: joined_exit.map(|(_, mask)| mask),
+                delta_q_target: joined_delta_q.map(|(target, _)| target),
+                delta_q_mask: joined_delta_q.map(|(_, mask)| mask),
+                belief_fields,
+                mixture_weights,
+                belief_fields_present,
+                mixture_weights_present,
+            });
         }
 
         update_safety(&mut safety, event)?;
@@ -489,13 +556,20 @@ fn load_game_from_events_internal(
 }
 
 fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
-    load_game_from_events_internal(None, None, None, events, None, None)
+    load_game_from_events_internal(
+        None,
+        SidecarProvenance::default(),
+        SidecarProvenance::default(),
+        events,
+        None,
+        None,
+    )
 }
 
 pub fn load_game_from_events_with_sidecar(
     source_identity: &str,
-    source_net_hash: u64,
-    source_version: u32,
+    exit_provenance: SidecarProvenance,
+    delta_q_provenance: SidecarProvenance,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -503,8 +577,8 @@ pub fn load_game_from_events_with_sidecar(
     let source_hash = source_hash_from_identity(source_identity);
     load_game_from_events_internal(
         Some(source_hash),
-        Some(source_net_hash),
-        Some(source_version),
+        exit_provenance,
+        delta_q_provenance,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -519,8 +593,8 @@ pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
 
 pub fn load_game_from_reader_with_sidecar<R: BufRead>(
     source_identity: &str,
-    source_net_hash: u64,
-    source_version: u32,
+    exit_provenance: SidecarProvenance,
+    delta_q_provenance: SidecarProvenance,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -529,8 +603,8 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
         .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
     load_game_from_events_with_sidecar(
         source_identity,
-        source_net_hash,
-        source_version,
+        exit_provenance,
+        delta_q_provenance,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -555,8 +629,8 @@ pub fn load_game_from_stream<R: Read>(reader: R) -> io::Result<MjaiGame> {
 
 pub fn load_game_from_stream_with_sidecar<R: Read>(
     source_identity: &str,
-    source_net_hash: u64,
-    source_version: u32,
+    exit_provenance: SidecarProvenance,
+    delta_q_provenance: SidecarProvenance,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -572,8 +646,8 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
     if is_gzip {
         return load_game_from_reader_with_sidecar(
             source_identity,
-            source_net_hash,
-            source_version,
+            exit_provenance,
+            delta_q_provenance,
             BufReader::new(GzDecoder::new(reader)),
             exit_sidecar,
             delta_q_sidecar,
@@ -582,8 +656,8 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
 
     load_game_from_reader_with_sidecar(
         source_identity,
-        source_net_hash,
-        source_version,
+        exit_provenance,
+        delta_q_provenance,
         reader,
         exit_sidecar,
         delta_q_sidecar,
@@ -598,8 +672,8 @@ pub fn load_game_from_path(path: impl AsRef<Path>) -> io::Result<MjaiGame> {
 
 pub fn load_game_from_path_with_sidecar(
     path: impl AsRef<Path>,
-    source_net_hash: u64,
-    source_version: u32,
+    exit_provenance: SidecarProvenance,
+    delta_q_provenance: SidecarProvenance,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
@@ -612,8 +686,8 @@ pub fn load_game_from_path_with_sidecar(
         .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))?;
     load_game_from_events_with_sidecar(
         identity,
-        source_net_hash,
-        source_version,
+        exit_provenance,
+        delta_q_provenance,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -670,13 +744,20 @@ impl MjaiDataset {
 mod tests {
     use super::*;
     use crate::teacher::belief::StageABeliefAuditSummary;
+    use crate::training::exit::ExitConfig;
+    use crate::training::replay_delta_q::{DeltaQSidecarIndex, ReplayDeltaQRecordV1, replay_delta_q_records_for_identity};
+    use crate::training::replay_exit::{ExitSidecarIndex, ReplayDecisionKey, ReplayExitRecordV1, legal_mask_digest_from_f32, replay_exit_records_for_identity};
+    use burn::backend::NdArray;
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use riichienv_core::action::Phase;
+    use riichienv_core::replay::read_mjai_events;
     use std::collections::HashMap;
     use std::fs::File;
     use std::io::{Cursor, Write};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    type B = NdArray<f32>;
 
     fn dummy_game() -> MjaiGame {
         MjaiGame {
@@ -823,13 +904,310 @@ mod tests {
         let (log, _) = play_game_with_mjai_log(29);
         let game = load_game_from_reader_with_sidecar(
             "game-29",
-            123,
-            1,
+            SidecarProvenance::new(Some(123), Some(1)),
+            SidecarProvenance::default(),
             Cursor::new(log.join("\n")),
             None,
             None,
         )
         .expect("load game");
+        assert!(game.samples.iter().all(|sample| sample.delta_q_target.is_none()));
+        assert!(game.samples.iter().all(|sample| sample.delta_q_mask.is_none()));
+    }
+
+    fn replay_sidecar_guardrail_log() -> String {
+        [
+            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
+    }
+
+    fn replay_guardrail_decisions() -> Vec<(ReplayDecisionKey, u8, [f32; HYDRA_ACTION_SPACE])> {
+        let events = read_mjai_events(Cursor::new(replay_sidecar_guardrail_log())).expect("parse events");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+        let mut decisions = Vec::new();
+
+        for (idx, event) in events.iter().enumerate() {
+            if let Some(decision) = prepare_replay_decision(event, &mut state, &safety, &mut encoder)
+                .expect("prepare replay decision")
+            {
+                decisions.push((
+                    ReplayDecisionKey {
+                        source_hash: source_hash_from_identity("game-1"),
+                        event_index: idx as u32,
+                        actor: decision.actor as u8,
+                        obs_hash: crate::training::live_exit::obs_hash(&decision.obs_encoded),
+                    },
+                    decision.action_id,
+                    bool_mask_to_f32(decision.legal_mask),
+                ));
+            }
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        decisions
+    }
+
+    fn synthetic_exit_records(
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayExitRecordV1> {
+        replay_guardrail_decisions()
+            .into_iter()
+            .take(2)
+            .map(|(key, action, legal_mask)| {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                mask[action as usize] = 1.0;
+                target[action as usize] = 1.0;
+                ReplayExitRecordV1 {
+                    version: 1,
+                    semantics: crate::training::replay_exit::REPLAY_EXIT_SEMANTICS_V1.to_string(),
+                    provenance: crate::training::replay_exit::REPLAY_EXIT_PROVENANCE.to_string(),
+                    key,
+                    action,
+                    legal_mask_digest: legal_mask_digest_from_f32(&legal_mask),
+                    source_net_hash,
+                    source_version,
+                    root_visit_count: 64,
+                    legal_discard_count: legal_mask[..=DISCARD_END as usize]
+                        .iter()
+                        .filter(|&&value| value > 0.0)
+                        .count() as u8,
+                    supported_actions: 1,
+                    coverage: 1.0,
+                    kl_to_base: 0.0,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                }
+            })
+            .collect()
+    }
+
+    fn synthetic_delta_q_records(
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayDeltaQRecordV1> {
+        replay_guardrail_decisions()
+            .into_iter()
+            .take(2)
+            .map(|(key, action, legal_mask)| {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                mask[action as usize] = 1.0;
+                target[action as usize] = 0.25;
+                ReplayDeltaQRecordV1 {
+                    version: 1,
+                    semantics: crate::training::replay_delta_q::REPLAY_DELTA_Q_SEMANTICS_V1
+                        .to_string(),
+                    provenance: crate::training::replay_delta_q::REPLAY_DELTA_Q_PROVENANCE
+                        .to_string(),
+                    key,
+                    action,
+                    legal_mask_digest: legal_mask_digest_from_f32(&legal_mask),
+                    source_net_hash,
+                    source_version,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn loader_replay_key_parity_matches_exit_and_delta_q_sidecars() {
+        let log = replay_sidecar_guardrail_log();
+        let events = read_mjai_events(Cursor::new(log)).expect("parse events");
+        let device = Default::default();
+        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
+
+        let (exit_records, _) = replay_exit_records_for_identity(
+            "game-1",
+            &events,
+            &model,
+            &device,
+            &ExitConfig::default_phase3(),
+            123,
+            1,
+        )
+        .expect("generate exit sidecar");
+        let (delta_q_records, _) = replay_delta_q_records_for_identity(
+            "game-1",
+            &events,
+            &model,
+            &device,
+            &ExitConfig::default_phase3(),
+            123,
+            1,
+        )
+        .expect("generate delta_q sidecar");
+
+        assert!(
+            !exit_records.is_empty() || !delta_q_records.is_empty(),
+            "expected at least one search-derived replay record"
+        );
+
+        let exit_keys: std::collections::BTreeSet<_> = exit_records
+            .iter()
+            .map(|record| {
+                (
+                    record.key.source_hash,
+                    record.key.event_index,
+                    record.key.actor,
+                    record.key.obs_hash,
+                    record.action,
+                )
+            })
+            .collect();
+        let delta_q_keys: std::collections::BTreeSet<_> = delta_q_records
+            .iter()
+            .map(|record| {
+                (
+                    record.key.source_hash,
+                    record.key.event_index,
+                    record.key.actor,
+                    record.key.obs_hash,
+                    record.action,
+                )
+            })
+            .collect();
+
+        let game = load_game_from_events_with_sidecar(
+            "game-1",
+            SidecarProvenance::new(Some(123), Some(1)),
+            SidecarProvenance::new(Some(123), Some(1)),
+            events,
+            Some(&ExitSidecarIndex::from_records(exit_records)),
+            Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
+        )
+        .expect("load with both sidecars");
+
+        let mut loader_state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+        let mut exit_joined = std::collections::BTreeSet::new();
+        let mut delta_q_joined = std::collections::BTreeSet::new();
+        for (idx, event) in read_mjai_events(Cursor::new(replay_sidecar_guardrail_log()))
+        .expect("parse events for parity")
+        .iter()
+        .enumerate()
+        {
+            if let Some(decision) = prepare_replay_decision(event, &mut loader_state, &safety, &mut encoder)
+                .expect("prepare replay decision")
+            {
+                let tuple = (
+                    source_hash_from_identity("game-1"),
+                    idx as u32,
+                    decision.actor as u8,
+                    crate::training::live_exit::obs_hash(&decision.obs_encoded),
+                    decision.action_id,
+                );
+                if exit_keys.contains(&tuple) {
+                    exit_joined.insert(tuple);
+                }
+                if delta_q_keys.contains(&tuple) {
+                    delta_q_joined.insert(tuple);
+                }
+            }
+            update_safety(&mut safety, event).expect("update safety");
+            loader_state.apply_mjai_event(event.clone());
+        }
+
+        assert_eq!(exit_joined, exit_keys, "loader replay keys should match exit sidecar keys");
+        assert_eq!(
+            delta_q_joined, delta_q_keys,
+            "loader replay keys should match delta_q sidecar keys"
+        );
+        assert!(game.samples.iter().any(|sample| sample.exit_target.is_some()));
+        assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
+        assert!(game.samples.iter().any(|sample| sample.delta_q_target.is_some()));
+        assert!(game.samples.iter().any(|sample| sample.delta_q_mask.is_some()));
+    }
+
+    #[test]
+    fn mismatched_obs_hash_prevents_sidecar_hydration() {
+        let log = replay_sidecar_guardrail_log();
+        let events = read_mjai_events(Cursor::new(log)).expect("parse events");
+        let mut exit_records = synthetic_exit_records(123, 1);
+        let mut delta_q_records = synthetic_delta_q_records(123, 1);
+
+        assert!(!exit_records.is_empty(), "expected exit sidecar records");
+        assert!(!delta_q_records.is_empty(), "expected delta_q sidecar records");
+
+        for record in &mut exit_records {
+            record.key.obs_hash = record.key.obs_hash.wrapping_add(1);
+        }
+        for record in &mut delta_q_records {
+            record.key.obs_hash = record.key.obs_hash.wrapping_add(1);
+        }
+
+        let game = load_game_from_events_with_sidecar(
+            "game-1",
+            SidecarProvenance::new(Some(123), Some(1)),
+            SidecarProvenance::new(Some(123), Some(1)),
+            events,
+            Some(&ExitSidecarIndex::from_records(exit_records)),
+            Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
+        )
+        .expect("load with mismatched obs_hash sidecars");
+
+        assert!(game.samples.iter().all(|sample| sample.exit_target.is_none()));
+        assert!(game.samples.iter().all(|sample| sample.exit_mask.is_none()));
+        assert!(game.samples.iter().all(|sample| sample.delta_q_target.is_none()));
+        assert!(game.samples.iter().all(|sample| sample.delta_q_mask.is_none()));
+    }
+
+    #[test]
+    fn mismatched_exit_provenance_does_not_block_delta_q_hydration() {
+        let log = replay_sidecar_guardrail_log();
+        let events = read_mjai_events(Cursor::new(log)).expect("parse events");
+        let exit_records = synthetic_exit_records(123, 1);
+        let delta_q_records = synthetic_delta_q_records(456, 2);
+
+        let game = load_game_from_events_with_sidecar(
+            "game-1",
+            SidecarProvenance::new(Some(999), Some(99)),
+            SidecarProvenance::new(Some(456), Some(2)),
+            events,
+            Some(&ExitSidecarIndex::from_records(exit_records)),
+            Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
+        )
+        .expect("load with mismatched exit provenance");
+
+        assert!(game.samples.iter().all(|sample| sample.exit_target.is_none()));
+        assert!(game.samples.iter().all(|sample| sample.exit_mask.is_none()));
+        assert!(game.samples.iter().any(|sample| sample.delta_q_target.is_some()));
+        assert!(game.samples.iter().any(|sample| sample.delta_q_mask.is_some()));
+    }
+
+    #[test]
+    fn mismatched_delta_q_provenance_does_not_block_exit_hydration() {
+        let log = replay_sidecar_guardrail_log();
+        let events = read_mjai_events(Cursor::new(log)).expect("parse events");
+        let exit_records = synthetic_exit_records(123, 1);
+        let delta_q_records = synthetic_delta_q_records(456, 2);
+
+        let game = load_game_from_events_with_sidecar(
+            "game-1",
+            SidecarProvenance::new(Some(123), Some(1)),
+            SidecarProvenance::new(Some(999), Some(99)),
+            events,
+            Some(&ExitSidecarIndex::from_records(exit_records)),
+            Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
+        )
+        .expect("load with mismatched delta_q provenance");
+
+        assert!(game.samples.iter().any(|sample| sample.exit_target.is_some()));
+        assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
         assert!(game.samples.iter().all(|sample| sample.delta_q_target.is_none()));
         assert!(game.samples.iter().all(|sample| sample.delta_q_mask.is_none()));
     }

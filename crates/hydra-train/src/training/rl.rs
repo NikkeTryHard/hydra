@@ -104,6 +104,7 @@ impl<B: Backend> RlBatch<B> {
             && self.targets.legal_mask.dims()[0] == b
     }
 
+    #[allow(clippy::single_range_in_vec_init)]
     /// Slice all batch tensors along dim 0 to produce `[start..end)`.
     pub fn slice(&self, start: usize, end: usize) -> Self {
         let r1 = [start..end];
@@ -221,6 +222,7 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
 /// statistics match the non-microbatched path exactly. Each microbatch
 /// runs forward+backward independently; gradients are accumulated and
 /// applied in one optimizer step at the end.
+#[allow(clippy::too_many_arguments)]
 pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch: &RlBatch<B>,
@@ -277,6 +279,7 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     while start < total_samples {
         let end = (start + mb_size).min(total_samples);
         let mb_batch = batch.slice(start, end);
+        #[allow(clippy::single_range_in_vec_init)]
         let mb_adv = advantages_normed.clone().slice([start..end]);
 
         let output = m.forward_active(mb_batch.obs.clone(), &active_loss_fn.config);
@@ -327,6 +330,7 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
 
 /// Run a single (micro)batch forward+backward+step. Used for the fast
 /// path when the entire batch fits in VRAM without splitting.
+#[allow(clippy::too_many_arguments)]
 fn rl_microbatch_forward<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch: &RlBatch<B>,

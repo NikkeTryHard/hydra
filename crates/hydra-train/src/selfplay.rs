@@ -1082,11 +1082,9 @@ pub fn generate_self_play_batch_source_cooperative<B: Backend>(
 
             for (game_idx, game) in games.iter_mut().enumerate() {
                 let advance = game.advance_until_inference_needed();
-                if advance.needs_policy {
-                    if let Some(obs) = game.pending_policy_obs() {
-                        batch_game_indices.push(game_idx);
-                        batch_observations.push(obs);
-                    }
+                if advance.needs_policy && let Some(obs) = game.pending_policy_obs() {
+                    batch_game_indices.push(game_idx);
+                    batch_observations.push(obs);
                 }
             }
 

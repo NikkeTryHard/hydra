@@ -36,6 +36,7 @@ impl<B: Backend> HydraTargets<B> {
     ///
     /// Produces a sub-batch covering `[start..end)`. Used by microbatch
     /// accumulation to split a full RL batch into VRAM-friendly chunks.
+    #[allow(clippy::single_range_in_vec_init)]
     pub fn slice_batch(&self, start: usize, end: usize) -> Self {
         let r1 = [start..end];
         let r2 = [start..end];
@@ -889,6 +890,7 @@ pub mod tests {
                 .with_w_mixture_weight(1.0),
         );
 
+        #[allow(clippy::single_range_in_vec_init)]
         let first_outputs = HydraOutput {
             policy_logits: outputs.policy_logits.clone().slice([0..1]),
             value: outputs.value.clone().slice([0..1]),

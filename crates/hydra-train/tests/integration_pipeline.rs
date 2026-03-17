@@ -25,7 +25,7 @@ fn no_nan_2d<B: Backend>(t: &Tensor<B, 2>, name: &str) {
 }
 
 #[test]
-fn full_pipeline_integration() {
+fn model_loss_and_distill_pipeline_smoke() {
     let device = Default::default();
 
     let actor_model = HydraModelConfig::actor().init::<InferBackend>(&device);
@@ -53,6 +53,28 @@ fn full_pipeline_integration() {
     let mut optim = AdamConfig::new().init();
     let _learner_model = optim.step(1e-4, learner_model, grads);
 
+    use hydra_train::training::distill;
+    let learner = HydraModelConfig::learner().init::<InferBackend>(&device);
+    let x_distill = Tensor::<InferBackend, 3>::zeros([2, NUM_CHANNELS, 34], &device);
+    let l_out = learner.forward(x_distill.clone());
+    let a_out = actor_model.forward(x_distill);
+    let mask = Tensor::<InferBackend, 2>::ones([2, 46], &device);
+    let d_loss = distill::distill_loss(
+        l_out.policy_logits,
+        a_out.policy_logits,
+        l_out.value,
+        a_out.value,
+        mask,
+        1.0,
+        0.5,
+    );
+    let d_val: f32 = d_loss.into_scalar().elem();
+    assert!(d_val.is_finite(), "distill loss not finite: {d_val}");
+}
+
+#[test]
+fn gae_and_drda_pipeline_smoke() {
+    let device = Default::default();
     let rewards = vec![0.5, -0.2, 1.0, 0.0, -0.5];
     let values = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.0];
     let dones = vec![false, false, false, false, true];
@@ -67,6 +89,11 @@ fn full_pipeline_integration() {
     let data = combined.to_data();
     let vals = data.as_slice::<f32>().expect("f32");
     assert!((vals[0] - 1.125).abs() < 1e-4);
+}
+
+#[test]
+fn ctsmc_search_and_inference_pipeline_smoke() {
+    let device = Default::default();
 
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
@@ -91,28 +118,62 @@ fn full_pipeline_integration() {
         }
     }
 
-    use hydra_train::training::distill;
-    let learner = HydraModelConfig::learner().init::<InferBackend>(&device);
-    let actor_for_distill = HydraModelConfig::actor().init::<InferBackend>(&device);
-    let x_distill = Tensor::<InferBackend, 3>::zeros([2, NUM_CHANNELS, 34], &device);
-    let l_out = learner.forward(x_distill.clone());
-    let a_out = actor_for_distill.forward(x_distill);
-    let mask = Tensor::<InferBackend, 2>::ones([2, 46], &device);
-    let d_loss = distill::distill_loss(
-        l_out.policy_logits,
-        a_out.policy_logits,
-        l_out.value,
-        a_out.value,
-        mask,
-        1.0,
-        0.5,
+    use hydra_core::afbs::{AfbsTree, TOP_K};
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(0, 1.0, false);
+    let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+    for (i, v) in logits[..10].iter_mut().enumerate() {
+        *v = (10 - i) as f32;
+    }
+    let mut mask = [false; HYDRA_ACTION_SPACE];
+    for v in &mut mask[..10] {
+        *v = true;
+    }
+    tree.expand_node(root, &logits, &mask, false);
+    assert_eq!(tree.nodes[root as usize].children.len(), TOP_K);
+    for _ in 0..8 {
+        if let Some((_, child)) = tree.puct_select(root) {
+            tree.backpropagate(&[root, child], 0.5);
+        }
+    }
+    assert!(
+        tree.nodes[root as usize].visit_count >= 8,
+        "AFBS visit_count < 8"
     );
-    let d_val: f32 = d_loss.into_scalar().elem();
-    assert!(d_val.is_finite(), "distill loss not finite: {d_val}");
+    let search_exit = tree.root_exit_policy(root, 1.0);
+    let search_sum: f32 = search_exit.iter().sum();
+    assert!(
+        (search_sum - 1.0).abs() < 0.01,
+        "search exit policy sum: {search_sum}"
+    );
 
+    let exit_q = vec![1.0, 3.0, 2.0, 0.5];
+    let exit_pi = exit::exit_policy_from_q(&exit_q, 1.0, None);
+    let sum: f32 = exit_pi.iter().sum();
+    assert!((sum - 1.0).abs() < 0.01, "exit policy sum: {sum}");
+
+    let actor = HydraModelConfig::actor().init::<InferBackend>(&device);
+    let x2 = Tensor::<InferBackend, 3>::random(
+        [1, NUM_CHANNELS, 34],
+        burn::tensor::Distribution::Normal(0.0, 0.1),
+        &device,
+    );
+    let out2 = actor.forward(x2);
+    let mut legal = [true; HYDRA_ACTION_SPACE];
+    legal[0] = false;
+    let (action, policy) = inference::infer_action(out2.policy_logits, &legal);
+    assert!(legal[action as usize], "inference picked illegal {action}");
+    let psum: f32 = policy.iter().sum();
+    assert!((psum - 1.0).abs() < 0.01, "inference policy sum: {psum}");
+}
+
+#[test]
+fn arena_and_rl_batch_pipeline_smoke() {
     use hydra_core::arena::{Arena, ArenaConfig, Trajectory, TrajectoryExitLabel, TrajectoryStep};
     use hydra_core::encoder::OBS_SIZE;
     use hydra_train::selfplay::{default_gae_config, trajectories_to_rl_batch};
+
+    let device = Default::default();
     let mut arena = Arena::new(ArenaConfig::default());
     for g in 0..10u32 {
         let mut traj = Trajectory::new(g, g as u64 * 42);
@@ -248,54 +309,6 @@ fn full_pipeline_integration() {
     assert!((delta_q_target_data[2] + 0.3).abs() < 1e-6);
     assert_eq!(delta_q_mask_data[1], 1.0);
     assert_eq!(delta_q_mask_data[2], 1.0);
-
-    use hydra_core::afbs::{AfbsTree, TOP_K};
-    let mut tree = AfbsTree::new();
-    let root = tree.add_node(0, 1.0, false);
-    let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
-    for (i, v) in logits[..10].iter_mut().enumerate() {
-        *v = (10 - i) as f32;
-    }
-    let mut mask = [false; HYDRA_ACTION_SPACE];
-    for v in &mut mask[..10] {
-        *v = true;
-    }
-    tree.expand_node(root, &logits, &mask, false);
-    assert_eq!(tree.nodes[root as usize].children.len(), TOP_K);
-    for _ in 0..8 {
-        if let Some((_, child)) = tree.puct_select(root) {
-            tree.backpropagate(&[root, child], 0.5);
-        }
-    }
-    assert!(
-        tree.nodes[root as usize].visit_count >= 8,
-        "AFBS visit_count < 8"
-    );
-    let search_exit = tree.root_exit_policy(root, 1.0);
-    let search_sum: f32 = search_exit.iter().sum();
-    assert!(
-        (search_sum - 1.0).abs() < 0.01,
-        "search exit policy sum: {search_sum}"
-    );
-
-    let exit_q = vec![1.0, 3.0, 2.0, 0.5];
-    let exit_pi = exit::exit_policy_from_q(&exit_q, 1.0, None);
-    let sum: f32 = exit_pi.iter().sum();
-    assert!((sum - 1.0).abs() < 0.01, "exit policy sum: {sum}");
-
-    let actor2 = HydraModelConfig::actor().init::<InferBackend>(&device);
-    let x2 = Tensor::<InferBackend, 3>::random(
-        [1, NUM_CHANNELS, 34],
-        burn::tensor::Distribution::Normal(0.0, 0.1),
-        &device,
-    );
-    let out2 = actor2.forward(x2);
-    let mut legal = [true; HYDRA_ACTION_SPACE];
-    legal[0] = false;
-    let (action, policy) = inference::infer_action(out2.policy_logits, &legal);
-    assert!(legal[action as usize], "inference picked illegal {action}");
-    let psum: f32 = policy.iter().sum();
-    assert!((psum - 1.0).abs() < 0.01, "inference policy sum: {psum}");
 }
 
 #[test]

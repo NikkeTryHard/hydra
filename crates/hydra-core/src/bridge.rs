@@ -50,6 +50,98 @@ fn tile136_to_type(tile136: u32) -> u8 {
     (tile136 / 4) as u8
 }
 
+#[inline]
+fn aka_flags_from_tiles<I>(tiles: I) -> [bool; 3]
+where
+    I: IntoIterator<Item = u8>,
+{
+    let mut aka_flags = [false; 3];
+    for tile in tiles {
+        match tile {
+            16 => aka_flags[0] = true,
+            52 => aka_flags[1] = true,
+            88 => aka_flags[2] = true,
+            _ => {}
+        }
+    }
+    aka_flags
+}
+
+#[inline]
+fn dora_info_from_parts<I, J>(indicator_tiles: I, observer_tiles: J) -> DoraInfo
+where
+    I: IntoIterator<Item = u8>,
+    J: IntoIterator<Item = u8>,
+{
+    let mut indicators = [0u8; 5];
+    let mut indicator_count = 0u8;
+    for (idx, tile) in indicator_tiles.into_iter().take(5).enumerate() {
+        indicators[idx] = tile;
+        indicator_count += 1;
+    }
+
+    DoraInfo {
+        indicators,
+        indicator_count,
+        aka_flags: aka_flags_from_tiles(observer_tiles),
+    }
+}
+
+#[inline]
+fn metadata_from_parts(
+    observer: usize,
+    riichi_declared: &[bool; 4],
+    scores: &[i32; 4],
+    kyoku_index: u8,
+    honba: u8,
+    kyotaku: u8,
+    hand_counts: &[u8; NUM_TILE_TYPES],
+) -> GameMetadata {
+    let hand_total: u8 = hand_counts.iter().sum();
+    let len_div3 = hand_total / 3;
+    let shanten = calc_shanten_from_counts(hand_counts, len_div3);
+
+    GameMetadata {
+        riichi: std::array::from_fn(|i| riichi_declared[(observer + i) % 4]),
+        scores: std::array::from_fn(|i| scores[(observer + i) % 4]),
+        shanten,
+        kyoku_index,
+        honba,
+        kyotaku,
+    }
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn encode_extracted_observation(
+    encoder: &mut ObservationEncoder,
+    hand: &[u8; NUM_TILE_TYPES],
+    drawn_tile: Option<u8>,
+    open_meld_counts: &[u8; NUM_TILE_TYPES],
+    discards: &[PlayerDiscards; 4],
+    melds: &[PlayerMelds; 4],
+    dora: &DoraInfo,
+    meta: &GameMetadata,
+    safety: &SafetyInfo,
+    search_context: &SearchContext<'_>,
+) -> [f32; OBS_SIZE] {
+    let hand_ev = compute_hand_ev_from_context(hand, discards, melds, dora, search_context);
+    let search_features = build_search_features(safety, search_context);
+    let slice = encoder.encode_with_context(
+        hand,
+        drawn_tile,
+        open_meld_counts,
+        discards,
+        melds,
+        dora,
+        meta,
+        safety,
+        Some(&search_features),
+        Some(&hand_ev),
+    );
+    *slice
+}
+
 /// Extract hand tile counts from an Observation.
 ///
 /// Only the observer's own hand is meaningful (opponents' hands are hidden).
@@ -154,29 +246,11 @@ pub fn extract_observer_meld_counts(obs: &Observation) -> [u8; NUM_TILE_TYPES] {
 /// indices 16 (5m), 52 (5p), 88 (5s).
 #[inline]
 pub fn extract_dora(obs: &Observation) -> DoraInfo {
-    let mut indicators = [0u8; 5];
-    let indicator_count = obs.dora_indicators.len().min(5) as u8;
-    for (i, &t) in obs.dora_indicators.iter().enumerate().take(5) {
-        indicators[i] = tile136_to_type(t);
-    }
-
-    // Single-pass aka dora detection
     let observer = obs.player_id as usize;
-    let mut aka_flags = [false; 3];
-    for &t in &obs.hands[observer] {
-        match t {
-            16 => aka_flags[0] = true,
-            52 => aka_flags[1] = true,
-            88 => aka_flags[2] = true,
-            _ => {}
-        }
-    }
-
-    DoraInfo {
-        indicators,
-        indicator_count,
-        aka_flags,
-    }
+    dora_info_from_parts(
+        obs.dora_indicators.iter().copied().map(tile136_to_type),
+        obs.hands[observer].iter().copied().map(|tile| tile as u8),
+    )
 }
 
 /// Extract game metadata from an Observation.
@@ -187,21 +261,15 @@ pub fn extract_dora(obs: &Observation) -> DoraInfo {
 #[inline]
 pub fn extract_metadata(obs: &Observation, hand_counts: &[u8; NUM_TILE_TYPES]) -> GameMetadata {
     let observer = obs.player_id as usize;
-
-    // Compute shanten: len_div3 is based on the closed hand tile count.
-    // A 13-tile hand has len_div3=4, a 14-tile hand also has len_div3=4.
-    let hand_total: u8 = hand_counts.iter().sum();
-    let len_div3 = hand_total / 3;
-    let shanten = calc_shanten_from_counts(hand_counts, len_div3);
-
-    GameMetadata {
-        riichi: std::array::from_fn(|i| obs.riichi_declared[(observer + i) % 4]),
-        scores: std::array::from_fn(|i| obs.scores[(observer + i) % 4]),
-        shanten,
-        kyoku_index: obs.kyoku_index,
-        honba: obs.honba,
-        kyotaku: obs.riichi_sticks.min(255) as u8,
-    }
+    metadata_from_parts(
+        observer,
+        &obs.riichi_declared,
+        &obs.scores,
+        obs.kyoku_index,
+        obs.honba,
+        obs.riichi_sticks.min(255) as u8,
+        hand_counts,
+    )
 }
 
 /// Compute public-state remaining tile counts for the observer.
@@ -398,10 +466,8 @@ pub fn encode_observation_with_search_context(
     let open_meld_counts = extract_observer_meld_counts(obs);
     let dora = extract_dora(obs);
     let meta = extract_metadata(obs, &hand);
-    let hand_ev = compute_hand_ev_from_context(&hand, &discards, &melds, &dora, search_context);
-    let search_features = build_search_features(safety, search_context);
-
-    let slice = encoder.encode_with_context(
+    encode_extracted_observation(
+        encoder,
         &hand,
         drawn_tile,
         &open_meld_counts,
@@ -410,10 +476,8 @@ pub fn encode_observation_with_search_context(
         &dora,
         &meta,
         safety,
-        Some(&search_features),
-        Some(&hand_ev),
-    );
-    *slice
+        search_context,
+    )
 }
 
 /// Encode a full observation into the fixed-superset tensor.
@@ -532,27 +596,10 @@ pub fn extract_observer_meld_counts_ref(obs: &ObservationRef<'_>) -> [u8; NUM_TI
 /// Extract dora information from an ObservationRef.
 #[inline]
 pub fn extract_dora_ref(obs: &ObservationRef<'_>) -> DoraInfo {
-    let mut indicators = [0u8; 5];
-    let indicator_count = obs.dora_indicators.len().min(5) as u8;
-    for (i, &t) in obs.dora_indicators.iter().enumerate().take(5) {
-        indicators[i] = t / 4;
-    }
-
-    let mut aka_flags = [false; 3];
-    for &t in obs.observer_hand {
-        match t {
-            16 => aka_flags[0] = true,
-            52 => aka_flags[1] = true,
-            88 => aka_flags[2] = true,
-            _ => {}
-        }
-    }
-
-    DoraInfo {
-        indicators,
-        indicator_count,
-        aka_flags,
-    }
+    dora_info_from_parts(
+        obs.dora_indicators.iter().copied().map(|tile| tile / 4),
+        obs.observer_hand.iter().copied(),
+    )
 }
 
 /// Extract game metadata from an ObservationRef.
@@ -561,19 +608,15 @@ pub fn extract_metadata_ref(
     obs: &ObservationRef<'_>,
     hand_counts: &[u8; NUM_TILE_TYPES],
 ) -> GameMetadata {
-    let observer = obs.player_id as usize;
-    let hand_total: u8 = hand_counts.iter().sum();
-    let len_div3 = hand_total / 3;
-    let shanten = calc_shanten_from_counts(hand_counts, len_div3);
-
-    GameMetadata {
-        riichi: std::array::from_fn(|i| obs.riichi_declared[(observer + i) % 4]),
-        scores: std::array::from_fn(|i| obs.scores[(observer + i) % 4]),
-        shanten,
-        kyoku_index: obs.kyoku_index,
-        honba: obs.honba,
-        kyotaku: obs.riichi_sticks.min(255) as u8,
-    }
+    metadata_from_parts(
+        obs.player_id as usize,
+        &obs.riichi_declared,
+        &obs.scores,
+        obs.kyoku_index,
+        obs.honba,
+        obs.riichi_sticks.min(255) as u8,
+        hand_counts,
+    )
 }
 
 /// Compute public-state remaining tile counts from a zero-copy observation.
@@ -595,24 +638,7 @@ pub fn compute_public_hand_ev_ref(
     melds: &[PlayerMelds; 4],
     dora: &DoraInfo,
 ) -> HandEvFeatures {
-    let remaining = extract_public_remaining_counts_ref(hand, discards, melds, dora);
-    compute_hand_ev(hand, &remaining)
-}
-
-#[inline]
-fn compute_hand_ev_from_context_ref(
-    hand: &[u8; NUM_TILE_TYPES],
-    discards: &[PlayerDiscards; 4],
-    melds: &[PlayerMelds; 4],
-    dora: &DoraInfo,
-    search_context: &SearchContext<'_>,
-) -> HandEvFeatures {
-    if let Some(ct_smc) = search_context.ct_smc
-        && !ct_smc.is_empty()
-    {
-        return compute_ct_smc_hand_ev(hand, ct_smc);
-    }
-    compute_public_hand_ev_ref(hand, discards, melds, dora)
+    compute_public_hand_ev(hand, discards, melds, dora)
 }
 
 /// Encode a zero-copy observation into the fixed-superset tensor with optional Group C runtime context.
@@ -630,10 +656,8 @@ pub fn encode_observation_ref_with_search_context(
     let dora = extract_dora_ref(obs);
     let meta = extract_metadata_ref(obs, &hand);
     let drawn_tile = obs.drawn_tile.map(|t| t / 4);
-    let hand_ev = compute_hand_ev_from_context_ref(&hand, &discards, &melds, &dora, search_context);
-    let search_features = build_search_features(safety, search_context);
-
-    let slice = encoder.encode_with_context(
+    encode_extracted_observation(
+        encoder,
         &hand,
         drawn_tile,
         &open_meld_counts,
@@ -642,10 +666,8 @@ pub fn encode_observation_ref_with_search_context(
         &dora,
         &meta,
         safety,
-        Some(&search_features),
-        Some(&hand_ev),
-    );
-    *slice
+        search_context,
+    )
 }
 
 /// Encode directly from a zero-copy observation reference.

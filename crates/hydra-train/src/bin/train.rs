@@ -285,16 +285,11 @@ mod tests {
 
     #[test]
     fn read_config_applies_defaults() {
-        let base = std::env::temp_dir().join(format!(
-            "hydra_train_config_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 3
 "#;
-        fs::write(&base, yaml).expect("write config");
+        let base = write_temp_file("config", "yaml", yaml);
         let cfg = read_config(&base).expect("read config");
         assert_eq!(cfg.data_dir, PathBuf::from("/tmp/data"));
         assert_eq!(cfg.output_dir, PathBuf::from("/tmp/out"));
@@ -393,6 +388,40 @@ num_epochs: 3
             std::process::id(),
             nanos
         ))
+    }
+
+    fn unique_temp_file(label: &str, extension: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hydra_train_{label}_{}_{}.{}",
+            std::process::id(),
+            default_seed(),
+            extension
+        ))
+    }
+
+    fn write_temp_file(label: &str, extension: &str, contents: &str) -> PathBuf {
+        let path = unique_temp_file(label, extension);
+        fs::write(&path, contents).expect("write temp file");
+        path
+    }
+
+    struct TrainDeviceEnvGuard;
+
+    impl TrainDeviceEnvGuard {
+        fn reset() -> Self {
+            unsafe {
+                env::remove_var("HYDRA_TRAIN_DEVICE");
+            }
+            Self
+        }
+    }
+
+    impl Drop for TrainDeviceEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                env::remove_var("HYDRA_TRAIN_DEVICE");
+            }
+        }
     }
 
     #[test]
@@ -606,35 +635,23 @@ unexpected_field: true
 
     #[test]
     fn read_config_supports_yaml_only() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_yaml_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("yaml", "yaml", yaml);
         assert_eq!(read_config(&yaml_path).expect("yaml config").num_epochs, 1);
         std::fs::remove_file(yaml_path).ok();
     }
 
     #[test]
     fn read_config_rejects_json_config() {
-        let dir = std::env::temp_dir();
-        let json_path = dir.join(format!(
-            "hydra_train_json_{}_{}.json",
-            std::process::id(),
-            default_seed()
-        ));
         let json = r#"{
             "data_dir": "/tmp/data",
             "output_dir": "/tmp/out",
             "num_epochs": 1
         }"#;
-        std::fs::write(&json_path, json).expect("write json config");
+        let json_path = write_temp_file("json", "json", json);
         let err = read_config(&json_path).expect_err("json config should be rejected");
         assert!(err.contains("unsupported config extension"));
         assert!(err.contains("use .yaml"));
@@ -643,18 +660,12 @@ num_epochs: 1
 
     #[test]
     fn read_config_rejects_unknown_top_level_fields() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_unknown_field_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
 old_field: true
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("unknown_field", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("unknown field should fail");
         assert!(err.contains("failed to parse yaml config"));
         std::fs::remove_file(yaml_path).ok();
@@ -662,12 +673,6 @@ old_field: true
 
     #[test]
     fn read_config_rejects_legacy_preflight_probe_only_block() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_probe_only_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
@@ -678,7 +683,7 @@ num_epochs: 1
     warmup_steps: 5
     measure_steps: 7
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("probe_only", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("legacy probe-only config should fail");
         assert!(err.contains("probe_only"));
         std::fs::remove_file(yaml_path).ok();
@@ -686,12 +691,6 @@ num_epochs: 1
 
     #[test]
     fn read_config_accepts_bc_hyperparameter_block() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_bc_block_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
@@ -702,7 +701,7 @@ bc:
   grad_clip_norm: 0.5
   warmup_steps: 321
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("bc_block", "yaml", yaml);
         let config = read_config(&yaml_path).expect("bc block should parse");
         assert!((config.bc.learning_rate - 1.0e-4).abs() < 1e-12);
         assert!((config.bc.min_learning_rate - 1.0e-5).abs() < 1e-12);
@@ -714,12 +713,6 @@ bc:
 
     #[test]
     fn read_config_rejects_unknown_bc_fields() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_bc_unknown_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
@@ -727,7 +720,7 @@ bc:
   learning_rate: 1.0e-4
   old_knob: true
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("bc_unknown", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("unknown bc field should fail");
         assert!(err.contains("failed to parse yaml config"));
         std::fs::remove_file(yaml_path).ok();
@@ -735,12 +728,6 @@ bc:
 
     #[test]
     fn read_config_rejects_probe_only_block_entirely() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_probe_only_unknown_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
@@ -750,7 +737,7 @@ preflight:
     candidate_microbatch: 256
     mystery_field: true
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("probe_only_unknown", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("probe_only block should fail");
         assert!(err.contains("failed to parse yaml config"));
         std::fs::remove_file(yaml_path).ok();
@@ -758,19 +745,13 @@ preflight:
 
     #[test]
     fn read_config_rejects_removed_preflight_enabled_field() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_preflight_enabled_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
 preflight:
   enabled: true
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("preflight_enabled", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("removed enabled field should fail");
         assert!(err.contains("enabled"));
         std::fs::remove_file(yaml_path).ok();
@@ -778,19 +759,13 @@ preflight:
 
     #[test]
     fn read_config_rejects_removed_preflight_reuse_cache_field() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_preflight_reuse_cache_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
 preflight:
   reuse_cache: true
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("preflight_reuse_cache", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("removed reuse_cache field should fail");
         assert!(err.contains("reuse_cache"));
         std::fs::remove_file(yaml_path).ok();
@@ -798,19 +773,13 @@ preflight:
 
     #[test]
     fn read_config_rejects_removed_preflight_advisory_only_field() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_preflight_advisory_only_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
 preflight:
   advisory_only: true
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("preflight_advisory_only", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("removed advisory_only field should fail");
         assert!(err.contains("advisory_only"));
         std::fs::remove_file(yaml_path).ok();
@@ -818,19 +787,13 @@ preflight:
 
     #[test]
     fn read_config_rejects_removed_preflight_safety_backoff_rungs_field() {
-        let dir = std::env::temp_dir();
-        let yaml_path = dir.join(format!(
-            "hydra_train_preflight_safety_backoff_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
 preflight:
   safety_backoff_rungs: 1
 "#;
-        std::fs::write(&yaml_path, yaml).expect("write yaml config");
+        let yaml_path = write_temp_file("preflight_safety_backoff", "yaml", yaml);
         let err = read_config(&yaml_path).expect_err("removed safety_backoff_rungs should fail");
         assert!(err.contains("safety_backoff_rungs"));
         std::fs::remove_file(yaml_path).ok();
@@ -1190,18 +1153,13 @@ preflight:
 
     #[test]
     fn read_config_rejects_unknown_advanced_loss_field() {
-        let base = std::env::temp_dir().join(format!(
-            "hydra_train_bad_advanced_loss_{}_{}.yaml",
-            std::process::id(),
-            default_seed()
-        ));
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 3
 advanced_loss:
   not_a_real_field: 0.1
 "#;
-        fs::write(&base, yaml).expect("write config");
+        let base = write_temp_file("bad_advanced_loss", "yaml", yaml);
         let err = read_config(&base).expect_err("unknown advanced loss field should fail");
         assert!(err.contains("not_a_real_field"));
         fs::remove_file(base).ok();
@@ -1335,48 +1293,38 @@ advanced_loss:
 
     #[test]
     fn train_device_prefers_env_override_then_config() {
-        struct EnvGuard;
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    env::remove_var("HYDRA_TRAIN_DEVICE");
-                }
-            }
-        }
-        let _guard = EnvGuard;
-        unsafe {
-            env::remove_var("HYDRA_TRAIN_DEVICE");
-        }
-        assert_eq!(train_device("cpu"), LibTorchDevice::Cpu);
-        assert_eq!(train_device("cuda:2"), LibTorchDevice::Cuda(2));
+        let _guard = TrainDeviceEnvGuard::reset();
+        assert_eq!(train_device("cpu").expect("cpu device"), LibTorchDevice::Cpu);
+        assert_eq!(
+            train_device("cuda:2").expect("cuda device"),
+            LibTorchDevice::Cuda(2)
+        );
 
         unsafe {
             env::set_var("HYDRA_TRAIN_DEVICE", "cuda:0");
         }
-        assert_eq!(train_device("cpu"), LibTorchDevice::Cuda(0));
+        assert_eq!(
+            train_device("cpu").expect("env cuda device"),
+            LibTorchDevice::Cuda(0)
+        );
 
         unsafe {
             env::set_var("HYDRA_TRAIN_DEVICE", "cpu");
         }
-        assert_eq!(train_device("cuda:3"), LibTorchDevice::Cpu);
+        assert_eq!(
+            train_device("cuda:3").expect("env cpu device"),
+            LibTorchDevice::Cpu
+        );
     }
 
     #[test]
-    #[should_panic(expected = "unsupported HYDRA_TRAIN_DEVICE")]
     fn train_device_rejects_invalid_env_value() {
+        let _guard = TrainDeviceEnvGuard::reset();
         unsafe {
             env::set_var("HYDRA_TRAIN_DEVICE", "vulkan");
         }
-        struct EnvGuard;
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    env::remove_var("HYDRA_TRAIN_DEVICE");
-                }
-            }
-        }
-        let _guard = EnvGuard;
-        let _ = train_device("cpu");
+        let err = train_device("cpu").expect_err("invalid env value should fail");
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE"));
     }
 
     #[test]

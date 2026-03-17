@@ -989,8 +989,8 @@ mod tests {
         let mut target = [0.0f32; 46];
         let mut mask = [0.0f32; 46];
         let legal = [1.0f32; 46];
-        for action in 0..3 {
-            mask[action] = 1.0;
+        for entry in mask.iter_mut().take(3) {
+            *entry = 1.0;
         }
         target[0] = 0.40;
         target[1] = 0.10;

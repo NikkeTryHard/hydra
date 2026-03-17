@@ -44,6 +44,7 @@ use super::probe_process::{
 use super::probe_request::{probe_child_request_from_cli, ProbeRequest};
 use super::probe_summary::{
     best_probe_summary, format_probe_selection_summary, probe_kind_name, summarize_probe_results,
+    ProbeCandidateSummary,
 };
 use super::runtime_autotune::autotune_loader_runtime;
 use super::schedule::effective_lr;
@@ -365,6 +366,106 @@ fn should_continue_validation_growth(best: f64, challenger: f64, tolerance_ratio
     challenger >= best * (1.0 - tolerance_ratio.max(0.0))
 }
 
+#[derive(Default)]
+struct ProbeGrowthState {
+    patience: usize,
+    steps: usize,
+    prior_best_score: Option<f64>,
+}
+
+fn maybe_expand_probe_candidates(
+    candidates: &mut Vec<usize>,
+    index: usize,
+    kind: ProbeKind,
+    candidate: usize,
+    summary: &ProbeCandidateSummary,
+    candidate_score: f64,
+    config: &TrainConfig,
+    tolerance: f64,
+    growth_state: &mut ProbeGrowthState,
+) -> bool {
+    let is_top = index + 1 == candidates.len();
+    if is_top && summary.candidate_microbatch == candidate {
+        let ceiling = dynamic_probe_ceiling(config, kind, candidate);
+        let next_candidate = candidate.saturating_mul(2);
+        if next_candidate > candidate && next_candidate <= ceiling {
+            if growth_state.steps >= config.preflight.validation_growth_max_steps.max(1) {
+                return true;
+            }
+            let reference_score = growth_state.prior_best_score.unwrap_or_else(|| {
+                summary
+                    .average_samples_per_second
+                    .unwrap_or(candidate_score)
+            });
+            if should_continue_validation_growth(reference_score, candidate_score, tolerance) {
+                growth_state.patience = 0;
+                growth_state.steps += 1;
+                candidates.push(next_candidate);
+                growth_state.prior_best_score = Some(reference_score.max(candidate_score));
+            } else {
+                growth_state.patience += 1;
+                growth_state.prior_best_score = Some(reference_score.max(candidate_score));
+                if growth_state.patience >= config.preflight.validation_growth_patience.max(1) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    growth_state.prior_best_score = Some(
+        growth_state.prior_best_score.unwrap_or(0.0).max(
+            summary
+                .average_samples_per_second
+                .unwrap_or(candidate_score),
+        ),
+    );
+    false
+}
+
+fn finalize_probe_search<F>(
+    config_path: &Path,
+    result_path_for: F,
+    kind: ProbeKind,
+    config: &TrainConfig,
+    results: &mut Vec<ProbeResult>,
+    progress: &indicatif::ProgressBar,
+    missing_error: String,
+) -> Result<ProbeCandidateSummary, String>
+where
+    F: Fn(ProbeKind, usize, usize) -> std::path::PathBuf + Copy,
+{
+    refine_probe_winner_locally(
+        config_path,
+        result_path_for,
+        kind,
+        config,
+        results,
+        progress,
+    )?;
+    refine_top_k_probe_candidates_locally(
+        config_path,
+        result_path_for,
+        kind,
+        config,
+        results,
+        progress,
+    )?;
+    let mut stable_results = results
+        .iter()
+        .filter(|result| result.status == ProbeStatus::Success)
+        .cloned()
+        .collect::<Vec<_>>();
+    rerun_probe_finalists(
+        config_path,
+        result_path_for,
+        kind,
+        config,
+        &mut stable_results,
+        progress,
+    )?;
+    best_probe_summary(&stable_results).ok_or(missing_error)
+}
+
 fn run_candidate_attempts<F>(
     config_path: &Path,
     result_path_for: &mut F,
@@ -630,75 +731,40 @@ fn search_validation_microbatch(
         let summary = best_probe_summary(&stable_results)
             .ok_or_else(|| "no stable validation microbatch found in preflight".to_string())?;
         let candidate_score = candidate_average(&results, candidate).unwrap_or(0.0);
-        let is_top = index + 1 == candidates.len();
-        if is_top && summary.candidate_microbatch == candidate {
-            let ceiling = dynamic_probe_ceiling(config, ProbeKind::Validation, candidate);
-            let next_candidate = candidate.saturating_mul(2);
-            if next_candidate > candidate && next_candidate <= ceiling {
-                if growth_steps >= config.preflight.validation_growth_max_steps.max(1) {
-                    break;
-                }
-                let reference_score = prior_best_score.unwrap_or_else(|| {
-                    summary
-                        .average_samples_per_second
-                        .unwrap_or(candidate_score)
-                });
-                if should_continue_validation_growth(reference_score, candidate_score, tolerance) {
-                    growth_patience = 0;
-                    growth_steps += 1;
-                    candidates.push(next_candidate);
-                    prior_best_score = Some(reference_score.max(candidate_score));
-                } else {
-                    growth_patience += 1;
-                    prior_best_score = Some(reference_score.max(candidate_score));
-                    if growth_patience >= config.preflight.validation_growth_patience.max(1) {
-                        break;
-                    }
-                }
-            }
+        let mut growth_state = ProbeGrowthState {
+            patience: growth_patience,
+            steps: growth_steps,
+            prior_best_score,
+        };
+        if maybe_expand_probe_candidates(
+            &mut candidates,
+            index,
+            ProbeKind::Validation,
+            candidate,
+            &summary,
+            candidate_score,
+            config,
+            tolerance,
+            &mut growth_state,
+        ) {
+            break;
         }
-        prior_best_score = Some(
-            prior_best_score.unwrap_or(0.0).max(
-                summary
-                    .average_samples_per_second
-                    .unwrap_or(candidate_score),
-            ),
-        );
+        growth_patience = growth_state.patience;
+        growth_steps = growth_state.steps;
+        prior_best_score = growth_state.prior_best_score;
         index += 1;
     }
 
     progress.finish_with_message("preflight validation ladder complete".green().to_string());
-    refine_probe_winner_locally(
+    let selected_summary = finalize_probe_search(
         config_path,
         |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         ProbeKind::Validation,
         config,
         &mut results,
         &progress,
+        "no stable validation microbatch found in preflight".to_string(),
     )?;
-    refine_top_k_probe_candidates_locally(
-        config_path,
-        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
-        ProbeKind::Validation,
-        config,
-        &mut results,
-        &progress,
-    )?;
-    stable_results = results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .cloned()
-        .collect();
-    rerun_probe_finalists(
-        config_path,
-        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
-        ProbeKind::Validation,
-        config,
-        &mut stable_results,
-        &progress,
-    )?;
-    let selected_summary = best_probe_summary(&stable_results)
-        .ok_or_else(|| "no stable validation microbatch found in preflight".to_string())?;
     println!(
         "{}",
         format_preflight_selection_line(format_probe_selection_summary(
@@ -816,40 +882,27 @@ fn search_rl_runtime_candidate(
             )
         })?;
         let candidate_score = candidate_average(&results, candidate).unwrap_or(0.0);
-        let is_top = index + 1 == candidates.len();
-        if is_top && summary.candidate_microbatch == candidate {
-            let ceiling = dynamic_probe_ceiling(config, kind, candidate);
-            let next_candidate = candidate.saturating_mul(2);
-            if next_candidate > candidate && next_candidate <= ceiling {
-                if growth_steps >= config.preflight.validation_growth_max_steps.max(1) {
-                    break;
-                }
-                let reference_score = prior_best_score.unwrap_or_else(|| {
-                    summary
-                        .average_samples_per_second
-                        .unwrap_or(candidate_score)
-                });
-                if should_continue_validation_growth(reference_score, candidate_score, tolerance) {
-                    growth_patience = 0;
-                    growth_steps += 1;
-                    candidates.push(next_candidate);
-                    prior_best_score = Some(reference_score.max(candidate_score));
-                } else {
-                    growth_patience += 1;
-                    prior_best_score = Some(reference_score.max(candidate_score));
-                    if growth_patience >= config.preflight.validation_growth_patience.max(1) {
-                        break;
-                    }
-                }
-            }
+        let mut growth_state = ProbeGrowthState {
+            patience: growth_patience,
+            steps: growth_steps,
+            prior_best_score,
+        };
+        if maybe_expand_probe_candidates(
+            &mut candidates,
+            index,
+            kind,
+            candidate,
+            &summary,
+            candidate_score,
+            config,
+            tolerance,
+            &mut growth_state,
+        ) {
+            break;
         }
-        prior_best_score = Some(
-            prior_best_score.unwrap_or(0.0).max(
-                summary
-                    .average_samples_per_second
-                    .unwrap_or(candidate_score),
-            ),
-        );
+        growth_patience = growth_state.patience;
+        growth_steps = growth_state.steps;
+        prior_best_score = growth_state.prior_best_score;
         index += 1;
     }
 
@@ -858,41 +911,18 @@ fn search_rl_runtime_candidate(
             .green()
             .to_string(),
     );
-    refine_probe_winner_locally(
+    let selected_summary = finalize_probe_search(
         config_path,
         |kind, candidate, attempt| rl_probe_result_path(artifacts, kind, candidate, attempt),
         kind,
         config,
         &mut results,
         &progress,
-    )?;
-    refine_top_k_probe_candidates_locally(
-        config_path,
-        |kind, candidate, attempt| rl_probe_result_path(artifacts, kind, candidate, attempt),
-        kind,
-        config,
-        &mut results,
-        &progress,
-    )?;
-    stable_results = results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .cloned()
-        .collect();
-    rerun_probe_finalists(
-        config_path,
-        |kind, candidate, attempt| rl_probe_result_path(artifacts, kind, candidate, attempt),
-        kind,
-        config,
-        &mut stable_results,
-        &progress,
-    )?;
-    let selected_summary = best_probe_summary(&stable_results).ok_or_else(|| {
         format!(
             "no stable {} candidate found in preflight",
             probe_kind_name(kind)
-        )
-    })?;
+        ),
+    )?;
     println!(
         "{}",
         format_preflight_selection_line(format_probe_selection_summary(kind, &selected_summary,))
@@ -984,6 +1014,7 @@ pub(super) fn probe_train_candidate(
             for chunk in logical_batch.chunks(microbatch_size) {
                 let Some((obs, targets)) =
                     collate_samples::<TrainBackend>(chunk, config.augment, train_device)
+                        .map_err(|err| format!("preflight train collation failed: {err}"))?
                 else {
                     continue;
                 };
@@ -1055,11 +1086,14 @@ pub(super) fn probe_validation_candidate(
         let buffer =
             buffer_result.map_err(|err| format!("preflight validation stream failed: {err}"))?;
         for chunk in buffer.chunks(microbatch_size) {
-            let Some((obs, batch)) = hydra_train::data::sample::collate_batch_samples::<ValidBackend>(
-                chunk,
-                false,
-                train_device,
-            ) else {
+            let Some((obs, batch)) =
+                hydra_train::data::sample::collate_batch_samples::<ValidBackend>(
+                    chunk,
+                    false,
+                    train_device,
+                )
+                .map_err(|err| format!("preflight validation collation failed: {err}"))?
+            else {
                 continue;
             };
             let targets = batch.to_hydra_targets();
@@ -1112,7 +1146,7 @@ fn run_rl_probe_only(
     request: ProbeRequest,
     result_path: &Path,
 ) -> Result<(), String> {
-    let train_device = train_device(&config.device);
+    let train_device = train_device(&config.device)?;
     let rl = config
         .rl
         .as_ref()
@@ -1211,7 +1245,7 @@ pub(super) fn run_probe_only(
         manifest.val_count,
         manifest.counts_exact,
     ))?;
-    let train_device = train_device(&config.device);
+    let train_device = train_device(&config.device)?;
     let started_at = Instant::now();
     let measured_samples_per_second = match request.kind {
         ProbeKind::Train => {
@@ -1559,7 +1593,7 @@ pub(super) fn run_preflight(
     })?;
     phase_pb.inc(1);
     phase_pb.set_message(preflight_phase_label("loader runtime tuning"));
-    let train_device = train_device(&config.device);
+    let train_device = train_device(&config.device)?;
     let loader = autotune_loader_runtime(&tuned_config, &manifest, &train_device)?;
     let runtime = EffectiveRuntimeConfig { selected, loader };
     write_preflight_cache(

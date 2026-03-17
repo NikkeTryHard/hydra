@@ -14,10 +14,12 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::data::mjai_loader::{
-    MjaiDataset, MjaiGame, load_game_from_path, load_game_from_stream,
+    MjaiDataset, MjaiGame, SidecarProvenance, load_game_from_path, load_game_from_stream,
     load_game_from_stream_with_sidecar,
 };
 use crate::data::sample::{MjaiSample, collate_sample_refs};
+
+type CollatedTrainBatch<B> = Vec<(Tensor<B, 3>, HydraTargets<B>)>;
 use crate::training::losses::HydraTargets;
 use crate::training::replay_delta_q::DeltaQSidecarIndex;
 use crate::training::replay_exit::ExitSidecarIndex;
@@ -437,12 +439,14 @@ fn spawn_archive_stream(
                             let result = if exit_sidecar.is_some() || delta_q_sidecar.is_some() {
                                 load_game_from_stream_with_sidecar(
                                     &job.display_name,
-                                    exit_sidecar_source_net_hash
-                                        .or(delta_q_sidecar_source_net_hash)
-                                        .unwrap_or_default(),
-                                    exit_sidecar_source_version
-                                        .or(delta_q_sidecar_source_version)
-                                        .unwrap_or_default(),
+                                    SidecarProvenance::new(
+                                        exit_sidecar_source_net_hash,
+                                        exit_sidecar_source_version,
+                                    ),
+                                    SidecarProvenance::new(
+                                        delta_q_sidecar_source_net_hash,
+                                        delta_q_sidecar_source_version,
+                                    ),
                                     BufReader::new(std::io::Cursor::new(job.data)),
                                     exit_sidecar.as_deref(),
                                     delta_q_sidecar.as_deref(),
@@ -646,14 +650,14 @@ impl StreamEpochIterator {
                     {
                         crate::data::mjai_loader::load_game_from_path_with_sidecar(
                             &path,
-                            self.config
-                                .exit_sidecar_source_net_hash
-                                .or(self.config.delta_q_sidecar_source_net_hash)
-                                .unwrap_or_default(),
-                            self.config
-                                .exit_sidecar_source_version
-                                .or(self.config.delta_q_sidecar_source_version)
-                                .unwrap_or_default(),
+                            SidecarProvenance::new(
+                                self.config.exit_sidecar_source_net_hash,
+                                self.config.exit_sidecar_source_version,
+                            ),
+                            SidecarProvenance::new(
+                                self.config.delta_q_sidecar_source_net_hash,
+                                self.config.delta_q_sidecar_source_version,
+                            ),
                             self.config.exit_sidecar.as_deref(),
                             self.config.delta_q_sidecar.as_deref(),
                         )
@@ -1006,22 +1010,24 @@ pub fn build_batches<B: Backend>(
     batch_size: usize,
     augment: bool,
     device: &B::Device,
-) -> Vec<(Tensor<B, 3>, HydraTargets<B>)> {
+) -> Result<CollatedTrainBatch<B>, String> {
     if samples.is_empty() || batch_size == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    samples
-        .chunks(batch_size)
-        .filter_map(|chunk| collate_sample_refs::<B>(chunk, augment, device))
-        .collect()
+    samples.chunks(batch_size).try_fold(Vec::new(), |mut batches, chunk| {
+        if let Some(batch) = collate_sample_refs::<B>(chunk, augment, device)? {
+            batches.push(batch);
+        }
+        Ok(batches)
+    })
 }
 
 pub fn collate_sample_chunk<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
     device: &B::Device,
-) -> Option<(Tensor<B, 3>, HydraTargets<B>)> {
+) -> crate::data::sample::CollatedHydraBatch<B> {
     collate_sample_refs::<B>(samples, augment, device)
 }
 
@@ -1033,12 +1039,20 @@ mod tests {
     use flate2::write::GzEncoder;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::encoder::OBS_SIZE;
+    use riichienv_core::replay::read_mjai_events;
     use std::fs::File;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tar::Builder;
 
-    use crate::data::mjai_loader::{MjaiDataset, MjaiGame};
+    use crate::data::mjai_loader::{MjaiDataset, MjaiGame, bool_mask_to_f32, prepare_replay_decision, update_safety};
+    use crate::training::replay_delta_q::{DeltaQSidecarIndex, ReplayDeltaQRecordV1};
+    use crate::training::replay_exit::{ExitSidecarIndex, ReplayDecisionKey, ReplayExitRecordV1, legal_mask_digest_from_f32};
+    use crate::training::{live_exit, replay_delta_q, replay_exit};
+    use hydra_core::encoder::ObservationEncoder;
+    use hydra_core::safety::SafetyInfo;
+    use riichienv_core::rule::GameRule;
+    use riichienv_core::state::GameState;
 
     type B = NdArray<f32>;
 
@@ -1090,6 +1104,118 @@ mod tests {
         .join("\n")
     }
 
+    fn replay_sidecar_guardrail_log() -> String {
+        [
+            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
+    }
+
+    fn replay_guardrail_decisions_for_identity(
+        identity: &str,
+    ) -> Vec<(ReplayDecisionKey, u8, [f32; HYDRA_ACTION_SPACE])> {
+        let events = read_mjai_events(std::io::Cursor::new(replay_sidecar_guardrail_log()))
+            .expect("parse events");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = std::array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+        let mut decisions = Vec::new();
+
+        for (idx, event) in events.iter().enumerate() {
+            if let Some(decision) =
+                prepare_replay_decision(event, &mut state, &safety, &mut encoder)
+                    .expect("prepare replay decision")
+            {
+                decisions.push((
+                    ReplayDecisionKey {
+                        source_hash: replay_exit::source_hash_from_identity(identity),
+                        event_index: idx as u32,
+                        actor: decision.actor as u8,
+                        obs_hash: live_exit::obs_hash(&decision.obs_encoded),
+                    },
+                    decision.action_id,
+                    bool_mask_to_f32(decision.legal_mask),
+                ));
+            }
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        decisions
+    }
+
+    fn synthetic_exit_records(
+        identity: &str,
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayExitRecordV1> {
+        replay_guardrail_decisions_for_identity(identity)
+            .into_iter()
+            .take(2)
+            .map(|(key, action, legal_mask)| {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                target[action as usize] = 1.0;
+                mask[action as usize] = 1.0;
+                ReplayExitRecordV1 {
+                    version: 1,
+                    semantics: replay_exit::REPLAY_EXIT_SEMANTICS_V1.to_string(),
+                    provenance: replay_exit::REPLAY_EXIT_PROVENANCE.to_string(),
+                    key,
+                    action,
+                    legal_mask_digest: legal_mask_digest_from_f32(&legal_mask),
+                    source_net_hash,
+                    source_version,
+                    root_visit_count: 64,
+                    legal_discard_count: legal_mask[..=36]
+                        .iter()
+                        .filter(|&&value| value > 0.0)
+                        .count() as u8,
+                    supported_actions: 1,
+                    coverage: 1.0,
+                    kl_to_base: 0.0,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                }
+            })
+            .collect()
+    }
+
+    fn synthetic_delta_q_records(
+        identity: &str,
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayDeltaQRecordV1> {
+        replay_guardrail_decisions_for_identity(identity)
+            .into_iter()
+            .take(2)
+            .map(|(key, action, legal_mask)| {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                target[action as usize] = 0.25;
+                mask[action as usize] = 1.0;
+                ReplayDeltaQRecordV1 {
+                    version: 1,
+                    semantics: replay_delta_q::REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+                    provenance: replay_delta_q::REPLAY_DELTA_Q_PROVENANCE.to_string(),
+                    key,
+                    action,
+                    legal_mask_digest: legal_mask_digest_from_f32(&legal_mask),
+                    source_net_hash,
+                    source_version,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                }
+            })
+            .collect()
+    }
+
     fn write_tar_zst_with_entries(path: &Path, entries: &[(&str, Vec<u8>)]) {
         let file = File::create(path).expect("create archive");
         let encoder = zstd::Encoder::new(file, 19).expect("create zstd encoder");
@@ -1106,6 +1232,36 @@ mod tests {
         builder.finish().expect("finish tar builder");
     }
 
+    fn unique_temp_path(label: &str, suffix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra_pipeline_{label}_{unique}{suffix}"))
+    }
+
+    fn single_archive_manifest(path: PathBuf) -> DataManifest {
+        DataManifest {
+            sources: vec![DataSource::Archive(path)],
+            total_games: 1,
+            train_count: 0,
+            val_count: 1,
+            counts_exact: false,
+        }
+    }
+
+    fn collect_streamed_samples(
+        manifest: &DataManifest,
+        config: &StreamingLoaderConfig,
+    ) -> Vec<MjaiSample> {
+        stream_val_pass(manifest, config, None)
+            .collect::<io::Result<Vec<_>>>()
+            .expect("stream validation pass")
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
     #[test]
     fn test_collect_samples_empty() {
         let dataset = MjaiDataset::new(0.9);
@@ -1116,7 +1272,7 @@ mod tests {
     #[test]
     fn test_build_batches_empty() {
         let device = Default::default();
-        let batches = build_batches::<B>(&[], 4, false, &device);
+        let batches = build_batches::<B>(&[], 4, false, &device).expect("empty batches succeed");
         assert!(batches.is_empty());
     }
 
@@ -1125,7 +1281,8 @@ mod tests {
         let dataset = dataset_with_samples(10);
         let samples = collect_samples(&dataset);
         let device = Default::default();
-        let batches = build_batches::<B>(&samples, 4, false, &device);
+        let batches =
+            build_batches::<B>(&samples, 4, false, &device).expect("batch build succeeds");
         assert_eq!(batches.len(), 3);
         assert_eq!(batches[0].0.dims()[0], 4);
         assert_eq!(batches[1].0.dims()[0], 4);
@@ -1149,8 +1306,9 @@ mod tests {
         let dataset = dataset_with_samples(5);
         let samples = collect_samples(&dataset);
         let device = Default::default();
-        let (obs, targets) =
-            collate_sample_chunk::<B>(&samples[..3], false, &device).expect("chunk should collate");
+        let (obs, targets) = collate_sample_chunk::<B>(&samples[..3], false, &device)
+            .expect("chunk should collate")
+            .expect("chunk should be present");
         assert_eq!(obs.dims()[0], 3);
         assert_eq!(targets.policy_target.dims()[0], 3);
     }
@@ -1176,18 +1334,10 @@ mod tests {
 
     #[test]
     fn test_load_mjai_directory_parallel_keeps_sorted_successes_and_skip_count() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("hydra_pipeline_loader_{unique}"));
+        let dir = unique_temp_path("loader", "");
         fs::create_dir_all(&dir).expect("create temp mjai dir");
 
-        let valid_game = [
-            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
-            r#"{"type":"end_kyoku"}"#,
-        ]
-        .join("\n");
+        let valid_game = valid_game_json();
 
         let good_a = dir.join("a_valid.json");
         let good_b = dir.join("b_valid.json");
@@ -1207,12 +1357,7 @@ mod tests {
 
     #[test]
     fn test_load_mjai_directory_reads_tar_zst_archive() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let archive_path =
-            std::env::temp_dir().join(format!("hydra_pipeline_archive_{unique}.tar.zst"));
+        let archive_path = unique_temp_path("archive", ".tar.zst");
 
         let raw = valid_game_json();
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
@@ -1237,11 +1382,7 @@ mod tests {
 
     #[test]
     fn test_load_mjai_directory_reads_mixed_dir_and_archives() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("hydra_pipeline_mixed_{unique}"));
+        let dir = unique_temp_path("mixed", "");
         fs::create_dir_all(&dir).expect("create temp dir");
 
         let raw = valid_game_json();
@@ -1255,5 +1396,89 @@ mod tests {
         assert_eq!(dataset.num_games(), 2);
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stream_val_pass_keeps_delta_q_hydration_when_exit_provenance_mismatches() {
+        let replay_log = replay_sidecar_guardrail_log();
+        let archive_path = unique_temp_path("sidecar_stream", ".tar.zst");
+        let entry_name = "game-1.mjai.json";
+        let identity = format!(
+            "{}/{}",
+            archive_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("archive name"),
+            entry_name
+        );
+
+        let exit_records = synthetic_exit_records(&identity, 123, 1);
+        let delta_q_records = synthetic_delta_q_records(&identity, 456, 2);
+
+        write_tar_zst_with_entries(&archive_path, &[(entry_name, replay_log.into_bytes())]);
+
+        let manifest = single_archive_manifest(archive_path.clone());
+        let config = StreamingLoaderConfig {
+            train_fraction: 0.0,
+            archive_queue_bound: 1,
+            exit_sidecar: Some(Arc::new(ExitSidecarIndex::from_records(exit_records))),
+            exit_sidecar_source_net_hash: Some(999),
+            exit_sidecar_source_version: Some(99),
+            delta_q_sidecar: Some(Arc::new(DeltaQSidecarIndex::from_records(delta_q_records))),
+            delta_q_sidecar_source_net_hash: Some(456),
+            delta_q_sidecar_source_version: Some(2),
+            ..StreamingLoaderConfig::default()
+        };
+
+        let samples = collect_streamed_samples(&manifest, &config);
+
+        assert!(samples.iter().all(|sample| sample.exit_target.is_none()));
+        assert!(samples.iter().all(|sample| sample.exit_mask.is_none()));
+        assert!(samples.iter().any(|sample| sample.delta_q_target.is_some()));
+        assert!(samples.iter().any(|sample| sample.delta_q_mask.is_some()));
+
+        fs::remove_file(&archive_path).ok();
+    }
+
+    #[test]
+    fn stream_val_pass_keeps_exit_hydration_when_delta_q_provenance_mismatches() {
+        let replay_log = replay_sidecar_guardrail_log();
+        let archive_path = unique_temp_path("sidecar_stream_inverse", ".tar.zst");
+        let entry_name = "game-1.mjai.json";
+        let identity = format!(
+            "{}/{}",
+            archive_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("archive name"),
+            entry_name
+        );
+
+        let exit_records = synthetic_exit_records(&identity, 123, 1);
+        let delta_q_records = synthetic_delta_q_records(&identity, 456, 2);
+
+        write_tar_zst_with_entries(&archive_path, &[(entry_name, replay_log.into_bytes())]);
+
+        let manifest = single_archive_manifest(archive_path.clone());
+        let config = StreamingLoaderConfig {
+            train_fraction: 0.0,
+            archive_queue_bound: 1,
+            exit_sidecar: Some(Arc::new(ExitSidecarIndex::from_records(exit_records))),
+            exit_sidecar_source_net_hash: Some(123),
+            exit_sidecar_source_version: Some(1),
+            delta_q_sidecar: Some(Arc::new(DeltaQSidecarIndex::from_records(delta_q_records))),
+            delta_q_sidecar_source_net_hash: Some(999),
+            delta_q_sidecar_source_version: Some(99),
+            ..StreamingLoaderConfig::default()
+        };
+
+        let samples = collect_streamed_samples(&manifest, &config);
+
+        assert!(samples.iter().any(|sample| sample.exit_target.is_some()));
+        assert!(samples.iter().any(|sample| sample.exit_mask.is_some()));
+        assert!(samples.iter().all(|sample| sample.delta_q_target.is_none()));
+        assert!(samples.iter().all(|sample| sample.delta_q_mask.is_none()));
+
+        fs::remove_file(&archive_path).ok();
     }
 }
