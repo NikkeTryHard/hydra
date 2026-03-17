@@ -55,6 +55,14 @@ pub(crate) struct RlPreflightPaths {
     pub(crate) cache_path: PathBuf,
 }
 
+pub(crate) struct LatestCheckpointState<'a> {
+    pub(crate) global_step: usize,
+    pub(crate) train_loss: f64,
+    pub(crate) best_validation: Option<BestValidation>,
+    pub(crate) continuation: &'a EpochContinuation,
+    pub(crate) runtime: RuntimeResumeContract,
+}
+
 impl PreflightPaths {
     pub(crate) fn new(artifacts: &BcArtifactPaths) -> Self {
         Self {
@@ -183,15 +191,18 @@ pub(crate) fn save_latest_checkpoint_and_state<O>(
     artifacts: &BcArtifactPaths,
     model: &HydraModel<TrainBackend>,
     optimizer: &O,
-    global_step: usize,
-    train_loss: f64,
-    best_validation: Option<BestValidation>,
-    continuation: &EpochContinuation,
-    runtime: RuntimeResumeContract,
+    state: LatestCheckpointState<'_>,
 ) -> Result<(), String>
 where
     O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
 {
+    let LatestCheckpointState {
+        global_step,
+        train_loss,
+        best_validation,
+        continuation,
+        runtime,
+    } = state;
     save_checkpoint(
         model,
         &artifacts.latest_model_base,

@@ -23,6 +23,20 @@ use super::progress::{BatchStats, ScalarAverages, batch_stats_from_breakdown};
 use super::resume::BestValidation;
 use super::{TrainBackend, ValidBackend};
 
+pub(super) struct ValidationContext<'a> {
+    pub(super) config: &'a TrainConfig,
+    pub(super) loader_config: &'a StreamingLoaderConfig,
+    pub(super) manifest: &'a DataManifest,
+    pub(super) device: &'a <ValidBackend as Backend>::Device,
+    pub(super) loss_fn: &'a HydraLoss<ValidBackend>,
+    pub(super) exit_cfg: &'a BcExitConfig,
+}
+
+pub(super) struct ValidationRuntime<'a> {
+    pub(super) head_controller: Option<&'a mut HeadActivationController>,
+    pub(super) progress: Option<&'a ProgressBar>,
+}
+
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub(super) struct DeltaQPromotionSnapshot {
     pub(super) compared_states: u64,
@@ -132,41 +146,35 @@ pub(super) fn is_better_validation(
 
 pub(super) fn run_validation(
     model: &HydraModel<TrainBackend>,
-    config: &TrainConfig,
-    loader_config: &StreamingLoaderConfig,
-    manifest: &DataManifest,
-    device: &<ValidBackend as Backend>::Device,
-    loss_fn: &HydraLoss<ValidBackend>,
-    exit_cfg: &BcExitConfig,
-    head_controller: Option<&mut HeadActivationController>,
-    progress: Option<&ProgressBar>,
+    context: ValidationContext<'_>,
+    runtime: ValidationRuntime<'_>,
 ) -> Result<ValidationSummary, String> {
     run_validation_with_policy_baseline(
         model,
         model,
-        config,
-        loader_config,
-        manifest,
-        device,
-        loss_fn,
-        exit_cfg,
-        head_controller,
-        progress,
+        context,
+        runtime,
     )
 }
 
 pub(super) fn run_validation_with_policy_baseline(
     model: &HydraModel<TrainBackend>,
     baseline_model: &HydraModel<TrainBackend>,
-    config: &TrainConfig,
-    loader_config: &StreamingLoaderConfig,
-    manifest: &DataManifest,
-    device: &<ValidBackend as Backend>::Device,
-    loss_fn: &HydraLoss<ValidBackend>,
-    exit_cfg: &BcExitConfig,
-    head_controller: Option<&mut HeadActivationController>,
-    progress: Option<&ProgressBar>,
+    context: ValidationContext<'_>,
+    runtime: ValidationRuntime<'_>,
 ) -> Result<ValidationSummary, String> {
+    let ValidationContext {
+        config,
+        loader_config,
+        manifest,
+        device,
+        loss_fn,
+        exit_cfg,
+    } = context;
+    let ValidationRuntime {
+        head_controller,
+        progress,
+    } = runtime;
     let model_valid = model.valid();
     let baseline_valid = baseline_model.valid();
     let validation_batch_size = validation_microbatch_size(config);
