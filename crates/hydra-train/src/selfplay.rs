@@ -1,6 +1,8 @@
 use burn::module::AutodiffModule;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
+mod cooperative_state;
+
 use hydra_core::action::{
     build_legal_mask, hydra_to_riichienv, riichienv_to_hydra, ActionPhase, GameContext,
     HydraAction, HYDRA_ACTION_SPACE,
@@ -11,34 +13,36 @@ use hydra_core::arena::{
     TrajectoryStep,
 };
 use hydra_core::bridge::encode_observation;
-use hydra_core::encoder::{ObservationEncoder, NUM_CHANNELS, OBS_SIZE};
+use hydra_core::encoder::{ObservationEncoder, OBS_SIZE};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::observation::Observation;
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 
-use crate::config::{GAE_GAMMA, GAE_LAMBDA};
 use crate::model::HydraModel;
+use crate::selfplay_batch::finalize_rewards;
 use crate::training::exit::{
-    build_delta_q_from_afbs_tree, build_exit_from_afbs_tree, collate_delta_q_targets,
-    collate_exit_targets, compatible_discard_state, is_hard_state,
+    build_delta_q_from_afbs_tree, build_exit_from_afbs_tree, compatible_discard_state,
+    is_hard_state,
 };
-use crate::training::gae::{compute_per_player_gae, normalize_advantages, GaeConfig};
+use crate::training::gae::GaeConfig;
 use crate::training::live_exit::{
     base_pi_from_logits, budget_from_legal_count, legal_discard_actions, make_live_exit_fn,
     seed_root_children_all_legal, ExitSearchAdapter, LiveExitConfig, RootDecisionContext,
     SelfPlayExitAdapter, TrajectorySearchLabels,
 };
-use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;
+use cooperative_state::{
+    ExitChildRequest, ExitSearchState, GameAdvance, PendingExitStep, PendingPolicyRequest,
+    PendingTurnState, PreparedExitSearch,
+};
+
+pub use crate::selfplay_batch::{default_gae_config, trajectories_to_rl_batch};
 
 const DEFAULT_GAME_MODE: u8 = 0;
 const MAX_SELF_PLAY_STEPS: u32 = 50_000;
-const SCORE_BINS: usize = 64;
-const GRP_CLASSES: usize = 24;
 const NUM_OPPONENTS: usize = 3;
-const NUM_TILES: usize = 34;
 
 #[derive(Clone, Copy)]
 struct PendingContext {
@@ -359,137 +363,6 @@ where
     trajectory
 }
 
-pub fn trajectories_to_rl_batch<B: Backend>(
-    trajectories: &[Trajectory],
-    values: &[Vec<f32>],
-    gae_config: &GaeConfig,
-    device: &B::Device,
-) -> RlBatch<B> {
-    let total_steps: usize = trajectories
-        .iter()
-        .map(|trajectory| trajectory.steps.len())
-        .sum();
-
-    let mut obs_flat = Vec::with_capacity(total_steps * OBS_SIZE);
-    let mut actions = Vec::with_capacity(total_steps);
-    let mut pi_old = Vec::with_capacity(total_steps);
-    let mut advantages = Vec::with_capacity(total_steps);
-    let mut legal_mask = Vec::with_capacity(total_steps * HYDRA_ACTION_SPACE);
-    let mut policy_target = vec![0.0f32; total_steps * HYDRA_ACTION_SPACE];
-    let mut value_target = Vec::with_capacity(total_steps);
-    let mut grp_target = vec![0.0f32; total_steps * GRP_CLASSES];
-    let tenpai_target = vec![0.0f32; total_steps * NUM_OPPONENTS];
-    let danger_target = vec![0.0f32; total_steps * NUM_OPPONENTS * NUM_TILES];
-    let danger_mask = vec![1.0f32; total_steps * NUM_OPPONENTS * NUM_TILES];
-    let mut opp_next_target = vec![0.0f32; total_steps * NUM_OPPONENTS * NUM_TILES];
-    let mut score_pdf_target = vec![0.0f32; total_steps * SCORE_BINS];
-    let mut score_cdf_target = vec![0.0f32; total_steps * SCORE_BINS];
-    let base_logits = vec![0.0f32; total_steps * HYDRA_ACTION_SPACE];
-    let mut exit_samples = Vec::with_capacity(total_steps);
-    let mut delta_q_samples = Vec::with_capacity(total_steps);
-
-    let mut global_step = 0usize;
-    for (trajectory_idx, trajectory) in trajectories.iter().enumerate() {
-        let trajectory_values = values.get(trajectory_idx).map_or(&[][..], Vec::as_slice);
-        let trajectory_advantages =
-            compute_trajectory_advantages(trajectory, trajectory_values, gae_config);
-
-        for (step_idx, step) in trajectory.steps.iter().enumerate() {
-            obs_flat.extend_from_slice(&step.obs);
-            actions.push(step.action as i32);
-            pi_old.push(step.pi_old[step.action as usize]);
-            advantages.push(trajectory_advantages[step_idx]);
-
-            for action_idx in 0..HYDRA_ACTION_SPACE {
-                legal_mask.push(if step.legal_mask[action_idx] {
-                    1.0
-                } else {
-                    0.0
-                });
-            }
-            exit_samples.push(step.exit_label.map(TrajectoryExitLabel::to_vec_pair));
-            delta_q_samples.push(step.delta_q_label.map(TrajectoryDeltaQLabel::to_vec_pair));
-
-            policy_target[global_step * HYDRA_ACTION_SPACE + step.action as usize] = 1.0;
-            value_target.push(step.reward);
-
-            let placement_class = trajectory.placement_for(step.player_id) as usize;
-            if placement_class < GRP_CLASSES {
-                grp_target[global_step * GRP_CLASSES + placement_class] = 1.0;
-            }
-
-            for opponent in 0..NUM_OPPONENTS {
-                opp_next_target[global_step * NUM_OPPONENTS * NUM_TILES + opponent * NUM_TILES] =
-                    1.0;
-            }
-
-            let score_bin = score_to_bin(trajectory.final_scores[step.player_id as usize]);
-            score_pdf_target[global_step * SCORE_BINS + score_bin] = 1.0;
-            for bin in score_bin..SCORE_BINS {
-                score_cdf_target[global_step * SCORE_BINS + bin] = 1.0;
-            }
-
-            global_step += 1;
-        }
-    }
-
-    normalize_advantages(&mut advantages);
-    let (exit_target, exit_mask) = collate_exit_targets::<B>(&exit_samples, device);
-    let (delta_q_target, delta_q_mask) = collate_delta_q_targets::<B>(&delta_q_samples, device);
-
-    RlBatch {
-        obs: Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([
-            total_steps,
-            NUM_CHANNELS,
-            NUM_TILES,
-        ]),
-        actions: Tensor::<B, 1, Int>::from_ints(actions.as_slice(), device),
-        pi_old: Tensor::<B, 1>::from_floats(pi_old.as_slice(), device),
-        advantages: Tensor::<B, 1>::from_floats(advantages.as_slice(), device),
-        base_logits: Tensor::<B, 1>::from_floats(base_logits.as_slice(), device)
-            .reshape([total_steps, HYDRA_ACTION_SPACE]),
-        targets: HydraTargets {
-            policy_target: Tensor::<B, 1>::from_floats(policy_target.as_slice(), device)
-                .reshape([total_steps, HYDRA_ACTION_SPACE]),
-            legal_mask: Tensor::<B, 1>::from_floats(legal_mask.as_slice(), device)
-                .reshape([total_steps, HYDRA_ACTION_SPACE]),
-            value_target: Tensor::<B, 1>::from_floats(value_target.as_slice(), device),
-            grp_target: Tensor::<B, 1>::from_floats(grp_target.as_slice(), device)
-                .reshape([total_steps, GRP_CLASSES]),
-            tenpai_target: Tensor::<B, 1>::from_floats(tenpai_target.as_slice(), device)
-                .reshape([total_steps, NUM_OPPONENTS]),
-            danger_target: Tensor::<B, 1>::from_floats(danger_target.as_slice(), device).reshape([
-                total_steps,
-                NUM_OPPONENTS,
-                NUM_TILES,
-            ]),
-            danger_mask: Tensor::<B, 1>::from_floats(danger_mask.as_slice(), device).reshape([
-                total_steps,
-                NUM_OPPONENTS,
-                NUM_TILES,
-            ]),
-            opp_next_target: Tensor::<B, 1>::from_floats(opp_next_target.as_slice(), device)
-                .reshape([total_steps, NUM_OPPONENTS, NUM_TILES]),
-            score_pdf_target: Tensor::<B, 1>::from_floats(score_pdf_target.as_slice(), device)
-                .reshape([total_steps, SCORE_BINS]),
-            score_cdf_target: Tensor::<B, 1>::from_floats(score_cdf_target.as_slice(), device)
-                .reshape([total_steps, SCORE_BINS]),
-            oracle_target: None,
-            belief_fields_target: None,
-            belief_fields_mask: None,
-            mixture_weight_target: None,
-            mixture_weight_mask: None,
-            opponent_hand_type_target: None,
-            delta_q_target,
-            delta_q_mask,
-            safety_residual_target: None,
-            safety_residual_mask: None,
-            oracle_guidance_mask: None,
-        },
-        exit_target,
-        exit_mask,
-    }
-}
 
 /// Raw output from a batch of self-play games before RL batch collation.
 ///
@@ -511,84 +384,6 @@ pub struct SelfPlayBatchSource {
 ///
 /// The returned [`SelfPlayBatchSource`] contains raw trajectories and
 /// per-step value baselines suitable for [`trajectories_to_rl_batch`].
-#[derive(Clone)]
-struct PendingPolicyRequest {
-    pid: u8,
-    obs: Observation,
-    obs_encoded: [f32; OBS_SIZE],
-    drawn_tile_before_action: Option<u8>,
-    turn: u32,
-}
-
-struct ExitChildRequest {
-    child_idx: NodeIdx,
-    obs: [f32; OBS_SIZE],
-}
-
-struct PendingExitStep {
-    step_record: StepRecord,
-    turn: u32,
-    tree: AfbsTree,
-    root: NodeIdx,
-    base_pi: [f32; HYDRA_ACTION_SPACE],
-    legal_f32: [f32; HYDRA_ACTION_SPACE],
-    budget: u32,
-    child_offset: usize,
-    child_count: usize,
-    output_index: usize,
-}
-
-struct ExitSearchState {
-    steps: Vec<PendingExitStep>,
-    child_requests: Vec<ExitChildRequest>,
-}
-
-impl ExitSearchState {
-    fn new() -> Self {
-        Self {
-            steps: Vec::new(),
-            child_requests: Vec::new(),
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.steps.is_empty()
-    }
-}
-
-struct PreparedExitSearch {
-    step: PendingExitStep,
-    child_requests: Vec<(NodeIdx, [f32; OBS_SIZE])>,
-}
-
-struct PendingTurnState {
-    chosen_actions: [Option<Action>; 4],
-    players: Vec<u8>,
-    next_index: usize,
-    turn: u32,
-    pending_steps: Vec<Option<TrajectoryStep>>,
-    pending_values: Vec<f32>,
-}
-
-impl PendingTurnState {
-    fn new(players: Vec<u8>, turn: u32) -> Self {
-        let pending_steps = Vec::with_capacity(players.len());
-        Self {
-            chosen_actions: [None; 4],
-            players,
-            next_index: 0,
-            turn,
-            pending_steps,
-            pending_values: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct GameAdvance {
-    needs_policy: bool,
-}
-
 struct CooperativeGameRunner {
     state: GameState,
     selector: NnActionSelector,
@@ -1277,88 +1072,14 @@ fn hand_from_observation(obs: &Observation, player: u8) -> [u8; 14] {
     hand
 }
 
-fn finalize_rewards(trajectory: &mut Trajectory) {
-    let mut steps_per_player = [0usize; 4];
-    for step in &trajectory.steps {
-        steps_per_player[step.player_id as usize] += 1;
-    }
-
-    for step in &mut trajectory.steps {
-        let player = step.player_id as usize;
-        let count = steps_per_player[player].max(1) as f32;
-        step.reward = trajectory.final_scores[player] as f32 / 100_000.0 / count;
-    }
-}
-
-fn compute_trajectory_advantages(
-    trajectory: &Trajectory,
-    values: &[f32],
-    gae_config: &GaeConfig,
-) -> Vec<f32> {
-    let mut advantages = vec![0.0f32; trajectory.steps.len()];
-
-    for player in 0..4u8 {
-        let player_indices: Vec<usize> = trajectory
-            .steps
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, step)| (step.player_id == player).then_some(idx))
-            .collect();
-        if player_indices.is_empty() {
-            continue;
-        }
-
-        let mut player_rewards = Vec::with_capacity(player_indices.len());
-        let mut player_values = Vec::with_capacity(player_indices.len() + 1);
-        let dones = vec![false; player_indices.len() - 1]
-            .into_iter()
-            .chain(std::iter::once(true))
-            .collect::<Vec<_>>();
-
-        for &idx in &player_indices {
-            let mut reward_row = [0.0f32; 4];
-            reward_row[player as usize] = trajectory.steps[idx].reward;
-            player_rewards.push(reward_row);
-
-            let mut value_row = [0.0f32; 4];
-            value_row[player as usize] = values.get(idx).copied().unwrap_or(0.0);
-            player_values.push(value_row);
-        }
-        player_values.push([0.0; 4]);
-
-        let player_advantages = compute_per_player_gae(
-            &player_rewards,
-            &player_values,
-            &dones,
-            gae_config.gamma,
-            gae_config.lambda,
-        );
-
-        for (local_idx, &global_idx) in player_indices.iter().enumerate() {
-            advantages[global_idx] = player_advantages[local_idx][player as usize];
-        }
-    }
-
-    advantages
-}
-
-fn score_to_bin(score: i32) -> usize {
-    let normalized = ((score as f32 / 1000.0) + 32.0).floor();
-    normalized.clamp(0.0, (SCORE_BINS - 1) as f32) as usize
-}
-
-pub fn default_gae_config() -> GaeConfig {
-    GaeConfig {
-        gamma: GAE_GAMMA,
-        lambda: GAE_LAMBDA,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{GAE_GAMMA, GAE_LAMBDA};
     use crate::model::HydraModelConfig;
+    use crate::selfplay_batch::default_gae_config;
     use burn::backend::NdArray;
+    use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
 
     type B = NdArray<f32>;
 
@@ -1397,6 +1118,44 @@ mod tests {
             });
         }
         trajectory
+    }
+
+    fn make_test_step_record(player_id: u8, action: u8) -> StepRecord {
+        let mut policy_logits = [0.0f32; HYDRA_ACTION_SPACE];
+        policy_logits[0] = 1.0;
+        policy_logits[1] = 0.5;
+        let mut pi_old = [0.0f32; HYDRA_ACTION_SPACE];
+        pi_old[0] = 0.6;
+        pi_old[1] = 0.4;
+        let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+        legal_mask[0] = true;
+        legal_mask[1] = true;
+        StepRecord {
+            obs: [player_id as f32; OBS_SIZE],
+            action,
+            policy_logits,
+            pi_old,
+            legal_mask,
+            player_id,
+        }
+    }
+
+    fn make_test_trajectory_step(player_id: u8, action: u8, turn: u16) -> TrajectoryStep {
+        let record = make_test_step_record(player_id, action);
+        TrajectoryStep {
+            obs: record.obs,
+            action: record.action,
+            pi_old: record.pi_old,
+            legal_mask: record.legal_mask,
+            exit_label: None,
+            delta_q_label: None,
+            reward: 0.0,
+            done: false,
+            player_id,
+            game_id: 99,
+            turn,
+            temperature: 1.0,
+        }
     }
 
     #[test]
@@ -1636,6 +1395,96 @@ mod tests {
         let [steps, action_dim] = batch.targets.policy_target.dims();
         assert!(steps > 0);
         assert_eq!(action_dim, HYDRA_ACTION_SPACE);
+    }
+
+    #[test]
+    fn cooperative_runner_waits_for_pending_exit_search_before_flushing_turn() {
+        let mut runner = CooperativeGameRunner::new(42, 1.0, 123, LiveExitConfig::default());
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(7, 1.0, false);
+        let mut turn_state = PendingTurnState::new(vec![0], 7);
+        turn_state.next_index = turn_state.players.len();
+        turn_state.pending_steps.push(None);
+        turn_state.pending_values.push(0.25);
+        runner.turn_state = Some(turn_state);
+        runner.pending_exit_search = Some(ExitSearchState {
+            steps: vec![PendingExitStep {
+                step_record: make_test_step_record(0, 0),
+                turn: 7,
+                tree,
+                root,
+                base_pi: [0.0; HYDRA_ACTION_SPACE],
+                legal_f32: [0.0; HYDRA_ACTION_SPACE],
+                budget: 0,
+                child_offset: 0,
+                child_count: 1,
+                output_index: 0,
+            }],
+            child_requests: vec![ExitChildRequest {
+                child_idx: root,
+                obs: [0.0; OBS_SIZE],
+            }],
+        });
+
+        let advance = runner.advance_until_inference_needed();
+
+        assert!(!advance.needs_policy);
+        assert_eq!(runner.trajectory.steps.len(), 0);
+        assert_eq!(runner.step_values.len(), 0);
+        assert_eq!(runner.total_steps, 0);
+        assert!(runner.turn_state.is_some());
+        assert!(runner.has_pending_exit_search());
+    }
+
+    #[test]
+    fn cooperative_runner_finalizes_pending_exit_step_into_original_slot() {
+        let mut runner = CooperativeGameRunner::new(42, 1.0, 123, LiveExitConfig::default());
+        let preserved_a_action = 0u8;
+        let preserved_b_action = 1u8;
+        let mut turn_state = PendingTurnState::new(vec![0, 1, 2], 3);
+        turn_state.pending_steps = vec![
+            Some(make_test_trajectory_step(0, preserved_a_action, 3)),
+            None,
+            Some(make_test_trajectory_step(2, preserved_b_action, 3)),
+        ];
+        turn_state.pending_values = vec![0.1, 0.2, 0.3];
+        runner.turn_state = Some(turn_state);
+
+        let mut tree = AfbsTree::new();
+        let root = tree.add_node(11, 1.0, false);
+        let delayed_record = make_test_step_record(1, 1);
+        runner.pending_exit_search = Some(ExitSearchState {
+            steps: vec![PendingExitStep {
+                step_record: delayed_record,
+                turn: 3,
+                tree,
+                root,
+                base_pi: [0.0; HYDRA_ACTION_SPACE],
+                legal_f32: [0.0; HYDRA_ACTION_SPACE],
+                budget: 0,
+                child_offset: 0,
+                child_count: 1,
+                output_index: 1,
+            }],
+            child_requests: vec![ExitChildRequest {
+                child_idx: root,
+                obs: [0.0; OBS_SIZE],
+            }],
+        });
+
+        runner.finalize_pending_exit_search(&[]);
+
+        assert!(runner.pending_exit_search.is_none());
+        let turn_state = runner.turn_state.as_ref().expect("turn state");
+        assert_eq!(turn_state.pending_values, vec![0.1, 0.2, 0.3]);
+        assert_eq!(turn_state.pending_steps[0].as_ref().map(|s| s.action), Some(preserved_a_action));
+        let inserted = turn_state.pending_steps[1].as_ref().expect("delayed step inserted");
+        assert_eq!(inserted.action, delayed_record.action);
+        assert_eq!(inserted.player_id, delayed_record.player_id);
+        assert_eq!(inserted.turn, 3);
+        assert!(inserted.exit_label.is_none());
+        assert!(inserted.delta_q_label.is_none());
+        assert_eq!(turn_state.pending_steps[2].as_ref().map(|s| s.action), Some(preserved_b_action));
     }
 
     #[test]
