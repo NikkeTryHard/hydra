@@ -24,7 +24,9 @@ use super::probe_request::ProbeRequest;
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
-use super::validation::run_validation_with_policy_baseline;
+use super::validation::{
+    run_validation_with_policy_baseline, ValidationContext, ValidationRuntime,
+};
 
 pub(super) fn handle_preflight_mode(
     config_path: &std::path::Path,
@@ -339,14 +341,18 @@ pub(super) fn handle_delta_q_promotion_mode(
     let summary = run_validation_with_policy_baseline(
         &model,
         &baseline_model,
-        &config,
-        &loader_config,
-        &manifest,
-        &train_device,
-        &valid_loss_fn,
-        &bc_exit_cfg,
-        Some(&mut head_controller),
-        None,
+        ValidationContext {
+            config: &config,
+            loader_config: &loader_config,
+            manifest: &manifest,
+            device: &train_device,
+            loss_fn: &valid_loss_fn,
+            exit_cfg: &bc_exit_cfg,
+        },
+        ValidationRuntime {
+            head_controller: Some(&mut head_controller),
+            progress: None,
+        },
     )?;
 
     let (Some(report), Some(result), Some(snapshot), transfer_result) = (

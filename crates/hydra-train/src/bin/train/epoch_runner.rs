@@ -21,7 +21,7 @@ use hydra_train::training::losses::HydraLoss;
 use super::artifacts::{
     append_step_log, append_training_log, log_tensorboard, save_checkpoint,
     save_latest_checkpoint_and_state, write_delta_q_promotion_artifact, BcArtifactPaths,
-    PersistedDeltaQPromotionArtifact,
+    LatestCheckpointState, PersistedDeltaQPromotionArtifact,
 };
 use super::config::{validation_sample_limit, TrainConfig};
 use super::presentation::{
@@ -38,7 +38,9 @@ use super::status::{
     display_step_label, display_validation_scope_label, epoch_progress_message_with_rate,
     estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
 };
-use super::validation::{is_better_validation, run_validation};
+use super::validation::{
+    is_better_validation, run_validation, ValidationContext, ValidationRuntime, ValidationSummary,
+};
 use super::{TrainBackend, ValidBackend};
 
 pub(super) struct EpochRunnerContext<'a> {
@@ -79,6 +81,81 @@ pub(super) struct EpochRunOutcome {
     pub(super) stop_after_epoch: bool,
 }
 
+struct TrainLogicalBatchConfig<'a> {
+    microbatch_size: usize,
+    augment: bool,
+    train_device: &'a LibTorchDevice,
+    loss_fn: &'a HydraLoss<TrainBackend>,
+    bc_exit_cfg: &'a BcExitConfig,
+    lr: f64,
+}
+
+struct ValidationStepContext<'a> {
+    multi: &'a MultiProgress,
+    config: &'a TrainConfig,
+    loader_config: &'a StreamingLoaderConfig,
+    manifest: &'a DataManifest,
+    train_device: &'a LibTorchDevice,
+    valid_loss_fn: &'a HydraLoss<ValidBackend>,
+    bc_exit_cfg: &'a BcExitConfig,
+    artifacts: &'a BcArtifactPaths,
+    session_start_global_step: usize,
+}
+
+struct IntervalStepSummaryContext<'a> {
+    artifacts: &'a BcArtifactPaths,
+    manifest: &'a DataManifest,
+    config: &'a TrainConfig,
+    session_start_global_step: usize,
+    global_step: usize,
+    epoch: usize,
+    lr: f64,
+    best_validation: Option<BestValidation>,
+    val_summary: Option<ValidationSummary>,
+    seen_samples: usize,
+    assumed_games_seen: usize,
+    epoch_optimizer_steps: usize,
+    window_stats: ScalarAverages,
+    step_rate: f64,
+}
+
+struct PeriodicCheckpointContext<'a> {
+    config: &'a TrainConfig,
+    artifacts: &'a BcArtifactPaths,
+    epoch: usize,
+    session_start_global_step: usize,
+    current_runtime: RuntimeResumeContract,
+}
+
+struct PeriodicCheckpointState {
+    global_step: usize,
+    epoch_optimizer_steps: usize,
+    total_loss: f64,
+    best_validation: Option<BestValidation>,
+}
+
+struct EpochEndValidationContext<'a> {
+    config: &'a TrainConfig,
+    loader_config: &'a StreamingLoaderConfig,
+    manifest: &'a DataManifest,
+    train_device: &'a LibTorchDevice,
+    valid_loss_fn: &'a HydraLoss<ValidBackend>,
+    bc_exit_cfg: &'a BcExitConfig,
+    artifacts: &'a BcArtifactPaths,
+}
+
+struct EpochFinalizeContext<'a> {
+    artifacts: &'a BcArtifactPaths,
+    config: &'a TrainConfig,
+    train_cfg: &'a BCTrainerConfig,
+    epoch: usize,
+    global_step: usize,
+    train_stats: ScalarAverages,
+    val_summary: Option<ValidationSummary>,
+    best_validation: Option<BestValidation>,
+    final_lr: f64,
+}
+
 fn should_run_epoch_end_validation(epoch: usize, num_epochs: usize, every_n_epochs: usize) -> bool {
     (epoch + 1).is_multiple_of(every_n_epochs) || epoch + 1 == num_epochs
 }
@@ -101,19 +178,22 @@ fn build_epoch_continuation(
 
 fn train_logical_batch<O>(
     logical_batch: &[MjaiSample],
-    microbatch_size: usize,
-    augment: bool,
-    train_device: &LibTorchDevice,
-    loss_fn: &HydraLoss<TrainBackend>,
-    bc_exit_cfg: &BcExitConfig,
+    config: TrainLogicalBatchConfig<'_>,
     head_controller: &mut HeadActivationController,
     model: &mut HydraModel<TrainBackend>,
     optimizer: &mut O,
-    lr: f64,
 ) -> Result<Vec<BatchStats>, String>
 where
     O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
 {
+    let TrainLogicalBatchConfig {
+        microbatch_size,
+        augment,
+        train_device,
+        loss_fn,
+        bc_exit_cfg,
+        lr,
+    } = config;
     if logical_batch.is_empty() {
         return Ok(Vec::new());
     }
@@ -173,25 +253,25 @@ fn record_drained_batch_stats(
     }
 }
 
-fn maybe_run_interval_validation<O>(
-    multi: &MultiProgress,
+fn maybe_run_interval_validation(
+    context: ValidationStepContext<'_>,
     model: &HydraModel<TrainBackend>,
-    config: &TrainConfig,
-    loader_config: &StreamingLoaderConfig,
-    manifest: &DataManifest,
-    train_device: &LibTorchDevice,
-    valid_loss_fn: &HydraLoss<ValidBackend>,
-    bc_exit_cfg: &BcExitConfig,
     head_controller: Option<&mut HeadActivationController>,
-    artifacts: &BcArtifactPaths,
     best_validation: &mut Option<BestValidation>,
     global_step: usize,
-    session_start_global_step: usize,
     step_window_total_loss: f64,
-) -> Result<Option<super::validation::ValidationSummary>, String>
-where
-    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
-{
+) -> Result<Option<ValidationSummary>, String> {
+    let ValidationStepContext {
+        multi,
+        config,
+        loader_config,
+        manifest,
+        train_device,
+        valid_loss_fn,
+        bc_exit_cfg,
+        artifacts,
+        session_start_global_step,
+    } = context;
     let session_step = session_steps_completed(global_step, session_start_global_step);
     if session_step == 0 || !session_step.is_multiple_of(config.validate_every_n_steps) {
         return Ok(None);
@@ -216,14 +296,18 @@ where
 
     let summary = run_validation(
         model,
-        config,
-        loader_config,
-        manifest,
-        train_device,
-        valid_loss_fn,
-        bc_exit_cfg,
-        head_controller,
-        None,
+        ValidationContext {
+            config,
+            loader_config,
+            manifest,
+            device: train_device,
+            loss_fn: valid_loss_fn,
+            exit_cfg: bc_exit_cfg,
+        },
+        ValidationRuntime {
+            head_controller,
+            progress: None,
+        },
     )?;
     if is_better_validation(&summary, *best_validation) {
         *best_validation = Some(BestValidation {
@@ -296,24 +380,27 @@ where
 fn emit_interval_step_summary<W>(
     multi: &MultiProgress,
     tb: &mut Option<EventWriter<W>>,
-    artifacts: &BcArtifactPaths,
-    manifest: &DataManifest,
-    config: &TrainConfig,
-    session_start_global_step: usize,
-    global_step: usize,
-    epoch: usize,
-    lr: f64,
-    best_validation: Option<BestValidation>,
-    val_summary: Option<super::validation::ValidationSummary>,
-    seen_samples: usize,
-    assumed_games_seen: usize,
-    epoch_optimizer_steps: usize,
-    window_stats: ScalarAverages,
-    step_rate: f64,
+    context: IntervalStepSummaryContext<'_>,
 ) -> Result<(), String>
 where
     W: Write,
 {
+    let IntervalStepSummaryContext {
+        artifacts,
+        manifest,
+        config,
+        session_start_global_step,
+        global_step,
+        epoch,
+        lr,
+        best_validation,
+        val_summary,
+        seen_samples,
+        assumed_games_seen,
+        epoch_optimizer_steps,
+        window_stats,
+        step_rate,
+    } = context;
     multi
         .println(timestamped(format!(
             "{} {} {} {} {} {} {} {}",
@@ -403,21 +490,27 @@ where
 }
 
 fn maybe_save_periodic_checkpoint<O>(
-    config: &TrainConfig,
-    artifacts: &BcArtifactPaths,
     model: &HydraModel<TrainBackend>,
     optimizer: &O,
-    global_step: usize,
-    epoch: usize,
-    epoch_optimizer_steps: usize,
-    total_loss: f64,
-    best_validation: Option<BestValidation>,
-    current_runtime: RuntimeResumeContract,
-    session_start_global_step: usize,
+    context: PeriodicCheckpointContext<'_>,
+    state: PeriodicCheckpointState,
 ) -> Result<(), String>
 where
     O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
 {
+    let PeriodicCheckpointContext {
+        config,
+        artifacts,
+        epoch,
+        session_start_global_step,
+        current_runtime,
+    } = context;
+    let PeriodicCheckpointState {
+        global_step,
+        epoch_optimizer_steps,
+        total_loss,
+        best_validation,
+    } = state;
     let session_step = session_steps_completed(global_step, session_start_global_step);
     if session_step == 0 || !session_step.is_multiple_of(config.checkpoint_every_n_steps) {
         return Ok(());
@@ -432,11 +525,13 @@ where
         artifacts,
         model,
         optimizer,
-        global_step,
-        total_loss,
-        best_validation,
-        &continuation,
-        current_runtime,
+        LatestCheckpointState {
+            global_step,
+            train_loss: total_loss,
+            best_validation,
+            continuation: &continuation,
+            runtime: current_runtime,
+        },
     )
 }
 
@@ -454,17 +549,20 @@ fn emit_paused_training_message(continuation: &EpochContinuation) {
 fn run_epoch_end_validation(
     epoch: usize,
     model: &HydraModel<TrainBackend>,
-    config: &TrainConfig,
-    loader_config: &StreamingLoaderConfig,
-    manifest: &DataManifest,
-    train_device: &LibTorchDevice,
-    valid_loss_fn: &HydraLoss<ValidBackend>,
-    bc_exit_cfg: &BcExitConfig,
+    context: EpochEndValidationContext<'_>,
     head_controller: Option<&mut HeadActivationController>,
-    artifacts: &BcArtifactPaths,
     best_validation: &mut Option<BestValidation>,
     train_total_loss: f64,
-) -> Result<Option<super::validation::ValidationSummary>, String> {
+) -> Result<Option<ValidationSummary>, String> {
+    let EpochEndValidationContext {
+        config,
+        loader_config,
+        manifest,
+        train_device,
+        valid_loss_fn,
+        bc_exit_cfg,
+        artifacts,
+    } = context;
     if !should_run_epoch_end_validation(epoch, config.num_epochs, config.validation_every_n_epochs)
     {
         return Ok(None);
@@ -483,14 +581,18 @@ fn run_epoch_end_validation(
     );
     let summary = run_validation(
         model,
-        config,
-        loader_config,
-        manifest,
-        train_device,
-        valid_loss_fn,
-        bc_exit_cfg,
-        head_controller,
-        None,
+        ValidationContext {
+            config,
+            loader_config,
+            manifest,
+            device: train_device,
+            loss_fn: valid_loss_fn,
+            exit_cfg: bc_exit_cfg,
+        },
+        ValidationRuntime {
+            head_controller,
+            progress: None,
+        },
     )?;
     if is_better_validation(&summary, *best_validation) {
         *best_validation = Some(BestValidation {
@@ -554,19 +656,22 @@ fn run_epoch_end_validation(
 
 fn finalize_epoch_outputs<W>(
     tb: &mut Option<EventWriter<W>>,
-    artifacts: &BcArtifactPaths,
-    config: &TrainConfig,
-    train_cfg: &BCTrainerConfig,
-    epoch: usize,
-    global_step: usize,
-    train_stats: ScalarAverages,
-    val_summary: Option<super::validation::ValidationSummary>,
-    best_validation: Option<BestValidation>,
-    final_lr: f64,
+    context: EpochFinalizeContext<'_>,
 ) -> Result<(), String>
 where
     W: Write,
 {
+    let EpochFinalizeContext {
+        artifacts,
+        config,
+        train_cfg,
+        epoch,
+        global_step,
+        train_stats,
+        val_summary,
+        best_validation,
+        final_lr,
+    } = context;
     if let Some(ref mut tb_writer) = tb.as_mut() {
         log_tensorboard(
             tb_writer,
@@ -755,15 +860,17 @@ where
                 pending_samples.drain(..config.batch_size).collect();
             let drained = train_logical_batch(
                 &logical_batch,
-                microbatch_size,
-                config.augment,
-                train_device,
-                loss_fn,
-                bc_exit_cfg,
+                TrainLogicalBatchConfig {
+                    microbatch_size,
+                    augment: config.augment,
+                    train_device,
+                    loss_fn,
+                    bc_exit_cfg,
+                    lr,
+                },
                 head_controller,
                 model,
                 optimizer,
-                lr,
             )?;
 
             record_drained_batch_stats(drained, &mut stats, &mut step_window);
@@ -783,20 +890,22 @@ where
             ));
 
             let session_step = session_steps_completed(*global_step, session_start_global_step);
-            let val_summary = maybe_run_interval_validation::<O>(
-                &multi,
+            let val_summary = maybe_run_interval_validation(
+                ValidationStepContext {
+                    multi: &multi,
+                    config,
+                    loader_config,
+                    manifest,
+                    train_device,
+                    valid_loss_fn,
+                    bc_exit_cfg,
+                    artifacts,
+                    session_start_global_step,
+                },
                 model,
-                config,
-                loader_config,
-                manifest,
-                train_device,
-                valid_loss_fn,
-                bc_exit_cfg,
                 Some(head_controller),
-                artifacts,
                 best_validation,
                 *global_step,
-                session_start_global_step,
                 step_window.finalize().total_loss,
             )?;
 
@@ -810,35 +919,41 @@ where
                 emit_interval_step_summary(
                     &multi,
                     tb,
-                    artifacts,
-                    manifest,
-                    config,
-                    session_start_global_step,
-                    *global_step,
-                    epoch,
-                    lr,
-                    *best_validation,
-                    val_summary,
-                    seen_samples,
-                    assumed_games_seen,
-                    epoch_optimizer_steps,
-                    window_stats,
-                    step_rate,
+                    IntervalStepSummaryContext {
+                        artifacts,
+                        manifest,
+                        config,
+                        session_start_global_step,
+                        global_step: *global_step,
+                        epoch,
+                        lr,
+                        best_validation: *best_validation,
+                        val_summary,
+                        seen_samples,
+                        assumed_games_seen,
+                        epoch_optimizer_steps,
+                        window_stats,
+                        step_rate,
+                    },
                 )?;
             }
 
             maybe_save_periodic_checkpoint(
-                config,
-                artifacts,
                 model,
                 optimizer,
-                *global_step,
-                epoch,
-                epoch_optimizer_steps,
-                stats.finalize().total_loss,
-                *best_validation,
-                current_runtime,
-                session_start_global_step,
+                PeriodicCheckpointContext {
+                    config,
+                    artifacts,
+                    epoch,
+                    session_start_global_step,
+                    current_runtime,
+                },
+                PeriodicCheckpointState {
+                    global_step: *global_step,
+                    epoch_optimizer_steps,
+                    total_loss: stats.finalize().total_loss,
+                    best_validation: *best_validation,
+                },
             )?;
 
             if reached_session_step_budget(
@@ -866,15 +981,17 @@ where
         let logical_batch: Vec<MjaiSample> = pending_samples.drain(..).collect();
         let drained = train_logical_batch(
             &logical_batch,
-            microbatch_size,
-            config.augment,
-            train_device,
-            loss_fn,
-            bc_exit_cfg,
+            TrainLogicalBatchConfig {
+                microbatch_size,
+                augment: config.augment,
+                train_device,
+                loss_fn,
+                bc_exit_cfg,
+                lr,
+            },
             head_controller,
             model,
             optimizer,
-            lr,
         )?;
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
         epoch_optimizer_steps += 1;
@@ -902,11 +1019,13 @@ where
         artifacts,
         model,
         optimizer,
-        *global_step,
-        train_stats.total_loss,
-        *best_validation,
-        &continuation,
-        current_runtime,
+        LatestCheckpointState {
+            global_step: *global_step,
+            train_loss: train_stats.total_loss,
+            best_validation: *best_validation,
+            continuation: &continuation,
+            runtime: current_runtime,
+        },
     )?;
 
     if !continuation.epoch_completed {
@@ -919,29 +1038,33 @@ where
     let val_summary = run_epoch_end_validation(
         epoch,
         model,
-        config,
-        loader_config,
-        manifest,
-        train_device,
-        valid_loss_fn,
-        bc_exit_cfg,
+        EpochEndValidationContext {
+            config,
+            loader_config,
+            manifest,
+            train_device,
+            valid_loss_fn,
+            bc_exit_cfg,
+            artifacts,
+        },
         Some(head_controller),
-        artifacts,
         best_validation,
         train_stats.total_loss,
     )?;
 
     finalize_epoch_outputs(
         tb,
-        artifacts,
-        config,
-        train_cfg,
-        epoch,
-        *global_step,
-        train_stats,
-        val_summary,
-        *best_validation,
-        final_lr,
+        EpochFinalizeContext {
+            artifacts,
+            config,
+            train_cfg,
+            epoch,
+            global_step: *global_step,
+            train_stats,
+            val_summary,
+            best_validation: *best_validation,
+            final_lr,
+        },
     )?;
 
     Ok(EpochRunOutcome {
