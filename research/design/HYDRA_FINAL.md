@@ -2,6 +2,8 @@
 
 **Promoted architecture doctrine summary.** This document is Hydra's architecture north star after filtering the canonical archive SSOT through current repo/code validation. It supersedes the two prior internal variants: the throughput-first "compute-constrained elegance" plan and the "information-geometric / all-out" plan. Hydra keeps their best ideas, removes their ceilings, and adds a rigorously grounded robustness layer.
 
+This file owns the target architecture, not the full live repo status board. For current shipped/staged status, read `docs/CURRENT_STATUS.md`. For active-path / staged-vs-reserve execution decisions, read `research/design/HYDRA_RECONCILIATION.md`. For runtime compatibility/runtime reality, read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
+
 ---
 
 ## 0. Abstract
@@ -85,7 +87,7 @@ Under purely random dealing, $X_t$ is multivariate hypergeometric; under strateg
 
 These features are computed by the CPU-side hand analyzer (`shanten_batch.rs` + scoring engine) using belief-weighted remaining tile counts from CT-SMC. Zero GPU cost -- CPU pre-computes during game step processing. Suphx reported these look-ahead features as their single biggest practical improvement (Li et al. 2020).
 
-Current implementation note: the live repo already carries the same 42-plane Hand-EV surface through `HandEvFeatures`, bridge code, and encoder channels, and the current baseline now ships a materially stronger multi-horizon local evaluator on that surface. Runtime bridge code uses public remaining counts by default and CT-SMC wall-weighted remaining counts when search context is present. Treat representative-world / per-particle CT-SMC Hand-EV as later work, not as a claim about the current shipped surface.
+Runtime reality note: the live repo already carries the same 42-plane Hand-EV surface through `HandEvFeatures`, bridge code, and encoder channels. Runtime bridge code uses public remaining counts by default and CT-SMC wall-weighted remaining counts when search context is present. For shipped/staged status of that surface, defer to `docs/CURRENT_STATUS.md` and `research/design/HYDRA_RECONCILIATION.md`.
 
 ### 4.2 Two-tier architecture
 
@@ -118,7 +120,7 @@ All use SE-ResNet with GroupNorm(32) and Mish. Target deployment precision is bf
 
 **Search distillation heads:** (9) $\Delta Q$ regression (predict search advantage over baseline). (10) Safety bound residual (predict conservatism gap).
 
-Current implementation note: the live model already exposes these advanced output families structurally in one output contract (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`). The replay-derived `safety_residual` lane is now closed narrowly enough to train through the BC path, and the learner BC loop now supports hardware-agnostic microbatch accumulation. Replay/sample `exit_target` is now closed through a sidecar-first search-derived path: offline replay ExIt labels can be generated, validated, joined back into replay samples with provenance/version checks, and consumed as a separate BC ExIt loss. `delta_q` is now also closed in the same narrow supervision family: the live self-play RL path emits the shared root-search masked `[46]` discard-compatible `Q(child)-Q(root)` target, replay/offline sidecars can generate and join the same object back into replay samples with provenance/version checks, and BC/train now has the activation-hook + warmup-detach path needed to train on those labels without broadening other advanced heads. Stronger public-teacher belief semantics are now shipped as part of the live baseline carrier/loss/gating story, but activation still remains staged overall because `mixture_weight` and richer opponent-target lanes are not equally promoted today.
+Runtime reality note: the live model already exposes these advanced output families structurally in one output contract (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`). For which of those surfaces are shipped baseline vs implemented-but-staged vs implemented-but-not-default-on, defer to `docs/CURRENT_STATUS.md` and `research/design/HYDRA_RECONCILIATION.md` rather than treating this architecture file as the status owner.
 
 ---
 
@@ -205,7 +207,7 @@ On event: lookup predicted child key; if match, shift root and keep statistics; 
 
 ### 7.5 Endgame exactification (wall-small solver)
 
-Current implementation note: the live repo currently implements a selective particle-weighted PIMC shell for this area rather than a full exact multiplayer endgame solver. Keep exactification as the target direction, not as a claim about the current `endgame.rs` semantics.
+Runtime reality note: the live repo currently implements a selective particle-weighted PIMC shell for this area rather than a full exact multiplayer endgame solver. Keep exactification as the target direction; defer current shipped/staged status to `docs/CURRENT_STATUS.md` and runtime semantics to `docs/GAME_ENGINE.md`.
 
 **Trigger:** Activate when remaining wall $\le W^* = 10$ tiles AND at least one threatening signal (riichi, open tenpai, high-tempo opponent).
 
@@ -345,9 +347,9 @@ $Q^{\text{total}}(I,a)=Q^{\text{inst}}(I,a)+\beta_{\text{epi}} Q^{\text{epi}}(I,
 ### 12.3 Primal-dual risk constraints
 Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kappa_{\text{leak}}$. Dual updates: $\lambda \leftarrow [\lambda+\alpha(\hat{C}-\kappa)]_+$.
 
-### DeltaQ lane status note
+### DeltaQ lane runtime note
 
-Current repo reality is now stronger than a plain structural DeltaQ lane. Hydra has the full narrow DeltaQ supervision path in code, plus an offline promotion stack: teacher-regret / head-fit reporting, a paired holdout policy-transfer gate, a dedicated `--delta-q-promotion` train mode, persisted promotion artifacts, and paired-arena helper/config/report objects. The still-missing piece is the actual paired arena-confirmation executor under fixed seeds / fixed compute / frozen opponents. So the honest status is: DeltaQ is implemented and promotion-gated offline, but not yet arena-confirmed or default-on.
+The target architecture continues to include a DeltaQ supervision family. For current repo maturity and promotion state, defer to `docs/CURRENT_STATUS.md` and `research/design/HYDRA_RECONCILIATION.md` instead of treating this architecture summary as the live status owner.
 
 ---
 

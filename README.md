@@ -11,22 +11,77 @@ Train a mahjong AI that:
 
 ## Architecture
 
-Hydra uses a layered authority flow:
+Hydra uses a layered authority flow built from the archive handoff canon upward:
 
-1. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT for upstream research conclusions
-2. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) and [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) — derived planning/render views over that archive canon
-3. [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — promoted architecture doctrine summary
-4. [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted execution doctrine summary and active-vs-reserve guide
-5. [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) — runtime reality reference; current code wins when docs drift
+1. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — epistemic root / canonical archive SSOT for upstream research conclusions
+2. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) and [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) — derived archive views over that canonical source ledger
+3. [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — promoted architecture doctrine built from archive canon plus repo validation
+4. [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted operational doctrine / active-path owner built from archive canon plus repo validation
+5. [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — promoted current-status snapshot for already-built repo surfaces
+6. [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md) — runtime semantics and compatibility surfaces; current code wins when docs drift
 
 Raw `answer_*_combined.md` files in `research/agent_handoffs/combined_all_variants/` remain raw archive corpus, not promoted doctrine.
 
+## Fresh-agent routing
+
+If you are entering Hydra with zero prior memory, use this order and stop when you have enough truth for the task.
+
+| Question | Primary file | What it is | What it is not |
+|---|---|---|---|
+| Where should I start? | `README.md` | repo entry router | not the full status board |
+| What upstream research claims survived intake, and what powers the rest of the repo's doctrine? | `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` | epistemic root / canonical archive intake / source ledger | not auto-promoted repo status by itself |
+| What archive-derived triage survived intake before promotion? | `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` | derived archive prioritization view | not final runtime truth or promoted operational doctrine |
+| What is Hydra trying to become? | `research/design/HYDRA_FINAL.md` | promoted architecture doctrine / north-star target | not the owner of current shipped status |
+| What is active now vs staged/reserve/historical? | `research/design/HYDRA_RECONCILIATION.md` | promoted operational doctrine / operational status owner | not raw archive intake |
+| What is already built in the repo today? | `docs/CURRENT_STATUS.md` | promoted current-status snapshot | not runtime compatibility truth by itself |
+| What runtime semantics and invariants are true today? | `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` | runtime truth and compatibility surface | not strategic architecture priority |
+| What is preserved raw archive corpus? | `research/agent_handoffs/combined_all_variants/` | evidence/provenance archive | not current implementation doctrine |
+
+## Trust and status vocabulary
+
+### Trust map
+
+| Surface | Role | Trust level for implementation work | Use it for | Do not use it for |
+|---|---|---|---|---|
+| `README.md` | repo router | entry-only | deciding where to read next | detailed runtime status |
+| `ARCHIVE_CANONICAL_CLAIMS.jsonl` | epistemic root / canonical archive intake | highest for upstream research provenance | preserving upstream conclusions with provenance; refreshing promoted doctrine when it drifts | assuming something is already implemented without code/runtime validation |
+| `ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` | derived archive prioritization view | high, but subordinate to the JSONL ledger | archive-derived do-now / phase-next triage | settling promoted doctrine or current runtime truth by itself |
+| `HYDRA_FINAL.md` | promoted architecture doctrine | high for target architecture | north-star design direction | shipped-status ownership |
+| `HYDRA_RECONCILIATION.md` | promoted operational doctrine | highest for active-path sequencing | active vs staged vs reserve decisions; best-next-task guidance | runtime compatibility details |
+| `docs/CURRENT_STATUS.md` | promoted status snapshot | high for shipped/staged snapshot | checking what is already built today | replacing runtime/code truth |
+| `docs/GAME_ENGINE.md` / `docs/COMPATIBILITY_SURFACE.md` | runtime truth | highest for runtime semantics | encoder/action/runtime contracts | archive promotion decisions |
+| current code | live implementation truth | final runtime truth | settling doc drift | skipping the doc-routing model entirely |
+| `combined_all_variants/` | raw archive corpus | evidence-only | provenance, archive archaeology | current Hydra doctrine |
+
+### Status vocabulary
+
+| Term | Meaning |
+|---|---|
+| `active path` | what Hydra should optimize/build now |
+| `shipped baseline` | implemented and part of the current live baseline |
+| `implemented but not default-on` | implemented in code, intentionally not the default path |
+| `implemented but staged` | implemented enough to exist, but activation/promotion is intentionally deferred |
+| `reserve shelf` | preserved later-work direction, not current mainline |
+| `blocked` | not ready because a real dependency or semantic gap remains |
+| `rejected` | not part of the current plan |
+| `historical` | preserved context only; not governing truth |
+
+## Crate ownership
+
+| Crate | Owns | Does not own |
+|---|---|---|
+| `crates/hydra-engine` | vendored rules engine behavior | Hydra-specific runtime/training orchestration |
+| `crates/hydra-core` | runtime bridge, encoder, simulator, seeding, search/runtime feature plumbing | Burn training logic or vendored rules ownership |
+| `crates/hydra-train` | model, targets, losses, BC/RL/self-play orchestration, train binary | low-level rules engine behavior |
+
 If you are deciding what to build next, read these in order:
-- [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / source ledger
-- [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) — archive prioritization view
+- [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — epistemic root / canonical archive SSOT / source ledger
+- [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) — derived archive prioritization view
 - [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — promoted architecture doctrine summary
-- [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted execution doctrine summary + best-next-action guide
+- [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted operational doctrine summary + best-next-action guide
+- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — promoted current shipped/staged repo snapshot
 - [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) — current game-engine/runtime baseline
+- [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md) — current compatibility contract
 - [`research/design/IMPLEMENTATION_ROADMAP.md`](research/design/IMPLEMENTATION_ROADMAP.md) — staged implementation reference
 - [`research/design/HYDRA_ARCHIVE.md`](research/design/HYDRA_ARCHIVE.md) — reserve-only design/archive planning
 
@@ -36,11 +91,11 @@ If you are deciding what to build next, read these in order:
 
 | File | What's In It |
 |------|-------------|
-| [ARCHIVE_CANONICAL_CLAIMS.jsonl](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) | Canonical archive SSOT for upstream research intake |
-| [ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) | Archive prioritization view over canonical archive claims |
+| [ARCHIVE_CANONICAL_CLAIMS.jsonl](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) | Epistemic root / canonical archive SSOT for upstream research intake |
+| [ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) | Derived archive prioritization view over canonical archive claims |
 | [ARCHIVE_CANONICAL_CLAIMS_RENDERED.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) | Generated human-readable mirror of the canonical archive ledger |
 | [HYDRA_FINAL.md](research/design/HYDRA_FINAL.md) | Promoted architecture doctrine summary |
-| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Promoted execution doctrine summary and active/reserve split |
+| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Promoted operational doctrine summary and active/reserve split |
 | [HYDRA_ARCHIVE.md](research/design/HYDRA_ARCHIVE.md) | Reserve-only design/archive planning surfaces |
 | [HYDRA_SPEC.md](research/design/HYDRA_SPEC.md) | Historical architecture spec only |
 | [MORTAL_ANALYSIS.md](research/intel/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
@@ -57,23 +112,21 @@ If you are deciding what to build next, read these in order:
 
 ### Authority Layers and Promotion Flow
 
-- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`: canonical archive SSOT / source ledger for upstream research conclusions
-- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`: archive prioritization view over the canonical archive
+- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`: epistemic root / canonical archive SSOT / source ledger for upstream research conclusions
+- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`: derived archive prioritization view over the canonical archive
 - `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md`: generated human-readable mirror of the canonical archive ledger
 - `research/design/HYDRA_FINAL.md`: promoted architecture doctrine summary
-- `research/design/HYDRA_RECONCILIATION.md`: promoted execution doctrine summary and best-next-action guide
+- `research/design/HYDRA_RECONCILIATION.md`: promoted operational doctrine summary and best-next-action guide
+- `docs/CURRENT_STATUS.md`: promoted shipped/staged repo status snapshot for already-built surfaces
 - `docs/GAME_ENGINE.md`: current game-engine/runtime baseline
+- `docs/COMPATIBILITY_SURFACE.md`: compact compatibility contract for runtime/training-sensitive invariants
 - `research/design/OPPONENT_MODELING.md`: detailed opponent-modeling rationale
 - `research/design/HYDRA_ARCHIVE.md`: reserve-only design/archive planning
 - `research/design/HYDRA_SPEC.md`: historical architecture summary only; do not use it as current implementation authority
 
 ## Status
 
-Active implementation. `hydra-core` is already built out as a real baseline engine/encoder crate, and `hydra-train` contains a substantial training/model scaffold with partial advanced integration. The repo now has a real narrow replay-derived `safety_residual` supervision lane plus a replay/sample ExIt sidecar-first lane: offline replay ExIt labels can be generated as search-derived sidecar records, joined back into replay samples with provenance checks, and consumed by BC as a separate optional ExIt loss without polluting the replay action target. `delta_q` is now also closed across both live RL and replay/offline BC paths: the shared root-search producer emits a masked discard-compatible `Q(child)-Q(root)` target into RL batches, replay/offline `delta_q` sidecars can be generated and joined back into replay samples with provenance/version checks, and BC/train now has the narrow activation-hook + warmup-detach path needed to train on those labels without broadening other advanced heads.
-
-What is newly shipped on top of that lane is the **offline DeltaQ promotion stack**, not the full arena executor. Hydra now has a real offline/head-fit gate, a paired holdout policy-transfer gate, a dedicated `--delta-q-promotion` mode, persisted DeltaQ promotion artifacts, and paired-arena helper/config/report objects. The still-missing piece is the actual paired arena confirmation runner that would populate the arena report under fixed seeds / fixed compute / frozen opponents. So the honest repo status is: **DeltaQ is code-closed and promotion-gated offline, but not yet arena-confirmed or default-on.**
-
-The stronger public-teacher belief-semantics tranche and the current Hand-EV realism upgrade are now shipped as part of the live baseline. Belief carriers and loss/presence semantics are materially stronger, Hand-EV now provides a stronger multi-horizon local evaluator on the live 42-plane surface, and the next project needs move beyond "make belief and Hand-EV real" toward the next selective strength tranche. Mixture-weight activation still remains staged, and representative-world CT-SMC Hand-EV remains later work.
+Hydra is in active implementation. For the current shipped/staged repo snapshot, read [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). For runtime semantics and compatibility-sensitive invariants, read [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md).
 
 ## License
 
