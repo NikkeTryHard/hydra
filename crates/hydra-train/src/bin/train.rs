@@ -49,7 +49,9 @@ use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
-use self::modes::{handle_preflight_mode, handle_probe_mode, handle_training_mode};
+use self::modes::{
+    handle_delta_q_promotion_mode, handle_preflight_mode, handle_probe_mode, handle_training_mode,
+};
 use self::preflight_runtime::run_probe_child_mode;
 use self::probe_request::probe_request_from_cli;
 
@@ -79,6 +81,13 @@ fn run() -> Result<(), String> {
     }
     if cli.preflight {
         return handle_preflight_mode(&cli.config_path, &config);
+    }
+    if cli.delta_q_promotion {
+        return handle_delta_q_promotion_mode(
+            &cli.config_path,
+            config,
+            cli.delta_q_baseline_checkpoint,
+        );
     }
     if let Some(request) = probe_request_from_cli(&config, cli.probe_only.clone())? {
         return handle_probe_mode(&cli.config_path, &config, request);
@@ -125,6 +134,7 @@ mod tests {
         let parsed = parse_args(args).expect("single config arg should parse");
         assert_eq!(parsed.config_path, PathBuf::from("config.yaml"));
         assert!(!parsed.preflight);
+        assert!(!parsed.delta_q_promotion);
         assert!(parsed.probe_only.is_none());
         assert!(parsed.probe_child.is_none());
     }
@@ -179,8 +189,69 @@ mod tests {
         ];
         let parsed = parse_args(args).expect("preflight arg should parse");
         assert!(parsed.preflight);
+        assert!(!parsed.delta_q_promotion);
         assert!(parsed.probe_only.is_none());
         assert!(parsed.probe_child.is_none());
+    }
+
+    #[test]
+    fn parse_args_accepts_delta_q_promotion_flag() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--delta-q-promotion".to_string(),
+        ];
+        let parsed = parse_args(args).expect("delta_q_promotion arg should parse");
+        assert!(!parsed.preflight);
+        assert!(parsed.delta_q_promotion);
+        assert!(parsed.delta_q_baseline_checkpoint.is_none());
+        assert!(parsed.probe_only.is_none());
+        assert!(parsed.probe_child.is_none());
+    }
+
+    #[test]
+    fn parse_args_accepts_delta_q_baseline_checkpoint() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--delta-q-promotion".to_string(),
+            "--delta-q-baseline-checkpoint".to_string(),
+            "baseline_model.mpk".to_string(),
+        ];
+        let parsed = parse_args(args).expect("delta_q baseline arg should parse");
+        assert!(parsed.delta_q_promotion);
+        assert_eq!(
+            parsed.delta_q_baseline_checkpoint,
+            Some(PathBuf::from("baseline_model.mpk"))
+        );
+    }
+
+    #[test]
+    fn parse_args_rejects_delta_q_baseline_checkpoint_without_promotion() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--delta-q-baseline-checkpoint".to_string(),
+            "baseline_model.mpk".to_string(),
+        ];
+        let err = parse_args(args)
+            .expect_err("delta_q baseline checkpoint without promotion should fail");
+        assert!(err.contains("--delta-q-baseline-checkpoint requires --delta-q-promotion"));
+    }
+
+    #[test]
+    fn parse_args_rejects_delta_q_promotion_with_probe_flags() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--delta-q-promotion".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+        ];
+        let err = parse_args(args).expect_err("mixed delta_q_promotion/probe flags should fail");
+        assert!(err.contains("--delta-q-promotion cannot be combined"));
     }
 
     #[test]
@@ -845,30 +916,42 @@ preflight:
             policy_loss: 1.0,
             agreement: 0.35,
             samples: 8192,
+            delta_q_promotion: None,
+            delta_q_promotion_result: None,
+            delta_q_promotion_snapshot: None,
+            delta_q_policy_transfer: None,
+            delta_q_policy_transfer_result: None,
+            delta_q_policy_transfer_snapshot: None,
         };
-        assert!(is_better_validation(summary, None));
+        assert!(is_better_validation(&summary, None));
 
         let best = BestValidation {
             policy_loss: 1.1,
             agreement: 0.60,
         };
-        assert!(is_better_validation(summary, Some(best)));
+        assert!(is_better_validation(&summary, Some(best)));
 
         let tied = ValidationSummary {
             total_loss: 2.1,
             policy_loss: 1.0,
             agreement: 0.40,
             samples: 8192,
+            delta_q_promotion: None,
+            delta_q_promotion_result: None,
+            delta_q_promotion_snapshot: None,
+            delta_q_policy_transfer: None,
+            delta_q_policy_transfer_result: None,
+            delta_q_policy_transfer_snapshot: None,
         };
         assert!(is_better_validation(
-            tied,
+            &tied,
             Some(BestValidation {
                 policy_loss: 1.0,
                 agreement: 0.39
             })
         ));
         assert!(!is_better_validation(
-            tied,
+            &tied,
             Some(BestValidation {
                 policy_loss: 1.0,
                 agreement: 0.41

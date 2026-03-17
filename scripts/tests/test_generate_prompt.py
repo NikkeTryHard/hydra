@@ -700,15 +700,12 @@ Canonical role
             stderr=stderr,
         )
 
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertIn("info: variant 'first variant' rendered at ", stderr.getvalue())
-        self.assertIn(
-            "warning: variant 'first variant' rendered at ", stderr.getvalue()
-        )
+        self.assertIn("error: variant 'first variant' rendered at ", stderr.getvalue())
         self.assertIn("info: variant 'second variant' rendered at ", stderr.getvalue())
-        self.assertIn(
-            "warning: variant 'second variant' rendered at ", stderr.getvalue()
-        )
+        self.assertIn("error: variant 'second variant' rendered at ", stderr.getvalue())
+        self.assertIn("10000+ line prompt packets", stderr.getvalue())
         self.assertTrue((output_dir / "first.md").exists())
         self.assertTrue((output_dir / "second-variant.md").exists())
 
@@ -718,7 +715,7 @@ Canonical role
         self.assertEqual(generate_prompt.count_rendered_lines("alpha\n"), 1)
         self.assertEqual(generate_prompt.count_rendered_lines("alpha\n\nbeta\n"), 3)
 
-    def test_cli_single_variant_stdout_mode_reports_count_and_warning_to_stderr(
+    def test_cli_single_variant_stdout_mode_reports_count_and_error_to_stderr(
         self,
     ) -> None:
         repo_root = self.make_repo()
@@ -737,15 +734,16 @@ Canonical role
             stderr=stderr,
         )
 
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         rendered = stdout.getvalue()
         self.assertIn("<role>", rendered)
         self.assertIn("<task>", rendered)
         self.assertIn("info: variant 'main' rendered at ", stderr.getvalue())
-        self.assertIn("warning: variant 'main' rendered at ", stderr.getvalue())
-        self.assertIn("below threshold 3000", stderr.getvalue())
+        self.assertIn("error: variant 'main' rendered at ", stderr.getvalue())
+        self.assertIn("below required minimum 3000", stderr.getvalue())
+        self.assertIn("10000+ line prompt packets", stderr.getvalue())
 
-    def test_cli_single_variant_output_mode_reports_count_on_stdout_and_warning_on_stderr(
+    def test_cli_single_variant_output_mode_reports_count_on_stdout_and_error_on_stderr(
         self,
     ) -> None:
         repo_root = self.make_repo()
@@ -767,13 +765,14 @@ Canonical role
             stderr=stderr,
         )
 
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertTrue(output_path.exists())
         self.assertIn("generated prompt at", stdout.getvalue())
         self.assertIn("lines)", stdout.getvalue())
-        self.assertIn("warning: variant 'main' rendered at ", stderr.getvalue())
+        self.assertIn("error: variant 'main' rendered at ", stderr.getvalue())
+        self.assertIn("10000+ line prompt packets", stderr.getvalue())
 
-    def test_cli_all_variants_reports_counts_and_warnings(self) -> None:
+    def test_cli_all_variants_reports_counts_and_errors(self) -> None:
         repo_root = self.make_repo()
         config_path = self.write_config(
             repo_root,
@@ -812,12 +811,70 @@ Canonical role
             stderr=stderr,
         )
 
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertIn("generated variant 'first'", stdout.getvalue())
         self.assertIn("generated variant 'second'", stdout.getvalue())
         self.assertIn("generated 2 prompt(s)", stdout.getvalue())
-        self.assertIn("warning: variant 'first' rendered at ", stderr.getvalue())
-        self.assertIn("warning: variant 'second' rendered at ", stderr.getvalue())
+        self.assertIn("error: variant 'first' rendered at ", stderr.getvalue())
+        self.assertIn("error: variant 'second' rendered at ", stderr.getvalue())
+        self.assertIn("10000+ line prompt packets", stderr.getvalue())
+
+    def test_cli_all_variants_strips_nested_output_file_prefixes(self) -> None:
+        repo_root = self.make_repo()
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [
+                        {"tag": "role", "lines": ["Example role."]},
+                        {"tag": "task", "lines": ["Example task."]},
+                    ],
+                    "artifact_ids": [],
+                },
+                "artifacts": [],
+                "variants": [
+                    {
+                        "name": "main",
+                        "output_file": ".opencode/generated-prompts/runtime-authority-promotion.md",
+                        "shell_sections": [],
+                        "artifact_ids": [],
+                    }
+                ],
+            },
+        )
+        output_dir = repo_root / "generated"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = generate_prompt.main(
+            [
+                "--config",
+                str(config_path),
+                "--all-variants",
+                "--output-dir",
+                str(output_dir),
+                "--warn-below-line-count",
+                "0",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertTrue((output_dir / "runtime-authority-promotion.md").exists())
+        self.assertFalse(
+            (
+                output_dir
+                / ".opencode"
+                / "generated-prompts"
+                / "runtime-authority-promotion.md"
+            ).exists()
+        )
+        self.assertIn(
+            str(output_dir / "runtime-authority-promotion.md"), stdout.getvalue()
+        )
 
     def test_cli_warning_threshold_zero_disables_warning(self) -> None:
         repo_root = self.make_repo()
@@ -841,7 +898,7 @@ Canonical role
 
         self.assertEqual(code, 0)
         self.assertIn("info: variant 'main' rendered at ", stderr.getvalue())
-        self.assertNotIn("warning:", stderr.getvalue())
+        self.assertNotIn("error:", stderr.getvalue())
 
     def test_cli_validate_only_does_not_emit_line_info_or_warning(self) -> None:
         repo_root = self.make_repo()

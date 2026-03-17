@@ -2,6 +2,7 @@
 
 pub mod ach;
 pub mod bc;
+pub mod delta_q_promotion;
 pub mod distill;
 pub mod delta_q_validation;
 pub mod drda;

@@ -345,6 +345,10 @@ $Q^{\text{total}}(I,a)=Q^{\text{inst}}(I,a)+\beta_{\text{epi}} Q^{\text{epi}}(I,
 ### 12.3 Primal-dual risk constraints
 Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kappa_{\text{leak}}$. Dual updates: $\lambda \leftarrow [\lambda+\alpha(\hat{C}-\kappa)]_+$.
 
+### DeltaQ lane status note
+
+Current repo reality is now stronger than a plain structural DeltaQ lane. Hydra has the full narrow DeltaQ supervision path in code, plus an offline promotion stack: teacher-regret / head-fit reporting, a paired holdout policy-transfer gate, a dedicated `--delta-q-promotion` train mode, persisted promotion artifacts, and paired-arena helper/config/report objects. The still-missing piece is the actual paired arena-confirmation executor under fixed seeds / fixed compute / frozen opponents. So the honest status is: DeltaQ is implemented and promotion-gated offline, but not yet arena-confirmed or default-on.
+
 ---
 
 ## 13. Validation gates
