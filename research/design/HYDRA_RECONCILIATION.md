@@ -92,7 +92,7 @@ Working principle for this memo:
 | Canonical archive SSOT | `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` |
 | Archive prioritization view | `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` |
 | Promoted architecture doctrine | `HYDRA_FINAL.md` |
-| Promoted execution doctrine | `HYDRA_RECONCILIATION.md` |
+| Promoted operational doctrine | `HYDRA_RECONCILIATION.md` |
 | Current shipped/staged repo snapshot | `docs/CURRENT_STATUS.md` |
 | Current runtime reality | `docs/GAME_ENGINE.md` |
 | Runtime compatibility surface | `docs/COMPATIBILITY_SURFACE.md` |

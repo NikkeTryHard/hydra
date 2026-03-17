@@ -8,7 +8,7 @@ Opponent modeling is Hydra's primary differentiator from existing Mahjong AIs. T
 
 ### Mortal's Blind Spot
 
-> **Ownership note:** This document is the authoritative source for detailed opponent-modeling rationale (safety encoding logic, tenpai/danger head behavior, and expected effects), but not for final implementation shape when the canonical archive SSOT, promoted doctrine summaries, or runtime reality differ. If this file conflicts with `ARCHIVE_CANONICAL_CLAIMS.jsonl`, `HYDRA_FINAL.md`, `HYDRA_RECONCILIATION.md`, or current code/runtime, treat this document as rationale/reference and refresh the lagging summary elsewhere.
+> **Ownership note:** This document is the detailed rationale/reference surface for opponent modeling, not the owner of final implementation shape or active-tranche priority. If this file conflicts with `ARCHIVE_CANONICAL_CLAIMS.jsonl`, `HYDRA_FINAL.md`, `HYDRA_RECONCILIATION.md`, `docs/CURRENT_STATUS.md`, or current code/runtime, treat this document as rationale/reference and refresh the lagging summary elsewhere.
 
 > **Reserve/future note:** Not everything in this document belongs to the active path right now. Core safety / tenpai / danger rationale is active. Heavier or more speculative extensions (for example wait-set belief heads, call-intent/FiLM conditioning, safety reserve, deception/RSA-style mechanisms, and other future extensions) should be treated as reserve-shelf material unless the reconciled doctrine explicitly promotes them.
 >
@@ -52,15 +52,15 @@ Specific documented issues:
 
 ### What Hydra Adds
 
-Hydra addresses the opponent modeling gap through seven complementary systems:
+Hydra addresses the opponent modeling gap through a mix of active and reserve systems:
 
-1. **Explicit Safety Planes** — Encode suji, kabe, and genbutsu directly into the input tensor
-2. **Tenpai Predictor Head** — Detect silent tenpai (damaten) from discard patterns
-3. **Danger Head** — Predict deal-in probability per tile (with dense counterfactual labels)
-4. **Wait-Set Belief Head** — Predict which tiles complete each opponent's hand (§ 4.6)
-5. **Value-Conditioned Tenpai** — Estimate opponent hand value when tenpai (§ 3.7)
-6. **Call-Intent Head** — Infer opponent yaku plan from call patterns (§ 4.7)
-7. **Oracle Distillation** — Learn implicit opponent reading through teacher-student training
+1. **Explicit Safety Planes** — active rationale; shipped baseline encoding support
+2. **Tenpai Predictor Head** — active rationale for opponent-readiness prediction
+3. **Danger Head** — active rationale for per-tile defensive modeling
+4. **Value-Conditioned Tenpai** — reserve/staged rationale unless promoted by current doctrine (§ 3.7)
+5. **Wait-Set Belief Head** — reserve/staged rationale unless promoted by current doctrine (§ 4.6)
+6. **Call-Intent Head** — reserve/staged rationale unless promoted by current doctrine (§ 4.7)
+7. **Oracle Distillation** — reserve/staged rationale; active implementation priority still comes from `HYDRA_RECONCILIATION.md`
 
 ---
 
@@ -690,7 +690,7 @@ Per-opponent GRU over the full discard history to capture temporal patterns (ted
 
 > **Consensus note:** This approach was independently proposed as the #1 recommendation by two separate frontier AI analyses (GPT-5.2 Pro, two independent runs) without seeing each other's output. Both identified mahjong's tile-count conservation as the key structural property that makes Sinkhorn uniquely appropriate.
 
-### Pragmatic Deception via Rational Speech Acts (Phase 3 Module)
+### Reserve module: Pragmatic Deception via Rational Speech Acts (Phase 3)
 
 **Cross-field import:** Cognitive linguistics / computational pragmatics (Frank & Goodman, "Predicting Pragmatic Reasoning in Language Games", Science 336:998, 2012).
 
@@ -781,7 +781,7 @@ Secondary metric: *Suji Trap Frequency* -- how often Hydra's actual wait involve
 
 ---
 
-### CVaR-on-GRP for Tail-Risk Placement Control (Phase 3+ Inference Module)
+### Reserve module: CVaR-on-GRP for Tail-Risk Placement Control (Phase 3+ Inference)
 
 **Cross-field import:** Risk-sensitive RL / financial risk management (Chow et al., NeurIPS 2015; Dabney et al., AAAI 2018).
 
