@@ -5,19 +5,21 @@
 > **Status note:** this is a mixed reference doc. Hydra now routes in layers: `README.md` for entry routing, `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` plus its roadmap/rendered views for canonical archive intake, `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` for promoted doctrine summaries, and `docs/GAME_ENGINE.md` plus current code for runtime reality.
 >
 > Keep the checkpointing mechanics here. Treat older phase-2/phase-3 league details as reserve planning unless the reconciled doctrine explicitly promotes them.
+>
+> **Hard boundary:** universally applicable atomic save/load/integrity mechanics are current reference material. Phase-specific Phase 2 / Phase 3 checkpoint lifecycles, opponent-pool policies, and multi-stage transition procedures below are reserve/historical unless explicitly revived by current doctrine.
 
 ## Related Documents
 
 - [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, training infra, hardware, deployment
 - [../design/SEEDING.md](../design/SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
 - [../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl](../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / upstream research intake
-- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — promoted execution doctrine summary and active-vs-reserve split
+- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — promoted operational doctrine summary and active-vs-reserve split
 
 ---
 
 ## Checkpoint Management
 
-This section specifies the full checkpoint lifecycle: what is saved, where it lives on disk, how saves are made atomic and verifiable, how checkpoints are retained and pruned across training phases, and how they are loaded at phase transitions. The design prioritizes crash safety (no half-written files), auditability (every checkpoint is hash-verified), and operational simplicity (shell-friendly naming, standard tooling).
+This section specifies the reference checkpoint lifecycle: what is saved, where it lives on disk, how saves are made atomic and verifiable, how checkpoints are retained and pruned across training phases, and how they are loaded at phase transitions. Treat multi-phase lifecycle details as reserve/historical unless current doctrine explicitly re-promotes them. The design prioritizes crash safety (no half-written files), auditability (every checkpoint is hash-verified), and operational simplicity (shell-friendly naming, standard tooling).
 
 ### Checkpoint Format
 

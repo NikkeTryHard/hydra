@@ -10,6 +10,8 @@
 > Keep this document as implementation/infrastructure reference, not as the top-level architecture authority.
 >
 > **Interpretation rule:** if a later section sounds more specific than the current promoted doctrine but conflicts with the current two-tier / `192x34` / supervision-first Hydra path, treat that later section as legacy planning context unless it matches the canonical archive SSOT, promoted doctrine summaries, and current code/runtime.
+>
+> **Hard boundary:** the active supervised / target-generation path is the current mainline. Detailed Phase 2 / Phase 3 PPO, league, oracle-distillation, and opponent-pool plans below are reserve/historical reference material unless `HYDRA_RECONCILIATION.md` explicitly promotes them again.
 
 ## Overview
 
@@ -28,6 +30,8 @@ Hydra uses a 100% Rust architecture. Burn framework with burn-tch (libtorch/cuDN
 ## System Architecture
 
 The system is composed of three major subsystems: the Rust core game engine, the Rust training stack (Burn framework), and the deployment pipeline. Data flows from the game engine directly into the Burn training loop within a single Rust process. Trained models are saved via Burn's Record system for inference.
+
+> **Reserve-stage banner:** the high-level Rust stack description above is current. Detailed later-stage training infrastructure below should be read as reserve/historical reference unless the reconciled doctrine revives that stage explicitly.
 
 ```mermaid
 graph TB

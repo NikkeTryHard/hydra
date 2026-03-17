@@ -16,7 +16,7 @@ This document specifies the testing strategy across all Hydra subsystems: the Ru
 
 ### Game State Machine Tests
 
-Every transition in INFRASTRUCTURE.md's state diagram must have a dedicated test. The state machine governs round flow — dealing, drawing, discarding, call checks, kan processing, riichi declarations, and win checks — and a single missed transition can produce impossible game states that silently corrupt downstream data.
+Every transition in Hydra's live game-state flow must have a dedicated test. Use `hydra-engine` / `hydra-core` runtime code and `docs/GAME_ENGINE.md` as the primary owners of that flow; use `INFRASTRUCTURE.md` only as supporting historical/reference context when it still matches current runtime reality. The state machine governs round flow — dealing, drawing, discarding, call checks, kan processing, riichi declarations, and win checks — and a single missed transition can produce impossible game states that silently corrupt downstream data.
 
 **Required transition coverage:**
 
