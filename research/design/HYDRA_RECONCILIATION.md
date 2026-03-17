@@ -1,10 +1,20 @@
 # Hydra Reconciliation
 
-> **Promoted execution doctrine summary.**
+> **Promoted operational doctrine summary.**
 >
 > This file compresses the current build order and active-vs-reserve split after reconciling the canonical archive SSOT with current repository state.
 > If a downstream implementation/reference doc conflicts with this file on sequencing, tranche priority, or active-vs-reserve status, this file wins.
 > If this file drifts from `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` or current code/runtime, refresh it instead of treating the drift as a demotion of the upstream source.
+
+This file is Hydra's promoted operational doctrine. It owns Hydra's operational status language and active-vs-staged-vs-reserve decisions.
+
+Relationship to adjacent surfaces:
+- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` is the epistemic root / canonical archive source ledger that powers downstream promoted doctrine.
+- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` is the derived archive prioritization view over that same root.
+- `research/agent_handoffs/` preserves archive evidence, provenance, and claim trust; it does **not** replace this file as the owner of current active-path status.
+- `docs/CURRENT_STATUS.md` is the promoted already-built status snapshot derived from this file plus code/runtime validation.
+- `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` own runtime semantics and compatibility-sensitive invariants.
+- `research/design/HYDRA_FINAL.md` remains the north-star architecture target, not the owner of current shipped-state bookkeeping.
 
 This memo reconciles the strongest design inputs, the actual repository state, and the best immediate next move.
 
@@ -62,6 +72,19 @@ Working principle for this memo:
 - **reserve shelf** = good ideas kept for later if the active path underdelivers
 - **drop shelf** = ideas that should stop consuming mainline attention for now
 
+## Status vocabulary
+
+| Term | Meaning |
+|---|---|
+| `active path` | current mainline direction to optimize/build now |
+| `shipped baseline` | implemented and part of the current live Hydra baseline |
+| `implemented but not default-on` | implemented and intentionally not the default runtime/training path |
+| `implemented but staged` | implemented in core form, but activation/promotion remains intentionally deferred |
+| `reserve shelf` | preserved later-work direction; not current mainline |
+| `blocked` | not ready because a real dependency, semantic gap, or promotion requirement remains |
+| `rejected` | not part of the current plan |
+| `historical` | preserved context only; not current governing truth |
+
 ## Doctrine routing
 
 | Need | Primary file |
@@ -70,7 +93,9 @@ Working principle for this memo:
 | Archive prioritization view | `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` |
 | Promoted architecture doctrine | `HYDRA_FINAL.md` |
 | Promoted execution doctrine | `HYDRA_RECONCILIATION.md` |
+| Current shipped/staged repo snapshot | `docs/CURRENT_STATUS.md` |
 | Current runtime reality | `docs/GAME_ENGINE.md` |
+| Runtime compatibility surface | `docs/COMPATIBILITY_SURFACE.md` |
 | Historical / reserve-only planning surfaces | `HYDRA_ARCHIVE.md` |
 
 Workflow helper note:

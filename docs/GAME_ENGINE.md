@@ -119,7 +119,7 @@ The `build_legal_action_mask` function takes the current riichienv game state an
 
 ### Tensor Shape
 
-**Routing note:** `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` is Hydra's canonical archive SSOT for upstream research conclusions. `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` are promoted doctrine summaries built from that archive canon plus repo validation. This file records current runtime reality for the live encoder/runtime, and current code wins if docs drift. The original `85 x 34` tensor now describes the **baseline prefix** of the live encoder, not the full live encoder. The current implementation is already a **fixed-shape 192 x 34 superset** with Groups C/D plus presence-mask channels.
+**Routing note:** this file records current runtime reality for the live encoder/runtime, and current code wins if docs drift. For repo entry routing, trust/status vocabulary, and crate ownership, read `README.md`. For active-path / staged-vs-reserve decisions, read `research/design/HYDRA_RECONCILIATION.md`. For the compact compatibility contract, read `docs/COMPATIBILITY_SURFACE.md`. The original `85 x 34` tensor now describes the **baseline prefix** of the live encoder, not the full live encoder. The current implementation is already a **fixed-shape 192 x 34 superset** with Groups C/D plus presence-mask channels.
 
 Each observation is a `192 x 34` float tensor (6,528 values). The first 85 channels retain the baseline public+safety encoding; the remaining channels provide fixed-shape search/belief and Hand-EV context with zero-fill plus explicit presence masks when dynamic features are unavailable. This full shape feeds directly into the current SE-ResNet model input.
 
