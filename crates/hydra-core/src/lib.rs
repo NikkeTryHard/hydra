@@ -4,6 +4,8 @@
 //! Provides observation encoding, safety calculations, and batch simulation
 //! for training the Hydra AI.
 
+#![deny(clippy::dbg_macro, clippy::manual_assert)]
+
 pub mod action;
 pub mod afbs;
 pub mod arena;

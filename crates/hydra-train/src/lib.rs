@@ -3,6 +3,8 @@
 //! SE-ResNet backbone with ACH training, ExIt search targets, and DRDA wrapping.
 //! Implements the full training pipeline from HYDRA_FINAL.md.
 
+#![deny(clippy::dbg_macro, clippy::manual_assert)]
+
 pub mod backbone;
 pub mod config;
 pub mod data;

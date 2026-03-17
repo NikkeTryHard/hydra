@@ -5,20 +5,14 @@ use std::io;
 use std::io::BufRead;
 
 use burn::prelude::Backend;
-use hydra_core::action::{
-    build_legal_mask, riichienv_to_hydra, ActionPhase, AKA_5M, AKA_5P, AKA_5S, DISCARD_END,
-    HYDRA_ACTION_SPACE,
-};
+use hydra_core::action::{AKA_5M, AKA_5P, AKA_5S, DISCARD_END, HYDRA_ACTION_SPACE};
 use hydra_core::arena::TrajectoryDeltaQLabel;
-use hydra_core::bridge::encode_observation;
 use hydra_core::safety::SafetyInfo;
-use riichienv_core::replay::{mjai_event_actor, mjai_event_to_action, MjaiEvent};
+use riichienv_core::replay::MjaiEvent;
 use riichienv_core::state::GameState;
 use serde::{Deserialize, Serialize};
 
-use crate::data::mjai_loader::{
-    bool_mask_to_f32, invalid_data, should_sample_replay_event, tile136_to_type, update_safety,
-};
+use crate::data::mjai_loader::{bool_mask_to_f32, prepare_replay_decision, update_safety};
 use crate::model::HydraModel;
 use crate::training::delta_q_validation::DeltaQValidationReport;
 use crate::training::exit::ExitConfig;
@@ -27,7 +21,8 @@ use crate::training::live_exit::{
     SelfPlayExitAdapter,
 };
 use crate::training::replay_exit::{
-    legal_mask_digest_from_f32, source_hash_from_identity, ReplayDecisionKey,
+    copy_label_arrays, legal_mask_digest_from_f32, read_jsonl_records, source_hash_from_identity,
+    ReplayDecisionKey,
 };
 
 pub const REPLAY_DELTA_Q_SEMANTICS_V1: &str = "delta_q_child_minus_root_v1";
@@ -93,38 +88,19 @@ impl DeltaQSidecarIndex {
             || record.legal_mask_digest != legal_mask_digest_from_f32(legal_mask)
             || record.source_net_hash != source_net_hash
             || record.source_version != source_version
-            || record.target.len() != HYDRA_ACTION_SPACE
-            || record.mask.len() != HYDRA_ACTION_SPACE
         {
             return None;
         }
-        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
-        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
-        target.copy_from_slice(&record.target);
-        mask.copy_from_slice(&record.mask);
+        let (target, mask) = copy_label_arrays(&record.target, &record.mask)?;
         let validated = validate_delta_q_contract(&target, &mask, legal_mask)?;
         Some((validated.target, validated.mask))
     }
 
     pub fn from_jsonl_reader(reader: impl BufRead) -> io::Result<Self> {
-        let mut records = Vec::new();
-        for (line_idx, line) in reader.lines().enumerate() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let record: ReplayDeltaQRecordV1 = serde_json::from_str(&line).map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "invalid replay delta_q sidecar line {}: {err}",
-                        line_idx + 1
-                    ),
-                )
-            })?;
-            records.push(record);
-        }
-        Ok(Self::from_records(records))
+        Ok(Self::from_records(read_jsonl_records(
+            reader,
+            "replay delta_q sidecar",
+        )?))
     }
 
     pub fn from_jsonl_path(path: &std::path::Path) -> io::Result<Self> {
@@ -140,7 +116,7 @@ fn validate_delta_q_contract(
 ) -> Option<TrajectoryDeltaQLabel> {
     let label = TrajectoryDeltaQLabel::from_slices(target, mask)?;
     let mut saw_masked = false;
-    for action_idx in 0..HYDRA_ACTION_SPACE {
+    for (action_idx, &legal_value) in legal_mask.iter().enumerate().take(HYDRA_ACTION_SPACE) {
         let mask_value = label.mask[action_idx];
         if mask_value < -1e-6 || ((mask_value - 1.0).abs() > 1e-3 && mask_value > 1e-6) {
             return None;
@@ -151,7 +127,7 @@ fn validate_delta_q_contract(
         }
         if mask_value > 0.5 {
             saw_masked = true;
-            if legal_mask[action_idx] <= 0.0 {
+            if legal_value <= 0.0 {
                 return None;
             }
             if action_idx > DISCARD_END as usize {
@@ -190,106 +166,81 @@ pub fn generate_replay_delta_q_records<B: Backend>(
     let mut report = DeltaQValidationReport::new();
 
     for (idx, event) in events.iter().enumerate() {
-        if should_sample_replay_event(event) {
-            let env_action = mjai_event_to_action(event)
-                .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
-            if let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) {
-                let obs = state
-                    .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
-                    .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
-                let hydra_action = riichienv_to_hydra(&env_action)
-                    .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
-                let legal = obs.legal_actions_method();
-                let phase = if matches!(event, MjaiEvent::Dahai { .. })
-                    && state.players[actor].riichi_declared
-                {
-                    ActionPhase::RiichiSelect
+        if let Some(decision) = prepare_replay_decision(event, &mut state, &safety, &mut encoder)? {
+            let actor = decision.actor;
+            let ctx = RootDecisionContext {
+                obs_encoded: decision.obs_encoded,
+                legal_mask: decision.legal_mask,
+                policy_logits: model.policy_value_cpu(&decision.obs_encoded, device).0,
+                player_id: actor as u8,
+            };
+            let key = ReplayDecisionKey {
+                source_hash,
+                event_index: idx as u32,
+                actor: actor as u8,
+                obs_hash: obs_hash(&ctx.obs_encoded),
+            };
+
+            report.total_states += 1;
+
+            let labels = try_search_labels_from_context(
+                &state,
+                &decision.obs,
+                &ctx,
+                &safety[actor],
+                exit_cfg,
+                &mut |obs_encoded| model.policy_value_cpu(obs_encoded, device),
+                &mut adapter,
+            );
+
+            if let Some(delta_q) = labels.and_then(|labels| labels.delta_q) {
+                let legal_discard_count = ctx.legal_mask[..=DISCARD_END as usize]
+                    .iter()
+                    .filter(|&&is_legal| is_legal)
+                    .count();
+                let supported_actions = delta_q.mask.iter().filter(|&&m| m > 0.0).count();
+                let coverage = if legal_discard_count == 0 {
+                    0.0
                 } else {
-                    ActionPhase::Normal
+                    supported_actions as f64 / legal_discard_count as f64
                 };
-                let legal_mask = build_legal_mask(&legal, phase);
-                if legal_mask[hydra_action.id() as usize] {
-                    let obs_encoded = encode_observation(
-                        &mut encoder,
-                        &obs,
-                        &safety[actor],
-                        state.drawn_tile.map(tile136_to_type),
-                    );
-                    let ctx = RootDecisionContext {
-                        obs_encoded,
-                        legal_mask,
-                        policy_logits: model.policy_value_cpu(&obs_encoded, device).0,
-                        player_id: actor as u8,
-                    };
-                    let key = ReplayDecisionKey {
-                        source_hash,
-                        event_index: idx as u32,
-                        actor: actor as u8,
-                        obs_hash: obs_hash(&ctx.obs_encoded),
-                    };
-
-                    report.total_states += 1;
-
-                    let labels = try_search_labels_from_context(
-                        &state,
-                        &obs,
-                        &ctx,
-                        &safety[actor],
-                        exit_cfg,
-                        &mut |obs_encoded| model.policy_value_cpu(obs_encoded, device),
-                        &mut adapter,
-                    );
-
-                    if let Some(delta_q) = labels.and_then(|labels| labels.delta_q) {
-                        let legal_discard_count = ctx.legal_mask[..=DISCARD_END as usize]
-                            .iter()
-                            .filter(|&&is_legal| is_legal)
-                            .count();
-                        let supported_actions = delta_q.mask.iter().filter(|&&m| m > 0.0).count();
-                        let coverage = if legal_discard_count == 0 {
-                            0.0
-                        } else {
-                            supported_actions as f64 / legal_discard_count as f64
-                        };
-                        report.labels_emitted += 1;
-                        report.coverage_sum += coverage;
-                        report.supported_actions_sum += supported_actions as u64;
-                        report.root_visits_sum +=
-                            u64::from(budget_from_legal_count(exit_cfg, legal_discard_count));
-                        for action_idx in 0..HYDRA_ACTION_SPACE {
-                            if delta_q.mask[action_idx] <= 0.0 {
-                                continue;
-                            }
-                            let value = delta_q.target[action_idx] as f64;
-                            report.masked_abs_sum += value.abs();
-                            report.masked_entry_count += 1;
-                            if value > 0.0 {
-                                report.masked_positive_count += 1;
-                            } else if value < 0.0 {
-                                report.masked_negative_count += 1;
-                            } else {
-                                report.masked_zero_count += 1;
-                            }
-                        }
-                        records.push(ReplayDeltaQRecordV1 {
-                            version: 1,
-                            semantics: REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
-                            provenance: REPLAY_DELTA_Q_PROVENANCE.to_string(),
-                            key,
-                            action: hydra_action.id(),
-                            legal_mask_digest: legal_mask_digest_from_f32(&bool_mask_to_f32(
-                                ctx.legal_mask,
-                            )),
-                            source_net_hash,
-                            source_version,
-                            target: delta_q.target.to_vec(),
-                            mask: delta_q.mask.to_vec(),
-                        });
+                report.labels_emitted += 1;
+                report.coverage_sum += coverage;
+                report.supported_actions_sum += supported_actions as u64;
+                report.root_visits_sum +=
+                    u64::from(budget_from_legal_count(exit_cfg, legal_discard_count));
+                for action_idx in 0..HYDRA_ACTION_SPACE {
+                    if delta_q.mask[action_idx] <= 0.0 {
+                        continue;
+                    }
+                    let value = delta_q.target[action_idx] as f64;
+                    report.masked_abs_sum += value.abs();
+                    report.masked_entry_count += 1;
+                    if value > 0.0 {
+                        report.masked_positive_count += 1;
+                    } else if value < 0.0 {
+                        report.masked_negative_count += 1;
                     } else {
-                        report.labels_rejected += 1;
-                        report.rejected_other += 1;
+                        report.masked_zero_count += 1;
                     }
                 }
+                records.push(ReplayDeltaQRecordV1 {
+                    version: 1,
+                    semantics: REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+                    provenance: REPLAY_DELTA_Q_PROVENANCE.to_string(),
+                    key,
+                    action: decision.action_id,
+                    legal_mask_digest: legal_mask_digest_from_f32(&bool_mask_to_f32(
+                        ctx.legal_mask,
+                    )),
+                    source_net_hash,
+                    source_version,
+                    target: delta_q.target.to_vec(),
+                    mask: delta_q.mask.to_vec(),
+                });
+            } else {
+                report.labels_rejected += 1;
+                report.rejected_other += 1;
             }
         }
 
@@ -378,7 +329,7 @@ mod tests {
     fn loader_with_sidecar_populates_delta_q_fields() {
         let events = read_mjai_events(Cursor::new(sample_log())).expect("parse events");
         let device = Default::default();
-        let model = crate::model::HydraModelConfig::learner().init::<B>(&device);
+        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
         let (records, _report) = replay_delta_q_records_for_identity(
             "game-1",
             &events,
@@ -391,8 +342,15 @@ mod tests {
         .expect("generate sidecar records");
         let index = DeltaQSidecarIndex::from_records(records);
 
-        let game = load_game_from_events_with_sidecar("game-1", 123, 1, events, None, Some(&index))
-            .expect("load with sidecar");
+        let game = load_game_from_events_with_sidecar(
+            "game-1",
+            crate::data::mjai_loader::SidecarProvenance::default(),
+            crate::data::mjai_loader::SidecarProvenance::new(Some(123), Some(1)),
+            events,
+            None,
+            Some(&index),
+        )
+        .expect("load with sidecar");
         assert!(game
             .samples
             .iter()
@@ -404,9 +362,55 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_delta_q_sidecar_key_last_record_wins() {
+        let key = ReplayDecisionKey {
+            source_hash: 7,
+            event_index: 3,
+            actor: 1,
+            obs_hash: 11,
+        };
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        mask[2] = 1.0;
+        let mut first_target = [0.0f32; HYDRA_ACTION_SPACE];
+        first_target[2] = 0.25;
+        let mut second_target = [0.0f32; HYDRA_ACTION_SPACE];
+        second_target[2] = -0.5;
+        let records = vec![
+            ReplayDeltaQRecordV1 {
+                version: 1,
+                semantics: REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+                provenance: REPLAY_DELTA_Q_PROVENANCE.to_string(),
+                key,
+                action: 2,
+                legal_mask_digest: legal_mask_digest_from_f32(&mask),
+                source_net_hash: 9,
+                source_version: 1,
+                target: first_target.to_vec(),
+                mask: mask.to_vec(),
+            },
+            ReplayDeltaQRecordV1 {
+                version: 1,
+                semantics: REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+                provenance: REPLAY_DELTA_Q_PROVENANCE.to_string(),
+                key,
+                action: 2,
+                legal_mask_digest: legal_mask_digest_from_f32(&mask),
+                source_net_hash: 9,
+                source_version: 1,
+                target: second_target.to_vec(),
+                mask: mask.to_vec(),
+            },
+        ];
+        let index = DeltaQSidecarIndex::from_records(records);
+        let (target, loaded_mask) = index.lookup_label(&key, 2, &mask, 9, 1).expect("lookup");
+        assert!((target[2] + 0.5).abs() < 1e-6);
+        assert_eq!(loaded_mask[2], 1.0);
+    }
+
+    #[test]
     fn replay_delta_q_records_are_tagged_search_derived() {
         let device = Default::default();
-        let model = crate::model::HydraModelConfig::learner().init::<B>(&device);
+        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
         let events = read_mjai_events(Cursor::new(sample_log())).expect("parse events");
         let (records, report) = replay_delta_q_records_for_identity(
             "game-1",

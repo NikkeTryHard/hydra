@@ -36,6 +36,38 @@ fn label_to_vec_pair(
     (target.to_vec(), mask.to_vec())
 }
 
+fn masked_softmax_probs(
+    logits: &[f32; HYDRA_ACTION_SPACE],
+    legal_mask: &[bool; HYDRA_ACTION_SPACE],
+    temperature: f32,
+) -> [f32; HYDRA_ACTION_SPACE] {
+    let mut adjusted = [f32::NEG_INFINITY; HYDRA_ACTION_SPACE];
+    let mut max_val = f32::NEG_INFINITY;
+    for i in 0..HYDRA_ACTION_SPACE {
+        if legal_mask[i] {
+            adjusted[i] = logits[i] / temperature;
+            if adjusted[i] > max_val {
+                max_val = adjusted[i];
+            }
+        }
+    }
+
+    let mut probs = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut total = 0.0f32;
+    for i in 0..HYDRA_ACTION_SPACE {
+        if legal_mask[i] {
+            probs[i] = (adjusted[i] - max_val).exp();
+            total += probs[i];
+        }
+    }
+    if total > 0.0 {
+        for p in &mut probs {
+            *p /= total;
+        }
+    }
+    probs
+}
+
 impl TrajectoryDeltaQLabel {
     pub fn from_slices(target: &[f32], mask: &[f32]) -> Option<Self> {
         let (target, mask) = label_from_slices(target, mask)?;
@@ -611,30 +643,7 @@ pub fn softmax_temperature(
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
     temperature: f32,
 ) -> [f32; HYDRA_ACTION_SPACE] {
-    let mut adjusted = [f32::NEG_INFINITY; HYDRA_ACTION_SPACE];
-    let mut max_val = f32::NEG_INFINITY;
-    for i in 0..HYDRA_ACTION_SPACE {
-        if legal_mask[i] {
-            adjusted[i] = logits[i] / temperature;
-            if adjusted[i] > max_val {
-                max_val = adjusted[i];
-            }
-        }
-    }
-    let mut probs = [0.0f32; HYDRA_ACTION_SPACE];
-    let mut total = 0.0f32;
-    for i in 0..HYDRA_ACTION_SPACE {
-        if legal_mask[i] {
-            probs[i] = (adjusted[i] - max_val).exp();
-            total += probs[i];
-        }
-    }
-    if total > 0.0 {
-        for p in &mut probs {
-            *p /= total;
-        }
-    }
-    probs
+    masked_softmax_probs(logits, legal_mask, temperature)
 }
 
 pub fn games_played(scores: &[[i32; 4]]) -> usize {
@@ -753,29 +762,7 @@ pub fn sample_action_with_temperature(
     temperature: f32,
     rng_val: f32,
 ) -> (u8, [f32; HYDRA_ACTION_SPACE]) {
-    let mut adjusted = [f32::NEG_INFINITY; HYDRA_ACTION_SPACE];
-    let mut max_val = f32::NEG_INFINITY;
-    for i in 0..HYDRA_ACTION_SPACE {
-        if legal_mask[i] {
-            adjusted[i] = logits[i] / temperature;
-            if adjusted[i] > max_val {
-                max_val = adjusted[i];
-            }
-        }
-    }
-    let mut probs = [0.0f32; HYDRA_ACTION_SPACE];
-    let mut total = 0.0f32;
-    for i in 0..HYDRA_ACTION_SPACE {
-        if legal_mask[i] {
-            probs[i] = (adjusted[i] - max_val).exp();
-            total += probs[i];
-        }
-    }
-    if total > 0.0 {
-        for p in &mut probs {
-            *p /= total;
-        }
-    }
+    let probs = masked_softmax_probs(logits, legal_mask, temperature);
     let mut cumsum = 0.0f32;
     let mut chosen = 0u8;
     for (i, &p) in probs.iter().enumerate() {
