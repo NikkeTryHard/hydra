@@ -236,18 +236,6 @@ pub(super) fn measure_rl_runtime_throughput(
     Ok(measure_samples_per_second(measure_samples, elapsed))
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::preflight_runtime::classify_probe_detail;
-    use hydra_train::preflight::ProbeStatus;
-
-    #[test]
-    fn rl_runtime_autotune_uses_probe_oom_classification() {
-        assert_eq!(classify_probe_detail("CUDA out of memory"), ProbeStatus::Oom);
-        assert_eq!(classify_probe_detail("oom while probing rl batch"), ProbeStatus::Oom);
-    }
-}
-
 pub(super) fn tune_runtime_knob<T, F>(
     base: &TrainConfig,
     knob_name: &str,
@@ -540,4 +528,16 @@ pub(super) fn autotune_loader_runtime(
     );
 
     Ok(loader_runtime_config(&tuned))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::preflight_runtime::classify_probe_detail;
+    use hydra_train::preflight::ProbeStatus;
+
+    #[test]
+    fn rl_runtime_autotune_uses_probe_oom_classification() {
+        assert_eq!(classify_probe_detail("CUDA out of memory"), ProbeStatus::Oom);
+        assert_eq!(classify_probe_detail("oom while probing rl batch"), ProbeStatus::Oom);
+    }
 }

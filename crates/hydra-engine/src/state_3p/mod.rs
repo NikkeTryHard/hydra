@@ -2112,35 +2112,6 @@ impl GameState3P {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replay_ankan_matcher_accepts_same_tile_class_with_different_copy_ids() {
-        let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
-        let replay = Action::new(ActionType::Ankan, Some(17), &[17, 17, 17, 17], Some(0));
-
-        assert!(GameState3P::replay_action_matches_legal(&legal, &replay));
-    }
-
-    #[test]
-    fn replay_kakan_matcher_accepts_same_tile_class_with_different_copy_ids() {
-        let legal = Action::new(ActionType::Kakan, Some(16), &[16, 17, 18], Some(0));
-        let replay = Action::new(ActionType::Kakan, Some(17), &[], Some(0));
-
-        assert!(GameState3P::replay_action_matches_legal(&legal, &replay));
-    }
-
-    #[test]
-    fn replay_kan_matcher_rejects_different_tile_classes() {
-        let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
-        let replay = Action::new(ActionType::Ankan, Some(20), &[20, 20, 20, 20], Some(0));
-
-        assert!(!GameState3P::replay_action_matches_legal(&legal, &replay));
-    }
-}
-
 impl GameState3P {
     pub fn _push_mjai_event(&mut self, event: Value) {
         if self.skip_mjai_logging {
@@ -2192,5 +2163,34 @@ impl GameState3P {
                 self.mjai_log_per_player[pid].push(final_json);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_ankan_matcher_accepts_same_tile_class_with_different_copy_ids() {
+        let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
+        let replay = Action::new(ActionType::Ankan, Some(17), &[17, 17, 17, 17], Some(0));
+
+        assert!(GameState3P::replay_action_matches_legal(&legal, &replay));
+    }
+
+    #[test]
+    fn replay_kakan_matcher_accepts_same_tile_class_with_different_copy_ids() {
+        let legal = Action::new(ActionType::Kakan, Some(16), &[16, 17, 18], Some(0));
+        let replay = Action::new(ActionType::Kakan, Some(17), &[], Some(0));
+
+        assert!(GameState3P::replay_action_matches_legal(&legal, &replay));
+    }
+
+    #[test]
+    fn replay_kan_matcher_rejects_different_tile_classes() {
+        let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
+        let replay = Action::new(ActionType::Ankan, Some(20), &[20, 20, 20, 20], Some(0));
+
+        assert!(!GameState3P::replay_action_matches_legal(&legal, &replay));
     }
 }
