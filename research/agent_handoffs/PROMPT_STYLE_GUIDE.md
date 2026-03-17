@@ -6,7 +6,122 @@
 > Do not stop after one packing pass. Render, inspect the line count, add more high-signal artifacts, rerender, and repeat until you are genuinely out of useful local context or the task is truly small.
 > The research agent is the most intelligent LLM on the planet, and the more useful artifacts you throw at it, the better it performs. For serious Hydra research, bias hard toward squeezing as much useful LOC as possible into the prompt.
 
-## 1. What this guide is for
+## 1. Good prompting advice for Hydra work
+
+### 1.0 Decide whether the job is actually research-worthy before you build a giant packet
+
+Do not spend Hydra research budget on a question the repo already answers after disciplined local triage.
+
+Before you build any serious research-agent prompt, narrow the lane locally first:
+
+1. check the authority docs in order
+2. check the relevant code and tests
+3. check canonical/archive surfaces if authority docs stop short
+4. decide whether any real gap remains, and whether it is unresolved semantics, missing evidence, or only engineering packaging
+
+Use this rule of thumb:
+
+- **research-worthy** = the repo still does not settle the core semantics, provenance, target object, trust object, or next-build blueprint after serious local search
+- **not research-worthy** = the lane is already narrowed, the target object is clear enough, and the remaining work is build, validation, gating, or sequencing inside current repo reality
+
+Important distinction:
+
+- early triage may ask **"is this the real next lane or not?"** once, only to avoid spending implementation effort on a fake path
+- after the lane is already narrowed, stop spending research budget on **"does this exist?"**, **"is this real?"**, or **"can we build now?"** unless new evidence materially reopens the semantics
+- once a lane survives triage, the research prompt should usually ask for **the blueprint**:
+  - what exact object to add
+  - what files to change and in what order
+  - what measurable gates or thresholds should control promotion
+  - what would falsify the lane and what the fallback should be
+
+Bad expensive-research prompts:
+
+- "does this lane exist?"
+- "can we build this now?"
+- "is this maybe a good idea?"
+
+when local triage has already narrowed the lane well enough to move to blueprint, validation, or implementation planning.
+
+Good research prompts after narrowing, when a real semantic gap still remains:
+
+- "what exact proof object should we add next?"
+- "what is the implementation-ready blueprint?"
+- "what acceptance criteria should control promotion or rejection?"
+- "what is the strongest fallback if this lane fails?"
+
+Use the research agent to answer the hardest unresolved question, not to rerun existence checks after the lane is already narrowed.
+
+### 1.1 Be explicit about the job
+
+Say what the agent is trying to produce.
+
+Usually that means one of:
+
+- an implementation-ready blueprint
+- a validation-ready blueprint
+- a debugging or risk-audit blueprint
+
+Do not ask for a memo when you want a buildable answer.
+
+### 1.2 Keep the shell lean
+
+The shell should usually be a few tight blocks such as:
+
+- `role`
+- `task`
+- `rules`
+- `style`
+- `artifact_note` when you need an explicit evidence warning, or fold that warning into `rules` when the shell should stay tighter
+
+The shell should orient the task.
+It should not become the task.
+
+Recommended split:
+
+- `role` = who the agent is for this prompt, kept short and customizable
+- `task` = the actual job and required deliverable, also customizable per prompt
+- `rules` = hard requirements, must-do / must-not-do behavior, tool/search/validation pressure
+- `style` = softer presentation and reasoning guidance
+
+### 1.3 Put the real weight in the artifacts
+
+Good Hydra prompts usually win or lose on artifact quality, not on shell cleverness.
+
+Use the prompt body to carry:
+
+- code
+- docs
+- tests
+- formulas
+- thresholds
+- comments
+- examples
+
+The prompt should give the agent a strong starting packet, not force first-mile rediscovery from nothing.
+
+### 1.4 Treat artifacts as evidence, not truth
+
+The prompt should explicitly tell the agent that artifacts may be:
+
+- stale
+- partial
+- inconsistent
+- semantically wrong
+- misleading by omission
+
+The agent should inspect and critique them, not inherit them blindly.
+
+### 1.5 Reduce ambiguity and conflicts
+
+If instructions fight each other, fix the conflict before you generate the final prompt.
+
+Bad prompt behavior often comes from:
+
+- too many style bullets
+- old inherited wording that no longer matches the task
+- broad novelty instructions on narrow tasks
+
+## 2. What this guide is for
 
 This guide is for building good Hydra prompts with the current prompt generator.
 
@@ -26,7 +141,7 @@ But do not casually strip away instructions that increase search depth, validati
 
 ---
 
-## 2. What the generator actually does
+## 3. What the generator actually does
 
 Main files:
 
@@ -68,7 +183,7 @@ It does not replace prompt judgment.
 
 ---
 
-## 3. Quickstart workflow
+## 4. Quickstart workflow
 
 Typical flow:
 
@@ -101,7 +216,7 @@ Treat it as a packing failure until you have either added more high-signal conte
 
 ---
 
-## 4. Reference examples are templates, not prisons
+## 5. Reference examples are templates, not prisons
 
 Reference examples are there to give you a good starting shell.
 They are not rigid copy targets.
@@ -148,132 +263,16 @@ They are strong defaults, and they should survive unless you have an explicit re
 
 ---
 
-## 5. Good prompting advice for Hydra work
-
-### 5.0 Decide whether the job is actually research-worthy before you build a giant packet
-
-Do not spend a large Hydra research packet on a question the repo can already answer with strong local search.
-
-Before you build a serious research-agent prompt, do local triage first:
-
-1. check the authority docs in order
-2. check the relevant code and tests
-3. check canonical/archive surfaces if authority docs stop short
-4. decide whether the remaining gap is semantics, missing evidence, or just engineering packaging
-
-Use this rule of thumb:
-
-- **research-worthy** = the repo still does not settle the core semantics, provenance, target object, trust object, or next-build blueprint after serious local search
-- **not research-worthy** = the lane is already narrowed and the real need is to decide how to build, validate, gate, or sequence it inside the current repo reality
-
-Important distinction:
-
-- early triage may ask **"is this the real next lane or not?"** once, to avoid wasting implementation effort on a fake path
-- after the lane is already narrowed, do **not** keep spending research-agent budget on **"does this exist?"** or **"can we build now?"** unless new evidence reopens the semantics
-- once a lane survives triage, the research prompt should usually ask for **the blueprint**:
-  - what exact object to add
-  - what files to change and in what order
-  - what measurable gates or thresholds should control promotion
-  - what would falsify the lane and what the fallback should be
-
-Bad expensive-research prompts:
-
-- "does this lane exist?"
-- "can we build this now?"
-- "is this maybe a good idea?"
-
-when the repo has already answered those well enough.
-
-Good expensive-research prompts after narrowing:
-
-- "what exact proof object should we add next?"
-- "what is the implementation-ready blueprint?"
-- "what acceptance criteria should control promotion or rejection?"
-- "what is the strongest fallback if this lane fails?"
-
-The research agent should be used to produce the strongest answer to the hard remaining question, not to repeatedly reconfirm that the lane exists after the repo already showed it does.
-
-### 5.1 Be explicit about the job
-
-Say what the agent is trying to produce.
-
-Usually that means one of:
-
-- an implementation-ready blueprint
-- a validation-ready blueprint
-- a debugging or risk-audit blueprint
-
-Do not ask for a memo when you want a buildable answer.
-
-### 5.2 Keep the shell lean
-
-The shell should usually be a few tight blocks such as:
-
-- `role`
-- `task`
-- `rules`
-- `style`
-- `artifact_note` when you need an explicit evidence warning, or fold that warning into `rules` when the shell should stay tighter
-
-The shell should orient the task.
-It should not become the task.
-
-Recommended split:
-
-- `role` = who the agent is for this prompt, kept short and customizable
-- `task` = the actual job and required deliverable, also customizable per prompt
-- `rules` = hard requirements, must-do / must-not-do behavior, tool/search/validation pressure
-- `style` = softer presentation and reasoning guidance
-
-### 5.3 Put the real weight in the artifacts
-
-Good Hydra prompts usually win or lose on artifact quality, not on shell cleverness.
-
-Use the prompt body to carry:
-
-- code
-- docs
-- tests
-- formulas
-- thresholds
-- comments
-- examples
-
-The prompt should give the agent a strong starting packet, not force first-mile rediscovery from nothing.
-
-### 5.4 Treat artifacts as evidence, not truth
-
-The prompt should explicitly tell the agent that artifacts may be:
-
-- stale
-- partial
-- inconsistent
-- semantically wrong
-- misleading by omission
-
-The agent should inspect and critique them, not inherit them blindly.
-
-### 5.5 Reduce ambiguity and conflicts
-
-If instructions fight each other, fix the conflict before you generate the final prompt.
-
-Bad prompt behavior often comes from:
-
-- too many style bullets
-- old inherited wording that no longer matches the task
-- broad novelty instructions on narrow tasks
-- output contracts that do not match the actual decision you want
-
 Clear prompts beat crowded prompts.
 
-### 5.6 Use examples as steering tools, not scripts
+### 5.1 Use examples as steering tools, not scripts
 
 The example prompts are useful because they show good families of structure.
 They are not a reason to copy every sentence.
 
 Start from the closest family, then adapt.
 
-### 5.7 Ask for visible reasoning when the task needs it
+### 5.2 Ask for visible reasoning when the task needs it
 
 For important technical tasks, the prompt should push the agent to separate:
 
@@ -286,7 +285,7 @@ For important technical tasks, the prompt should push the agent to separate:
 Do this when it helps correctness.
 Do not force giant reporting rituals for tiny tasks.
 
-### 5.8 Preserve strong search, tool, and validation pressure by default
+### 5.3 Preserve strong search, tool, and validation pressure by default
 
 Some inherited style lines look repetitive, but for Hydra research they are usually load-bearing rather than filler.
 

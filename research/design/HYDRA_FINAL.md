@@ -1,6 +1,6 @@
-# HYDRA-OMEGA: A Maximum-Ceiling 4-Player Riichi Mahjong AI (Complexity-Free)
+# HYDRA: A Maximum-Ceiling 4-Player Riichi Mahjong AI
 
-**Promoted architecture doctrine summary.** This document is Hydra's architecture north star after filtering the canonical archive SSOT through current repo/code validation. It supersedes the two prior internal variants: the throughput-first "compute-constrained elegance" plan and the "information-geometric / all-out" plan. HYDRA-OMEGA keeps their best ideas, removes their ceilings, and adds a rigorously-grounded robustness layer.
+**Promoted architecture doctrine summary.** This document is Hydra's architecture north star after filtering the canonical archive SSOT through current repo/code validation. It supersedes the two prior internal variants: the throughput-first "compute-constrained elegance" plan and the "information-geometric / all-out" plan. Hydra keeps their best ideas, removes their ceilings, and adds a rigorously grounded robustness layer.
 
 ---
 
@@ -8,7 +8,7 @@
 
 4-player Riichi Mahjong is a large, general-sum, imperfect-information game with a **finite shared hidden pool** (multivariate hypergeometric), **hard conservation constraints**, and **decision-critical correlations** that strengthen late game.
 
-HYDRA-OMEGA is built around one central engine:
+Hydra is built around one central engine:
 
 > **ExIt + Pondering + Search-as-Feature (SaF)**
 > Deep anytime belief-search generates training targets continuously during self-play, amplified by opponent-turn idle time; those targets are amortized back into the policy/value networks so inference remains fast.
