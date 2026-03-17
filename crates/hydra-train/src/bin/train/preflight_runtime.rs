@@ -155,11 +155,13 @@ where
         rerun_candidate_attempts(
             config_path,
             &mut result_path_for,
-            kind,
-            summary.candidate_microbatch,
-            extra_attempts,
-            warmup_steps,
-            measure_steps + extra_measure_steps,
+            ProbeRunSpec {
+                kind,
+                candidate: summary.candidate_microbatch,
+                attempts: extra_attempts,
+                warmup_steps,
+                measure_steps: measure_steps + extra_measure_steps,
+            },
             results,
             progress,
         )?;
@@ -232,11 +234,14 @@ where
         rerun_candidate_attempts(
             config_path,
             &mut result_path_for,
-            kind,
-            candidate,
-            1,
-            warmup_steps,
-            measure_steps + config.preflight.local_refinement_extra_measure_steps.max(1),
+            ProbeRunSpec {
+                kind,
+                candidate,
+                attempts: 1,
+                warmup_steps,
+                measure_steps: measure_steps
+                    + config.preflight.local_refinement_extra_measure_steps.max(1),
+            },
             results,
             progress,
         )?;
@@ -337,28 +342,14 @@ fn adaptive_probe_steps(config: &TrainConfig, seconds_per_step: f64) -> (usize, 
 fn rerun_candidate_attempts<F>(
     config_path: &Path,
     result_path_for: &mut F,
-    kind: ProbeKind,
-    candidate: usize,
-    attempts: usize,
-    warmup_steps: usize,
-    measure_steps: usize,
+    spec: ProbeRunSpec,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
 ) -> Result<(), String>
 where
     F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
 {
-    run_candidate_attempts(
-        config_path,
-        result_path_for,
-        kind,
-        candidate,
-        attempts,
-        warmup_steps,
-        measure_steps,
-        results,
-        progress,
-    )?;
+    run_candidate_attempts(config_path, result_path_for, spec, results, progress)?;
     Ok(())
 }
 
@@ -373,17 +364,37 @@ struct ProbeGrowthState {
     prior_best_score: Option<f64>,
 }
 
-fn maybe_expand_probe_candidates(
-    candidates: &mut Vec<usize>,
+struct ProbeRunSpec {
+    kind: ProbeKind,
+    candidate: usize,
+    attempts: usize,
+    warmup_steps: usize,
+    measure_steps: usize,
+}
+
+struct ProbeGrowthDecision<'a> {
     index: usize,
     kind: ProbeKind,
     candidate: usize,
-    summary: &ProbeCandidateSummary,
+    summary: &'a ProbeCandidateSummary,
     candidate_score: f64,
-    config: &TrainConfig,
     tolerance: f64,
+}
+
+fn maybe_expand_probe_candidates(
+    candidates: &mut Vec<usize>,
+    decision: ProbeGrowthDecision<'_>,
+    config: &TrainConfig,
     growth_state: &mut ProbeGrowthState,
 ) -> bool {
+    let ProbeGrowthDecision {
+        index,
+        kind,
+        candidate,
+        summary,
+        candidate_score,
+        tolerance,
+    } = decision;
     let is_top = index + 1 == candidates.len();
     if is_top && summary.candidate_microbatch == candidate {
         let ceiling = dynamic_probe_ceiling(config, kind, candidate);
@@ -469,17 +480,20 @@ where
 fn run_candidate_attempts<F>(
     config_path: &Path,
     result_path_for: &mut F,
-    kind: ProbeKind,
-    candidate: usize,
-    attempts: usize,
-    warmup_steps: usize,
-    measure_steps: usize,
+    spec: ProbeRunSpec,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
 ) -> Result<bool, String>
 where
     F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
 {
+    let ProbeRunSpec {
+        kind,
+        candidate,
+        attempts,
+        warmup_steps,
+        measure_steps,
+    } = spec;
     for attempt in 0..attempts.max(1) {
         let attempt_number = attempt + 1;
         progress.set_message(format_probe_attempt_message(
@@ -567,11 +581,13 @@ fn search_train_microbatch(
         let passed = run_candidate_attempts(
             config_path,
             &mut result_path_for,
-            ProbeKind::Train,
-            candidate,
-            config.preflight.required_successes.max(1),
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps,
+            ProbeRunSpec {
+                kind: ProbeKind::Train,
+                candidate,
+                attempts: config.preflight.required_successes.max(1),
+                warmup_steps: config.preflight.warmup_steps,
+                measure_steps: config.preflight.measure_steps,
+            },
             &mut results,
             &progress,
         )?;
@@ -700,11 +716,13 @@ fn search_validation_microbatch(
         let passed = run_candidate_attempts(
             config_path,
             &mut result_path_for,
-            ProbeKind::Validation,
-            candidate,
-            config.preflight.required_successes.max(1),
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps,
+            ProbeRunSpec {
+                kind: ProbeKind::Validation,
+                candidate,
+                attempts: config.preflight.required_successes.max(1),
+                warmup_steps: config.preflight.warmup_steps,
+                measure_steps: config.preflight.measure_steps,
+            },
             &mut results,
             &progress,
         )?;
@@ -738,13 +756,15 @@ fn search_validation_microbatch(
         };
         if maybe_expand_probe_candidates(
             &mut candidates,
-            index,
-            ProbeKind::Validation,
-            candidate,
-            &summary,
-            candidate_score,
+            ProbeGrowthDecision {
+                index,
+                kind: ProbeKind::Validation,
+                candidate,
+                summary: &summary,
+                candidate_score,
+                tolerance,
+            },
             config,
-            tolerance,
             &mut growth_state,
         ) {
             break;
@@ -841,11 +861,13 @@ fn search_rl_runtime_candidate(
         let passed = run_candidate_attempts(
             config_path,
             &mut result_path_for,
-            kind,
-            candidate,
-            config.preflight.required_successes.max(1),
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps,
+            ProbeRunSpec {
+                kind,
+                candidate,
+                attempts: config.preflight.required_successes.max(1),
+                warmup_steps: config.preflight.warmup_steps,
+                measure_steps: config.preflight.measure_steps,
+            },
             &mut results,
             &progress,
         )?;
@@ -889,13 +911,15 @@ fn search_rl_runtime_candidate(
         };
         if maybe_expand_probe_candidates(
             &mut candidates,
-            index,
-            kind,
-            candidate,
-            &summary,
-            candidate_score,
+            ProbeGrowthDecision {
+                index,
+                kind,
+                candidate,
+                summary: &summary,
+                candidate_score,
+                tolerance,
+            },
             config,
-            tolerance,
             &mut growth_state,
         ) {
             break;
