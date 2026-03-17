@@ -2380,6 +2380,62 @@ impl GameState {
     }
 }
 
+impl GameState {
+    /// Append a JSON MJAI event to global and per-player logs.
+    pub fn _push_mjai_event(&mut self, event: Value) {
+        if self.skip_mjai_logging {
+            return;
+        }
+        // SAFETY: serialization of serde_json::Value always succeeds
+        let json_str = serde_json::to_string(&event).unwrap();
+        self.mjai_log.push(json_str.clone());
+
+        let type_str = event["type"].as_str().unwrap_or("");
+        let actor = event["actor"].as_u64().map(|a| a as usize);
+
+        let np = NP;
+        for pid in 0..np {
+            let should_push = true;
+            let mut final_json = json_str.clone();
+
+            if type_str == "start_kyoku" {
+                if let Some(tehais_val) = event.get("tehais").and_then(|v| v.as_array()) {
+                    let mut masked_tehais = Vec::new();
+                    for (i, hand_val) in tehais_val.iter().enumerate() {
+                        if i == pid {
+                            masked_tehais.push(hand_val.clone());
+                        } else {
+                            let len = hand_val.as_array().map(|a| a.len()).unwrap_or(13);
+                            let masked = vec!["?".to_string(); len];
+                            // SAFETY: serialization of Vec<String> never fails
+                            masked_tehais.push(serde_json::to_value(masked).unwrap());
+                        }
+                    }
+                    // SAFETY: event was constructed as Value::Object, so as_object() always succeeds
+                    let mut masked_event = event.as_object().unwrap().clone();
+                    masked_event.insert("tehais".to_string(), Value::Array(masked_tehais));
+                    // SAFETY: serialization of serde_json::Value always succeeds
+                    final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
+                }
+            } else if type_str == "tsumo" {
+                if let Some(act_id) = actor {
+                    if act_id != pid {
+                        // SAFETY: event was constructed as Value::Object, so as_object() always succeeds
+                        let mut masked_event = event.as_object().unwrap().clone();
+                        masked_event.insert("pai".to_string(), Value::String("?".to_string()));
+                        // SAFETY: serialization of serde_json::Value always succeeds
+                        final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
+                    }
+                }
+            }
+
+            if should_push {
+                self.mjai_log_per_player[pid].push(final_json);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2435,61 +2491,5 @@ mod tests {
         let replay = Action::new(ActionType::Ankan, Some(20), &[20, 20, 20, 20], Some(0));
 
         assert!(!GameState::replay_action_matches_legal(&legal, &replay));
-    }
-}
-
-impl GameState {
-    /// Append a JSON MJAI event to global and per-player logs.
-    pub fn _push_mjai_event(&mut self, event: Value) {
-        if self.skip_mjai_logging {
-            return;
-        }
-        // SAFETY: serialization of serde_json::Value always succeeds
-        let json_str = serde_json::to_string(&event).unwrap();
-        self.mjai_log.push(json_str.clone());
-
-        let type_str = event["type"].as_str().unwrap_or("");
-        let actor = event["actor"].as_u64().map(|a| a as usize);
-
-        let np = NP;
-        for pid in 0..np {
-            let should_push = true;
-            let mut final_json = json_str.clone();
-
-            if type_str == "start_kyoku" {
-                if let Some(tehais_val) = event.get("tehais").and_then(|v| v.as_array()) {
-                    let mut masked_tehais = Vec::new();
-                    for (i, hand_val) in tehais_val.iter().enumerate() {
-                        if i == pid {
-                            masked_tehais.push(hand_val.clone());
-                        } else {
-                            let len = hand_val.as_array().map(|a| a.len()).unwrap_or(13);
-                            let masked = vec!["?".to_string(); len];
-                            // SAFETY: serialization of Vec<String> never fails
-                            masked_tehais.push(serde_json::to_value(masked).unwrap());
-                        }
-                    }
-                    // SAFETY: event was constructed as Value::Object, so as_object() always succeeds
-                    let mut masked_event = event.as_object().unwrap().clone();
-                    masked_event.insert("tehais".to_string(), Value::Array(masked_tehais));
-                    // SAFETY: serialization of serde_json::Value always succeeds
-                    final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
-                }
-            } else if type_str == "tsumo" {
-                if let Some(act_id) = actor {
-                    if act_id != pid {
-                        // SAFETY: event was constructed as Value::Object, so as_object() always succeeds
-                        let mut masked_event = event.as_object().unwrap().clone();
-                        masked_event.insert("pai".to_string(), Value::String("?".to_string()));
-                        // SAFETY: serialization of serde_json::Value always succeeds
-                        final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
-                    }
-                }
-            }
-
-            if should_push {
-                self.mjai_log_per_player[pid].push(final_json);
-            }
-        }
     }
 }
