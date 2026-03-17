@@ -484,7 +484,8 @@ pub fn encode_observation_with_search_context(
 ///
 /// This is the main bridge entry point. Extracts all components from
 /// a riichienv [`Observation`], feeds them through the encoder pipeline,
-/// and returns a reference to the filled `[f32; 2890]` buffer.
+/// and returns a reference to the filled fixed-superset observation buffer
+/// (`[f32; OBS_SIZE]`, currently `192 x 34`).
 ///
 /// # Drawn tile limitation
 ///

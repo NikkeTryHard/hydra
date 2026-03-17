@@ -1,5 +1,3 @@
-//! Loss functions for all 9 heads + total weighted loss.
-
 use burn::prelude::*;
 use burn::tensor::activation;
 use std::marker::PhantomData;
