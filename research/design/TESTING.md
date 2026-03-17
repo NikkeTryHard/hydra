@@ -1,6 +1,6 @@
 # Hydra Testing Strategy
 
-> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. Hydra now routes in layers: `README.md` for entry routing, `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` plus its roadmap/rendered views for canonical archive intake, `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` for promoted doctrine summaries, and `docs/GAME_ENGINE.md` plus current code for runtime reality.
+> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. For repo routing and trust/status vocabulary, read `README.md`. For active-path / staged-vs-reserve execution doctrine, read `research/design/HYDRA_RECONCILIATION.md`. For live runtime and compatibility truth, read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
 >
 > The live encoder/model contract is `192x34`. The old `85x34` view is still useful only as the baseline prefix (`channels 0..84`) and should be tested as such.
 

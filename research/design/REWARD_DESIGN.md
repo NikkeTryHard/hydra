@@ -1,6 +1,6 @@
 # Hydra Reward Design
 
-> **Status note:** this is a mixed design/reference document. Hydra now routes in layers: `README.md` for entry routing, `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` plus its roadmap/rendered views for canonical archive intake, `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` for promoted doctrine summaries, and `docs/GAME_ENGINE.md` plus current code for runtime reality.
+> **Status note:** this is a mixed design/reference document. For repo routing and trust/status vocabulary, read `README.md`. For active-path / staged-vs-reserve doctrine, read `research/design/HYDRA_RECONCILIATION.md`. For runtime truth, read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
 >
 > Keep the reward-analysis evidence and reserve ideas here, but do not treat older `TRAINING.md` references as current governing doctrine.
 
