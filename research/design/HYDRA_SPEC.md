@@ -18,7 +18,7 @@ A Riichi Mahjong AI designed to rival LuckyJ (Tencent, 10.68 stable dan) through
 
 - [../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl](../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / upstream research intake
 - [HYDRA_FINAL.md](HYDRA_FINAL.md) — promoted architecture doctrine summary
-- [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — promoted execution doctrine summary and implementation priorities
+- [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — promoted operational doctrine summary and implementation priorities
 - [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — infrastructure reference (legacy sections clearly marked)
 
 - Historical MORL placement note — no standalone `MORL_PLACEMENT.md` file currently exists in this repo.
