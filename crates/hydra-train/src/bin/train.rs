@@ -22,6 +22,8 @@ mod presentation;
 mod probe_ladder;
 #[path = "train/probe_process.rs"]
 mod probe_process;
+#[path = "train/probe_search.rs"]
+mod probe_search;
 #[path = "train/probe_request.rs"]
 mod probe_request;
 #[path = "train/probe_summary.rs"]
