@@ -102,8 +102,6 @@ Interpretation rules:
 | 1 | Narrow `safety_residual` / BC activation sublane | Active-path doctrine | Completed | Reconciliation says the immediate need is supervision-loop closure, not broader search expansion. The completed portion is the replay-derived `safety_residual` BC lane plus hardware-agnostic BC microbatch accumulation; broader Recommendation 1 closure remains open. | `HYDRA_RECONCILIATION.md` Recommendation 1; canonical rows 24, 34, 35, 55 |
 | 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end, with BC-path staged activation and microbatch accumulation available for learner training | The builder, mask, batch carrier, head, and loss are now aligned on signed residual semantics; the train binary can enable only this narrow advanced loss while keeping weaker lanes blocked, and BC no longer assumes one machine's VRAM shape. Keep this lane replay-derived and narrow. | canonical rows 22, 23, 24; `answer_18_combined.md` |
 | 3 | ExIt carrier closure across live self-play and replay/sample sidecar lane | Completed in code | Live self-play loop, replay/sample sidecar producer/join, BC consumption, default-on live producer | ExIt now has bridge helpers, consumer mask support, a live self-play loop (`generate_self_play_rl_batch`) with search-derived labels via `SelfPlayExitAdapter`, plus a replay/sample sidecar-first lane that generates replay-indexed search-derived labels, joins them back into replay samples with provenance/version checks, and feeds BC as a separate optional ExIt loss. | canonical rows 34, 35, 51, 52; `answer_9_combined.md`, `answer_15_combined.md`, `answer_24_combined.md` |
-
-Additional narrowing from `answer_22.md`: now that Hydra has closed the live AFBS ExIt producer lane, the surviving archive verdict is narrower than the older broad ExIt discussion. Teacher semantics stay root child visits, `root_exit_policy()` / q-softmax do not become the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement still needs trained-model re-validation). Read this as a live self-play/producer status update, not as a claim that every training data path in the repo now carries `exit_target`.
 | 4 | Advanced-head activation discipline | Completed in code | Gate pack implemented: density, conflict, warmup | `HeadActivationController` with density gates (`rho >= 0.8` dense, `spp >= 5` sparse), gradient conflict tracking (cosine < 30% negative), warmup protocol (Off->Warmup->Active), and `approved_loss_config` integration. 36 tests pass. | canonical row 55; `answer_13_combined.md`, `answer_3-1_combined.md` |
 | 5 | Runtime ponder/cache provenance hardening | Completed in code | Provenance fields, generation tracking, trust gating implemented | `PonderResult` carries `source_net_hash`, `source_version`, `TrustLevel`, `CacheNamespace`, `generation`. `PonderCache` enforces generation freshness. `InferenceServer` gates runtime cache hits behind `Authoritative` trust (nothing qualifies, keeping everything learner-only). 10 new tests. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 
@@ -116,16 +114,6 @@ Additional narrowing from `answer_22.md`: now that Hydra has closed the live AFB
 | 8 | Tile-aware spatial/global head routing correction | Strong archive architecture survivor; not current doctrine | Narrow problem is visible in repo now | Route tile-indexed outputs from spatial features first; do not auto-promote the whole history-sidecar package. | canonical row 56; `answer_21.md` |
 | 9 | World-aware CT-SMC Hand-EV (H1b) | Later selective lane only | Runtime seam exists; train/infer parity blocked | H1a must win first, CT-SMC quality gates must pass, and training-time matching search-context observations must exist. | canonical rows 39, 40, 41; `answer_14_combined.md`, `answer_1-1_combined.md` |
 | 10 | Specialist endgame leaf exactification | Later/narrower than Hand-EV | Host shell exists, stronger leaf absent | Keep it as a specialist late-game lane, likely via pondering/search-side deployment, not fast-path identity. | canonical rows 42, 43; `answer_14_combined.md`, `answer_3-1_combined.md` |
-
-Additional narrowing from `answer_23_combined.md`: the surviving honest `delta_q` object was learner-only, root-only, search-derived `Q(child) - Q(root)` supervision over discard-compatible actions, preserved in the existing `[46]` head space via an explicit `[46]` mask. That closure is now implemented in code across replay/offline sidecar provenance, sample/batch carriage, and BC/train activation, and the archive warning against zero-extending the bridge/runtime `[34]` plane remains the right reading of what was shipped.
-
-Additional narrowing from `answer_25_combined.md`: the RL-only validation follow-up survives as a correctness requirement on the now-implemented lane. Sparse-head activation accounting must count only rows whose `[46]` `delta_q_mask` has nonzero support, and invalid `(Some, None)` / `(None, Some)` target-mask pairs stay explicit plumbing failures rather than silently degrading into zero-loss behavior. Those pair-safety constraints are now reflected in code and should be treated as completed narrowing, not future doctrine.
-
-Additional narrowing from `answer_26_combined.md`: replay/offline `delta_q` did correctly close through the replay-indexed search-derived sidecar pattern rather than a replay-built loader path, and the separate BC/train activation-hook blocker is now also closed in code through caller-side `HeadActivationController` integration plus warmup-time trunk detachment for `DeltaQ`. Keep that archive split as the historical explanation for the implementation order, not as a current blocker.
-
-Additional narrowing from `answer_27_combined.md` and `answer_28_combined.md`: the sharper surviving belief reading is narrower than the older generic “Stage-A is weak” shorthand. Current Stage-A belief is one duplicated aggregate projection object cloned across the four component blocks rather than a real multimodal teacher, so the first honest closure is belief-before-mixture: repair the teacher object to a public-posterior expected hidden allocation, repair the loss/object pairing to row-conditional belief supervision, and keep `mixture_weight` off until canonical component identity exists.
-
-Additional narrowing from `answer_24_combined.md`: the normal replay/sample loader should stay replay-pure for ExIt. That lane is now closed in code through a replay-indexed, search-derived offline sidecar producer plus supervised join path, and it should now be treated as the pattern for provenance-explicit search-derived labels rather than as unfinished future work.
 
 ### Reserve shelf
 
@@ -190,6 +178,26 @@ Historical-note warning:
 
 ## Source map
 
+## Narrowing / status-update notes
+
+These notes preserve high-signal archive narrowing and post-roadmap truth alignment without interrupting the ranked roadmap tables above.
+
+- Additional narrowing from `answer_22.md`: now that Hydra has closed the live AFBS ExIt producer lane, the surviving archive verdict is narrower than the older broad ExIt discussion. Teacher semantics stay root child visits, `root_exit_policy()` / q-softmax do not become the teacher object, and the only narrow surviving evaluator source is the current public model value head used inside learner-only, root-only AFBS. The producer is now default-on after infrastructure validation cleared 5/6 criteria (top-1 agreement still needs trained-model re-validation). Read this as a live self-play/producer status update, not as a claim that every training data path in the repo now carries `exit_target`.
+
+- Additional narrowing from `answer_23_combined.md`: the surviving honest `delta_q` object was learner-only, root-only, search-derived `Q(child) - Q(root)` supervision over discard-compatible actions, preserved in the existing `[46]` head space via an explicit `[46]` mask. That closure is now implemented in code across replay/offline sidecar provenance, sample/batch carriage, and BC/train activation, and the archive warning against zero-extending the bridge/runtime `[34]` plane remains the right reading of what was shipped.
+
+- Additional narrowing from `answer_29_combined.md`: the shipped narrow `delta_q` lane is now best read as code-closed and promotion-gated offline, but still not arena-confirmed. Current code now has teacher-regret / policy-transfer reporting, a dedicated promotion mode, and persisted promotion artifacts, while the actual paired arena-confirmation executor remains the missing piece. So the next honest follow-up is the arena executor on the shipped lane, not more carrier plumbing and not automatic default-on status.
+
+- Additional narrowing from `answer_25_combined.md`: the RL-only validation follow-up survives as a correctness requirement on the now-implemented lane. Sparse-head activation accounting must count only rows whose `[46]` `delta_q_mask` has nonzero support, and invalid `(Some, None)` / `(None, Some)` target-mask pairs stay explicit plumbing failures rather than silently degrading into zero-loss behavior. Those pair-safety constraints are now reflected in code and should be treated as completed narrowing, not future doctrine.
+
+- Additional narrowing from `answer_26_combined.md`: replay/offline `delta_q` did correctly close through the replay-indexed search-derived sidecar pattern rather than a replay-built loader path, and the separate BC/train activation-hook blocker is now also closed in code through caller-side `HeadActivationController` integration plus warmup-time trunk detachment for `DeltaQ`. Keep that archive split as the historical explanation for the implementation order, not as a current blocker.
+
+- Additional narrowing from `answer_27_combined.md` and `answer_28_combined.md`: the sharper surviving belief reading is narrower than the older generic “Stage-A is weak” shorthand. Current Stage-A belief is one duplicated aggregate projection object cloned across the four component blocks rather than a real multimodal teacher, so the first honest closure is belief-before-mixture: repair the teacher object to a public-posterior expected hidden allocation, repair the loss/object pairing to row-conditional belief supervision, and keep `mixture_weight` off until canonical component identity exists.
+
+- Additional narrowing from `answer_24_combined.md`: the normal replay/sample loader should stay replay-pure for ExIt. That lane is now closed in code through a replay-indexed, search-derived offline sidecar producer plus supervised join path, and it should now be treated as the pattern for provenance-explicit search-derived labels rather than as unfinished future work.
+
+- Additional narrowing from `answer_32_combined.md`: shipped replay-derived `safety_residual` semantics are not the missing piece anymore. The next honest follow-up is promotion-discipline closure: add validator/reporting visibility, close fail-fast target/mask parity, and judge behavior on recomposed safety (`public_score + residual`) while keeping the lane discard-only, replay-derived, and narrower than `delta_q`.
+
 High-signal archive answers behind this roadmap:
 
 - `answer_18_combined.md` — strongest target-semantic audit and narrow `safety_residual`-first reading
@@ -207,14 +215,18 @@ High-signal archive answers behind this roadmap:
 - `answer_26_combined.md` — replay/offline delta_q provenance narrowing: close replay/offline labels only through a replay-indexed search-derived sidecar contract; the later BC/train activation-hook blocker is now historical for the completed lane
 - `answer_27_combined.md` — repo-grounded belief-closure narrowing: preserve current carrier surfaces and train-bin safety gates, allow belief before mixture only after stronger teacher plus row-conditional loss repair, and keep mixture off in v1
 - `answer_28_combined.md` — semantic-object belief narrowing: current Stage-A is one duplicated aggregate object, and the honest v1 teacher is the public posterior expected hidden allocation rather than a fake 4-component mixture
+- `answer_29_combined.md` — DeltaQ promotion-gap narrowing: the lane is code-closed but not promotion-closed, so current structural validation should not be overread as decision-quality proof
+- `answer_30_combined.md` — routing-vs-DeltaQ head-to-head follow-up: largely reaffirmed the existing delta_q-first bounded tranche without changing current routing rank or doctrine status
+- `answer_31_combined.md` — runtime-authority follow-up: preserves an exact observed-root proving shape, but keeps runtime authority as a later challenger rather than a new mainline lane
+- `answer_32_combined.md` — SafetyResidual promotion-discipline narrowing: preserve replay-derived semantics, add validator/pair-discipline closure next, and judge behavior on recomposed safety rather than raw residuals
 
 Canonical rows used most heavily:
 
 - 22-24: `safety_residual`
-- 25-31, 61-62: belief / mixture keep-off logic plus sharper Stage-A duplicated-object diagnosis and belief-before-mixture closure narrowing
+- 25-31, 62-63: belief / mixture keep-off logic plus sharper Stage-A duplicated-object diagnosis and belief-before-mixture closure narrowing
 - 40-41: `delta_q` blocker plus masked future closure object
-- 73: RL-only `delta_q` validation narrowing for mask-row target-presence accounting and invalid pair keep-off behavior
-- 81: replay/offline `delta_q` provenance narrowing: sidecar-first/search-derived closure, with BC/train activation-hook closure still separate
+- 60-61, 64: shipped `delta_q` lane closure plus later validation/provenance narrowing and the still-open promotion-gap reading
+- 65: shipped `safety_residual` semantics are closed, but promotion discipline remains a later follow-up
 - 34-35: ExIt doctrine versus missing carrier
 - 68-69: replay-pure loader boundary plus replay-indexed ExIt search-derived provenance / sidecar closure lane
 - 41: live-AFBS ExIt evaluator semantics (visit teacher, reject q-softmax teacher, value-head evaluator under learner-only root-only AFBS)

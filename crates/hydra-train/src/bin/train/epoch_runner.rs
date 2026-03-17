@@ -20,7 +20,8 @@ use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::{
     append_step_log, append_training_log, log_tensorboard, save_checkpoint,
-    save_latest_checkpoint_and_state, BcArtifactPaths,
+    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact, BcArtifactPaths,
+    PersistedDeltaQPromotionArtifact,
 };
 use super::config::{validation_sample_limit, TrainConfig};
 use super::presentation::{
@@ -223,7 +224,7 @@ where
         head_controller,
         None,
     )?;
-    if is_better_validation(summary, *best_validation) {
+    if is_better_validation(&summary, *best_validation) {
         *best_validation = Some(BestValidation {
             policy_loss: summary.policy_loss,
             agreement: summary.agreement,
@@ -233,13 +234,13 @@ where
             &artifacts.best_model_base,
             global_step,
             step_window_total_loss,
-            Some(summary),
+            Some(&summary),
         )?;
     }
 
     multi
         .println(timestamped(format!(
-            "{} {} {} {} {}",
+            "{} {} {} {} {}{}",
             display_validation_scope_label(
                 global_step,
                 session_start_global_step,
@@ -251,8 +252,42 @@ where
             format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
             format!("val_total={:.4}", summary.total_loss).yellow(),
             format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
+            summary
+                .delta_q_promotion_snapshot
+                .as_ref()
+                .map(|report| format!(
+                    " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
+                    report.mean_decision_lift,
+                    report.candidate_mean_regret,
+                    report.baseline_mean_regret,
+                    report.regret_beats_baseline_rate * 100.0,
+                    report.passed
+                ))
+                .unwrap_or_default()
+                .yellow(),
         )))
         .map_err(|err| format!("failed to print validation summary: {err}"))?;
+
+    if let (Some(report), Some(result)) = (
+        summary.delta_q_promotion.as_ref(),
+        summary.delta_q_promotion_result.as_ref(),
+    ) {
+        write_delta_q_promotion_artifact(
+            &artifacts.delta_q_promotion_path,
+            &PersistedDeltaQPromotionArtifact {
+                scope: "step_validation",
+                step_or_epoch: global_step,
+                recommendation: result.recommendation(),
+                stage: "offline_gate",
+                arena_confirmation: None,
+                arena_report: None,
+                report,
+                result,
+                policy_transfer: summary.delta_q_policy_transfer.as_ref(),
+                policy_transfer_result: summary.delta_q_policy_transfer_result.as_ref(),
+            },
+        )?;
+    }
 
     Ok(Some(summary))
 }
@@ -333,7 +368,7 @@ where
             tb_writer,
             global_step,
             &window_stats,
-            val_summary,
+            val_summary.as_ref(),
             lr,
             best_validation,
         )?;
@@ -353,9 +388,12 @@ where
         train_loss_opp_next: window_stats.loss_opp_next,
         train_loss_score_pdf: window_stats.loss_score_pdf,
         train_loss_score_cdf: window_stats.loss_score_cdf,
-        val_total_loss: val_summary.map(|summary| summary.total_loss),
-        val_policy_loss: val_summary.map(|summary| summary.policy_loss),
-        val_policy_agreement: val_summary.map(|summary| summary.agreement),
+        val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
+        val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
+        val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
+        val_delta_q_promotion: val_summary
+            .as_ref()
+            .and_then(|summary| summary.delta_q_promotion_snapshot),
         best_val_policy_loss: best_validation.map(|best| best.policy_loss),
         best_val_agreement: best_validation.map(|best| best.agreement),
     };
@@ -453,7 +491,7 @@ fn run_epoch_end_validation(
         head_controller,
         None,
     )?;
-    if is_better_validation(summary, *best_validation) {
+    if is_better_validation(&summary, *best_validation) {
         *best_validation = Some(BestValidation {
             policy_loss: summary.policy_loss,
             agreement: summary.agreement,
@@ -463,20 +501,53 @@ fn run_epoch_end_validation(
             &artifacts.best_model_base,
             epoch + 1,
             train_total_loss,
-            Some(summary),
+            Some(&summary),
         )?;
     }
     println!(
         "{}",
         timestamped(format!(
-            "{} {} {} {} {}",
+            "{} {} {} {} {}{}",
             "validation @ epoch end".bold().magenta(),
             format!("val_samples={}", summary.samples).yellow(),
             format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
             format!("val_total={:.4}", summary.total_loss).yellow(),
             format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
+            summary
+                .delta_q_promotion_snapshot
+                .as_ref()
+                .map(|report| format!(
+                    " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
+                    report.mean_decision_lift,
+                    report.candidate_mean_regret,
+                    report.baseline_mean_regret,
+                    report.regret_beats_baseline_rate * 100.0,
+                    report.passed
+                ))
+                .unwrap_or_default()
+                .yellow(),
         ))
     );
+    if let (Some(report), Some(result)) = (
+        summary.delta_q_promotion.as_ref(),
+        summary.delta_q_promotion_result.as_ref(),
+    ) {
+        write_delta_q_promotion_artifact(
+            &artifacts.delta_q_promotion_path,
+            &PersistedDeltaQPromotionArtifact {
+                scope: "epoch_validation",
+                step_or_epoch: epoch + 1,
+                recommendation: result.recommendation(),
+                stage: "offline_gate",
+                arena_confirmation: None,
+                arena_report: None,
+                report,
+                result,
+                policy_transfer: summary.delta_q_policy_transfer.as_ref(),
+                policy_transfer_result: summary.delta_q_policy_transfer_result.as_ref(),
+            },
+        )?;
+    }
     Ok(Some(summary))
 }
 
@@ -500,7 +571,7 @@ where
             tb_writer,
             epoch + 1,
             &train_stats,
-            val_summary,
+            val_summary.as_ref(),
             final_lr,
             best_validation,
         )?;
@@ -523,6 +594,9 @@ where
         val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
         val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
         val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
+        val_delta_q_promotion: val_summary
+            .as_ref()
+            .and_then(|summary| summary.delta_q_promotion_snapshot),
         best_val_policy_loss: best_validation.map(|best| best.policy_loss),
         best_val_agreement: best_validation.map(|best| best.agreement),
         num_batches: train_stats.num_batches,

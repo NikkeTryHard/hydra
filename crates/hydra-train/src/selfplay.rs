@@ -1000,50 +1000,6 @@ impl CooperativeGameRunner {
     }
 }
 
-fn batch_policy_value_cpu<B: Backend>(
-    model: &HydraModel<B>,
-    observations: &[[f32; OBS_SIZE]],
-    device: &B::Device,
-) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
-    model.batch_policy_value_cpu(observations, device)
-}
-
-fn batched_trajectory_values<B: Backend>(
-    trajectories: &[Trajectory],
-    model: &HydraModel<B>,
-    device: &B::Device,
-) -> Vec<Vec<f32>> {
-    let total_steps: usize = trajectories
-        .iter()
-        .map(|trajectory| trajectory.steps.len())
-        .sum();
-    if total_steps == 0 {
-        return trajectories.iter().map(|_| Vec::new()).collect();
-    }
-
-    let mut observations = Vec::with_capacity(total_steps);
-    let mut step_counts = Vec::with_capacity(trajectories.len());
-    for trajectory in trajectories {
-        step_counts.push(trajectory.steps.len());
-        for step in &trajectory.steps {
-            observations.push(step.obs);
-        }
-    }
-
-    let outputs = batch_policy_value_cpu(model, &observations, device);
-    let mut values = Vec::with_capacity(trajectories.len());
-    let mut offset = 0usize;
-    for step_count in step_counts {
-        let mut per_trajectory = Vec::with_capacity(step_count);
-        for (_, value) in &outputs[offset..offset + step_count] {
-            per_trajectory.push(*value);
-        }
-        values.push(per_trajectory);
-        offset += step_count;
-    }
-    values
-}
-
 pub fn generate_self_play_batch_source<B: Backend>(
     game_seeds: &[u64],
     temperature: f32,

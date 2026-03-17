@@ -17,8 +17,7 @@ use riichienv_core::state::GameState;
 use serde::{Deserialize, Serialize};
 
 use crate::data::mjai_loader::{
-    bool_mask_to_f32, final_scores, invalid_data, should_sample_replay_event, tile136_to_type,
-    update_safety,
+    bool_mask_to_f32, invalid_data, should_sample_replay_event, tile136_to_type, update_safety,
 };
 use crate::model::HydraModel;
 use crate::training::delta_q_validation::DeltaQValidationReport;
@@ -177,7 +176,6 @@ pub fn generate_replay_delta_q_records<B: Backend>(
     source_net_hash: u64,
     source_version: u32,
 ) -> io::Result<(Vec<ReplayDeltaQRecordV1>, DeltaQValidationReport)> {
-    let _ = final_scores(events);
     let mut state = GameState::new(
         0,
         true,

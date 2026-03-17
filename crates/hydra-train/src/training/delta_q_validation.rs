@@ -594,15 +594,16 @@ mod tests {
     fn test_display_formatting() {
         let report = passing_report();
         let report_text = format!("{report}");
-        let result_text = format!(
-            "{}",
-            evaluate_report(&report, &DeltaQValidationThresholds::default())
-        );
+        let result = evaluate_report(&report, &DeltaQValidationThresholds::default());
+        let result_text = format!("{result}");
 
         assert!(report_text.contains("DeltaQ Validation Report"));
         assert!(report_text.contains("Mean |delta_q|"));
         assert!(result_text.contains("DeltaQ Validation Result: PASS"));
-        assert!(result_text.contains("sample_size"));
+        assert!(result
+            .criteria
+            .iter()
+            .any(|criterion| criterion.name == "sample_size"));
     }
 
     #[test]

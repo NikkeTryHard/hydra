@@ -139,6 +139,8 @@ pub(crate) struct ProbeChildRequest {
 pub(crate) struct TrainCli {
     pub(crate) config_path: PathBuf,
     pub(crate) preflight: bool,
+    pub(crate) delta_q_promotion: bool,
+    pub(crate) delta_q_baseline_checkpoint: Option<PathBuf>,
     pub(crate) probe_only: Option<ProbeCliRequest>,
     pub(crate) probe_child: Option<ProbeChildRequest>,
 }
@@ -275,7 +277,7 @@ pub(crate) fn default_max_validation_samples() -> Option<usize> {
 
 pub(crate) fn usage(program: &str) -> String {
     format!(
-        "Usage: {program} <config.yaml> [--preflight] [--probe-kind <train|validation> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]]"
+        "Usage: {program} <config.yaml> [--preflight] [--delta-q-promotion [--delta-q-baseline-checkpoint <path>]] [--probe-kind <train|validation> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]]"
     )
 }
 
@@ -310,11 +312,22 @@ where
     let mut measure_steps = None;
     let mut probe_result_path = None;
     let mut preflight = false;
+    let mut delta_q_promotion = false;
+    let mut delta_q_baseline_checkpoint = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--preflight" => {
                 preflight = true;
+            }
+            "--delta-q-promotion" => {
+                delta_q_promotion = true;
+            }
+            "--delta-q-baseline-checkpoint" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --delta-q-baseline-checkpoint".to_string())?;
+                delta_q_baseline_checkpoint = Some(PathBuf::from(value));
             }
             "--probe-kind" => {
                 let value = args
@@ -345,9 +358,26 @@ where
     }
 
     let config_path = PathBuf::from(config);
-    if preflight && (probe_kind.is_some() || probe_result_path.is_some()) {
+    if preflight
+        && (probe_kind.is_some()
+            || probe_result_path.is_some()
+            || delta_q_promotion
+            || delta_q_baseline_checkpoint.is_some())
+    {
         return Err(format!(
             "{}\n--preflight cannot be combined with probe-only flags",
+            usage(&program)
+        ));
+    }
+    if delta_q_promotion && (probe_kind.is_some() || probe_result_path.is_some()) {
+        return Err(format!(
+            "{}\n--delta-q-promotion cannot be combined with probe-only flags",
+            usage(&program)
+        ));
+    }
+    if delta_q_baseline_checkpoint.is_some() && !delta_q_promotion {
+        return Err(format!(
+            "{}\n--delta-q-baseline-checkpoint requires --delta-q-promotion",
             usage(&program)
         ));
     }
@@ -355,12 +385,16 @@ where
         (None, None, None) => Ok(TrainCli {
             config_path,
             preflight,
+            delta_q_promotion,
+            delta_q_baseline_checkpoint,
             probe_only: None,
             probe_child: None,
         }),
         (Some(kind), Some(candidate_microbatch), None) => Ok(TrainCli {
             config_path,
             preflight: false,
+            delta_q_promotion: false,
+            delta_q_baseline_checkpoint: None,
             probe_only: Some(ProbeCliRequest {
                 kind,
                 candidate_microbatch,
@@ -372,6 +406,8 @@ where
         (Some(kind), Some(candidate_microbatch), Some(result_path)) => Ok(TrainCli {
             config_path,
             preflight: false,
+            delta_q_promotion: false,
+            delta_q_baseline_checkpoint: None,
             probe_only: None,
             probe_child: Some(ProbeChildRequest {
                 request: ProbeCliRequest {

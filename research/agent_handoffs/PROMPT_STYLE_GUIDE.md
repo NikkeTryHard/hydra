@@ -150,6 +150,49 @@ They are strong defaults, and they should survive unless you have an explicit re
 
 ## 5. Good prompting advice for Hydra work
 
+### 5.0 Decide whether the job is actually research-worthy before you build a giant packet
+
+Do not spend a large Hydra research packet on a question the repo can already answer with strong local search.
+
+Before you build a serious research-agent prompt, do local triage first:
+
+1. check the authority docs in order
+2. check the relevant code and tests
+3. check canonical/archive surfaces if authority docs stop short
+4. decide whether the remaining gap is semantics, missing evidence, or just engineering packaging
+
+Use this rule of thumb:
+
+- **research-worthy** = the repo still does not settle the core semantics, provenance, target object, trust object, or next-build blueprint after serious local search
+- **not research-worthy** = the lane is already narrowed and the real need is to decide how to build, validate, gate, or sequence it inside the current repo reality
+
+Important distinction:
+
+- early triage may ask **"is this the real next lane or not?"** once, to avoid wasting implementation effort on a fake path
+- after the lane is already narrowed, do **not** keep spending research-agent budget on **"does this exist?"** or **"can we build now?"** unless new evidence reopens the semantics
+- once a lane survives triage, the research prompt should usually ask for **the blueprint**:
+  - what exact object to add
+  - what files to change and in what order
+  - what measurable gates or thresholds should control promotion
+  - what would falsify the lane and what the fallback should be
+
+Bad expensive-research prompts:
+
+- "does this lane exist?"
+- "can we build this now?"
+- "is this maybe a good idea?"
+
+when the repo has already answered those well enough.
+
+Good expensive-research prompts after narrowing:
+
+- "what exact proof object should we add next?"
+- "what is the implementation-ready blueprint?"
+- "what acceptance criteria should control promotion or rejection?"
+- "what is the strongest fallback if this lane fails?"
+
+The research agent should be used to produce the strongest answer to the hard remaining question, not to repeatedly reconfirm that the lane exists after the repo already showed it does.
+
 ### 5.1 Be explicit about the job
 
 Say what the agent is trying to produce.

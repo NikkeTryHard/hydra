@@ -1,3 +1,4 @@
+use super::validation::DeltaQPromotionSnapshot;
 use burn::prelude::*;
 
 use hydra_train::training::losses::LossBreakdown;
@@ -51,6 +52,7 @@ pub(super) struct EpochLogEntry {
     pub(super) val_total_loss: Option<f64>,
     pub(super) val_policy_loss: Option<f64>,
     pub(super) val_policy_agreement: Option<f64>,
+    pub(super) val_delta_q_promotion: Option<DeltaQPromotionSnapshot>,
     pub(super) best_val_policy_loss: Option<f64>,
     pub(super) best_val_agreement: Option<f64>,
     pub(super) num_batches: usize,
@@ -74,6 +76,7 @@ pub(super) struct StepLogEntry {
     pub(super) val_total_loss: Option<f64>,
     pub(super) val_policy_loss: Option<f64>,
     pub(super) val_policy_agreement: Option<f64>,
+    pub(super) val_delta_q_promotion: Option<DeltaQPromotionSnapshot>,
     pub(super) best_val_policy_loss: Option<f64>,
     pub(super) best_val_agreement: Option<f64>,
 }

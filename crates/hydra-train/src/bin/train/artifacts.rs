@@ -10,6 +10,11 @@ use tboard::EventWriter;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{default_cache_name, PreflightCacheEntry};
 use hydra_train::training::bc::CheckpointMeta;
+use hydra_train::training::delta_q_promotion::{
+    DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPolicyTransferReport,
+    DeltaQPolicyTransferResult, DeltaQPromotionRecommendation, DeltaQPromotionReport,
+    DeltaQPromotionResult,
+};
 
 use super::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
 use super::resume::{
@@ -29,6 +34,7 @@ pub(crate) struct BcArtifactPaths {
     pub(crate) latest_state_path: PathBuf,
     pub(crate) training_log_path: PathBuf,
     pub(crate) step_log_path: PathBuf,
+    pub(crate) delta_q_promotion_path: PathBuf,
 }
 
 pub(crate) struct RlArtifactPaths {
@@ -81,6 +87,7 @@ impl BcArtifactPaths {
             latest_state_path: root.join("latest_state.yaml"),
             training_log_path: root.join("training_log.jsonl"),
             step_log_path: root.join("step_log.jsonl"),
+            delta_q_promotion_path: root.join("delta_q_promotion.json"),
             root,
             tb_root,
             tb_session_dir,
@@ -219,7 +226,7 @@ pub(crate) fn save_checkpoint(
     base: &Path,
     epoch: usize,
     loss: f64,
-    val_summary: Option<ValidationSummary>,
+    val_summary: Option<&ValidationSummary>,
 ) -> Result<(), String> {
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     model
@@ -284,6 +291,34 @@ pub(crate) fn append_rl_step_log(path: &Path, entry: &RlStepLogEntry) -> Result<
         .map_err(|err| format!("failed to append RL step log {}: {err}", path.display()))
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct PersistedDeltaQPromotionArtifact<'a> {
+    pub(crate) scope: &'a str,
+    pub(crate) step_or_epoch: usize,
+    pub(crate) recommendation: DeltaQPromotionRecommendation,
+    pub(crate) stage: &'a str,
+    pub(crate) arena_confirmation: Option<DeltaQArenaConfirmationRequest>,
+    pub(crate) arena_report: Option<&'a DeltaQArenaReport>,
+    pub(crate) report: &'a DeltaQPromotionReport,
+    pub(crate) result: &'a DeltaQPromotionResult,
+    pub(crate) policy_transfer: Option<&'a DeltaQPolicyTransferReport>,
+    pub(crate) policy_transfer_result: Option<&'a DeltaQPolicyTransferResult>,
+}
+
+pub(crate) fn write_delta_q_promotion_artifact(
+    path: &Path,
+    artifact: &PersistedDeltaQPromotionArtifact<'_>,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(artifact)
+        .map_err(|err| format!("failed to serialize delta_q promotion artifact: {err}"))?;
+    fs::write(path, json).map_err(|err| {
+        format!(
+            "failed to write delta_q promotion artifact {}: {err}",
+            path.display()
+        )
+    })
+}
+
 pub(crate) fn save_latest_rl_checkpoint_and_state<O>(
     artifacts: &RlArtifactPaths,
     model: &HydraModel<TrainBackend>,
@@ -332,7 +367,7 @@ pub(crate) fn log_tensorboard<W: Write>(
     tb: &mut EventWriter<W>,
     epoch: usize,
     train: &ScalarAverages,
-    val_summary: Option<ValidationSummary>,
+    val_summary: Option<&ValidationSummary>,
     lr: f64,
     best_validation: Option<BestValidation>,
 ) -> Result<(), String> {
@@ -352,6 +387,72 @@ pub(crate) fn log_tensorboard<W: Write>(
             .map_err(|err| format!("tensorboard write val/policy_loss failed: {err}"))?;
         tb.write_scalar(step, "val/total_loss", val_summary.total_loss as f32)
             .map_err(|err| format!("tensorboard write val/total_loss failed: {err}"))?;
+        if let Some(delta_q) = val_summary.delta_q_promotion_snapshot {
+            tb.write_scalar(
+                step,
+                "val/delta_q_candidate_top1_agreement",
+                delta_q.candidate_top1_agreement as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_candidate_top1_agreement failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_candidate_mean_regret",
+                delta_q.candidate_mean_regret as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_candidate_mean_regret failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_baseline_mean_regret",
+                delta_q.baseline_mean_regret as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_baseline_mean_regret failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_mean_decision_lift",
+                delta_q.mean_decision_lift as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_mean_decision_lift failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_negative_lift_fraction",
+                delta_q.negative_lift_fraction as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_negative_lift_fraction failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_regret_beats_baseline_rate",
+                delta_q.regret_beats_baseline_rate as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_regret_beats_baseline_rate failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_top1_beats_baseline_rate",
+                delta_q.top1_beats_baseline_rate as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_top1_beats_baseline_rate failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_offline_gate_passed",
+                if delta_q.passed { 1.0 } else { 0.0 },
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_offline_gate_passed failed: {err}")
+            })?;
+        }
     }
     tb.write_scalar(step, "lr", lr as f32)
         .map_err(|err| format!("tensorboard write lr failed: {err}"))?;

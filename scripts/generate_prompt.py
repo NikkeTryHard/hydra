@@ -1214,7 +1214,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--warn-below-line-count",
         type=int,
         default=3000,
-        help="Warn when a rendered prompt is shorter than this many lines; set to 0 to disable",
+        help="Require rendered prompts to be at least this many lines; set to 0 to disable the minimum-line check",
     )
     return parser
 
@@ -1224,17 +1224,25 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _resolve_variant_output_path(output_dir: Path, output_name: str) -> Path:
+    candidate = Path(output_name)
+    file_name = candidate.name or f"{slugify(output_name)}.md"
+    return output_dir / file_name
+
+
 def _emit_line_count_info(
     err: TextIO,
     variant_name: str,
     line_count: int,
     threshold: int,
-) -> None:
+) -> bool:
     err.write(f"info: variant '{variant_name}' rendered at {line_count} lines\n")
     if threshold > 0 and line_count < threshold:
         err.write(
-            f"warning: variant '{variant_name}' rendered at {line_count} lines, below threshold {threshold}; do another packing pass unless the task is truly small\n"
+            f"error: variant '{variant_name}' rendered at {line_count} lines, below required minimum {threshold}; Hydra research agents are capable of 10000+ line prompt packets, so squeeze as much useful local context as possible and rerender\n"
         )
+        return False
+    return True
 
 
 def main(
@@ -1281,22 +1289,27 @@ def main(
         if args.all_variants:
             output_dir = Path(args.output_dir).resolve()
             rendered = generate_all_variants(config)
+            all_ok = True
             for variant in config.variants:
                 output_name = variant.output_file or f"{slugify(variant.name)}.md"
+                output_path = _resolve_variant_output_path(output_dir, output_name)
                 rendered_text = rendered[variant.name]
                 line_count = count_rendered_lines(rendered_text)
-                _write_text(output_dir / output_name, rendered_text)
+                _write_text(output_path, rendered_text)
                 out.write(
-                    f"generated variant '{variant.name}' at {output_dir / output_name} ({line_count} lines)\n"
+                    f"generated variant '{variant.name}' at {output_path} ({line_count} lines)\n"
                 )
-                _emit_line_count_info(
-                    err,
-                    variant.name,
-                    line_count,
-                    args.warn_below_line_count,
+                all_ok = (
+                    _emit_line_count_info(
+                        err,
+                        variant.name,
+                        line_count,
+                        args.warn_below_line_count,
+                    )
+                    and all_ok
                 )
             out.write(f"generated {len(rendered)} prompt(s) in {output_dir}\n")
-            return 0
+            return 0 if all_ok else 1
 
         selected_variant = choose_variant(config, args.variant)
         rendered = render_prompt(config, selected_variant)
@@ -1305,7 +1318,7 @@ def main(
             output_path = Path(args.output).resolve()
             _write_text(output_path, rendered)
             out.write(f"generated prompt at {output_path} ({line_count} lines)\n")
-            _emit_line_count_info(
+            ok = _emit_line_count_info(
                 err,
                 selected_variant,
                 line_count,
@@ -1315,13 +1328,13 @@ def main(
             out.write(rendered)
             if not rendered.endswith("\n"):
                 out.write("\n")
-            _emit_line_count_info(
+            ok = _emit_line_count_info(
                 err,
                 selected_variant,
                 line_count,
                 args.warn_below_line_count,
             )
-        return 0
+        return 0 if ok else 1
     except ValidationError as exc:
         for error in exc.errors:
             err.write(f"{error}\n")

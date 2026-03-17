@@ -15,43 +15,46 @@ pub struct TrajectoryDeltaQLabel {
     pub mask: [f32; HYDRA_ACTION_SPACE],
 }
 
+fn label_from_slices(
+    target: &[f32],
+    mask: &[f32],
+) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])> {
+    if target.len() != HYDRA_ACTION_SPACE || mask.len() != HYDRA_ACTION_SPACE {
+        return None;
+    }
+    let mut target_arr = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut mask_arr = [0.0f32; HYDRA_ACTION_SPACE];
+    target_arr.copy_from_slice(target);
+    mask_arr.copy_from_slice(mask);
+    Some((target_arr, mask_arr))
+}
+
+fn label_to_vec_pair(
+    target: [f32; HYDRA_ACTION_SPACE],
+    mask: [f32; HYDRA_ACTION_SPACE],
+) -> (Vec<f32>, Vec<f32>) {
+    (target.to_vec(), mask.to_vec())
+}
+
 impl TrajectoryDeltaQLabel {
     pub fn from_slices(target: &[f32], mask: &[f32]) -> Option<Self> {
-        if target.len() != HYDRA_ACTION_SPACE || mask.len() != HYDRA_ACTION_SPACE {
-            return None;
-        }
-        let mut target_arr = [0.0f32; HYDRA_ACTION_SPACE];
-        let mut mask_arr = [0.0f32; HYDRA_ACTION_SPACE];
-        target_arr.copy_from_slice(target);
-        mask_arr.copy_from_slice(mask);
-        Some(Self {
-            target: target_arr,
-            mask: mask_arr,
-        })
+        let (target, mask) = label_from_slices(target, mask)?;
+        Some(Self { target, mask })
     }
 
     pub fn to_vec_pair(self) -> (Vec<f32>, Vec<f32>) {
-        (self.target.to_vec(), self.mask.to_vec())
+        label_to_vec_pair(self.target, self.mask)
     }
 }
 
 impl TrajectoryExitLabel {
     pub fn from_slices(target: &[f32], mask: &[f32]) -> Option<Self> {
-        if target.len() != HYDRA_ACTION_SPACE || mask.len() != HYDRA_ACTION_SPACE {
-            return None;
-        }
-        let mut target_arr = [0.0f32; HYDRA_ACTION_SPACE];
-        let mut mask_arr = [0.0f32; HYDRA_ACTION_SPACE];
-        target_arr.copy_from_slice(target);
-        mask_arr.copy_from_slice(mask);
-        Some(Self {
-            target: target_arr,
-            mask: mask_arr,
-        })
+        let (target, mask) = label_from_slices(target, mask)?;
+        Some(Self { target, mask })
     }
 
     pub fn to_vec_pair(self) -> (Vec<f32>, Vec<f32>) {
-        (self.target.to_vec(), self.mask.to_vec())
+        label_to_vec_pair(self.target, self.mask)
     }
 }
 

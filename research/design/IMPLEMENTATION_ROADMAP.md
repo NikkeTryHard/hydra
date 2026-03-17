@@ -198,6 +198,8 @@ Current code reality is broader than the original 9-head bootstrap plan. The liv
 
 Current activation note: the advanced heads above are structurally live, and the current shipped baseline now includes the stronger public-teacher belief-semantics tranche across the belief carrier / loss / presence path. In the normal supervised path, `belief_fields`, `mixture_weight`, and `safety_residual` already have concrete carriers, replay/sample ExIt now flows through a separate sidecar-backed carrier path, replay/offline `delta_q` now also flows through a parallel sidecar-backed carrier path plus BC/train activation-hook closure, while `opponent_hand_type_target` still remains absent in the standard sample-to-target conversion. `mixture_weight` promotion remains staged and should not be inferred from the stronger shipped belief carrier semantics.
 
+Current DeltaQ status note: the repo has moved past plain structural DeltaQ validation. The current shipped DeltaQ follow-up includes an offline promotion stack with teacher-regret metrics, paired holdout policy-transfer reporting, a dedicated `--delta-q-promotion` train mode, persisted promotion artifacts, and paired-arena helper/config/report objects. The still-missing part is the actual paired arena executor that would populate the arena report and settle arena confirmation under fixed seeds / fixed compute / frozen opponents.
+
 ### 3.2 Struct Definitions
 
 Each head is a `#[derive(Module, Debug)]` struct with a single `linear: Linear<B>` or `conv: Conv1d<B>` field. Forward methods are trivial pass-through with activation:
