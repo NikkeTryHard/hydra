@@ -1,9 +1,9 @@
 # HYDRA Code Build Plan
 
-**Goal**: Write all Rust/Burn code until `hydra-train` compiles, tests pass, and is ready to train.
-**No GPU hours. No training. Just code that works.**
+**Historical/reference goal**: preserve the old code-build plan shape for Hydra implementation work.
+**No GPU hours. No training. Just code/reference material that can still be compared against live doctrine.**
 
-**End state**: `cargo build --release && cargo nextest run --release && cargo clippy -- -D warnings` all green. Every HYDRA_FINAL component implemented and tested.
+**Historical/reference end state**: `cargo build --release && cargo nextest run --release && cargo clippy -- -D warnings` all green. Do not treat this line as the current tranche owner; current tranche priority comes from `HYDRA_RECONCILIATION.md`.
 
 > **Current sequencing note:** This roadmap is an implementation-detail reference, not the upstream source of truth on what to build next. Start with `README.md` for repo routing, then `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` for archive intake, `research/design/HYDRA_FINAL.md` for north-star doctrine, `research/design/HYDRA_RECONCILIATION.md` for active-path status, and `docs/GAME_ENGINE.md` / `docs/COMPATIBILITY_SURFACE.md` for runtime truth.
 >
@@ -11,26 +11,26 @@
 
 > **Current repo snapshot note:** For the compact already-built status board, read `docs/CURRENT_STATUS.md`. This roadmap keeps a local snapshot only to orient historical/bootstrap sections; it is not the primary owner of shipped/staged repo status.
 
-**Dev agent rules**:
+**Historical/reference dev-agent rules**:
 - Every task ends with tests that PASS
 - No `unwrap()` in library code (use `?` or explicit error handling)
 - `cargo clippy -- -D warnings` clean after every task
 - Read the referenced files BEFORE writing code
 - Do NOT skip steps or proceed without passing the gate
-- Do NOT invent your own approach -- follow the spec EXACTLY
+- Do NOT treat this file as the active-spec winner. For current implementation priority and acceptable scope, defer to `HYDRA_RECONCILIATION.md`, `docs/CURRENT_STATUS.md`, and current code.
 
 **Promoted architecture doctrine summary**: `research/design/HYDRA_FINAL.md`.
 
-**Promoted execution doctrine summary**: `research/design/HYDRA_RECONCILIATION.md` for immediate tranche ordering.
+**Promoted operational doctrine summary**: `research/design/HYDRA_RECONCILIATION.md` for immediate tranche ordering.
 
 > **Workflow helper note:** Any short-form “what should I build next?” helper for this repo should name the safest highest-impact next task, say whether it is documented/safe, and report checked/not-checked coverage across the canonical archive SSOT, promoted doctrine summaries, source, tests, and noisier research surfaces. It is workflow tooling only and does not outrank the archive source ledger, promoted doctrine summaries, runtime reality, or this roadmap.
 
 ---
 
-# HYDRA Build Plan: Steps 1-4 (Neural Network Foundation)
+# Historical build-plan reference: Steps 1-4 (Neural Network Foundation)
 
-> For an LLM coding agent. Every signature, shape, and value is EXACT.
-> If something is not specified here, ASK -- do not invent.
+> Historical/reference note for coding agents: many details below preserve older build-plan specificity.
+> Do not treat every signature, shape, or value in this file as the current implementation winner unless reconciliation/runtime reality still agrees.
 
 ---
 
