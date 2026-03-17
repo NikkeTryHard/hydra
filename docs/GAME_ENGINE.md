@@ -160,7 +160,8 @@ The 85 channels break down into these groups:
 | 65-67 | Genbutsu (tedashi): restricted to tiles discarded from hand (not tsumogiri) |
 | 68-70 | Genbutsu (riichi-era): restricted to tiles discarded after opponent's riichi |
 | 71-73 | Suji: float 0.0-1.0 for suji-inferred safety against each opponent |
-| 74-79 | Reserved suji context (zeros) |
+| 74-76 | Half-suji indicator | 1.0 when the tile is half-suji-safe against that opponent |
+| 77-79 | Matagi-suji danger | float danger signal for matagi-suji patterns against that opponent |
 | 80 | Kabe: 1.0 for tiles with all 4 copies visible (global, not per-opponent) |
 | 81 | One-chance: 1.0 for tiles where exactly 3 of 4 copies are visible |
 | 82-84 | Tenpai hints | Opponent tenpai hints (implemented baseline use: riichi or cached tenpai prediction threshold) |
