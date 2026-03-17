@@ -5,11 +5,11 @@
 
 **End state**: `cargo build --release && cargo nextest run --release && cargo clippy -- -D warnings` all green. Every HYDRA_FINAL component implemented and tested.
 
-> **Current sequencing note:** This roadmap is an implementation-detail reference, not the upstream source of truth on what to build next. Start with `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`, use `ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` for archive prioritization, and treat `research/design/HYDRA_FINAL.md` / `research/design/HYDRA_RECONCILIATION.md` as promoted doctrine summaries that may need refresh when archive canon or code moves.
+> **Current sequencing note:** This roadmap is an implementation-detail reference, not the upstream source of truth on what to build next. Start with `README.md` for repo routing, then `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` for archive intake, `research/design/HYDRA_FINAL.md` for north-star doctrine, `research/design/HYDRA_RECONCILIATION.md` for active-path status, and `docs/GAME_ENGINE.md` / `docs/COMPATIBILITY_SURFACE.md` for runtime truth.
 >
 > **Demotion note:** Treat this file as a reference/backlog map, not as the default build order for the strongest current Hydra. Any section that conflicts with reconciliation or current runtime reality should be treated as archived or future-use material, not immediate marching orders.
 
-> **Current repo snapshot (2026-03 code reality):** `hydra-train` already exists as a substantial crate. The live tree now includes `data/`, `training/`, `teacher/`, `selfplay.rs`, `inference.rs`, `eval.rs`, `league.rs`, and the `src/bin/train.rs` binary in addition to the original backbone / heads / model surfaces. The model already exposes the advanced output family (`belief_fields`, `mixture_weight_logits`, `opponent_hand_type`, `delta_q`, `safety_residual`), and the training stack already contains `live_exit.rs`, `exit_validation.rs`, `head_gates.rs`, and `orchestrator.rs`. The stronger public-teacher belief-semantics tranche and the current Hand-EV realism tranche are now also shipped as part of the live baseline, while mixture-weight promotion and representative-world CT-SMC Hand-EV remain staged/later. Read the step-by-step bootstrap sections below as historical implementation context unless a section is explicitly updated to describe the current code snapshot.
+> **Current repo snapshot note:** For the compact already-built status board, read `docs/CURRENT_STATUS.md`. This roadmap keeps a local snapshot only to orient historical/bootstrap sections; it is not the primary owner of shipped/staged repo status.
 
 **Dev agent rules**:
 - Every task ends with tests that PASS
