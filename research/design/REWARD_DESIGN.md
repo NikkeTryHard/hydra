@@ -1,8 +1,8 @@
 # Hydra Reward Design
 
-> **Status note:** this is a mixed design/reference document. For repo routing and trust/status vocabulary, read `README.md`. For active-path / staged-vs-reserve doctrine, read `research/design/HYDRA_RECONCILIATION.md`. For runtime truth, read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
+> **Status note:** this is a mixed design/reference document. Keep the reward-analysis evidence and reserve ideas here. For active-path doctrine, use `research/design/HYDRA_RECONCILIATION.md`. For runtime truth, use `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, and current code.
 >
-> Keep the reward-analysis evidence and reserve ideas here, but do not treat older `TRAINING.md` references as current governing doctrine.
+> Do not treat older `TRAINING.md` references as current governing doctrine.
 
 Hydra's reward function design, informed by cross-domain analysis of reward systems in Pluribus, ReBeL, AlphaStar, OpenAI Five, and RVR Mahjong.
 

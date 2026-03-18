@@ -14,6 +14,9 @@ The old `85x34` view is still useful as the baseline prefix, but it is no longer
 
 This crate also provides the batch simulation pipeline: run thousands of games in parallel via rayon, encode observations on the fly, and feed them directly into the training loop.
 
+For the full live runtime/channel contract, read [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md).
+For compatibility-sensitive shape/runtime facts, read [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
+
 ## Module Reference
 
 | Module | Description |
@@ -31,26 +34,13 @@ This crate also provides the batch simulation pipeline: run thousands of games i
 
 ## Observation Tensor (192x34 fixed superset)
 
-The encoder produces an `[f32; 192 * 34]` flat array (row-major) with channels grouped:
+The encoder produces an `[f32; 192 * 34]` flat array (row-major) with three high-level regions:
 
-| Channels | Content |
-|----------|---------|
-| 0-3 | Closed hand (thresholded tile counts) |
-| 4-7 | Open meld hand counts |
-| 8 | Drawn tile one-hot |
-| 9-10 | Shanten masks (keep / next) |
-| 11-22 | Discards per player (presence, tedashi, temporal) |
-| 23-34 | Melds per player (chi, pon, kan) |
-| 35-39 | Dora indicator thermometer |
-| 40-42 | Aka dora flags (per suit plane) |
-| 43-61 | Game metadata (riichi, scores, gaps, shanten, round, honba, kyotaku) |
-| 62-84 | Safety channels (genbutsu, suji, kabe, one-chance, tenpai) |
-| 85-149 | Search/belief context, mixture stats, delta-Q, opponent risk/stress, presence masks, reserved slots |
-| 150-191 | Hand-EV context (tenpai / win / expected score / ukeire) plus presence mask |
+- `0..84`: baseline public + safety prefix
+- `85..149`: Group C search/belief context plus presence masks and reserved slots
+- `150..191`: Group D Hand-EV context plus presence mask
 
-If you need the active architecture/plan rather than the crate-local runtime summary, read:
-- `research/design/HYDRA_FINAL.md`
-- `research/design/HYDRA_RECONCILIATION.md`
+For the channel-by-channel breakdown and live runtime semantics, defer to `docs/GAME_ENGINE.md`.
 
 ## Benchmarks
 

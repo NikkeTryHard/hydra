@@ -1,8 +1,8 @@
-# Compute Budget Feasibility Analysis: Hydra on 2668 GPU-hours
+# Compute Budget Feasibility Analysis: Hydra on about 2000 DeltaAI GPU-hours
 
 ## Executive Summary
 
-**Bottom line: 2668 GPU-hours on Quadro RTX 5000 is sufficient for reaching strong amateur/low-dan play (Phase 1-2 of training), but fundamentally insufficient for LuckyJ-level (10+ dan) play without radical efficiency innovations. The budget is comparable to what Suphx used per RL agent on much weaker hardware, putting us in "one good shot" territory.**
+**Bottom line: about 2000 DeltaAI GPU-hours on the minimum GH200 planning unit is likely sufficient for reaching strong amateur/low-dan play through a disciplined BC-heavy path, but still fundamentally insufficient for LuckyJ-level (10+ dan) play without radical efficiency innovations. The budget is enough for one serious Hydra v1 push, not an open-ended search project.**
 
 **Recommendation: Option (b) -- pursue radically more efficient approach. BC-heavy pipeline with targeted RL fine-tuning is the only viable path at this budget.**
 
@@ -25,11 +25,10 @@
 | Model | 50 residual blocks, 256 channels, 5 separate networks |
 | Result | **10 dan** (Tenhou, somewhat unstable) |
 
-**FLOPS-normalized to RTX 5000:**
-- K80 die: ~2.9 TFLOPS FP32; Titan XP: ~12.1 TFLOPS; Quadro RTX 5000: **11.2 TFLOPS**
-- Suphx effective compute: (40 x 2.9 + 4 x 12.1) x 48h = ~7,900 TFLOPS-hours
-- Our budget: 2668 x 11.2 = **~29,900 TFLOPS-hours**
-- **We have ~3.8x one Suphx agent's compute budget in raw FLOPS**
+**Compute comparison caution:**
+- Suphx and later Mahjong systems were trained on very different hardware mixes and runtime assumptions.
+- Hydra's current planning target is about 2000 DeltaAI GPU-hours on a shared-node GH200 system with a minimum allocatable unit of 1 GH200 superchip.
+- Do not treat old RTX 5000 FLOPS-normalization math as the current planning baseline.
 
 ### 1.2 LuckyJ / JueJong (Tencent AI Lab, 2022-2023)
 
@@ -95,7 +94,7 @@ This is the only paper explicitly targeting **low-resource Mahjong training**. T
 | **Pluribus** | Poker | 64-core CPU server | 8 days | 12,400 CPU-hr | **$144** | Superhuman |
 | **AlphaStar** | StarCraft II | 16 TPUs/agent x 600 agents | 14-44 days | ~Millions TPU-hr | ~$Millions | Grandmaster |
 | **OpenAI Five** | Dota 2 | 256 P100 + 128K CPUs | Months | ~Millions GPU-hr | ~$Millions | Beat pros |
-| **Hydra (ours)** | Mahjong | Quadro RTX 5000 | TBD | **2,668 GPU-hr** | Grant-funded | Target: 80%+ |
+| **Hydra (ours)** | Mahjong | DeltaAI GH200 (minimum-unit planning target) | TBD | **~2,000 GPU-hr** | Grant-funded | Target: strong Hydra v1 baseline |
 
 ## 3. Scaling Laws for Game AI
 
@@ -163,7 +162,7 @@ No formal equivalent exists, but we can derive estimates from what worked:
 
 **AlphaStar**: ~5% imitation learning (from replays), ~95% RL (league self-play)
 
-**Recommended split for Hydra at 2668 GPU-hours**:
+**Recommended split for Hydra at about 2000 DeltaAI GPU-hours**:
 
 | Phase | Budget | GPU-hours | What it buys |
 |-------|--------|-----------|-------------|
@@ -184,7 +183,7 @@ Nobody has studied this directly. But we can triangulate:
 - **LuckyJ** (Mahjong, 2023): Unknown but almost certainly >>10K GPU-hours, reached stable 10.68 dan.
 
 **Estimated minimum for 10+ dan Mahjong AI**:
-- With state-of-the-art techniques (OLSS, oracle guiding, CQL): **5,000-15,000 RTX 5000-equivalent GPU-hours**
+- With state-of-the-art techniques (OLSS, oracle guiding, CQL): **5,000-15,000 modern-GPU-equivalent hours**
 - Without advanced techniques (basic PPO self-play): **50,000-100,000+ GPU-hours**
 - For 80% agreement (strong dan, not necessarily 10 dan): **1,500-5,000 GPU-hours**
 
@@ -192,23 +191,25 @@ Nobody has studied this directly. But we can triangulate:
 
 ## 8. Feasibility Assessment
 
-### What 2668 GPU-hours CAN achieve:
+### What about 2000 DeltaAI GPU-hours CAN achieve:
 - Full BC pretraining to expert-level prediction accuracy
 - Substantial offline RL (CQL) fine-tuning
 - Limited online self-play (~10-20M games at our engine speed)
 - A model that plays at strong amateur / low-dan level
 - Probably 70-80% agreement with expert play
 
-### What 2668 GPU-hours CANNOT achieve:
+### What about 2000 DeltaAI GPU-hours CANNOT achieve:
 - LuckyJ-level (10+ dan) performance
 - Extensive hyperparameter search
 - League-based training with multiple agents
 - Many iterations of the train->evaluate->iterate cycle
 
 ### Hardware context:
-- Quadro RTX 5000: 11.2 TFLOPS FP32, 16GB GDDR6, 384 Tensor Cores
-- 4 per Frontera node, likely running 1 training job across all 4
-- bf16 training supported via Tensor Cores
+- DeltaAI GH200 is a shared-node GH200 system.
+- The minimum allocatable unit is 1 GH200 superchip on a 4-way node.
+- Each minimum unit is effectively one H100-class GPU with its paired Grace CPU resources.
+- ACCESS exposes DeltaAI usage in GPU-hours rather than node-hours.
+- Current docs should not assume full 4-way billing is the same as the minimum unit.
 
 ### The verdict:
 
@@ -220,12 +221,12 @@ Specifically:
 3. **Oracle guiding**: Train with perfect-information oracle first, distill to imperfect-information policy.
 4. **Single focused RL run**: No hyperparameter sweeps. Pick proven hyperparameters from Mortal/Suphx.
 5. **Accept 80% as ceiling**: 80% agreement with expert play is achievable. 90%+ (10 dan) is not at this budget.
-6. **Future compute**: If initial results are promising, apply for additional allocation (TACC, NSF, etc.)
+6. **Future compute**: If initial results are promising, apply for additional allocation or a larger DeltaAI budget.
 
 ### Risk assessment:
 - **High confidence** (>90%): BC phase succeeds, model predicts expert moves at ~65-70% top-1 accuracy
 - **Medium confidence** (50-70%): RL phase lifts performance to ~75-80% agreement  
-- **Low confidence** (<20%): Reaching 10+ dan with 2668 GPU-hours alone
+- **Low confidence** (<20%): Reaching 10+ dan with about 2000 GPU-hours alone
 - **Negligible confidence** (<5%): Matching LuckyJ's stable 10.68 dan at this budget
 
 ---
@@ -241,4 +242,4 @@ Specifically:
 7. Li et al. "LsAc*-MJ: A Low-Resource Consumption RL Model for Mahjong." IJIS, 2024.
 8. Mortal Documentation: mortal.ekyu.moe
 9. Haobo Fu personal page: haobofu.github.io
-10. TACC Frontera Documentation: docs.tacc.utexas.edu/hpc/frontera/
+10. DeltaAI / ACCESS planning evidence: shared-node GH200 minimum-unit docs plus ACCESS GPU-hour exchange guidance.
