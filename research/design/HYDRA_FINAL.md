@@ -213,7 +213,7 @@ Runtime reality note: the live repo currently implements a selective particle-we
 
 **PIMC with top-k draw pruning.** Full Expectimax over wall=10 is too slow (~661K paths per particle at 0.1ms each = 66s). Instead, use **Pure PIMC**: for each CT-SMC particle, sample ONE draw sequence (weighted by hypergeometric probabilities) and ONE opponent action sequence (from ActorNet policy). Average over P particles. This reduces to P forward passes per endgame evaluation. With top-mass particle reduction (keep particles covering 95% weight, typically P=50-100): **5-10ms per decision**, well within budget. Top-k draw pruning (branch only on the 2-3 most likely draws at our nodes) provides a middle ground between PIMC and full Expectimax when more precision is needed.
 
-$$Q(a) \approx \frac{1}{P}\sum_{p=1}^{P} \text{PIMC\_Rollout}(a \mid X^{(p)})$$
+$$Q(a) \approx \frac{1}{P}\sum_{p=1}^{P} \operatorname{PIMC\_Rollout}(a \mid X^{(p)})$$
 
 The inner value is exact over wall draws; opponent actions remain modeled by the robust policy (KL ball). This removes chance uncertainty variance at the most sensitive game phase (oorasu placement swings).
 
