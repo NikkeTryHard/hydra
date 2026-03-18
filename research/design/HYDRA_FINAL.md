@@ -128,15 +128,37 @@ Runtime reality note: the live model already exposes these advanced output famil
 
 ### 5.1 SIB as KL projection
 
-Let $K_\theta(k,z)=\exp(F_\theta(k,z))>0$. The transportation polytope: $\mathcal{U}(r_t,s_t)=\{B\ge0: B\mathbf{1}=r_t, B^\top \mathbf{1}=s_t\}$.
+Let
 
-**SIB operator:** $\mathrm{SIB}(K_\theta;r_t,s_t) := \arg\min_{B\in\mathcal{U}} D_{\mathrm{KL}}(B\|K_\theta)$. Solution: $B^*=\mathrm{diag}(u)\cdot K_\theta\cdot\mathrm{diag}(v)$ via Sinkhorn-Knopp.
+$$K_\theta(k,z)=\exp(F_\theta(k,z))>0$$
+
+The transportation polytope is
+
+$$\mathcal{U}(r_t,s_t)=\{B\ge 0: B\mathbf{1}=r_t, B^\top \mathbf{1}=s_t\}$$
+
+**SIB operator:**
+
+$$\mathrm{SIB}(K_\theta;r_t,s_t) := \arg\min_{B\in\mathcal{U}} D_{\mathrm{KL}}(B\|K_\theta)$$
+
+Sinkhorn-Knopp gives the solution
+
+$$B^*=\mathrm{diag}(u)\cdot K_\theta\cdot\mathrm{diag}(v)$$
 
 ### 5.2 Mixture-SIB for multimodality
 
-$L$ components: $q_t(X)=\sum_{\ell=1}^L w_t^{(\ell)} q_t^{(\ell)}(X)$, each $B_t^{(\ell)}=\mathrm{SIB}(\exp(F_\theta^{(\ell)});r_t,s_t)$.
+With $L$ components, the mixture posterior is
 
-Weight update (Bayes): $w_{t+1}^{(\ell)}\propto w_t^{(\ell)} \cdot p_\phi(e_t\mid I_t, B_t^{(\ell)}, \ell)$ where $e_t$ is the observed public event (opponent discard, call, riichi, or pass). Anti-collapse via entropy regularizer, split-merge on low ESS, diversity penalty between components.
+$$q_t(X)=\sum_{\ell=1}^L w_t^{(\ell)} q_t^{(\ell)}(X)$$
+
+Each component marginal is
+
+$$B_t^{(\ell)}=\mathrm{SIB}(\exp(F_\theta^{(\ell)});r_t,s_t)$$
+
+Weight update (Bayes):
+
+$$w_{t+1}^{(\ell)}\propto w_t^{(\ell)} \cdot p_\phi(e_t\mid I_t, B_t^{(\ell)}, \ell)$$
+
+Here, $e_t$ is the observed public event (opponent discard, call, riichi, or pass). Anti-collapse via entropy regularizer, split-merge on low ESS, and a diversity penalty between components.
 
 ### 5.3 Particle posterior (SMC) for joint structure
 
@@ -144,7 +166,11 @@ Particles $\{X_t^{(p)},\alpha_t^{(p)}\}_{p=1}^P$ targeting $p(X_t\mid I_t)$. Pro
 
 ### 5.4 Correlation scale diagnostic
 
-$|\rho_{ij}|=\sqrt{K_i K_j} / \sqrt{(H-K_i)(H-K_j)}$. At $H=50$, $K=4$: $|\rho|=4/46=0.087$; at $H=25$: $|\rho|=0.190$. Late-game correlations motivate Mixture-SIB + particles over first-moment alone.
+The correlation scale is
+
+$$|\rho_{ij}|=\sqrt{K_i K_j} / \sqrt{(H-K_i)(H-K_j)}$$
+
+At $H=50$ and $K=4$, this gives $|\rho|=4/46=0.087$. At $H=25$, it gives $|\rho|=0.190$. Late-game correlations motivate Mixture-SIB plus particles over first-moment alone.
 
 ### 5.5 CT-SMC: Exact contingency-table sampling (replaces generic particle proposals)
 
@@ -154,17 +180,37 @@ The hidden allocation $X_t \in \mathbb{Z}_{\ge 0}^{34\times 4}$ is a **fixed-mar
 
 $$Z_k(\mathbf{c}) = \sum_{x \in \mathcal{X}_k(\mathbf{c})} \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x), \quad Z_{35}(\mathbf{0})=1$$
 
-where $\phi_k(x)=\prod_j \omega_{kj}^{x_j}$ is the learned field weight per row. Key insight: $c_W = R_k - (c_1+c_2+c_3)$ is **derived** (where $R_k = \sum_{t \ge k} r_t$ is the remaining hidden tile count at DP step $k$), so the DP state is 3D: $(c_1,c_2,c_3)$. State count: $\le (15)^3 = 3{,}375$ (max 14 tiles after draw, before discard). Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 3375 \times 35 \approx 4.0M$ ops -- **trivially sub-millisecond in Rust**. Use log-space DP for numerical stability.
+The learned field weight for each row is
 
-**Exact backward sampling:** $p(x_k = x \mid \mathbf{c}) = \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x) / Z_k(\mathbf{c})$. This gives **exact samples with correct correlations** from the conservation-constrained distribution -- not mean-field approximations.
+$$\phi_k(x)=\prod_j \omega_{kj}^{x_j}$$
 
-**SMC integration.** The full posterior is $p(X \mid \mathcal{O}_{1:t}) \propto p_0(X) \cdot L(X)$ where $L(X)$ is the opponent action likelihood. Sample $X^{(n)} \sim p_0$ via CT-DP (fast, correlation-correct), weight $w^{(n)} \leftarrow L(X^{(n)})$, normalize and resample. The proposal already respects the hardest constraint (tile conservation) exactly, so ESS stays high.
+The wall residual is derived from the other capacities:
+
+$$c_W = R_k - (c_1+c_2+c_3)$$
+
+Here, $R_k = \sum_{t \ge k} r_t$ is the remaining hidden tile count at DP step $k$. So the DP state is 3D: $(c_1,c_2,c_3)$. State count: $\le (15)^3 = 3{,}375$ (max 14 tiles after draw, before discard). Each transition enumerates $\le 35$ compositions. Total: $\sim 34 \times 3375 \times 35 \approx 4.0M$ ops -- **trivially sub-millisecond in Rust**. Use log-space DP for numerical stability.
+
+**Exact backward sampling:**
+
+$$p(x_k = x \mid \mathbf{c}) = \phi_k(x) \cdot Z_{k+1}(\mathbf{c}-x) / Z_k(\mathbf{c})$$
+
+This gives **exact samples with correct correlations** from the conservation-constrained distribution -- not mean-field approximations.
+
+**SMC integration.** The full posterior is
+
+$$p(X \mid \mathcal{O}_{1:t}) \propto p_0(X) \cdot L(X)$$
+
+Here, $L(X)$ is the opponent action likelihood. Sample $X^{(n)} \sim p_0$ via CT-DP (fast, correlation-correct), then assign weights with
+
+$$w^{(n)} \leftarrow L(X^{(n)})$$
+
+Normalize and resample. The proposal already respects the hardest constraint (tile conservation) exactly, so ESS stays high.
 
 **What CT-SMC replaces:** The generic particle proposal from Section 5.3. Mixture-SIB is KEPT as the fast amortized belief head for network input; CT-SMC is the search-grade belief for AFBS and safety queries.
 
 **Validation gates:**
 - **Gate A (posterior log-likelihood):** At end of hand, evaluate $\log p(X^* \mid \mathcal{O}_{1:t})$ under CT-SMC vs generic CMPS. CT-SMC must win.
-- **Gate B (pairwise MI calibration):** Compare estimated $I(\mathbf{1}\{A \in H_z\}; \mathbf{1}\{B \in H_z\})$ vs empirical. Must capture correlations generic CMPS misses.
+- **Gate B (pairwise MI calibration):** Compare the estimated mutual information between whether tile $A$ is in hidden hand $z$ and whether tile $B$ is in hidden hand $z$ against empirical values. It must capture correlations generic CMPS misses.
 
 ---
 
@@ -176,7 +222,11 @@ The remaining-tile distribution under "draw without replacement" is Strongly Ray
 
 ### 6.2 Hunter bound (spanning tree correction)
 
-For threat events $\{A_j\}_{j=1}^J$ and any spanning tree $\mathcal{T}$: $P(\bigcup_j A_j) \le \sum_j P(A_j) - \sum_{(u,v)\in\mathcal{T}} P(A_u\cap A_v)$. Maximum-weight spanning tree gives the tightest bound. Kounias (1968) bound is a member; we take the minimum computable bound.
+For threat events $A_1, \ldots, A_J$ and any spanning tree $T$:
+
+$$P\left(\bigcup_{j=1}^{J} A_j\right) \le \sum_{j=1}^{J} P(A_j) - \sum_{(u,v)\in T} P(A_u \cap A_v)$$
+
+Maximum-weight spanning tree gives the tightest bound. Kounias (1968) bound is a member; we take the minimum computable bound.
 
 ### 6.3 Computing intersections reliably
 
@@ -209,11 +259,11 @@ On event: lookup predicted child key; if match, shift root and keep statistics; 
 
 Runtime reality note: the live repo currently implements a selective particle-weighted PIMC shell for this area rather than a full exact multiplayer endgame solver. Keep exactification as the target direction; defer current shipped/staged status to `docs/CURRENT_STATUS.md` and runtime semantics to `docs/GAME_ENGINE.md`.
 
-**Trigger:** Activate when remaining wall $\le W^* = 10$ tiles AND at least one threatening signal (riichi, open tenpai, high-tempo opponent).
+**Trigger:** Activate when the remaining wall is 10 tiles or fewer and at least one threatening signal is present (riichi, open tenpai, high-tempo opponent).
 
 **PIMC with top-k draw pruning.** Full Expectimax over wall=10 is too slow (~661K paths per particle at 0.1ms each = 66s). Instead, use **Pure PIMC**: for each CT-SMC particle, sample ONE draw sequence (weighted by hypergeometric probabilities) and ONE opponent action sequence (from ActorNet policy). Average over P particles. This reduces to P forward passes per endgame evaluation. With top-mass particle reduction (keep particles covering 95% weight, typically P=50-100): **5-10ms per decision**, well within budget. Top-k draw pruning (branch only on the 2-3 most likely draws at our nodes) provides a middle ground between PIMC and full Expectimax when more precision is needed.
 
-$$Q(a) \approx \frac{1}{P}\sum_{p=1}^{P} \operatorname{PIMC\_Rollout}(a \mid X^{(p)})$$
+$$Q(a) \approx \frac{1}{P}\sum_{p=1}^{P} PIMC(a \mid X^{(p)})$$
 
 The inner value is exact over wall draws; opponent actions remain modeled by the robust policy (KL ball). This removes chance uncertainty variance at the most sensitive game phase (oorasu placement swings).
 
@@ -229,11 +279,23 @@ The inner value is exact over wall draws; opponent actions remain modeled by the
 
 ### 8.1 Opponent uncertainty set
 
-Learned opponent policy $p(a)$. True policy $q(a)$ lies in KL ball: $\mathcal{Q}_\varepsilon(p)=\{q: D_{\mathrm{KL}}(q\|p)\le \varepsilon\}$. $\varepsilon$ calibrated from data as empirical upper quantile of observed KL, bucketed by context.
+Learned opponent policy is $p(a)$. The true policy $q(a)$ lies in the KL ball
+
+$$\mathcal{Q}_\varepsilon(p)=\{q: D_{\mathrm{KL}}(q\|p)\le \varepsilon\}$$
+
+$\varepsilon$ is calibrated from data as the empirical upper quantile of observed KL, bucketed by context.
 
 ### 8.2 Robust value at opponent nodes
 
-$V_{\text{rob}}=\min_{q\in \mathcal{Q}_\varepsilon(p)} \sum_a q(a) Q(a)$. Solution: $q_\tau(a)\propto p(a)\exp(-Q(a)/\tau)$ for $\tau$ chosen so $D_{\mathrm{KL}}(q_\tau\|p)=\varepsilon$.
+Robust value at opponent nodes is
+
+$$V_{\text{rob}}=\min_{q\in \mathcal{Q}_\varepsilon(p)} \sum_a q(a) Q(a)$$
+
+The solution has the form
+
+$$q_\tau(a)\propto p(a)\exp(-Q(a)/\tau)$$
+
+Choose $\tau$ so that $D_{\mathrm{KL}}(q_\tau\|p)=\varepsilon$.
 
 **Contract.** For any opponent policy $q$ in the KL ball, AFBS's robust backup gives a lower bound on expected value against $q$.
 
@@ -252,7 +314,13 @@ This soft-min over archetypes directly mirrors LuckyJ's OLSS-II approach (Liu et
 
 For each legal action $a$, AFBS returns: $\Delta Q(a)$, deal-in risk estimates (Boole/Hunter/robust), epistemic terms (entropy drop), robust stress ($\tau$), uncertainty (variance, ESS).
 
-**Logit-residual policy:** $\ell_{\text{final}}(a)=\ell_\theta(a) + \alpha_{\text{SaF}}\cdot g_\psi(f(a))\cdot m(a)$ where $m(a)\in\{0,1\}$ indicates features present. $g_\psi$ is a tiny shared MLP (hidden dim 32-64). **SaF-dropout**: during training, randomly zero $m$ even when features are available ($p_{\text{drop}}=0.3$) to prevent over-reliance. Train $g_\psi$ first via supervised regression on $\delta(a)=\log\pi_{\text{search}}(a)-\log\pi_{\text{base}}(a)$, then switch to joint end-to-end.
+**Logit-residual policy:**
+
+$$\ell_{\text{final}}(a)=\ell_\theta(a) + \alpha_{\text{SaF}}\cdot g_\psi(f(a))\cdot m(a)$$
+
+Here, $m(a)\in\{0,1\}$ indicates whether features are present. $g_\psi$ is a tiny shared MLP (hidden dim 32-64).
+
+**SaF-dropout:** during training, randomly zero $m$ even when features are available ($p_{\text{drop}}=0.3$) to prevent over-reliance. Train $g_\psi$ first via supervised regression on $\delta(a)=\log\pi_{\text{search}}(a)-\log\pi_{\text{base}}(a)$, then switch to joint end-to-end.
 
 ---
 
@@ -299,13 +367,33 @@ If gates fail, shrink AFBS/teacher usage and reallocate to more self-play.
 Train LearnerNet (24-block) on 5-6M expert games (Tenhou Houou + Majsoul). 24x augmentation (6 suit perms x 4 seat rotations). All heads supervised. Distill to ActorNet (12-block) at end.
 
 ### Phase 1: Oracle-visible supervision (200 GPU hours)
-Self-play with full hidden state access. Train oracle critic (zero-sum constraint $\sum_i V_i = 0$) and belief likelihood model. Suphx-style Bernoulli dropout $\gamma_t: 1 \to 0$. Post-oracle stability: LR decay $\times 0.1$ + importance weight rejection when $\gamma_t$ reaches 0.
+Self-play with full hidden state access. Train the oracle critic under the zero-sum constraint
+
+$$\sum_i V_i = 0$$
+
+and train the belief likelihood model alongside it.
+
+Use the Suphx-style Bernoulli dropout schedule
+
+$$\gamma_t: 1 \to 0$$
+
+Post-oracle stability uses LR decay by $\times 0.1$ plus importance weight rejection when $\gamma_t$ reaches 0.
 
 ### Phase 2: DRDA-wrapped ACH self-play (800 GPU hours)
 
-**DRDA-wrapped ACH**: ACH is LuckyJ's inner optimizer (+0.4 fan over PPO) but its theory covers only 2-player zero-sum. For 4-player stability, wrap in DRDA's multi-round structure (ICLR 2025). Policy: $\pi_\theta(a|x) = \mathrm{softmax}(\ell_{\text{base}}(x,a) + y_\theta(x,a)/\tau_{\text{drda}})$ where $\ell_{\text{base}}$ is a frozen checkpoint, $y_\theta$ is a trainable residual, and $\tau_{\text{drda}} \in \{2, 4, 8\}$ (tune via Phase -1; target median KL to base in $[0.05, 0.20]$).
+**DRDA-wrapped ACH**: ACH is LuckyJ's inner optimizer (+0.4 fan over PPO) but its theory covers only 2-player zero-sum. For 4-player stability, wrap it in DRDA's multi-round structure (ICLR 2025).
 
-**Rebase rule (CRITICAL):** Every 25-50 GPU hours: (1) fold residual into base: $\ell_{\text{base}} \leftarrow \ell_{\text{base}} + y_\theta/\tau_{\text{drda}}$, (2) zero $y_\theta$ and reset optimizer moments. This preserves $\pi$ exactly across boundaries and prevents double-counting accumulated regret.
+The policy is
+
+$$\pi_\theta(a|x) = \mathrm{softmax}(\ell_{\text{base}}(x,a) + y_\theta(x,a)/\tau_{\text{drda}})$$
+
+Here, $\ell_{\text{base}}$ is a frozen checkpoint, $y_\theta$ is a trainable residual, and $\tau_{\text{drda}} \in \{2, 4, 8\}$ (tune via Phase -1; target median KL to base in $[0.05, 0.20]$).
+
+**Rebase rule (CRITICAL):** Every 25-50 GPU hours, fold residual into base with
+
+$$\ell_{\text{base}} \leftarrow \ell_{\text{base}} + y_\theta/\tau_{\text{drda}}$$
+
+Then zero $y_\theta$ and reset optimizer moments. This preserves $\pi$ exactly across boundaries and prevents double-counting accumulated regret.
 
 ACH update (per-(s,a) sample):
 $$L_\pi(s,a) = -c(s,a) \cdot \eta \cdot \frac{y(a|s;\theta)}{\pi_{\text{old}}(a|s)} \cdot A(s,a)$$
@@ -342,10 +430,18 @@ League: latest ActorNet, trailing checkpoints, human-style anchors (BC-heavy), a
 Score pdf/cdf heads. CVaR for "avoid 4th" objectives.
 
 ### 12.2 Information-Value Decomposition (IVD)
-$Q^{\text{total}}(I,a)=Q^{\text{inst}}(I,a)+\beta_{\text{epi}} Q^{\text{epi}}(I,a)+\xi Q^{\text{str}}(I,a)$ where instrumental = score utility, epistemic = posterior entropy decrease, strategic = concealment/leakage penalty. (Note: $\beta_{\text{epi}}$ is the epistemic weight, distinct from ACH's $\eta$.)
+The full decomposition is
+
+$$Q^{\text{total}}(I,a)=Q^{\text{inst}}(I,a)+\beta_{\text{epi}} Q^{\text{epi}}(I,a)+\xi Q^{\text{str}}(I,a)$$
+
+Here, instrumental means score utility, epistemic means posterior entropy decrease, and strategic means concealment or leakage penalty. Note that $\beta_{\text{epi}}$ is the epistemic weight, distinct from ACH's $\eta$.
 
 ### 12.3 Primal-dual risk constraints
-Constraints: deal-in risk below $\kappa_{\text{deal}}$, info leakage below $\kappa_{\text{leak}}$. Dual updates: $\lambda \leftarrow [\lambda+\alpha(\hat{C}-\kappa)]_+$.
+Constraints keep deal-in risk below $\kappa_{\text{deal}}$ and information leakage below $\kappa_{\text{leak}}$.
+
+Dual updates use
+
+$$\lambda \leftarrow [\lambda+\alpha(\hat{C}-\kappa)]_+$$
 
 ### DeltaQ lane runtime note
 
