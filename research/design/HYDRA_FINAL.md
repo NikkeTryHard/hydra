@@ -103,12 +103,12 @@ Runtime reality note: the live repo already carries the same 42-plane Hand-EV su
 
 A 40-block teacher trained only on hard states (1-5%) gets just ~7 spp -- catastrophic data starvation. **Two-tier architecture avoids this paradox:**
 
-| Network | Blocks | Params | Role | GPU |
-|---------|-------:|-------:|------|-----|
-| **LearnerNet** | 24 | ~10M | Training (ACH/ExIt) + deep AFBS on hard positions | GPU 0-1 (train), GPU 3 (search) |
-| **ActorNet** | 12 | ~5M | Self-play data generation + shallow SaF features | GPU 2 |
+| Network | Blocks | Params | Role | Runtime placement |
+|---------|-------:|-------:|------|-------------------|
+| **LearnerNet** | 24 | ~10M | Training (ACH/ExIt) + deep AFBS on hard positions | Main training / search-capable GH200 resources |
+| **ActorNet** | 12 | ~5M | Self-play data generation + shallow SaF features | Fast rollout / self-play generation resources |
 
-All use SE-ResNet with GroupNorm(32) and Mish. Target deployment precision is bf16-capable, but the current repo remains fp32-first unless backend autocast is wired explicitly. **Continuous distillation**: Learner -> Actor (every 1-2 minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms. LearnerNet runs deep AFBS on GPU 3 for hard-position ExIt labels.
+All use SE-ResNet with GroupNorm(32) and Mish. Target deployment precision is bf16-capable, but the current repo remains fp32-first unless backend autocast is wired explicitly. **Continuous distillation**: Learner -> Actor (every 1-2 minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms. LearnerNet runs deeper AFBS only on hard-position ExIt labels when throughput budget allows.
 
 ### 4.3 Heads (multi-task)
 
@@ -350,7 +350,7 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 | Phase 0: BC | 50 | LearnerNet (24-block) | N/A (5-6M expert) | Initialize from human data |
 | Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
 | Phase 2: DRDA-wrapped ACH | 800 | LearnerNet via ACH+DRDA | ~18M | Game-theoretic base + early ExIt |
-| Phase 3: ExIt + Pondering | 800 | LearnerNet (deep AFBS on GPU 3) | ~12M | Deep search ExIt + endgame |
+| Phase 3: ExIt + Pondering | 800 | LearnerNet (deep AFBS on hard positions) | ~12M | Deep search ExIt + endgame |
 | **Total** | **2000** | | **~35M** | |
 
 Logical role split: training, self-play generation, and pondering/search amplification should be partitioned across the available DeltaAI GH200 resources as throughput permits. Treat these as workload roles, not a claim that Hydra will have exclusive use of four physical GPUs. Distillation: Learner -> Actor continuously (IMPALA-style).
@@ -417,7 +417,7 @@ Oracle critic provides advantages via CTDE: actor conditions on public info only
 
 ### Phase 3: ExIt + AFBS + Pondering (800 GPU hours)
 
-LearnerNet runs deep AFBS on GPU 3 for **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS). ExIt targets distilled into LearnerNet's own training loss (ACH + ExIt + SaF auxiliary regression). ActorNet updated from LearnerNet continuously.
+LearnerNet runs deep AFBS for **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS) when the available DeltaAI GH200 throughput budget allows. ExIt targets distilled into LearnerNet's own training loss (ACH + ExIt + SaF auxiliary regression). ActorNet updated from LearnerNet continuously.
 
 ### Population training
 League: latest ActorNet, trailing checkpoints, human-style anchors (BC-heavy), adversarial exploiters.
