@@ -402,7 +402,7 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 | Pre-encoded shards (Blosc+LZ4, ~7:1) | ~640 GB | Optional production path only |
 | Actions + masks + metadata | ~22 GB | Compact ancillary data |
 
-**Memory budget (GH200 / H100-class 96 GB GPU memory):**
+**Memory budget (Delta GPU A100, 40 GB GPU memory):**
 
 | Component | Memory | Phase |
 |-----------|--------|-------|
@@ -472,8 +472,8 @@ The remainder of this section preserves older detailed training-infrastructure p
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | Batch size | 2048 | 4× Mortal's 512; linear scaling with LR |
-| Gradient accumulation | 1 | Effective batch = 2048 (sufficient on 96 GB-class accelerators) |
-| Precision | bf16 (autocast) | H100/GH200-class friendly; same dynamic range as fp32, no GradScaler needed |
+| Gradient accumulation | 1 | Effective batch = 2048 (comfortably fits on A100 40 GB) |
+| Precision | bf16 (autocast) | A100-friendly; same dynamic range as fp32, no GradScaler needed |
 | CubeCL JIT | Planned (burn-cuda upgrade) | Kernel fusion via burn-cuda backend. Currently using burn-tch (libtorch). See [RUST_STACK.md](RUST_STACK.md). |
 
 **Loss function:**
@@ -495,9 +495,9 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 **Resource estimates:**
 - Steps per epoch: ~160K (330M decisions / 2048 per batch)
 - Total training steps: ~480K (3 epochs)
-- Wall time per epoch: hardware-dependent; benchmark on the actual DeltaAI GH200 allocation before treating this as a planning constant
-- Total wall time: depends on measured GH200 throughput and data-pipeline efficiency
-- GPU memory: ~400 MB total (model + optimizer + batch — still tiny relative to 96 GB-class accelerators)
+- Wall time per epoch: hardware-dependent; benchmark on the actual Delta GPU A100 allocation before treating this as a planning constant
+- Total wall time: depends on measured Delta GPU A100 throughput and data-pipeline efficiency
+- GPU memory: ~400 MB total (model + optimizer + batch — still tiny relative to A100 40 GB)
 
 **Monitoring (via W&B REST API / tensorboard-rs):**
 
@@ -757,21 +757,22 @@ graph LR
 
 The core advantage of a 100% Rust stack is zero FFI boundary at inference time. No GIL, no Python startup overhead, no cross-language serialization -- enabling sub-15ms decision latency suitable for real-time play.
 
-## DeltaAI GH200 Planning Target
+## Delta GPU A100 Planning Target
 
-Current Hydra planning targets DeltaAI GH200 rather than the older Frontera proposal-era environment.
+Current Hydra planning targets NCSA Delta GPU on the `gpuA100x4` partition, starting with 1 shared A100 rather than the older Frontera proposal-era environment.
 
 ### Planning assumptions
 
-- DeltaAI GH200 is a shared-node system.
-- The minimum allocatable unit is 1 GH200 superchip on a 4-way node.
-- Each GH200 superchip corresponds to one Grace CPU plus one H100 GPU.
-- ACCESS exchange exposes DeltaAI usage in GPU-hours.
-- Current planning target is about 2,000 GPU-hours on that minimum GH200 unit.
+- Delta GPU `gpuA100x4` is a shared-node system with 4 A100 GPUs per node.
+- Hydra's current target is 1 shared A100 on that partition, not an exclusive full node.
+- Official Delta accounting treats 1 SU as the Quad A100 equivalent of 1 A100, 16 CPU cores, or 62.5 GB host memory for 1 hour.
+- Charges are based on reserved resources, using the larger of GPU count, reserved-core fraction, or reserved-memory fraction.
+- Official Delta accounting notes that 1 GB here means 1e9 bytes (1,000,000,000), not 2^30 bytes (1,073,741,824).
+- Current planning target is about 2,000 GPU-hours on that 1-A100 shared-job shape.
 
 ### Planning caveat
 
-This section should be read as the current budgeting target for Hydra training, not as a claim that full 4-way DeltaAI use is billed the same as the minimum unit. Repo evidence currently supports the minimum-unit and GPU-hour framing, but does not explicitly prove exact full-node billing semantics.
+This section should be read as the current budgeting target for Hydra training. Delta node-sharing is the default; exclusivity on `gpuA100x4` means reserving the full 4-GPU node and paying at the full-node rate.
 
 ### Budget sketch
 
@@ -781,7 +782,7 @@ This section should be read as the current budgeting target for Hydra training, 
 | Phase 2: Oracle distillation + search calibration | 800 | Preserved later-stage reference budget |
 | Phase 3: League self-play validation | 400 | Preserved later-stage reference budget |
 | Ablation studies + debugging buffer | 200 | Validation and fallback margin |
-| **Total** | **2,000** | Planning target on DeltaAI GH200 |
+| **Total** | **2,000** | Planning target on Delta GPU A100 |
 
 ### Historical note
 
@@ -793,9 +794,9 @@ Older TACC/Frontera proposal framing remains historical context only. Do not use
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| GPU | RTX 3080 (10GB) | GH200 superchip-class H100 GPU (96GB) |
-| CPU | 8 cores | 32+ cores |
-| RAM | 32GB | 128GB+ |
+| GPU | RTX 3080 (10GB) | 1 shared A100 40 GB on Delta `gpuA100x4` |
+| CPU | 8 cores | 16 reserved cores on Delta Quad A100 |
+| RAM | 32GB | 62.5 GB reserved host memory on Delta Quad A100 |
 | Storage | 100GB SSD | 1TB NVMe |
 
 ### Inference
