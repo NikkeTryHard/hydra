@@ -3,9 +3,12 @@ use std::path::PathBuf;
 
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
+use hydra_train::eval::{run_paired_delta_q_arena_confirmation, PairedArenaEvalConfig};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
-use hydra_train::training::delta_q_promotion::DeltaQPromotionRecommendation;
+use hydra_train::training::delta_q_promotion::{
+    DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPromotionRecommendation,
+};
 
 use super::artifacts::{
     write_delta_q_promotion_artifact, BcArtifactPaths, PersistedDeltaQPromotionArtifact,
@@ -307,21 +310,21 @@ pub(super) fn handle_delta_q_promotion_mode(
         mut head_controller,
         ..
     } = runtime;
-    let baseline_model = if let Some(path) = baseline_checkpoint.as_ref() {
-        let checkpoint_base = checkpoint_base_from_path(path);
-        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-        HydraModelConfig::learner()
-            .init::<super::TrainBackend>(&train_device)
-            .load_file(&checkpoint_base, &recorder, &train_device)
-            .map_err(|err| {
-                format!(
-                    "failed to load delta_q baseline checkpoint {}: {err}",
-                    checkpoint_base.display()
-                )
-            })?
-    } else {
-        model.clone()
-    };
+    let baseline_checkpoint = baseline_checkpoint.as_ref().ok_or_else(|| {
+        "delta_q promotion mode requires --delta-q-baseline-checkpoint for arena confirmation"
+            .to_string()
+    })?;
+    let checkpoint_base = checkpoint_base_from_path(baseline_checkpoint);
+    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+    let baseline_model = HydraModelConfig::learner()
+        .init::<super::TrainBackend>(&train_device)
+        .load_file(&checkpoint_base, &recorder, &train_device)
+        .map_err(|err| {
+            format!(
+                "failed to load delta_q baseline checkpoint {}: {err}",
+                checkpoint_base.display()
+            )
+        })?;
 
     println!(
         "{}",
@@ -366,24 +369,63 @@ pub(super) fn handle_delta_q_promotion_mode(
                 .to_string(),
         );
     };
-    let final_recommendation = if result.passed && transfer_result.map(|r| r.passed).unwrap_or(true)
-    {
-        DeltaQPromotionRecommendation::RequiresArenaConfirmation
-    } else {
-        DeltaQPromotionRecommendation::RejectAtOfflineGate
-    };
+    let pre_arena_recommendation =
+        if result.passed && transfer_result.map(|r| r.passed).unwrap_or(true) {
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation
+        } else {
+            DeltaQPromotionRecommendation::RejectAtOfflineGate
+        };
+
+    let arena_confirmation_request: Option<DeltaQArenaConfirmationRequest> =
+        (pre_arena_recommendation == DeltaQPromotionRecommendation::RequiresArenaConfirmation)
+            .then_some(Default::default());
+    let arena_config = arena_confirmation_request.as_ref().map(|request| {
+        PairedArenaEvalConfig::new()
+            .with_min_games(request.min_games as usize)
+            .with_seed(config.seed)
+            .with_same_seeds(request.same_seeds)
+            .with_same_seat_rotation_schedule(request.same_seat_rotation_schedule)
+            .with_same_search_budget(request.same_search_budget)
+            .with_same_temperature(request.same_temperature)
+            .with_same_frozen_opponent_pool(request.same_frozen_opponent_pool)
+    });
+    let arena_eval = arena_config.as_ref().map(|arena_config| {
+        run_paired_delta_q_arena_confirmation(
+            &model,
+            &baseline_model,
+            &train_device,
+            arena_config,
+            config.rl.as_ref().map(|rl| rl.temperature).unwrap_or(1.0),
+        )
+    });
+    let arena_report = arena_eval.as_ref().map(|outcome| {
+        DeltaQArenaReport::from_paired_eval(
+            &outcome.paired_result,
+            outcome.lower_confidence_bound_mean_placement,
+        )
+    });
+    let arena_decision = arena_eval.as_ref().map(|outcome| {
+        outcome.paired_result.recommendation(
+            arena_config
+                .as_ref()
+                .expect("arena config exists when arena eval exists"),
+        )
+    });
 
     write_delta_q_promotion_artifact(
         &artifacts.delta_q_promotion_path,
         &PersistedDeltaQPromotionArtifact {
             scope: "promotion_mode",
             step_or_epoch: 0,
-            recommendation: final_recommendation,
-            stage: "offline_and_policy_transfer_gate",
-            arena_confirmation: (final_recommendation
-                == DeltaQPromotionRecommendation::RequiresArenaConfirmation)
-                .then_some(Default::default()),
-            arena_report: None,
+            recommendation: pre_arena_recommendation,
+            stage: if arena_report.is_some() {
+                "offline_transfer_and_arena_gate"
+            } else {
+                "offline_and_policy_transfer_gate"
+            },
+            arena_confirmation: arena_confirmation_request.clone(),
+            arena_decision,
+            arena_report: arena_report.as_ref(),
             report,
             result,
             policy_transfer: summary.delta_q_policy_transfer.as_ref(),
@@ -403,16 +445,40 @@ pub(super) fn handle_delta_q_promotion_mode(
             snapshot.baseline_mean_regret,
             snapshot.regret_beats_baseline_rate * 100.0,
             snapshot.passed,
-            final_recommendation,
-            if final_recommendation == DeltaQPromotionRecommendation::RequiresArenaConfirmation {
-                hydra_train::training::delta_q_promotion::DeltaQArenaConfirmationRequest::default()
-                    .summary()
+            pre_arena_recommendation,
+            if let Some(request) = arena_confirmation_request.as_ref() {
+                request.summary()
             } else {
                 "n/a".to_string()
             },
             artifacts.delta_q_promotion_path.display(),
         ))
     );
+    if let Some(outcome) = arena_eval.as_ref() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {} lower_ci={:.3}",
+                "DeltaQ arena confirmation".bold().green(),
+                outcome.paired_result.summary(
+                    arena_config
+                        .as_ref()
+                        .expect("arena config exists when arena eval exists"),
+                ),
+                outcome.lower_confidence_bound_mean_placement,
+            ))
+        );
+        if let Some(decision) = arena_decision {
+            println!(
+                "{}",
+                timestamped(format!(
+                    "{} {}",
+                    "DeltaQ arena decision".bold().green(),
+                    decision.summary(),
+                ))
+            );
+        }
+    }
     if let Some(transfer) = summary.delta_q_policy_transfer_snapshot {
         println!(
             "{}",
