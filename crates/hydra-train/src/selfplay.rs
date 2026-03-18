@@ -363,6 +363,63 @@ where
     trajectory
 }
 
+pub fn run_mixed_policy_game_scores<B: Backend>(
+    game_seed: u64,
+    temperature: f32,
+    rng_seed: u64,
+    seat_models: [&HydraModel<B>; 4],
+    device: &B::Device,
+) -> [i32; 4] {
+    let rule = GameRule::default_tenhou();
+    let mut state = GameState::new(DEFAULT_GAME_MODE, true, Some(game_seed), 0, rule);
+    let mut selector = NnActionSelector::new(temperature, rng_seed);
+    let mut legal_buf = Vec::with_capacity(HYDRA_ACTION_SPACE);
+    let mut total_steps = 0u32;
+
+    while !state.is_done && total_steps < MAX_SELF_PLAY_STEPS {
+        if state.needs_initialize_next_round {
+            state.step_unchecked(&[None; 4]);
+            selector.reset_safety();
+            continue;
+        }
+
+        let mut chosen_actions = [None; 4];
+        match state.phase {
+            Phase::WaitAct => {
+                let pid = state.current_player;
+                run_mixed_player_decision(
+                    &mut state,
+                    &mut selector,
+                    &mut legal_buf,
+                    &seat_models,
+                    device,
+                    &mut chosen_actions,
+                    pid,
+                );
+            }
+            Phase::WaitResponse => {
+                let active_players = state.active_player_slice().to_vec();
+                for pid in active_players {
+                    run_mixed_player_decision(
+                        &mut state,
+                        &mut selector,
+                        &mut legal_buf,
+                        &seat_models,
+                        device,
+                        &mut chosen_actions,
+                        pid,
+                    );
+                }
+            }
+        }
+
+        state.step_unchecked(&chosen_actions);
+        total_steps = total_steps.saturating_add(1);
+    }
+
+    std::array::from_fn(|idx| state.players[idx].score)
+}
+
 
 /// Raw output from a batch of self-play games before RL batch collation.
 ///
@@ -1045,6 +1102,38 @@ fn run_player_decision<F, E>(
     }
 }
 
+fn run_mixed_player_decision<B: Backend>(
+    state: &mut GameState,
+    selector: &mut NnActionSelector,
+    legal_buf: &mut Vec<Action>,
+    seat_models: &[&HydraModel<B>; 4],
+    device: &B::Device,
+    chosen_actions: &mut [Option<Action>; 4],
+    pid: u8,
+) {
+    let obs = state.get_observation(pid);
+    if obs.legal_actions_ref().is_empty() {
+        return;
+    }
+
+    let drawn_tile = state.drawn_tile.map(|tile| tile / 4);
+    let encoded = selector.encode_observation(&obs, pid, drawn_tile);
+    let logits = seat_models[pid as usize].policy_value_cpu(&encoded, device).0;
+    selector.set_logits(logits);
+
+    state.get_legal_actions_into(pid, legal_buf);
+    if legal_buf.is_empty() {
+        return;
+    }
+
+    let drawn_tile_before_action = state.drawn_tile;
+    let action = <NnActionSelector as hydra_core::game_loop::ActionSelector>::select_action(
+        selector, pid, legal_buf,
+    );
+    selector.track_action(pid, drawn_tile_before_action, &action);
+    chosen_actions[pid as usize] = Some(action);
+}
+
 fn infer_action_phase(legal_actions: &[Action]) -> ActionPhase {
     if legal_actions.iter().any(|action| {
         matches!(
@@ -1373,6 +1462,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn mixed_policy_runner_matches_single_model_selfplay_when_all_seats_share_model() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<B>(&device);
+
+        let trajectory = run_self_play_game(77, 1.0, 1234, |obs| model.policy_value_cpu(obs, &device).0);
+        let scores = run_mixed_policy_game_scores(
+            77,
+            1.0,
+            1234,
+            [&model, &model, &model, &model],
+            &device,
+        );
+
+        assert_eq!(trajectory.final_scores, scores);
     }
 
     #[test]

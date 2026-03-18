@@ -42,8 +42,8 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 
 ### Implemented but not default-on
 
-- The narrow DeltaQ supervision lane is implemented in code and promotion-gated offline.
-- DeltaQ is **not** arena-confirmed yet and is **not** default-on.
+- The narrow DeltaQ supervision lane is implemented in code and promotion-gated through an arena-confirmation path.
+- DeltaQ promotion artifacts now persist explicit `arena_decision` plus `arena_report`, but the lane is still **not** default-on.
 
 ### Implemented but staged
 
@@ -67,7 +67,7 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 | Belief semantics baseline | shipped baseline | Stronger public-teacher belief tranche is in the live baseline |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |
 | ExIt carrier | shipped baseline | Live self-play lane + replay/sample sidecar-first lane |
-| DeltaQ lane | implemented but not default-on | Promotion-gated offline; not arena-confirmed |
+| DeltaQ lane | implemented but not default-on | Arena-confirmation path implemented; promotion artifact now records pre-arena recommendation plus final `arena_decision`/`arena_report` |
 | `mixture_weight` activation | implemented but staged | Surface exists, promotion remains deferred |
 | `opponent_hand_type` activation | implemented but staged | Surface exists, target closure remains incomplete |
 | AFBS broad default runtime | reserve shelf | Specialist / hard-state gated direction only |

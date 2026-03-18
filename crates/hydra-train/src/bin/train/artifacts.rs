@@ -7,6 +7,7 @@ use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use tboard::EventWriter;
 
+use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{default_cache_name, PreflightCacheEntry};
 use hydra_train::training::bc::CheckpointMeta;
@@ -309,6 +310,7 @@ pub(crate) struct PersistedDeltaQPromotionArtifact<'a> {
     pub(crate) recommendation: DeltaQPromotionRecommendation,
     pub(crate) stage: &'a str,
     pub(crate) arena_confirmation: Option<DeltaQArenaConfirmationRequest>,
+    pub(crate) arena_decision: Option<ArenaPromotionDecision>,
     pub(crate) arena_report: Option<&'a DeltaQArenaReport>,
     pub(crate) report: &'a DeltaQPromotionReport,
     pub(crate) result: &'a DeltaQPromotionResult,
@@ -482,4 +484,66 @@ pub(crate) fn log_tensorboard<W: Write>(
         .map_err(|err| format!("tensorboard write val/best_policy_agreement failed: {err}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra_{label}_{unique}"))
+    }
+
+    #[test]
+    fn delta_q_promotion_artifact_serializes_arena_fields() {
+        let dir = temp_dir_path("delta_q_promotion_artifact");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("delta_q_promotion.json");
+
+        let report = DeltaQPromotionReport::new();
+        let result = DeltaQPromotionResult {
+            passed: true,
+            criteria: Vec::new(),
+        };
+        let arena_request = DeltaQArenaConfirmationRequest::default();
+        let paired = hydra_train::eval::paired_arena_result_from_placements(
+            &[0, 1, 1, 2],
+            &[1, 2, 2, 3],
+            0.02,
+        );
+        let arena_report = DeltaQArenaReport::from_paired_eval(&paired, -0.01);
+
+        write_delta_q_promotion_artifact(
+            &path,
+            &PersistedDeltaQPromotionArtifact {
+                scope: "promotion_mode",
+                step_or_epoch: 0,
+                recommendation: DeltaQPromotionRecommendation::RequiresArenaConfirmation,
+                stage: "offline_transfer_and_arena_gate",
+                arena_confirmation: Some(arena_request),
+                arena_decision: Some(ArenaPromotionDecision::NonRegressionOnly),
+                arena_report: Some(&arena_report),
+                report: &report,
+                result: &result,
+                policy_transfer: None,
+                policy_transfer_result: None,
+            },
+        )
+        .expect("write artifact");
+
+        let raw = fs::read_to_string(&path).expect("read artifact");
+        assert!(raw.contains("\"arena_confirmation\""));
+        assert!(raw.contains("\"arena_decision\""));
+        assert!(raw.contains("\"arena_report\""));
+        assert!(raw.contains("\"lower_confidence_bound_mean_placement\""));
+        assert!(raw.contains("\"upper_confidence_bound_mean_placement\""));
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
