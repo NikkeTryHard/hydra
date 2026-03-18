@@ -1,13 +1,12 @@
-# Hydra container
+# Hydra training container
 
-This image packages all Hydra binaries as prebuilt executables for SCNet-style registry import and GPU execution.
+This image packages Hydra's training binaries for local and containerized GPU execution.
 
 ## What is inside
 
 - `train` -- training entrypoint from `crates/hydra-train/src/bin/train.rs`
 - `mjai_audit` -- MJAI replay auditor from `crates/hydra-train/src/bin/mjai_audit.rs`
-- Burn + `tch` / libtorch-compatible runtime via PyTorch 2.9.0 CUDA image
-- `sudo` and `openssh-server` installed for SCNet SSH-capable container usage
+- Burn + `tch` / libtorch-compatible runtime via the CUDA base image
 
 This image does **not** add Jupyter, VS Code server, or RStudio.
 
@@ -29,36 +28,44 @@ docker run --rm hydra:local
 
 ## Runtime contract
 
-The binary expects:
+The container entrypoint is `train`, and it expects one YAML config argument:
 
-- one JSON config argument: `train <config.json>`
-- `HYDRA_TRAIN_DEVICE=cpu|cuda|cuda:<index>`
+- `train <config.yaml>`
 - mounted config/data/output paths instead of baking datasets into the image
 
-Hydra's current behavioral-cloning loader reads a **flat** MJAI directory of `.json` / `.json.gz` files.
+Hydra's current behavioral-cloning loader supports either:
+
+- a flat MJAI directory of `.json` / `.json.gz` files
+- a direct `.tar.zst` MJAI archive path
+
+Keep mounted container paths aligned with the config:
+
+- `data_dir: /data` for an extracted MJAI directory
+- `data_dir: /data/dataset.tar.zst` for a mounted archive file
+- `output_dir: /output`
 
 ## Example run
 
 ```bash
 docker run --rm \
-  -e HYDRA_TRAIN_DEVICE=cuda:0 \
-  -v /host/config:/config:ro \
+  --gpus all \
+  -v /host/config.yaml:/config/train.yaml:ro \
   -v /host/mjai:/data:ro \
   -v /host/output:/output \
   hydra:local \
-  /config/train.json
+  /config/train.yaml
 ```
 
-Your JSON config should point at the mounted container paths, for example:
+Your YAML config should point at the mounted container paths, for example:
 
-```json
-{
-  "data_dir": "/data",
-  "output_dir": "/output",
-  "num_epochs": 1,
-  "batch_size": 32
-}
+```yaml
+data_dir: /data
+output_dir: /output
+num_epochs: 1
+batch_size: 32
 ```
+
+For an archive-backed run, mount the archive itself and point `data_dir` at that file path.
 
 ## Publish to GHCR
 
@@ -87,6 +94,6 @@ docker tag hydra:local ghcr.io/nikketryhard/hydra:0.1.0
 docker push ghcr.io/nikketryhard/hydra:0.1.0
 ```
 
-## SCNet note
+## Note on image publishing
 
-SCNet's external-registry flow expects a public image pull path. After pushing to GHCR, make sure the package visibility is public before trying to import it into SCNet.
+If you publish the image to GHCR or another registry, make sure the package visibility and pull path match the environment that will run training.

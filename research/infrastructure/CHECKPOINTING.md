@@ -2,9 +2,9 @@
 
 > Checkpoint management specification for the Hydra Mahjong AI. Covers checkpoint format, directory structure, save protocol, retention policies, opponent pool versioning, and integrity verification.
 >
-> **Status note:** this is a mixed reference doc. Hydra now routes in layers: `README.md` for entry routing, `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` plus its roadmap/rendered views for canonical archive intake, `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` for promoted doctrine summaries, and `docs/GAME_ENGINE.md` plus current code for runtime reality.
+> **Status note:** this is a mixed reference doc. Keep the checkpointing mechanics here. For current implementation priority, use `research/design/HYDRA_RECONCILIATION.md`. For runtime truth, use `docs/GAME_ENGINE.md` and current code.
 >
-> Keep the checkpointing mechanics here. Treat older phase-2/phase-3 league details as reserve planning unless the reconciled doctrine explicitly promotes them.
+> Treat older phase-2/phase-3 league details as reserve planning unless the reconciled doctrine explicitly promotes them.
 >
 > **Hard boundary:** universally applicable atomic save/load/integrity mechanics are current reference material. Phase-specific Phase 2 / Phase 3 checkpoint lifecycles, opponent-pool policies, and multi-stage transition procedures below are reserve/historical unless explicitly revived by current doctrine.
 
@@ -13,7 +13,7 @@
 - [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — Data pipeline, training infra, hardware, deployment
 - [../design/SEEDING.md](../design/SEEDING.md) — RNG hierarchy, reproducibility, evaluation seed bank
 - [../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl](../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / upstream research intake
-- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — promoted operational doctrine summary and active-vs-reserve split
+- [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — promoted operational doctrine summary and roadmap to Hydra v1
 
 ---
 

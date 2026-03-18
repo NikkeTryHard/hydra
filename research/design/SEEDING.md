@@ -2,13 +2,12 @@
 
 > Seeding strategy and reproducibility guarantees for the Hydra Mahjong AI. Covers RNG hierarchy, per-component seeding, CUDA determinism, and evaluation seed banks.
 >
-> **Status note:** this is a mixed reference doc. Hydra now routes in layers: `README.md` for entry routing, `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` plus its roadmap/rendered views for canonical archive intake, `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md` for promoted doctrine summaries, and `docs/GAME_ENGINE.md` plus current code for runtime reality.
+> **Status note:** this is a mixed reference doc. Keep the seeding hierarchy and deterministic replay principles here. For current implementation priority, use `research/design/HYDRA_RECONCILIATION.md`. For live runtime truth, use `docs/GAME_ENGINE.md` and current code.
 >
-> Keep the seeding hierarchy and deterministic replay principles here. Treat older multi-phase RL/opponent-pool specifics as reserve/legacy planning unless the reconciled doctrine explicitly promotes them.
+> Treat older multi-phase RL/opponent-pool specifics as reserve/legacy planning unless the reconciled doctrine explicitly promotes them.
 
 ## Related Documents
 
-- [../../research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl](../../research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / upstream research intake
 - [HYDRA_RECONCILIATION.md](HYDRA_RECONCILIATION.md) — promoted execution doctrine summary and active-vs-reserve split
 - [../../docs/GAME_ENGINE.md](../../docs/GAME_ENGINE.md) — current runtime reality
 - [HYDRA_ARCHIVE.md](HYDRA_ARCHIVE.md) — reserve-only design/archive planning

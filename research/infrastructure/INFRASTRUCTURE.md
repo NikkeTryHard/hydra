@@ -1,17 +1,10 @@
 # Hydra Infrastructure Specification
 
-> **Routing note:** This document still contains legacy infrastructure planning from the earlier 40-block / PPO-centered Hydra plan. For live architecture/process routing, use these layers:
+> **Ownership note:** This document owns infrastructure rationale, implementation reference detail, and preserved reserve-stage planning. For active-path sequencing and staged-vs-reserve decisions, use `research/design/HYDRA_RECONCILIATION.md`. For live runtime and compatibility truth, use `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, and current code.
 >
-> 1. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` — canonical archive SSOT
-> 2. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` / `ARCHIVE_CANONICAL_CLAIMS_RENDERED.md` — derived archive views
-> 3. `research/design/HYDRA_FINAL.md` / `research/design/HYDRA_RECONCILIATION.md` — promoted doctrine summaries
-> 4. `docs/GAME_ENGINE.md` and current code — runtime reality
+> **Interpretation rule:** when this file conflicts with promoted doctrine or current runtime reality, treat this file as reference material and refresh the lagging summary elsewhere.
 >
-> Keep this document as implementation/infrastructure reference, not as the top-level architecture authority.
->
-> **Interpretation rule:** if a later section sounds more specific than the current promoted doctrine but conflicts with the current two-tier / `192x34` / supervision-first Hydra path, treat that later section as legacy planning context unless it matches the canonical archive SSOT, promoted doctrine summaries, and current code/runtime.
->
-> **Hard boundary:** the active supervised / target-generation path is the current mainline. Detailed Phase 2 / Phase 3 PPO, league, oracle-distillation, and opponent-pool plans below are reserve/historical reference material unless `HYDRA_RECONCILIATION.md` explicitly promotes them again.
+> **Reserve-stage rule:** the active supervised / target-generation path is the current mainline. Later Phase 2 / Phase 3 PPO, league, oracle-distillation, and opponent-pool plans are preserved here as historical/reference material unless `HYDRA_RECONCILIATION.md` explicitly promotes them again.
 
 ## Overview
 
@@ -19,7 +12,6 @@ Hydra uses a 100% Rust architecture. Burn framework with burn-tch (libtorch/cuDN
 
 ## Related Documents
 
-- [../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl](../agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — canonical archive SSOT / upstream research intake
 - [../design/HYDRA_FINAL.md](../design/HYDRA_FINAL.md) — promoted architecture doctrine summary
 - [../design/HYDRA_RECONCILIATION.md](../design/HYDRA_RECONCILIATION.md) — promoted execution doctrine summary and next implementation tranche
 - [../design/HYDRA_ARCHIVE.md](../design/HYDRA_ARCHIVE.md) — reserve-only design/archive planning
@@ -30,8 +22,6 @@ Hydra uses a 100% Rust architecture. Burn framework with burn-tch (libtorch/cuDN
 ## System Architecture
 
 The system is composed of three major subsystems: the Rust core game engine, the Rust training stack (Burn framework), and the deployment pipeline. Data flows from the game engine directly into the Burn training loop within a single Rust process. Trained models are saved via Burn's Record system for inference.
-
-> **Reserve-stage banner:** the high-level Rust stack description above is current. Detailed later-stage training infrastructure below should be read as reserve/historical reference unless the reconciled doctrine revives that stage explicitly.
 
 ```mermaid
 graph TB
@@ -126,7 +116,7 @@ The `hydra-core` crate is organized as a flat module layout under `src/`:
 
 ### MJAI Protocol
 
-MJAI is a line-delimited JSON protocol for mahjong AI communication. Hydra uses MJAI for game log compatibility (parsing Tenhou and Majsoul records) and bot interface (real-time play via `mjai.rs`).
+MJAI is a line-delimited JSON protocol for mahjong AI communication. Hydra uses MJAI for game log compatibility (parsing Tenhou and Majsoul records) and bot interface (real-time play via `mjai.rs`). For the live runtime contract and action/state semantics, use `docs/GAME_ENGINE.md`.
 
 #### Message Types
 
@@ -166,7 +156,7 @@ Mortal extends the MJAI protocol with a metadata structure attached to bot respo
 
 ### Tile Representation
 
-Hydra uses the standard 34-tile index mapping (0–33 across manzu, pinzu, souzu, and honors). Keep `HYDRA_SPEC.md` only as historical context if you need to compare older descriptions; do not treat it as the current authority source.
+Hydra uses the standard 34-tile index mapping (0–33 across manzu, pinzu, souzu, and honors). For the live tile/action/runtime contract, use `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
 
 ### Game State Machine
 
@@ -229,7 +219,7 @@ stateDiagram-v2
 
 ### Observation Encoder
 
-The observation encoder currently produces a **192×34 fixed-superset tensor**. The first 85 channels retain the original public+safety baseline prefix; the remaining channels provide fixed-shape search/belief and Hand-EV context with zero-fill plus presence masks when dynamic features are unavailable. It translates the current game state — hand tiles, discards, melds, dora indicators, safety information, and optional higher-level context — into a fixed-size numerical representation suitable for neural network input.
+The observation encoder currently produces a **192×34 fixed-superset tensor**. The first 85 channels retain the original public+safety baseline prefix; the remaining channels provide fixed-shape search/belief and Hand-EV context with zero-fill plus presence masks when dynamic features are unavailable. It translates the current game state — hand tiles, discards, melds, dora indicators, safety information, and optional higher-level context — into a fixed-size numerical representation suitable for neural network input. For the live channel-by-channel breakdown and compatibility-sensitive encoder contract, use `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
 
 Key performance considerations:
 
@@ -266,7 +256,7 @@ Target throughput for pure Rust simulation (no NN inference): 100,000+ games/hou
 
 ## Data Pipeline
 
-This section specifies the complete data pipeline for Phase 1 behavioral cloning (supervised learning from expert game logs). It resolves five design gaps: storage format, data loading architecture, filtering strategy, suit permutation augmentation, and volume/throughput estimates. The same pipeline foundations extend to Phases 2–3 (oracle distillation and self-play RL), where the data source shifts from static logs to live self-play trajectories.
+This section specifies the complete data pipeline for Phase 1 behavioral cloning (supervised learning from expert game logs). It resolves five design gaps: storage format, data loading architecture, filtering strategy, suit permutation augmentation, and volume/throughput estimates. The same pipeline foundations could support later stages if they are ever re-promoted, but the current active path is the supervised baseline described in `HYDRA_RECONCILIATION.md`.
 
 ### Pipeline Architecture
 
@@ -440,7 +430,7 @@ The historical PPO rollout buffer estimate in this document assumes the older 85
 
 ## Python Bindings
 
-Removed. Hydra uses a 100% Rust stack. See `RUST_STACK.md` for the decision rationale and treat the rest of this file as implementation/reference material, not the active training roadmap.
+Removed. Hydra uses a 100% Rust stack. See `RUST_STACK.md` for the decision rationale.
 
 ## Rust Training (hydra-train)
 
@@ -456,9 +446,9 @@ Removed. Hydra uses a 100% Rust stack. See `RUST_STACK.md` for the decision rati
 | indicatif | Progress bars and terminal output |
 | flate2 | Gzip decompression for MJAI log parsing |
 
-### Legacy / Reserve Training Infrastructure
+### Reserve-stage training reference
 
-The remainder of this section preserves older detailed training-infrastructure planning. Keep it only as reserve/reference material unless `HYDRA_RECONCILIATION.md` explicitly promotes a given stage back into the active path.
+The remainder of this section preserves older detailed training-infrastructure planning for later stages. It is reference material, not active-path authority.
 
 #### Phase 1: Behavioral Cloning (Supervised)
 
@@ -489,7 +479,7 @@ The remainder of this section preserves older detailed training-infrastructure p
 **Loss function:**
 L_IL = CE(π, a_human) + 0.5 × MSE(V, outcome) + 0.1 × L_aux
 
-Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and danger estimation (focal BCE). Treat the exact weighting details below as legacy planning context unless re-promoted by the reconciled doctrine.
+Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and danger estimation (focal BCE). Exact launch and promotion conditions still come from `HYDRA_RECONCILIATION.md`.
 
 **Training schedule:**
 - 3 epochs over the filtered dataset (~5-6M games, ~300-360M decisions)
@@ -538,8 +528,6 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 | Student gradients | fp32 | ~67 MB |
 | **Total Phase 2 VRAM** | | **~465 MB** |
 
-This teacher/student configuration reflects older monolithic planning and should be treated as reserve-only unless the reconciled doctrine revives it.
-
 **Initialization from Phase 1:**
 - Load Phase 1 best checkpoint into all student ResBlocks, policy head, value head, and aux heads
 - Copy student ResBlocks into teacher (identical weights)
@@ -563,14 +551,13 @@ This teacher/student configuration reflects older monolithic planning and should
 L_distill = L_PPO(π_S) + λ_KL × D_KL(π_S ‖ π_T) + λ_anchor × D_KL(π_S ‖ π_BC)
 
 Where:
-- the exact RL-loss decomposition below is legacy planning context, not current repo authority
 - λ_KL follows the feature dropout schedule (decays from 1.0 to 0.3)
 - λ_anchor = 0.1, decaying to 0 over Phase 2 (prevents catastrophic forgetting of BC knowledge)
 - D_KL uses temperature τ = 3.0 (fixed, not annealed — annealing changes the meaning of "dark knowledge" mid-training)
 
-**Feature dropout schedule** (legacy reserve design):
+**Feature dropout schedule:**
 
-Two feature groups are masked independently: Group A (opponent hands, 39ch) scaled by `mask_opp`, and Group B (wall/dead wall, 166ch) scaled by `mask_wall`. Keep this as reserve-stage planning detail rather than live authority.
+Two feature groups are masked independently: Group A (opponent hands, 39ch) scaled by `mask_opp`, and Group B (wall/dead wall, 166ch) scaled by `mask_wall`.
 
 Post-dropout continuation: LR decayed to 1/10 of current value, importance weight rejection applied to prevent large policy updates on the now-fully-blind student.
 
@@ -621,7 +608,7 @@ graph TB
 - **Game workers:** The Rust game engine runs 512 concurrent hanchans via rayon thread pool. Feature encoding is parallelized within the game batch (Mortal's proven pattern). When a hanchan finishes, a new game immediately spawns with a fresh seed (no sync barrier). The rollout buffer fills from all active games regardless of their lifecycle stage.
 - **Double-buffered rollout storage:** Buffer A fills from self-play while Buffer B is consumed by PPO training. Swap trigger: Buffer A reaches `rollout_steps x num_envs` (2048 x 512 = 1,048,576) transitions. Swap is coordinated via `std::sync::Condvar` -- training thread signals completion, game thread swaps buffer pointers. Both buffers use pre-allocated memory for direct GPU transfer via burn-tch. Binary/count channels (0-10, 23-34) stored as u8; float channels (temporal weights, normalized scores) stored as f32, cast to f32 per-minibatch on GPU.
 
- **Opponent pool** (legacy reserve design if a later league stage is revived):
+ **Opponent pool:**
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
@@ -637,9 +624,7 @@ graph TB
 
 **Seat rotation:** Every game seed is played in 4 rotations (challenger at East/South/West/North), following Mortal's 1v3 duplicate protocol. This controls for positional advantage (East player has slight edge in Mahjong).
 
- **Legacy RL hyperparameters:**
-
- > Historical planning only. Do not treat this as current authoritative Hydra execution doctrine.
+ **Reserve RL hyperparameters:**
 
 **Anti-forgetting mechanisms:**
 - KL penalty against Phase 2 policy: λ_KL = 0.05, annealed to 0 over the first 30% of Phase 3 training
@@ -661,7 +646,7 @@ graph TB
 
 #### Phase Transitions
 
-**General principle (reserve planning):** if Hydra later revives multiple major training stages, reset optimizer and LR scheduler at stage boundaries unless the active doctrine says otherwise.
+**General principle:** if Hydra later revives multiple major training stages, reset optimizer and LR scheduler at stage boundaries unless the active doctrine says otherwise.
 
 **What carries over vs. resets at each phase boundary:**
 
@@ -700,7 +685,7 @@ graph TB
 
 #### Rating and Evaluation
 
-**Rating system:** OpenSkill PlackettLuce remains a strong evaluation choice. Treat the exact numbers and cadence below as reference planning unless promoted by the active doctrine.
+**Rating system:** OpenSkill PlackettLuce remains a strong evaluation choice for preserved reference planning.
 
 **Evaluation protocol:** 1v3 duplicate format following Mortal's established methodology:
 - Challenger (1 copy) vs Champion (3 copies)
@@ -722,7 +707,7 @@ graph TB
 
 #### Distributed Strategy
 
-**Single GPU is sufficient for the active supervised / target-generation work.** Later reserve-stage resource estimates below are historical planning context and should not be mistaken for the current mainline.
+**Single GPU is sufficient for the active supervised / target-generation work.** The later multi-stage resource estimates below remain preserved reference planning.
 
 **No DDP or FSDP is needed.** Distributed data parallelism is designed for models that don't fit on one GPU or for scaling batch size across devices. Neither applies: the model fits 2,900× over in 96 GB, and batch_size=2048-4096 is already sufficient for stable gradients.
 
@@ -744,7 +729,7 @@ The Burn model implements Hydra’s current SE-ResNet family as documented by th
 - **Precision: bf16** (not fp16). Blackwell GPUs have native bf16 tensor core support at full throughput. bf16 has the same dynamic range as fp32 (8 exponent bits), eliminating the need for GradScaler and the risk of gradient overflow/underflow. fp16 (5 exponent bits, max 65504) requires GradScaler and can cause training instabilities early in learning when gradients are large.
 - **Gradient checkpointing** is available but unnecessary at this model scale. The ~16.7M param model's activations occupy ~100-200 MB during forward/backward — negligible on 96 GB. Gradient checkpointing would add ~30% compute overhead for <0.2% memory savings.
 - **GroupNorm(32)** is used throughout instead of BatchNorm. GroupNorm has no running statistics, so it is immune to distribution shift between BC data and self-play data — unlike Mortal's BatchNorm which must be frozen during online RL.
-- **Orthogonal initialization:** the exact RL-era justification text here is legacy context; keep the implementation note, but do not read this line as evidence that PPO-era planning is still the active mainline.
+- **Orthogonal initialization:** kept here as implementation/reference detail for the preserved later-stage plans.
 
 ## Reproducibility and Seeding
 
@@ -772,51 +757,35 @@ graph LR
 
 The core advantage of a 100% Rust stack is zero FFI boundary at inference time. No GIL, no Python startup overhead, no cross-language serialization -- enabling sub-15ms decision latency suitable for real-time play.
 
-## TACC Frontera Allocation
+## DeltaAI GH200 Planning Target
 
-Hydra has a Startup allocation on TACC Frontera (UT System TxRAS path). This section documents the allocation details and the proposal framing used in the justification document.
+Current Hydra planning targets DeltaAI GH200 rather than the older Frontera proposal-era environment.
 
-### Allocation Details
+### Planning assumptions
 
-| Field | Value |
-|-------|-------|
-| System | Frontera GPU nodes (rtx queue) |
-| PI | Dr. Sihong He, UT Arlington |
-| Researcher | Sho Kaneko (TACC username: louiskaneko) |
-| Allocation type | Startup (UT System via TxRAS) |
-| Requested | 667 node-hours (= 2,000 SUs at 3 SU/node-hour rtx multiplier) |
-| Startup GPU limit | 3,000 SUs (TxRAS path for UT System institutions) |
-| Allocation end | 2026-05-31 (Frontera expected shutdown) |
-| Submission portal | https://submit-tacc.xras.org/ |
+- DeltaAI GH200 is a shared-node system.
+- The minimum allocatable unit is 1 GH200 superchip on a 4-way node.
+- Each GH200 superchip corresponds to one Grace CPU plus one H100 GPU.
+- ACCESS exchange exposes DeltaAI usage in GPU-hours.
+- Current planning target is about 2,000 GPU-hours on that minimum GH200 unit.
 
-### Frontera RTX Node Specs
+### Planning caveat
 
-| Component | Specification |
-|-----------|--------------|
-| GPUs per node | 4x NVIDIA Quadro RTX 5000 |
-| GPU memory | 16 GB GDDR6 per card |
-| CUDA cores | 3,072 per card |
-| Tensor cores | 384 per card |
-| CPUs | 2x Intel Xeon E5-2620 v4 (Broadwell) |
-| RAM | 128 GB DDR4 |
-| Local storage | 144 GB /tmp on 240 GB SSD |
-| Charge rate | 3 SUs per node-hour (rtx queue) |
+This section should be read as the current budgeting target for Hydra training, not as a claim that full 4-way DeltaAI use is billed the same as the minimum unit. Repo evidence currently supports the minimum-unit and GPU-hour framing, but does not explicitly prove exact full-node billing semantics.
 
-Hydra's peak VRAM usage is under 4 GB (Phase 3 with 5 cached opponent models). Each RTX 5000's 16 GB provides ample headroom, enabling all 4 GPUs per node to run independent experiments simultaneously.
+### Budget sketch
 
-### Compute Budget
+| Workload | GPU-Hours | Notes |
+|----------|-----------|-------|
+| Phase 1: Behavioral cloning + contrastive clustering | 600 | Baseline supervised launch |
+| Phase 2: Oracle distillation + search calibration | 800 | Preserved later-stage reference budget |
+| Phase 3: League self-play validation | 400 | Preserved later-stage reference budget |
+| Ablation studies + debugging buffer | 200 | Validation and fallback margin |
+| **Total** | **2,000** | Planning target on DeltaAI GH200 |
 
-| Workload | GPU-Hours | Node-Hours | SUs |
-|----------|-----------|------------|-----|
-| Phase 1: Behavioral cloning + contrastive clustering | 600 | 150 | 450 |
-| Phase 2: Oracle distillation + search calibration | 800 | 200 | 600 |
-| Phase 3: League self-play validation | 800 | 200 | 600 |
-| Ablation studies + debugging buffer | 468 | 117 | 350 |
-| **Total** | **2,668** | **667** | **2,000** |
+### Historical note
 
-### Proposal Framing Note
-
-The TACC justification document describes the project as "Learned Abstraction Search (LAS) for Mahjong AI," framing the architecture as a long-term research direction. Keep that as historical/proposal context; do not treat the older `SE-ResNet + PPO + oracle distillation` phrasing here as the current Hydra execution doctrine.
+Older TACC/Frontera proposal framing remains historical context only. Do not use the prior node-hour / SU / RTX 5000 assumptions here as the current planning baseline.
 
 ## Hardware Requirements
 
@@ -824,7 +793,7 @@ The TACC justification document describes the project as "Learned Abstraction Se
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| GPU | RTX 3080 (10GB) | RTX PRO 6000 Blackwell (96GB) |
+| GPU | RTX 3080 (10GB) | GH200 superchip-class H100 GPU (96GB) |
 | CPU | 8 cores | 32+ cores |
 | RAM | 32GB | 128GB+ |
 | Storage | 100GB SSD | 1TB NVMe |
@@ -882,4 +851,4 @@ Every pull request and merge to main runs automated checks to catch regressions 
 | Encoding regression | `cargo nextest run --release encoder_golden_tests` | Every PR | ~1min |
 | Full eval (200K games) | `cargo run --release --bin evaluate -- --tier full` | Merge to main | ~4h |
 
-**Design rationale:** The encoding regression stage runs the golden tests from TESTING.md § Known-State Golden Tests. Any encoder change that alters output tensors must explicitly regenerate golden files — accidental encoding drift is the single most dangerous silent failure mode in the pipeline. The full eval runs only on merge to main because it takes hours and is not needed for incremental development.
+**Design rationale:** The encoding regression stage runs the golden tests from TESTING.md § Known-State Golden Tests. Any encoder change that alters output tensors must explicitly regenerate golden files. See `research/design/TESTING.md` for the fuller correctness rationale.

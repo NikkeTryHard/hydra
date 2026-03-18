@@ -342,7 +342,7 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 
 ## 11. Training pipeline
 
-### Compute budget (2000 GPU hours on 4x RTX 5000 Ada)
+### Compute budget (about 2000 GPU-hours on DeltaAI GH200 planning assumptions)
 
 | Phase | GPU-hrs | Nets trained | Games | Key output |
 |-------|--------:|-------------|------:|-----------|
@@ -353,7 +353,7 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 | Phase 3: ExIt + Pondering | 800 | LearnerNet (deep AFBS on GPU 3) | ~12M | Deep search ExIt + endgame |
 | **Total** | **2000** | | **~35M** | |
 
-GPU allocation: GPU 0-1 training (LearnerNet), GPU 2 self-play (ActorNet), GPU 3 pondering (LearnerNet inference for deep AFBS). Distillation: Learner -> Actor continuously (IMPALA-style).
+Logical role split: training, self-play generation, and pondering/search amplification should be partitioned across the available DeltaAI GH200 resources as throughput permits. Treat these as workload roles, not a claim that Hydra will have exclusive use of four physical GPUs. Distillation: Learner -> Actor continuously (IMPALA-style).
 
 ### Phase -1: Hard reality benchmarks (150 GPU hours reserve)
 Unlocked BEFORE committing the full budget. Must pass:

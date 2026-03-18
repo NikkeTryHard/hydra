@@ -8,11 +8,9 @@ Opponent modeling is Hydra's primary differentiator from existing Mahjong AIs. T
 
 ### Mortal's Blind Spot
 
-> **Ownership note:** This document is the detailed rationale/reference surface for opponent modeling, not the owner of final implementation shape or active-tranche priority. If this file conflicts with `ARCHIVE_CANONICAL_CLAIMS.jsonl`, `HYDRA_FINAL.md`, `HYDRA_RECONCILIATION.md`, `docs/CURRENT_STATUS.md`, or current code/runtime, treat this document as rationale/reference and refresh the lagging summary elsewhere.
+> **Ownership note:** This document is the detailed rationale/reference surface for opponent modeling. For active-path priority, use `HYDRA_RECONCILIATION.md`. For what is actually shipped today, use `docs/CURRENT_STATUS.md`. For live runtime/channel truth, use `docs/GAME_ENGINE.md` and current code.
 
-> **Reserve/future note:** Not everything in this document belongs to the active path right now. Core safety / tenpai / danger rationale is active. Heavier or more speculative extensions (for example wait-set belief heads, call-intent/FiLM conditioning, safety reserve, deception/RSA-style mechanisms, and other future extensions) should be treated as reserve-shelf material unless the reconciled doctrine explicitly promotes them.
->
-> **Legacy-link note:** historical references to the old training-plan document are kept only as rationale breadcrumbs. Do not treat missing `TRAINING.md` links as live authority; use `HYDRA_RECONCILIATION.md` for active doctrine.
+> Reserve/future ideas are kept here as rationale, but they do not become active just because they are described in this file.
 
 Mortal uses `SinglePlayerTables` for EV calculation, assuming no opponent interaction. There are no safety features (suji, kabe, genbutsu) pre-computed, no opponent tenpai estimation, and no aggression or tendency profiling. The network must learn all opponent-relevant patterns implicitly through raw observation channels — and the evidence shows it fails at the hardest cases.
 
@@ -52,15 +50,15 @@ Specific documented issues:
 
 ### What Hydra Adds
 
-Hydra addresses the opponent modeling gap through a mix of active and reserve systems:
+Hydra addresses the opponent modeling gap through a mix of implemented rationale and later extensions:
 
-1. **Explicit Safety Planes** — active rationale; shipped baseline encoding support
-2. **Tenpai Predictor Head** — active rationale for opponent-readiness prediction
-3. **Danger Head** — active rationale for per-tile defensive modeling
-4. **Value-Conditioned Tenpai** — reserve/staged rationale unless promoted by current doctrine (§ 3.7)
-5. **Wait-Set Belief Head** — reserve/staged rationale unless promoted by current doctrine (§ 4.6)
-6. **Call-Intent Head** — reserve/staged rationale unless promoted by current doctrine (§ 4.7)
-7. **Oracle Distillation** — reserve/staged rationale; active implementation priority still comes from `HYDRA_RECONCILIATION.md`
+1. **Explicit Safety Planes** — core Hydra opponent-read rationale with shipped baseline encoding support
+2. **Tenpai Predictor Head** — rationale for opponent-readiness prediction
+3. **Danger Head** — rationale for per-tile defensive modeling
+4. **Value-Conditioned Tenpai** — later extension unless promoted by current doctrine (§ 3.7)
+5. **Wait-Set Belief Head** — later extension unless promoted by current doctrine (§ 4.6)
+6. **Call-Intent Head** — later extension unless promoted by current doctrine (§ 4.7)
+7. **Oracle Distillation** — later extension; implementation priority still comes from `HYDRA_RECONCILIATION.md`
 
 ---
 

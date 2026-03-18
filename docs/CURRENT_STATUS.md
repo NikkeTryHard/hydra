@@ -4,15 +4,10 @@ Current shipped/staged status for Hydra's already-built surfaces.
 
 This file is Hydra's promoted current-status snapshot for things that already exist in code or are partially implemented in code. Use it to answer questions like "what is shipped today?", "what is implemented but still staged?", and "what is implemented but not default-on yet?"
 
-This file does **not** replace the repo's authority chain:
+This file reports shipped/staged status only.
 
-- `README.md` = repo entry routing and trust map
-- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` = epistemic root / canonical archive intake / source ledger
-- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` = derived archive prioritization view over that canonical root
-- `research/design/HYDRA_FINAL.md` = promoted architecture doctrine / north-star target
-- `research/design/HYDRA_RECONCILIATION.md` = promoted operational doctrine / active-path status owner
-- `docs/GAME_ENGINE.md` = current runtime semantics and compatibility surface owner
-- current code = final runtime truth when docs drift
+- For the roadmap to Hydra v1, read `research/design/HYDRA_RECONCILIATION.md`.
+- For runtime semantics and compatibility truth, read `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, and current code.
 
 When this file and current code disagree, current code wins. When this file and `HYDRA_RECONCILIATION.md` disagree on active vs reserve vs staged priority, refresh reconciliation and then refresh this file. When reconciliation or current status drift from the archive root, refresh the promoted docs rather than demoting the canonical archive source ledger.
 
@@ -75,5 +70,5 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 ## Where to read next
 
 - Need the current runtime contract? Read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
-- Need the active-path / staged-vs-reserve decision? Read `research/design/HYDRA_RECONCILIATION.md`.
+- Need the roadmap to Hydra v1 or the active-path / staged-vs-reserve decision? Read `research/design/HYDRA_RECONCILIATION.md`.
 - Need the north-star architecture rather than current shipped status? Read `research/design/HYDRA_FINAL.md`.

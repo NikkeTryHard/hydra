@@ -1,6 +1,6 @@
 # Hydra Testing Strategy
 
-> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. For repo routing and trust/status vocabulary, read `README.md`. For active-path / staged-vs-reserve execution doctrine, read `research/design/HYDRA_RECONCILIATION.md`. For live runtime and compatibility truth, read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
+> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. For next implementation priority, use `research/design/HYDRA_RECONCILIATION.md`. For live runtime and compatibility truth, use `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, and current code.
 >
 > The live encoder/model contract is `192x34`. The old `85x34` view is still useful only as the baseline prefix (`channels 0..84`) and should be tested as such.
 
@@ -9,6 +9,16 @@
 Testing is critical for a mahjong AI because engine bugs silently corrupt training data. A single incorrect legal action mask, a mis-scored hand, or a wrong tile encoding feeds the neural network garbage labels for hundreds of thousands of training steps before anyone notices. Unlike a web app where users report bugs, a training pipeline happily trains on wrong data and produces a model that plays "confidently wrong" — the worst possible outcome. Every component that touches training data must be verified against independent ground truth.
 
 This document specifies the testing strategy across all Hydra subsystems: the Rust game engine, observation encoder, MJAI parser, suit permutation augmentation, and the Burn training stack.
+
+### Coverage Reporting
+
+Hydra now publishes workspace-wide Rust coverage reports with `cargo-llvm-cov`. Coverage is a regression-review aid, not the definition of correctness.
+
+- Default fast regression path: `cargo nextest run --release`
+- Coverage path: `./scripts/coverage.sh`
+- Coverage artifacts: HTML report, LCOV export, and text summary
+
+Use coverage to verify that tests actually execute risky paths like encoder channel writes, replay roundtrips, legal-action generation, scoring, and training-label gating. Do not treat a single repo-wide percentage as proof that those paths are semantically safe.
 
 ---
 
