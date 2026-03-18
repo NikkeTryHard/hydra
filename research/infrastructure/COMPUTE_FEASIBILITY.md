@@ -1,8 +1,8 @@
-# Compute Budget Feasibility Analysis: Hydra on about 2000 DeltaAI GPU-hours
+# Compute Budget Feasibility Analysis: Hydra on about 2000 Delta GPU A100 hours
 
 ## Executive Summary
 
-**Bottom line: about 2000 DeltaAI GPU-hours on the minimum GH200 planning unit is likely sufficient for reaching strong amateur/low-dan play through a disciplined BC-heavy path, but still fundamentally insufficient for LuckyJ-level (10+ dan) play without radical efficiency innovations. The budget is enough for one serious Hydra v1 push, not an open-ended search project.**
+**Bottom line: about 2000 Delta GPU A100-hours on a 1-GPU shared `gpuA100x4` job is likely sufficient for reaching strong amateur/low-dan play through a disciplined BC-heavy path, but still fundamentally insufficient for LuckyJ-level (10+ dan) play without radical efficiency innovations. The budget is enough for one serious Hydra v1 push, not an open-ended search project.**
 
 **Recommendation: Option (b) -- pursue radically more efficient approach. BC-heavy pipeline with targeted RL fine-tuning is the only viable path at this budget.**
 
@@ -27,7 +27,7 @@
 
 **Compute comparison caution:**
 - Suphx and later Mahjong systems were trained on very different hardware mixes and runtime assumptions.
-- Hydra's current planning target is about 2000 DeltaAI GPU-hours on a shared-node GH200 system with a minimum allocatable unit of 1 GH200 superchip.
+- Hydra's current planning target is about 2000 Delta GPU A100-hours on a shared `gpuA100x4` job using 1 reserved A100.
 - Do not treat old RTX 5000 FLOPS-normalization math as the current planning baseline.
 
 ### 1.2 LuckyJ / JueJong (Tencent AI Lab, 2022-2023)
@@ -94,7 +94,7 @@ This is the only paper explicitly targeting **low-resource Mahjong training**. T
 | **Pluribus** | Poker | 64-core CPU server | 8 days | 12,400 CPU-hr | **$144** | Superhuman |
 | **AlphaStar** | StarCraft II | 16 TPUs/agent x 600 agents | 14-44 days | ~Millions TPU-hr | ~$Millions | Grandmaster |
 | **OpenAI Five** | Dota 2 | 256 P100 + 128K CPUs | Months | ~Millions GPU-hr | ~$Millions | Beat pros |
-| **Hydra (ours)** | Mahjong | DeltaAI GH200 (minimum-unit planning target) | TBD | **~2,000 GPU-hr** | Grant-funded | Target: strong Hydra v1 baseline |
+| **Hydra (ours)** | Mahjong | Delta GPU `gpuA100x4` (1 shared A100) | TBD | **~2,000 GPU-hr** | Grant-funded | Target: strong Hydra v1 baseline |
 
 ## 3. Scaling Laws for Game AI
 
@@ -162,7 +162,7 @@ No formal equivalent exists, but we can derive estimates from what worked:
 
 **AlphaStar**: ~5% imitation learning (from replays), ~95% RL (league self-play)
 
-**Recommended split for Hydra at about 2000 DeltaAI GPU-hours**:
+**Recommended split for Hydra at about 2000 Delta GPU A100-hours**:
 
 | Phase | Budget | GPU-hours | What it buys |
 |-------|--------|-----------|-------------|
@@ -191,25 +191,24 @@ Nobody has studied this directly. But we can triangulate:
 
 ## 8. Feasibility Assessment
 
-### What about 2000 DeltaAI GPU-hours CAN achieve:
+### What about 2000 Delta GPU A100-hours CAN achieve:
 - Full BC pretraining to expert-level prediction accuracy
 - Substantial offline RL (CQL) fine-tuning
 - Limited online self-play (~10-20M games at our engine speed)
 - A model that plays at strong amateur / low-dan level
 - Probably 70-80% agreement with expert play
 
-### What about 2000 DeltaAI GPU-hours CANNOT achieve:
+### What about 2000 Delta GPU A100-hours CANNOT achieve:
 - LuckyJ-level (10+ dan) performance
 - Extensive hyperparameter search
 - League-based training with multiple agents
 - Many iterations of the train->evaluate->iterate cycle
 
 ### Hardware context:
-- DeltaAI GH200 is a shared-node GH200 system.
-- The minimum allocatable unit is 1 GH200 superchip on a 4-way node.
-- Each minimum unit is effectively one H100-class GPU with its paired Grace CPU resources.
-- ACCESS exposes DeltaAI usage in GPU-hours rather than node-hours.
-- Current docs should not assume full 4-way billing is the same as the minimum unit.
+- Delta GPU `gpuA100x4` is a shared-node quad-A100 system.
+- Hydra's current planning target is 1 shared A100, not an exclusive full node.
+- Official Delta accounting treats 1 SU on Quad A100 as equivalent to 1 A100, 16 reserved CPU cores, or 62.5 GB reserved host memory for 1 hour.
+- Official Delta accounting notes that 1 GB here means 1e9 bytes (1,000,000,000), not 2^30 bytes.
 
 ### The verdict:
 
@@ -221,7 +220,7 @@ Specifically:
 3. **Oracle guiding**: Train with perfect-information oracle first, distill to imperfect-information policy.
 4. **Single focused RL run**: No hyperparameter sweeps. Pick proven hyperparameters from Mortal/Suphx.
 5. **Accept 80% as ceiling**: 80% agreement with expert play is achievable. 90%+ (10 dan) is not at this budget.
-6. **Future compute**: If initial results are promising, apply for additional allocation or a larger DeltaAI budget.
+6. **Future compute**: If initial results are promising, apply for additional Delta GPU hours or later larger-node budgets.
 
 ### Risk assessment:
 - **High confidence** (>90%): BC phase succeeds, model predicts expert moves at ~65-70% top-1 accuracy
@@ -242,4 +241,4 @@ Specifically:
 7. Li et al. "LsAc*-MJ: A Low-Resource Consumption RL Model for Mahjong." IJIS, 2024.
 8. Mortal Documentation: mortal.ekyu.moe
 9. Haobo Fu personal page: haobofu.github.io
-10. DeltaAI / ACCESS planning evidence: shared-node GH200 minimum-unit docs plus ACCESS GPU-hour exchange guidance.
+10. Delta / ACCESS planning evidence: Quad A100 accounting docs plus ACCESS GPU-hour exchange guidance.
