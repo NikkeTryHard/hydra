@@ -402,7 +402,7 @@ All estimates scaled to ~6.6M games × ~60 decisions per game = ~400M total deci
 | Pre-encoded shards (Blosc+LZ4, ~7:1) | ~640 GB | Optional production path only |
 | Actions + masks + metadata | ~22 GB | Compact ancillary data |
 
-**Memory budget (RTX PRO 6000 Blackwell, 96 GB VRAM):**
+**Memory budget (GH200 / H100-class 96 GB GPU memory):**
 
 | Component | Memory | Phase |
 |-----------|--------|-------|
@@ -472,8 +472,8 @@ The remainder of this section preserves older detailed training-infrastructure p
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | Batch size | 2048 | 4× Mortal's 512; linear scaling with LR |
-| Gradient accumulation | 1 | Effective batch = 2048 (sufficient on 96GB) |
-| Precision | bf16 (autocast) | Blackwell-native; same dynamic range as fp32, no GradScaler needed |
+| Gradient accumulation | 1 | Effective batch = 2048 (sufficient on 96 GB-class accelerators) |
+| Precision | bf16 (autocast) | H100/GH200-class friendly; same dynamic range as fp32, no GradScaler needed |
 | CubeCL JIT | Planned (burn-cuda upgrade) | Kernel fusion via burn-cuda backend. Currently using burn-tch (libtorch). See [RUST_STACK.md](RUST_STACK.md). |
 
 **Loss function:**
@@ -495,9 +495,9 @@ Where L_aux includes GRP rank prediction (CE), tenpai classification (BCE), and 
 **Resource estimates:**
 - Steps per epoch: ~160K (330M decisions / 2048 per batch)
 - Total training steps: ~480K (3 epochs)
-- Wall time per epoch: ~2.2 hours on RTX PRO 6000 (Blackwell)
-- Total wall time: ~6.6 hours for 3 epochs
-- GPU memory: ~400 MB total (model + optimizer + batch — massive headroom on 96 GB)
+- Wall time per epoch: hardware-dependent; benchmark on the actual DeltaAI GH200 allocation before treating this as a planning constant
+- Total wall time: depends on measured GH200 throughput and data-pipeline efficiency
+- GPU memory: ~400 MB total (model + optimizer + batch — still tiny relative to 96 GB-class accelerators)
 
 **Monitoring (via W&B REST API / tensorboard-rs):**
 
@@ -726,7 +726,7 @@ graph TB
 The Burn model implements Hydra’s current SE-ResNet family as documented by the active authority stack. Key infrastructure considerations:
 
 - **CubeCL JIT fusion (burn-cuda upgrade path):** Currently using burn-tch (libtorch) backend. Future upgrade to burn-cuda will enable CubeCL kernel fusion for fixed-shape inputs -- particularly beneficial for the InferenceServer where batch size is stable. See [RUST_STACK.md](RUST_STACK.md).
-- **Precision: bf16** (not fp16). Blackwell GPUs have native bf16 tensor core support at full throughput. bf16 has the same dynamic range as fp32 (8 exponent bits), eliminating the need for GradScaler and the risk of gradient overflow/underflow. fp16 (5 exponent bits, max 65504) requires GradScaler and can cause training instabilities early in learning when gradients are large.
+- **Precision: bf16** (not fp16). GH200/H100-class accelerators have native bf16 tensor core support at full throughput. bf16 has the same dynamic range as fp32 (8 exponent bits), eliminating the need for GradScaler and the risk of gradient overflow/underflow. fp16 (5 exponent bits, max 65504) requires GradScaler and can cause training instabilities early in learning when gradients are large.
 - **Gradient checkpointing** is available but unnecessary at this model scale. The ~16.7M param model's activations occupy ~100-200 MB during forward/backward — negligible on 96 GB. Gradient checkpointing would add ~30% compute overhead for <0.2% memory savings.
 - **GroupNorm(32)** is used throughout instead of BatchNorm. GroupNorm has no running statistics, so it is immune to distribution shift between BC data and self-play data — unlike Mortal's BatchNorm which must be frozen during online RL.
 - **Orthogonal initialization:** kept here as implementation/reference detail for the preserved later-stage plans.
