@@ -105,7 +105,7 @@ A 40-block teacher trained only on hard states (1-5%) gets just ~7 spp -- catast
 
 | Network | Blocks | Params | Role | Runtime placement |
 |---------|-------:|-------:|------|-------------------|
-| **LearnerNet** | 24 | ~10M | Training (ACH/ExIt) + deep AFBS on hard positions | Main training / search-capable GH200 resources |
+| **LearnerNet** | 24 | ~10M | Training (ACH/ExIt) + deep AFBS on hard positions | Main Delta A100 training resources |
 | **ActorNet** | 12 | ~5M | Self-play data generation + shallow SaF features | Fast rollout / self-play generation resources |
 
 All use SE-ResNet with GroupNorm(32) and Mish. Target deployment precision is bf16-capable, but the current repo remains fp32-first unless backend autocast is wired explicitly. **Continuous distillation**: Learner -> Actor (every 1-2 minutes, IMPALA-style). ActorNet inference: ~0.2ms. LearnerNet inference: ~0.35ms. LearnerNet runs deeper AFBS only on hard-position ExIt labels when throughput budget allows.
@@ -342,7 +342,7 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 
 ## 11. Training pipeline
 
-### Compute budget (about 2000 GPU-hours on DeltaAI GH200 planning assumptions)
+### Compute budget (about 2000 GPU-hours on Delta GPU `gpuA100x4` with 1 shared A100)
 
 | Phase | GPU-hrs | Nets trained | Games | Key output |
 |-------|--------:|-------------|------:|-----------|
@@ -353,7 +353,7 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 | Phase 3: ExIt + Pondering | 800 | LearnerNet (deep AFBS on hard positions) | ~12M | Deep search ExIt + endgame |
 | **Total** | **2000** | | **~35M** | |
 
-Logical role split: training, self-play generation, and pondering/search amplification should be partitioned across the available DeltaAI GH200 resources as throughput permits. Treat these as workload roles, not a claim that Hydra will have exclusive use of four physical GPUs. Distillation: Learner -> Actor continuously (IMPALA-style).
+Logical role split: training, self-play generation, and pondering/search amplification should be partitioned across the available Delta A100 budget as throughput permits. Treat these as workload roles, not a claim that Hydra will have exclusive use of a full node. Distillation: Learner -> Actor continuously (IMPALA-style).
 
 ### Phase -1: Hard reality benchmarks (150 GPU hours reserve)
 Unlocked BEFORE committing the full budget. Must pass:
@@ -417,7 +417,7 @@ Oracle critic provides advantages via CTDE: actor conditions on public info only
 
 ### Phase 3: ExIt + AFBS + Pondering (800 GPU hours)
 
-LearnerNet runs deep AFBS for **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS) when the available DeltaAI GH200 throughput budget allows. ExIt targets distilled into LearnerNet's own training loss (ACH + ExIt + SaF auxiliary regression). ActorNet updated from LearnerNet continuously.
+LearnerNet runs deep AFBS for **hard positions only** (top-2 policy gap < 10%, high-risk defense, low particle ESS) when the available Delta GPU A100 throughput budget allows. ExIt targets distilled into LearnerNet's own training loss (ACH + ExIt + SaF auxiliary regression). ActorNet updated from LearnerNet continuously.
 
 ### Population training
 League: latest ActorNet, trailing checkpoints, human-style anchors (BC-heavy), adversarial exploiters.
