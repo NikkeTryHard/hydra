@@ -1015,12 +1015,14 @@ pub fn build_batches<B: Backend>(
         return Ok(Vec::new());
     }
 
-    samples.chunks(batch_size).try_fold(Vec::new(), |mut batches, chunk| {
-        if let Some(batch) = collate_sample_refs::<B>(chunk, augment, device)? {
-            batches.push(batch);
-        }
-        Ok(batches)
-    })
+    samples
+        .chunks(batch_size)
+        .try_fold(Vec::new(), |mut batches, chunk| {
+            if let Some(batch) = collate_sample_refs::<B>(chunk, augment, device)? {
+                batches.push(batch);
+            }
+            Ok(batches)
+        })
 }
 
 pub fn collate_sample_chunk<B: Backend>(
@@ -1045,9 +1047,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tar::Builder;
 
-    use crate::data::mjai_loader::{MjaiDataset, MjaiGame, bool_mask_to_f32, prepare_replay_decision, update_safety};
+    use crate::data::mjai_loader::{
+        MjaiDataset, MjaiGame, bool_mask_to_f32, prepare_replay_decision, update_safety,
+    };
     use crate::training::replay_delta_q::{DeltaQSidecarIndex, ReplayDeltaQRecordV1};
-    use crate::training::replay_exit::{ExitSidecarIndex, ReplayDecisionKey, ReplayExitRecordV1, legal_mask_digest_from_f32};
+    use crate::training::replay_exit::{
+        ExitSidecarIndex, ReplayDecisionKey, ReplayExitRecordV1, legal_mask_digest_from_f32,
+    };
     use crate::training::{live_exit, replay_delta_q, replay_exit};
     use hydra_core::encoder::ObservationEncoder;
     use hydra_core::safety::SafetyInfo;
