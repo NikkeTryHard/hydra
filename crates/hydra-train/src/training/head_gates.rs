@@ -227,7 +227,9 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
     // Belief fields: per-sample mask.
     if targets.belief_fields_target.is_some() {
         counts[AdvancedHead::BeliefFields.index()] = match &targets.belief_fields_mask {
-            Some(mask) => count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref()),
+            Some(mask) => {
+                count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref())
+            }
             None => batch_size,
         };
     }
@@ -235,7 +237,9 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
     // Mixture weight: per-sample mask.
     if targets.mixture_weight_target.is_some() {
         counts[AdvancedHead::MixtureWeight.index()] = match &targets.mixture_weight_mask {
-            Some(mask) => count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref()),
+            Some(mask) => {
+                count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref())
+            }
             None => batch_size,
         };
     }
@@ -282,7 +286,10 @@ fn count_nonzero_1d_with_optional_gate<B: Backend>(
     };
     let gate_owned = gate.and_then(|gate| {
         let gate_data = gate.to_data();
-        gate_data.as_slice::<f32>().ok().map(|values| values.to_vec())
+        gate_data
+            .as_slice::<f32>()
+            .ok()
+            .map(|values| values.to_vec())
     });
     data.iter()
         .enumerate()
