@@ -169,6 +169,26 @@ pub(super) fn write_report<T: Serialize>(output: &Path, report: &T) -> Result<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_path(name: &str, ext: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hydra_replay_sidecar_{name}_{}_{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos(),
+            ext
+        ))
+    }
+
+    #[derive(Serialize)]
+    struct DummyRecord {
+        id: u32,
+        label: &'static str,
+    }
 
     #[test]
     fn parse_args_accepts_required_and_optional_flags() {
@@ -223,6 +243,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_rejects_invalid_numeric_flags() {
+        let err = parse_args(
+            "build_replay_sidecar",
+            vec![
+                "build_replay_sidecar".to_string(),
+                "--input".to_string(),
+                "game.json".to_string(),
+                "--checkpoint".to_string(),
+                "model_base".to_string(),
+                "--output".to_string(),
+                "out.jsonl".to_string(),
+                "--source-version".to_string(),
+                "abc".to_string(),
+            ],
+        )
+        .expect_err("invalid source-version should fail");
+
+        assert!(err.contains("invalid --source-version"));
+    }
+
+    #[test]
     fn build_exit_config_applies_cli_overrides() {
         let cli = ReplaySidecarCli {
             input: PathBuf::from("game.json"),
@@ -238,5 +279,48 @@ mod tests {
         assert_eq!(cfg.min_visits, 64);
         assert_eq!(cfg.hard_state_threshold, 0.2);
         assert_eq!(cfg.safety_valve_max_kl, 0.75);
+    }
+
+    #[test]
+    fn write_jsonl_and_report_persist_expected_content() {
+        let output_path = unique_path("rows", "jsonl");
+        let report_output = unique_path("report-base", "jsonl");
+
+        let records = [
+            DummyRecord {
+                id: 1,
+                label: "alpha",
+            },
+            DummyRecord {
+                id: 2,
+                label: "beta",
+            },
+        ];
+        write_jsonl(&output_path, &records).expect("jsonl should be written");
+        let written = fs::read_to_string(&output_path).expect("jsonl readable");
+        assert!(written.contains("\"id\":1"));
+        assert!(written.contains("\"label\":\"beta\""));
+
+        let report = DummyRecord {
+            id: 9,
+            label: "report",
+        };
+        let report_path = write_report(&report_output, &report).expect("report should be written");
+        assert_eq!(report_path, report_output.with_extension("report.json"));
+        let report_json = fs::read_to_string(&report_path).expect("report readable");
+        assert!(report_json.contains("\"id\": 9"));
+        assert!(report_json.contains("\"label\": \"report\""));
+
+        fs::remove_file(output_path).expect("remove jsonl");
+        fs::remove_file(report_path).expect("remove report");
+    }
+
+    #[test]
+    fn source_net_hash_is_stable_for_same_checkpoint_path() {
+        let path = PathBuf::from("/tmp/model_base");
+        assert_eq!(
+            source_net_hash_from_checkpoint(&path),
+            source_net_hash_from_checkpoint(&path)
+        );
     }
 }
