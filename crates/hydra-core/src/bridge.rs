@@ -1091,4 +1091,85 @@ mod tests {
         assert_eq!(tile136_to_type(4), 1); // 2m copy 0
         assert_eq!(tile136_to_type(135), 33); // chun copy 3
     }
+
+    #[test]
+    fn aka_flags_and_dora_parts_detect_red_fives_and_cap_indicators() {
+        assert_eq!(aka_flags_from_tiles([16, 52, 88]), [true, true, true]);
+        assert_eq!(aka_flags_from_tiles([0, 4, 8]), [false, false, false]);
+
+        let dora = dora_info_from_parts([1, 2, 3, 4, 5, 6], [16, 0, 52]);
+        assert_eq!(dora.indicators, [1, 2, 3, 4, 5]);
+        assert_eq!(dora.indicator_count, 5);
+        assert_eq!(dora.aka_flags, [true, true, false]);
+    }
+
+    #[test]
+    fn metadata_parts_rotate_relative_state_and_compute_shanten() {
+        let mut hand_counts = [0u8; NUM_TILE_TYPES];
+        hand_counts[0] = 3;
+        hand_counts[1] = 3;
+        hand_counts[2] = 3;
+        hand_counts[27] = 2;
+        hand_counts[28] = 2;
+
+        let meta = metadata_from_parts(
+            2,
+            &[true, false, true, false],
+            &[25000, 26000, 27000, 28000],
+            3,
+            1,
+            2,
+            &hand_counts,
+        );
+
+        assert_eq!(meta.riichi, [true, false, true, false]);
+        assert_eq!(meta.scores, [27000, 28000, 25000, 26000]);
+        assert_eq!(meta.kyoku_index, 3);
+        assert_eq!(meta.honba, 1);
+        assert_eq!(meta.kyotaku, 2);
+        assert!((-1..=8).contains(&meta.shanten));
+    }
+
+    #[test]
+    fn ct_smc_empty_and_context_fallbacks_use_safe_defaults() {
+        let hand = [0u8; NUM_TILE_TYPES];
+        let discards = std::array::from_fn(|_| PlayerDiscards::new());
+        let melds = std::array::from_fn(|_| PlayerMelds::new());
+        let dora = DoraInfo {
+            indicators: [0; 5],
+            indicator_count: 0,
+            aka_flags: [false; 3],
+        };
+        let empty_smc = CtSmc::new(crate::ct_smc::CtSmcConfig::default().with_particles(1));
+
+        assert_eq!(
+            extract_ct_smc_remaining_counts(&empty_smc),
+            [0.0; NUM_TILE_TYPES]
+        );
+
+        let from_empty_context = compute_hand_ev_from_context(
+            &hand,
+            &discards,
+            &melds,
+            &dora,
+            &SearchContext::default(),
+        );
+        let from_empty_smc = compute_hand_ev_from_context(
+            &hand,
+            &discards,
+            &melds,
+            &dora,
+            &SearchContext {
+                ct_smc: Some(&empty_smc),
+                ..SearchContext::default()
+            },
+        );
+
+        assert_eq!(from_empty_context.tenpai_prob, from_empty_smc.tenpai_prob);
+        assert_eq!(from_empty_context.ukeire, from_empty_smc.ukeire);
+        assert_eq!(
+            from_empty_context.expected_score,
+            from_empty_smc.expected_score
+        );
+    }
 }
