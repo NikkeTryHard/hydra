@@ -602,3 +602,508 @@ pub(super) fn probe_candidate_ladder(
     }
     Ok((selected_summary.candidate_microbatch, results))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use hydra_train::preflight::{PreflightConfig, ProbeKind, ProbeStatus};
+
+    use super::*;
+    use crate::config::TrainConfig;
+
+    fn dummy_config() -> TrainConfig {
+        TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: None,
+            rl: None,
+            bc: Default::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: None,
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: PreflightConfig::default(),
+        }
+    }
+
+    fn summary(
+        candidate_microbatch: usize,
+        average_samples_per_second: Option<f64>,
+    ) -> ProbeCandidateSummary {
+        ProbeCandidateSummary {
+            candidate_microbatch,
+            status: ProbeStatus::Success,
+            attempts: 1,
+            average_samples_per_second,
+            average_elapsed_seconds: Some(1.0),
+        }
+    }
+
+    fn probe_result(
+        kind: ProbeKind,
+        candidate_microbatch: usize,
+        status: ProbeStatus,
+        measured_samples_per_second: Option<f64>,
+        elapsed_seconds: Option<f64>,
+    ) -> ProbeResult {
+        ProbeResult {
+            kind,
+            candidate_microbatch,
+            status,
+            measured_samples_per_second,
+            elapsed_seconds,
+            detail: String::new(),
+        }
+    }
+
+    fn hidden_progress() -> indicatif::ProgressBar {
+        indicatif::ProgressBar::hidden()
+    }
+
+    #[test]
+    fn adaptive_probe_steps_clamp_to_minimums_for_slow_steps() {
+        let mut config = dummy_config();
+        config.preflight.warmup_steps = 2;
+        config.preflight.measure_steps = 3;
+        config.preflight.target_warmup_seconds = 1.0;
+        config.preflight.target_measure_seconds = 2.0;
+        config.preflight.max_adaptive_warmup_steps = 8;
+        config.preflight.max_adaptive_measure_steps = 9;
+
+        let (warmup_steps, measure_steps) = adaptive_probe_steps(&config, 10.0);
+
+        assert_eq!(warmup_steps, 2);
+        assert_eq!(measure_steps, 3);
+    }
+
+    #[test]
+    fn adaptive_probe_steps_clamp_to_maximums_for_tiny_or_zero_step_times() {
+        let mut config = dummy_config();
+        config.preflight.warmup_steps = 2;
+        config.preflight.measure_steps = 3;
+        config.preflight.target_warmup_seconds = 6.0;
+        config.preflight.target_measure_seconds = 12.0;
+        config.preflight.max_adaptive_warmup_steps = 4;
+        config.preflight.max_adaptive_measure_steps = 5;
+
+        let (warmup_steps, measure_steps) = adaptive_probe_steps(&config, 0.0);
+
+        assert_eq!(warmup_steps, 4);
+        assert_eq!(measure_steps, 5);
+    }
+
+    #[test]
+    fn should_continue_validation_growth_treats_negative_tolerance_as_zero() {
+        assert!(should_continue_validation_growth(100.0, 100.0, -0.5));
+        assert!(!should_continue_validation_growth(100.0, 99.0, -0.5));
+        assert!(should_continue_validation_growth(100.0, 95.0, 0.05));
+    }
+
+    #[test]
+    fn maybe_expand_probe_candidates_pushes_next_candidate_when_score_is_within_tolerance() {
+        let config = dummy_config();
+        let mut candidates = vec![32, 64];
+        let summary = summary(64, None);
+        let mut growth_state = ProbeGrowthState {
+            patience: 1,
+            steps: 0,
+            prior_best_score: None,
+        };
+
+        let should_stop = maybe_expand_probe_candidates(
+            &mut candidates,
+            ProbeGrowthDecision {
+                index: 1,
+                kind: ProbeKind::Train,
+                candidate: 64,
+                summary: &summary,
+                candidate_score: 97.0,
+                tolerance: 0.03,
+            },
+            &config,
+            &mut growth_state,
+        );
+
+        assert!(!should_stop);
+        assert_eq!(candidates, vec![32, 64, 128]);
+        assert_eq!(growth_state.patience, 0);
+        assert_eq!(growth_state.steps, 1);
+        assert_eq!(growth_state.prior_best_score, Some(97.0));
+    }
+
+    #[test]
+    fn maybe_expand_probe_candidates_stops_when_growth_steps_are_exhausted() {
+        let mut config = dummy_config();
+        config.preflight.validation_growth_max_steps = 0;
+        let mut candidates = vec![64];
+        let summary = summary(64, Some(110.0));
+        let mut growth_state = ProbeGrowthState {
+            patience: 0,
+            steps: 1,
+            prior_best_score: None,
+        };
+
+        let should_stop = maybe_expand_probe_candidates(
+            &mut candidates,
+            ProbeGrowthDecision {
+                index: 0,
+                kind: ProbeKind::Train,
+                candidate: 64,
+                summary: &summary,
+                candidate_score: 109.0,
+                tolerance: 0.02,
+            },
+            &config,
+            &mut growth_state,
+        );
+
+        assert!(should_stop);
+        assert_eq!(candidates, vec![64]);
+        assert_eq!(growth_state.prior_best_score, None);
+    }
+
+    #[test]
+    fn maybe_expand_probe_candidates_stops_after_patience_limit_on_dropoff() {
+        let mut config = dummy_config();
+        config.preflight.validation_growth_patience = 2;
+        let mut candidates = vec![64];
+        let summary = summary(64, Some(118.0));
+        let mut growth_state = ProbeGrowthState {
+            patience: 1,
+            steps: 0,
+            prior_best_score: Some(120.0),
+        };
+
+        let should_stop = maybe_expand_probe_candidates(
+            &mut candidates,
+            ProbeGrowthDecision {
+                index: 0,
+                kind: ProbeKind::Train,
+                candidate: 64,
+                summary: &summary,
+                candidate_score: 100.0,
+                tolerance: 0.05,
+            },
+            &config,
+            &mut growth_state,
+        );
+
+        assert!(should_stop);
+        assert_eq!(candidates, vec![64]);
+        assert_eq!(growth_state.patience, 2);
+        assert_eq!(growth_state.steps, 0);
+        assert_eq!(growth_state.prior_best_score, Some(120.0));
+    }
+
+    #[test]
+    fn maybe_expand_probe_candidates_updates_best_score_even_without_expansion() {
+        let config = dummy_config();
+        let mut candidates = vec![32, 64, 128];
+        let summary = summary(64, Some(110.0));
+        let mut growth_state = ProbeGrowthState {
+            patience: 0,
+            steps: 0,
+            prior_best_score: Some(105.0),
+        };
+
+        let should_stop = maybe_expand_probe_candidates(
+            &mut candidates,
+            ProbeGrowthDecision {
+                index: 1,
+                kind: ProbeKind::Train,
+                candidate: 64,
+                summary: &summary,
+                candidate_score: 90.0,
+                tolerance: 0.01,
+            },
+            &config,
+            &mut growth_state,
+        );
+
+        assert!(!should_stop);
+        assert_eq!(candidates, vec![32, 64, 128]);
+        assert_eq!(growth_state.patience, 0);
+        assert_eq!(growth_state.steps, 0);
+        assert_eq!(growth_state.prior_best_score, Some(110.0));
+    }
+
+    #[test]
+    fn maybe_expand_probe_candidates_ignores_non_top_candidate() {
+        let config = dummy_config();
+        let mut candidates = vec![32, 64];
+        let summary = summary(32, Some(111.0));
+        let mut growth_state = ProbeGrowthState::default();
+
+        let should_stop = maybe_expand_probe_candidates(
+            &mut candidates,
+            ProbeGrowthDecision {
+                index: 0,
+                kind: ProbeKind::Train,
+                candidate: 32,
+                summary: &summary,
+                candidate_score: 100.0,
+                tolerance: 0.05,
+            },
+            &config,
+            &mut growth_state,
+        );
+
+        assert!(!should_stop);
+        assert_eq!(candidates, vec![32, 64]);
+        assert_eq!(growth_state.patience, 0);
+        assert_eq!(growth_state.steps, 0);
+        assert_eq!(growth_state.prior_best_score, Some(111.0));
+    }
+
+    #[test]
+    fn maybe_expand_probe_candidates_ignores_mismatched_summary_candidate() {
+        let config = dummy_config();
+        let mut candidates = vec![32, 64];
+        let summary = summary(32, Some(103.0));
+        let mut growth_state = ProbeGrowthState {
+            patience: 1,
+            steps: 2,
+            prior_best_score: Some(101.0),
+        };
+
+        let should_stop = maybe_expand_probe_candidates(
+            &mut candidates,
+            ProbeGrowthDecision {
+                index: 1,
+                kind: ProbeKind::Train,
+                candidate: 64,
+                summary: &summary,
+                candidate_score: 99.0,
+                tolerance: 0.02,
+            },
+            &config,
+            &mut growth_state,
+        );
+
+        assert!(!should_stop);
+        assert_eq!(candidates, vec![32, 64]);
+        assert_eq!(growth_state.patience, 1);
+        assert_eq!(growth_state.steps, 2);
+        assert_eq!(growth_state.prior_best_score, Some(103.0));
+    }
+
+    #[test]
+    fn maybe_expand_probe_candidates_stops_growing_when_ceiling_is_reached() {
+        let config = dummy_config();
+        let mut candidates = vec![128, 256];
+        let summary = summary(256, Some(140.0));
+        let mut growth_state = ProbeGrowthState::default();
+
+        let should_stop = maybe_expand_probe_candidates(
+            &mut candidates,
+            ProbeGrowthDecision {
+                index: 1,
+                kind: ProbeKind::Train,
+                candidate: 256,
+                summary: &summary,
+                candidate_score: 135.0,
+                tolerance: 0.01,
+            },
+            &config,
+            &mut growth_state,
+        );
+
+        assert!(!should_stop);
+        assert_eq!(candidates, vec![128, 256]);
+        assert_eq!(growth_state.steps, 0);
+        assert_eq!(growth_state.prior_best_score, Some(140.0));
+    }
+
+    #[test]
+    fn rerun_probe_finalists_returns_early_when_fewer_than_two_finalists_exist() {
+        let config = dummy_config();
+        let mut results = vec![probe_result(
+            ProbeKind::Train,
+            64,
+            ProbeStatus::Success,
+            Some(500.0),
+            Some(1.0),
+        )];
+        let progress = hidden_progress();
+
+        rerun_probe_finalists(
+            Path::new("/dev/null"),
+            |_, _, _| panic!("unexpected finalist rerun"),
+            ProbeKind::Train,
+            &config,
+            &mut results,
+            &progress,
+        )
+        .expect("single finalist should skip reruns");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].candidate_microbatch, 64);
+    }
+
+    #[test]
+    fn refine_probe_winner_locally_returns_early_when_local_refinement_is_disabled() {
+        let mut config = dummy_config();
+        config.preflight.local_refinement_enabled = false;
+        let mut results = vec![probe_result(
+            ProbeKind::Train,
+            64,
+            ProbeStatus::Success,
+            Some(480.0),
+            Some(1.0),
+        )];
+        let progress = hidden_progress();
+
+        refine_probe_winner_locally(
+            Path::new("/dev/null"),
+            |_, _, _| panic!("unexpected local refinement rerun"),
+            ProbeKind::Train,
+            &config,
+            &mut results,
+            &progress,
+        )
+        .expect("disabled local refinement should be a no-op");
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn refine_probe_winner_locally_returns_early_when_no_local_candidates_exist() {
+        let config = dummy_config();
+        let mut results = vec![probe_result(
+            ProbeKind::Train,
+            64,
+            ProbeStatus::Success,
+            Some(480.0),
+            Some(1.0),
+        )];
+        let progress = hidden_progress();
+
+        refine_probe_winner_locally(
+            Path::new("/dev/null"),
+            |_, _, _| panic!("unexpected local refinement rerun"),
+            ProbeKind::Train,
+            &config,
+            &mut results,
+            &progress,
+        )
+        .expect("missing local candidates should skip reruns");
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn refine_top_k_probe_candidates_locally_returns_early_when_no_candidates_exist() {
+        let config = dummy_config();
+        let mut results = vec![probe_result(
+            ProbeKind::Train,
+            64,
+            ProbeStatus::Success,
+            Some(480.0),
+            Some(1.0),
+        )];
+        let progress = hidden_progress();
+
+        refine_top_k_probe_candidates_locally(
+            Path::new("/dev/null"),
+            |_, _, _| panic!("unexpected top-k refinement rerun"),
+            ProbeKind::Train,
+            &config,
+            &mut results,
+            &progress,
+        )
+        .expect("missing top-k candidates should skip reruns");
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn finalize_probe_search_returns_missing_error_when_no_stable_results_exist() {
+        let mut config = dummy_config();
+        config.preflight.local_refinement_enabled = false;
+        let mut results = Vec::new();
+        let progress = hidden_progress();
+
+        let error = finalize_probe_search(
+            Path::new("/dev/null"),
+            |_, _, _| panic!("unexpected finalize rerun"),
+            ProbeKind::Train,
+            &config,
+            &mut results,
+            &progress,
+            "missing winner".to_string(),
+        )
+        .expect_err("empty successful results should fail");
+
+        assert_eq!(error, "missing winner");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn finalize_probe_search_returns_best_summary_when_refinements_have_no_work() {
+        let mut config = dummy_config();
+        config.preflight.local_refinement_enabled = false;
+        let mut results = vec![probe_result(
+            ProbeKind::Train,
+            64,
+            ProbeStatus::Success,
+            Some(512.0),
+            Some(1.5),
+        )];
+        let progress = hidden_progress();
+
+        let best = finalize_probe_search(
+            Path::new("/dev/null"),
+            |_, _, _| panic!("unexpected finalize rerun"),
+            ProbeKind::Train,
+            &config,
+            &mut results,
+            &progress,
+            "missing winner".to_string(),
+        )
+        .expect("single stable result should finalize cleanly");
+
+        assert_eq!(best.candidate_microbatch, 64);
+        assert_eq!(best.average_samples_per_second, Some(512.0));
+        assert_eq!(best.average_elapsed_seconds, Some(1.5));
+        assert_eq!(best.attempts, 1);
+    }
+
+    #[test]
+    fn probe_candidate_ladder_errors_when_candidate_list_is_empty() {
+        let mut config = dummy_config();
+        config.microbatch_size = None;
+        let artifacts = crate::artifacts::BcArtifactPaths::new(Path::new("/tmp/out"), 0);
+
+        let error = probe_candidate_ladder(
+            Path::new("/dev/null"),
+            &config,
+            &artifacts,
+            ProbeKind::Train,
+            &[],
+        )
+        .expect_err("empty candidate ladder should not find a stable winner");
+
+        assert_eq!(error, "no stable train microbatch found in preflight");
+    }
+}
