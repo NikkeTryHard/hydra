@@ -9,5 +9,12 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
+[profile.coverage]
+inherits = "test"
+opt-level = 1
+codegen-units = 16
+incremental = false
+debug = 1
+
 [profile.bench]
 inherits = "release"

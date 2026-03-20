@@ -29,6 +29,38 @@ From the repo root:
 ./scripts/coverage.sh
 ```
 
+By default the script now uses the workspace `coverage` Cargo profile through
+nextest's `--cargo-profile` passthrough, which keeps coverage runs cheaper than
+Hydra's shipping `release` profile while staying compatible with `cargo llvm-cov nextest`.
+
+For fast inner-loop coverage while you are only touching a few modules, keep the
+same script but scope the nextest run and skip heavy artifacts:
+
+```bash
+HYDRA_COVERAGE_FAST=1 \
+HYDRA_COVERAGE_HTML=0 \
+HYDRA_COVERAGE_LCOV=0 \
+HYDRA_COVERAGE_NEXTTEST_FILTERS='-p hydra-core arena robust_opponent bridge' \
+./scripts/coverage.sh
+```
+
+The script now prints per-step timings and total runtime so you can see whether
+time is going into test execution, HTML generation, or LCOV export.
+
+By default the script also pins both Cargo build jobs and nextest runtime test
+threads to 16. Override either with `HYDRA_BUILD_JOBS` or `HYDRA_TEST_THREADS`
+if you need a different build-vs-test scheduling balance.
+
+Fast mode skips summary, HTML, and LCOV generation entirely, which is useful when
+you only care about collecting fresh coverage data and timing the hot test stage.
+For a fresh text summary after a fast run, rerun with `HYDRA_COVERAGE_FAST=0`.
+
+To override the coverage build profile:
+
+```bash
+HYDRA_COVERAGE_PROFILE=release ./scripts/coverage.sh
+```
+
 Artifacts are written under `target/coverage/` by default:
 
 - `target/coverage/html/index.html` — browsable HTML report
