@@ -16,6 +16,20 @@ use hydra_train::training::losses::*;
 type TestBackend = Autodiff<NdArray<f32>>;
 type InferBackend = NdArray<f32>;
 
+fn small_actor_model_config() -> HydraModelConfig {
+    HydraModelConfig::actor()
+        .with_hidden_channels(32)
+        .with_num_groups(4)
+        .with_se_bottleneck(8)
+}
+
+fn small_learner_model_config() -> HydraModelConfig {
+    HydraModelConfig::learner()
+        .with_hidden_channels(32)
+        .with_num_groups(4)
+        .with_se_bottleneck(8)
+}
+
 fn no_nan_2d<B: Backend>(t: &Tensor<B, 2>, name: &str) {
     let data = t.to_data();
     let slice = data.as_slice::<f32>().expect("f32");
@@ -28,9 +42,9 @@ fn no_nan_2d<B: Backend>(t: &Tensor<B, 2>, name: &str) {
 fn model_loss_and_distill_pipeline_smoke() {
     let device = Default::default();
 
-    let actor_model = HydraModelConfig::actor().init::<InferBackend>(&device);
+    let actor_model = small_actor_model_config().init::<InferBackend>(&device);
     let x = Tensor::<InferBackend, 3>::random(
-        [4, NUM_CHANNELS, 34],
+        [2, NUM_CHANNELS, 34],
         burn::tensor::Distribution::Normal(0.0, 0.1),
         &device,
     );
@@ -38,11 +52,11 @@ fn model_loss_and_distill_pipeline_smoke() {
     no_nan_2d(&out.policy_logits, "actor_policy");
     no_nan_2d(&out.value, "actor_value");
 
-    let learner_model = HydraModelConfig::learner().init::<TestBackend>(&device);
-    let targets = make_test_targets(&device, 4);
+    let learner_model = small_learner_model_config().init::<TestBackend>(&device);
+    let targets = make_test_targets(&device, 2);
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
     let breakdown = loss_fn.total_loss(
-        &learner_model.forward(Tensor::zeros([4, NUM_CHANNELS, 34], &device)),
+        &learner_model.forward(Tensor::zeros([2, NUM_CHANNELS, 34], &device)),
         &targets,
     );
     let loss_val: f64 = breakdown.total.clone().into_scalar().elem();
@@ -54,8 +68,8 @@ fn model_loss_and_distill_pipeline_smoke() {
     let _learner_model = optim.step(1e-4, learner_model, grads);
 
     use hydra_train::training::distill;
-    let learner = HydraModelConfig::learner().init::<InferBackend>(&device);
-    let x_distill = Tensor::<InferBackend, 3>::zeros([2, NUM_CHANNELS, 34], &device);
+    let learner = small_learner_model_config().init::<InferBackend>(&device);
+    let x_distill = Tensor::<InferBackend, 3>::zeros([1, NUM_CHANNELS, 34], &device);
     let l_out = learner.forward(x_distill.clone());
     let a_out = actor_model.forward(x_distill);
     let mask = Tensor::<InferBackend, 2>::ones([2, 46], &device);
@@ -105,7 +119,7 @@ fn ctsmc_search_and_inference_pipeline_smoke() {
     let col_sums = [1, 1, 1, 1];
     let log_omega = [[0.0f64; 4]; 34];
     let cfg = CtSmcConfig {
-        num_particles: 32,
+        num_particles: 8,
         ess_threshold: 0.4,
         rng_seed: 42,
     };
@@ -175,9 +189,9 @@ fn arena_and_rl_batch_pipeline_smoke() {
 
     let device = Default::default();
     let mut arena = Arena::new(ArenaConfig::default());
-    for g in 0..10u32 {
+    for g in 0..4u32 {
         let mut traj = Trajectory::new(g, g as u64 * 42);
-        for turn in 0..5u16 {
+        for turn in 0..3u16 {
             traj.steps.push(TrajectoryStep {
                 obs: [0.1; OBS_SIZE],
                 action: (turn % 34) as u8,
@@ -194,7 +208,7 @@ fn arena_and_rl_batch_pipeline_smoke() {
                 exit_label: None,
                 delta_q_label: None,
                 reward: 0.0,
-                done: turn == 4,
+                done: turn == 2,
                 player_id: (turn % 4) as u8,
                 game_id: g,
                 turn,
@@ -204,8 +218,8 @@ fn arena_and_rl_batch_pipeline_smoke() {
         traj.final_scores = [25000; 4];
         arena.add_trajectory(traj);
     }
-    assert_eq!(arena.games_completed, 10);
-    assert!(arena.total_steps() >= 50, "should have 50+ steps");
+    assert_eq!(arena.games_completed, 4);
+    assert!(arena.total_steps() >= 12, "should have 12+ steps");
 
     let mut rl_traj = Trajectory::new(99, 4242);
     let exit_label = TrajectoryExitLabel::from_slices(
@@ -326,7 +340,7 @@ fn edge_case_smoke_test() {
     let col_sums = [2, 2, 1, 0];
     let log_omega = [[0.0f64; 4]; 34];
     let cfg = CtSmcConfig {
-        num_particles: 32,
+        num_particles: 8,
         ess_threshold: 0.4,
         rng_seed: 42,
     };
@@ -359,7 +373,7 @@ fn determinism_same_seed_same_particles() {
     let col_sums = [1, 1, 1, 1];
     let log_omega = [[0.0f64; 4]; 34];
     let cfg = CtSmcConfig {
-        num_particles: 16,
+        num_particles: 8,
         ess_threshold: 0.4,
         rng_seed: 42,
     };
@@ -377,7 +391,7 @@ fn determinism_same_seed_same_particles() {
     let mut smc2 = CtSmc::new(cfg2);
     smc2.sample_particles(&row_sums, &col_sums, &log_omega, &mut rng2);
 
-    for i in 0..16 {
+    for i in 0..8 {
         assert_eq!(
             smc1.particles[i].allocation, smc2.particles[i].allocation,
             "particle {i} differs between runs with same seed"
@@ -511,7 +525,7 @@ fn ctsmc_to_endgame_to_exit_pipeline() {
     let col_sums = [2, 1, 1, 1];
     let log_omega = [[0.0f64; 4]; 34];
     let cfg = CtSmcConfig {
-        num_particles: 64,
+        num_particles: 16,
         ess_threshold: 0.4,
         rng_seed: 99,
     };

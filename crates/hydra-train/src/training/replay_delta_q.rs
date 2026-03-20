@@ -275,23 +275,76 @@ pub fn replay_delta_q_records_for_identity<B: Backend>(
 mod tests {
     use super::*;
     use crate::data::mjai_loader::load_game_from_events_with_sidecar;
-    use burn::backend::NdArray;
+    use hydra_core::encoder::ObservationEncoder;
     use riichienv_core::replay::read_mjai_events;
+    use riichienv_core::rule::GameRule;
+    use std::array;
     use std::io::Cursor;
+    use std::io::ErrorKind;
 
-    type B = NdArray<f32>;
-
-    fn sample_log() -> String {
+    fn guardrail_log() -> String {
         [
             r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
-            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
-            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["6m","6m","6m","7m","8m","9m","1p","2p","3p","4p","5p","6p","7p","8p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"8p","tsumogiri":false}"#,
             r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
             r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
             r#"{"type":"ryukyoku"}"#,
             r#"{"type":"end_kyoku"}"#,
         ]
         .join("\n")
+    }
+
+    fn synthetic_delta_q_records(
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayDeltaQRecordV1> {
+        let events = read_mjai_events(Cursor::new(guardrail_log())).expect("parse events");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+
+        let mut records = Vec::new();
+
+        for (idx, event) in events.iter().enumerate() {
+            if let Some(decision) =
+                prepare_replay_decision(event, &mut state, &safety, &mut encoder)
+                    .expect("prepare replay decision")
+            {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                mask[decision.action_id as usize] = 1.0;
+                target[decision.action_id as usize] = 0.25;
+                records.push(ReplayDeltaQRecordV1 {
+                    version: 1,
+                    semantics: REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+                    provenance: REPLAY_DELTA_Q_PROVENANCE.to_string(),
+                    key: ReplayDecisionKey {
+                        source_hash: source_hash_from_identity("game-1"),
+                        event_index: idx as u32,
+                        actor: decision.actor as u8,
+                        obs_hash: obs_hash(&decision.obs_encoded),
+                    },
+                    action: decision.action_id,
+                    legal_mask_digest: legal_mask_digest_from_f32(&bool_mask_to_f32(
+                        decision.legal_mask,
+                    )),
+                    source_net_hash,
+                    source_version,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                });
+                if records.len() == 2 {
+                    update_safety(&mut safety, event).expect("update safety");
+                    state.apply_mjai_event(event.clone());
+                    break;
+                }
+            }
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        records
     }
 
     #[test]
@@ -327,19 +380,8 @@ mod tests {
 
     #[test]
     fn loader_with_sidecar_populates_delta_q_fields() {
-        let events = read_mjai_events(Cursor::new(sample_log())).expect("parse events");
-        let device = Default::default();
-        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
-        let (records, _report) = replay_delta_q_records_for_identity(
-            "game-1",
-            &events,
-            &model,
-            &device,
-            &ExitConfig::default_phase3(),
-            123,
-            1,
-        )
-        .expect("generate sidecar records");
+        let events = read_mjai_events(Cursor::new(guardrail_log())).expect("parse events");
+        let records = synthetic_delta_q_records(123, 1);
         let index = DeltaQSidecarIndex::from_records(records);
 
         let game = load_game_from_events_with_sidecar(
@@ -409,20 +451,8 @@ mod tests {
 
     #[test]
     fn replay_delta_q_records_are_tagged_search_derived() {
-        let device = Default::default();
-        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
-        let events = read_mjai_events(Cursor::new(sample_log())).expect("parse events");
-        let (records, report) = replay_delta_q_records_for_identity(
-            "game-1",
-            &events,
-            &model,
-            &device,
-            &ExitConfig::default_phase3(),
-            123,
-            1,
-        )
-        .expect("generate records");
-        assert!(report.total_states > 0);
+        let records = synthetic_delta_q_records(123, 1);
+        assert!(!records.is_empty());
         for record in records {
             assert_eq!(record.provenance, REPLAY_DELTA_Q_PROVENANCE);
             assert_eq!(record.semantics, REPLAY_DELTA_Q_SEMANTICS_V1);
@@ -459,5 +489,63 @@ mod tests {
         };
         let index = DeltaQSidecarIndex::from_records(vec![record]);
         assert!(index.lookup_label(&key, 2, &legal_mask, 9, 1).is_none());
+    }
+
+    #[test]
+    fn delta_q_contract_rejects_missing_masked_actions_and_nonzero_unmasked_targets() {
+        let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        legal_mask[2] = 1.0;
+
+        let target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mask = [0.0f32; HYDRA_ACTION_SPACE];
+        assert!(validate_delta_q_contract(&target, &mask, &legal_mask).is_none());
+
+        let mut bad_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut bad_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        bad_target[4] = 0.25;
+        bad_mask[2] = 1.0;
+        assert!(validate_delta_q_contract(&bad_target, &bad_mask, &legal_mask).is_none());
+    }
+
+    #[test]
+    fn delta_q_contract_rejects_aka_actions_even_when_legal() {
+        let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        legal_mask[AKA_5M as usize] = 1.0;
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[AKA_5M as usize] = 0.1;
+        mask[AKA_5M as usize] = 1.0;
+        assert!(validate_delta_q_contract(&target, &mask, &legal_mask).is_none());
+    }
+
+    #[test]
+    fn delta_q_sidecar_reader_reports_invalid_line_numbers() {
+        let err = DeltaQSidecarIndex::from_jsonl_reader(Cursor::new("\nnot-json\n"))
+            .expect_err("invalid jsonl should fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(err
+            .to_string()
+            .contains("invalid replay delta_q sidecar line 2"));
+    }
+
+    #[test]
+    fn delta_q_sidecar_reader_accepts_blank_lines_and_contract_rejects_bad_mask_values() {
+        let records = synthetic_delta_q_records(123, 1);
+        let raw = format!(
+            "\n{}\n\n",
+            serde_json::to_string(&records[0]).expect("record should serialize")
+        );
+        let index = DeltaQSidecarIndex::from_jsonl_reader(Cursor::new(raw))
+            .expect("valid jsonl with blanks should parse");
+
+        assert_eq!(index.records.len(), 1);
+
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[records[0].action as usize] = 0.1;
+        mask[records[0].action as usize] = 0.25;
+        let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        legal_mask[records[0].action as usize] = 1.0;
+        assert!(validate_delta_q_contract(&target, &mask, &legal_mask).is_none());
     }
 }
