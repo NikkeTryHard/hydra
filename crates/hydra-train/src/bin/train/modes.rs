@@ -44,12 +44,9 @@ pub(super) fn handle_preflight_mode(
         let preflight = run_rl_preflight(config_path, config, &train_device)?;
         println!(
             "{}",
-            format_preflight_summary_line(
-                "Preflight:",
-                format!(
-                    "selected rl.games_per_batch={} rl.microbatch_size={}",
-                    preflight.selected_games_per_batch, preflight.selected_microbatch_size,
-                )
+            format_rl_preflight_selection_message(
+                preflight.selected_games_per_batch,
+                preflight.selected_microbatch_size,
             )
         );
         print_probe_table(
@@ -79,10 +76,7 @@ pub(super) fn handle_preflight_mode(
     )?;
     println!(
         "{}",
-        format_preflight_summary_line(
-            "Preflight:",
-            explicit_preflight_summary(preflight.runtime, preflight.explicit)
-        )
+        format_bc_preflight_selection_message(preflight.runtime, preflight.explicit)
     );
     print_probe_table(
         "Preflight train table",
@@ -109,20 +103,7 @@ pub(super) fn handle_probe_mode(
     let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
     artifacts.create_root_dir()?;
     print_preflight_banner("Hydra probe-only", config, &device_label(&config.device));
-    println!(
-        "{}",
-        format_status_line(
-            "Probe-only:",
-            format!(
-                "kind={} candidate_mb={} warmup_steps={} measure_steps= {}",
-                probe_kind_name(request.kind),
-                request.candidate_microbatch,
-                request.warmup_steps,
-                request.measure_steps,
-            )
-            .replace("measure_steps= ", "measure_steps=")
-        )
-    );
+    println!("{}", format_probe_only_status_message(request));
     let (selected, results) = run_probe_ladder_only(config_path, config, &artifacts, request)?;
     let selected_summary = best_probe_summary(&results).ok_or_else(|| {
         format!(
@@ -141,7 +122,7 @@ pub(super) fn handle_probe_mode(
         "{}",
         format_status_line(
             "Probe best candidate:",
-            format!("{}={}", probe_kind_name(request.kind), selected)
+            format_probe_best_candidate_detail(request.kind, selected)
         )
     );
     print_probe_table("Probe final table", request.kind, &results, selected);
@@ -270,17 +251,9 @@ pub(super) fn handle_training_mode(
             "Finished BC training. Best validation policy CE:"
                 .bold()
                 .cyan(),
-            if let Some(best_validation) = best_validation {
-                format!(
-                    "{:.4} (agree {:.2}%)",
-                    best_validation.policy_loss,
-                    best_validation.agreement * 100.0
-                )
-            } else {
-                "n/a".to_string()
-            }
-            .bold()
-            .green()
+            format_best_validation_summary(best_validation.as_ref())
+                .bold()
+                .green()
         ))
     );
 
@@ -370,15 +343,9 @@ pub(super) fn handle_delta_q_promotion_mode(
         );
     };
     let pre_arena_recommendation =
-        if result.passed && transfer_result.map(|r| r.passed).unwrap_or(true) {
-            DeltaQPromotionRecommendation::RequiresArenaConfirmation
-        } else {
-            DeltaQPromotionRecommendation::RejectAtOfflineGate
-        };
+        pre_arena_recommendation(result.passed, transfer_result.map(|r| r.passed));
 
-    let arena_confirmation_request: Option<DeltaQArenaConfirmationRequest> =
-        (pre_arena_recommendation == DeltaQPromotionRecommendation::RequiresArenaConfirmation)
-            .then_some(Default::default());
+    let arena_confirmation_request = default_arena_confirmation_request(pre_arena_recommendation);
     let arena_config = arena_confirmation_request.as_ref().map(|request| {
         PairedArenaEvalConfig::new()
             .with_min_games(request.min_games as usize)
@@ -418,11 +385,7 @@ pub(super) fn handle_delta_q_promotion_mode(
             scope: "promotion_mode",
             step_or_epoch: 0,
             recommendation: pre_arena_recommendation,
-            stage: if arena_report.is_some() {
-                "offline_transfer_and_arena_gate"
-            } else {
-                "offline_and_policy_transfer_gate"
-            },
+            stage: delta_q_promotion_stage(arena_report.is_some()),
             arena_confirmation: arena_confirmation_request.clone(),
             arena_decision,
             arena_report: arena_report.as_ref(),
@@ -435,24 +398,13 @@ pub(super) fn handle_delta_q_promotion_mode(
 
     println!(
         "{}",
-        timestamped(format!(
-            "{} samples={} compared={} dq_lift={:.4} dq_regret={:.4}/{:.4} dq_win={:.2}% dq_offline_gate={} next={} arena_req='{}' artifact={}",
-            "DeltaQ offline gate".bold().magenta(),
+        format_delta_q_offline_gate_message(
             summary.samples,
-            snapshot.compared_states,
-            snapshot.mean_decision_lift,
-            snapshot.candidate_mean_regret,
-            snapshot.baseline_mean_regret,
-            snapshot.regret_beats_baseline_rate * 100.0,
-            snapshot.passed,
+            snapshot,
             pre_arena_recommendation,
-            if let Some(request) = arena_confirmation_request.as_ref() {
-                request.summary()
-            } else {
-                "n/a".to_string()
-            },
-            artifacts.delta_q_promotion_path.display(),
-        ))
+            &delta_q_arena_requirement_summary(arena_confirmation_request.as_ref()),
+            &artifacts.delta_q_promotion_path,
+        )
     );
     if let Some(outcome) = arena_eval.as_ref() {
         println!(
@@ -480,34 +432,167 @@ pub(super) fn handle_delta_q_promotion_mode(
         }
     }
     if let Some(transfer) = summary.delta_q_policy_transfer_snapshot {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} compared={} policy_regret={:.4}/{:.4} policy_top1={:.2}%/{:.2}% policy_beats_baseline={:.2}% candidate_worse_rate={:.2}%",
-                "DeltaQ policy-vs-teacher holdout".bold().blue(),
-                transfer.compared_states,
-                transfer.candidate_policy_mean_teacher_regret,
-                transfer.baseline_policy_mean_teacher_regret,
-                transfer.candidate_policy_top1_to_teacher * 100.0,
-                transfer.baseline_policy_top1_to_teacher * 100.0,
-                transfer.candidate_beats_baseline_rate * 100.0,
-                transfer.negative_transfer_fraction * 100.0,
-            ))
-        );
+        println!("{}", format_delta_q_policy_holdout_message(transfer));
     }
     if let Some(transfer_result) = transfer_result {
         println!(
             "{}",
-            timestamped(format!(
-                "{} pass={} next={}",
-                "DeltaQ policy transfer gate".bold().blue(),
+            format_delta_q_policy_transfer_gate_message(
                 transfer_result.passed,
                 transfer_result.recommendation(),
-            ))
+            )
         );
     }
 
     Ok(())
+}
+
+fn format_probe_only_status_detail(request: ProbeRequest) -> String {
+    format!(
+        "kind={} candidate_mb={} warmup_steps={} measure_steps={}",
+        probe_kind_name(request.kind),
+        request.candidate_microbatch,
+        request.warmup_steps,
+        request.measure_steps,
+    )
+}
+
+fn format_probe_only_status_message(request: ProbeRequest) -> String {
+    format_status_line("Probe-only:", format_probe_only_status_detail(request))
+}
+
+fn format_rl_preflight_selection_message(
+    selected_games_per_batch: usize,
+    selected_microbatch_size: usize,
+) -> String {
+    format_preflight_summary_line(
+        "Preflight:",
+        format!(
+            "selected rl.games_per_batch={} rl.microbatch_size={}",
+            selected_games_per_batch, selected_microbatch_size,
+        ),
+    )
+}
+
+fn format_bc_preflight_selection_message(
+    runtime: hydra_train::preflight::EffectiveRuntimeConfig,
+    explicit: hydra_train::preflight::ExplicitSettings,
+) -> String {
+    format_preflight_summary_line("Preflight:", explicit_preflight_summary(runtime, explicit))
+}
+
+fn format_probe_best_candidate_detail(kind: ProbeKind, selected: usize) -> String {
+    format!("{}={}", probe_kind_name(kind), selected)
+}
+
+fn format_best_validation_summary(
+    best_validation: Option<&super::resume::BestValidation>,
+) -> String {
+    if let Some(best_validation) = best_validation {
+        format!(
+            "{:.4} (agree {:.2}%)",
+            best_validation.policy_loss,
+            best_validation.agreement * 100.0
+        )
+    } else {
+        "n/a".to_string()
+    }
+}
+
+fn pre_arena_recommendation(
+    offline_gate_passed: bool,
+    transfer_gate_passed: Option<bool>,
+) -> DeltaQPromotionRecommendation {
+    if offline_gate_passed && transfer_gate_passed.unwrap_or(true) {
+        DeltaQPromotionRecommendation::RequiresArenaConfirmation
+    } else {
+        DeltaQPromotionRecommendation::RejectAtOfflineGate
+    }
+}
+
+fn default_arena_confirmation_request(
+    recommendation: DeltaQPromotionRecommendation,
+) -> Option<DeltaQArenaConfirmationRequest> {
+    (recommendation == DeltaQPromotionRecommendation::RequiresArenaConfirmation)
+        .then_some(Default::default())
+}
+
+fn delta_q_promotion_stage(has_arena_report: bool) -> &'static str {
+    if has_arena_report {
+        "offline_transfer_and_arena_gate"
+    } else {
+        "offline_and_policy_transfer_gate"
+    }
+}
+
+fn delta_q_arena_requirement_summary(request: Option<&DeltaQArenaConfirmationRequest>) -> String {
+    request
+        .map(DeltaQArenaConfirmationRequest::summary)
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_delta_q_offline_gate_message(
+    samples: usize,
+    snapshot: super::validation::DeltaQPromotionSnapshot,
+    recommendation: DeltaQPromotionRecommendation,
+    arena_requirement: &str,
+    artifact_path: &std::path::Path,
+) -> String {
+    timestamped(format!(
+        "{} samples={} compared={} dq_lift={:.4} dq_regret={:.4}/{:.4} dq_win={:.2}% dq_offline_gate={} next={} arena_req='{}' artifact={}",
+        "DeltaQ offline gate".bold().magenta(),
+        samples,
+        snapshot.compared_states,
+        snapshot.mean_decision_lift,
+        snapshot.candidate_mean_regret,
+        snapshot.baseline_mean_regret,
+        snapshot.regret_beats_baseline_rate * 100.0,
+        snapshot.passed,
+        recommendation,
+        arena_requirement,
+        artifact_path.display(),
+    ))
+}
+
+fn format_delta_q_policy_holdout_message(
+    snapshot: super::validation::DeltaQPolicyTransferSnapshot,
+) -> String {
+    timestamped(format!(
+        "{} compared={} policy_regret={:.4}/{:.4} policy_top1={:.2}%/{:.2}% policy_beats_baseline={:.2}% candidate_worse_rate={:.2}%",
+        "DeltaQ policy-vs-teacher holdout".bold().blue(),
+        snapshot.compared_states,
+        snapshot.candidate_policy_mean_teacher_regret,
+        snapshot.baseline_policy_mean_teacher_regret,
+        snapshot.candidate_policy_top1_to_teacher * 100.0,
+        snapshot.baseline_policy_top1_to_teacher * 100.0,
+        snapshot.candidate_beats_baseline_rate * 100.0,
+        snapshot.negative_transfer_fraction * 100.0,
+    ))
+}
+
+fn format_delta_q_policy_transfer_gate_message(
+    passed: bool,
+    next: DeltaQPromotionRecommendation,
+) -> String {
+    timestamped(format!(
+        "{} pass={} next={}",
+        "DeltaQ policy transfer gate".bold().blue(),
+        passed,
+        next,
+    ))
+}
+
+fn format_probe_table_message(
+    title: &str,
+    kind: ProbeKind,
+    results: &[hydra_train::preflight::ProbeResult],
+    selected: usize,
+) -> String {
+    timestamped(format!(
+        "{}\n{}",
+        title.bold().cyan(),
+        format_probe_results_table(kind, results, Some(selected))
+    ))
 }
 
 fn print_probe_table(
@@ -518,10 +603,402 @@ fn print_probe_table(
 ) {
     println!(
         "{}",
-        timestamped(format!(
-            "{}\n{}",
-            title.bold().cyan(),
-            format_probe_results_table(kind, results, Some(selected))
-        ))
+        format_probe_table_message(title, kind, results, selected)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use hydra_train::preflight::{PreflightConfig, ProbeKind, ProbeResult, ProbeStatus};
+    use hydra_train::training::delta_q_promotion::DeltaQPromotionRecommendation;
+
+    use super::super::config::{BcHyperparamConfig, RlTrainConfig, TrainConfig};
+    use super::super::resume::BestValidation;
+    use super::*;
+
+    fn dummy_config() -> TrainConfig {
+        TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: None,
+            rl: None,
+            bc: BcHyperparamConfig::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: Some(1),
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: PreflightConfig::default(),
+        }
+    }
+
+    fn dummy_probe_request(kind: ProbeKind) -> ProbeRequest {
+        ProbeRequest {
+            kind,
+            candidate_microbatch: 192,
+            warmup_steps: 4,
+            measure_steps: 8,
+        }
+    }
+
+    fn dummy_probe_result(
+        kind: ProbeKind,
+        candidate_microbatch: usize,
+        selected: bool,
+    ) -> ProbeResult {
+        ProbeResult {
+            kind,
+            candidate_microbatch,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: Some(if selected { 512.0 } else { 384.0 }),
+            elapsed_seconds: Some(if selected { 1.5 } else { 2.0 }),
+            detail: String::new(),
+        }
+    }
+
+    fn dummy_best_validation(policy_loss: f64, agreement: f64) -> BestValidation {
+        BestValidation {
+            policy_loss,
+            agreement,
+        }
+    }
+
+    #[test]
+    fn format_probe_only_status_detail_is_stable() {
+        assert_eq!(
+            format_probe_only_status_detail(dummy_probe_request(ProbeKind::RlMicrobatch)),
+            "kind=rl_microbatch candidate_mb=192 warmup_steps=4 measure_steps=8"
+        );
+    }
+
+    #[test]
+    fn format_probe_best_candidate_detail_uses_kind_name() {
+        assert_eq!(
+            format_probe_best_candidate_detail(ProbeKind::Validation, 96),
+            "validation=96"
+        );
+    }
+
+    #[test]
+    fn format_best_validation_summary_formats_metrics_and_none_case() {
+        let summary = dummy_best_validation(0.125, 0.875);
+        assert_eq!(
+            format_best_validation_summary(Some(&summary)),
+            "0.1250 (agree 87.50%)"
+        );
+        assert_eq!(format_best_validation_summary(None), "n/a");
+    }
+
+    #[test]
+    fn pre_arena_recommendation_requires_both_offline_and_transfer_gate() {
+        assert_eq!(
+            pre_arena_recommendation(true, Some(true)),
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation
+        );
+        assert_eq!(
+            pre_arena_recommendation(true, None),
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation
+        );
+        assert_eq!(
+            pre_arena_recommendation(true, Some(false)),
+            DeltaQPromotionRecommendation::RejectAtOfflineGate
+        );
+        assert_eq!(
+            pre_arena_recommendation(false, Some(true)),
+            DeltaQPromotionRecommendation::RejectAtOfflineGate
+        );
+    }
+
+    #[test]
+    fn default_arena_confirmation_request_tracks_recommendation() {
+        let request = default_arena_confirmation_request(
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation,
+        )
+        .expect("arena confirmation request should exist");
+        assert!(request.same_seeds);
+        assert_eq!(request.min_games, 10_000);
+        assert!(default_arena_confirmation_request(
+            DeltaQPromotionRecommendation::RejectAtOfflineGate,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn delta_q_stage_and_requirement_summary_follow_arena_presence() {
+        assert_eq!(
+            delta_q_promotion_stage(true),
+            "offline_transfer_and_arena_gate"
+        );
+        assert_eq!(
+            delta_q_promotion_stage(false),
+            "offline_and_policy_transfer_gate"
+        );
+
+        let request = DeltaQArenaConfirmationRequest::default();
+        let summary = delta_q_arena_requirement_summary(Some(&request));
+        assert!(summary.contains("same_seeds=true"));
+        assert!(summary.contains("min_games=10000"));
+        assert_eq!(delta_q_arena_requirement_summary(None), "n/a");
+    }
+
+    #[test]
+    fn format_probe_table_message_includes_title_selection_and_rows() {
+        let selected = 64;
+        let message = format_probe_table_message(
+            "Probe final table",
+            ProbeKind::Train,
+            &[
+                dummy_probe_result(ProbeKind::Train, selected, true),
+                dummy_probe_result(ProbeKind::Train, 48, false),
+            ],
+            selected,
+        );
+
+        assert!(message.contains("Probe final table"));
+        assert!(message.contains("candidate_mb"));
+        assert!(message.contains("train        yes       64"));
+        assert!(message.contains("train        no        48"));
+    }
+
+    #[test]
+    fn handle_preflight_mode_returns_validation_errors_before_runtime_work() {
+        let mut config = dummy_config();
+        config.num_epochs = 0;
+
+        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
+            .expect_err("invalid config should fail before preflight runtime");
+        assert_eq!(err, "num_epochs must be greater than 0");
+    }
+
+    #[test]
+    fn handle_probe_mode_returns_validation_errors_before_probe_runtime() {
+        let mut config = dummy_config();
+        config.batch_size = 0;
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            dummy_probe_request(ProbeKind::Train),
+        )
+        .expect_err("invalid config should fail before probe runtime");
+        assert_eq!(err, "batch_size must be greater than 0");
+    }
+
+    #[test]
+    fn handle_preflight_mode_rl_branch_rejects_invalid_device_before_rl_runtime() {
+        let mut config = dummy_config();
+        config.rl = Some(RlTrainConfig::default());
+        config.device = "definitely-not-a-device".to_string();
+
+        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
+            .expect_err("invalid device should fail before rl preflight runtime");
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+    }
+
+    #[test]
+    fn handle_training_mode_returns_validation_errors_from_bootstrap() {
+        let mut config = dummy_config();
+        config.archive_queue_bound = 0;
+
+        let err = handle_training_mode(Path::new("config.yaml"), config)
+            .expect_err("invalid config should fail before training bootstrap work");
+        assert_eq!(err, "archive_queue_bound must be greater than 0");
+    }
+
+    #[test]
+    fn handle_delta_q_promotion_mode_returns_validation_errors_from_bootstrap() {
+        let mut config = dummy_config();
+        config.buffer_samples = 0;
+
+        let err = handle_delta_q_promotion_mode(Path::new("config.yaml"), config, None)
+            .expect_err("invalid config should fail before promotion runtime");
+        assert_eq!(err, "buffer_samples must be greater than 0");
+    }
+
+    #[test]
+    fn format_probe_table_message_preserves_selected_candidate_even_without_rows() {
+        let message = format_probe_table_message("Empty probe table", ProbeKind::RlGames, &[], 256);
+        assert!(message.contains("Empty probe table"));
+        assert!(message.contains("candidate_mb"));
+        assert!(message.contains("selected"));
+    }
+
+    #[test]
+    fn preflight_and_probe_status_message_helpers_render_expected_labels() {
+        let probe_message = format_probe_only_status_message(dummy_probe_request(ProbeKind::Train));
+        assert!(probe_message.contains("Probe-only:"));
+        assert!(probe_message.contains("kind=train"));
+
+        let rl_message = format_rl_preflight_selection_message(64, 16);
+        assert!(rl_message.contains("Preflight:"));
+        assert!(rl_message.contains("selected rl.games_per_batch=64 rl.microbatch_size=16"));
+
+        let runtime = hydra_train::preflight::EffectiveRuntimeConfig {
+            selected: hydra_train::preflight::SelectedRuntimeConfig {
+                train_microbatch_size: 64,
+                validation_microbatch_size: 32,
+                accum_steps: 4,
+            },
+            loader: hydra_train::preflight::LoaderRuntimeConfig {
+                num_threads: Some(6),
+                buffer_games: 16,
+                buffer_samples: 128,
+                archive_queue_bound: 8,
+            },
+        };
+        let explicit = hydra_train::preflight::ExplicitSettings {
+            train_microbatch_explicit: false,
+            validation_microbatch_explicit: true,
+        };
+        let bc_message = format_bc_preflight_selection_message(runtime, explicit);
+        assert!(bc_message.contains("Preflight:"));
+        assert!(bc_message.contains("saved train_mb=64 val_mb=32"));
+        assert!(bc_message.contains("accum_steps=4"));
+        assert!(bc_message.contains("threads=6"));
+        assert!(bc_message.contains("explicit(train=false, val=true)"));
+    }
+
+    #[test]
+    fn probe_mode_helpers_cover_all_probe_kinds() {
+        assert_eq!(
+            format_probe_only_status_detail(dummy_probe_request(ProbeKind::Train)),
+            "kind=train candidate_mb=192 warmup_steps=4 measure_steps=8"
+        );
+        assert_eq!(
+            format_probe_best_candidate_detail(ProbeKind::RlGames, 512),
+            "rl_games=512"
+        );
+        assert_eq!(
+            format_probe_best_candidate_detail(ProbeKind::RlMicrobatch, 32),
+            "rl_microbatch=32"
+        );
+    }
+
+    #[test]
+    fn print_probe_table_message_shape_stays_stable_for_validation_kind() {
+        let message = format_probe_table_message(
+            "Validation probe table",
+            ProbeKind::Validation,
+            &[dummy_probe_result(ProbeKind::Validation, 32, true)],
+            32,
+        );
+
+        assert!(message.contains("Validation probe table"));
+        assert!(message.contains("validation"));
+        assert!(message.contains("candidate_mb"));
+    }
+
+    #[test]
+    fn format_best_validation_summary_rounds_and_handles_zero_agreement() {
+        let summary = dummy_best_validation(1.0 / 3.0, 0.0);
+        assert_eq!(
+            format_best_validation_summary(Some(&summary)),
+            "0.3333 (agree 0.00%)"
+        );
+    }
+
+    #[test]
+    fn pre_arena_and_stage_helpers_cover_all_rejecting_paths() {
+        assert_eq!(
+            pre_arena_recommendation(false, None),
+            DeltaQPromotionRecommendation::RejectAtOfflineGate
+        );
+        assert_eq!(
+            pre_arena_recommendation(false, Some(false)),
+            DeltaQPromotionRecommendation::RejectAtOfflineGate
+        );
+        assert_eq!(
+            delta_q_promotion_stage(true),
+            "offline_transfer_and_arena_gate"
+        );
+        assert_eq!(
+            delta_q_promotion_stage(false),
+            "offline_and_policy_transfer_gate"
+        );
+    }
+
+    #[test]
+    fn delta_q_arena_requirement_summary_reports_custom_request_fields() {
+        let request = DeltaQArenaConfirmationRequest {
+            min_games: 256,
+            same_seeds: false,
+            same_seat_rotation_schedule: false,
+            same_search_budget: false,
+            same_temperature: false,
+            same_frozen_opponent_pool: false,
+        };
+        let summary = delta_q_arena_requirement_summary(Some(&request));
+        assert!(summary.contains("same_seeds=false"));
+        assert!(summary.contains("min_games=256"));
+    }
+
+    #[test]
+    fn delta_q_promotion_formatters_cover_offline_holdout_and_gate_messages() {
+        let offline = format_delta_q_offline_gate_message(
+            64,
+            crate::validation::DeltaQPromotionSnapshot {
+                compared_states: 12,
+                candidate_top1_agreement: 0.75,
+                candidate_mean_regret: 0.2,
+                baseline_mean_regret: 0.3,
+                mean_decision_lift: 0.1,
+                negative_lift_fraction: 0.25,
+                regret_beats_baseline_rate: 0.8,
+                top1_beats_baseline_rate: 0.7,
+                passed: true,
+            },
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation,
+            "same_seeds=true min_games=10000",
+            Path::new("/tmp/delta_q.json"),
+        );
+        assert!(offline.contains("DeltaQ offline gate"));
+        assert!(offline.contains("samples=64"));
+        assert!(offline.contains("compared=12"));
+        assert!(offline.contains("next=requires_arena_confirmation"));
+        assert!(offline.contains("artifact=/tmp/delta_q.json"));
+
+        let holdout = format_delta_q_policy_holdout_message(
+            crate::validation::DeltaQPolicyTransferSnapshot {
+                compared_states: 20,
+                candidate_policy_top1_to_teacher: 0.6,
+                baseline_policy_top1_to_teacher: 0.5,
+                candidate_policy_mean_teacher_regret: 0.2,
+                baseline_policy_mean_teacher_regret: 0.25,
+                candidate_beats_baseline_rate: 0.7,
+                negative_transfer_fraction: 0.1,
+            },
+        );
+        assert!(holdout.contains("DeltaQ policy-vs-teacher holdout"));
+        assert!(holdout.contains("compared=20"));
+        assert!(holdout.contains("policy_top1=60.00%/50.00%"));
+
+        let gate = format_delta_q_policy_transfer_gate_message(
+            true,
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation,
+        );
+        assert!(gate.contains("DeltaQ policy transfer gate"));
+        assert!(gate.contains("pass=true"));
+        assert!(gate.contains("next=requires_arena_confirmation"));
+    }
 }
