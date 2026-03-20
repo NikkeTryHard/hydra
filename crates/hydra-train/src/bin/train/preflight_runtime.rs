@@ -1124,8 +1124,7 @@ pub(super) fn run_rl_preflight(
             "RL Preflight:",
             format!(
                 "selected games_per_batch={} rl.microbatch_size={} (stored in preflight cache for RL runtime reuse)",
-                selected_games_per_batch,
-                selected_microbatch_size,
+                selected_games_per_batch, selected_microbatch_size,
             )
         )
     );
@@ -1147,16 +1146,19 @@ pub(super) fn run_rl_preflight(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::config::loader_runtime_config;
+    use crate::config::{loader_runtime_config, ProbeChildRequest, ProbeCliRequest, RlTrainConfig};
     use hydra_train::preflight::{PreflightConfig, ProbeStatus};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
-            data_dir: PathBuf::from("/tmp/data"),
-            output_dir: PathBuf::from("/tmp/out"),
+            data_dir: PathBuf::from("/home/nikketryhard/tmp/hydra-test-data"),
+            output_dir: PathBuf::from("/home/nikketryhard/tmp/hydra-test-out"),
             num_epochs: 1,
             batch_size: 256,
             microbatch_size: Some(64),
@@ -1188,11 +1190,46 @@ mod tests {
         }
     }
 
+    fn unique_test_path(label: &str) -> PathBuf {
+        let base = PathBuf::from("/home/nikketryhard/tmp");
+        fs::create_dir_all(&base).expect("test temp root should be creatable");
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        base.join(format!("hydra-preflight-runtime-{label}-{unique}"))
+    }
+
+    fn write_temp_file(label: &str, extension: &str, contents: &str) -> PathBuf {
+        let path = unique_test_path(label).with_extension(extension);
+        fs::write(&path, contents).expect("temporary test file should be writable");
+        path
+    }
+
+    fn missing_test_path(label: &str) -> PathBuf {
+        let path = unique_test_path(label);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
+
+    fn dummy_rl_train_config() -> RlTrainConfig {
+        RlTrainConfig {
+            games_per_batch: 8,
+            microbatch_size: Some(16),
+            ..RlTrainConfig::default()
+        }
+    }
+
     #[test]
     fn measure_samples_per_second_handles_zero_samples_and_zero_time() {
         assert_eq!(measure_samples_per_second(0, Duration::from_secs(2)), 0.0);
         assert_eq!(measure_samples_per_second(10, Duration::from_secs(0)), 0.0);
         assert!((measure_samples_per_second(24, Duration::from_secs(3)) - 8.0).abs() < 1e-12);
+        assert_eq!(
+            measure_samples_per_second(10, Duration::from_secs_f64(f64::EPSILON / 2.0)),
+            0.0
+        );
     }
 
     #[test]
@@ -1209,6 +1246,47 @@ mod tests {
             classify_probe_detail("replay data collate mismatch"),
             ProbeStatus::DataError
         );
+        assert_eq!(
+            classify_probe_detail("unexpected worker panic"),
+            ProbeStatus::BackendError
+        );
+    }
+
+    #[test]
+    fn format_probe_attempt_message_uses_probe_kind_label_and_min_attempt_denominator() {
+        assert_eq!(
+            format_probe_attempt_message(ProbeKind::Validation, 64, 2, 0),
+            "[preflight:validation] candidate_mb=64 attempt 2/1"
+        );
+        assert_eq!(
+            format_probe_attempt_message(ProbeKind::RlMicrobatch, 128, 1, 3),
+            "[preflight:rl_microbatch] candidate_mb=128 attempt 1/3"
+        );
+    }
+
+    #[test]
+    fn maybe_block_host_ram_growth_probe_returns_none_for_non_growth_cases() {
+        let config = dummy_config();
+
+        assert!(maybe_block_host_ram_growth_probe(&config, ProbeKind::Train, 64, None).is_none());
+        assert!(
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::Validation, 64, Some(64))
+                .is_none()
+        );
+        assert!(
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::Validation, 32, Some(64))
+                .is_none()
+        );
+        assert!(
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlGames, 64, Some(64)).is_none()
+        );
+    }
+
+    #[test]
+    fn run_probe_child_mode_without_child_request_is_a_no_op() {
+        let config = dummy_config();
+
+        assert_eq!(run_probe_child_mode(&config, None), Ok(false));
     }
 
     #[test]
@@ -1277,5 +1355,583 @@ mod tests {
         assert!(oom.contains(
             "[train] candidate_mb=256 outcome=oom(generic) next=smaller_microbatch detail=n/a"
         ));
+
+        let backend = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::RlGames,
+            candidate_microbatch: 512,
+            status: ProbeStatus::BackendError,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail: "probe blocked by host-RAM guard".to_string(),
+        });
+        assert!(backend.contains(
+            "[rl_games] candidate_mb=512 outcome=backend_error(host_ram_guard) detail=probe blocked by host-RAM guard"
+        ));
+    }
+
+    #[test]
+    fn maybe_block_host_ram_growth_probe_returns_backend_error_with_host_ram_details() {
+        let Some(available) = mem_available_bytes() else {
+            return;
+        };
+        let Some(required_free) = rl_probe_required_free_bytes(&{
+            let mut config = dummy_config();
+            config.preflight.rl_probe_min_free_memory_bytes = available;
+            config.preflight.rl_probe_memory_headroom_ratio = 0.0;
+            config
+        }) else {
+            return;
+        };
+
+        let mut config = dummy_config();
+        config.preflight.rl_probe_min_free_memory_bytes = available.max(required_free);
+        config.preflight.rl_probe_memory_headroom_ratio = 0.0;
+        config.preflight.rl_probe_growth_safety_factor = 1.0;
+
+        let blocked = maybe_block_host_ram_growth_probe(&config, ProbeKind::RlGames, 128, Some(64))
+            .expect(
+                "growth probe should be blocked when required free memory matches available memory",
+            );
+
+        assert_eq!(blocked.kind, ProbeKind::RlGames);
+        assert_eq!(blocked.candidate_microbatch, 128);
+        assert_eq!(blocked.status, ProbeStatus::BackendError);
+        assert!(blocked.measured_samples_per_second.is_none());
+        assert!(blocked.elapsed_seconds.is_none());
+        assert!(blocked.detail.contains("probe blocked by host-RAM guard"));
+        assert!(blocked.detail.contains("available="));
+        assert!(blocked.detail.contains("required_free="));
+        assert!(blocked.detail.contains("estimated_probe="));
+        assert!(blocked.detail.contains("remaining_after_probe="));
+        assert!(blocked.detail.contains("baseline_candidate=64"));
+        assert!(blocked.detail.contains("growth_safety_factor=1.00"));
+    }
+
+    #[test]
+    fn search_rl_runtime_candidate_rejects_non_rl_probe_kinds() {
+        let config = dummy_config();
+        let artifacts = RlArtifactPaths::new(&config.output_dir, 0);
+
+        let err = search_rl_runtime_candidate(
+            std::path::Path::new("dummy-config.yaml"),
+            &config,
+            &artifacts,
+            ProbeKind::Train,
+            64,
+        )
+        .expect_err("train probe kind should be rejected for RL runtime search");
+
+        assert_eq!(err, "non-RL probe kind passed to RL runtime search");
+    }
+
+    #[test]
+    fn run_probe_only_rl_games_fails_fast_without_rl_config() {
+        let config = dummy_config();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let result_path = std::env::temp_dir().join(format!(
+            "hydra-preflight-runtime-test-rl-games-missing-config-{unique}.json"
+        ));
+
+        let err = run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::RlGames,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("RL games probe should fail before runtime work when RL config is missing");
+
+        assert_eq!(err, "RL probe requested without rl config block");
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn emit_probe_progress_and_step_progress_cover_warmup_and_measure_paths() {
+        assert!(emit_probe_progress("plain text that should only flush").is_ok());
+        assert!(emit_probe_progress(
+            "probe_progress kind=train candidate_mb=64 phase=starting warmup_steps=2 measure_steps=3"
+        )
+        .is_ok());
+
+        let request = ProbeRequest {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 64,
+            warmup_steps: 2,
+            measure_steps: 3,
+        };
+        assert!(
+            emit_probe_step_progress(ProbeKind::Train, 64, 0, request, None, 256).is_ok(),
+            "warmup branch should format and flush"
+        );
+        assert!(
+            emit_probe_step_progress(ProbeKind::Train, 64, 2, request, Some(Instant::now()), 256,)
+                .is_ok(),
+            "measure branch should format and flush"
+        );
+    }
+
+    #[test]
+    fn run_probe_child_mode_rejects_unresolved_child_probe_steps() {
+        let config = dummy_config();
+        let result_path = unique_test_path("probe-child.json");
+
+        let warmup_err = run_probe_child_mode(
+            &config,
+            Some(ProbeChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Train,
+                    candidate_microbatch: 32,
+                    warmup_steps: None,
+                    measure_steps: Some(2),
+                },
+                result_path: result_path.clone(),
+            }),
+        )
+        .expect_err("missing warmup steps should be rejected before running child mode");
+        assert_eq!(
+            warmup_err,
+            "internal probe child missing resolved warmup steps"
+        );
+
+        let measure_err = run_probe_child_mode(
+            &config,
+            Some(ProbeChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Validation,
+                    candidate_microbatch: 32,
+                    warmup_steps: Some(1),
+                    measure_steps: None,
+                },
+                result_path,
+            }),
+        )
+        .expect_err("missing measure steps should be rejected before running child mode");
+        assert_eq!(
+            measure_err,
+            "internal probe child missing resolved measure steps"
+        );
+    }
+
+    #[test]
+    fn execute_probe_request_rejects_unsupported_config_extension_before_spawning() {
+        let config_path = write_temp_file("unsupported-config", "txt", "not yaml");
+        let result_path = unique_test_path("probe-result.json");
+
+        let err = execute_probe_request(
+            &config_path,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 64,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("unsupported config extension should fail before spawning child process");
+
+        assert_eq!(
+            err,
+            format!(
+                "unsupported config extension for {}; use .yaml",
+                config_path.display()
+            )
+        );
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_rl_probe_only_rejects_non_rl_probe_kinds() {
+        let config = dummy_config();
+        let result_path = unique_test_path("non-rl-probe-result.json");
+
+        let err = run_rl_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 16,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("non-RL kinds should be rejected by the RL-only handler");
+
+        assert_eq!(err, "RL probe requested without rl config block");
+        assert!(!result_path.exists());
+
+        let mut config = dummy_config();
+        config.rl = Some(dummy_rl_train_config());
+        let err = run_rl_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 16,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("non-RL kinds should be rejected even when rl config exists");
+
+        assert_eq!(err, "non-RL probe routed to RL probe handler");
+    }
+
+    #[test]
+    fn run_probe_only_rl_microbatch_fails_fast_without_rl_config() {
+        let config = dummy_config();
+        let result_path = unique_test_path("rl-microbatch-result.json");
+
+        let err = run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::RlMicrobatch,
+                candidate_microbatch: 24,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err(
+            "RL microbatch probe should fail before runtime work when RL config is missing",
+        );
+
+        assert_eq!(err, "RL probe requested without rl config block");
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_probe_only_train_fails_fast_when_dataset_scan_cannot_start() {
+        let mut config = dummy_config();
+        config.data_dir = missing_test_path("missing-train-data");
+        let result_path = unique_test_path("train-probe-result.json");
+
+        let err = run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("missing dataset path should fail before any heavy train probing");
+
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_probe_ladder_only_fails_before_probe_attempts_when_data_scan_fails() {
+        let mut config = dummy_config();
+        config.data_dir = missing_test_path("missing-ladder-data");
+        let artifacts = BcArtifactPaths::new(&unique_test_path("ladder-artifacts"), 0);
+
+        let err = run_probe_ladder_only(
+            Path::new("ignored-config.yaml"),
+            &config,
+            &artifacts,
+            ProbeRequest {
+                kind: ProbeKind::Validation,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err("missing dataset path should stop probe ladder before child probes");
+
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn search_train_and_validation_microbatch_fail_fast_on_invalid_probe_config_path() {
+        let config_path = write_temp_file("invalid-search-config", "txt", "not yaml");
+        let artifacts = BcArtifactPaths::new(&unique_test_path("search-bc-artifacts"), 0);
+        let config = dummy_config();
+
+        let train_err = search_train_microbatch(&config_path, &config, &artifacts, 64)
+            .expect_err("invalid config path should stop train search before launching probes");
+        assert_eq!(
+            train_err,
+            format!(
+                "unsupported config extension for {}; use .yaml",
+                config_path.display()
+            )
+        );
+
+        let validation_err = search_validation_microbatch(&config_path, &config, &artifacts, 32)
+            .expect_err(
+                "invalid config path should stop validation search before launching probes",
+            );
+        assert_eq!(
+            validation_err,
+            format!(
+                "unsupported config extension for {}; use .yaml",
+                config_path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn search_rl_runtime_candidate_fails_fast_on_invalid_probe_config_path() {
+        let config_path = write_temp_file("invalid-rl-search-config", "txt", "not yaml");
+        let mut config = dummy_config();
+        config.rl = Some(dummy_rl_train_config());
+        config.preflight.allow_override_explicit_microbatch = false;
+        let artifacts = RlArtifactPaths::new(&unique_test_path("search-rl-artifacts"), 0);
+
+        let err = search_rl_runtime_candidate(
+            &config_path,
+            &config,
+            &artifacts,
+            ProbeKind::RlMicrobatch,
+            16,
+        )
+        .expect_err("invalid config path should stop RL candidate search before launching probes");
+
+        assert_eq!(
+            err,
+            format!(
+                "unsupported config extension for {}; use .yaml",
+                config_path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn run_preflight_stops_at_train_probe_when_probe_config_path_is_invalid() {
+        let config_path = write_temp_file("invalid-preflight-config", "txt", "not yaml");
+        let config = dummy_config();
+        let artifacts = BcArtifactPaths::new(&unique_test_path("preflight-artifacts"), 0);
+
+        let err = match run_preflight(
+            &config_path,
+            &config,
+            &HydraModelConfig::learner(),
+            "cpu",
+            &artifacts,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("invalid config path should stop preflight before runtime autotuning"),
+        };
+
+        assert_eq!(
+            err,
+            format!(
+                "unsupported config extension for {}; use .yaml",
+                config_path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn run_rl_preflight_handles_missing_rl_config_and_invalid_probe_config_path() {
+        let train_device = LibTorchDevice::Cpu;
+        let config_path = write_temp_file("invalid-rl-preflight-config", "txt", "not yaml");
+
+        let missing_rl_err = match run_rl_preflight(&config_path, &dummy_config(), &train_device) {
+            Err(err) => err,
+            Ok(_) => {
+                panic!("RL preflight should reject missing rl config before any filesystem work")
+            }
+        };
+        assert_eq!(
+            missing_rl_err,
+            "RL preflight requested without rl config block"
+        );
+
+        let mut config = dummy_config();
+        config.output_dir = unique_test_path("rl-preflight-output");
+        config.rl = Some(dummy_rl_train_config());
+        let err = match run_rl_preflight(&config_path, &config, &train_device) {
+            Err(err) => err,
+            Ok(_) => {
+                panic!("invalid config path should stop RL preflight before heavy runtime probes")
+            }
+        };
+        assert_eq!(
+            err,
+            format!(
+                "unsupported config extension for {}; use .yaml",
+                config_path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn format_probe_result_summary_reports_data_error_and_plain_backend_error() {
+        let data = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::Validation,
+            candidate_microbatch: 48,
+            status: ProbeStatus::DataError,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail: "replay parse mismatch".to_string(),
+        });
+        assert!(data.contains(
+            "[validation] candidate_mb=48 outcome=data_error detail=replay parse mismatch"
+        ));
+
+        let backend = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 96,
+            status: ProbeStatus::BackendError,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail: "unexpected worker panic".to_string(),
+        });
+        assert!(backend.contains("[train] candidate_mb=96 outcome=backend_error("));
+        assert!(backend.contains("detail=unexpected worker panic"));
+    }
+
+    #[test]
+    fn maybe_block_host_ram_growth_probe_uses_baseline_guard_for_rl_microbatch_too() {
+        let Some(available) = mem_available_bytes() else {
+            return;
+        };
+        let mut config = dummy_config();
+        config.preflight.rl_probe_min_free_memory_bytes = available;
+        config.preflight.rl_probe_memory_headroom_ratio = 0.0;
+        config.preflight.rl_probe_growth_safety_factor = 1.0;
+
+        let blocked =
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlMicrobatch, 64, Some(32))
+                .expect(
+                "growth probe should be blocked when required free memory matches available memory",
+            );
+
+        assert_eq!(blocked.kind, ProbeKind::RlMicrobatch);
+        assert_eq!(blocked.candidate_microbatch, 64);
+        assert_eq!(blocked.status, ProbeStatus::BackendError);
+        assert!(blocked.detail.contains("baseline_candidate=32"));
+    }
+
+    #[test]
+    fn run_probe_ladder_only_stops_on_invalid_config_extension_before_attempts() {
+        let config_path = write_temp_file("invalid-probe-ladder-config", "txt", "not yaml");
+        let config = dummy_config();
+        let artifacts = BcArtifactPaths::new(&unique_test_path("probe-ladder-artifacts"), 0);
+
+        let err = run_probe_ladder_only(
+            &config_path,
+            &config,
+            &artifacts,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err("invalid config extension should stop probe ladder before probe attempts");
+
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn execute_probe_request_rejects_missing_config_before_spawning() {
+        let config_path = missing_test_path("missing-probe-config.yaml").with_extension("yaml");
+        let result_path = unique_test_path("missing-probe-result.json");
+
+        let err = execute_probe_request(
+            &config_path,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("missing config path should fail before spawning child process");
+
+        assert!(err.contains(config_path.to_string_lossy().as_ref()));
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn format_probe_result_summary_handles_success_without_elapsed_samples() {
+        let summary = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::Validation,
+            candidate_microbatch: 24,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail: String::new(),
+        });
+        assert!(summary.contains("[validation] candidate_mb=24 outcome=success"));
+        assert!(summary.contains("0.00 samples/s"));
+        assert!(summary.contains("elapsed=0.00s"));
+    }
+
+    #[test]
+    fn classify_probe_detail_treats_cudnn_and_oom_strings_as_expected() {
+        assert_eq!(
+            classify_probe_detail("cuDNN kernel launch failed"),
+            ProbeStatus::BackendError
+        );
+        assert_eq!(
+            classify_probe_detail("OOM killer terminated child process"),
+            ProbeStatus::Oom
+        );
+    }
+
+    #[test]
+    fn run_rl_preflight_fails_fast_on_invalid_microbatch_config_path() {
+        let train_device = LibTorchDevice::Cpu;
+        let config_path = write_temp_file("invalid-rl-micro-config", "txt", "not yaml");
+        let mut config = dummy_config();
+        config.output_dir = unique_test_path("rl-preflight-fastfail");
+        config.rl = Some(dummy_rl_train_config());
+
+        let err = match run_rl_preflight(&config_path, &config, &train_device) {
+            Err(err) => err,
+            Ok(_) => {
+                panic!("invalid config path should stop RL preflight before runtime probing")
+            }
+        };
+
+        assert_eq!(
+            err,
+            format!(
+                "unsupported config extension for {}; use .yaml",
+                config_path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn run_probe_ladder_only_accepts_rl_request_wrapper_and_fails_on_missing_data_first() {
+        let mut config = dummy_config();
+        config.data_dir = missing_test_path("missing-rl-ladder-data");
+        config.rl = Some(dummy_rl_train_config());
+        let artifacts = BcArtifactPaths::new(&unique_test_path("rl-ladder-artifacts"), 0);
+
+        let err = run_probe_ladder_only(
+            Path::new("ignored-config.yaml"),
+            &config,
+            &artifacts,
+            ProbeRequest {
+                kind: ProbeKind::RlMicrobatch,
+                candidate_microbatch: 16,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err(
+            "missing dataset path should stop RL-flavored probe ladder before child probes",
+        );
+
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
     }
 }
