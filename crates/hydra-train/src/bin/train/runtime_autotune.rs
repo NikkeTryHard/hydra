@@ -26,6 +26,63 @@ use super::presentation::{
 };
 use super::schedule::effective_lr;
 
+type RuntimeTuple = (usize, usize, usize);
+
+fn apply_runtime_tuple(config: &mut TrainConfig, tuple: RuntimeTuple) {
+    config.archive_queue_bound = tuple.0;
+    config.buffer_samples = tuple.1;
+    config.buffer_games = tuple.2;
+}
+
+fn current_runtime_tuple(config: &TrainConfig) -> RuntimeTuple {
+    (
+        config.archive_queue_bound,
+        config.buffer_samples,
+        config.buffer_games,
+    )
+}
+
+fn should_refine_close_tuples(close_tuples: &[RuntimeTuple]) -> bool {
+    close_tuples.len() >= 2
+}
+
+fn coarse_search_candidate_count(
+    queue_candidates: &[usize],
+    sample_candidates: &[usize],
+    game_candidates: &[usize],
+) -> usize {
+    queue_candidates.len() * sample_candidates.len() * game_candidates.len()
+}
+
+fn validate_runtime_threads(config: &TrainConfig) -> Result<(), String> {
+    if matches!(config.num_threads, Some(0)) {
+        return Err("runtime autotune produced invalid num_threads=0".to_string());
+    }
+    Ok(())
+}
+
+fn should_start_measurement(completed_steps: usize, warmup_steps: usize) -> bool {
+    completed_steps == warmup_steps
+}
+
+fn should_count_measured_samples(completed_steps: usize, warmup_steps: usize) -> bool {
+    completed_steps > warmup_steps
+}
+
+fn measured_train_samples(measure_steps: usize, batch_size: usize) -> usize {
+    measure_steps * batch_size
+}
+
+fn finalize_runtime_probe_throughput(
+    measure_start: Option<Instant>,
+    measured_samples: usize,
+) -> f64 {
+    let elapsed = measure_start
+        .map(|start| start.elapsed())
+        .unwrap_or_default();
+    measure_samples_per_second(measured_samples, elapsed)
+}
+
 pub(super) fn autotune_buffer_samples_candidates(config: &TrainConfig) -> Vec<usize> {
     let current = config.buffer_samples.max(1);
     let mut candidates = vec![
@@ -131,16 +188,13 @@ pub(super) fn measure_train_runtime_throughput(
             let grads = accumulator.grads();
             model = optimizer.step(lr, model, grads);
             completed_steps += 1;
-            if completed_steps == warmup_steps {
+            if should_start_measurement(completed_steps, warmup_steps) {
                 measure_start = Some(Instant::now());
             }
             if completed_steps >= target_steps {
-                let elapsed = measure_start
-                    .map(|start| start.elapsed())
-                    .unwrap_or_default();
-                return Ok(measure_samples_per_second(
-                    measure_steps * config.batch_size,
-                    elapsed,
+                return Ok(finalize_runtime_probe_throughput(
+                    measure_start,
+                    measured_train_samples(measure_steps, config.batch_size),
                 ));
             }
         }
@@ -224,16 +278,15 @@ pub(super) fn measure_rl_runtime_throughput(
         state.total_samples += batch_samples as u64;
         state.increment_learner_version();
         rebase_tracker.tick(1.0);
-        if completed_steps == warmup_steps {
+        if should_start_measurement(completed_steps, warmup_steps) {
             measure_start = Some(Instant::now());
         }
-        if completed_steps > warmup_steps {
+        if should_count_measured_samples(completed_steps, warmup_steps) {
             measure_samples += batch_samples;
         }
     }
 
-    let elapsed = measure_start.map(|start| start.elapsed()).unwrap_or_default();
-    Ok(measure_samples_per_second(measure_samples, elapsed))
+    Ok(finalize_runtime_probe_throughput(measure_start, measure_samples))
 }
 
 pub(super) fn tune_runtime_knob<T, F>(
@@ -277,11 +330,10 @@ where
             "{}",
             format_runtime_tuning_message(
                 knob_name,
-                format!(
-                    "candidate={} throughput={:.2} samples/s best={} ({:.2} samples/s)",
-                    display(*candidate),
+                format_runtime_knob_candidate_summary(
+                    &display(*candidate),
                     candidate_score,
-                    display(best),
+                    &display(best),
                     best_score,
                 ),
                 progress.position() as usize,
@@ -297,17 +349,69 @@ where
     Ok(best)
 }
 
+pub(super) fn format_runtime_knob_candidate_summary(
+    candidate: &str,
+    candidate_score: f64,
+    best: &str,
+    best_score: f64,
+) -> String {
+    format!(
+        "candidate={candidate} throughput={candidate_score:.2} samples/s best={best} ({best_score:.2} samples/s)"
+    )
+}
+
+pub(super) fn runtime_tuple_key(config: &TrainConfig) -> RuntimeTuple {
+    current_runtime_tuple(config)
+}
+
+pub(super) fn rank_runtime_tuple_scores(scores: &mut [(RuntimeTuple, f64)]) {
+    scores.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+pub(super) fn close_runtime_tuples(
+    scores: &[(RuntimeTuple, f64)],
+    best_score: f64,
+    margin_ratio: f64,
+    max_candidates: usize,
+) -> Vec<RuntimeTuple> {
+    let minimum_score = best_score * (1.0 - margin_ratio);
+    scores
+        .iter()
+        .filter(|(_, score)| *score >= minimum_score)
+        .take(max_candidates)
+        .map(|(tuple, _)| *tuple)
+        .collect()
+}
+
+pub(super) fn runtime_refine_sample_budget(extra_samples: usize) -> usize {
+    extra_samples.max(1)
+}
+
+pub(super) fn format_runtime_refine_summary(
+    close_tuples: &[RuntimeTuple],
+    extra_samples: usize,
+) -> String {
+    format_preflight_summary_line(
+        "Runtime refine:",
+        format!(
+            "close_tuples={close_tuples:?} extra_samples={}",
+            runtime_refine_sample_budget(extra_samples)
+        ),
+    )
+}
+
 pub(super) fn score_runtime_tuple(
     config: &TrainConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     cache: &mut BTreeMap<(usize, usize, usize), Vec<f64>>,
 ) -> Result<f64, String> {
-    let key = (
-        config.archive_queue_bound,
-        config.buffer_samples,
-        config.buffer_games,
-    );
+    let key = runtime_tuple_key(config);
     if let Some(scores) = cache.get(&key)
         && !scores.is_empty()
     {
@@ -325,11 +429,7 @@ pub(super) fn push_runtime_tuple_sample(
     train_device: &LibTorchDevice,
     cache: &mut BTreeMap<(usize, usize, usize), Vec<f64>>,
 ) -> Result<f64, String> {
-    let key = (
-        config.archive_queue_bound,
-        config.buffer_samples,
-        config.buffer_games,
-    );
+    let key = runtime_tuple_key(config);
     let loader = runtime_probe_loader_config(config);
     let sample = measure_train_runtime_throughput(config, &loader, manifest, train_device)?;
     let samples = cache.entry(key).or_default();
@@ -352,12 +452,7 @@ pub(super) fn autotune_loader_runtime(
     let runtime_tuning_started = Instant::now();
     let mut tuned = config.clone();
     tuned.num_threads = loader_runtime_config(&tuned).num_threads;
-
-    if let Some(num_threads) = tuned.num_threads
-        && num_threads == 0
-    {
-        return Err("runtime autotune produced invalid num_threads=0".to_string());
-    }
+    validate_runtime_threads(&tuned)?;
 
     let mut score_cache: BTreeMap<(usize, usize, usize), Vec<f64>> = BTreeMap::new();
 
@@ -366,27 +461,20 @@ pub(super) fn autotune_loader_runtime(
     let game_candidates = autotune_buffer_games_candidates(&tuned);
 
     let mut best_score = f64::NEG_INFINITY;
-    let mut best_tuple = (
-        tuned.archive_queue_bound,
-        tuned.buffer_samples,
-        tuned.buffer_games,
-    );
+    let mut best_tuple = current_runtime_tuple(&tuned);
     let mut coarse_scores = Vec::new();
     let coarse_started = Instant::now();
     println!(
         "{}",
         format_timed_phase_message(
             "runtime_coarse_search",
-            &format!(
-                "starting tuples={}",
-                queue_candidates.len() * sample_candidates.len() * game_candidates.len()
-            ),
+            &format!("starting tuples={}", coarse_search_candidate_count(&queue_candidates, &sample_candidates, &game_candidates)),
             0.0,
         )
     );
 
     let coarse_progress = make_bar(
-        (queue_candidates.len() * sample_candidates.len() * game_candidates.len()) as u64,
+        coarse_search_candidate_count(&queue_candidates, &sample_candidates, &game_candidates) as u64,
         "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
     )?;
     for queue in &queue_candidates {
@@ -399,9 +487,7 @@ pub(super) fn autotune_loader_runtime(
                     coarse_progress.length().unwrap_or(1) as usize,
                 ));
                 let mut candidate = tuned.clone();
-                candidate.archive_queue_bound = *queue;
-                candidate.buffer_samples = *samples;
-                candidate.buffer_games = *games;
+                apply_runtime_tuple(&mut candidate, (*queue, *samples, *games));
                 let score =
                     score_runtime_tuple(&candidate, manifest, train_device, &mut score_cache)?;
                 coarse_progress.inc(1);
@@ -423,39 +509,26 @@ pub(super) fn autotune_loader_runtime(
         )
     );
 
-    coarse_scores.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let close_tuples = coarse_scores
-        .iter()
-        .filter(|(_, score)| {
-            *score >= best_score * (1.0 - config.preflight.loader_tuple_margin_ratio)
-        })
-        .take(2)
-        .map(|(tuple, _)| *tuple)
-        .collect::<Vec<_>>();
-    if close_tuples.len() >= 2 {
+    rank_runtime_tuple_scores(&mut coarse_scores);
+    let close_tuples = close_runtime_tuples(
+        &coarse_scores,
+        best_score,
+        config.preflight.loader_tuple_margin_ratio,
+        2,
+    );
+    if should_refine_close_tuples(&close_tuples) {
         let refine_started = Instant::now();
         println!(
             "{}",
-            format_preflight_summary_line(
-                "Runtime refine:",
-                format!(
-                    "close_tuples={:?} extra_samples={}",
-                    close_tuples,
-                    config.preflight.loader_tuple_extra_samples.max(1)
-                )
+            format_runtime_refine_summary(
+                &close_tuples,
+                config.preflight.loader_tuple_extra_samples
             )
         );
         for tuple in &close_tuples {
             let mut candidate = tuned.clone();
-            candidate.archive_queue_bound = tuple.0;
-            candidate.buffer_samples = tuple.1;
-            candidate.buffer_games = tuple.2;
-            for _ in 0..config.preflight.loader_tuple_extra_samples.max(1) {
+            apply_runtime_tuple(&mut candidate, *tuple);
+            for _ in 0..runtime_refine_sample_budget(config.preflight.loader_tuple_extra_samples) {
                 let averaged = push_runtime_tuple_sample(
                     &candidate,
                     manifest,
@@ -478,9 +551,7 @@ pub(super) fn autotune_loader_runtime(
         );
     }
 
-    tuned.archive_queue_bound = best_tuple.0;
-    tuned.buffer_samples = best_tuple.1;
-    tuned.buffer_games = best_tuple.2;
+    apply_runtime_tuple(&mut tuned, best_tuple);
 
     for _round in 0..config.preflight.loader_runtime_rounds.max(1) {
         let mut score = |candidate: &TrainConfig| {
@@ -532,12 +603,295 @@ pub(super) fn autotune_loader_runtime(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
     use crate::preflight_runtime::classify_probe_detail;
-    use hydra_train::preflight::ProbeStatus;
+    use hydra_train::preflight::{PreflightConfig, ProbeStatus};
+
+    fn dummy_config() -> TrainConfig {
+        TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: Some(PathBuf::from("/tmp/exit.sidecar")),
+            delta_q_sidecar_path: Some(PathBuf::from("/tmp/delta-q.sidecar")),
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 7,
+            advanced_loss: None,
+            rl: None,
+            bc: Default::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: Some(6),
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: PreflightConfig::default(),
+        }
+    }
+
+    #[test]
+    fn buffer_sample_candidates_clamp_zero_and_dedup_saturation() {
+        let mut config = dummy_config();
+        config.buffer_samples = 0;
+        assert_eq!(autotune_buffer_samples_candidates(&config), vec![1, 2, 4]);
+
+        config.buffer_samples = usize::MAX;
+        assert_eq!(
+            autotune_buffer_samples_candidates(&config),
+            vec![usize::MAX]
+        );
+    }
+
+    #[test]
+    fn buffer_game_candidates_clamp_zero_and_dedup_saturation() {
+        let mut config = dummy_config();
+        config.buffer_games = 0;
+        assert_eq!(autotune_buffer_games_candidates(&config), vec![1, 2]);
+
+        config.buffer_games = usize::MAX;
+        assert_eq!(autotune_buffer_games_candidates(&config), vec![usize::MAX]);
+    }
+
+    #[test]
+    fn archive_queue_candidates_drop_zero_half_and_sort() {
+        let mut config = dummy_config();
+        config.archive_queue_bound = 0;
+        assert_eq!(autotune_archive_queue_candidates(&config), vec![1, 2]);
+
+        config.archive_queue_bound = 9;
+        assert_eq!(autotune_archive_queue_candidates(&config), vec![4, 9, 18]);
+    }
+
+    #[test]
+    fn runtime_probe_loader_config_projects_runtime_fields_and_clears_sidecars() {
+        let config = dummy_config();
+        let loader = runtime_probe_loader_config(&config);
+
+        assert_eq!(loader.buffer_games, config.buffer_games);
+        assert_eq!(loader.buffer_samples, config.buffer_samples);
+        assert_eq!(loader.train_fraction, config.train_fraction);
+        assert_eq!(loader.seed, config.seed);
+        assert_eq!(loader.archive_queue_bound, config.archive_queue_bound);
+        assert_eq!(
+            loader.max_skip_logs_per_source,
+            config.max_skip_logs_per_source
+        );
+        assert!(loader.aggregate_skip_logs);
+        assert!(loader.exit_sidecar.is_none());
+        assert!(loader.exit_sidecar_source_net_hash.is_none());
+        assert!(loader.exit_sidecar_source_version.is_none());
+        assert!(loader.delta_q_sidecar.is_none());
+        assert!(loader.delta_q_sidecar_source_net_hash.is_none());
+        assert!(loader.delta_q_sidecar_source_version.is_none());
+    }
+
+    #[test]
+    fn runtime_tuple_helpers_cover_key_mean_budget_and_formatting() {
+        let config = dummy_config();
+
+        assert_eq!(runtime_tuple_key(&config), (8, 128, 16));
+        assert_eq!(current_runtime_tuple(&config), (8, 128, 16));
+        assert_eq!(score_tuple_samples_mean(&[]), 0.0);
+        assert!((score_tuple_samples_mean(&[90.0, 120.0, 150.0]) - 120.0).abs() < 1e-12);
+        assert_eq!(runtime_refine_sample_budget(0), 1);
+        assert_eq!(runtime_refine_sample_budget(3), 3);
+        assert_eq!(
+            format_runtime_knob_candidate_summary("256", 123.456, "128", 120.1),
+            "candidate=256 throughput=123.46 samples/s best=128 (120.10 samples/s)"
+        );
+    }
+
+    #[test]
+    fn runtime_tuple_mutation_and_search_helpers_cover_pure_decisions() {
+        let mut config = dummy_config();
+        apply_runtime_tuple(&mut config, (32, 512, 64));
+
+        assert_eq!(current_runtime_tuple(&config), (32, 512, 64));
+        assert!(should_refine_close_tuples(&[(8, 128, 16), (16, 256, 32)]));
+        assert!(!should_refine_close_tuples(&[(8, 128, 16)]));
+        assert_eq!(coarse_search_candidate_count(&[1, 2], &[3, 4, 5], &[6]), 6);
+        assert_eq!(validate_runtime_threads(&config), Ok(()));
+
+        config.num_threads = Some(0);
+        assert_eq!(
+            validate_runtime_threads(&config),
+            Err("runtime autotune produced invalid num_threads=0".to_string())
+        );
+    }
+
+    #[test]
+    fn probe_measurement_helpers_cover_warmup_sample_count_and_zero_elapsed_paths() {
+        assert!(should_start_measurement(3, 3));
+        assert!(!should_start_measurement(2, 3));
+
+        assert!(!should_count_measured_samples(3, 3));
+        assert!(should_count_measured_samples(4, 3));
+
+        assert_eq!(measured_train_samples(5, 256), 1280);
+        assert_eq!(finalize_runtime_probe_throughput(None, 1280), 0.0);
+    }
+
+    #[test]
+    fn rank_and_select_close_runtime_tuples_use_score_order_threshold_and_limit() {
+        let mut scores = vec![
+            ((32, 512, 64), 90.0),
+            ((16, 256, 32), 100.0),
+            ((64, 1024, 128), 89.9),
+            ((8, 128, 16), 95.0),
+        ];
+
+        rank_runtime_tuple_scores(&mut scores);
+
+        assert_eq!(scores[0].0, (16, 256, 32));
+        assert_eq!(scores[1].0, (8, 128, 16));
+        assert_eq!(scores[2].0, (32, 512, 64));
+        assert_eq!(scores[3].0, (64, 1024, 128));
+
+        assert_eq!(
+            close_runtime_tuples(&scores, 100.0, 0.10, 2),
+            vec![(16, 256, 32), (8, 128, 16)]
+        );
+        assert_eq!(
+            close_runtime_tuples(&scores, 100.0, 0.10, 3),
+            vec![(16, 256, 32), (8, 128, 16), (32, 512, 64)]
+        );
+    }
+
+    #[test]
+    fn rank_runtime_tuple_scores_preserves_nan_position_when_comparison_is_equal() {
+        let mut scores = vec![
+            ((32, 512, 64), f64::NAN),
+            ((16, 256, 32), 100.0),
+            ((8, 128, 16), 95.0),
+        ];
+
+        rank_runtime_tuple_scores(&mut scores);
+
+        assert!(scores[0].1.is_nan());
+        assert_eq!(scores[1].0, (16, 256, 32));
+        assert_eq!(scores[2].0, (8, 128, 16));
+    }
+
+    #[test]
+    fn close_runtime_tuples_handles_zero_limit_and_negative_best_score() {
+        let scores = vec![((8, 128, 16), -9.0), ((16, 256, 32), -10.0)];
+
+        assert!(close_runtime_tuples(&scores, -9.0, 0.10, 0).is_empty());
+        assert_eq!(
+            close_runtime_tuples(&scores, -9.0, 0.0, 2),
+            vec![(8, 128, 16)]
+        );
+    }
+
+    #[test]
+    fn autotune_loader_runtime_rejects_zero_threads_before_measurement() {
+        let mut config = dummy_config();
+        config.num_threads = Some(0);
+        let manifest = DataManifest {
+            sources: vec![],
+            total_games: 0,
+            train_count: 0,
+            val_count: 0,
+            counts_exact: true,
+        };
+
+        let result = autotune_loader_runtime(&config, &manifest, &LibTorchDevice::Cpu);
+
+        assert_eq!(
+            result,
+            Err("runtime autotune produced invalid num_threads=0".to_string())
+        );
+    }
+
+    #[test]
+    fn runtime_refine_summary_includes_branchy_tuple_and_budget_details() {
+        let summary = format_runtime_refine_summary(&[(8, 128, 16), (16, 256, 32)], 0);
+
+        assert!(summary.contains("Runtime refine:"));
+        assert!(summary.contains("close_tuples=[(8, 128, 16), (16, 256, 32)]"));
+        assert!(summary.contains("extra_samples=1"));
+    }
+
+    #[test]
+    fn tune_runtime_knob_selects_highest_score_and_keeps_first_tie() {
+        let base = dummy_config();
+        let candidates = [8usize, 16, 32];
+        let mut seen = Vec::new();
+        let mut score = |candidate: &TrainConfig| {
+            seen.push(candidate.archive_queue_bound);
+            Ok(match candidate.archive_queue_bound {
+                8 => 10.0,
+                16 => 20.0,
+                32 => 20.0,
+                other => panic!("unexpected candidate {other}"),
+            })
+        };
+
+        let best = tune_runtime_knob(
+            &base,
+            "archive_queue_bound",
+            &candidates,
+            |value| value.to_string(),
+            |cfg, value| cfg.archive_queue_bound = value,
+            &mut score,
+        )
+        .expect("knob tuning should succeed");
+
+        assert_eq!(best, 16);
+        assert_eq!(seen, vec![8, 16, 32]);
+    }
+
+    #[test]
+    fn tune_runtime_knob_rejects_empty_candidate_lists() {
+        let base = dummy_config();
+        let candidates: [usize; 0] = [];
+        let mut score = |_candidate: &TrainConfig| Ok(0.0);
+
+        assert_eq!(
+            tune_runtime_knob(
+                &base,
+                "buffer_samples",
+                &candidates,
+                |value| value.to_string(),
+                |cfg, value| cfg.buffer_samples = value,
+                &mut score,
+            ),
+            Err("no candidates available for buffer_samples".to_string())
+        );
+    }
 
     #[test]
     fn rl_runtime_autotune_uses_probe_oom_classification() {
-        assert_eq!(classify_probe_detail("CUDA out of memory"), ProbeStatus::Oom);
-        assert_eq!(classify_probe_detail("oom while probing rl batch"), ProbeStatus::Oom);
+        assert_eq!(
+            classify_probe_detail("CUDA out of memory"),
+            ProbeStatus::Oom
+        );
+        assert_eq!(
+            classify_probe_detail("oom while probing rl batch"),
+            ProbeStatus::Oom
+        );
+    }
+
+    #[test]
+    fn format_runtime_knob_candidate_summary_rounds_negative_scores() {
+        assert_eq!(
+            format_runtime_knob_candidate_summary("64", -1.234, "32", -2.0),
+            "candidate=64 throughput=-1.23 samples/s best=32 (-2.00 samples/s)"
+        );
     }
 }

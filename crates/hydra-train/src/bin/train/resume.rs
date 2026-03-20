@@ -9,7 +9,7 @@ use hydra_train::config::PipelineState;
 
 use super::config::{RlPhaseConfig, RlTrainConfig};
 
-use super::config::{train_microbatch_size, validation_microbatch_size, TrainConfig};
+use super::config::{TrainConfig, train_microbatch_size, validation_microbatch_size};
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
