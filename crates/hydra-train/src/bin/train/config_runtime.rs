@@ -269,3 +269,149 @@ pub(crate) fn validation_sample_limit(config: &TrainConfig) -> Option<usize> {
             .map(|limit| limit.saturating_mul(validation_microbatch_size(config)))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::config::{
+        AdvancedLossConfig, BcHyperparamConfig, RlPhaseConfig, RlTrainConfig, TrainConfig,
+    };
+    use super::*;
+    use hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE;
+    use std::path::PathBuf;
+
+    fn dummy_config() -> TrainConfig {
+        TrainConfig {
+            data_dir: PathBuf::from("/data"),
+            output_dir: PathBuf::from("/output"),
+            num_epochs: 1,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: None,
+            rl: None,
+            bc: BcHyperparamConfig::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: Some(6),
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: hydra_train::preflight::PreflightConfig::default(),
+        }
+    }
+
+    #[test]
+    fn parse_train_device_accepts_cpu_cuda_and_indices() {
+        assert_eq!(parse_train_device("cpu"), Ok(LibTorchDevice::Cpu));
+        assert_eq!(parse_train_device(" CUDA "), Ok(LibTorchDevice::Cuda(0)));
+        assert_eq!(parse_train_device("cuda:3"), Ok(LibTorchDevice::Cuda(3)));
+    }
+
+    #[test]
+    fn parse_train_device_rejects_invalid_values() {
+        let err = parse_train_device("cuda:abc").expect_err("invalid cuda index should fail");
+        assert!(err.contains("expected cpu, cuda, or cuda:<index>"));
+
+        let err = parse_train_device("metal").expect_err("unsupported backend should fail");
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=metal"));
+    }
+
+    #[test]
+    fn resolved_num_threads_rejects_zero_and_uses_explicit_value() {
+        assert_eq!(resolved_num_threads(Some(4)), Ok(4));
+        assert_eq!(
+            resolved_num_threads(Some(0)),
+            Err("num_threads must be greater than 0".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_config_requires_positive_sidecar_backed_advanced_losses() {
+        let mut config = dummy_config();
+        config.advanced_loss = Some(AdvancedLossConfig {
+            exit: Some(0.25),
+            ..AdvancedLossConfig::default()
+        });
+        assert_eq!(
+            validate_config(&config),
+            Err(
+                "advanced_loss.exit requires exit_sidecar_path so replay ExIt labels are present"
+                    .to_string()
+            )
+        );
+
+        config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.sidecar"));
+        assert!(validate_config(&config).is_ok());
+
+        config.advanced_loss = Some(AdvancedLossConfig {
+            delta_q: Some(0.1),
+            ..AdvancedLossConfig::default()
+        });
+        assert_eq!(
+            validate_config(&config),
+            Err(
+                "advanced_loss.delta_q requires delta_q_sidecar_path so replay delta_q labels are present"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn rl_and_loader_runtime_configs_map_expected_fields() {
+        let mut config = dummy_config();
+        let rl = RlTrainConfig {
+            games_per_batch: 4,
+            temperature: 1.25,
+            phase: RlPhaseConfig::ExitPondering,
+            learning_rate: Some(3e-4),
+            exit_weight: Some(0.7),
+            aux_weight: Some(0.2),
+            microbatch_size: None,
+        };
+
+        let trainer_cfg = trainer_config_from_train_config(&config);
+        assert_eq!(trainer_cfg.batch_size, config.batch_size);
+        assert_eq!(trainer_cfg.lr, config.bc.learning_rate);
+        assert_eq!(trainer_cfg.min_learning_rate, config.bc.min_learning_rate);
+
+        let rl_cfg = rl_config_from_train_config(&rl);
+        assert_eq!(rl_cfg.lr, 3e-4);
+        assert_eq!(rl_cfg.exit_weight, 0.7);
+        assert_eq!(rl_cfg.aux_weight, 0.2);
+        assert_eq!(rl_cfg.microbatch_size, Some(DEFAULT_RL_MICROBATCH_SIZE));
+
+        config.num_threads = None;
+        let loader_cfg = loader_runtime_config(&config);
+        assert_eq!(loader_cfg.buffer_games, config.buffer_games);
+        assert_eq!(loader_cfg.buffer_samples, config.buffer_samples);
+        assert_eq!(loader_cfg.archive_queue_bound, config.archive_queue_bound);
+        assert!(loader_cfg.num_threads.is_some());
+    }
+
+    #[test]
+    fn validation_helpers_prefer_explicit_sample_limit_then_batch_limit() {
+        let mut config = dummy_config();
+        config.max_validation_batches = Some(5);
+        assert_eq!(validation_sample_limit(&config), Some(160));
+
+        config.max_validation_samples = Some(77);
+        assert_eq!(validation_sample_limit(&config), Some(77));
+
+        assert_eq!(train_microbatch_size(&config), 64);
+        assert_eq!(validation_microbatch_size(&config), 32);
+    }
+}
