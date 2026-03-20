@@ -787,6 +787,320 @@ pub fn sample_action_with_temperature(
 mod tests {
     use super::*;
 
+    fn legal_step(action: u8, player_id: u8, reward: f32, done: bool, turn: u16) -> TrajectoryStep {
+        let mut pi_old = [0.0f32; HYDRA_ACTION_SPACE];
+        pi_old[action as usize] = 1.0;
+        let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+        legal_mask[action as usize] = true;
+        TrajectoryStep {
+            obs: [0.0; OBS_SIZE],
+            action,
+            pi_old,
+            legal_mask,
+            exit_label: None,
+            delta_q_label: None,
+            reward,
+            done,
+            player_id,
+            game_id: 0,
+            turn,
+            temperature: 1.0,
+        }
+    }
+
+    #[test]
+    fn labels_roundtrip_and_reject_wrong_lengths() {
+        let target = vec![0.25f32; HYDRA_ACTION_SPACE];
+        let mask = vec![1.0f32; HYDRA_ACTION_SPACE];
+
+        let exit = TrajectoryExitLabel::from_slices(&target, &mask).expect("valid exit label");
+        let delta =
+            TrajectoryDeltaQLabel::from_slices(&target, &mask).expect("valid delta q label");
+
+        let (exit_target, exit_mask) = exit.to_vec_pair();
+        let (delta_target, delta_mask) = delta.to_vec_pair();
+        assert_eq!(exit_target, target);
+        assert_eq!(exit_mask, mask);
+        assert_eq!(delta_target, target);
+        assert_eq!(delta_mask, mask);
+
+        assert!(TrajectoryExitLabel::from_slices(&target[..10], &mask).is_none());
+        assert!(TrajectoryDeltaQLabel::from_slices(&target, &mask[..10]).is_none());
+    }
+
+    #[test]
+    fn arena_and_selfplay_configs_validate_expected_bounds() {
+        let mut arena_cfg = ArenaConfig::default();
+        assert!(arena_cfg.validate().is_ok());
+        assert!(arena_cfg.summary().contains("arena(games=500"));
+
+        arena_cfg.num_parallel_games = 0;
+        assert_eq!(arena_cfg.validate(), Err("num_parallel_games > 0"));
+
+        let mut arena_cfg = ArenaConfig::default();
+        arena_cfg.max_trajectory_buffer = 0;
+        assert_eq!(arena_cfg.validate(), Err("max_trajectory_buffer > 0"));
+
+        let mut selfplay = SelfPlayConfig::default().with_games(128);
+        assert_eq!(selfplay.arena.num_parallel_games, 128);
+        assert!(selfplay.summary().contains("selfplay(games=128"));
+        assert!(selfplay.validate().is_ok());
+
+        selfplay.gae_gamma = 1.0;
+        assert_eq!(selfplay.validate(), Err("gae_gamma in (0,1)"));
+    }
+
+    #[test]
+    fn score_summary_helpers_handle_empty_and_ranked_games() {
+        let scores = [
+            [30_000, 25_000, 20_000, 15_000],
+            [15_000, 30_000, 25_000, 20_000],
+        ];
+        assert_eq!(games_played(&scores), 2);
+        assert_eq!(total_score_sum(&scores), 180_000);
+        assert_eq!(avg_score(&scores, 0), 22_500.0);
+        assert!(score_std(&scores, 0) > 0.0);
+        assert_eq!(top_two_rate(&scores, 1), 1.0);
+        assert_eq!(fourth_place_rate(&scores, 0), 0.5);
+        assert_eq!(win_rate_from_scores(&scores, 0), 0.5);
+        assert_eq!(mean_placement_from_scores(&scores, 0), 2.5);
+
+        assert_eq!(avg_score(&[], 0), 0.0);
+        assert_eq!(score_std(&[], 0), 0.0);
+        assert_eq!(top_two_rate(&[], 0), 0.0);
+        assert_eq!(fourth_place_rate(&[], 0), 0.0);
+        assert_eq!(win_rate_from_scores(&[], 0), 0.0);
+        assert_eq!(mean_placement_from_scores(&[], 0), 2.5);
+    }
+
+    #[test]
+    fn trajectory_and_arena_summary_helpers_compute_expected_values() {
+        let mut t1 = Trajectory::new(7, 111);
+        t1.final_scores = [30_000, 20_000, 25_000, 15_000];
+        t1.steps.push(legal_step(0, 0, 1.5, false, 0));
+        t1.steps.push(legal_step(1, 1, -0.5, true, 3));
+
+        let mut t2 = Trajectory::new(8, 222);
+        t2.final_scores = [15_000, 35_000, 25_000, 25_000];
+        t2.steps.push(legal_step(2, 1, 2.0, true, 5));
+
+        assert_eq!(t1.num_steps(), 2);
+        assert_eq!(t1.active_players(), vec![0, 1]);
+        assert_eq!(t1.score_for(2), 25_000);
+        assert_eq!(t1.score_delta(0), 7_500);
+        assert_eq!(t1.placement_for(0), 0);
+        assert_eq!(t1.winner(), 0);
+        assert_eq!(t1.max_turn(), 3);
+        assert_eq!(t1.player_reward_sum(0), 1.5);
+        assert_eq!(t1.total_reward(), 1.0);
+        assert!(t1.is_complete());
+        assert_eq!(t1.steps_for_player(1).len(), 1);
+
+        let mut arena = Arena::new(ArenaConfig {
+            max_trajectory_buffer: 4,
+            ..Default::default()
+        });
+        arena.add_trajectory(t1);
+        arena.add_trajectory(t2);
+
+        assert_eq!(arena.max_capacity(), 4);
+        assert!(!arena.is_full());
+        assert_eq!(arena.completed_trajectories(), 2);
+        assert_eq!(arena.total_steps(), 3);
+        assert_eq!(arena.num_buffered(), 2);
+        assert_eq!(arena.oldest_game_id(), Some(7));
+        assert_eq!(arena.latest_game_id(), Some(8));
+        assert_eq!(
+            arena.mean_scores(),
+            [22_500.0, 27_500.0, 25_000.0, 20_000.0]
+        );
+        assert_eq!(arena.mean_score_for(1), 27_500.0);
+        assert!(arena.score_variance() > 0.0);
+        assert_eq!(arena.mean_game_length(), 4.0);
+        assert_eq!(arena.mean_placement_for(1), 2.0);
+        assert_eq!(arena.fourth_place_count(0), 1);
+        assert_eq!(arena.win_count(1), 1);
+        assert_eq!(arena.win_rate_for(1), 0.5);
+        assert_eq!(arena.fill_ratio(), 0.5);
+        assert_eq!(arena.utilization(), "2/4 (50%)");
+        assert_eq!(arena.avg_trajectory_length(), 1.5);
+        assert!(arena
+            .stats_summary()
+            .contains("games=2 steps=3 buffered=2 complete=2"));
+        assert_eq!(arena.collect_player_steps(1).len(), 2);
+        assert_eq!(arena.compute_rewards(1), vec![vec![-0.5], vec![2.0]]);
+        assert_eq!(arena.placement_distribution(1), [0.5, 0.0, 0.5, 0.0]);
+        assert!(arena.validate_all().is_ok());
+
+        arena.reset();
+        assert_eq!(arena.games_completed, 0);
+        assert!(arena.trajectory_buffer.is_empty());
+    }
+
+    #[test]
+    fn masked_softmax_and_sampling_fallback_handle_degenerate_inputs() {
+        let logits = [0.0f32; HYDRA_ACTION_SPACE];
+        let legal_mask = [false; HYDRA_ACTION_SPACE];
+        let probs = softmax_temperature(&logits, &legal_mask, 1.0);
+        assert!(probs.iter().all(|&p| p == 0.0));
+
+        let mut single_legal = [false; HYDRA_ACTION_SPACE];
+        single_legal[9] = true;
+        let (action, probs) = sample_action_with_temperature(&logits, &single_legal, 1.0, 1.5);
+        assert_eq!(action, 9);
+        assert_eq!(probs[9], 1.0);
+    }
+
+    #[test]
+    fn trajectory_validate_rejects_bad_policy_and_label_shapes() {
+        let mut traj = Trajectory::new(1, 2);
+        let mut bad_step = legal_step(0, 0, 0.0, true, 0);
+        bad_step.pi_old[0] = 0.7;
+        bad_step.pi_old[1] = 0.7;
+        traj.steps.push(bad_step);
+        assert!(traj.validate().unwrap_err().contains("pi_old sums to"));
+
+        let mut traj = Trajectory::new(1, 2);
+        let mut step = legal_step(0, 0, 0.0, true, 0);
+        let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_mask[0] = 1.0;
+        exit_mask[(DISCARD_END as usize) + 1] = 1.0;
+        let mut exit_target = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_target[0] = 0.5;
+        exit_target[(DISCARD_END as usize) + 1] = 0.5;
+        step.exit_label = Some(TrajectoryExitLabel {
+            target: exit_target,
+            mask: exit_mask,
+        });
+        traj.steps.push(step);
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("exit label masks illegal action"));
+
+        let mut traj = Trajectory::new(1, 2);
+        let mut step = legal_step(0, 0, 0.0, true, 0);
+        let mut delta_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        delta_mask[0] = 1.0;
+        let mut delta_target = [0.0f32; HYDRA_ACTION_SPACE];
+        delta_target[0] = f32::NAN;
+        step.delta_q_label = Some(TrajectoryDeltaQLabel {
+            target: delta_target,
+            mask: delta_mask,
+        });
+        traj.steps.push(step);
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("delta_q target at action 0 is not finite"));
+    }
+
+    #[test]
+    fn config_validation_catches_temperature_and_lambda_bounds() {
+        let mut arena_cfg = ArenaConfig::default();
+        arena_cfg.temperature_range = (0.0, 1.0);
+        assert_eq!(arena_cfg.validate(), Err("temperature range start > 0"));
+
+        let mut arena_cfg = ArenaConfig::default();
+        arena_cfg.temperature_range = (1.2, 1.1);
+        assert_eq!(arena_cfg.validate(), Err("temperature range end >= start"));
+
+        let mut selfplay = SelfPlayConfig::default();
+        selfplay.gae_lambda = 1.0;
+        assert_eq!(selfplay.validate(), Err("gae_lambda in (0,1)"));
+    }
+
+    #[test]
+    fn arena_helpers_cover_empty_defaults_and_drain_behavior() {
+        let mut arena = Arena::new(ArenaConfig {
+            max_trajectory_buffer: 2,
+            ..Default::default()
+        });
+
+        assert_eq!(arena.mean_scores(), [0.0; 4]);
+        assert_eq!(arena.placement_distribution(0), [0.25; 4]);
+        assert!(arena.compute_rewards(0).is_empty());
+        assert_eq!(arena.mean_score_for(0), 0.0);
+        assert_eq!(arena.score_variance(), 0.0);
+        assert_eq!(arena.mean_game_length(), 0.0);
+        assert_eq!(arena.mean_placement_for(0), 2.5);
+        assert_eq!(arena.win_rate_for(0), 0.0);
+        assert_eq!(arena.win_count(0), 0);
+        assert_eq!(arena.oldest_game_id(), None);
+        assert_eq!(arena.latest_game_id(), None);
+        assert_eq!(arena.fill_ratio(), 0.0);
+        assert_eq!(arena.avg_trajectory_length(), 0.0);
+        assert!(arena.collect_player_steps(0).is_empty());
+
+        let mut t = Trajectory::new(1, 9);
+        t.steps.push(legal_step(0, 0, 0.5, true, 0));
+        arena.add_trajectory(t);
+        let drained = arena.drain_trajectories();
+        assert_eq!(drained.len(), 1);
+        assert!(arena.trajectory_buffer.is_empty());
+    }
+
+    #[test]
+    fn trajectory_validate_rejects_no_legal_actions_illegal_choice_and_bad_exit_mass() {
+        let mut traj = Trajectory::new(1, 2);
+        let mut step = legal_step(0, 0, 0.0, true, 0);
+        step.legal_mask = [false; HYDRA_ACTION_SPACE];
+        traj.steps.push(step);
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("legal_mask has no legal actions"));
+
+        let mut traj = Trajectory::new(1, 2);
+        let mut step = legal_step(0, 0, 0.0, true, 0);
+        step.legal_mask[0] = false;
+        step.legal_mask[1] = true;
+        traj.steps.push(step);
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("selected action 0 is not marked legal"));
+
+        let mut traj = Trajectory::new(1, 2);
+        let mut step = legal_step(0, 0, 0.0, true, 0);
+        let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_mask[0] = 1.0;
+        let mut exit_target = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_target[0] = 0.7;
+        step.exit_label = Some(TrajectoryExitLabel {
+            target: exit_target,
+            mask: exit_mask,
+        });
+        traj.steps.push(step);
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("exit target mass over masked actions is 0.7"));
+    }
+
+    #[test]
+    fn trajectory_validate_rejects_bad_delta_masks_and_invalid_action_index() {
+        let mut traj = Trajectory::new(1, 2);
+        let mut step = legal_step(0, 0, 0.0, true, 0);
+        let mut delta_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        delta_mask[0] = 0.3;
+        step.delta_q_label = Some(TrajectoryDeltaQLabel {
+            target: [0.0; HYDRA_ACTION_SPACE],
+            mask: delta_mask,
+        });
+        traj.steps.push(step);
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("delta_q mask at action 0 is not approximately binary"));
+
+        let mut traj = Trajectory::new(1, 2);
+        let mut step = legal_step(0, 0, 0.0, true, 0);
+        step.action = HYDRA_ACTION_SPACE as u8;
+        traj.steps.push(step);
+        assert!(traj.validate().unwrap_err().contains("invalid action"));
+    }
+
     #[test]
     fn temperature_sampling_legal_only() {
         let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
