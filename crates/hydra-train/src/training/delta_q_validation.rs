@@ -4,12 +4,12 @@ use std::fmt;
 
 use burn::prelude::Backend;
 use hydra_core::action::DISCARD_END;
-use hydra_core::arena::{softmax_temperature, TrajectoryStep};
+use hydra_core::arena::{TrajectoryStep, softmax_temperature};
 
 use crate::model::HydraModel;
 use crate::selfplay::generate_self_play_batch_source;
-use crate::training::exit::{compatible_discard_state, is_hard_state, ExitConfig};
-use crate::training::live_exit::{budget_from_legal_count, LiveExitConfig};
+use crate::training::exit::{ExitConfig, compatible_discard_state, is_hard_state};
+use crate::training::live_exit::{LiveExitConfig, budget_from_legal_count};
 
 /// Aggregated metrics from an observational delta-q validation run.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -600,10 +600,12 @@ mod tests {
         assert!(report_text.contains("DeltaQ Validation Report"));
         assert!(report_text.contains("Mean |delta_q|"));
         assert!(result_text.contains("DeltaQ Validation Result: PASS"));
-        assert!(result
-            .criteria
-            .iter()
-            .any(|criterion| criterion.name == "sample_size"));
+        assert!(
+            result
+                .criteria
+                .iter()
+                .any(|criterion| criterion.name == "sample_size")
+        );
     }
 
     #[test]

@@ -1150,10 +1150,11 @@ mod tests {
         let result = evaluate_promotion_report(&report, &DeltaQPromotionThresholds::default());
         assert!(!result.passed);
         assert!(result.criteria.iter().any(|criterion| !criterion.passed));
-        assert!(result
-            .criteria
-            .iter()
-            .any(|criterion| criterion.name == "regret_beats_baseline_rate" && !criterion.passed));
+        assert!(
+            result.criteria.iter().any(
+                |criterion| criterion.name == "regret_beats_baseline_rate" && !criterion.passed
+            )
+        );
         assert_eq!(
             result.recommendation(),
             DeltaQPromotionRecommendation::RejectAtOfflineGate
