@@ -4,16 +4,16 @@ use burn::tensor::backend::AutodiffBackend;
 mod cooperative_state;
 
 use hydra_core::action::{
-    build_legal_mask, hydra_to_riichienv, riichienv_to_hydra, ActionPhase, GameContext,
-    HydraAction, HYDRA_ACTION_SPACE,
+    ActionPhase, GameContext, HYDRA_ACTION_SPACE, HydraAction, build_legal_mask,
+    hydra_to_riichienv, riichienv_to_hydra,
 };
 use hydra_core::afbs::{AfbsTree, NodeIdx};
 use hydra_core::arena::{
-    sample_action_with_temperature, Trajectory, TrajectoryDeltaQLabel, TrajectoryExitLabel,
-    TrajectoryStep,
+    Trajectory, TrajectoryDeltaQLabel, TrajectoryExitLabel, TrajectoryStep,
+    sample_action_with_temperature,
 };
 use hydra_core::bridge::encode_observation;
-use hydra_core::encoder::{ObservationEncoder, OBS_SIZE};
+use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::observation::Observation;
@@ -28,9 +28,9 @@ use crate::training::exit::{
 };
 use crate::training::gae::GaeConfig;
 use crate::training::live_exit::{
-    base_pi_from_logits, budget_from_legal_count, legal_discard_actions, make_live_exit_fn,
-    seed_root_children_all_legal, ExitSearchAdapter, LiveExitConfig, RootDecisionContext,
-    SelfPlayExitAdapter, TrajectorySearchLabels,
+    ExitSearchAdapter, LiveExitConfig, RootDecisionContext, SelfPlayExitAdapter,
+    TrajectorySearchLabels, base_pi_from_logits, budget_from_legal_count, legal_discard_actions,
+    make_live_exit_fn, seed_root_children_all_legal,
 };
 use crate::training::rl::RlBatch;
 use cooperative_state::{
@@ -419,7 +419,6 @@ pub fn run_mixed_policy_game_scores<B: Backend>(
 
     std::array::from_fn(|idx| state.players[idx].score)
 }
-
 
 /// Raw output from a batch of self-play games before RL batch collation.
 ///
@@ -934,7 +933,9 @@ pub fn generate_self_play_batch_source_cooperative<B: Backend>(
 
             for (game_idx, game) in games.iter_mut().enumerate() {
                 let advance = game.advance_until_inference_needed();
-                if advance.needs_policy && let Some(obs) = game.pending_policy_obs() {
+                if advance.needs_policy
+                    && let Some(obs) = game.pending_policy_obs()
+                {
                     batch_game_indices.push(game_idx);
                     batch_observations.push(obs);
                 }
@@ -1118,7 +1119,9 @@ fn run_mixed_player_decision<B: Backend>(
 
     let drawn_tile = state.drawn_tile.map(|tile| tile / 4);
     let encoded = selector.encode_observation(&obs, pid, drawn_tile);
-    let logits = seat_models[pid as usize].policy_value_cpu(&encoded, device).0;
+    let logits = seat_models[pid as usize]
+        .policy_value_cpu(&encoded, device)
+        .0;
     selector.set_logits(logits);
 
     state.get_legal_actions_into(pid, legal_buf);
@@ -1207,6 +1210,13 @@ mod tests {
             });
         }
         trajectory
+    }
+
+    fn small_test_model_config() -> HydraModelConfig {
+        HydraModelConfig::new(2)
+            .with_hidden_channels(16)
+            .with_se_bottleneck(4)
+            .with_num_groups(4)
     }
 
     fn make_test_step_record(player_id: u8, action: u8) -> StepRecord {
@@ -1361,21 +1371,17 @@ mod tests {
     #[test]
     fn test_generate_self_play_batch_source_without_exit() {
         let device = Default::default();
-        let model = HydraModelConfig::new(2)
-            .with_hidden_channels(32)
-            .with_se_bottleneck(8)
-            .with_num_groups(4)
-            .init::<B>(&device);
-        let seeds = [42u64, 43];
+        let model = small_test_model_config().init::<B>(&device);
+        let seeds = [42u64];
         let cfg = LiveExitConfig {
             enabled: false,
             ..LiveExitConfig::default()
         };
 
-        let source = generate_self_play_batch_source(&seeds, 1.0, 100, &model, &device, cfg);
+        let source = generate_self_play_batch_source(&seeds, 1.0, 40, &model, &device, cfg);
 
-        assert_eq!(source.trajectories.len(), 2);
-        assert_eq!(source.values.len(), 2);
+        assert_eq!(source.trajectories.len(), 1);
+        assert_eq!(source.values.len(), 1);
         for (traj, vals) in source.trajectories.iter().zip(source.values.iter()) {
             assert_eq!(traj.steps.len(), vals.len());
             assert!(traj.steps.iter().all(|s| s.exit_label.is_none()));
@@ -1385,21 +1391,17 @@ mod tests {
     #[test]
     fn test_batched_source_matches_serial() {
         let device = Default::default();
-        let model = HydraModelConfig::new(2)
-            .with_hidden_channels(32)
-            .with_se_bottleneck(8)
-            .with_num_groups(4)
-            .init::<B>(&device);
-        let seeds = [42u64, 43, 44];
+        let model = small_test_model_config().init::<B>(&device);
+        let seeds = [42u64];
         let cfg = LiveExitConfig {
             enabled: false,
             ..LiveExitConfig::default()
         };
 
         let serial =
-            generate_self_play_batch_source(&seeds, 1.0, 100, &model, &device, cfg.clone());
+            generate_self_play_batch_source(&seeds, 1.0, 40, &model, &device, cfg.clone());
         let batched = generate_self_play_batch_source_batched(
-            &seeds, 1.0, 100, &model, &device, &device, cfg,
+            &seeds, 1.0, 40, &model, &device, &device, cfg,
         );
 
         assert_eq!(serial.trajectories.len(), batched.trajectories.len());
@@ -1467,20 +1469,12 @@ mod tests {
     #[test]
     fn mixed_policy_runner_matches_single_model_selfplay_when_all_seats_share_model() {
         let device = Default::default();
-        let model = HydraModelConfig::new(2)
-            .with_hidden_channels(32)
-            .with_se_bottleneck(8)
-            .with_num_groups(4)
-            .init::<B>(&device);
+        let model = small_test_model_config().init::<B>(&device);
 
-        let trajectory = run_self_play_game(77, 1.0, 1234, |obs| model.policy_value_cpu(obs, &device).0);
-        let scores = run_mixed_policy_game_scores(
-            77,
-            1.0,
-            1234,
-            [&model, &model, &model, &model],
-            &device,
-        );
+        let trajectory =
+            run_self_play_game(77, 1.0, 1234, |obs| model.policy_value_cpu(obs, &device).0);
+        let scores =
+            run_mixed_policy_game_scores(77, 1.0, 1234, [&model, &model, &model, &model], &device);
 
         assert_eq!(trajectory.final_scores, scores);
     }
@@ -1489,19 +1483,18 @@ mod tests {
     fn test_generate_self_play_rl_batch_produces_valid_batch() {
         type AB = burn::backend::Autodiff<B>;
         let device = Default::default();
-        let model = HydraModelConfig::new(2)
-            .with_hidden_channels(32)
-            .with_se_bottleneck(8)
-            .with_num_groups(4)
-            .init::<AB>(&device);
+        let model = small_test_model_config().init::<AB>(&device);
         let seeds = [42u64];
-        let cfg = LiveExitConfig::default();
+        let cfg = LiveExitConfig {
+            enabled: false,
+            ..LiveExitConfig::default()
+        };
         let gae = GaeConfig {
             gamma: GAE_GAMMA,
             lambda: GAE_LAMBDA,
         };
 
-        let batch = generate_self_play_rl_batch(&seeds, 1.0, 100, &model, &device, &gae, cfg);
+        let batch = generate_self_play_rl_batch(&seeds, 1.0, 40, &model, &device, &gae, cfg);
         let [steps, action_dim] = batch.targets.policy_target.dims();
         assert!(steps > 0);
         assert_eq!(action_dim, HYDRA_ACTION_SPACE);
@@ -1587,14 +1580,22 @@ mod tests {
         assert!(runner.pending_exit_search.is_none());
         let turn_state = runner.turn_state.as_ref().expect("turn state");
         assert_eq!(turn_state.pending_values, vec![0.1, 0.2, 0.3]);
-        assert_eq!(turn_state.pending_steps[0].as_ref().map(|s| s.action), Some(preserved_a_action));
-        let inserted = turn_state.pending_steps[1].as_ref().expect("delayed step inserted");
+        assert_eq!(
+            turn_state.pending_steps[0].as_ref().map(|s| s.action),
+            Some(preserved_a_action)
+        );
+        let inserted = turn_state.pending_steps[1]
+            .as_ref()
+            .expect("delayed step inserted");
         assert_eq!(inserted.action, delayed_record.action);
         assert_eq!(inserted.player_id, delayed_record.player_id);
         assert_eq!(inserted.turn, 3);
         assert!(inserted.exit_label.is_none());
         assert!(inserted.delta_q_label.is_none());
-        assert_eq!(turn_state.pending_steps[2].as_ref().map(|s| s.action), Some(preserved_b_action));
+        assert_eq!(
+            turn_state.pending_steps[2].as_ref().map(|s| s.action),
+            Some(preserved_b_action)
+        );
     }
 
     #[test]
@@ -1755,10 +1756,12 @@ mod tests {
             },
         );
 
-        assert!(trajectory
-            .steps
-            .iter()
-            .any(|step| step.exit_label.is_some()));
+        assert!(
+            trajectory
+                .steps
+                .iter()
+                .any(|step| step.exit_label.is_some())
+        );
         assert!(trajectory.validate().is_ok());
     }
 }

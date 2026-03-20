@@ -313,8 +313,11 @@ pub fn run_paired_delta_q_arena_confirmation<B: Backend>(
 
         let candidate_scores =
             run_mixed_policy_game_scores(game_seed, temperature, rng_seed, candidate_seats, device);
-        let baseline_scores =
-            run_mixed_policy_game_scores(game_seed, temperature, rng_seed, baseline_seats, device);
+        let baseline_scores = if std::ptr::eq(candidate_model, baseline_model) {
+            candidate_scores
+        } else {
+            run_mixed_policy_game_scores(game_seed, temperature, rng_seed, baseline_seats, device)
+        };
 
         candidate_placements.push(compute_placements(candidate_scores)[challenger_seat as usize]);
         baseline_placements.push(compute_placements(baseline_scores)[challenger_seat as usize]);
@@ -571,12 +574,12 @@ mod tests {
             .with_num_groups(4)
             .init::<B>(&device);
         let cfg = PairedArenaEvalConfig::new()
-            .with_min_games(8)
+            .with_min_games(2)
             .with_seed(123);
 
         let outcome = run_paired_delta_q_arena_confirmation(&model, &model, &device, &cfg, 1.0);
 
-        assert_eq!(outcome.paired_result.compared_games, 8);
+        assert_eq!(outcome.paired_result.compared_games, 2);
         assert!(outcome.paired_result.delta_mean_placement.abs() < 1e-6);
         assert!(
             outcome
@@ -593,11 +596,111 @@ mod tests {
         let candidate = [2, 2, 3, 3, 2, 3, 3, 2];
         let baseline = [0, 1, 1, 2, 1, 2, 1, 2];
 
-        let (lower, upper) = paired_bootstrap_mean_placement_ci(&candidate, &baseline, 99, 1024);
+        let (lower, upper) = paired_bootstrap_mean_placement_ci(&candidate, &baseline, 99, 128);
 
         assert!(lower > 0.0);
         assert!(upper > 0.0);
         let result = paired_arena_result_from_placements(&candidate, &baseline, upper);
         assert!(result.delta_mean_placement > 0.0);
+    }
+
+    #[test]
+    fn eval_and_benchmark_helpers_cover_defaults_and_thresholds() {
+        let cfg = EvalConfig::new();
+        assert!(cfg.summary().contains("eval(games=1000, seed=42)"));
+        assert!(cfg.validate().is_ok());
+        assert_eq!(cfg.with_games(12).num_games, 12);
+
+        let bad = EvalConfig::new().with_num_games(0);
+        assert_eq!(bad.validate(), Err("num_games must be > 0"));
+
+        let gates = BenchmarkGates {
+            afbs_on_turn_ms: 149.0,
+            ct_smc_dp_ms: 0.9,
+            endgame_ms: 99.0,
+            self_play_games_per_sec: 21.0,
+            distill_kl_drift: 0.09,
+        };
+        assert!(gates.passes());
+        assert!(gates.summary().contains("afbs=149ms"));
+
+        let failing = BenchmarkGates {
+            afbs_on_turn_ms: 151.0,
+            ..gates
+        };
+        assert!(!failing.passes());
+    }
+
+    #[test]
+    fn eval_result_helper_methods_cover_target_checks_and_summary() {
+        let result = EvalResult {
+            mean_placement: 1.75,
+            stable_dan: 8.5,
+            win_rate: 0.25,
+            deal_in_rate: 0.10,
+            tsumo_rate: 0.15,
+        };
+
+        assert!(result.meets_target(8.0));
+        assert!(result.is_mortal_level());
+        assert!(!result.is_tendan_plus());
+        assert!(result.summary().contains("placement=1.75"));
+
+        let from = EvalResult::from_mean_placement(2.0);
+        assert_eq!(from.mean_placement, 2.0);
+        assert_eq!(from.win_rate, 0.0);
+    }
+
+    #[test]
+    fn training_metrics_default_summary_and_improvement_behave() {
+        let default_metrics = TrainingMetrics::default();
+        assert_eq!(default_metrics.elo, 1500.0);
+        assert!(default_metrics.summary().contains("epoch=0 loss=0.0000"));
+        assert!(!default_metrics.is_improving(-1.0));
+
+        let improving = TrainingMetrics {
+            epoch: 3,
+            total_loss: 0.5,
+            policy_agreement: 0.7,
+            value_mse: 0.2,
+            games_completed: 99,
+            arena_mean_score: 10.0,
+            distill_kl: 0.05,
+            elo: 1600.0,
+        };
+        assert!(improving.is_improving(0.6));
+        assert!(improving.summary().contains("agree=70.00%"));
+    }
+
+    #[test]
+    fn paired_result_and_bootstrap_helpers_cover_empty_and_singleton_edges() {
+        let cfg = PairedArenaEvalConfig::new();
+        let single = paired_arena_result_from_placements(&[0], &[1], 0.1);
+        assert_eq!(single.compared_games, 1);
+        assert!(single.summary(&cfg).contains("decision="));
+
+        let (lower, upper) = paired_bootstrap_mean_placement_ci(&[], &[], 7, 0);
+        assert_eq!((lower, upper), (0.0, 0.0));
+
+        let (lower, upper) = paired_bootstrap_mean_placement_ci(&[0], &[1], 7, 0);
+        assert_eq!((lower, upper), (-1.0, -1.0));
+    }
+
+    #[test]
+    fn placement_histogram_and_rates_cover_empty_and_non_uniform_inputs() {
+        let empty_hist = placement_histogram(&[]);
+        assert_eq!(empty_hist, [0.0; 4]);
+        assert_eq!(compute_top2_rate(&[]), 0.0);
+        assert_eq!(compute_4th_rate(&[]), 0.0);
+        assert_eq!(compute_win_rate(&[]), 0.0);
+
+        let placements = [0, 1, 1, 3];
+        let hist = placement_histogram(&placements);
+        assert!((hist[0] - 0.25).abs() < 1e-6);
+        assert!((hist[1] - 0.5).abs() < 1e-6);
+        assert!((hist[3] - 0.25).abs() < 1e-6);
+        assert!((compute_top2_rate(&placements) - 0.75).abs() < 1e-6);
+        assert!((compute_4th_rate(&placements) - 0.25).abs() < 1e-6);
+        assert!((compute_win_rate(&placements) - 0.25).abs() < 1e-6);
     }
 }

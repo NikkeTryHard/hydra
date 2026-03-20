@@ -232,6 +232,85 @@ impl Default for League {
 mod tests {
     use super::*;
 
+    fn agent(path: &str, agent_type: AgentType, elo: f32) -> LeagueAgent {
+        LeagueAgent {
+            weights_path: PathBuf::from(path),
+            agent_type,
+            elo,
+        }
+    }
+
+    #[test]
+    fn default_league_helpers_cover_empty_roster_behavior() {
+        let league = League::default();
+        assert_eq!(league.num_agents(), 0);
+        assert_eq!(league.mean_elo(), 0.0);
+        assert_eq!(league.elo_spread(), 0.0);
+        assert_eq!(league.best_agent_by_elo(), None);
+        assert_eq!(league.worst_agent_by_elo(), None);
+        assert_eq!(league.current_agent(), None);
+        assert_eq!(league.elo_of(99), 1500.0);
+        assert_eq!(league.select_opponents(3, 0.5), Vec::<usize>::new());
+        assert_eq!(league.snapshot().agents.len(), 0);
+        assert_eq!(league.snapshot().total_games, 0);
+        assert_eq!(league.summary(), "agents=0 matches=0 spread=0");
+    }
+
+    #[test]
+    fn roster_snapshot_and_type_helpers_track_agent_metadata() {
+        let mut league = League::new();
+        league.standard_roster(
+            PathBuf::from("current.bin"),
+            &[PathBuf::from("cp0.bin"), PathBuf::from("cp1.bin")],
+        );
+
+        assert_eq!(league.num_agents(), 3);
+        assert_eq!(league.current_agent(), Some(0));
+        assert_eq!(league.agents_of_type(&AgentType::Checkpoint(1)), vec![2]);
+
+        let snapshot = league.snapshot();
+        assert_eq!(snapshot.total_games, 0);
+        assert_eq!(snapshot.agents[0], ("current.bin".to_string(), 1500.0));
+        assert_eq!(snapshot.agents[2], ("cp1.bin".to_string(), 1500.0));
+    }
+
+    #[test]
+    fn ranking_and_range_helpers_return_expected_indices() {
+        let mut league = League::new();
+        league.add_agent(agent("a.bin", AgentType::Current, 1510.0));
+        league.add_agent(agent("b.bin", AgentType::Checkpoint(0), 1475.0));
+        league.add_agent(agent("c.bin", AgentType::Exploiter, 1600.0));
+        league.add_agent(agent("d.bin", AgentType::BcAnchor, 1490.0));
+
+        assert_eq!(league.best_agent_by_elo(), Some(2));
+        assert_eq!(league.worst_agent_by_elo(), Some(1));
+        assert_eq!(league.top_k_agents(2), vec![2, 0]);
+        assert_eq!(league.top_k_agents(10), vec![2, 0, 3, 1]);
+        assert_eq!(league.elo_range(), (1475.0, 1600.0));
+        assert_eq!(league.total_elo(), 6075.0);
+        assert!((league.mean_elo() - 1518.75).abs() < 1e-6);
+        assert_eq!(league.elo_spread(), 125.0);
+        assert_eq!(league.elo_of(3), 1490.0);
+        assert_eq!(league.summary(), "agents=4 matches=0 spread=125");
+    }
+
+    #[test]
+    fn replace_and_remove_helpers_mutate_roster_safely() {
+        let mut league = League::new();
+        league.add_agent(agent("weak.bin", AgentType::Checkpoint(0), 1400.0));
+        league.add_agent(agent("mid.bin", AgentType::Checkpoint(1), 1500.0));
+        league.add_agent(agent("best.bin", AgentType::Current, 1600.0));
+
+        league.replace_weakest(agent("new.bin", AgentType::Exploiter, 1550.0));
+        assert_eq!(league.worst_agent_by_elo(), Some(1));
+        assert_eq!(league.agents[0].weights_path, PathBuf::from("new.bin"));
+
+        let removed = league.remove_agent(1).expect("agent at idx 1 should exist");
+        assert_eq!(removed.weights_path, PathBuf::from("mid.bin"));
+        assert_eq!(league.num_agents(), 2);
+        assert!(league.remove_agent(99).is_none());
+    }
+
     #[test]
     fn elo_updates_correctly() {
         let mut league = League::new();
