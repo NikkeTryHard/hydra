@@ -173,12 +173,14 @@ mod tests {
     #[test]
     fn stage_a_teacher_returns_none_without_hidden_tiles() {
         let remaining = [1.0f32; BELIEF_TILES];
-        assert!(build_stage_a_teacher(
-            &remaining,
-            &[0; BELIEF_ZONES],
-            StageABeliefConfig::default()
-        )
-        .is_none());
+        assert!(
+            build_stage_a_teacher(
+                &remaining,
+                &[0; BELIEF_ZONES],
+                StageABeliefConfig::default()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -188,10 +190,12 @@ mod tests {
             build_stage_a_teacher(&remaining, &[8, 8, 8, 10], StageABeliefConfig::default())
                 .expect("teacher target");
         assert!(target.trust >= StageABeliefConfig::default().trust_threshold);
-        assert!(target
-            .belief_fields
-            .iter()
-            .all(|v| v.is_finite() && *v >= 0.0));
+        assert!(
+            target
+                .belief_fields
+                .iter()
+                .all(|v| v.is_finite() && *v >= 0.0)
+        );
     }
 
     #[test]
