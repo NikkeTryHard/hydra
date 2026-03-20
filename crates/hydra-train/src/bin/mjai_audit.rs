@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 
 const MJAI_AUDIT_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
@@ -18,6 +18,20 @@ struct AuditConfig {
     data_dir: PathBuf,
     threads: usize,
     failure_examples: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AuditTotals {
+    loaded: usize,
+    skipped: usize,
+    samples: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AuditRates {
+    elapsed_secs: f64,
+    files_per_sec: f64,
+    samples_per_sec: f64,
 }
 
 fn usage(program: &str) -> String {
@@ -118,6 +132,71 @@ fn summarize_error(err: &str) -> String {
     }
 }
 
+fn throughput_per_second(units: usize, elapsed_secs: f64) -> f64 {
+    if elapsed_secs > 0.0 {
+        units as f64 / elapsed_secs
+    } else {
+        0.0
+    }
+}
+
+fn sort_error_buckets(error_buckets: HashMap<String, usize>) -> Vec<(String, usize)> {
+    let mut buckets = error_buckets.into_iter().collect::<Vec<_>>();
+    buckets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    buckets
+}
+
+fn should_record_failure_example(current_examples: usize, limit: usize) -> bool {
+    current_examples < limit
+}
+
+fn total_files(totals: &AuditTotals) -> usize {
+    totals.loaded + totals.skipped
+}
+
+fn compute_audit_rates(totals: &AuditTotals, elapsed_secs: f64) -> AuditRates {
+    AuditRates {
+        elapsed_secs,
+        files_per_sec: throughput_per_second(total_files(totals), elapsed_secs),
+        samples_per_sec: throughput_per_second(totals.samples, elapsed_secs),
+    }
+}
+
+fn audit_totals_summary_line(totals: &AuditTotals) -> String {
+    format!(
+        "Audit complete: loaded={} skipped={} samples={} total={}",
+        totals.loaded,
+        totals.skipped,
+        totals.samples,
+        total_files(totals)
+    )
+}
+
+fn audit_speed_summary_line(rates: &AuditRates) -> String {
+    format!(
+        "Speed: elapsed={:.2}s files_per_sec={:.2} samples_per_sec={:.2}",
+        rates.elapsed_secs, rates.files_per_sec, rates.samples_per_sec
+    )
+}
+
+fn failure_report_lines(buckets: &[(String, usize)], examples: &[(String, String)]) -> Vec<String> {
+    if buckets.is_empty() {
+        return vec!["No failures detected.".to_string()];
+    }
+
+    let mut lines = vec!["Top failure buckets:".to_string()];
+    for (bucket, count) in buckets.iter().take(20) {
+        lines.push(format!("  {count:>6}  {bucket}"));
+    }
+    if !examples.is_empty() {
+        lines.push("Failure examples:".to_string());
+        for (path, err) in examples {
+            lines.push(format!("---\n{path}\n{err}"));
+        }
+    }
+    lines
+}
+
 fn run() -> Result<(), String> {
     let started_at = Instant::now();
     let config = parse_args(std::env::args())?;
@@ -178,50 +257,29 @@ fn run() -> Result<(), String> {
                     let err_string = err.to_string();
                     let bucket = summarize_error(&err_string);
                     *error_buckets.entry(bucket).or_insert(0) += 1;
-                    if failure_examples.len() < config.failure_examples {
+                    if should_record_failure_example(
+                        failure_examples.len(),
+                        config.failure_examples,
+                    ) {
                         failure_examples.push((entry_path.display().to_string(), err_string));
                     }
                 }
             }
         }
 
-        let elapsed_secs = started_at.elapsed().as_secs_f64();
-        let total = loaded + skipped;
-        let files_per_sec = if elapsed_secs > 0.0 {
-            total as f64 / elapsed_secs
-        } else {
-            0.0
+        let totals = AuditTotals {
+            loaded,
+            skipped,
+            samples,
         };
-        let samples_per_sec = if elapsed_secs > 0.0 {
-            samples as f64 / elapsed_secs
-        } else {
-            0.0
-        };
+        let rates = compute_audit_rates(&totals, started_at.elapsed().as_secs_f64());
 
-        println!(
-            "Audit complete: loaded={} skipped={} samples={} total={}",
-            loaded, skipped, samples, total
-        );
-        println!(
-            "Speed: elapsed={:.2}s files_per_sec={:.2} samples_per_sec={:.2}",
-            elapsed_secs, files_per_sec, samples_per_sec
-        );
+        println!("{}", audit_totals_summary_line(&totals));
+        println!("{}", audit_speed_summary_line(&rates));
 
-        let mut buckets = error_buckets.into_iter().collect::<Vec<_>>();
-        buckets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        if buckets.is_empty() {
-            println!("No failures detected.");
-        } else {
-            println!("Top failure buckets:");
-            for (bucket, count) in buckets.into_iter().take(20) {
-                println!("  {count:>6}  {bucket}");
-            }
-            if !failure_examples.is_empty() {
-                println!("Failure examples:");
-                for (path, err) in failure_examples {
-                    println!("---\n{path}\n{err}");
-                }
-            }
+        let buckets = sort_error_buckets(error_buckets);
+        for line in failure_report_lines(&buckets, &failure_examples) {
+            println!("{line}");
         }
 
         return Ok(());
@@ -274,7 +332,7 @@ fn run() -> Result<(), String> {
                     }
                     {
                         let mut examples = failure_examples.lock().expect("lock failure examples");
-                        if examples.len() < config.failure_examples {
+                        if should_record_failure_example(examples.len(), config.failure_examples) {
                             examples.push((path.display().to_string(), err_string));
                         }
                     }
@@ -286,60 +344,266 @@ fn run() -> Result<(), String> {
 
     progress.finish_and_clear();
 
-    let loaded = loaded.load(Ordering::Relaxed);
-    let skipped = skipped.load(Ordering::Relaxed);
-    let samples = samples.load(Ordering::Relaxed);
-    let elapsed = started_at.elapsed();
-    let elapsed_secs = elapsed.as_secs_f64();
-    let files_per_sec = if elapsed_secs > 0.0 {
-        total as f64 / elapsed_secs
-    } else {
-        0.0
+    let totals = AuditTotals {
+        loaded: loaded.load(Ordering::Relaxed),
+        skipped: skipped.load(Ordering::Relaxed),
+        samples: samples.load(Ordering::Relaxed),
     };
-    let samples_per_sec = if elapsed_secs > 0.0 {
-        samples as f64 / elapsed_secs
-    } else {
-        0.0
-    };
+    let rates = compute_audit_rates(&totals, started_at.elapsed().as_secs_f64());
 
-    println!(
-        "Audit complete: loaded={} skipped={} samples={} total={}",
-        loaded, skipped, samples, total
+    println!("{}", audit_totals_summary_line(&totals));
+    println!("{}", audit_speed_summary_line(&rates));
+
+    let buckets = sort_error_buckets(
+        error_buckets
+            .lock()
+            .expect("lock error buckets")
+            .drain()
+            .collect(),
     );
-    println!(
-        "Speed: elapsed={:.2}s files_per_sec={:.2} samples_per_sec={:.2}",
-        elapsed_secs, files_per_sec, samples_per_sec
-    );
-
-    let mut buckets = error_buckets
-        .lock()
-        .expect("lock error buckets")
-        .drain()
-        .collect::<Vec<_>>();
-    buckets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    if buckets.is_empty() {
-        println!("No failures detected.");
-    } else {
-        println!("Top failure buckets:");
-        for (bucket, count) in buckets.into_iter().take(20) {
-            println!("  {count:>6}  {bucket}");
-        }
-
-        let examples = failure_examples.lock().expect("lock failure examples");
-        if !examples.is_empty() {
-            println!("Failure examples:");
-            for (path, err) in examples.iter() {
-                println!("---\n{path}\n{err}");
-            }
-        }
+    let examples = failure_examples.lock().expect("lock failure examples");
+    for line in failure_report_lines(&buckets, &examples) {
+        println!("{line}");
     }
 
     Ok(())
 }
 
+fn exit_code_for_run_result(result: &Result<(), String>) -> i32 {
+    if result.is_ok() {
+        0
+    } else {
+        1
+    }
+}
+
 fn main() {
-    if let Err(err) = run() {
+    let result = run();
+    if let Err(err) = &result {
         eprintln!("{err}");
-        std::process::exit(1);
+        std::process::exit(exit_code_for_run_result(&result));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hydra_mjai_audit_{name}_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn parse_args_uses_defaults_and_accepts_overrides() {
+        let cfg = parse_args(vec!["mjai_audit".to_string(), "/data".to_string()])
+            .expect("default args should parse");
+        assert_eq!(cfg.data_dir, PathBuf::from("/data"));
+        assert_eq!(cfg.threads, 16);
+        assert_eq!(cfg.failure_examples, 20);
+
+        let cfg = parse_args(vec![
+            "mjai_audit".to_string(),
+            "/data".to_string(),
+            "--threads".to_string(),
+            "8".to_string(),
+            "--failure-examples".to_string(),
+            "5".to_string(),
+        ])
+        .expect("override args should parse");
+        assert_eq!(cfg.threads, 8);
+        assert_eq!(cfg.failure_examples, 5);
+    }
+
+    #[test]
+    fn parse_args_rejects_bad_values_and_unknown_flags() {
+        assert!(parse_args(vec!["mjai_audit".to_string()]).is_err());
+
+        let zero = parse_args(vec![
+            "mjai_audit".to_string(),
+            "/data".to_string(),
+            "--threads".to_string(),
+            "0".to_string(),
+        ])
+        .expect_err("zero threads should fail");
+        assert!(zero.contains("greater than 0"));
+
+        let invalid = parse_args(vec![
+            "mjai_audit".to_string(),
+            "/data".to_string(),
+            "--threads".to_string(),
+            "abc".to_string(),
+        ])
+        .expect_err("non numeric threads should fail");
+        assert!(invalid.contains("invalid --threads value"));
+
+        let unknown = parse_args(vec![
+            "mjai_audit".to_string(),
+            "/data".to_string(),
+            "--mystery".to_string(),
+        ])
+        .expect_err("unknown flag should fail");
+        assert!(unknown.contains("unknown argument"));
+    }
+
+    #[test]
+    fn path_classifiers_and_error_summary_match_expected_suffix_rules() {
+        assert_eq!(
+            usage("audit-bin"),
+            "Usage: audit-bin <data-dir> [--threads N] [--failure-examples N]"
+        );
+        assert!(is_mjai_file(Path::new("game.json")));
+        assert!(is_mjai_file(Path::new("game.json.gz")));
+        assert!(is_mjai_file(Path::new("game.mjai.json.gz")));
+
+        assert!(is_archive_file(Path::new("dataset.tar.zst")));
+        assert!(is_archive_file(Path::new("dataset.tar-0001.zst")));
+        assert!(!is_archive_file(Path::new("dataset.zip")));
+
+        assert!(is_mjai_archive_entry(Path::new("round.mjai.json")));
+        assert!(is_mjai_archive_entry(Path::new("round.mjai.json.gz")));
+        assert!(is_mjai_archive_entry(Path::new("round.json")));
+        assert!(!is_mjai_archive_entry(Path::new("round.txt")));
+
+        assert_eq!(summarize_error("first line\nsecond line"), "first line");
+        assert_eq!(summarize_error("   \n  "), "unknown error");
+    }
+
+    #[test]
+    fn collect_paths_accepts_single_file_and_filters_directory_entries() {
+        let dir = unique_temp_dir("collect");
+        let keep_json = dir.join("a.json");
+        let keep_gz = dir.join("b.json.gz");
+        let skip_txt = dir.join("note.txt");
+        fs::write(&keep_json, b"{}").expect("write json");
+        fs::write(&keep_gz, b"gz").expect("write gz placeholder");
+        fs::write(&skip_txt, b"note").expect("write txt");
+
+        let single = collect_paths(&keep_json).expect("single file should be accepted");
+        assert_eq!(single, vec![keep_json.clone()]);
+
+        let listed = collect_paths(&dir).expect("directory collection should succeed");
+        assert_eq!(listed, vec![keep_json.clone(), keep_gz.clone()]);
+
+        fs::remove_file(keep_json).expect("remove json");
+        fs::remove_file(keep_gz).expect("remove gz");
+        fs::remove_file(skip_txt).expect("remove txt");
+        fs::remove_dir(dir).expect("remove dir");
+    }
+
+    #[test]
+    fn collect_paths_reports_missing_directory_with_context() {
+        let missing = std::env::temp_dir().join(format!(
+            "hydra_missing_mjai_audit_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let err = collect_paths(&missing).expect_err("missing dir should fail");
+        assert!(err.contains("failed to read data dir"));
+        assert!(err.contains(&missing.display().to_string()));
+    }
+
+    #[test]
+    fn archive_and_mjai_entry_classifiers_reject_directory_and_wrong_suffixes() {
+        assert!(!is_archive_file(Path::new("dataset.tar")));
+        assert!(!is_archive_file(Path::new("dataset.zst")));
+        assert!(!is_archive_file(Path::new("dataset.tar.gz")));
+
+        assert!(!is_mjai_archive_entry(Path::new("round.mjai")));
+        assert!(!is_mjai_archive_entry(Path::new("round.log")));
+        assert!(!is_mjai_archive_entry(Path::new("round.json.zst")));
+    }
+
+    #[test]
+    fn parse_args_requires_flag_values_for_threads_and_failure_examples() {
+        let threads_err = parse_args(vec![
+            "mjai_audit".to_string(),
+            "/data".to_string(),
+            "--threads".to_string(),
+        ])
+        .expect_err("missing threads value should fail");
+        assert!(threads_err.contains("missing value for --threads"));
+
+        let examples_err = parse_args(vec![
+            "mjai_audit".to_string(),
+            "/data".to_string(),
+            "--failure-examples".to_string(),
+        ])
+        .expect_err("missing failure-examples value should fail");
+        assert!(examples_err.contains("missing value for --failure-examples"));
+    }
+
+    #[test]
+    fn summary_helpers_cover_zero_positive_sorting_and_failure_limits() {
+        assert_eq!(throughput_per_second(10, 0.0), 0.0);
+        assert_eq!(throughput_per_second(12, 3.0), 4.0);
+
+        let sorted = sort_error_buckets(HashMap::from([
+            ("z bucket".to_string(), 2usize),
+            ("a bucket".to_string(), 2usize),
+            ("mid bucket".to_string(), 5usize),
+        ]));
+        assert_eq!(sorted[0], ("mid bucket".to_string(), 5));
+        assert_eq!(sorted[1], ("a bucket".to_string(), 2));
+        assert_eq!(sorted[2], ("z bucket".to_string(), 2));
+
+        assert!(should_record_failure_example(0, 2));
+        assert!(should_record_failure_example(1, 2));
+        assert!(!should_record_failure_example(2, 2));
+        assert!(!should_record_failure_example(0, 0));
+    }
+
+    #[test]
+    fn report_helpers_cover_totals_rates_and_failure_rendering() {
+        let totals = AuditTotals {
+            loaded: 3,
+            skipped: 2,
+            samples: 40,
+        };
+        assert_eq!(total_files(&totals), 5);
+
+        let rates = compute_audit_rates(&totals, 2.0);
+        assert_eq!(rates.elapsed_secs, 2.0);
+        assert_eq!(rates.files_per_sec, 2.5);
+        assert_eq!(rates.samples_per_sec, 20.0);
+
+        assert_eq!(
+            audit_totals_summary_line(&totals),
+            "Audit complete: loaded=3 skipped=2 samples=40 total=5"
+        );
+        assert_eq!(
+            audit_speed_summary_line(&rates),
+            "Speed: elapsed=2.00s files_per_sec=2.50 samples_per_sec=20.00"
+        );
+
+        let none = failure_report_lines(&[], &[]);
+        assert_eq!(none, vec!["No failures detected.".to_string()]);
+
+        let lines = failure_report_lines(
+            &[("bucket a".to_string(), 3), ("bucket b".to_string(), 1)],
+            &[("/tmp/a.json".to_string(), "boom".to_string())],
+        );
+        assert_eq!(lines[0], "Top failure buckets:");
+        assert!(lines.iter().any(|line| line.contains("bucket a")));
+        assert!(lines.iter().any(|line| line == "Failure examples:"));
+        assert!(lines.iter().any(|line| line.contains("/tmp/a.json")));
+    }
+
+    #[test]
+    fn exit_code_helper_distinguishes_success_from_failure() {
+        assert_eq!(exit_code_for_run_result(&Ok(())), 0);
+        assert_eq!(exit_code_for_run_result(&Err("boom".to_string())), 1);
     }
 }
