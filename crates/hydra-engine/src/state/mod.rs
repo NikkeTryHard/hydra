@@ -2440,6 +2440,10 @@ impl GameState {
 mod tests {
     use super::*;
 
+    fn fresh_state() -> GameState {
+        GameState::new(1, false, Some(7), 0, GameRule::default_tenhou())
+    }
+
     #[test]
     fn replay_ankan_matcher_accepts_same_tile_class_with_different_copy_ids() {
         let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
@@ -2491,5 +2495,401 @@ mod tests {
         let replay = Action::new(ActionType::Ankan, Some(20), &[20, 20, 20, 20], Some(0));
 
         assert!(!GameState::replay_action_matches_legal(&legal, &replay));
+    }
+
+    #[test]
+    fn reset_and_reset_for_new_game_restore_logging_and_seeded_state() {
+        let mut state = fresh_state();
+        state.mjai_log.push("junk".to_string());
+        state.mjai_log_per_player[0].push("junk".to_string());
+        state.player_event_counts = [3, 2, 1, 0];
+        state.mjai_events.clear();
+        state.reset();
+
+        assert_eq!(state.player_event_counts, [0; 4]);
+        assert_eq!(state.mjai_log.len(), 1);
+        assert_eq!(state.mjai_log_per_player[0].len(), 1);
+        assert_eq!(state.mjai_events.len(), 1);
+
+        state.players[0].score = 1234;
+        state.turn_count = 99;
+        state.reset_for_new_game(Some(99));
+        assert_eq!(state.seed, Some(99));
+        assert_eq!(state.turn_count, 0);
+        assert_eq!(state.players[0].score, state.mode.starting_score());
+        assert!(!state.mjai_log.is_empty());
+    }
+
+    #[test]
+    fn ura_helpers_and_kan_dora_reveal_use_dead_wall_layout() {
+        let mut state = fresh_state();
+        state.wall.tile_count = 20;
+        state.wall.tiles[4] = 16;
+        state.wall.tiles[5] = 52;
+        state.wall.tiles[6] = 88;
+        state.wall.tiles[7] = 108;
+        state.wall.dora_indicator_count = 1;
+
+        assert_eq!(state._get_ura_indicators(), vec![52]);
+        assert_eq!(state._get_ura_markers(), vec!["5pr".to_string()]);
+
+        state._reveal_kan_dora();
+        assert_eq!(state.wall.dora_indicator_slice(), &[4, 88]);
+    }
+
+    #[test]
+    fn initialize_next_round_ends_single_round_games_and_rotates_east_games() {
+        let mut single = GameState::new(0, true, Some(1), 0, GameRule::default_tenhou());
+        single.is_done = false;
+        single._initialize_next_round(false, false);
+        assert!(single.is_done);
+
+        let mut east = GameState::new(1, true, Some(1), 0, GameRule::default_tenhou());
+        east.is_done = false;
+        east.oya = 3;
+        east.honba = 2;
+        east.players.iter_mut().for_each(|p| p.score = 25_000);
+        east._initialize_next_round(false, true);
+        assert!(!east.is_done);
+        assert_eq!(east.oya, 0);
+        assert_eq!(east.round_wind, 1);
+        assert_eq!(east.honba, 3);
+    }
+
+    #[test]
+    fn trigger_ryukyoku_handles_illegal_action_penalties_and_nagashi() {
+        let mut state = GameState::new(1, true, Some(1), 0, GameRule::default_tenhou());
+        state.players.iter_mut().for_each(|p| {
+            p.score = 25_000;
+            p.score_delta = 0;
+        });
+        state.oya = 0;
+        state._trigger_ryukyoku("Error: Illegal Action by Player 1");
+        assert_eq!(state.players[0].score_delta, 4000);
+        assert_eq!(state.players[1].score_delta, -8000);
+        assert_eq!(state.players[2].score_delta, 2000);
+        assert_eq!(state.players[3].score_delta, 2000);
+
+        let mut nagashi = GameState::new(1, true, Some(1), 0, GameRule::default_tenhou());
+        nagashi.players.iter_mut().for_each(|p| {
+            p.score = 25_000;
+            p.score_delta = 0;
+            p.nagashi_eligible = false;
+        });
+        nagashi.players[0].nagashi_eligible = true;
+        nagashi.oya = 0;
+        nagashi._trigger_ryukyoku("exhaustive_draw");
+        assert!(nagashi.players[0].score > 25_000);
+        assert!(nagashi.players[1].score < 25_000);
+        assert_eq!(nagashi.honba, 1);
+    }
+
+    #[test]
+    fn push_mjai_event_masks_start_kyoku_hands_and_other_players_draws() {
+        let mut state = fresh_state();
+        let mut start = serde_json::Map::new();
+        start.insert("type".to_string(), Value::String("start_kyoku".to_string()));
+        start.insert(
+            "tehais".to_string(),
+            serde_json::json!([["1m", "2m"], ["3m", "4m"], ["5m", "6m"], ["7m", "8m"]]),
+        );
+        state._push_mjai_event(Value::Object(start));
+        let masked_start = state.mjai_log_per_player[1]
+            .last()
+            .expect("masked start_kyoku event should exist");
+        assert!(masked_start.contains("?"));
+        assert!(!masked_start.contains("1m"));
+        assert!(!masked_start.contains("2m"));
+
+        let mut tsumo = serde_json::Map::new();
+        tsumo.insert("type".to_string(), Value::String("tsumo".to_string()));
+        tsumo.insert("actor".to_string(), Value::Number(0.into()));
+        tsumo.insert("pai".to_string(), Value::String("5pr".to_string()));
+        state._push_mjai_event(Value::Object(tsumo));
+        let masked_tsumo = state.mjai_log_per_player[1]
+            .last()
+            .expect("masked tsumo event should exist");
+        let actor_tsumo = state.mjai_log_per_player[0]
+            .last()
+            .expect("actor tsumo event should exist");
+        assert!(masked_tsumo.contains("\"pai\":\"?\""));
+        assert!(actor_tsumo.contains("5pr"));
+    }
+
+    #[test]
+    fn initialize_next_round_returns_immediately_when_game_is_already_done() {
+        let mut state = fresh_state();
+        state.is_done = true;
+        state.oya = 3;
+        state.honba = 2;
+        state.round_wind = 1;
+
+        state._initialize_next_round(false, false);
+
+        assert!(state.is_done);
+        assert_eq!(state.oya, 3);
+        assert_eq!(state.honba, 2);
+        assert_eq!(state.round_wind, 1);
+    }
+
+    #[test]
+    fn deal_next_exhaustive_draw_without_nagashi_keeps_scores_even_and_renchan_depends_on_oya_tenpai(
+    ) {
+        let mut state = GameState::new(1, false, Some(1), 0, GameRule::default_tenhou());
+        state.mjai_log.clear();
+        state.mjai_log_per_player = Default::default();
+        state.oya = 2;
+        state.current_player = 1;
+        state.honba = 0;
+        state.round_wind = 0;
+        state.wall.tile_count = 14;
+        state.wall.draw_cursor = 0;
+        state.players.iter_mut().for_each(|player| {
+            player.nagashi_eligible = false;
+            player.score = 25_000;
+            player.score_delta = 0;
+            player.hand = [0; 14];
+            player.hand_len = 0;
+            player.melds = [Meld::default(); 4];
+            player.meld_count = 0;
+        });
+
+        state.players[0].hand[..13]
+            .copy_from_slice(&[0, 4, 8, 36, 40, 44, 72, 76, 80, 108, 109, 110, 112]);
+        state.players[0].hand_len = 13;
+        state.players[1].hand[..13]
+            .copy_from_slice(&[1, 5, 9, 37, 41, 45, 73, 77, 81, 113, 117, 121, 125]);
+        state.players[1].hand_len = 13;
+        state.players[2].hand[..13]
+            .copy_from_slice(&[0, 1, 2, 36, 37, 38, 72, 73, 74, 108, 109, 110, 112]);
+        state.players[2].hand_len = 13;
+        state.players[3].hand[..13]
+            .copy_from_slice(&[2, 6, 10, 38, 42, 46, 74, 78, 82, 114, 118, 122, 126]);
+        state.players[3].hand_len = 13;
+
+        state._deal_next();
+
+        assert_eq!(state.players[0].score, 25_000);
+        assert_eq!(state.players[1].score, 25_000);
+        assert_eq!(state.players[2].score, 25_000);
+        assert_eq!(state.players[3].score, 25_000);
+        assert!(state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"ryukyoku\"")));
+        assert_eq!(state.oya, 3);
+        assert_eq!(state.honba, 1);
+        assert_eq!(state.round_wind, 0);
+    }
+
+    #[test]
+    fn process_end_game_is_idempotent_for_done_flag_and_logging_shape() {
+        let mut logged = fresh_state();
+        logged.mjai_log.clear();
+        logged.mjai_log_per_player = Default::default();
+
+        logged._process_end_game();
+        logged._process_end_game();
+
+        assert!(logged.is_done);
+        assert_eq!(logged.mjai_log.len(), 2);
+        assert!(logged
+            .mjai_log
+            .iter()
+            .all(|event| event.contains("\"type\":\"end_game\"")));
+
+        let mut silent = GameState::new(1, true, Some(1), 0, GameRule::default_tenhou());
+        silent._process_end_game();
+        silent._process_end_game();
+        assert!(silent.is_done);
+        assert!(silent.mjai_log.is_empty());
+    }
+
+    #[test]
+    fn check_abortive_draw_triggers_suufon_renda_and_rejects_mixed_winds() {
+        let mut triggered = fresh_state();
+        for (idx, player) in triggered.players.iter_mut().enumerate() {
+            player.discards[0] = [108, 109, 110, 111][idx];
+            player.discard_len = 1;
+            player.meld_count = 0;
+        }
+
+        assert!(triggered.check_abortive_draw());
+        assert!(triggered
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"ryukyoku\"")));
+
+        let mut mixed = fresh_state();
+        mixed.players[0].discards[0] = 108;
+        mixed.players[1].discards[0] = 112;
+        mixed.players[2].discards[0] = 109;
+        mixed.players[3].discards[0] = 110;
+        for player in &mut mixed.players {
+            player.discard_len = 1;
+            player.meld_count = 0;
+        }
+        assert!(!mixed.check_abortive_draw());
+    }
+
+    #[test]
+    fn check_abortive_draw_triggers_suucha_riichi_when_all_players_declared() {
+        let mut state = fresh_state();
+        state.players.iter_mut().for_each(|player| {
+            player.riichi_declared = true;
+            player.score_delta = 0;
+        });
+
+        assert!(state.check_abortive_draw());
+        assert!(state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"reason\":\"suucha_riichi\"")));
+    }
+
+    #[test]
+    fn accept_riichi_is_noop_without_pending_player_and_logs_when_present() {
+        let mut silent = fresh_state();
+        let score_before = silent.players[0].score;
+        silent._accept_riichi();
+        assert_eq!(silent.players[0].score, score_before);
+        assert_eq!(silent.riichi_sticks, 0);
+
+        let mut logged = fresh_state();
+        logged.mjai_log.clear();
+        logged.mjai_log_per_player = Default::default();
+        logged.riichi_pending_acceptance = Some(2);
+        logged._accept_riichi();
+        assert_eq!(logged.players[2].score, 24_000);
+        assert_eq!(logged.players[2].score_delta, -1000);
+        assert_eq!(logged.riichi_sticks, 1);
+        assert!(logged.players[2].riichi_declared);
+        assert!(logged.players[2].ippatsu_cycle);
+        assert!(logged.riichi_pending_acceptance.is_none());
+        assert!(logged
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"reach_accepted\"")));
+    }
+
+    #[test]
+    fn deal_next_draws_tile_from_back_and_clears_needs_tsumo() {
+        let mut state = fresh_state();
+        state.drawn_tile = None;
+        state.needs_tsumo = true;
+        state.current_player = 1;
+        state.wall.tile_count = 40;
+        let hand_len_before = state.players[1].hand_len;
+
+        state._deal_next();
+
+        assert!(state.drawn_tile.is_some());
+        assert!(!state.needs_tsumo);
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.active_player_slice(), &[1]);
+        assert_eq!(state.players[1].hand_len, hand_len_before + 1);
+        assert!(state.players[1]
+            .hand_slice()
+            .contains(&state.drawn_tile.expect("drawn tile should be recorded")));
+    }
+
+    #[test]
+    fn resolve_discard_sets_riichi_side_effects_and_logs_dahai() {
+        let mut state = fresh_state();
+        state.mjai_log.clear();
+        state.mjai_log_per_player = Default::default();
+        state.current_player = 0;
+        let drawn = state
+            .drawn_tile
+            .expect("fresh state should start with a drawn tile");
+        state.players[0].riichi_stage = true;
+        state.players[0].nagashi_eligible = true;
+
+        state._resolve_discard(0, drawn, false);
+
+        assert_eq!(state.last_discard, Some((0, drawn)));
+        assert!(state.players[0].riichi_declared);
+        assert_eq!(state.last_tedashis[0], Some(drawn));
+        assert!(state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"dahai\"")));
+        assert!(state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"reach_accepted\"")));
+    }
+
+    #[test]
+    fn initialize_round_applies_scores_and_logs_start_and_initial_tsumo() {
+        let mut state = fresh_state();
+        state.mjai_log.clear();
+        state.mjai_log_per_player = Default::default();
+
+        state._initialize_round(2, 1, 3, 4, None, Some(vec![21_000, 22_000, 23_000, 24_000]));
+
+        assert_eq!(state.oya, 2);
+        assert_eq!(state.round_wind, 1);
+        assert_eq!(state.honba, 3);
+        assert_eq!(state.riichi_sticks, 4);
+        assert_eq!(state.players[0].score, 21_000);
+        assert_eq!(state.players[3].score, 24_000);
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.active_player_slice(), &[2]);
+        assert!(state.drawn_tile.is_some());
+        assert!(state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"start_kyoku\"")));
+        assert!(state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"tsumo\"")));
+    }
+
+    #[test]
+    fn initialize_round_without_oya_draw_leaves_needs_tsumo_true() {
+        let mut state = fresh_state();
+        let wall = vec![0; 52];
+        state.mjai_log.clear();
+        state.mjai_log_per_player = Default::default();
+
+        state._initialize_round(0, 0, 0, 0, Some(wall), Some(vec![25_000; 4]));
+
+        assert!(state.drawn_tile.is_none());
+        assert!(state.needs_tsumo);
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.active_player_slice(), &[0]);
+        assert!(state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"start_kyoku\"")));
+        assert!(!state
+            .mjai_log
+            .iter()
+            .any(|event| event.contains("\"type\":\"tsumo\"")));
+    }
+
+    #[test]
+    fn apply_mjai_event_and_log_action_wrappers_delegate_to_handlers() {
+        let mut state = fresh_state();
+        state.mjai_log.clear();
+        state.mjai_log_per_player = Default::default();
+        state.apply_mjai_event(MjaiEvent::Reach { actor: 0 });
+        assert!(state.players[0].riichi_stage);
+
+        let mut replay = fresh_state();
+        replay.mjai_log.clear();
+        replay.mjai_log_per_player = Default::default();
+        replay.last_tedashis = [None; NP];
+        let action = LogAction::DiscardTile {
+            seat: 0,
+            tile: 16,
+            is_liqi: false,
+            is_wliqi: false,
+            doras: None,
+        };
+        replay.apply_log_action(&action);
+        assert_eq!(replay.last_discard.map(|(_, t)| t / 4), Some(4));
     }
 }
