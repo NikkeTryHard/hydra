@@ -22,20 +22,20 @@ mod presentation;
 mod probe_ladder;
 #[path = "train/probe_process.rs"]
 mod probe_process;
-#[path = "train/probe_search.rs"]
-mod probe_search;
 #[path = "train/probe_request.rs"]
 mod probe_request;
+#[path = "train/probe_search.rs"]
+mod probe_search;
 #[path = "train/probe_summary.rs"]
 mod probe_summary;
 #[path = "train/progress.rs"]
 mod progress;
 #[path = "train/resume.rs"]
 mod resume;
-#[path = "train/runtime_autotune.rs"]
-mod runtime_autotune;
 #[path = "train/rl_runner.rs"]
 mod rl_runner;
+#[path = "train/runtime_autotune.rs"]
+mod runtime_autotune;
 #[path = "train/schedule.rs"]
 mod schedule;
 #[path = "train/status.rs"]
@@ -1138,7 +1138,8 @@ preflight:
             delta_q: Some(0.1),
             ..Default::default()
         };
-        let cfg = build_loss_config(Some(&advanced)).expect("delta_q should be allowed in train.rs");
+        let cfg =
+            build_loss_config(Some(&advanced)).expect("delta_q should be allowed in train.rs");
         assert_eq!(cfg.w_delta_q, 0.1);
     }
 
@@ -1296,7 +1297,10 @@ advanced_loss:
     #[test]
     fn train_device_prefers_env_override_then_config() {
         let _guard = TrainDeviceEnvGuard::reset();
-        assert_eq!(train_device("cpu").expect("cpu device"), LibTorchDevice::Cpu);
+        assert_eq!(
+            train_device("cpu").expect("cpu device"),
+            LibTorchDevice::Cpu
+        );
         assert_eq!(
             train_device("cuda:2").expect("cuda device"),
             LibTorchDevice::Cuda(2)
