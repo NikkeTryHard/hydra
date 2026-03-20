@@ -5,9 +5,9 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::model::HydraModel;
-use crate::training::ach::{ach_policy_loss, AchConfig};
+use crate::training::ach::{AchConfig, ach_policy_loss};
 use crate::training::drda;
-use crate::training::head_gates::{extract_target_presence, HeadActivationController};
+use crate::training::head_gates::{HeadActivationController, extract_target_presence};
 use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub const MAX_RL_BATCH_SIZE: usize = 512;
@@ -381,7 +381,7 @@ mod tests {
     use super::*;
     use crate::model::HydraModelConfig;
     use crate::training::head_gates::{AdvancedHead, HeadActivationConfig};
-    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::{Autodiff, NdArray};
     use burn::optim::AdamConfig;
 

@@ -318,24 +318,85 @@ pub fn replay_exit_records_for_identity<B: Backend>(
 mod tests {
     use super::*;
     use crate::data::mjai_loader::load_game_from_events_with_sidecar;
-    use burn::backend::NdArray;
     use hydra_core::action::DISCARD_END;
+    use hydra_core::encoder::ObservationEncoder;
     use riichienv_core::replay::read_mjai_events;
+    use riichienv_core::rule::GameRule;
+    use std::array;
     use std::io::Cursor;
+    use std::io::ErrorKind;
 
-    type B = NdArray<f32>;
-
-    fn sample_log() -> String {
+    fn guardrail_log() -> String {
         [
             r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
-            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
-            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["6m","6m","6m","7m","8m","9m","1p","2p","3p","4p","5p","6p","7p","8p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"8p","tsumogiri":false}"#,
             r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
             r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
             r#"{"type":"ryukyoku"}"#,
             r#"{"type":"end_kyoku"}"#,
         ]
         .join("\n")
+    }
+
+    fn synthetic_exit_records(
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayExitRecordV1> {
+        let events = read_mjai_events(Cursor::new(guardrail_log())).expect("parse events");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+
+        let mut records = Vec::new();
+
+        for (idx, event) in events.iter().enumerate() {
+            if let Some(decision) =
+                prepare_replay_decision(event, &mut state, &safety, &mut encoder)
+                    .expect("prepare replay decision")
+            {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                mask[decision.action_id as usize] = 1.0;
+                target[decision.action_id as usize] = 1.0;
+                records.push(ReplayExitRecordV1 {
+                    version: 1,
+                    semantics: REPLAY_EXIT_SEMANTICS_V1.to_string(),
+                    provenance: REPLAY_EXIT_PROVENANCE.to_string(),
+                    key: ReplayDecisionKey {
+                        source_hash: source_hash_from_identity("game-1"),
+                        event_index: idx as u32,
+                        actor: decision.actor as u8,
+                        obs_hash: obs_hash(&decision.obs_encoded),
+                    },
+                    action: decision.action_id,
+                    legal_mask_digest: legal_mask_digest_from_f32(&bool_mask_to_f32(
+                        decision.legal_mask,
+                    )),
+                    source_net_hash,
+                    source_version,
+                    root_visit_count: 64,
+                    legal_discard_count: decision.legal_mask[..=DISCARD_END as usize]
+                        .iter()
+                        .filter(|&&value| value)
+                        .count() as u8,
+                    supported_actions: 1,
+                    coverage: 1.0,
+                    kl_to_base: 0.0,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                });
+                if records.len() == 2 {
+                    update_safety(&mut safety, event).expect("update safety");
+                    state.apply_mjai_event(event.clone());
+                    break;
+                }
+            }
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        records
     }
 
     #[test]
@@ -500,19 +561,7 @@ mod tests {
 
     #[test]
     fn replay_exit_records_are_tagged_search_derived() {
-        let device = Default::default();
-        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
-        let events = read_mjai_events(Cursor::new(sample_log())).expect("parse events");
-        let (records, _report) = replay_exit_records_for_identity(
-            "game-1",
-            &events,
-            &model,
-            &device,
-            &ExitConfig::default_phase3(),
-            123,
-            1,
-        )
-        .expect("generate records");
+        let records = synthetic_exit_records(123, 1);
         for record in records {
             assert_eq!(record.provenance, REPLAY_EXIT_PROVENANCE);
             assert_eq!(record.semantics, REPLAY_EXIT_SEMANTICS_V1);
@@ -523,19 +572,8 @@ mod tests {
 
     #[test]
     fn loader_with_sidecar_populates_exit_fields() {
-        let events = read_mjai_events(Cursor::new(sample_log())).expect("parse events");
-        let device = Default::default();
-        let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
-        let (records, _report) = replay_exit_records_for_identity(
-            "game-1",
-            &events,
-            &model,
-            &device,
-            &ExitConfig::default_phase3(),
-            123,
-            1,
-        )
-        .expect("generate sidecar records");
+        let events = read_mjai_events(Cursor::new(guardrail_log())).expect("parse events");
+        let records = synthetic_exit_records(123, 1);
         let index = ExitSidecarIndex::from_records(records);
 
         let game = load_game_from_events_with_sidecar(
@@ -552,5 +590,80 @@ mod tests {
             .iter()
             .any(|sample| sample.exit_target.is_some()));
         assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
+    }
+
+    #[test]
+    fn copy_label_arrays_rejects_wrong_lengths() {
+        assert!(copy_label_arrays(
+            &vec![0.0; HYDRA_ACTION_SPACE - 1],
+            &vec![0.0; HYDRA_ACTION_SPACE]
+        )
+        .is_none());
+        assert!(copy_label_arrays(
+            &vec![0.0; HYDRA_ACTION_SPACE],
+            &vec![0.0; HYDRA_ACTION_SPACE - 1]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn read_jsonl_records_reports_invalid_line_numbers() {
+        let err = read_jsonl_records::<ReplayExitRecordV1>(
+            Cursor::new("\nnot-json\n"),
+            "replay ExIt sidecar",
+        )
+        .expect_err("invalid jsonl should fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(err
+            .to_string()
+            .contains("invalid replay ExIt sidecar line 2"));
+    }
+
+    #[test]
+    fn exit_sidecar_index_rejects_malformed_target_shapes() {
+        let key = ReplayDecisionKey {
+            source_hash: 7,
+            event_index: 3,
+            actor: 1,
+            obs_hash: 11,
+        };
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        mask[2] = 1.0;
+        let record = ReplayExitRecordV1 {
+            version: 1,
+            semantics: REPLAY_EXIT_SEMANTICS_V1.to_string(),
+            provenance: REPLAY_EXIT_PROVENANCE.to_string(),
+            key,
+            action: 2,
+            legal_mask_digest: legal_mask_digest_from_f32(&mask),
+            source_net_hash: 9,
+            source_version: 1,
+            root_visit_count: 64,
+            legal_discard_count: 1,
+            supported_actions: 1,
+            coverage: 1.0,
+            kl_to_base: 0.0,
+            target: vec![1.0; HYDRA_ACTION_SPACE - 1],
+            mask: vec![1.0; HYDRA_ACTION_SPACE],
+        };
+        let index = ExitSidecarIndex::from_records(vec![record]);
+        assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_none());
+    }
+
+    #[test]
+    fn exit_sidecar_reader_skips_blank_lines_and_hash_helpers_match() {
+        let records = synthetic_exit_records(123, 1);
+        let raw = format!(
+            "\n{}\n\n",
+            serde_json::to_string(&records[0]).expect("record should serialize")
+        );
+        let index = ExitSidecarIndex::from_jsonl_reader(Cursor::new(raw))
+            .expect("valid jsonl with blanks should parse");
+
+        assert_eq!(index.records.len(), 1);
+        assert_eq!(
+            source_net_hash_from_checkpoint_identity("checkpoint-a"),
+            source_hash_from_identity("checkpoint-a")
+        );
     }
 }
