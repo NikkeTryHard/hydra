@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
-use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::Adam;
 use burn::optim::Optimizer;
+use burn::optim::adaptor::OptimizerAdaptor;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use colored::Colorize;
@@ -13,7 +13,7 @@ use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, DataManifest, StreamingLoaderConfig,
+    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
 };
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::{BCTrainerConfig, BcExitConfig};
@@ -22,14 +22,14 @@ use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationCont
 use hydra_train::training::losses::HydraLoss;
 use hydra_train::training::replay_delta_q::DeltaQSidecarIndex;
 use hydra_train::training::replay_exit::{
-    source_net_hash_from_checkpoint_identity, ExitSidecarIndex,
+    ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
 };
 use hydra_train::training::rl::RlConfig;
 
-use super::artifacts::{read_preflight_cache, BcArtifactPaths, RlArtifactPaths, RlPreflightPaths};
+use super::artifacts::{BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, read_preflight_cache};
 use super::config::{
-    configure_threads, device_label, train_device, train_microbatch_size,
-    trainer_config_from_train_config, validate_config, RlTrainConfig, TrainConfig,
+    RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
+    train_microbatch_size, trainer_config_from_train_config, validate_config,
 };
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::{build_bc_exit_config, build_loss_config, build_rl_loss_config};
@@ -37,9 +37,9 @@ use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::timestamped;
 use super::progress::BannerStats;
 use super::resume::{
-    rl_runtime_resume_contract, runtime_resume_contract, validate_resume_runtime_compatibility,
-    validate_rl_resume_runtime_compatibility, ResumeContext, RlResumeContext,
-    RlRuntimeResumeContract,
+    ResumeContext, RlResumeContext, RlRuntimeResumeContract, rl_runtime_resume_contract,
+    runtime_resume_contract, validate_resume_runtime_compatibility,
+    validate_rl_resume_runtime_compatibility,
 };
 use super::schedule::schedule_total_steps;
 use super::{TrainBackend, ValidBackend};
@@ -502,19 +502,42 @@ pub(super) fn initialize_rl_training_bootstrap(
 mod tests {
     use super::*;
     use crate::config::{RlPhaseConfig, RlTrainConfig};
+    use crate::resume::{
+        build_resume_state, build_rl_resume_state, rl_runtime_resume_contract,
+        test_runtime_resume_contract, write_resume_state,
+    };
+    use hydra_train::config::PipelineState;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn unique_temp_dir(label: &str) -> PathBuf {
+        let base_dir = PathBuf::from("/home/nikketryhard/tmp");
+        fs::create_dir_all(&base_dir).expect("create test temp root");
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time went backwards")
             .as_nanos();
-        std::env::temp_dir().join(format!(
+        base_dir.join(format!(
             "hydra_rl_bootstrap_{label}_{}_{}",
             std::process::id(),
             nanos
         ))
+    }
+
+    fn create_empty_dir(path: &Path) {
+        fs::create_dir_all(path).expect("create dir");
+    }
+
+    fn cleanup_dir(path: &Path) {
+        fs::remove_dir_all(path).ok();
+    }
+
+    fn latest_model_checkpoint_path(output_dir: &Path) -> PathBuf {
+        output_dir.join("latest_model.mpk")
+    }
+
+    fn latest_state_path(output_dir: &Path) -> PathBuf {
+        output_dir.join("latest_state.yaml")
     }
 
     fn dummy_rl_config(output_dir: PathBuf) -> TrainConfig {
@@ -552,6 +575,13 @@ mod tests {
         }
     }
 
+    fn dummy_bc_config(data_dir: PathBuf, output_dir: PathBuf) -> TrainConfig {
+        let mut config = dummy_rl_config(output_dir);
+        config.data_dir = data_dir;
+        config.rl = None;
+        config
+    }
+
     #[test]
     fn initialize_rl_training_bootstrap_uses_rl_defaults() {
         let output_dir = unique_temp_dir("defaults");
@@ -569,12 +599,12 @@ mod tests {
             hydra_train::config::TrainingPhase::DrdaAchSelfPlay
         );
         assert_eq!(runtime.global_step, 0);
-        fs::remove_dir_all(output_dir).ok();
+        cleanup_dir(&output_dir);
     }
 
     #[test]
     fn rl_bootstrap_applies_preflight_cache_override() {
-        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
+        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -632,12 +662,12 @@ mod tests {
             Some(tuned_microbatch),
             "bootstrap should apply preflight-cached rl.microbatch_size"
         );
-        fs::remove_dir_all(output_dir).ok();
+        cleanup_dir(&output_dir);
     }
 
     #[test]
     fn rl_bootstrap_ignores_stale_preflight_cache() {
-        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
+        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
             PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
@@ -699,6 +729,152 @@ mod tests {
             bootstrap.rl_config.games_per_batch, original_games,
             "bootstrap should ignore stale preflight cache"
         );
-        fs::remove_dir_all(output_dir).ok();
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_rejects_invalid_config_early() {
+        let root_dir = unique_temp_dir("bc_invalid_config");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        config.num_epochs = 0;
+
+        let err = initialize_training_bootstrap(&output_dir, config)
+            .err()
+            .expect("invalid config should fail before bootstrap work");
+
+        assert_eq!(err, "num_epochs must be greater than 0");
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_reports_missing_data_dir() {
+        let root_dir = unique_temp_dir("bc_missing_data_dir");
+        let output_dir = root_dir.join("output");
+        create_empty_dir(&output_dir);
+
+        let missing_data_dir = root_dir.join("missing_data");
+        let config = dummy_bc_config(missing_data_dir.clone(), output_dir.clone());
+
+        let err = initialize_training_bootstrap(&output_dir, config)
+            .err()
+            .expect("missing data dir should fail before scan setup completes");
+
+        assert!(
+            err.contains(&format!(
+                "failed to read data dir {}",
+                missing_data_dir.display()
+            )),
+            "unexpected error: {err}"
+        );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_rejects_resume_batch_size_mismatch() {
+        let root_dir = unique_temp_dir("bc_resume_batch_mismatch");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+
+        let resumed_batch_size = config.batch_size / 2;
+        let state = build_resume_state(
+            0,
+            0,
+            11,
+            None,
+            test_runtime_resume_contract(
+                resumed_batch_size,
+                config.microbatch_size.expect("train microbatch"),
+                config
+                    .validation_microbatch_size
+                    .expect("validation microbatch"),
+            ),
+        );
+        write_resume_state(&latest_state_path(&output_dir), &state).expect("write resume state");
+
+        let err = initialize_training_bootstrap(&output_dir, config)
+            .err()
+            .expect("resume batch mismatch should fail before model load");
+
+        assert_eq!(
+            err,
+            format!(
+                "resume batch_size mismatch: checkpoint={} current=256",
+                resumed_batch_size
+            )
+        );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_rejects_partial_epoch_runtime_mismatch() {
+        let root_dir = unique_temp_dir("bc_partial_epoch_runtime_mismatch");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+
+        let state = build_resume_state(
+            2,
+            3,
+            17,
+            None,
+            test_runtime_resume_contract(config.batch_size, 32, 16),
+        );
+        write_resume_state(&latest_state_path(&output_dir), &state).expect("write resume state");
+
+        let err = initialize_training_bootstrap(&output_dir, config)
+            .err()
+            .expect("partial epoch mismatch should fail before model load");
+
+        assert_eq!(
+            err,
+            "partial-epoch resume requires identical runtime contract; checkpoint train_mb=32 val_mb=16 accum_steps=8 current train_mb=64 val_mb=32 accum_steps=4"
+        );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_rl_training_bootstrap_rejects_resume_runtime_mismatch() {
+        let output_dir = unique_temp_dir("rl_resume_runtime_mismatch");
+        create_empty_dir(&output_dir);
+
+        let mut config = dummy_rl_config(output_dir.clone());
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+        let rl_cfg = config.rl.clone().expect("rl config");
+        let mut mismatched_runtime = rl_runtime_resume_contract(&rl_cfg);
+        mismatched_runtime.games_per_batch += 3;
+        let state = build_rl_resume_state(
+            9,
+            PipelineState {
+                phase: rl_cfg.phase.to_training_phase(),
+                ..PipelineState::default()
+            },
+            mismatched_runtime,
+        );
+        let state_yaml = serde_yaml::to_string(&state).expect("serialize rl resume state");
+        fs::write(latest_state_path(&output_dir), state_yaml).expect("write rl resume state");
+
+        let err = initialize_rl_training_bootstrap(&output_dir, config, rl_cfg)
+            .err()
+            .expect("rl runtime mismatch should fail before model load");
+
+        assert_eq!(
+            err,
+            "RL resume runtime mismatch: checkpoint games_per_batch=7 microbatch_size=128 phase=DrdaAchSelfPlay current games_per_batch=4 microbatch_size=128 phase=DrdaAchSelfPlay"
+        );
+        cleanup_dir(&output_dir);
     }
 }
