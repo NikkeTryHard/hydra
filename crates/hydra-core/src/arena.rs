@@ -837,8 +837,10 @@ mod tests {
         arena_cfg.num_parallel_games = 0;
         assert_eq!(arena_cfg.validate(), Err("num_parallel_games > 0"));
 
-        let mut arena_cfg = ArenaConfig::default();
-        arena_cfg.max_trajectory_buffer = 0;
+        let arena_cfg = ArenaConfig {
+            max_trajectory_buffer: 0,
+            ..ArenaConfig::default()
+        };
         assert_eq!(arena_cfg.validate(), Err("max_trajectory_buffer > 0"));
 
         let mut selfplay = SelfPlayConfig::default().with_games(128);
@@ -997,16 +999,22 @@ mod tests {
 
     #[test]
     fn config_validation_catches_temperature_and_lambda_bounds() {
-        let mut arena_cfg = ArenaConfig::default();
-        arena_cfg.temperature_range = (0.0, 1.0);
+        let arena_cfg = ArenaConfig {
+            temperature_range: (0.0, 1.0),
+            ..ArenaConfig::default()
+        };
         assert_eq!(arena_cfg.validate(), Err("temperature range start > 0"));
 
-        let mut arena_cfg = ArenaConfig::default();
-        arena_cfg.temperature_range = (1.2, 1.1);
+        let arena_cfg = ArenaConfig {
+            temperature_range: (1.2, 1.1),
+            ..ArenaConfig::default()
+        };
         assert_eq!(arena_cfg.validate(), Err("temperature range end >= start"));
 
-        let mut selfplay = SelfPlayConfig::default();
-        selfplay.gae_lambda = 1.0;
+        let selfplay = SelfPlayConfig {
+            gae_lambda: 1.0,
+            ..SelfPlayConfig::default()
+        };
         assert_eq!(selfplay.validate(), Err("gae_lambda in (0,1)"));
     }
 
