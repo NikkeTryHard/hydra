@@ -19,6 +19,8 @@ Primary runtime owner: `docs/GAME_ENGINE.md`
 | Aka tile behavior | aka tiles stay distinct in 136-format/action handling where needed | `hydra-core/src/tile.rs`, `hydra-core/src/action.rs` | Red 5m/5p/5s remain special cases |
 | Legal action mask shape | `[bool; 46]` | `hydra-core/src/action.rs` | Training/inference must agree on mask semantics |
 | Runtime/train entrypoint | `crates/hydra-train/src/bin/train.rs` | root `AGENTS.md`, crate docs | Main train binary entry surface |
+| BC selected-runtime authority | fresh run = config-derived; epoch-boundary resume may reuse matching preflight-selected runtime; partial-epoch resume requires identical runtime | `crates/hydra-train/src/bin/train/bootstrap.rs`, `crates/hydra-train/src/bin/train/resume.rs` | Applies only to selected-runtime tuple (`train_microbatch_size`, `validation_microbatch_size`, `accum_steps`) |
+| BC loader-runtime authority | config-derived | `crates/hydra-train/src/bin/train/bootstrap.rs`, `crates/hydra-train/src/bin/train/config_runtime.rs` | Matching BC preflight cache does not make loader-runtime authoritative |
 | Runtime truth on drift | current code wins | `docs/GAME_ENGINE.md`, root `AGENTS.md` | Docs are compatibility aids, not stronger than code |
 
 ## Crate ownership quick reference
