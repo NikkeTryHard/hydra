@@ -7,11 +7,11 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::config::OracleGuidingConfig;
-use crate::data::sample::{collate_sample_refs_with_batch, MjaiBatch, MjaiSample};
+use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_with_batch};
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::exit::exit_loss;
 use crate::training::head_gates::{
-    extract_target_presence, AdvancedHead, HeadActivationController,
+    AdvancedHead, HeadActivationController, extract_target_presence,
 };
 use crate::training::losses::{HydraLoss, HydraTargets};
 
@@ -211,11 +211,7 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob {
-                1.0
-            } else {
-                0.0
-            }
+            if sample < keep_prob { 1.0 } else { 0.0 }
         })
         .collect()
 }
@@ -567,7 +563,7 @@ impl CheckpointMeta {
 mod tests {
     use super::*;
     use crate::data::sample::MjaiBatch;
-    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;

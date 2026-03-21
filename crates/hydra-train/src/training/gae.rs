@@ -350,4 +350,66 @@ mod tests {
             "constant rewards should give std ~0 (epsilon only), got {std}"
         );
     }
+
+    #[test]
+    fn test_gae_config_builder_summary_and_validate_bounds() {
+        let cfg = GaeConfig::mahjong_defaults()
+            .with_gamma(0.9)
+            .with_lambda(0.8);
+
+        assert_eq!(cfg.summary(), "gae(gamma=0.900, lambda=0.80)");
+        assert!(cfg.validate().is_ok());
+
+        assert_eq!(
+            GaeConfig::default().with_gamma(0.0).validate(),
+            Err("gamma in (0,1)")
+        );
+        assert_eq!(
+            GaeConfig::default().with_gamma(1.0).validate(),
+            Err("gamma in (0,1)")
+        );
+        assert_eq!(
+            GaeConfig::default().with_lambda(0.0).validate(),
+            Err("lambda in (0,1)")
+        );
+        assert_eq!(
+            GaeConfig::default().with_lambda(1.0).validate(),
+            Err("lambda in (0,1)")
+        );
+    }
+
+    #[test]
+    fn test_advantage_helpers_discount_returns_and_zero_step_rewards() {
+        let advantages = [-2.0f32, 0.5, 3.0];
+        assert_eq!(advantage_range(&advantages), (-2.0, 3.0));
+        assert!((mean_advantage(&advantages) - 0.5).abs() < 1e-6);
+
+        let clipped = clipped_advantages(&advantages, 1.5);
+        assert_eq!(clipped, vec![-1.5, 0.5, 1.5]);
+
+        let discounted = discount_returns(&[1.0, 2.0, 3.0], 0.5);
+        assert_eq!(discounted.len(), 3);
+        assert!((discounted[0] - 2.75).abs() < 1e-6);
+        assert!((discounted[1] - 3.5).abs() < 1e-6);
+        assert!((discounted[2] - 3.0).abs() < 1e-6);
+
+        let rewards = rewards_from_final_scores([25_000, -10_000, 5_000, 0], &[2, 0, 1, 0]);
+        assert_eq!(rewards.len(), 2);
+        assert!((rewards[0][0] - 0.125).abs() < 1e-6);
+        assert_eq!(rewards[0][1], 0.0);
+        assert!((rewards[0][2] - 0.05).abs() < 1e-6);
+        assert_eq!(rewards[1][2], 0.0);
+    }
+
+    #[test]
+    fn test_explained_variance_handles_empty_and_constant_returns() {
+        assert_eq!(explained_variance(&[], &[]), 0.0);
+
+        let constant_returns = [4.0f32, 4.0, 4.0];
+        let noisy_predictions = [1.0f32, 2.0, 3.0];
+        assert_eq!(
+            explained_variance(&constant_returns, &noisy_predictions),
+            1.0
+        );
+    }
 }
