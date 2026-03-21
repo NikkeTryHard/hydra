@@ -179,4 +179,64 @@ mod tests {
             "different outputs should give positive loss: {val}"
         );
     }
+
+    #[test]
+    fn fast_distill_uses_faster_update_schedule() {
+        let config = DistillConfig::fast_distill();
+
+        assert_eq!(config.update_interval_secs, 30);
+        assert!((config.ema_decay - 0.995).abs() < 1e-6);
+        assert!((config.kd_kl_weight - 1.0).abs() < 1e-6);
+        assert!((config.kd_mse_weight - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn validate_rejects_bad_learning_rate_and_ema_decay() {
+        let bad_lr = DistillConfig::new().with_distill_lr(0.0);
+        assert_eq!(bad_lr.validate(), Err("distill_lr must be positive"));
+
+        let bad_zero_decay = DistillConfig::new().with_ema_decay(0.0);
+        assert_eq!(bad_zero_decay.validate(), Err("ema_decay must be in (0,1)"));
+
+        let bad_one_decay = DistillConfig::new().with_ema_decay(1.0);
+        assert_eq!(bad_one_decay.validate(), Err("ema_decay must be in (0,1)"));
+    }
+
+    #[test]
+    fn distill_state_tracks_ticks_recording_and_health() {
+        let config = DistillConfig::new().with_update_interval_secs(5);
+        let mut state = DistillState::new();
+
+        assert_eq!(state.elapsed_steps(), 0);
+        assert!(!state.should_distill(&config, 4));
+        assert!(state.should_distill(&config, 5));
+
+        state.tick();
+        state.tick();
+        assert_eq!(state.steps_since_update, 2);
+
+        state.record_step(0.25);
+        assert_eq!(state.elapsed_steps(), 1);
+        assert_eq!(state.steps_since_update, 0);
+        assert!((state.last_kl_drift - 0.25).abs() < 1e-6);
+        assert!(state.is_healthy(0.3));
+        assert!(!state.is_healthy(0.2));
+        assert!(state.should_warn(0.2));
+        assert!(!state.should_warn(0.3));
+    }
+
+    #[test]
+    fn summaries_include_key_runtime_fields() {
+        let config = DistillConfig::new();
+        let mut state = DistillState::default();
+        state.record_step(0.125);
+
+        let config_summary = config.summary();
+        let state_summary = state.summary();
+
+        assert!(config_summary.contains("distill(lr="));
+        assert!(config_summary.contains("interval=60s"));
+        assert!(state_summary.contains("distill_steps=1"));
+        assert!(state_summary.contains("kl=0.1250"));
+    }
 }
