@@ -1398,11 +1398,9 @@ mod tests {
             ..LiveExitConfig::default()
         };
 
-        let serial =
-            generate_self_play_batch_source(&seeds, 1.0, 40, &model, &device, cfg.clone());
-        let batched = generate_self_play_batch_source_batched(
-            &seeds, 1.0, 40, &model, &device, &device, cfg,
-        );
+        let serial = generate_self_play_batch_source(&seeds, 1.0, 40, &model, &device, cfg.clone());
+        let batched =
+            generate_self_play_batch_source_batched(&seeds, 1.0, 40, &model, &device, &device, cfg);
 
         assert_eq!(serial.trajectories.len(), batched.trajectories.len());
         assert_eq!(serial.values.len(), batched.values.len());

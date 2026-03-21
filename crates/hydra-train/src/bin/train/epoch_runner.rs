@@ -8,30 +8,30 @@ use colored::Colorize;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
-use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
-use hydra_train::data::sample::{collate_batch_samples, MjaiSample};
+use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
+use hydra_train::data::sample::{MjaiSample, collate_batch_samples};
 use hydra_train::model::HydraModel;
 use hydra_train::training::bc::{
-    bc_total_with_exit, gated_bc_context, policy_agreement, target_actions_from_policy_target,
-    BCTrainerConfig, BcExitConfig,
+    BCTrainerConfig, BcExitConfig, bc_total_with_exit, gated_bc_context, policy_agreement,
+    target_actions_from_policy_target,
 };
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::{
-    append_step_log, append_training_log, log_tensorboard, save_checkpoint,
-    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact, BcArtifactPaths,
-    LatestCheckpointState, PersistedDeltaQPromotionArtifact,
+    BcArtifactPaths, LatestCheckpointState, PersistedDeltaQPromotionArtifact, append_step_log,
+    append_training_log, log_tensorboard, save_checkpoint, save_latest_checkpoint_and_state,
+    write_delta_q_promotion_artifact,
 };
-use super::config::{validation_sample_limit, TrainConfig};
+use super::config::{TrainConfig, validation_sample_limit};
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
 use super::progress::{
-    batch_stats_from_breakdown, BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry,
+    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_stats_from_breakdown,
 };
 use super::resume::{
-    paused_training_message, BestValidation, EpochContinuation, RuntimeResumeContract,
+    BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
@@ -39,7 +39,7 @@ use super::status::{
     estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
 };
 use super::validation::{
-    is_better_validation, run_validation, ValidationContext, ValidationRuntime, ValidationSummary,
+    ValidationContext, ValidationRuntime, ValidationSummary, is_better_validation, run_validation,
 };
 use super::{TrainBackend, ValidBackend};
 
@@ -1261,6 +1261,12 @@ mod tests {
     }
 
     #[test]
+    fn epoch_end_validation_runs_on_final_epoch_even_when_interval_is_larger() {
+        assert!(should_run_epoch_end_validation(4, 5, 10));
+        assert!(!should_run_epoch_end_validation(3, 5, 10));
+    }
+
+    #[test]
     fn record_drained_batch_stats_updates_both_accumulators_with_weighted_values() {
         let mut stats = ScalarAverages::default();
         let mut window = ScalarAverages::default();
@@ -1446,10 +1452,12 @@ mod tests {
 
         assert!(!artifacts.latest_state_path.exists());
         assert!(!artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(!artifacts
-            .latest_optimizer_base
-            .with_extension("bin")
-            .exists());
+        assert!(
+            !artifacts
+                .latest_optimizer_base
+                .with_extension("bin")
+                .exists()
+        );
     }
 
     #[test]
@@ -1491,14 +1499,52 @@ mod tests {
         assert_eq!(state.runtime, dummy_runtime_resume_contract());
         assert!(artifacts.latest_state_path.exists());
         assert!(artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .latest_model_base
-            .with_extension("meta.json")
-            .exists());
-        assert!(artifacts
-            .latest_optimizer_base
-            .with_extension("bin")
-            .exists());
+        assert!(
+            artifacts
+                .latest_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
+        assert!(
+            artifacts
+                .latest_optimizer_base
+                .with_extension("bin")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn maybe_save_periodic_checkpoint_preserves_absent_best_validation_on_boundary() {
+        let config = dummy_config();
+        let artifacts = test_artifacts("periodic_checkpoint_save_without_best");
+        let device = LibTorchDevice::Cpu;
+        let model = dummy_model(&device);
+        let optimizer = AdamConfig::new().init();
+
+        maybe_save_periodic_checkpoint(
+            &model,
+            &optimizer,
+            PeriodicCheckpointContext {
+                config: &config,
+                artifacts: &artifacts,
+                epoch: 1,
+                session_start_global_step: 0,
+                current_runtime: dummy_runtime_resume_contract(),
+            },
+            PeriodicCheckpointState {
+                global_step: 5,
+                epoch_optimizer_steps: 2,
+                total_loss: 0.5,
+                best_validation: None,
+            },
+        )
+        .expect("save checkpoint without best validation");
+
+        let state = read_resume_state(&artifacts.latest_state_path).expect("read resume state");
+        assert_eq!(state.next_epoch, 1);
+        assert_eq!(state.skip_optimizer_steps_in_epoch, 2);
+        assert_eq!(state.global_step, 5);
+        assert_eq!(state.best_validation, None);
     }
 
     #[test]
@@ -1549,10 +1595,12 @@ mod tests {
             })
         );
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .best_model_base
-            .with_extension("meta.json")
-            .exists());
+        assert!(
+            artifacts
+                .best_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -1807,10 +1855,12 @@ mod tests {
             })
         );
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .best_model_base
-            .with_extension("meta.json")
-            .exists());
+        assert!(
+            artifacts
+                .best_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
     }
 
     #[test]
