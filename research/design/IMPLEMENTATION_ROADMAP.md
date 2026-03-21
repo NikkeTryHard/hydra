@@ -515,7 +515,7 @@ Collation: stack obs arrays -> reshape [B,192,34], convert action to Int tensor,
 | `test_checkpoint_save_load` | save, load, forward same input -> identical output (bitwise) |
 | `test_policy_agreement_range` | random model agreement ~1/46 (~2.2%), not 0% or 100% |
 
-Current status note: this BC surface is no longer just the historical baseline loop. The live code already covers narrow advanced-target consumption for replay-derived `safety_residual`, `advanced_loss` config validation in `src/bin/train.rs`, and hardware-agnostic microbatch accumulation for learner-sized runs; broader advanced-target closure remains tracked in `HYDRA_RECONCILIATION.md`.
+Current status note: this BC surface is no longer just the historical baseline loop. The live code already covers narrow advanced-target consumption for replay-derived `safety_residual`, `advanced_loss` config validation in `src/bin/train.rs`, hardware-agnostic microbatch accumulation for learner-sized runs, and BC selected-runtime authority that stays config-derived on fresh runs, allows matching preflight-selected runtime reuse at epoch boundaries only, and preserves strict partial-epoch runtime identity while keeping loader-runtime config-derived. Broader advanced-target closure remains tracked in `HYDRA_RECONCILIATION.md`.
 
 ---
 

@@ -137,11 +137,11 @@ Every checkpoint saves the following RNG state alongside model weights and optim
 | Burn backend RNG | Backend-specific RNG state via `Record` | Reproducible forward pass on resume |
 | System RNG (rand crate) | ChaCha20Rng serialized state | Reproducible Rust-level randomness on resume |
 | DataLoader RNG | ChaCha8Rng state per worker | DataLoader and augmentation state |
-| Training progress | Epoch number, global step, file cursor position | Reconstruct DataLoader file ordering on resume |
+| Training progress | Epoch number, global step, logical skip count / persisted runtime contract (current BC) | Reconstruct the current training continuation contract on resume |
 
-**Resume protocol:** On checkpoint load, all RNG states are restored before the first forward pass. The DataLoader reconstructs its file ordering from the saved epoch number and file cursor, ensuring that resumed training sees exactly the same data sequence as uninterrupted training.
+**Resume protocol:** On checkpoint load, all RNG states are restored before the first forward pass. Current BC resume reconstructs continuation from persisted epoch/global-step state plus logical skip count and runtime contract, rather than restoring an explicit file cursor. Fresh BC runs still derive runtime from config, while epoch-boundary BC resumes may reuse matching preflight-selected runtime for the selected-runtime tuple only; partial-epoch resumes still require identical runtime.
 
-- **Phase 1:** Enables bitwise-identical training continuation — the resumed run produces the same gradients as if it had never been interrupted.
+- **Phase 1:** Current BC resume is designed around logical-batch continuation, not a stronger claim of bitwise-identical continuation through every loader/cache detail.
 - **Phases 2–3:** Enables approximate resumption. Game trajectories will differ due to thread scheduling non-determinism in rayon, but the statistical properties of the training distribution are preserved.
 
 ### Stage Transition Seeding (Reserve / Future Planning)

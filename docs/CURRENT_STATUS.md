@@ -30,6 +30,7 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 - `hydra-core` is a real first-party runtime/encoder/simulator crate.
 - The live encoder/model contract is `192x34`; the old `85x34` view is baseline-prefix only.
 - The fixed runtime action space is 46 actions with two-phase riichi and kan handling.
+- BC training now supports **epoch-boundary-only** reuse of matching preflight-selected runtime for the selected-runtime tuple (`train_microbatch_size`, `validation_microbatch_size`, derived `accum_steps`), while fresh runs remain config-derived, partial-epoch resumes still require identical runtime, and loader-runtime stays config-derived.
 - The stronger public-teacher belief-semantics tranche is shipped as part of the current training baseline.
 - The current Hand-EV realism upgrade is shipped as part of the live baseline surface.
 - Replay-derived `safety_residual` is shipped as a narrow supervised lane.
@@ -60,6 +61,7 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 | Runtime encoder / action semantics | shipped baseline | See `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` |
 | Hand-EV baseline surface | shipped baseline | Stronger local evaluator is live; representative-world CT-SMC Hand-EV remains staged |
 | Belief semantics baseline | shipped baseline | Stronger public-teacher belief tranche is in the live baseline |
+| BC runtime authority | shipped baseline | Fresh runs are config-derived; epoch-boundary resumes may reuse matching preflight-selected runtime for selected-runtime only; partial-epoch resumes still require identical runtime; loader-runtime remains config-derived |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |
 | ExIt carrier | shipped baseline | Live self-play lane + replay/sample sidecar-first lane |
 | DeltaQ lane | implemented but not default-on | Arena-confirmation path implemented; promotion artifact now records pre-arena recommendation plus final `arena_decision`/`arena_report` |
