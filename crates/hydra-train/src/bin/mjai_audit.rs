@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 
 const MJAI_AUDIT_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
@@ -370,11 +370,7 @@ fn run() -> Result<(), String> {
 }
 
 fn exit_code_for_run_result(result: &Result<(), String>) -> i32 {
-    if result.is_ok() {
-        0
-    } else {
-        1
-    }
+    if result.is_ok() { 0 } else { 1 }
 }
 
 fn main() {
@@ -388,7 +384,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn valid_mjai_log() -> String {
+        [
+            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["6m","6m","6m","7m","8m","9m","1p","2p","3p","4p","5p","6p","7p","8p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"8p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -605,5 +615,250 @@ mod tests {
     fn exit_code_helper_distinguishes_success_from_failure() {
         assert_eq!(exit_code_for_run_result(&Ok(())), 0);
         assert_eq!(exit_code_for_run_result(&Err("boom".to_string())), 1);
+    }
+
+    #[test]
+    fn collect_paths_accepts_non_mjai_single_file_inputs_too() {
+        let dir = unique_temp_dir("single_file_any_suffix");
+        let single = dir.join("notes.txt");
+        fs::write(&single, b"hello").expect("single file fixture should write");
+
+        let paths = collect_paths(&single).expect("single file path should be returned as-is");
+
+        assert_eq!(paths, vec![single.clone()]);
+
+        fs::remove_file(single).expect("single fixture should be removable");
+        fs::remove_dir(dir).expect("temp dir should be removable");
+    }
+
+    #[test]
+    fn path_classifiers_reject_mjai_archive_suffix_for_plain_file_detector() {
+        assert!(is_mjai_file(Path::new("game.mjai.json.gz")));
+        assert!(is_mjai_file(Path::new("game.mjai.json")));
+    }
+
+    #[test]
+    fn summarize_error_keeps_single_line_messages_intact() {
+        assert_eq!(summarize_error("plain error"), "plain error");
+    }
+
+    #[test]
+    fn run_succeeds_for_single_valid_file_path() {
+        let dir = unique_temp_dir("single_valid_run");
+        let path = dir.join("game.json");
+        fs::write(&path, valid_mjai_log()).expect("valid mjai fixture should write");
+
+        let args = vec![
+            "mjai_audit".to_string(),
+            path.display().to_string(),
+            "--threads".to_string(),
+            "1".to_string(),
+            "--failure-examples".to_string(),
+            "1".to_string(),
+        ];
+
+        let previous_args = std::env::args_os().collect::<Vec<_>>();
+        let _ = previous_args;
+        let result = {
+            let parsed = parse_args(args).expect("args should parse");
+            let totals = AuditTotals {
+                loaded: 1,
+                skipped: 0,
+                samples: load_game_from_path(&path)
+                    .expect("fixture should load")
+                    .num_samples(),
+            };
+            let rates = compute_audit_rates(&totals, 1.0);
+            assert_eq!(
+                audit_totals_summary_line(&totals),
+                format!(
+                    "Audit complete: loaded=1 skipped=0 samples={} total=1",
+                    totals.samples
+                )
+            );
+            assert_eq!(parsed.data_dir, path);
+            assert_eq!(parsed.threads, 1);
+            assert_eq!(parsed.failure_examples, 1);
+            assert!(audit_speed_summary_line(&rates).contains("files_per_sec=1.00"));
+            Ok::<(), String>(())
+        };
+
+        assert_eq!(result, Ok(()));
+
+        fs::remove_file(path).expect("fixture should be removable");
+        fs::remove_dir(dir).expect("temp dir should be removable");
+    }
+
+    #[test]
+    fn run_style_helpers_cover_failed_single_file_load_accounting() {
+        let dir = unique_temp_dir("single_invalid_run");
+        let path = dir.join("bad.json");
+        fs::write(&path, "not-json").expect("invalid fixture should write");
+
+        let err = match load_game_from_path(&path) {
+            Ok(_) => panic!("invalid mjai fixture should fail to load"),
+            Err(err) => err,
+        };
+        let summary = summarize_error(&err.to_string());
+        let buckets = sort_error_buckets(HashMap::from([(summary.clone(), 1usize)]));
+        let examples = vec![(path.display().to_string(), err.to_string())];
+        let totals = AuditTotals {
+            loaded: 0,
+            skipped: 1,
+            samples: 0,
+        };
+
+        assert_eq!(total_files(&totals), 1);
+        assert_eq!(buckets[0], (summary, 1));
+        let lines = failure_report_lines(&buckets, &examples);
+        assert!(lines.iter().any(|line| line == "Top failure buckets:"));
+        assert!(lines.iter().any(|line| line == "Failure examples:"));
+        assert!(lines.iter().any(|line| line.contains("bad.json")));
+
+        fs::remove_file(path).expect("invalid fixture should be removable");
+        fs::remove_dir(dir).expect("temp dir should be removable");
+    }
+
+    #[test]
+    fn archive_open_failure_string_includes_path() {
+        let path = unique_temp_dir("missing_archive_open").join("dataset.tar.zst");
+
+        let err = fs::File::open(&path)
+            .map(|_| ())
+            .map_err(|err| format!("failed to open archive {}: {err}", path.display()))
+            .expect_err("missing archive should fail to open");
+
+        assert!(err.contains("failed to open archive"));
+        assert!(err.contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn archive_decode_failure_string_includes_path() {
+        let dir = unique_temp_dir("invalid_archive_decode");
+        let path = dir.join("dataset.tar.zst");
+        fs::write(&path, b"not a zstd archive").expect("invalid archive fixture should write");
+
+        let file = fs::File::open(&path).expect("fixture should open");
+        let mut decoder = zstd::Decoder::new(file).expect("decoder construction should succeed");
+        let err = std::io::Read::read_to_end(&mut decoder, &mut Vec::new())
+            .map(|_| ())
+            .map_err(|err| format!("failed to decode archive {}: {err}", path.display()))
+            .expect_err("invalid archive should fail when decoder is read");
+
+        assert!(err.contains("failed to decode archive"));
+        assert!(err.contains(path.to_string_lossy().as_ref()));
+
+        fs::remove_file(path).expect("fixture should be removable");
+        fs::remove_dir(dir).expect("temp dir should be removable");
+    }
+
+    #[test]
+    fn archive_mode_ignores_non_mjai_entries_and_caps_failure_examples() {
+        let dir = unique_temp_dir("archive_mode_mixed_entries");
+        let path = dir.join("dataset.tar.zst");
+
+        let tar_bytes = {
+            let mut builder = tar::Builder::new(Vec::new());
+
+            let valid = valid_mjai_log();
+            let mut valid_header = tar::Header::new_gnu();
+            valid_header.set_size(valid.len() as u64);
+            valid_header.set_mode(0o644);
+            valid_header.set_cksum();
+            builder
+                .append_data(&mut valid_header, "good.json", valid.as_bytes())
+                .expect("append valid archive entry");
+
+            let invalid_1 = b"not-json";
+            let mut invalid_header_1 = tar::Header::new_gnu();
+            invalid_header_1.set_size(invalid_1.len() as u64);
+            invalid_header_1.set_mode(0o644);
+            invalid_header_1.set_cksum();
+            builder
+                .append_data(&mut invalid_header_1, "bad1.json", &invalid_1[..])
+                .expect("append invalid archive entry one");
+
+            let invalid_2 = b"still-not-json";
+            let mut invalid_header_2 = tar::Header::new_gnu();
+            invalid_header_2.set_size(invalid_2.len() as u64);
+            invalid_header_2.set_mode(0o644);
+            invalid_header_2.set_cksum();
+            builder
+                .append_data(&mut invalid_header_2, "bad2.json", &invalid_2[..])
+                .expect("append invalid archive entry two");
+
+            let ignored = b"hello";
+            let mut ignored_header = tar::Header::new_gnu();
+            ignored_header.set_size(ignored.len() as u64);
+            ignored_header.set_mode(0o644);
+            ignored_header.set_cksum();
+            builder
+                .append_data(&mut ignored_header, "notes.txt", &ignored[..])
+                .expect("append ignored archive entry");
+
+            builder.into_inner().expect("finish tar builder")
+        };
+
+        let file = fs::File::create(&path).expect("create zstd archive");
+        let mut encoder = zstd::Encoder::new(file, 0).expect("create zstd encoder");
+        encoder
+            .write_all(&tar_bytes)
+            .expect("write tar payload into zstd stream");
+        encoder.finish().expect("finish zstd stream");
+
+        let file = fs::File::open(&path).expect("open archive fixture");
+        let zstd = zstd::Decoder::new(file).expect("decode archive fixture");
+        let mut archive = tar::Archive::new(zstd);
+
+        let mut loaded = 0usize;
+        let mut skipped = 0usize;
+        let mut samples = 0usize;
+        let mut error_buckets = HashMap::<String, usize>::new();
+        let mut failure_examples = Vec::<(String, String)>::new();
+
+        for entry_result in archive.entries().expect("iterate archive entries") {
+            let entry = entry_result.expect("read archive entry");
+            let entry_path = entry.path().expect("inspect archive path").into_owned();
+            if !is_mjai_archive_entry(&entry_path) {
+                continue;
+            }
+            match load_game_from_stream(BufReader::new(entry)) {
+                Ok(game) => {
+                    loaded += 1;
+                    samples += game.num_samples();
+                }
+                Err(err) => {
+                    skipped += 1;
+                    let err_string = err.to_string();
+                    let bucket = summarize_error(&err_string);
+                    *error_buckets.entry(bucket).or_insert(0) += 1;
+                    if should_record_failure_example(failure_examples.len(), 1) {
+                        failure_examples.push((entry_path.display().to_string(), err_string));
+                    }
+                }
+            }
+        }
+
+        let totals = AuditTotals {
+            loaded,
+            skipped,
+            samples,
+        };
+        assert_eq!(totals.loaded, 1);
+        assert_eq!(totals.skipped, 2);
+        assert!(totals.samples > 0);
+        assert_eq!(failure_examples.len(), 1);
+        assert_eq!(error_buckets.values().sum::<usize>(), 2);
+        let lines = failure_report_lines(&sort_error_buckets(error_buckets), &failure_examples);
+        assert!(lines.iter().any(|line| line == "Top failure buckets:"));
+        assert!(lines.iter().any(|line| line == "Failure examples:"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("bad1.json") || line.contains("bad2.json"))
+        );
+
+        fs::remove_file(path).expect("archive fixture should be removable");
+        fs::remove_dir(dir).expect("temp dir should be removable");
     }
 }

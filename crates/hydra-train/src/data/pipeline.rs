@@ -1059,6 +1059,7 @@ mod tests {
     use hydra_core::safety::SafetyInfo;
     use riichienv_core::rule::GameRule;
     use riichienv_core::state::GameState;
+    use std::os::unix::ffi::OsStringExt;
 
     type B = NdArray<f32>;
 
@@ -1336,6 +1337,95 @@ mod tests {
             compact_identity(identity),
             "210614_44a21457_86ce_4215_9ac2_aeb845f15521.mjai.json"
         );
+    }
+
+    #[test]
+    fn test_fraction_identity_and_split_helpers_cover_edge_cases() {
+        assert_eq!(normalized_train_fraction(f32::NAN), 0.0);
+        assert_eq!(normalized_train_fraction(-0.25), 0.0);
+        assert_eq!(normalized_train_fraction(1.25), 1.0);
+
+        let identity = "game_0001.mjai.json";
+        let train_fraction = 0.6;
+        assert_eq!(
+            should_include_identity(identity, train_fraction, &StreamSplit::Train),
+            is_train_game(identity, train_fraction)
+        );
+        assert_eq!(
+            should_include_identity(identity, train_fraction, &StreamSplit::Validation),
+            !is_train_game(identity, train_fraction)
+        );
+
+        let cfg = StreamingLoaderConfig {
+            seed: 7,
+            ..StreamingLoaderConfig::default()
+        };
+        assert_eq!(stream_shuffle_seed(&cfg, 2, 5), 9_000_032);
+    }
+
+    #[test]
+    fn test_identity_helpers_and_hash_are_deterministic() {
+        let loose = identity_for_loose_file(Path::new("/tmp/example.mjai.json"))
+            .expect("filename should be valid utf-8");
+        assert_eq!(loose, "example.mjai.json");
+
+        let archive = identity_for_archive_entry(
+            Path::new("/tmp/archive.tar.zst"),
+            Path::new("nested/game.json"),
+        )
+        .expect("archive identity should build");
+        assert_eq!(archive, "archive.tar.zst/nested/game.json");
+
+        let bad_archive = PathBuf::from(std::ffi::OsString::from_vec(vec![0xFF]));
+        let err = identity_for_archive_entry(&bad_archive, Path::new("game.json"))
+            .expect_err("invalid utf-8 archive names should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        assert_eq!(fnv1a_hash(b"hydra"), fnv1a_hash(b"hydra"));
+        assert_ne!(fnv1a_hash(b"hydra"), fnv1a_hash(b"hydrb"));
+    }
+
+    #[test]
+    fn test_scan_data_sources_with_fraction_on_single_files() {
+        let loose_path = unique_temp_path("single_loose", ".mjai.json");
+        fs::write(&loose_path, valid_game_json()).expect("write loose replay");
+
+        let loose_manifest = scan_data_sources_with_fraction(&loose_path, 1.0, None)
+            .expect("loose file should scan");
+        assert_eq!(
+            loose_manifest.sources,
+            vec![DataSource::LooseFile(loose_path.clone())]
+        );
+        assert_eq!(loose_manifest.total_games, 1);
+        assert_eq!(loose_manifest.train_count, 1);
+        assert_eq!(loose_manifest.val_count, 0);
+        assert!(loose_manifest.counts_exact);
+
+        let archive_path = unique_temp_path("single_archive", ".tar.zst");
+        write_tar_zst_with_entries(
+            &archive_path,
+            &[("game.mjai.json", valid_game_json().into_bytes())],
+        );
+        let archive_manifest = scan_data_sources_with_fraction(&archive_path, 0.5, None)
+            .expect("archive file should scan");
+        assert_eq!(
+            archive_manifest.sources,
+            vec![DataSource::Archive(archive_path.clone())]
+        );
+        assert_eq!(archive_manifest.total_games, 0);
+        assert_eq!(archive_manifest.train_count, 0);
+        assert_eq!(archive_manifest.val_count, 0);
+        assert!(!archive_manifest.counts_exact);
+
+        let invalid_path = unique_temp_path("single_invalid", ".txt");
+        fs::write(&invalid_path, "not mjai").expect("write invalid input file");
+        let err = scan_data_sources_with_fraction(&invalid_path, 0.5, None)
+            .expect_err("non-mjai file should be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        fs::remove_file(loose_path).ok();
+        fs::remove_file(archive_path).ok();
+        fs::remove_file(invalid_path).ok();
     }
 
     #[test]
