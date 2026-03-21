@@ -174,7 +174,7 @@ mod tests {
     use hydra_train::training::losses::LossBreakdown;
     use serde_json::Value;
 
-    use super::{batch_stats_from_breakdown, scalar1, BatchStats, ScalarAverages};
+    use super::{BatchStats, ScalarAverages, batch_stats_from_breakdown, scalar1};
 
     fn batch(sample_count: usize, total_loss: f64, agreement: f64) -> BatchStats {
         BatchStats {
