@@ -133,6 +133,13 @@ mod tests {
     }
 
     #[test]
+    fn source_identity_rejects_paths_without_file_names() {
+        let err = source_identity(Path::new(".")).expect_err("path without file name should fail");
+
+        assert!(err.contains("invalid replay filename ."));
+    }
+
+    #[test]
     fn write_sidecar_with_forwards_wrapper_inputs_and_formats_success_message() {
         let input = Path::new("replays/game.json.gz");
         let checkpoint = Path::new("checkpoints/model_base");
@@ -270,5 +277,35 @@ mod tests {
         .expect_err("report writer failure should bubble up");
 
         assert_eq!(err, "report write failed");
+    }
+
+    #[test]
+    fn write_sidecar_with_formats_zero_record_success_message() {
+        let output = Path::new("out.jsonl");
+        let expected_report_path = PathBuf::from("out.report.json");
+
+        let summary = write_sidecar_with(
+            Path::new("game.json.gz"),
+            Path::new("model_base"),
+            output,
+            1,
+            |_source_identity, _source_net_hash, _source_version| {
+                Ok((Vec::<DummyRecord>::new(), DummyReport { labels_emitted: 0 }))
+            },
+            |_path, records| {
+                assert!(records.is_empty());
+                Ok(())
+            },
+            |_path, report| {
+                assert_eq!(*report, DummyReport { labels_emitted: 0 });
+                Ok(expected_report_path.clone())
+            },
+        )
+        .expect("empty sidecar should still succeed");
+
+        assert_eq!(
+            summary,
+            success_message(0, output, expected_report_path.as_path())
+        );
     }
 }
