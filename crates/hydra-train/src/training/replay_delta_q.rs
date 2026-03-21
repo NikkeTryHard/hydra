@@ -17,12 +17,12 @@ use crate::model::HydraModel;
 use crate::training::delta_q_validation::DeltaQValidationReport;
 use crate::training::exit::ExitConfig;
 use crate::training::live_exit::{
-    budget_from_legal_count, obs_hash, try_search_labels_from_context, RootDecisionContext,
-    SelfPlayExitAdapter,
+    RootDecisionContext, SelfPlayExitAdapter, budget_from_legal_count, obs_hash,
+    try_search_labels_from_context,
 };
 use crate::training::replay_exit::{
-    copy_label_arrays, legal_mask_digest_from_f32, read_jsonl_records, source_hash_from_identity,
-    ReplayDecisionKey,
+    ReplayDecisionKey, copy_label_arrays, legal_mask_digest_from_f32, read_jsonl_records,
+    source_hash_from_identity,
 };
 
 pub const REPLAY_DELTA_Q_SEMANTICS_V1: &str = "delta_q_child_minus_root_v1";
@@ -281,6 +281,16 @@ mod tests {
     use std::array;
     use std::io::Cursor;
     use std::io::ErrorKind;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_jsonl_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra-{name}-{nanos}.jsonl"))
+    }
 
     fn guardrail_log() -> String {
         [
@@ -393,14 +403,16 @@ mod tests {
             Some(&index),
         )
         .expect("load with sidecar");
-        assert!(game
-            .samples
-            .iter()
-            .any(|sample| sample.delta_q_target.is_some()));
-        assert!(game
-            .samples
-            .iter()
-            .any(|sample| sample.delta_q_mask.is_some()));
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_target.is_some())
+        );
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_mask.is_some())
+        );
     }
 
     #[test]
@@ -519,13 +531,48 @@ mod tests {
     }
 
     #[test]
+    fn delta_q_contract_rejects_illegal_masked_actions_and_non_finite_targets() {
+        let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        legal_mask[2] = 1.0;
+
+        let mut illegal_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut illegal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        illegal_target[3] = 0.1;
+        illegal_mask[3] = 1.0;
+        assert!(validate_delta_q_contract(&illegal_target, &illegal_mask, &legal_mask).is_none());
+
+        let mut nan_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut valid_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        nan_target[2] = f32::NAN;
+        valid_mask[2] = 1.0;
+        assert!(validate_delta_q_contract(&nan_target, &valid_mask, &legal_mask).is_none());
+    }
+
+    #[test]
+    fn delta_q_contract_accepts_regular_masked_discard_actions() {
+        let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        legal_mask[2] = 1.0;
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[2] = -0.25;
+        mask[2] = 1.0;
+
+        let label = validate_delta_q_contract(&target, &mask, &legal_mask)
+            .expect("regular masked discard action should be accepted");
+
+        assert_eq!(label.target[2], -0.25);
+        assert_eq!(label.mask[2], 1.0);
+    }
+
+    #[test]
     fn delta_q_sidecar_reader_reports_invalid_line_numbers() {
         let err = DeltaQSidecarIndex::from_jsonl_reader(Cursor::new("\nnot-json\n"))
             .expect_err("invalid jsonl should fail");
         assert_eq!(err.kind(), ErrorKind::InvalidData);
-        assert!(err
-            .to_string()
-            .contains("invalid replay delta_q sidecar line 2"));
+        assert!(
+            err.to_string()
+                .contains("invalid replay delta_q sidecar line 2")
+        );
     }
 
     #[test]
@@ -547,5 +594,122 @@ mod tests {
         let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
         legal_mask[records[0].action as usize] = 1.0;
         assert!(validate_delta_q_contract(&target, &mask, &legal_mask).is_none());
+    }
+
+    #[test]
+    fn delta_q_sidecar_lookup_rejects_version_semantics_and_provenance_mismatches() {
+        let key = ReplayDecisionKey {
+            source_hash: 7,
+            event_index: 3,
+            actor: 1,
+            obs_hash: 11,
+        };
+        let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        legal_mask[2] = 1.0;
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[2] = 0.25;
+        mask[2] = 1.0;
+
+        let mut record = ReplayDeltaQRecordV1 {
+            version: 1,
+            semantics: REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+            provenance: REPLAY_DELTA_Q_PROVENANCE.to_string(),
+            key,
+            action: 2,
+            legal_mask_digest: legal_mask_digest_from_f32(&legal_mask),
+            source_net_hash: 9,
+            source_version: 1,
+            target: target.to_vec(),
+            mask: mask.to_vec(),
+        };
+
+        record.version = 2;
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record.clone()])
+                .lookup_label(&key, 2, &legal_mask, 9, 1)
+                .is_none()
+        );
+
+        record.version = 1;
+        record.semantics = "wrong-semantics".to_string();
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record.clone()])
+                .lookup_label(&key, 2, &legal_mask, 9, 1)
+                .is_none()
+        );
+
+        record.semantics = REPLAY_DELTA_Q_SEMANTICS_V1.to_string();
+        record.provenance = "manual".to_string();
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record])
+                .lookup_label(&key, 2, &legal_mask, 9, 1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn delta_q_sidecar_lookup_rejects_digest_mismatch_and_missing_masked_action() {
+        let key = ReplayDecisionKey {
+            source_hash: 7,
+            event_index: 3,
+            actor: 1,
+            obs_hash: 11,
+        };
+        let mut stored_legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        stored_legal_mask[2] = 1.0;
+        let mut lookup_legal_mask = stored_legal_mask;
+        lookup_legal_mask[3] = 1.0;
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[2] = 0.25;
+        mask[2] = 1.0;
+        let record = ReplayDeltaQRecordV1 {
+            version: 1,
+            semantics: REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+            provenance: REPLAY_DELTA_Q_PROVENANCE.to_string(),
+            key,
+            action: 2,
+            legal_mask_digest: legal_mask_digest_from_f32(&stored_legal_mask),
+            source_net_hash: 9,
+            source_version: 1,
+            target: target.to_vec(),
+            mask: mask.to_vec(),
+        };
+
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record.clone()])
+                .lookup_label(&key, 2, &lookup_legal_mask, 9, 1)
+                .is_none()
+        );
+
+        let no_mask_record = ReplayDeltaQRecordV1 {
+            mask: vec![0.0; HYDRA_ACTION_SPACE],
+            ..record
+        };
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![no_mask_record])
+                .lookup_label(&key, 2, &stored_legal_mask, 9, 1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn delta_q_sidecar_can_load_from_jsonl_path() {
+        let records = synthetic_delta_q_records(123, 1);
+        let path = unique_temp_jsonl_path("replay-delta-q-sidecar");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&records[0]).expect("record should serialize")
+            ),
+        )
+        .expect("jsonl fixture should write");
+
+        let index = DeltaQSidecarIndex::from_jsonl_path(&path).expect("jsonl path should parse");
+        std::fs::remove_file(&path).expect("temp jsonl should be removable");
+
+        assert_eq!(index.records.len(), 1);
     }
 }

@@ -325,6 +325,16 @@ mod tests {
     use std::array;
     use std::io::Cursor;
     use std::io::ErrorKind;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_jsonl_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra-{name}-{nanos}.jsonl"))
+    }
 
     fn guardrail_log() -> String {
         [
@@ -594,16 +604,27 @@ mod tests {
 
     #[test]
     fn copy_label_arrays_rejects_wrong_lengths() {
-        assert!(copy_label_arrays(
-            &vec![0.0; HYDRA_ACTION_SPACE - 1],
-            &vec![0.0; HYDRA_ACTION_SPACE]
-        )
-        .is_none());
-        assert!(copy_label_arrays(
-            &vec![0.0; HYDRA_ACTION_SPACE],
-            &vec![0.0; HYDRA_ACTION_SPACE - 1]
-        )
-        .is_none());
+        assert!(
+            copy_label_arrays(&[0.0; HYDRA_ACTION_SPACE - 1], &[0.0; HYDRA_ACTION_SPACE]).is_none()
+        );
+        assert!(
+            copy_label_arrays(&[0.0; HYDRA_ACTION_SPACE], &[0.0; HYDRA_ACTION_SPACE - 1]).is_none()
+        );
+    }
+
+    #[test]
+    fn copy_label_arrays_accepts_exact_action_space_lengths() {
+        let mut target = vec![0.0; HYDRA_ACTION_SPACE];
+        let mut mask = vec![0.0; HYDRA_ACTION_SPACE];
+        target[3] = 0.75;
+        mask[3] = 1.0;
+
+        let (target_arr, mask_arr) =
+            copy_label_arrays(&target, &mask).expect("exact-size vectors should copy");
+
+        assert_eq!(target_arr[3], 0.75);
+        assert_eq!(mask_arr[3], 1.0);
+        assert_eq!(target_arr.iter().filter(|&&value| value > 0.0).count(), 1);
     }
 
     #[test]
@@ -651,6 +672,39 @@ mod tests {
     }
 
     #[test]
+    fn exit_sidecar_index_rejects_malformed_mask_shapes() {
+        let key = ReplayDecisionKey {
+            source_hash: 7,
+            event_index: 3,
+            actor: 1,
+            obs_hash: 11,
+        };
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        mask[2] = 1.0;
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        target[2] = 1.0;
+        let record = ReplayExitRecordV1 {
+            version: 1,
+            semantics: REPLAY_EXIT_SEMANTICS_V1.to_string(),
+            provenance: REPLAY_EXIT_PROVENANCE.to_string(),
+            key,
+            action: 2,
+            legal_mask_digest: legal_mask_digest_from_f32(&mask),
+            source_net_hash: 9,
+            source_version: 1,
+            root_visit_count: 64,
+            legal_discard_count: 1,
+            supported_actions: 1,
+            coverage: 1.0,
+            kl_to_base: 0.0,
+            target: target.to_vec(),
+            mask: vec![1.0; HYDRA_ACTION_SPACE - 1],
+        };
+        let index = ExitSidecarIndex::from_records(vec![record]);
+        assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_none());
+    }
+
+    #[test]
     fn exit_sidecar_reader_skips_blank_lines_and_hash_helpers_match() {
         let records = synthetic_exit_records(123, 1);
         let raw = format!(
@@ -665,5 +719,110 @@ mod tests {
             source_net_hash_from_checkpoint_identity("checkpoint-a"),
             source_hash_from_identity("checkpoint-a")
         );
+    }
+
+    #[test]
+    fn exit_sidecar_index_rejects_version_semantics_and_provenance_mismatches() {
+        let key = ReplayDecisionKey {
+            source_hash: 7,
+            event_index: 3,
+            actor: 1,
+            obs_hash: 11,
+        };
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        mask[2] = 1.0;
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        target[2] = 1.0;
+
+        let mut record = ReplayExitRecordV1 {
+            version: 1,
+            semantics: REPLAY_EXIT_SEMANTICS_V1.to_string(),
+            provenance: REPLAY_EXIT_PROVENANCE.to_string(),
+            key,
+            action: 2,
+            legal_mask_digest: legal_mask_digest_from_f32(&mask),
+            source_net_hash: 9,
+            source_version: 1,
+            root_visit_count: 64,
+            legal_discard_count: 1,
+            supported_actions: 1,
+            coverage: 1.0,
+            kl_to_base: 0.0,
+            target: target.to_vec(),
+            mask: mask.to_vec(),
+        };
+
+        record.version = 2;
+        assert!(ExitSidecarIndex::from_records(vec![record.clone()])
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .is_none());
+
+        record.version = 1;
+        record.semantics = "wrong-semantics".to_string();
+        assert!(ExitSidecarIndex::from_records(vec![record.clone()])
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .is_none());
+
+        record.semantics = REPLAY_EXIT_SEMANTICS_V1.to_string();
+        record.provenance = "manual".to_string();
+        assert!(ExitSidecarIndex::from_records(vec![record])
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .is_none());
+    }
+
+    #[test]
+    fn exit_sidecar_index_rejects_legal_mask_digest_mismatch() {
+        let key = ReplayDecisionKey {
+            source_hash: 7,
+            event_index: 3,
+            actor: 1,
+            obs_hash: 11,
+        };
+        let mut stored_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        stored_mask[2] = 1.0;
+        let mut lookup_mask = stored_mask;
+        lookup_mask[3] = 1.0;
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        target[2] = 1.0;
+        let record = ReplayExitRecordV1 {
+            version: 1,
+            semantics: REPLAY_EXIT_SEMANTICS_V1.to_string(),
+            provenance: REPLAY_EXIT_PROVENANCE.to_string(),
+            key,
+            action: 2,
+            legal_mask_digest: legal_mask_digest_from_f32(&stored_mask),
+            source_net_hash: 9,
+            source_version: 1,
+            root_visit_count: 64,
+            legal_discard_count: 1,
+            supported_actions: 1,
+            coverage: 1.0,
+            kl_to_base: 0.0,
+            target: target.to_vec(),
+            mask: stored_mask.to_vec(),
+        };
+
+        assert!(ExitSidecarIndex::from_records(vec![record])
+            .lookup_label(&key, 2, &lookup_mask, 9, 1)
+            .is_none());
+    }
+
+    #[test]
+    fn exit_sidecar_index_can_load_from_jsonl_path() {
+        let records = synthetic_exit_records(123, 1);
+        let path = unique_temp_jsonl_path("replay-exit-sidecar");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&records[0]).expect("record should serialize")
+            ),
+        )
+        .expect("jsonl fixture should write");
+
+        let index = ExitSidecarIndex::from_jsonl_path(&path).expect("jsonl path should parse");
+        std::fs::remove_file(&path).expect("temp jsonl should be removable");
+
+        assert_eq!(index.records.len(), 1);
     }
 }
