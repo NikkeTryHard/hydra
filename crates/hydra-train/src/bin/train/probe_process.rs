@@ -390,12 +390,12 @@ mod tests {
 
     use super::super::artifacts::{BcArtifactPaths, RlArtifactPaths};
     use super::super::config::{
-        default_archive_queue_bound, default_augment, default_batch_size, default_buffer_games,
-        default_buffer_samples, default_checkpoint_every_n_steps, default_device,
-        default_log_every_n_steps, default_max_skip_logs_per_source,
-        default_max_validation_samples, default_seed, default_tensorboard, default_train_fraction,
-        default_validate_every_n_steps, default_validation_every_n_epochs, BcHyperparamConfig,
-        TrainConfig,
+        BcHyperparamConfig, TrainConfig, default_archive_queue_bound, default_augment,
+        default_batch_size, default_buffer_games, default_buffer_samples,
+        default_checkpoint_every_n_steps, default_device, default_log_every_n_steps,
+        default_max_skip_logs_per_source, default_max_validation_samples, default_seed,
+        default_tensorboard, default_train_fraction, default_validate_every_n_steps,
+        default_validation_every_n_epochs,
     };
     use super::*;
 
@@ -668,6 +668,19 @@ mod tests {
     }
 
     #[test]
+    fn normalized_output_line_suppresses_indented_raw_probe_progress() {
+        assert!(normalized_probe_output_line("   probe_progress kind=train phase=start").is_none());
+    }
+
+    #[test]
+    fn normalized_output_line_trims_non_progress_text_without_suppressing_it() {
+        assert_eq!(
+            normalized_probe_output_line("   useful stderr line   \n"),
+            Some("useful stderr line".to_string())
+        );
+    }
+
+    #[test]
     fn probe_failure_detail_uses_stdout_when_stderr_has_only_suppressed_noise() {
         let detail = probe_failure_detail(
             ProbeStatus::BackendError,
@@ -676,5 +689,51 @@ mod tests {
             Some(7),
         );
         assert!(detail.contains("stdout useful"));
+    }
+
+    #[test]
+    fn probe_failure_detail_uses_filtered_stderr_summary_when_stdout_is_more_verbose() {
+        let detail = probe_failure_detail(
+            ProbeStatus::BackendError,
+            "stdout useful\nstdout extra",
+            "probe_progress kind=train phase=start\n\nfirst useful\nthread 'main' panicked\nsecond useful\nthird useful\nfourth useful",
+            Some(11),
+        );
+
+        assert!(detail.contains("first useful | second useful | third useful"));
+        assert!(!detail.contains("fourth useful"));
+        assert!(!detail.contains("stdout useful"));
+    }
+
+    #[test]
+    fn probe_failure_detail_falls_back_to_process_status_summary_when_outputs_are_empty() {
+        let detail = probe_failure_detail(ProbeStatus::BackendError, "", "", Some(17));
+
+        assert_eq!(
+            detail,
+            "probe process status=Some(17) detail=probe child failed without structured result"
+        );
+    }
+
+    #[test]
+    fn probe_failure_detail_uses_process_status_summary_when_outputs_and_exit_code_are_missing() {
+        let detail = probe_failure_detail(ProbeStatus::DataError, "", "", None);
+
+        assert_eq!(
+            detail,
+            "probe process status=None detail=probe child failed without structured result"
+        );
+    }
+
+    #[test]
+    fn join_output_forwarder_reports_panic_with_stream_name() {
+        let handle = thread::spawn(|| -> Result<Vec<u8>, String> {
+            panic!("boom");
+        });
+
+        let err = join_output_forwarder(handle, "stderr")
+            .expect_err("panicking forwarder should surface a stream-specific error");
+
+        assert_eq!(err, "preflight probe stderr forwarder panicked");
     }
 }

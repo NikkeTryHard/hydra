@@ -387,4 +387,55 @@ mod tests {
         assert!((config.rl_probe_memory_headroom_ratio - 0.0).abs() < f64::EPSILON);
         assert!((config.rl_probe_growth_safety_factor - 1.35).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn candidate_ladder_falls_back_to_max_of_batch_and_minimum() {
+        let config = PreflightConfig {
+            candidate_microbatches: vec![8, 12],
+            min_microbatch_size: 16,
+            ..Default::default()
+        };
+
+        assert_eq!(candidate_ladder(&config, 10), vec![16]);
+        assert_eq!(candidate_ladder(&config, 64), vec![64]);
+    }
+
+    #[test]
+    fn resolve_runtime_config_clamps_zero_microbatches() {
+        let runtime = resolve_runtime_config(
+            32,
+            ExplicitSettings {
+                train_microbatch_explicit: true,
+                validation_microbatch_explicit: true,
+            },
+            0,
+            0,
+        );
+
+        assert_eq!(runtime.train_microbatch_size, 1);
+        assert_eq!(runtime.validation_microbatch_size, 1);
+        assert_eq!(runtime.accum_steps, 32);
+    }
+
+    #[test]
+    fn resolve_runtime_config_caps_train_microbatch_without_overcounting_accumulation() {
+        let runtime = resolve_runtime_config(
+            32,
+            ExplicitSettings {
+                train_microbatch_explicit: false,
+                validation_microbatch_explicit: false,
+            },
+            128,
+            4,
+        );
+
+        assert_eq!(runtime.train_microbatch_size, 32);
+        assert_eq!(runtime.validation_microbatch_size, 4);
+        assert_eq!(runtime.accum_steps, 1);
+    }
+
+    #[test]
+    fn default_cache_name_is_stable() {
+        assert_eq!(default_cache_name(), PathBuf::from("preflight_cache.json"));
+    }
 }

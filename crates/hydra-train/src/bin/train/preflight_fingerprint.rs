@@ -157,12 +157,16 @@ mod tests {
         assert!(fingerprint.model_signature.contains("blocks:24"));
         assert!(fingerprint.model_signature.contains("action:46"));
         assert!(fingerprint.code_signature.contains("hydra-train:"));
-        assert!(fingerprint
-            .advanced_loss_signature
-            .contains("\"exit\":0.25"));
-        assert!(fingerprint
-            .advanced_loss_signature
-            .contains("\"safety_residual\":0.75"));
+        assert!(
+            fingerprint
+                .advanced_loss_signature
+                .contains("\"exit\":0.25")
+        );
+        assert!(
+            fingerprint
+                .advanced_loss_signature
+                .contains("\"safety_residual\":0.75")
+        );
     }
 
     #[test]
