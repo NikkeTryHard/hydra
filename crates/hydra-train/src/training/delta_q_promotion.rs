@@ -1201,4 +1201,113 @@ mod tests {
         assert!((report.lower_confidence_bound_mean_placement + 0.01).abs() < 1e-9);
         assert!((report.upper_confidence_bound_mean_placement - 0.02).abs() < 1e-9);
     }
+
+    #[test]
+    fn compare_delta_q_state_respects_legal_mask_overlap() {
+        let policy = [0.0f32; 46];
+        let candidate = [0.0f32; 46];
+        let mut target = [0.0f32; 46];
+        let mut mask = [0.0f32; 46];
+        let mut legal = [0.0f32; 46];
+
+        target[0] = 0.4;
+        target[1] = 0.2;
+        mask[0] = 1.0;
+        mask[1] = 1.0;
+        legal[0] = 1.0;
+
+        assert!(compare_delta_q_state(&policy, &candidate, &target, &mask, &legal).is_none());
+    }
+
+    #[test]
+    fn argmax_over_actions_returns_none_for_missing_value() {
+        assert_eq!(argmax_over_actions(&[1.0, 2.0], &[0, 2]), None);
+        assert_eq!(argmax_over_actions(&[1.0, 2.0], &[]), None);
+    }
+
+    #[test]
+    fn collect_metrics_without_delta_q_targets_returns_empty_reports() {
+        let targets = dummy_targets();
+        let output = dummy_output(
+            tensor2(vec![0.0; 2 * 46], 2, 46),
+            tensor2(vec![0.0; 2 * 46], 2, 46),
+        );
+
+        let promotion = collect_promotion_metrics_from_outputs(&output, &targets, 0.5);
+        let transfer = collect_policy_transfer_metrics_from_policy_outputs(
+            tensor2(vec![0.0; 2 * 46], 2, 46),
+            tensor2(vec![0.0; 2 * 46], 2, 46),
+            &targets,
+        );
+
+        assert_eq!(promotion.eligible_states, 0);
+        assert_eq!(promotion.compared_states, 0);
+        assert_eq!(transfer.compared_states, 0);
+    }
+
+    #[test]
+    fn evaluate_policy_transfer_report_handles_zero_baseline_regret_edges() {
+        let mut report = DeltaQPolicyTransferReport::new();
+        report.compared_states = 1_500;
+        report.candidate_beats_baseline_count = 1_000;
+
+        let zero_ratio_result = evaluate_policy_transfer_report(&report, &Default::default());
+        assert!(zero_ratio_result.passed);
+        assert!(zero_ratio_result.criteria.iter().any(|criterion| {
+            criterion.name == "candidate_policy_mean_teacher_regret_ratio"
+                && criterion.measured == 0.0
+                && matches!(criterion.direction, PromotionThresholdDirection::Max)
+        }));
+
+        report.candidate_policy_regret_sum = 1.0;
+        let infinite_ratio_result = evaluate_policy_transfer_report(&report, &Default::default());
+        assert!(!infinite_ratio_result.passed);
+        assert!(infinite_ratio_result.criteria.iter().any(|criterion| {
+            criterion.name == "candidate_policy_mean_teacher_regret_ratio"
+                && criterion.measured.is_infinite()
+                && !criterion.passed
+        }));
+    }
+
+    #[test]
+    fn promotion_recommendations_and_displays_are_stable() {
+        assert_eq!(
+            DeltaQPromotionRecommendation::RejectAtOfflineGate.to_string(),
+            "reject_at_offline_gate"
+        );
+        assert_eq!(
+            DeltaQPromotionRecommendation::RequiresPolicyTransferGate.to_string(),
+            "requires_policy_transfer_gate"
+        );
+        assert_eq!(
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation.to_string(),
+            "requires_arena_confirmation"
+        );
+
+        let promotion_result = DeltaQPromotionResult {
+            passed: true,
+            criteria: vec![DeltaQPromotionCriterionResult {
+                name: "compared_states".to_string(),
+                measured: 1_500.0,
+                threshold: 1_000.0,
+                passed: true,
+                direction: PromotionThresholdDirection::Min,
+            }],
+        };
+        let policy_result = DeltaQPolicyTransferResult {
+            passed: false,
+            criteria: vec![DeltaQPromotionCriterionResult {
+                name: "candidate_policy_mean_teacher_regret_ratio".to_string(),
+                measured: 1.2,
+                threshold: 0.95,
+                passed: false,
+                direction: PromotionThresholdDirection::Max,
+            }],
+        };
+
+        assert!(format!("{promotion_result}").contains("DeltaQ Promotion Result: PASS"));
+        let policy_text = format!("{policy_result}");
+        assert!(policy_text.contains("DeltaQ Policy Transfer Result: FAIL"));
+        assert!(policy_text.contains("<="));
+    }
 }

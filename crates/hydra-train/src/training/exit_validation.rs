@@ -560,6 +560,30 @@ fn kl_divergence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hydra_core::arena::TrajectoryExitLabel;
+    use hydra_core::encoder::OBS_SIZE;
+
+    fn step_with_discards(discard_actions: &[usize]) -> TrajectoryStep {
+        let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+        for &action in discard_actions {
+            legal_mask[action] = true;
+        }
+        TrajectoryStep {
+            obs: [0.0; OBS_SIZE],
+            action: discard_actions.first().copied().unwrap_or_default() as u8,
+            pi_old: [0.0; HYDRA_ACTION_SPACE],
+            legal_mask,
+            exit_label: None,
+            delta_q_label: None,
+            reward: 0.0,
+            done: false,
+            player_id: 0,
+            game_id: 0,
+            turn: 0,
+            temperature: 1.0,
+        }
+    }
+
     fn passing_report() -> ExitValidationReport {
         ExitValidationReport {
             total_states: 2_000,
@@ -782,6 +806,167 @@ mod tests {
         assert!(report_text.contains("Mean KL"));
         assert!(result_text.contains("ExIt Validation Result: PASS"));
         assert!(result_text.contains("sample_size"));
+    }
+
+    #[test]
+    fn test_mean_supported_actions_and_root_visits_return_zero_without_labels() {
+        let report = ExitValidationReport::default();
+
+        assert_eq!(report.mean_supported_actions(), 0.0);
+        assert_eq!(report.mean_root_visits(), 0.0);
+    }
+
+    #[test]
+    fn test_evaluate_report_exact_thresholds_pass() {
+        let thresholds = ExitValidationThresholds::default();
+        let report = ExitValidationReport {
+            total_states: thresholds.min_sample_size,
+            compatible_discard_states: 100,
+            hard_states: 50,
+            labels_emitted: 20,
+            labels_rejected: 980,
+            coverage_sum: thresholds.min_mean_coverage * 20.0,
+            supported_actions_sum: (thresholds.min_mean_supported_actions * 20.0) as u64,
+            root_visits_sum: 640,
+            top1_agreement_count: (thresholds.min_top1_agreement * 20.0) as u64,
+            kl_sum: thresholds.max_mean_kl * 20.0,
+            ..ExitValidationReport::default()
+        };
+
+        let result = evaluate_report(&report, &thresholds);
+
+        assert!(result.passed);
+        assert!(result.criteria.iter().all(|criterion| criterion.passed));
+    }
+
+    #[test]
+    fn test_push_criterion_helpers_record_direction_and_threshold_checks() {
+        let mut criteria = Vec::new();
+        push_min_criterion(&mut criteria, "min", 0.5, 0.5);
+        push_max_criterion(&mut criteria, "max", 0.6, 0.5);
+
+        assert_eq!(criteria.len(), 2);
+        assert!(matches!(criteria[0].direction, ThresholdDirection::Min));
+        assert!(criteria[0].passed);
+        assert!(matches!(criteria[1].direction, ThresholdDirection::Max));
+        assert!(!criteria[1].passed);
+    }
+
+    #[test]
+    fn test_ratio_helpers_handle_zero_and_nonzero_denominators() {
+        assert_eq!(ratio_u64(3, 0), 0.0);
+        assert_eq!(ratio_f64(3.0, 0), 0.0);
+        assert!((ratio_u64(3, 4) - 0.75).abs() < 1e-12);
+        assert!((ratio_f64(3.0, 4) - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_legal_discard_actions_filters_to_discard_range_only() {
+        let mut step = step_with_discards(&[0, 5, DISCARD_END as usize]);
+        step.legal_mask[DISCARD_END as usize + 1] = true;
+        step.legal_mask[HYDRA_ACTION_SPACE - 1] = true;
+
+        let actions = legal_discard_actions(&step);
+
+        assert_eq!(actions, vec![0, 5, DISCARD_END as usize]);
+    }
+
+    #[test]
+    fn test_top1_index_returns_best_action_within_subset() {
+        let mut values = [0.0f32; HYDRA_ACTION_SPACE];
+        values[2] = 0.25;
+        values[7] = 0.9;
+        values[9] = 0.5;
+
+        assert_eq!(top1_index(&values, &[2, 7, 9]), 7);
+    }
+
+    #[test]
+    fn test_kl_divergence_ignores_unmasked_and_nonpositive_terms() {
+        let mut base_pi = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut exit_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        base_pi[1] = 0.6;
+        exit_target[1] = 0.3;
+        exit_mask[1] = 1.0;
+        base_pi[2] = 0.4;
+        exit_target[2] = 0.8;
+
+        let kl = kl_divergence(&base_pi, &exit_target, &exit_mask);
+
+        assert!(kl > 0.0);
+        assert!(kl.is_finite());
+    }
+
+    #[test]
+    fn test_collect_validation_metrics_rejects_incompatible_state() {
+        let mut step = step_with_discards(&[0]);
+        step.legal_mask[DISCARD_END as usize + 1] = true;
+        let mut report = ExitValidationReport::default();
+
+        let legal_f32 = step
+            .legal_mask
+            .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
+        assert!(!compatible_discard_state(&legal_f32));
+
+        report.total_states += 1;
+        if !compatible_discard_state(&legal_f32) {
+            report.labels_rejected += 1;
+            report.rejected_incompatible_state += 1;
+        }
+
+        assert_eq!(report.total_states, 1);
+        assert_eq!(report.labels_rejected, 1);
+        assert_eq!(report.rejected_incompatible_state, 1);
+    }
+
+    #[test]
+    fn test_collect_validation_metrics_rejects_too_few_discards_after_compatible_gate() {
+        let step = step_with_discards(&[1]);
+        let mut report = ExitValidationReport::default();
+
+        let legal_f32 = step
+            .legal_mask
+            .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
+        assert!(compatible_discard_state(&legal_f32));
+        let discards = legal_discard_actions(&step);
+        assert_eq!(discards, vec![1]);
+
+        report.total_states += 1;
+        report.compatible_discard_states += 1;
+        if discards.len() < 2 {
+            report.labels_rejected += 1;
+            report.rejected_too_few_discards += 1;
+        }
+
+        assert_eq!(report.labels_rejected, 1);
+        assert_eq!(report.rejected_too_few_discards, 1);
+    }
+
+    #[test]
+    fn test_exit_label_top1_agreement_math_matches_expected_paths() {
+        let legal_discards = vec![2usize, 4usize, 6usize];
+        let mut base_pi = [0.0f32; HYDRA_ACTION_SPACE];
+        base_pi[2] = 0.1;
+        base_pi[4] = 0.7;
+        base_pi[6] = 0.2;
+
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[4] = 1.0;
+        mask[4] = 1.0;
+        let label = TrajectoryExitLabel { target, mask };
+
+        assert_eq!(top1_index(&base_pi, &legal_discards), 4);
+        assert_eq!(top1_index(&label.target, &legal_discards), 4);
+
+        target[2] = 1.0;
+        target[4] = 0.0;
+        let disagreeing = TrajectoryExitLabel { target, mask };
+        assert_ne!(
+            top1_index(&base_pi, &legal_discards),
+            top1_index(&disagreeing.target, &legal_discards)
+        );
     }
 
     #[test]

@@ -435,6 +435,30 @@ fn ratio_f64(numerator: f64, denominator: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hydra_core::action::HYDRA_ACTION_SPACE;
+    use hydra_core::arena::TrajectoryDeltaQLabel;
+    use hydra_core::encoder::OBS_SIZE;
+
+    fn step_with_discards(discard_actions: &[usize]) -> TrajectoryStep {
+        let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+        for &action in discard_actions {
+            legal_mask[action] = true;
+        }
+        TrajectoryStep {
+            obs: [0.0; OBS_SIZE],
+            action: discard_actions.first().copied().unwrap_or_default() as u8,
+            pi_old: [0.0; HYDRA_ACTION_SPACE],
+            legal_mask,
+            exit_label: None,
+            delta_q_label: None,
+            reward: 0.0,
+            done: false,
+            player_id: 0,
+            game_id: 0,
+            turn: 0,
+            temperature: 1.0,
+        }
+    }
 
     fn passing_report() -> DeltaQValidationReport {
         DeltaQValidationReport {
@@ -606,6 +630,249 @@ mod tests {
                 .iter()
                 .any(|criterion| criterion.name == "sample_size")
         );
+    }
+
+    #[test]
+    fn test_report_derived_metrics_match_aggregates() {
+        let report = passing_report();
+
+        assert!((report.hard_state_rate() - 0.15).abs() < 1e-9);
+        assert!((report.mean_root_visits() - 64.0).abs() < 1e-9);
+        assert!((report.mean_abs() - 0.12).abs() < 1e-9);
+        assert!((report.positive_fraction() - (170.0 / 350.0)).abs() < 1e-9);
+        assert!((report.negative_fraction() - (160.0 / 350.0)).abs() < 1e-9);
+        assert!((report.zero_fraction() - (20.0 / 350.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_no_label_report_keeps_sample_size_but_fails_label_quality_criteria() {
+        let report = DeltaQValidationReport {
+            total_states: 2_000,
+            labels_rejected: 2_000,
+            ..DeltaQValidationReport::default()
+        };
+
+        let result = evaluate_report(&report, &DeltaQValidationThresholds::default());
+
+        assert!(criterion(&result, "sample_size").passed);
+        assert!(!criterion(&result, "emission_rate").passed);
+        assert!(!criterion(&result, "mean_coverage").passed);
+        assert!(!criterion(&result, "mean_supported_actions").passed);
+        assert!(matches!(
+            criterion(&result, "sample_size").direction,
+            ThresholdDirection::Min
+        ));
+    }
+
+    #[test]
+    fn test_display_formatting_for_failures_shows_threshold_direction() {
+        let report = DeltaQValidationReport {
+            total_states: 500,
+            ..DeltaQValidationReport::default()
+        };
+        let result = evaluate_report(&report, &DeltaQValidationThresholds::default());
+        let result_text = format!("{result}");
+
+        assert!(result_text.contains("DeltaQ Validation Result: FAIL"));
+        assert!(result_text.contains("sample_size"));
+        assert!(result_text.contains(">="));
+    }
+
+    #[test]
+    fn test_mean_supported_actions_and_root_visits_return_zero_without_labels() {
+        let report = DeltaQValidationReport::default();
+
+        assert_eq!(report.mean_supported_actions(), 0.0);
+        assert_eq!(report.mean_root_visits(), 0.0);
+    }
+
+    #[test]
+    fn test_evaluate_report_exact_thresholds_pass() {
+        let thresholds = DeltaQValidationThresholds::default();
+        let report = DeltaQValidationReport {
+            total_states: thresholds.min_sample_size,
+            compatible_discard_states: 100,
+            hard_states: 50,
+            labels_emitted: 20,
+            labels_rejected: 980,
+            coverage_sum: thresholds.min_mean_coverage * 20.0,
+            supported_actions_sum: (thresholds.min_mean_supported_actions * 20.0) as u64,
+            root_visits_sum: 640,
+            masked_abs_sum: 4.0,
+            masked_entry_count: 20,
+            masked_zero_count: 5,
+            masked_positive_count: 10,
+            masked_negative_count: 5,
+            ..DeltaQValidationReport::default()
+        };
+
+        let result = evaluate_report(&report, &thresholds);
+
+        assert!(result.passed);
+        assert!(result.criteria.iter().all(|criterion| criterion.passed));
+    }
+
+    #[test]
+    fn test_push_min_criterion_records_direction_and_threshold_checks() {
+        let mut criteria = Vec::new();
+        push_min_criterion(&mut criteria, "sample_size", 5.0, 5.0);
+        push_min_criterion(&mut criteria, "coverage", 0.4, 0.5);
+
+        assert_eq!(criteria.len(), 2);
+        assert!(matches!(criteria[0].direction, ThresholdDirection::Min));
+        assert!(criteria[0].passed);
+        assert!(!criteria[1].passed);
+    }
+
+    #[test]
+    fn test_ratio_helpers_handle_zero_and_nonzero_denominators() {
+        assert_eq!(ratio_u64(3, 0), 0.0);
+        assert_eq!(ratio_f64(3.0, 0), 0.0);
+        assert!((ratio_u64(3, 4) - 0.75).abs() < 1e-12);
+        assert!((ratio_f64(3.0, 4) - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_legal_discard_actions_filters_to_discard_range_only() {
+        let mut step = step_with_discards(&[0, 4, DISCARD_END as usize]);
+        step.legal_mask[DISCARD_END as usize + 1] = true;
+        step.legal_mask[HYDRA_ACTION_SPACE - 1] = true;
+
+        let actions = legal_discard_actions(&step);
+
+        assert_eq!(actions, vec![0, 4, DISCARD_END as usize]);
+    }
+
+    #[test]
+    fn test_delta_q_label_sign_fractions_cover_positive_negative_and_zero_cases() {
+        let report = DeltaQValidationReport {
+            labels_emitted: 1,
+            masked_abs_sum: 1.5,
+            masked_entry_count: 3,
+            masked_zero_count: 1,
+            masked_positive_count: 1,
+            masked_negative_count: 1,
+            ..DeltaQValidationReport::default()
+        };
+
+        assert!((report.mean_abs() - 0.5).abs() < 1e-12);
+        assert!((report.positive_fraction() - (1.0 / 3.0)).abs() < 1e-12);
+        assert!((report.negative_fraction() - (1.0 / 3.0)).abs() < 1e-12);
+        assert!((report.zero_fraction() - (1.0 / 3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_delta_q_rejection_bookkeeping_matches_incompatible_and_too_few_paths() {
+        let mut incompatible = step_with_discards(&[0, 1]);
+        incompatible.legal_mask[DISCARD_END as usize + 1] = true;
+        let legal_f32 = incompatible
+            .legal_mask
+            .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
+        assert!(!compatible_discard_state(&legal_f32));
+
+        let mut report = DeltaQValidationReport::default();
+        report.total_states += 1;
+        if !compatible_discard_state(&legal_f32) {
+            report.labels_rejected += 1;
+            report.rejected_incompatible_state += 1;
+        }
+        assert_eq!(report.labels_rejected, 1);
+        assert_eq!(report.rejected_incompatible_state, 1);
+
+        let too_few = step_with_discards(&[2]);
+        let legal_f32 = too_few
+            .legal_mask
+            .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
+        assert!(compatible_discard_state(&legal_f32));
+        let discards = legal_discard_actions(&too_few);
+        assert_eq!(discards, vec![2]);
+
+        report.total_states += 1;
+        report.compatible_discard_states += 1;
+        if discards.len() < 2 {
+            report.labels_rejected += 1;
+            report.rejected_too_few_discards += 1;
+        }
+        assert_eq!(report.labels_rejected, 2);
+        assert_eq!(report.rejected_too_few_discards, 1);
+    }
+
+    #[test]
+    fn test_delta_q_supported_action_counting_ignores_unmasked_entries() {
+        let mut step = step_with_discards(&[1, 2, 3]);
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[1] = 0.2;
+        mask[1] = 1.0;
+        target[2] = -0.4;
+        mask[2] = 1.0;
+        target[3] = 0.0;
+        mask[3] = 1.0;
+        step.delta_q_label = Some(TrajectoryDeltaQLabel { target, mask });
+
+        let label = step.delta_q_label.expect("delta-q label should be present");
+        let mut report = DeltaQValidationReport::default();
+        for action in 0..=DISCARD_END as usize {
+            if label.mask[action] <= 0.0 {
+                continue;
+            }
+            report.supported_actions_sum += 1;
+            let value = label.target[action] as f64;
+            report.masked_abs_sum += value.abs();
+            report.masked_entry_count += 1;
+            if value > 0.0 {
+                report.masked_positive_count += 1;
+            } else if value < 0.0 {
+                report.masked_negative_count += 1;
+            } else {
+                report.masked_zero_count += 1;
+            }
+        }
+        report.coverage_sum += report.supported_actions_sum as f64 / 3.0;
+
+        assert_eq!(report.supported_actions_sum, 3);
+        assert_eq!(report.masked_entry_count, 3);
+        assert_eq!(report.masked_positive_count, 1);
+        assert_eq!(report.masked_negative_count, 1);
+        assert_eq!(report.masked_zero_count, 1);
+        assert!((report.coverage_sum - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_display_includes_zeroed_structure_metrics_when_no_masked_entries_exist() {
+        let report = DeltaQValidationReport {
+            total_states: 10,
+            labels_rejected: 10,
+            ..DeltaQValidationReport::default()
+        };
+
+        let text = format!("{report}");
+
+        assert!(text.contains("Mean |delta_q|:      0.0000"));
+        assert!(text.contains("Positive frac:       0.000"));
+        assert!(text.contains("Negative frac:       0.000"));
+        assert!(text.contains("Zero frac:           0.000"));
+    }
+
+    #[test]
+    fn test_report_merge_accumulates_zero_and_sign_counts_with_empty_rhs() {
+        let mut lhs = DeltaQValidationReport {
+            masked_abs_sum: 2.0,
+            masked_entry_count: 4,
+            masked_zero_count: 1,
+            masked_positive_count: 2,
+            masked_negative_count: 1,
+            ..DeltaQValidationReport::default()
+        };
+        let rhs = DeltaQValidationReport::default();
+
+        lhs.merge(&rhs);
+
+        assert_eq!(lhs.masked_abs_sum, 2.0);
+        assert_eq!(lhs.masked_entry_count, 4);
+        assert_eq!(lhs.masked_zero_count, 1);
+        assert_eq!(lhs.masked_positive_count, 2);
+        assert_eq!(lhs.masked_negative_count, 1);
     }
 
     #[test]
