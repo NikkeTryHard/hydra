@@ -610,6 +610,7 @@ fn print_probe_table(
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use hydra_train::preflight::{PreflightConfig, ProbeKind, ProbeResult, ProbeStatus};
     use hydra_train::training::delta_q_promotion::DeltaQPromotionRecommendation;
@@ -684,6 +685,14 @@ mod tests {
         }
     }
 
+    fn unique_test_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra-modes-test-{label}-{unique}"))
+    }
+
     #[test]
     fn format_probe_only_status_detail_is_stable() {
         assert_eq!(
@@ -698,6 +707,21 @@ mod tests {
             format_probe_best_candidate_detail(ProbeKind::Validation, 96),
             "validation=96"
         );
+    }
+
+    #[test]
+    fn format_probe_table_message_supports_rl_games_rows() {
+        let message = format_probe_table_message(
+            "RL games probe table",
+            ProbeKind::RlGames,
+            &[dummy_probe_result(ProbeKind::RlGames, 24, true)],
+            24,
+        );
+
+        assert!(message.contains("RL games probe table"));
+        assert!(message.contains("rl_games"));
+        assert!(message.contains("candidate_mb"));
+        assert!(message.contains("yes       24"));
     }
 
     #[test]
@@ -792,6 +816,18 @@ mod tests {
     }
 
     #[test]
+    fn handle_preflight_mode_rl_branch_still_validates_before_device_or_runtime_work() {
+        let mut config = dummy_config();
+        config.num_epochs = 0;
+        config.rl = Some(RlTrainConfig::default());
+
+        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
+            .expect_err("invalid config should fail before RL preflight setup");
+
+        assert_eq!(err, "num_epochs must be greater than 0");
+    }
+
+    #[test]
     fn handle_probe_mode_returns_validation_errors_before_probe_runtime() {
         let mut config = dummy_config();
         config.batch_size = 0;
@@ -802,6 +838,22 @@ mod tests {
             dummy_probe_request(ProbeKind::Train),
         )
         .expect_err("invalid config should fail before probe runtime");
+        assert_eq!(err, "batch_size must be greater than 0");
+    }
+
+    #[test]
+    fn handle_probe_mode_validates_rl_probe_requests_before_probe_runtime() {
+        let mut config = dummy_config();
+        config.batch_size = 0;
+        config.rl = Some(RlTrainConfig::default());
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            dummy_probe_request(ProbeKind::RlMicrobatch),
+        )
+        .expect_err("invalid config should fail before RL probe wrapper work");
+
         assert_eq!(err, "batch_size must be greater than 0");
     }
 
@@ -827,6 +879,32 @@ mod tests {
     }
 
     #[test]
+    fn handle_training_mode_rl_branch_rejects_invalid_device_before_runtime_work() {
+        let mut config = dummy_config();
+        config.rl = Some(RlTrainConfig::default());
+        config.device = "definitely-not-a-device".to_string();
+
+        let err = handle_training_mode(Path::new("config.yaml"), config)
+            .expect_err("invalid RL device should fail before bootstrap runtime work");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+    }
+
+    #[test]
+    fn handle_training_mode_bc_branch_bubbles_bootstrap_errors_before_device_runtime_work() {
+        let mut config = dummy_config();
+        config.data_dir = unique_test_path("missing-bc-train-data");
+        config.output_dir = unique_test_path("bc-train-out");
+
+        let err = handle_training_mode(Path::new("config.yaml"), config)
+            .expect_err("missing BC data should fail while bootstrap initializes training mode");
+
+        assert!(
+            err.contains("failed to read data dir") || err.contains("failed to scan MJAI data")
+        );
+    }
+
+    #[test]
     fn handle_delta_q_promotion_mode_returns_validation_errors_from_bootstrap() {
         let mut config = dummy_config();
         config.buffer_samples = 0;
@@ -834,6 +912,51 @@ mod tests {
         let err = handle_delta_q_promotion_mode(Path::new("config.yaml"), config, None)
             .expect_err("invalid config should fail before promotion runtime");
         assert_eq!(err, "buffer_samples must be greater than 0");
+    }
+
+    #[test]
+    fn handle_delta_q_promotion_mode_requires_baseline_checkpoint_after_bootstrap() {
+        let mut config = dummy_config();
+        let data_dir = unique_test_path("promotion-data");
+        let output_dir = unique_test_path("promotion-out");
+        std::fs::create_dir_all(&data_dir).expect("create empty promotion data dir");
+        std::fs::create_dir_all(&output_dir).expect("create promotion output dir");
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+
+        let err = handle_delta_q_promotion_mode(Path::new("config.yaml"), config, None)
+            .expect_err("promotion mode should require a baseline checkpoint after bootstrap");
+
+        assert_eq!(
+            err,
+            "delta_q promotion mode requires --delta-q-baseline-checkpoint for arena confirmation"
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+    }
+
+    #[test]
+    fn handle_delta_q_promotion_mode_bubbles_baseline_checkpoint_load_errors() {
+        let mut config = dummy_config();
+        let data_dir = unique_test_path("promotion-load-error-data");
+        let output_dir = unique_test_path("promotion-load-error-out");
+        let baseline_checkpoint = unique_test_path("missing-baseline-checkpoint");
+        std::fs::create_dir_all(&data_dir).expect("create empty promotion data dir");
+        std::fs::create_dir_all(&output_dir).expect("create promotion output dir");
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+
+        let err = handle_delta_q_promotion_mode(
+            Path::new("config.yaml"),
+            config,
+            Some(baseline_checkpoint.clone()),
+        )
+        .expect_err("missing baseline checkpoint should fail during load");
+
+        assert!(err.contains("failed to load delta_q baseline checkpoint"));
+        assert!(err.contains(baseline_checkpoint.to_string_lossy().as_ref()));
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
     }
 
     #[test]
@@ -1000,5 +1123,373 @@ mod tests {
         assert!(gate.contains("DeltaQ policy transfer gate"));
         assert!(gate.contains("pass=true"));
         assert!(gate.contains("next=requires_arena_confirmation"));
+    }
+
+    #[test]
+    fn handle_preflight_mode_bc_branch_bubbles_runtime_scan_errors() {
+        let mut config = dummy_config();
+        config.data_dir = unique_test_path("missing-bc-data");
+        config.output_dir = unique_test_path("bc-out");
+
+        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
+            .expect_err("missing dataset should fail during BC preflight runtime");
+
+        assert!(err.contains("failed to read config config.yaml"));
+    }
+
+    #[test]
+    fn handle_preflight_mode_bc_branch_bubbles_artifact_dir_creation_error() {
+        let output_path = unique_test_path("bc-preflight-artifact-file");
+        std::fs::write(&output_path, "not a directory").expect("write artifact blocker file");
+        let mut config = dummy_config();
+        config.output_dir = output_path.clone();
+
+        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
+            .expect_err("file-backed output path should fail BC artifact dir creation");
+
+        assert!(err.contains("failed to create BC artifact dir"));
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn handle_preflight_mode_bc_branch_bubbles_no_stable_train_result() {
+        let data_dir = unique_test_path("bc-preflight-no-stable-data");
+        std::fs::create_dir_all(&data_dir).expect("create empty BC preflight data dir");
+        let output_dir = unique_test_path("bc-preflight-no-stable-out");
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        let config_path = unique_test_path("bc-preflight-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid BC preflight config");
+        std::fs::write(&config_path, config_yaml).expect("write valid BC preflight config");
+
+        let err = handle_preflight_mode(&config_path, &config)
+            .expect_err("all-failing BC preflight should bubble the no-stable train error");
+
+        assert_eq!(err, "no stable train microbatch found in preflight");
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn handle_preflight_mode_rl_branch_bubbles_config_read_errors() {
+        let mut config = dummy_config();
+        config.rl = Some(RlTrainConfig::default());
+        config.output_dir = unique_test_path("rl-out");
+
+        let err = handle_preflight_mode(Path::new("config.txt"), &config)
+            .expect_err("invalid config extension should fail during RL preflight runtime");
+
+        assert!(err.contains("failed to read config config.txt"));
+    }
+
+    #[test]
+    fn handle_preflight_mode_rl_branch_bubbles_artifact_dir_creation_error() {
+        let output_path = unique_test_path("rl-preflight-artifact-file");
+        std::fs::write(&output_path, "not a directory").expect("write artifact blocker file");
+        let mut config = dummy_config();
+        config.output_dir = output_path.clone();
+        config.rl = Some(RlTrainConfig::default());
+
+        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
+            .expect_err("file-backed output path should fail RL artifact dir creation");
+
+        assert!(err.contains("failed to create RL artifact dir"));
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn handle_preflight_mode_rl_branch_bubbles_no_stable_rl_games_result() {
+        let data_dir = unique_test_path("rl-preflight-no-stable-data");
+        std::fs::create_dir_all(&data_dir).expect("create empty RL preflight data dir");
+        let output_dir = unique_test_path("rl-preflight-no-stable-out");
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+        config.device = "cpu".to_string();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.preflight.required_successes = 1;
+        config.rl = Some(RlTrainConfig::default());
+        let config_path = unique_test_path("rl-preflight-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid RL preflight config");
+        std::fs::write(&config_path, config_yaml).expect("write valid RL preflight config");
+
+        let err = handle_preflight_mode(&config_path, &config)
+            .expect_err("all-failing RL preflight should bubble the no-stable RL games error");
+
+        assert_eq!(err, "no stable rl_games candidate found in preflight");
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn handle_probe_mode_bubbles_probe_ladder_scan_errors() {
+        let mut config = dummy_config();
+        config.data_dir = unique_test_path("missing-probe-data");
+        config.output_dir = unique_test_path("probe-out");
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            dummy_probe_request(ProbeKind::Validation),
+        )
+        .expect_err("missing dataset should fail during probe ladder setup");
+
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn handle_probe_mode_bubbles_rl_probe_ladder_scan_errors() {
+        let mut config = dummy_config();
+        config.data_dir = unique_test_path("missing-rl-probe-data");
+        config.output_dir = unique_test_path("rl-probe-out");
+        config.rl = Some(RlTrainConfig::default());
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            dummy_probe_request(ProbeKind::RlMicrobatch),
+        )
+        .expect_err("missing dataset should fail during RL probe ladder setup");
+
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn handle_probe_mode_bubbles_artifact_dir_creation_error() {
+        let output_path = unique_test_path("probe-artifact-file");
+        std::fs::write(&output_path, "not a directory").expect("write artifact blocker file");
+        let mut config = dummy_config();
+        config.output_dir = output_path.clone();
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            dummy_probe_request(ProbeKind::Train),
+        )
+        .expect_err("file-backed output path should fail probe artifact dir creation");
+
+        assert!(err.contains("failed to create BC artifact dir"));
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn handle_probe_mode_bubbles_no_stable_result_when_ladder_returns_only_failures() {
+        let data_dir = unique_test_path("probe-no-stable-data");
+        std::fs::create_dir_all(&data_dir).expect("create empty probe data dir");
+        let output_dir = unique_test_path("probe-no-stable-out");
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        let config_path = unique_test_path("probe-no-stable-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize valid probe config");
+        std::fs::write(&config_path, config_yaml).expect("write valid probe config");
+
+        let err = handle_probe_mode(
+            &config_path,
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Validation,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err("all-failing probe ladder should bubble the no-stable-result error");
+
+        assert_eq!(err, "no stable validation microbatch found in preflight");
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn handle_probe_mode_bubbles_no_stable_train_result_when_ladder_returns_only_failures() {
+        let data_dir = unique_test_path("probe-train-no-stable-data");
+        std::fs::create_dir_all(&data_dir).expect("create empty train probe data dir");
+        let output_dir = unique_test_path("probe-train-no-stable-out");
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        let config_path = unique_test_path("probe-train-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid train probe config");
+        std::fs::write(&config_path, config_yaml).expect("write valid train probe config");
+
+        let err = handle_probe_mode(
+            &config_path,
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 64,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err("all-failing train probe ladder should bubble the no-stable-result error");
+
+        assert_eq!(err, "no stable train microbatch found in preflight");
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn format_probe_only_and_rl_selection_helpers_render_exact_details() {
+        let probe_message =
+            format_probe_only_status_message(dummy_probe_request(ProbeKind::Validation));
+        assert!(probe_message.contains("Probe-only:"));
+        assert!(probe_message
+            .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8"));
+
+        let rl_message = format_rl_preflight_selection_message(32, 8);
+        assert!(rl_message.contains("Preflight:"));
+        assert!(rl_message.contains("selected rl.games_per_batch=32 rl.microbatch_size=8"));
+    }
+
+    #[test]
+    fn format_probe_table_message_supports_rl_microbatch_rows() {
+        let message = format_probe_table_message(
+            "RL microbatch probe table",
+            ProbeKind::RlMicrobatch,
+            &[dummy_probe_result(ProbeKind::RlMicrobatch, 16, true)],
+            16,
+        );
+
+        assert!(message.contains("RL microbatch probe table"));
+        assert!(message.contains("rl_microbatch"));
+        assert!(message.contains("candidate_mb"));
+        assert!(message.contains("yes       16"));
+    }
+
+    #[test]
+    fn delta_q_policy_transfer_gate_and_offline_messages_cover_reject_paths() {
+        let gate = format_delta_q_policy_transfer_gate_message(
+            false,
+            DeltaQPromotionRecommendation::RejectAtOfflineGate,
+        );
+        assert!(gate.contains("pass=false"));
+        assert!(gate.contains("next=reject_at_offline_gate"));
+
+        let offline = format_delta_q_offline_gate_message(
+            8,
+            crate::validation::DeltaQPromotionSnapshot {
+                compared_states: 4,
+                candidate_top1_agreement: 0.25,
+                candidate_mean_regret: 0.5,
+                baseline_mean_regret: 0.4,
+                mean_decision_lift: -0.1,
+                negative_lift_fraction: 0.75,
+                regret_beats_baseline_rate: 0.25,
+                top1_beats_baseline_rate: 0.1,
+                passed: false,
+            },
+            DeltaQPromotionRecommendation::RejectAtOfflineGate,
+            "n/a",
+            Path::new("/tmp/reject.json"),
+        );
+        assert!(offline.contains("dq_offline_gate=false"));
+        assert!(offline.contains("next=reject_at_offline_gate"));
+        assert!(offline.contains("artifact=/tmp/reject.json"));
+    }
+
+    #[test]
+    fn default_arena_confirmation_request_returns_default_request_for_requires_confirmation() {
+        let request = default_arena_confirmation_request(
+            DeltaQPromotionRecommendation::RequiresArenaConfirmation,
+        )
+        .expect("requires-confirmation should create a default arena request");
+
+        assert_eq!(
+            request.min_games,
+            DeltaQArenaConfirmationRequest::default().min_games
+        );
+        assert_eq!(
+            request.same_seeds,
+            DeltaQArenaConfirmationRequest::default().same_seeds
+        );
+    }
+
+    #[test]
+    fn format_rl_and_bc_preflight_selection_messages_cover_small_values() {
+        let rl_message = format_rl_preflight_selection_message(1, 2);
+        assert!(rl_message.contains("selected rl.games_per_batch=1 rl.microbatch_size=2"));
+
+        let runtime = hydra_train::preflight::EffectiveRuntimeConfig {
+            selected: hydra_train::preflight::SelectedRuntimeConfig {
+                train_microbatch_size: 8,
+                validation_microbatch_size: 4,
+                accum_steps: 1,
+            },
+            loader: hydra_train::preflight::LoaderRuntimeConfig {
+                num_threads: None,
+                buffer_games: 2,
+                buffer_samples: 16,
+                archive_queue_bound: 1,
+            },
+        };
+        let explicit = hydra_train::preflight::ExplicitSettings {
+            train_microbatch_explicit: true,
+            validation_microbatch_explicit: false,
+        };
+
+        let bc_message = format_bc_preflight_selection_message(runtime, explicit);
+        assert!(bc_message.contains("saved train_mb=8 val_mb=4"));
+        assert!(bc_message.contains("accum_steps=1"));
+        assert!(bc_message.contains("explicit(train=true, val=false)"));
+    }
+
+    #[test]
+    fn format_probe_best_candidate_detail_supports_rl_games_kind() {
+        let detail = format_probe_best_candidate_detail(ProbeKind::RlGames, 8);
+
+        assert_eq!(detail, "rl_games=8");
+    }
+
+    #[test]
+    fn handle_probe_mode_rl_games_request_still_validates_before_probe_runtime() {
+        let mut config = dummy_config();
+        config.batch_size = 0;
+        config.rl = Some(RlTrainConfig::default());
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            dummy_probe_request(ProbeKind::RlGames),
+        )
+        .expect_err("invalid config should fail before RL games probe wrapper work");
+
+        assert_eq!(err, "batch_size must be greater than 0");
+    }
+
+    #[test]
+    fn format_probe_only_status_message_supports_rl_games_kind() {
+        let message = format_probe_only_status_message(dummy_probe_request(ProbeKind::RlGames));
+
+        assert!(message.contains("Probe-only:"));
+        assert!(message.contains("kind=rl_games candidate_mb=192 warmup_steps=4 measure_steps=8"));
+    }
+
+    #[test]
+    fn format_probe_best_candidate_detail_supports_train_kind() {
+        assert_eq!(
+            format_probe_best_candidate_detail(ProbeKind::Train, 48),
+            "train=48"
+        );
     }
 }

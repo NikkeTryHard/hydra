@@ -540,6 +540,15 @@ mod tests {
         output_dir.join("latest_state.yaml")
     }
 
+    fn save_latest_model_checkpoint(output_dir: &Path) {
+        let checkpoint_base = latest_model_checkpoint_path(output_dir).with_extension("");
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+        HydraModelConfig::learner()
+            .init::<TrainBackend>(&LibTorchDevice::Cpu)
+            .save_file(&checkpoint_base, &recorder)
+            .expect("save latest model checkpoint");
+    }
+
     fn dummy_rl_config(output_dir: PathBuf) -> TrainConfig {
         TrainConfig {
             data_dir: PathBuf::from("/tmp/data"),
@@ -678,6 +687,7 @@ mod tests {
         let config = dummy_rl_config(output_dir.clone());
         let rl_cfg = config.rl.clone().expect("rl config");
         let original_games = rl_cfg.games_per_batch;
+        let original_microbatch = rl_cfg.microbatch_size;
 
         let rl_artifacts = crate::artifacts::RlArtifactPaths::new(&config.output_dir, 0);
         rl_artifacts.create_root_dir().expect("create rl dir");
@@ -729,6 +739,28 @@ mod tests {
             bootstrap.rl_config.games_per_batch, original_games,
             "bootstrap should ignore stale preflight cache"
         );
+        assert_eq!(
+            bootstrap.rl_config.microbatch_size, original_microbatch,
+            "bootstrap should preserve configured microbatch when preflight cache is stale"
+        );
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn initialize_rl_training_bootstrap_creates_tensorboard_writer_when_enabled() {
+        let output_dir = unique_temp_dir("rl_tensorboard_enabled");
+        create_empty_dir(&output_dir);
+
+        let mut config = dummy_rl_config(output_dir.clone());
+        config.tensorboard = true;
+        let rl_cfg = config.rl.clone().expect("rl config");
+
+        let (bootstrap, runtime) = initialize_rl_training_bootstrap(&output_dir, config, rl_cfg)
+            .expect("rl bootstrap with tensorboard");
+
+        assert!(runtime.tb.is_some(), "tensorboard writer should be created");
+        assert!(bootstrap.artifacts.tb_root.is_dir());
+        assert!(bootstrap.artifacts.tb_session_dir.is_dir());
         cleanup_dir(&output_dir);
     }
 
@@ -770,6 +802,94 @@ mod tests {
                 missing_data_dir.display()
             )),
             "unexpected error: {err}"
+        );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_rejects_invalid_exit_sidecar_path_early() {
+        let root_dir = unique_temp_dir("bc_invalid_exit_sidecar");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        let missing_sidecar = root_dir.join("missing_exit_sidecar.jsonl");
+        config.exit_sidecar_path = Some(missing_sidecar.clone());
+
+        let err = initialize_training_bootstrap(&output_dir, config)
+            .err()
+            .expect("invalid exit sidecar path should fail before scan/runtime work");
+
+        assert!(err.starts_with(&format!(
+            "failed to load replay ExIt sidecar {}:",
+            missing_sidecar.display()
+        )));
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_rejects_invalid_delta_q_sidecar_path_early() {
+        let root_dir = unique_temp_dir("bc_invalid_delta_q_sidecar");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        let missing_sidecar = root_dir.join("missing_delta_q_sidecar.jsonl");
+        config.delta_q_sidecar_path = Some(missing_sidecar.clone());
+
+        let err = initialize_training_bootstrap(&output_dir, config)
+            .err()
+            .expect("invalid delta_q sidecar path should fail before scan/runtime work");
+
+        assert!(err.starts_with(&format!(
+            "failed to load replay delta_q sidecar {}:",
+            missing_sidecar.display()
+        )));
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_requires_optimizer_sidecar_when_resume_state_demands_it() {
+        let root_dir = unique_temp_dir("bc_missing_optimizer_sidecar");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        save_latest_model_checkpoint(&output_dir);
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+
+        let state = build_resume_state(
+            1,
+            0,
+            12,
+            None,
+            test_runtime_resume_contract(
+                config.batch_size,
+                config.microbatch_size.expect("train microbatch"),
+                config
+                    .validation_microbatch_size
+                    .expect("validation microbatch"),
+            ),
+        );
+        write_resume_state(&latest_state_path(&output_dir), &state).expect("write resume state");
+
+        let err = initialize_training_bootstrap(&output_dir, config)
+            .err()
+            .expect("resume without optimizer sidecar should fail after checkpoint load");
+
+        assert_eq!(
+            err,
+            format!(
+                "resume state for checkpoint {} requires optimizer sidecar, but none was found next to that checkpoint",
+                output_dir.join("latest_model").display()
+            )
         );
         cleanup_dir(&root_dir);
     }
@@ -874,6 +994,41 @@ mod tests {
         assert_eq!(
             err,
             "RL resume runtime mismatch: checkpoint games_per_batch=7 microbatch_size=128 phase=DrdaAchSelfPlay current games_per_batch=4 microbatch_size=128 phase=DrdaAchSelfPlay"
+        );
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn initialize_rl_training_bootstrap_requires_optimizer_sidecar_when_resume_state_demands_it() {
+        let output_dir = unique_temp_dir("rl_missing_optimizer_sidecar");
+        create_empty_dir(&output_dir);
+
+        save_latest_model_checkpoint(&output_dir);
+
+        let mut config = dummy_rl_config(output_dir.clone());
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+        let rl_cfg = config.rl.clone().expect("rl config");
+        let state = build_rl_resume_state(
+            9,
+            PipelineState {
+                phase: rl_cfg.phase.to_training_phase(),
+                ..PipelineState::default()
+            },
+            rl_runtime_resume_contract(&rl_cfg),
+        );
+        let state_yaml = serde_yaml::to_string(&state).expect("serialize rl resume state");
+        fs::write(latest_state_path(&output_dir), state_yaml).expect("write rl resume state");
+
+        let err = initialize_rl_training_bootstrap(&output_dir, config, rl_cfg)
+            .err()
+            .expect("rl resume without optimizer sidecar should fail after checkpoint load");
+
+        assert_eq!(
+            err,
+            format!(
+                "RL resume state for checkpoint {} requires optimizer sidecar, but none was found next to that checkpoint",
+                output_dir.join("latest_model").display()
+            )
         );
         cleanup_dir(&output_dir);
     }

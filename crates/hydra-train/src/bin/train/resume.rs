@@ -423,3 +423,404 @@ pub(crate) fn rl_resume_banner_message(state: &RlResumeState) -> String {
     )
 }
 use super::presentation::timestamped;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hydra_train::config::TrainingPhase;
+    use std::fs;
+
+    use crate::config::{BcHyperparamConfig, TrainConfig};
+
+    fn dummy_config() -> TrainConfig {
+        TrainConfig {
+            data_dir: PathBuf::from("/tmp/data"),
+            output_dir: PathBuf::from("/tmp/out"),
+            num_epochs: 4,
+            batch_size: 256,
+            microbatch_size: Some(64),
+            validation_microbatch_size: Some(32),
+            exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
+            train_fraction: 0.9,
+            augment: true,
+            resume_checkpoint: None,
+            seed: 7,
+            advanced_loss: None,
+            rl: None,
+            bc: BcHyperparamConfig::default(),
+            device: "cpu".to_string(),
+            buffer_games: 16,
+            buffer_samples: 128,
+            num_threads: Some(1),
+            tensorboard: false,
+            archive_queue_bound: 8,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 4,
+            log_every_n_steps: 10,
+            validate_every_n_steps: 10,
+            checkpoint_every_n_steps: 10,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: None,
+            preflight: Default::default(),
+        }
+    }
+
+    fn dummy_best_validation() -> BestValidation {
+        BestValidation {
+            policy_loss: 0.25,
+            agreement: 0.8,
+        }
+    }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra-resume-test-{label}-{unique}"))
+    }
+
+    fn write_yaml_file(label: &str, contents: &str) -> PathBuf {
+        let path = unique_test_path(label).with_extension("yaml");
+        fs::write(&path, contents).expect("yaml fixture should be writable");
+        path
+    }
+
+    #[test]
+    fn checkpoint_base_and_latest_path_helpers_cover_latest_and_non_latest_names() {
+        let latest = Path::new("/tmp/latest_model.mpk");
+        let other = Path::new("/tmp/epoch_1_model.mpk");
+
+        assert_eq!(
+            checkpoint_base_from_path(latest),
+            PathBuf::from("/tmp/latest_model")
+        );
+        assert_eq!(
+            checkpoint_base_from_path(other),
+            PathBuf::from("/tmp/epoch_1_model")
+        );
+        assert_eq!(
+            checkpoint_base_from_path(Path::new("/tmp/latest_model")),
+            PathBuf::from("/tmp/latest_model")
+        );
+
+        assert_eq!(
+            latest_state_path_for_checkpoint_base(Path::new("/tmp/latest_model")),
+            Some(PathBuf::from("/tmp/latest_state.yaml"))
+        );
+        assert_eq!(
+            latest_optimizer_base_for_checkpoint_base(Path::new("/tmp/latest_model")),
+            Some(PathBuf::from("/tmp/latest_optimizer"))
+        );
+        assert!(latest_state_path_for_checkpoint_base(Path::new("/tmp/epoch_1_model")).is_none());
+        assert!(
+            latest_optimizer_base_for_checkpoint_base(Path::new("/tmp/epoch_1_model")).is_none()
+        );
+    }
+
+    #[test]
+    fn runtime_contract_helpers_compute_expected_values() {
+        let config = dummy_config();
+        let bc = runtime_resume_contract(&config);
+        assert_eq!(bc.batch_size, 256);
+        assert_eq!(bc.train_microbatch_size, 64);
+        assert_eq!(bc.validation_microbatch_size, 32);
+        assert_eq!(bc.accum_steps, 4);
+
+        let rl = rl_runtime_resume_contract(&RlTrainConfig::default());
+        assert_eq!(rl.games_per_batch, RlTrainConfig::default().games_per_batch);
+        assert_eq!(
+            rl.microbatch_size,
+            hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE
+        );
+        assert_eq!(rl.phase, RlTrainConfig::default().phase);
+    }
+
+    #[test]
+    fn validate_resume_runtime_compatibility_checks_batch_and_partial_epoch_contracts() {
+        let current = test_runtime_resume_contract(256, 64, 32);
+        let mut state = build_resume_state(2, 0, 12, Some(dummy_best_validation()), current);
+        assert_eq!(
+            validate_resume_runtime_compatibility(&state, current),
+            Ok(())
+        );
+
+        let mismatched_batch = test_runtime_resume_contract(128, 64, 32);
+        let err = validate_resume_runtime_compatibility(&state, mismatched_batch)
+            .expect_err("batch size mismatch should be rejected");
+        assert!(err.contains("resume batch_size mismatch"));
+
+        state.skip_optimizer_steps_in_epoch = 3;
+        let mismatched_partial = test_runtime_resume_contract(256, 32, 32);
+        let err = validate_resume_runtime_compatibility(&state, mismatched_partial)
+            .expect_err("partial epoch resume should require identical runtime contract");
+        assert!(err.contains("partial-epoch resume requires identical runtime contract"));
+    }
+
+    #[test]
+    fn validate_rl_resume_runtime_compatibility_rejects_mismatched_runtime() {
+        let state = build_rl_resume_state(
+            10,
+            PipelineState {
+                phase: TrainingPhase::ExitPondering,
+                ..PipelineState::default()
+            },
+            RlRuntimeResumeContract {
+                games_per_batch: 8,
+                microbatch_size: 16,
+                phase: RlPhaseConfig::ExitPondering,
+            },
+        );
+
+        let err = validate_rl_resume_runtime_compatibility(
+            &state,
+            RlRuntimeResumeContract {
+                games_per_batch: 16,
+                microbatch_size: 16,
+                phase: RlPhaseConfig::ExitPondering,
+            },
+        )
+        .expect_err("RL runtime mismatch should be rejected");
+
+        assert!(err.contains("RL resume runtime mismatch"));
+    }
+
+    #[test]
+    fn read_resume_state_rejects_schema_and_semantics_mismatches() {
+        let schema_path = write_yaml_file(
+            "bad-bc-schema",
+            r#"schema_version: 2
+resume_semantics: RestoreOptimizerSkipSeenSamples
+next_epoch: 1
+skip_optimizer_steps_in_epoch: 0
+global_step: 4
+best_validation: null
+runtime:
+  batch_size: 256
+  train_microbatch_size: 64
+  validation_microbatch_size: 32
+  accum_steps: 4
+saved_at_unix_s: 1
+"#,
+        );
+        let schema_err = read_resume_state(&schema_path).expect_err("schema mismatch should fail");
+        assert!(schema_err.contains("unsupported resume schema_version 2"));
+
+        let semantics_path = write_yaml_file(
+            "bad-bc-semantics",
+            r#"schema_version: 3
+resume_semantics: RestoreOptimizerFreshSelfPlay
+next_epoch: 1
+skip_optimizer_steps_in_epoch: 0
+global_step: 4
+best_validation: null
+runtime:
+  batch_size: 256
+  train_microbatch_size: 64
+  validation_microbatch_size: 32
+  accum_steps: 4
+saved_at_unix_s: 1
+"#,
+        );
+        let semantics_err =
+            read_resume_state(&semantics_path).expect_err("semantics mismatch should fail");
+        assert!(semantics_err.contains("failed to parse resume state"));
+    }
+
+    #[test]
+    fn read_rl_resume_state_rejects_schema_mismatch() {
+        let path = write_yaml_file(
+            "bad-rl-schema",
+            r#"schema_version: 2
+resume_semantics: RestoreOptimizerFreshSelfPlay
+global_step: 7
+pipeline_state:
+  phase: ExitPondering
+  total_games: 0
+  total_samples: 0
+  gpu_hours_used: 0.0
+  learner_version: 0
+runtime:
+  games_per_batch: 8
+  microbatch_size: 16
+  phase: ExitPondering
+saved_at_unix_s: 1
+"#,
+        );
+        let err = read_rl_resume_state(&path).expect_err("schema mismatch should fail");
+        assert!(err.contains("failed to parse RL resume state"));
+    }
+
+    #[test]
+    fn resume_context_helpers_cover_state_access_and_restore_flags() {
+        let runtime = test_runtime_resume_contract(256, 64, 32);
+        let state = build_resume_state(3, 2, 11, Some(dummy_best_validation()), runtime);
+        let ctx = ResumeContext {
+            checkpoint_base: None,
+            state: Some(state.clone()),
+            optimizer_base: None,
+            session_start_global_step: state.global_step,
+            start_epoch: state.next_epoch,
+        };
+
+        assert_eq!(ctx.best_validation(), Some(dummy_best_validation()));
+        assert_eq!(ctx.steps_to_skip_for_epoch(3), 2);
+        assert_eq!(ctx.steps_to_skip_for_epoch(1), 0);
+        assert!(ctx.restores_optimizer_state());
+
+        let empty = ResumeContext {
+            checkpoint_base: None,
+            state: None,
+            optimizer_base: None,
+            session_start_global_step: 0,
+            start_epoch: 0,
+        };
+        assert_eq!(empty.best_validation(), None);
+        assert_eq!(empty.steps_to_skip_for_epoch(0), 0);
+        assert!(!empty.restores_optimizer_state());
+    }
+
+    #[test]
+    fn rl_resume_context_restore_flag_tracks_presence_of_state() {
+        let ctx = RlResumeContext {
+            checkpoint_base: None,
+            state: None,
+            optimizer_base: None,
+            session_start_global_step: 0,
+        };
+        assert!(!ctx.restores_optimizer_state());
+
+        let ctx = RlResumeContext {
+            checkpoint_base: None,
+            state: Some(build_rl_resume_state(
+                5,
+                PipelineState::default(),
+                RlRuntimeResumeContract {
+                    games_per_batch: 8,
+                    microbatch_size: 16,
+                    phase: RlPhaseConfig::ExitPondering,
+                },
+            )),
+            optimizer_base: None,
+            session_start_global_step: 5,
+        };
+        assert!(ctx.restores_optimizer_state());
+    }
+
+    #[test]
+    fn banner_and_pause_messages_include_runtime_details() {
+        let state = build_resume_state(
+            1,
+            3,
+            9,
+            Some(dummy_best_validation()),
+            test_runtime_resume_contract(256, 64, 32),
+        );
+        let resume_banner = resume_banner_message(&state);
+        assert!(resume_banner.contains("global_step=9"));
+        assert!(resume_banner.contains("skipping 3 completed optimizer steps"));
+        assert!(resume_banner.contains("runtime=train_mb:64 val_mb:32 accum_steps:4"));
+
+        let immediate_banner = resume_banner_message(&build_resume_state(
+            0,
+            0,
+            1,
+            None,
+            test_runtime_resume_contract(256, 64, 32),
+        ));
+        assert!(immediate_banner.contains("resuming at epoch 1 with new updates immediately"));
+
+        let rl_banner = rl_resume_banner_message(&build_rl_resume_state(
+            10,
+            PipelineState {
+                phase: TrainingPhase::ExitPondering,
+                total_games: 12,
+                total_samples: 128,
+                ..PipelineState::default()
+            },
+            RlRuntimeResumeContract {
+                games_per_batch: 8,
+                microbatch_size: 16,
+                phase: RlPhaseConfig::ExitPondering,
+            },
+        ));
+        assert!(rl_banner.contains("phase=ExitPondering"));
+        assert!(rl_banner.contains("games=12 samples=128"));
+        assert!(rl_banner.contains("runtime=games_per_batch:8 microbatch_size:16"));
+
+        let paused = paused_training_message(&EpochContinuation {
+            next_epoch: 2,
+            skip_optimizer_steps_in_epoch: 4,
+            epoch_completed: false,
+        });
+        assert!(paused.contains("resume_epoch=3"));
+        assert!(paused.contains("skipped_optimizer_steps_in_epoch=4"));
+    }
+
+    #[test]
+    fn write_resume_state_round_trips_and_load_helpers_detect_latest_files() {
+        let root = unique_test_path("resume-roundtrip");
+        fs::create_dir_all(&root).expect("temp root should be creatable");
+        let checkpoint = root.join("latest_model.mpk");
+        fs::write(&checkpoint, b"model").expect("checkpoint marker should be writable");
+        let latest_state = root.join("latest_state.yaml");
+        let latest_optimizer = root.join("latest_optimizer.bin");
+        fs::write(&latest_optimizer, b"optimizer").expect("optimizer marker should be writable");
+
+        let state = build_resume_state(
+            2,
+            1,
+            7,
+            Some(dummy_best_validation()),
+            test_runtime_resume_contract(256, 64, 32),
+        );
+        write_resume_state(&latest_state, &state).expect("resume state should write");
+
+        let loaded = read_resume_state(&latest_state).expect("written resume state should parse");
+        assert_eq!(loaded, state);
+
+        let mut config = dummy_config();
+        config.resume_checkpoint = Some(checkpoint);
+        let ctx = ResumeContext::load(&config).expect("resume context should load latest files");
+        assert_eq!(ctx.session_start_global_step, 7);
+        assert_eq!(ctx.start_epoch, 2);
+        assert_eq!(ctx.optimizer_base, Some(root.join("latest_optimizer")));
+        assert_eq!(ctx.state, Some(state));
+    }
+
+    #[test]
+    fn rl_resume_context_load_detects_latest_state_and_optimizer() {
+        let root = unique_test_path("rl-resume-load");
+        fs::create_dir_all(&root).expect("temp root should be creatable");
+        let checkpoint = root.join("latest_model.mpk");
+        fs::write(&checkpoint, b"model").expect("checkpoint marker should be writable");
+        let latest_state = root.join("latest_state.yaml");
+        let latest_optimizer = root.join("latest_optimizer.bin");
+        fs::write(&latest_optimizer, b"optimizer").expect("optimizer marker should be writable");
+
+        let state = build_rl_resume_state(
+            5,
+            PipelineState {
+                phase: TrainingPhase::ExitPondering,
+                ..PipelineState::default()
+            },
+            RlRuntimeResumeContract {
+                games_per_batch: 8,
+                microbatch_size: 16,
+                phase: RlPhaseConfig::ExitPondering,
+            },
+        );
+        let yaml = serde_yaml::to_string(&state).expect("RL resume state should serialize");
+        fs::write(&latest_state, yaml).expect("RL resume state should write");
+
+        let mut config = dummy_config();
+        config.resume_checkpoint = Some(checkpoint);
+        let ctx =
+            RlResumeContext::load(&config).expect("RL resume context should load latest files");
+        assert_eq!(ctx.session_start_global_step, 5);
+        assert_eq!(ctx.optimizer_base, Some(root.join("latest_optimizer")));
+        assert_eq!(ctx.state, Some(state));
+    }
+}
