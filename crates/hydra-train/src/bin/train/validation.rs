@@ -514,7 +514,10 @@ mod tests {
         let device = LibTorchDevice::Cpu;
         let batch = empty_batch(&device, 3);
 
-        assert_eq!(batch.obs.dims(), [3, hydra_train::config::INPUT_CHANNELS, 34]);
+        assert_eq!(
+            batch.obs.dims(),
+            [3, hydra_train::config::INPUT_CHANNELS, 34]
+        );
         assert_eq!(batch.actions.dims(), [3]);
         assert_eq!(batch.legal_mask.dims(), [3, 46]);
         assert_eq!(batch.grp_target.dims(), [3, 24]);
