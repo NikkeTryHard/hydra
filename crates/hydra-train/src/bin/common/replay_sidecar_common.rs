@@ -2,14 +2,14 @@ use std::fs;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use burn::backend::libtorch::LibTorchDevice;
 use burn::backend::LibTorch;
+use burn::backend::libtorch::LibTorchDevice;
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::exit::ExitConfig;
 use hydra_train::training::replay_exit::source_net_hash_from_checkpoint_identity;
-use riichienv_core::replay::{load_mjai_events_from_path, read_mjai_events, MjaiEvent};
+use riichienv_core::replay::{MjaiEvent, load_mjai_events_from_path, read_mjai_events};
 use serde::Serialize;
 
 pub(super) type Backend = LibTorch<f32>;
@@ -322,5 +322,100 @@ mod tests {
             source_net_hash_from_checkpoint(&path),
             source_net_hash_from_checkpoint(&path)
         );
+    }
+
+    #[test]
+    fn usage_mentions_required_and_optional_flags() {
+        let usage_text = usage("build_replay_sidecar");
+        assert!(usage_text.contains("--input <replay.json|replay.json.gz>"));
+        assert!(usage_text.contains("--checkpoint <model_base>"));
+        assert!(usage_text.contains("[--max-kl <f32>]"));
+    }
+
+    #[test]
+    fn parse_args_rejects_unknown_flag_with_usage() {
+        let err = parse_args(
+            "build_replay_sidecar",
+            vec![
+                "build_replay_sidecar".to_string(),
+                "--bogus".to_string(),
+                "value".to_string(),
+            ],
+        )
+        .expect_err("unknown flags should fail");
+
+        assert!(err.starts_with("Usage:"));
+    }
+
+    #[test]
+    fn parse_args_reports_missing_optional_flag_values() {
+        let err = parse_args(
+            "build_replay_sidecar",
+            vec![
+                "build_replay_sidecar".to_string(),
+                "--input".to_string(),
+                "game.json".to_string(),
+                "--checkpoint".to_string(),
+                "model_base".to_string(),
+                "--output".to_string(),
+                "out.jsonl".to_string(),
+                "--source-version".to_string(),
+                "1".to_string(),
+                "--min-visits".to_string(),
+            ],
+        )
+        .expect_err("missing min-visits value should fail");
+
+        assert!(err.contains("missing value for --min-visits"));
+    }
+
+    #[test]
+    fn build_exit_config_keeps_phase3_defaults_without_overrides() {
+        let cli = ReplaySidecarCli {
+            input: PathBuf::from("game.json"),
+            checkpoint: PathBuf::from("model_base"),
+            output: PathBuf::from("out.jsonl"),
+            source_version: 1,
+            min_visits: None,
+            hard_state_threshold: None,
+            max_kl: None,
+        };
+
+        let cfg = build_exit_config(&cli);
+        let default_cfg = ExitConfig::default_phase3();
+        assert_eq!(cfg.min_visits, default_cfg.min_visits);
+        assert_eq!(cfg.hard_state_threshold, default_cfg.hard_state_threshold);
+        assert_eq!(cfg.safety_valve_max_kl, default_cfg.safety_valve_max_kl);
+    }
+
+    #[test]
+    fn write_jsonl_handles_empty_records_and_read_events_reports_missing_file() {
+        let output_path = unique_path("empty-rows", "jsonl");
+        write_jsonl::<DummyRecord>(&output_path, &[]).expect("empty jsonl should be created");
+        assert_eq!(
+            fs::read_to_string(&output_path).expect("empty jsonl readable"),
+            ""
+        );
+
+        let missing_path = unique_path("missing", "json");
+        let err = read_events(&missing_path).expect_err("missing replay should fail");
+        assert!(err.contains("failed to open replay"));
+        assert!(err.contains(&missing_path.display().to_string()));
+
+        fs::remove_file(output_path).expect("remove empty jsonl");
+    }
+
+    #[test]
+    fn write_report_surfaces_directory_write_failures() {
+        let output_path = unique_path("report-dir", "jsonl");
+        let report_path = output_path.with_extension("report.json");
+        fs::create_dir(&report_path).expect("create report-path directory");
+
+        let report = DummyRecord { id: 1, label: "x" };
+        let err = write_report(&output_path, &report)
+            .expect_err("directory-backed report path should fail");
+        assert!(err.contains("failed to write report"));
+
+        fs::remove_dir(&report_path).expect("remove temp dir");
     }
 }
