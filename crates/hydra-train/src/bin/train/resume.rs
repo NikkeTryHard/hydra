@@ -9,7 +9,7 @@ use hydra_train::config::PipelineState;
 
 use super::config::{RlPhaseConfig, RlTrainConfig};
 
-use super::config::{TrainConfig, train_microbatch_size, validation_microbatch_size};
+use super::config::{train_microbatch_size, validation_microbatch_size, TrainConfig};
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -122,14 +122,17 @@ impl ResumeContext {
             .unwrap_or(0)
     }
 
-    pub(crate) fn print_banner(&self) {
+    pub(crate) fn print_banner_with_effective_runtime(
+        &self,
+        effective_runtime: Option<RuntimeResumeContract>,
+    ) {
         if let Some(state) = self.state.as_ref() {
             println!(
                 "{}",
                 timestamped(format!(
                     "{} {}",
                     "Resume:".bold().cyan(),
-                    resume_banner_message(state).yellow(),
+                    resume_banner_message(state, effective_runtime).yellow(),
                 ))
             );
         }
@@ -385,7 +388,10 @@ pub(crate) fn paused_training_message(continuation: &EpochContinuation) -> Strin
     )
 }
 
-pub(crate) fn resume_banner_message(state: &BcResumeState) -> String {
+pub(crate) fn resume_banner_message(
+    state: &BcResumeState,
+    effective_runtime: Option<RuntimeResumeContract>,
+) -> String {
     if state.skip_optimizer_steps_in_epoch > 0 {
         format!(
             "global_step={} semantics={:?} skipping {} completed optimizer steps worth of samples in epoch {} before new updates runtime=train_mb:{} val_mb:{} accum_steps:{}",
@@ -398,7 +404,7 @@ pub(crate) fn resume_banner_message(state: &BcResumeState) -> String {
             state.runtime.accum_steps,
         )
     } else {
-        format!(
+        let base = format!(
             "global_step={} semantics={:?} resuming at epoch {} with new updates immediately runtime=train_mb:{} val_mb:{} accum_steps:{}",
             state.global_step,
             state.resume_semantics,
@@ -406,7 +412,17 @@ pub(crate) fn resume_banner_message(state: &BcResumeState) -> String {
             state.runtime.train_microbatch_size,
             state.runtime.validation_microbatch_size,
             state.runtime.accum_steps,
-        )
+        );
+        match effective_runtime.filter(|runtime| runtime != &state.runtime) {
+            Some(runtime) => format!(
+                "{} effective_runtime=train_mb:{} val_mb:{} accum_steps:{}",
+                base,
+                runtime.train_microbatch_size,
+                runtime.validation_microbatch_size,
+                runtime.accum_steps,
+            ),
+            None => base,
+        }
     }
 }
 
@@ -718,19 +734,22 @@ saved_at_unix_s: 1
             Some(dummy_best_validation()),
             test_runtime_resume_contract(256, 64, 32),
         );
-        let resume_banner = resume_banner_message(&state);
+        let resume_banner = resume_banner_message(&state, None);
         assert!(resume_banner.contains("global_step=9"));
         assert!(resume_banner.contains("skipping 3 completed optimizer steps"));
         assert!(resume_banner.contains("runtime=train_mb:64 val_mb:32 accum_steps:4"));
 
-        let immediate_banner = resume_banner_message(&build_resume_state(
-            0,
-            0,
-            1,
-            None,
-            test_runtime_resume_contract(256, 64, 32),
-        ));
+        let immediate_state =
+            build_resume_state(0, 0, 1, None, test_runtime_resume_contract(256, 64, 32));
+        let immediate_banner = resume_banner_message(&immediate_state, None);
         assert!(immediate_banner.contains("resuming at epoch 1 with new updates immediately"));
+
+        let effective_banner = resume_banner_message(
+            &immediate_state,
+            Some(test_runtime_resume_contract(256, 32, 16)),
+        );
+        assert!(effective_banner.contains("runtime=train_mb:64 val_mb:32 accum_steps:4"));
+        assert!(effective_banner.contains("effective_runtime=train_mb:32 val_mb:16 accum_steps:8"));
 
         let rl_banner = rl_resume_banner_message(&build_rl_resume_state(
             10,

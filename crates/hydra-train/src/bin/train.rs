@@ -572,7 +572,7 @@ unexpected_field: true
             test_runtime_resume_contract(2048, 256, 128),
         );
         assert_eq!(
-            resume_banner_message(&state),
+            resume_banner_message(&state, None),
             "global_step=2048 semantics=RestoreOptimizerSkipSeenSamples skipping 137 completed optimizer steps worth of samples in epoch 3 before new updates runtime=train_mb:256 val_mb:128 accum_steps:8"
         );
     }
@@ -587,7 +587,7 @@ unexpected_field: true
             test_runtime_resume_contract(2048, 512, 256),
         );
         assert_eq!(
-            resume_banner_message(&state),
+            resume_banner_message(&state, None),
             "global_step=500 semantics=RestoreOptimizerSkipSeenSamples resuming at epoch 2 with new updates immediately runtime=train_mb:512 val_mb:256 accum_steps:4"
         );
     }
