@@ -8,23 +8,23 @@ use burn::module::AutodiffModule;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use colored::Colorize;
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, stream_train_epoch, stream_val_pass, DataManifest,
-    StreamingLoaderConfig,
+    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
+    stream_val_pass,
 };
-use hydra_train::data::sample::{collate_samples, MjaiSample};
+use hydra_train::data::sample::{MjaiSample, collate_samples};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    candidate_ladder, resolve_runtime_config, EffectiveRuntimeConfig, ExplicitSettings,
-    PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
+    EffectiveRuntimeConfig, ExplicitSettings, PreflightCacheEntry, ProbeKind, ProbeResult,
+    ProbeStatus, candidate_ladder, resolve_runtime_config,
 };
 use hydra_train::training::losses::HydraLoss;
 
 use super::artifacts::{
-    write_preflight_cache, BcArtifactPaths, PreflightPaths, RlArtifactPaths, RlPreflightPaths,
+    BcArtifactPaths, PreflightPaths, RlArtifactPaths, RlPreflightPaths, write_preflight_cache,
 };
 use super::config::{
-    configure_threads, default_num_threads_for_system, train_device,
-    trainer_config_from_train_config, ProbeChildRequest, TrainConfig,
+    ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
+    train_device, trainer_config_from_train_config,
 };
 use super::loss_policy::build_loss_config;
 use super::preflight_fingerprint::preflight_cache_key;
@@ -38,11 +38,11 @@ use super::probe_process::{
     mem_available_bytes, probe_result_path, rl_probe_required_free_bytes, rl_probe_result_path,
     write_probe_result,
 };
-use super::probe_request::{probe_child_request_from_cli, ProbeRequest};
+use super::probe_request::{ProbeRequest, probe_child_request_from_cli};
 use super::probe_search::{
-    finalize_probe_search, maybe_expand_probe_candidates, probe_candidate_ladder,
-    refine_probe_winner_locally, refine_top_k_probe_candidates_locally, rerun_probe_finalists,
-    run_candidate_attempts, ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec,
+    ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec, finalize_probe_search,
+    maybe_expand_probe_candidates, probe_candidate_ladder, refine_probe_winner_locally,
+    refine_top_k_probe_candidates_locally, rerun_probe_finalists, run_candidate_attempts,
 };
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use super::runtime_autotune::autotune_loader_runtime;
@@ -1152,7 +1152,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::config::{loader_runtime_config, ProbeChildRequest, ProbeCliRequest, RlTrainConfig};
+    use crate::config::{ProbeChildRequest, ProbeCliRequest, RlTrainConfig, loader_runtime_config};
     use hydra_train::preflight::{PreflightConfig, ProbeStatus};
 
     fn dummy_config() -> TrainConfig {
@@ -2303,11 +2303,15 @@ mod tests {
         config.preflight.rl_probe_memory_headroom_ratio = 0.0;
         config.preflight.rl_probe_growth_safety_factor = 1.0;
 
-        let blocked =
-            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlMicrobatch, 64, Some(32))
-                .expect(
-                "growth probe should be blocked when required free memory matches available memory",
-            );
+        let blocked = maybe_block_host_ram_growth_probe(
+            &config,
+            ProbeKind::RlMicrobatch,
+            64,
+            Some(32),
+        )
+        .expect(
+            "growth probe should be blocked when required free memory matches available memory",
+        );
 
         assert_eq!(blocked.kind, ProbeKind::RlMicrobatch);
         assert_eq!(blocked.candidate_microbatch, 64);

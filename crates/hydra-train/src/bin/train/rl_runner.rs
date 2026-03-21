@@ -7,16 +7,16 @@ use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{AdvancedHead, HeadState};
 use hydra_train::training::orchestrator::{
-    live_exit_config_from_plan, maintenance_plan, rl_phase_train_step_with_controller,
-    PhaseTrainReport,
+    PhaseTrainReport, live_exit_config_from_plan, maintenance_plan,
+    rl_phase_train_step_with_controller,
 };
 
-use super::artifacts::{append_rl_step_log, save_latest_rl_checkpoint_and_state, RlArtifactPaths};
+use super::artifacts::{RlArtifactPaths, append_rl_step_log, save_latest_rl_checkpoint_and_state};
 use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime};
 use super::config::RlTrainConfig;
 use super::presentation::{format_status_line, timestamped};
 use super::progress::RlStepLogEntry;
-use super::resume::{build_rl_resume_state, RlRuntimeResumeContract};
+use super::resume::{RlRuntimeResumeContract, build_rl_resume_state};
 use super::status::{reached_session_step_budget, session_steps_completed};
 
 fn rl_mode_summary(rl_config: &RlTrainConfig, total_steps: usize) -> String {
