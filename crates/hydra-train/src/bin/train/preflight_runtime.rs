@@ -1221,6 +1221,28 @@ mod tests {
         }
     }
 
+    fn tiny_real_mjai_replay() -> String {
+        [
+            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
+    }
+
+    fn write_real_probe_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = unique_test_path(label);
+        fs::create_dir_all(&root).expect("create real probe fixture dir");
+        let replay_path = root.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("write real probe replay");
+        let result_path = root.join("probe-result.json");
+        (root, replay_path, result_path)
+    }
+
     #[test]
     fn measure_samples_per_second_handles_zero_samples_and_zero_time() {
         assert_eq!(measure_samples_per_second(0, Duration::from_secs(2)), 0.0);
@@ -1230,6 +1252,77 @@ mod tests {
             measure_samples_per_second(10, Duration::from_secs_f64(f64::EPSILON / 2.0)),
             0.0
         );
+    }
+
+    #[test]
+    fn run_probe_only_train_writes_success_result_for_real_loose_replay() {
+        let (root, replay_path, result_path) = write_real_probe_fixture("train-success");
+        let mut config = dummy_config();
+        config.data_dir = replay_path;
+        config.batch_size = 1;
+        config.train_fraction = 1.0;
+        config.device = "cpu".to_string();
+
+        run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 1,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect("train probe should succeed on a real loose replay");
+
+        assert!(result_path.exists());
+        let raw = fs::read_to_string(&result_path).expect("read written train probe result json");
+        let result: ProbeResult =
+            serde_json::from_str(&raw).expect("deserialize written train probe result json");
+        assert_eq!(result.kind, ProbeKind::Train);
+        assert_eq!(result.status, ProbeStatus::Success);
+        assert_eq!(result.candidate_microbatch, 1);
+        assert!(result.measured_samples_per_second.is_some());
+        assert!(result.elapsed_seconds.is_some());
+        assert_eq!(result.detail, "stable train probe on real dataset");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_probe_only_validation_writes_success_result_for_real_loose_replay() {
+        let (root, replay_path, result_path) = write_real_probe_fixture("validation-success");
+        let mut config = dummy_config();
+        config.data_dir = replay_path;
+        config.batch_size = 1;
+        config.train_fraction = 0.0;
+        config.device = "cpu".to_string();
+
+        run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Validation,
+                candidate_microbatch: 1,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect("validation probe should succeed on a real loose replay");
+
+        assert!(result_path.exists());
+        let raw =
+            fs::read_to_string(&result_path).expect("read written validation probe result json");
+        let result: ProbeResult =
+            serde_json::from_str(&raw).expect("deserialize written validation probe result json");
+        assert_eq!(result.kind, ProbeKind::Validation);
+        assert_eq!(result.status, ProbeStatus::Success);
+        assert_eq!(result.candidate_microbatch, 1);
+        assert!(result.measured_samples_per_second.is_some());
+        assert!(result.elapsed_seconds.is_some());
+        assert_eq!(result.detail, "stable validation probe on real dataset");
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1287,6 +1380,23 @@ mod tests {
         let config = dummy_config();
 
         assert_eq!(run_probe_child_mode(&config, None), Ok(false));
+    }
+
+    #[test]
+    fn search_rl_runtime_candidate_rejects_validation_kind_as_non_rl() {
+        let config = dummy_config();
+        let artifacts = RlArtifactPaths::new(&config.output_dir, 0);
+
+        let err = search_rl_runtime_candidate(
+            std::path::Path::new("dummy-config.yaml"),
+            &config,
+            &artifacts,
+            ProbeKind::Validation,
+            8,
+        )
+        .expect_err("validation should be rejected by RL runtime search");
+
+        assert_eq!(err, "non-RL probe kind passed to RL runtime search");
     }
 
     #[test]
@@ -1474,6 +1584,10 @@ mod tests {
                 .is_ok(),
             "measure branch should format and flush"
         );
+        assert!(
+            emit_probe_step_progress(ProbeKind::Validation, 64, 2, request, None, 64).is_ok(),
+            "measure branch should still flush without a start timestamp"
+        );
     }
 
     #[test]
@@ -1516,6 +1630,54 @@ mod tests {
             measure_err,
             "internal probe child missing resolved measure steps"
         );
+    }
+
+    #[test]
+    fn run_probe_child_mode_bubbles_probe_runtime_errors_after_cli_resolution() {
+        let mut config = dummy_config();
+        config.data_dir = missing_test_path("probe-child-missing-data");
+        let result_path = unique_test_path("probe-child-runtime-error.json");
+
+        let err = run_probe_child_mode(
+            &config,
+            Some(ProbeChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Validation,
+                    candidate_microbatch: 32,
+                    warmup_steps: Some(1),
+                    measure_steps: Some(1),
+                },
+                result_path: result_path.clone(),
+            }),
+        )
+        .expect_err("resolved child requests should bubble probe runtime errors");
+
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_probe_child_mode_routes_rl_requests_into_rl_probe_wrapper_errors() {
+        let config = dummy_config();
+        let result_path = unique_test_path("probe-child-rl-runtime-error.json");
+
+        let err = run_probe_child_mode(
+            &config,
+            Some(ProbeChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::RlGames,
+                    candidate_microbatch: 8,
+                    warmup_steps: Some(1),
+                    measure_steps: Some(1),
+                },
+                result_path: result_path.clone(),
+            }),
+        )
+        .expect_err("resolved RL child requests should route into the RL probe wrapper");
+
+        assert_eq!(err, "RL probe requested without rl config block");
+        assert!(!result_path.exists());
     }
 
     #[test]
@@ -1583,6 +1745,52 @@ mod tests {
     }
 
     #[test]
+    fn run_rl_probe_only_rl_games_bubbles_invalid_device_before_runtime_work() {
+        let mut config = dummy_config();
+        config.device = "definitely-not-a-device".to_string();
+        config.rl = Some(dummy_rl_train_config());
+        let result_path = unique_test_path("rl-games-invalid-device.json");
+
+        let err = run_rl_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::RlGames,
+                candidate_microbatch: 8,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("invalid RL device should fail before self-play runtime work");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_rl_probe_only_rl_microbatch_bubbles_invalid_device_before_runtime_work() {
+        let mut config = dummy_config();
+        config.device = "definitely-not-a-device".to_string();
+        config.rl = Some(dummy_rl_train_config());
+        let result_path = unique_test_path("rl-micro-invalid-device.json");
+
+        let err = run_rl_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::RlMicrobatch,
+                candidate_microbatch: 16,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("invalid RL device should fail before RL microbatch runtime work");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        assert!(!result_path.exists());
+    }
+
+    #[test]
     fn run_probe_only_rl_microbatch_fails_fast_without_rl_config() {
         let config = dummy_config();
         let result_path = unique_test_path("rl-microbatch-result.json");
@@ -1602,6 +1810,52 @@ mod tests {
         );
 
         assert_eq!(err, "RL probe requested without rl config block");
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_probe_only_rejects_invalid_thread_configuration_before_any_probe_work() {
+        let mut config = dummy_config();
+        config.num_threads = Some(0);
+        let result_path = unique_test_path("invalid-thread-probe-result.json");
+
+        let err = run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("invalid rayon thread config should fail before scan or device setup");
+
+        assert!(err.starts_with("failed to configure rayon threads for probe child: "));
+        assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_probe_child_mode_bubbles_invalid_thread_configuration_before_probe_execution() {
+        let mut config = dummy_config();
+        config.num_threads = Some(0);
+        let result_path = unique_test_path("invalid-thread-child-result.json");
+
+        let err = run_probe_child_mode(
+            &config,
+            Some(ProbeChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::RlMicrobatch,
+                    candidate_microbatch: 16,
+                    warmup_steps: Some(1),
+                    measure_steps: Some(1),
+                },
+                result_path: result_path.clone(),
+            }),
+        )
+        .expect_err("invalid rayon thread config should bubble before child probe execution");
+
+        assert!(err.starts_with("failed to configure rayon threads for probe child: "));
         assert!(!result_path.exists());
     }
 
@@ -1626,6 +1880,58 @@ mod tests {
         assert!(err.starts_with("failed to scan preflight data from "));
         assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
         assert!(!result_path.exists());
+    }
+
+    #[test]
+    fn run_probe_only_train_bubbles_invalid_device_after_successful_scan() {
+        let root = unique_test_path("train-invalid-device-scan");
+        fs::create_dir_all(&root).expect("create empty data dir");
+        let mut config = dummy_config();
+        config.data_dir = root.clone();
+        config.device = "definitely-not-a-device".to_string();
+        let result_path = unique_test_path("train-invalid-device-result.json");
+
+        let err = run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("invalid device should fail after scan but before train probing");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        assert!(!result_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_probe_only_validation_bubbles_invalid_device_after_successful_scan() {
+        let root = unique_test_path("validation-invalid-device-scan");
+        fs::create_dir_all(&root).expect("create empty data dir");
+        let mut config = dummy_config();
+        config.data_dir = root.clone();
+        config.device = "definitely-not-a-device".to_string();
+        let result_path = unique_test_path("validation-invalid-device-result.json");
+
+        let err = run_probe_only(
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Validation,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+        )
+        .expect_err("invalid device should fail after scan but before validation probing");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        assert!(!result_path.exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1767,6 +2073,201 @@ mod tests {
     }
 
     #[test]
+    fn search_rl_runtime_candidate_explicit_microbatch_failure_uses_explicit_error_path() {
+        let data_dir = unique_test_path("rl-explicit-microbatch-data");
+        fs::create_dir_all(&data_dir).expect("create empty RL data dir");
+        let output_dir = unique_test_path("rl-explicit-microbatch-out");
+        let artifacts = RlArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.rl = Some(RlTrainConfig {
+            games_per_batch: 8,
+            microbatch_size: Some(24),
+            ..RlTrainConfig::default()
+        });
+        let config_path = unique_test_path("rl-explicit-microbatch-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize valid RL config");
+        fs::write(&config_path, config_yaml).expect("write valid RL config yaml");
+
+        let err = search_rl_runtime_candidate(
+            &config_path,
+            &config,
+            &artifacts,
+            ProbeKind::RlMicrobatch,
+            16,
+        )
+        .expect_err("explicit RL microbatch failure should use explicit-only error path");
+
+        assert_eq!(err, "explicit rl_microbatch candidate 24 failed preflight");
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn search_train_microbatch_explicit_failure_uses_explicit_error_path() {
+        let data_dir = unique_test_path("train-explicit-microbatch-data");
+        fs::create_dir_all(&data_dir).expect("create empty train data dir");
+        let output_dir = unique_test_path("train-explicit-microbatch-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.preflight.required_successes = 1;
+        config.microbatch_size = Some(96);
+        let config_path =
+            unique_test_path("train-explicit-microbatch-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize valid train config");
+        fs::write(&config_path, config_yaml).expect("write valid train config yaml");
+
+        let err = search_train_microbatch(&config_path, &config, &artifacts, 64)
+            .expect_err("explicit train microbatch failure should use explicit-only error path");
+
+        assert_eq!(err, "explicit train microbatch 96 failed preflight");
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn search_train_microbatch_non_explicit_failure_reports_no_stable_result() {
+        let data_dir = unique_test_path("train-no-stable-data");
+        fs::create_dir_all(&data_dir).expect("create empty train data dir");
+        let output_dir = unique_test_path("train-no-stable-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        let config_path = unique_test_path("train-no-stable-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize valid train config");
+        fs::write(&config_path, config_yaml).expect("write valid train config yaml");
+
+        let err = search_train_microbatch(&config_path, &config, &artifacts, 64)
+            .expect_err("all-failing train search should report no stable result");
+
+        assert_eq!(err, "no stable train microbatch found in preflight");
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn search_validation_microbatch_explicit_failure_uses_explicit_error_path() {
+        let data_dir = unique_test_path("validation-explicit-microbatch-data");
+        fs::create_dir_all(&data_dir).expect("create empty validation data dir");
+        let output_dir = unique_test_path("validation-explicit-microbatch-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.preflight.required_successes = 1;
+        config.validation_microbatch_size = Some(48);
+        let config_path =
+            unique_test_path("validation-explicit-microbatch-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid validation config");
+        fs::write(&config_path, config_yaml).expect("write valid validation config yaml");
+
+        let err = search_validation_microbatch(&config_path, &config, &artifacts, 32).expect_err(
+            "explicit validation microbatch failure should use explicit-only error path",
+        );
+
+        assert_eq!(err, "explicit validation microbatch 48 failed preflight");
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn search_validation_microbatch_non_explicit_failure_reports_no_stable_result() {
+        let data_dir = unique_test_path("validation-no-stable-data");
+        fs::create_dir_all(&data_dir).expect("create empty validation data dir");
+        let output_dir = unique_test_path("validation-no-stable-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        let config_path = unique_test_path("validation-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid validation config");
+        fs::write(&config_path, config_yaml).expect("write valid validation config yaml");
+
+        let err = search_validation_microbatch(&config_path, &config, &artifacts, 32)
+            .expect_err("non-explicit validation failure should report no stable result");
+
+        assert_eq!(err, "no stable validation microbatch found in preflight");
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn search_rl_games_non_explicit_failure_reports_no_stable_result() {
+        let data_dir = unique_test_path("rl-games-no-stable-data");
+        fs::create_dir_all(&data_dir).expect("create empty RL data dir");
+        let output_dir = unique_test_path("rl-games-no-stable-out");
+        let artifacts = RlArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.preflight.required_successes = 1;
+        config.rl = Some(dummy_rl_train_config());
+        let config_path = unique_test_path("rl-games-no-stable-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize valid RL games config");
+        fs::write(&config_path, config_yaml).expect("write valid RL games config yaml");
+
+        let err =
+            search_rl_runtime_candidate(&config_path, &config, &artifacts, ProbeKind::RlGames, 16)
+                .expect_err("all-failing RL games search should report no stable result");
+
+        assert_eq!(err, "no stable rl_games candidate found in preflight");
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn search_rl_microbatch_non_explicit_failure_reports_no_stable_result() {
+        let data_dir = unique_test_path("rl-micro-no-stable-data");
+        fs::create_dir_all(&data_dir).expect("create empty RL data dir");
+        let output_dir = unique_test_path("rl-micro-no-stable-out");
+        let artifacts = RlArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        config.rl = Some(dummy_rl_train_config());
+        let config_path = unique_test_path("rl-micro-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid RL microbatch config");
+        fs::write(&config_path, config_yaml).expect("write valid RL microbatch config yaml");
+
+        let err = search_rl_runtime_candidate(
+            &config_path,
+            &config,
+            &artifacts,
+            ProbeKind::RlMicrobatch,
+            16,
+        )
+        .expect_err("all-failing RL microbatch search should report no stable result");
+
+        assert_eq!(err, "no stable rl_microbatch candidate found in preflight");
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
     fn format_probe_result_summary_reports_data_error_and_plain_backend_error() {
         let data = format_probe_result_summary(&ProbeResult {
             kind: ProbeKind::Validation,
@@ -1815,26 +2316,37 @@ mod tests {
     }
 
     #[test]
-    fn run_probe_ladder_only_stops_on_invalid_config_extension_before_attempts() {
-        let config_path = write_temp_file("invalid-probe-ladder-config", "txt", "not yaml");
-        let config = dummy_config();
-        let artifacts = BcArtifactPaths::new(&unique_test_path("probe-ladder-artifacts"), 0);
+    fn maybe_block_host_ram_growth_probe_clamps_subunit_safety_factor_to_one() {
+        let Some(available) = mem_available_bytes() else {
+            return;
+        };
+        let mut config = dummy_config();
+        config.preflight.rl_probe_min_free_memory_bytes = available;
+        config.preflight.rl_probe_memory_headroom_ratio = 0.0;
+        config.preflight.rl_probe_growth_safety_factor = 0.25;
 
-        let err = run_probe_ladder_only(
-            &config_path,
-            &config,
-            &artifacts,
-            ProbeRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 32,
-                warmup_steps: 1,
-                measure_steps: 1,
-            },
-        )
-        .expect_err("invalid config extension should stop probe ladder before probe attempts");
+        let blocked = maybe_block_host_ram_growth_probe(&config, ProbeKind::RlGames, 128, Some(64))
+            .expect("sub-unit safety factors should still clamp to the host-RAM guard path");
 
-        assert!(err.starts_with("failed to scan preflight data from "));
-        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+        assert_eq!(blocked.kind, ProbeKind::RlGames);
+        assert_eq!(blocked.status, ProbeStatus::BackendError);
+        assert!(blocked.detail.contains("growth_safety_factor=1.00"));
+    }
+
+    #[test]
+    fn maybe_block_host_ram_growth_probe_allows_growth_when_required_free_is_zero() {
+        let Some(_available) = mem_available_bytes() else {
+            return;
+        };
+        let mut config = dummy_config();
+        config.preflight.rl_probe_min_free_memory_bytes = 0;
+        config.preflight.rl_probe_memory_headroom_ratio = 0.0;
+        config.preflight.rl_probe_growth_safety_factor = 1.0;
+
+        assert!(
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlMicrobatch, 33, Some(32))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1933,5 +2445,130 @@ mod tests {
 
         assert!(err.starts_with("failed to scan preflight data from "));
         assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn classify_probe_detail_prefers_oom_and_data_keywords_over_backend_defaults() {
+        assert_eq!(
+            classify_probe_detail("OOM from replay loader while CUDA kernel was active"),
+            ProbeStatus::Oom
+        );
+        assert_eq!(
+            classify_probe_detail("collate data replay failure in worker thread"),
+            ProbeStatus::DataError
+        );
+    }
+
+    #[test]
+    fn classify_probe_detail_prefers_backend_keywords_over_data_without_oom() {
+        assert_eq!(
+            classify_probe_detail("cuda replay mismatch in collate worker"),
+            ProbeStatus::BackendError
+        );
+        assert_eq!(
+            classify_probe_detail("libtorch data loader replay error"),
+            ProbeStatus::BackendError
+        );
+    }
+
+    #[test]
+    fn format_probe_result_summary_reports_plain_success_detail_for_rl_microbatch() {
+        let summary = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::RlMicrobatch,
+            candidate_microbatch: 12,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: Some(42.25),
+            elapsed_seconds: Some(0.5),
+            detail: "stable rl_microbatch probe on real dataset".to_string(),
+        });
+
+        assert!(summary.contains("[rl_microbatch] candidate_mb=12 outcome=success"));
+        assert!(summary.contains("42.25 samples/s"));
+        assert!(summary.contains("elapsed=0.50s"));
+    }
+
+    #[test]
+    fn format_probe_attempt_message_uses_exact_denominator_when_positive() {
+        assert_eq!(
+            format_probe_attempt_message(ProbeKind::Train, 32, 3, 4),
+            "[preflight:train] candidate_mb=32 attempt 3/4"
+        );
+    }
+
+    #[test]
+    fn measure_samples_per_second_handles_fractional_elapsed_time() {
+        assert!((measure_samples_per_second(9, Duration::from_millis(450)) - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn format_probe_result_summary_keeps_empty_rl_backend_detail_field_stable() {
+        let summary = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::RlGames,
+            candidate_microbatch: 40,
+            status: ProbeStatus::BackendError,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail: String::new(),
+        });
+
+        assert!(summary.contains("[rl_games] candidate_mb=40 outcome=backend_error(generic)"));
+        assert!(summary.contains("detail="));
+        assert!(!summary.contains("detail=n/a"));
+    }
+
+    #[test]
+    fn classify_probe_detail_treats_plain_data_keywords_as_data_errors() {
+        assert_eq!(
+            classify_probe_detail("data pipeline mismatch in worker"),
+            ProbeStatus::DataError
+        );
+        assert_eq!(
+            classify_probe_detail("collate failure without backend keywords"),
+            ProbeStatus::DataError
+        );
+    }
+
+    #[test]
+    fn format_probe_attempt_message_clamps_zero_total_attempts_for_rl_games() {
+        assert_eq!(
+            format_probe_attempt_message(ProbeKind::RlGames, 12, 1, 0),
+            "[preflight:rl_games] candidate_mb=12 attempt 1/1"
+        );
+    }
+
+    #[test]
+    fn maybe_block_host_ram_growth_probe_returns_none_when_candidate_does_not_grow() {
+        let config = dummy_config();
+
+        assert!(
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlMicrobatch, 31, Some(32))
+                .is_none()
+        );
+        assert!(
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlGames, 32, Some(32)).is_none()
+        );
+    }
+
+    #[test]
+    fn classify_probe_detail_prefers_oom_over_backend_and_data_keywords() {
+        assert_eq!(
+            classify_probe_detail("cuda oom while replay data collate failed"),
+            ProbeStatus::Oom
+        );
+    }
+
+    #[test]
+    fn format_probe_result_summary_keeps_empty_backend_detail_field_stable() {
+        let summary = format_probe_result_summary(&ProbeResult {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 40,
+            status: ProbeStatus::BackendError,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail: String::new(),
+        });
+
+        assert!(summary.contains("[train] candidate_mb=40 outcome=backend_error(generic)"));
+        assert!(summary.ends_with("detail="));
     }
 }

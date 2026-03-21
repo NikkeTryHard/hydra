@@ -11,7 +11,7 @@ use super::presentation::{format_status_line, make_bar};
 use super::probe_ladder::{dynamic_probe_ceiling, top_k_refinement_candidates};
 use super::probe_request::ProbeRequest;
 use super::probe_summary::{
-    best_probe_summary, probe_kind_name, summarize_probe_results, ProbeCandidateSummary,
+    ProbeCandidateSummary, best_probe_summary, probe_kind_name, summarize_probe_results,
 };
 
 pub(super) struct ProbeRunSpec {
@@ -1105,5 +1105,91 @@ mod tests {
         .expect_err("empty candidate ladder should not find a stable winner");
 
         assert_eq!(error, "no stable train microbatch found in preflight");
+    }
+
+    #[test]
+    fn probe_candidate_ladder_prefers_explicit_only_train_candidate_before_results_exist() {
+        let mut config = dummy_config();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.microbatch_size = Some(96);
+        let artifacts = crate::artifacts::BcArtifactPaths::new(Path::new("/tmp/out"), 0);
+
+        let error = probe_candidate_ladder(
+            Path::new("/dev/null"),
+            &config,
+            &artifacts,
+            ProbeKind::Train,
+            &[32, 64],
+        )
+        .expect_err(
+            "explicit-only train ladder should fail against invalid config path before probing",
+        );
+
+        assert!(error.contains("/dev/null"));
+        assert!(error.contains("config") || error.contains("extension"));
+    }
+
+    #[test]
+    fn probe_candidate_ladder_prefers_explicit_only_rl_microbatch_candidate() {
+        let mut config = dummy_config();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.rl = Some(crate::config::RlTrainConfig {
+            microbatch_size: Some(24),
+            ..crate::config::RlTrainConfig::default()
+        });
+        let artifacts = crate::artifacts::BcArtifactPaths::new(Path::new("/tmp/out"), 0);
+
+        let error = probe_candidate_ladder(
+            Path::new("/dev/null"),
+            &config,
+            &artifacts,
+            ProbeKind::RlMicrobatch,
+            &[16, 32],
+        )
+        .expect_err("explicit-only RL microbatch ladder should fail against invalid config path before probing");
+
+        assert!(error.contains("/dev/null"));
+        assert!(error.contains("config") || error.contains("extension"));
+    }
+
+    #[test]
+    fn probe_candidate_ladder_rl_games_does_not_use_explicit_only_override_path() {
+        let mut config = dummy_config();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.rl = Some(crate::config::RlTrainConfig {
+            games_per_batch: 24,
+            ..crate::config::RlTrainConfig::default()
+        });
+        let artifacts = crate::artifacts::BcArtifactPaths::new(Path::new("/tmp/out"), 0);
+
+        let error = probe_candidate_ladder(
+            Path::new("missing-config.yaml"),
+            &config,
+            &artifacts,
+            ProbeKind::RlGames,
+            &[16, 32],
+        )
+        .expect_err("rl games ladder should still use the normal candidate ladder path");
+
+        assert!(error.contains("failed to read config missing-config.yaml"));
+    }
+
+    #[test]
+    fn probe_candidate_ladder_returns_explicit_failure_message_when_probe_attempt_fails() {
+        let mut config = dummy_config();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.microbatch_size = Some(64);
+        let artifacts = crate::artifacts::BcArtifactPaths::new(Path::new("/tmp/out"), 0);
+
+        let error = probe_candidate_ladder(
+            Path::new("missing-config.yaml"),
+            &config,
+            &artifacts,
+            ProbeKind::Train,
+            &[64],
+        )
+        .expect_err("explicit-only train candidate should bubble probe-request failure");
+
+        assert!(error.contains("failed to read config missing-config.yaml"));
     }
 }
