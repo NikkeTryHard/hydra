@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
+use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::Adam;
 use burn::optim::Optimizer;
-use burn::optim::adaptor::OptimizerAdaptor;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use colored::Colorize;
@@ -13,7 +13,7 @@ use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
 use hydra_train::data::pipeline::{
-    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
+    scan_data_sources_with_progress, DataManifest, StreamingLoaderConfig,
 };
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::{BCTrainerConfig, BcExitConfig};
@@ -22,14 +22,14 @@ use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationCont
 use hydra_train::training::losses::HydraLoss;
 use hydra_train::training::replay_delta_q::DeltaQSidecarIndex;
 use hydra_train::training::replay_exit::{
-    ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
+    source_net_hash_from_checkpoint_identity, ExitSidecarIndex,
 };
 use hydra_train::training::rl::RlConfig;
 
-use super::artifacts::{BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, read_preflight_cache};
+use super::artifacts::{read_preflight_cache, BcArtifactPaths, RlArtifactPaths, RlPreflightPaths};
 use super::config::{
-    RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
-    train_microbatch_size, trainer_config_from_train_config, validate_config,
+    configure_threads, device_label, train_device, train_microbatch_size,
+    trainer_config_from_train_config, validate_config, RlTrainConfig, TrainConfig,
 };
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::{build_bc_exit_config, build_loss_config, build_rl_loss_config};
@@ -37,9 +37,9 @@ use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::timestamped;
 use super::progress::BannerStats;
 use super::resume::{
-    ResumeContext, RlResumeContext, RlRuntimeResumeContract, rl_runtime_resume_contract,
-    runtime_resume_contract, validate_resume_runtime_compatibility,
-    validate_rl_resume_runtime_compatibility,
+    rl_runtime_resume_contract, runtime_resume_contract, validate_resume_runtime_compatibility,
+    validate_rl_resume_runtime_compatibility, ResumeContext, RlResumeContext,
+    RlRuntimeResumeContract,
 };
 use super::schedule::schedule_total_steps;
 use super::{TrainBackend, ValidBackend};
@@ -106,7 +106,7 @@ pub(super) struct RlTrainingRuntime {
 
 pub(super) fn initialize_training_bootstrap(
     _config_path: &Path,
-    config: TrainConfig,
+    mut config: TrainConfig,
 ) -> Result<(TrainingBootstrap, TrainingRuntime), String> {
     validate_config(&config)?;
     configure_threads(config.num_threads)?;
@@ -115,6 +115,54 @@ pub(super) fn initialize_training_bootstrap(
     let session_start_global_step = resume.session_start_global_step;
     let artifacts = BcArtifactPaths::new(&config.output_dir, session_start_global_step);
     artifacts.create_root_dir()?;
+    let model_config = HydraModelConfig::learner();
+
+    if let Some(state) = resume.state.as_ref()
+        && state.skip_optimizer_steps_in_epoch == 0
+    {
+        let preflight_paths = crate::artifacts::PreflightPaths::new(&artifacts);
+        let cache_key = preflight_cache_key(
+            &config,
+            &model_config,
+            &config.device,
+            super::config::default_num_threads_for_system(),
+        );
+        if let Some(cached) = read_preflight_cache(&preflight_paths.cache_path)? {
+            if cached.cache_key == cache_key {
+                let tuned = cached.runtime.selected;
+                let original_train = config.microbatch_size;
+                let original_validation = config.validation_microbatch_size;
+                if original_train != Some(tuned.train_microbatch_size)
+                    || original_validation != Some(tuned.validation_microbatch_size)
+                {
+                    println!(
+                        "{}",
+                        timestamped(format!(
+                            "{} train_microbatch_size={:?} -> {} validation_microbatch_size={:?} -> {} accum_steps={} (epoch-boundary selected-runtime from preflight cache)",
+                            "BC preflight override:".bold().cyan(),
+                            original_train,
+                            tuned.train_microbatch_size,
+                            original_validation,
+                            tuned.validation_microbatch_size,
+                            tuned.accum_steps,
+                        ))
+                    );
+                }
+                config.microbatch_size = Some(tuned.train_microbatch_size);
+                config.validation_microbatch_size = Some(tuned.validation_microbatch_size);
+            } else {
+                println!(
+                    "{}",
+                    timestamped(format!(
+                        "{} cache fingerprint mismatch, using config train_microbatch_size={:?} validation_microbatch_size={:?}",
+                        "BC preflight skip:".bold().yellow(),
+                        config.microbatch_size,
+                        config.validation_microbatch_size,
+                    ))
+                );
+            }
+        }
+    }
 
     let exit_sidecar = if let Some(path) = config.exit_sidecar_path.as_ref() {
         Some(std::sync::Arc::new(
@@ -202,7 +250,6 @@ pub(super) fn initialize_training_bootstrap(
         .map_err(|err| format!("invalid trainer config: {err}"))?;
 
     let device_name = device_label(&config.device);
-    let model_config = HydraModelConfig::learner();
     let current_runtime = runtime_resume_contract(&config);
     if let Some(state) = resume.state.as_ref() {
         validate_resume_runtime_compatibility(state, current_runtime)?;
@@ -613,7 +660,7 @@ mod tests {
 
     #[test]
     fn rl_bootstrap_applies_preflight_cache_override() {
-        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
+        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -676,7 +723,7 @@ mod tests {
 
     #[test]
     fn rl_bootstrap_ignores_stale_preflight_cache() {
-        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
+        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
             PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
@@ -780,6 +827,289 @@ mod tests {
             .expect("invalid config should fail before bootstrap work");
 
         assert_eq!(err, "num_epochs must be greater than 0");
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_ignores_matching_preflight_cache_on_fresh_run() {
+        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::preflight_fingerprint::preflight_cache_key;
+        use hydra_train::preflight::{
+            EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
+        };
+
+        let root_dir = unique_temp_dir("bc_ignore_preflight_cache");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        let config = dummy_bc_config(data_dir, output_dir.clone());
+        let original_buffer_games = config.buffer_games;
+        let original_buffer_samples = config.buffer_samples;
+        let original_archive_queue_bound = config.archive_queue_bound;
+        let original_microbatch = config.microbatch_size.expect("train microbatch");
+        let original_validation_microbatch = config
+            .validation_microbatch_size
+            .expect("validation microbatch");
+        let original_accum_steps = config.batch_size.div_ceil(original_microbatch).max(1);
+
+        let bc_artifacts = crate::artifacts::BcArtifactPaths::new(&config.output_dir, 0);
+        bc_artifacts.create_root_dir().expect("create bc dir");
+        let paths = PreflightPaths::new(&bc_artifacts);
+        let model_config = HydraModelConfig::learner();
+        let key = preflight_cache_key(
+            &config,
+            &model_config,
+            &config.device,
+            crate::config::default_num_threads_for_system(),
+        );
+
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: key,
+                runtime: EffectiveRuntimeConfig {
+                    selected: SelectedRuntimeConfig {
+                        train_microbatch_size: 32,
+                        validation_microbatch_size: 16,
+                        accum_steps: config.batch_size.div_ceil(32).max(1),
+                    },
+                    loader: LoaderRuntimeConfig {
+                        num_threads: Some(1),
+                        buffer_games: 999,
+                        buffer_samples: 777,
+                        archive_queue_bound: 5,
+                    },
+                },
+            },
+        )
+        .expect("write cache");
+
+        let (bootstrap, _runtime) =
+            initialize_training_bootstrap(&output_dir, config).expect("bc bootstrap");
+
+        assert_eq!(
+            bootstrap.loader_config.buffer_games, original_buffer_games,
+            "BC bootstrap should keep configured buffer_games even when matching preflight cache exists"
+        );
+        assert_eq!(
+            bootstrap.loader_config.buffer_samples, original_buffer_samples,
+            "BC bootstrap should keep configured buffer_samples even when matching preflight cache exists"
+        );
+        assert_eq!(
+            bootstrap.loader_config.archive_queue_bound, original_archive_queue_bound,
+            "BC bootstrap should keep configured archive_queue_bound even when matching preflight cache exists"
+        );
+        assert_eq!(
+            bootstrap.microbatch_size, original_microbatch,
+            "BC bootstrap should keep configured train microbatch even when matching preflight cache exists"
+        );
+        assert_eq!(
+            bootstrap.current_runtime.train_microbatch_size,
+            original_microbatch,
+            "BC bootstrap should keep configured runtime train microbatch even when matching preflight cache exists"
+        );
+        assert_eq!(
+            bootstrap.current_runtime.validation_microbatch_size,
+            original_validation_microbatch,
+            "BC bootstrap should keep configured validation microbatch even when matching preflight cache exists"
+        );
+        assert_eq!(
+            bootstrap.current_runtime.accum_steps,
+            original_accum_steps,
+            "BC bootstrap should keep configured accum_steps even when matching preflight cache exists"
+        );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_ignores_stale_preflight_cache_at_epoch_boundary() {
+        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use hydra_train::preflight::{
+            EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
+            PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
+        };
+
+        let root_dir = unique_temp_dir("bc_epoch_boundary_stale_preflight_cache");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        save_latest_model_checkpoint(&output_dir);
+
+        let train_cfg = trainer_config_from_train_config(&dummy_bc_config(
+            data_dir.clone(),
+            output_dir.clone(),
+        ));
+        let optimizer = train_cfg
+            .optimizer_config()
+            .init::<TrainBackend, HydraModel<TrainBackend>>();
+        let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+        optimizer_recorder
+            .record(optimizer.to_record(), output_dir.join("latest_optimizer"))
+            .expect("save latest optimizer sidecar");
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+
+        let state = build_resume_state(
+            2,
+            0,
+            17,
+            None,
+            test_runtime_resume_contract(config.batch_size, 32, 16),
+        );
+        write_resume_state(&latest_state_path(&output_dir), &state).expect("write resume state");
+
+        let bc_artifacts = crate::artifacts::BcArtifactPaths::new(&config.output_dir, 17);
+        bc_artifacts.create_root_dir().expect("create bc dir");
+        let paths = PreflightPaths::new(&bc_artifacts);
+        let stale_key = PreflightCacheKey {
+            hardware: HardwareFingerprint {
+                device_label: "stale-device".to_string(),
+                backend: "burn-libtorch".to_string(),
+                cpu_logical_cores: 999,
+                total_memory_bytes: None,
+            },
+            workload: WorkloadFingerprint {
+                batch_size: 9999,
+                augment: false,
+                train_fraction_bits: 0,
+                max_skip_logs_per_source: 0,
+                max_validation_batches: None,
+                max_validation_samples: None,
+                model_signature: "stale".to_string(),
+                code_signature: "stale".to_string(),
+                advanced_loss_signature: "stale".to_string(),
+            },
+        };
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: stale_key,
+                runtime: EffectiveRuntimeConfig {
+                    selected: SelectedRuntimeConfig {
+                        train_microbatch_size: 32,
+                        validation_microbatch_size: 16,
+                        accum_steps: config.batch_size.div_ceil(32).max(1),
+                    },
+                    loader: LoaderRuntimeConfig {
+                        num_threads: Some(1),
+                        buffer_games: 999,
+                        buffer_samples: 777,
+                        archive_queue_bound: 5,
+                    },
+                },
+            },
+        )
+        .expect("write stale cache");
+
+        let (bootstrap, runtime) =
+            initialize_training_bootstrap(&output_dir, config).expect("stale epoch-boundary cache");
+
+        assert_eq!(bootstrap.current_runtime.train_microbatch_size, 64);
+        assert_eq!(bootstrap.current_runtime.validation_microbatch_size, 32);
+        assert_eq!(bootstrap.current_runtime.accum_steps, 4);
+        assert_eq!(bootstrap.microbatch_size, 64);
+        assert_eq!(runtime.global_step, 17);
+
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_applies_matching_preflight_cache_at_epoch_boundary() {
+        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::preflight_fingerprint::preflight_cache_key;
+        use hydra_train::preflight::{
+            EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
+        };
+
+        let root_dir = unique_temp_dir("bc_epoch_boundary_preflight_override");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        save_latest_model_checkpoint(&output_dir);
+
+        let train_cfg = trainer_config_from_train_config(&dummy_bc_config(
+            data_dir.clone(),
+            output_dir.clone(),
+        ));
+        let optimizer = train_cfg
+            .optimizer_config()
+            .init::<TrainBackend, HydraModel<TrainBackend>>();
+        let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+        optimizer_recorder
+            .record(optimizer.to_record(), output_dir.join("latest_optimizer"))
+            .expect("save latest optimizer sidecar");
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        let original_buffer_games = config.buffer_games;
+        let original_buffer_samples = config.buffer_samples;
+        let original_archive_queue_bound = config.archive_queue_bound;
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+
+        let state = build_resume_state(
+            2,
+            0,
+            17,
+            None,
+            test_runtime_resume_contract(config.batch_size, 32, 16),
+        );
+        write_resume_state(&latest_state_path(&output_dir), &state).expect("write resume state");
+
+        let bc_artifacts = crate::artifacts::BcArtifactPaths::new(&config.output_dir, 17);
+        bc_artifacts.create_root_dir().expect("create bc dir");
+        let paths = PreflightPaths::new(&bc_artifacts);
+        let model_config = HydraModelConfig::learner();
+        let key = preflight_cache_key(
+            &config,
+            &model_config,
+            &config.device,
+            crate::config::default_num_threads_for_system(),
+        );
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: key,
+                runtime: EffectiveRuntimeConfig {
+                    selected: SelectedRuntimeConfig {
+                        train_microbatch_size: 32,
+                        validation_microbatch_size: 16,
+                        accum_steps: config.batch_size.div_ceil(32).max(1),
+                    },
+                    loader: LoaderRuntimeConfig {
+                        num_threads: Some(1),
+                        buffer_games: 999,
+                        buffer_samples: 777,
+                        archive_queue_bound: 5,
+                    },
+                },
+            },
+        )
+        .expect("write cache");
+
+        let (bootstrap, runtime) =
+            initialize_training_bootstrap(&output_dir, config).expect("epoch-boundary override");
+
+        assert_eq!(bootstrap.resume.start_epoch, 2);
+        assert_eq!(bootstrap.session_start_global_step, 17);
+        assert_eq!(bootstrap.resume.steps_to_skip_for_epoch(2), 0);
+        assert_eq!(bootstrap.current_runtime.train_microbatch_size, 32);
+        assert_eq!(bootstrap.current_runtime.validation_microbatch_size, 16);
+        assert_eq!(bootstrap.current_runtime.accum_steps, 8);
+        assert_eq!(bootstrap.microbatch_size, 32);
+        assert_eq!(bootstrap.loader_config.buffer_games, original_buffer_games);
+        assert_eq!(bootstrap.loader_config.buffer_samples, original_buffer_samples);
+        assert_eq!(
+            bootstrap.loader_config.archive_queue_bound,
+            original_archive_queue_bound
+        );
+        assert_eq!(runtime.global_step, 17);
+
         cleanup_dir(&root_dir);
     }
 
@@ -963,6 +1293,54 @@ mod tests {
             err,
             "partial-epoch resume requires identical runtime contract; checkpoint train_mb=32 val_mb=16 accum_steps=8 current train_mb=64 val_mb=32 accum_steps=4"
         );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_allows_epoch_boundary_runtime_change() {
+        let root_dir = unique_temp_dir("bc_epoch_boundary_runtime_change");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        save_latest_model_checkpoint(&output_dir);
+
+        let train_cfg = trainer_config_from_train_config(&dummy_bc_config(
+            data_dir.clone(),
+            output_dir.clone(),
+        ));
+        let optimizer = train_cfg
+            .optimizer_config()
+            .init::<TrainBackend, HydraModel<TrainBackend>>();
+        let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+        optimizer_recorder
+            .record(optimizer.to_record(), output_dir.join("latest_optimizer"))
+            .expect("save latest optimizer sidecar");
+
+        let mut config = dummy_bc_config(data_dir, output_dir.clone());
+        config.resume_checkpoint = Some(latest_model_checkpoint_path(&output_dir));
+
+        let state = build_resume_state(
+            2,
+            0,
+            17,
+            None,
+            test_runtime_resume_contract(config.batch_size, 32, 16),
+        );
+        write_resume_state(&latest_state_path(&output_dir), &state).expect("write resume state");
+
+        let (bootstrap, runtime) =
+            initialize_training_bootstrap(&output_dir, config).expect("epoch-boundary resume");
+
+        assert_eq!(bootstrap.resume.start_epoch, 2);
+        assert_eq!(bootstrap.session_start_global_step, 17);
+        assert_eq!(bootstrap.resume.steps_to_skip_for_epoch(2), 0);
+        assert_eq!(bootstrap.current_runtime.train_microbatch_size, 64);
+        assert_eq!(bootstrap.current_runtime.validation_microbatch_size, 32);
+        assert_eq!(bootstrap.current_runtime.accum_steps, 4);
+        assert_eq!(runtime.global_step, 17);
+
         cleanup_dir(&root_dir);
     }
 
