@@ -498,7 +498,7 @@ fn exit_rl_step_with_target() {
         (target, mask)
     };
 
-    let samples = vec![Some(accepted.clone()), Some(accepted)];
+    let samples = vec![Some(accepted), Some(accepted)];
     let (exit_target, exit_mask) = collate_exit_targets::<TestBackend>(&samples, &device);
 
     let rl_batch = RlBatch {
