@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
@@ -800,6 +800,13 @@ fn is_tar_zst_file(path: &Path) -> bool {
     )
 }
 
+fn is_tar_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name) if name.ends_with(".tar")
+    )
+}
+
 fn is_mjai_archive_entry(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
@@ -825,13 +832,18 @@ fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset
         .stack_size(MJAI_LOAD_THREAD_STACK_SIZE)
         .spawn(move || -> io::Result<()> {
             let file = fs::File::open(&path_buf)?;
-            let zstd = zstd::Decoder::new(file).map_err(|err| {
-                io::Error::other(format!(
-                    "failed to open zstd archive {}: {err}",
-                    path_buf.display()
-                ))
-            })?;
-            let mut archive = tar::Archive::new(zstd);
+            let reader: Box<dyn Read> = if is_tar_zst_file(&path_buf) {
+                let zstd = zstd::Decoder::new(file).map_err(|err| {
+                    io::Error::other(format!(
+                        "failed to open zstd archive {}: {err}",
+                        path_buf.display()
+                    ))
+                })?;
+                Box::new(zstd)
+            } else {
+                Box::new(file)
+            };
+            let mut archive = tar::Archive::new(reader);
 
             let mut sequence = 0usize;
             for entry_result in archive.entries()? {
@@ -912,13 +924,13 @@ fn load_mjai_archive(path: &Path, train_fraction: f32) -> io::Result<MjaiDataset
 
 pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDataset> {
     if dir.is_file() {
-        if is_tar_zst_file(dir) {
+        if is_tar_zst_file(dir) || is_tar_file(dir) {
             return load_mjai_archive(dir, train_fraction);
         }
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "expected directory or .tar.zst archive, got {}",
+                "expected directory or .tar/.tar.zst archive, got {}",
                 dir.display()
             ),
         ));
@@ -933,7 +945,7 @@ pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDa
         if file_type.is_file() {
             if is_mjai_file(&path) {
                 paths.push(path);
-            } else if is_tar_zst_file(&path) {
+            } else if is_tar_zst_file(&path) || is_tar_file(&path) {
                 archives.push(path);
             }
         }
