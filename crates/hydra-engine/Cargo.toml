@@ -31,9 +31,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
 sha2 = "0.10"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "agari_bench"
+harness = false
+
 [features]
 default = ["mjai-logging"]
 mjai-logging = ["serde_json"]
-# Kept as no-op so cfg(feature = "python") guards compile without warnings.
-# The actual pyo3 dependency is removed; these code paths are dead.
-python = []

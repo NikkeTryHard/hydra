@@ -118,6 +118,11 @@ impl GameState3PEventHandler for GameState3P {
                 self.phase = Phase::WaitAct;
                 self.set_single_active_player(self.current_player);
                 self.needs_tsumo = true;
+                let oya_idx = self.oya as usize;
+                if self.players[oya_idx].hand_len == 14 {
+                    self.drawn_tile = self.players[oya_idx].hand_slice().last().copied();
+                    self.needs_tsumo = false;
+                }
                 self.is_done = false;
             }
             MjaiEvent::Tsumo { actor, pai } => {
@@ -129,6 +134,8 @@ impl GameState3PEventHandler for GameState3P {
                 if self.wall.tile_count > 0 {
                     self.wall.draw_back();
                 }
+                self.phase = Phase::WaitAct;
+                self.set_single_active_player(actor as u8);
                 self.needs_tsumo = false;
             }
             MjaiEvent::Dahai { actor, pai, .. } => {
