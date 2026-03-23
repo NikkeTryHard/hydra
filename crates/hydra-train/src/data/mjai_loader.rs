@@ -16,6 +16,7 @@ use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, build_legal_mask, riic
 use hydra_core::bridge::encode_observation;
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
+use riichienv_core::action::{Action as EngineAction, ActionType, Phase};
 use riichienv_core::observation::Observation;
 use riichienv_core::parser::mjai_to_tid;
 use riichienv_core::replay::{
@@ -230,6 +231,146 @@ pub(crate) struct PreparedReplayDecision {
     pub obs_encoded: [f32; OBS_SIZE],
 }
 
+fn replay_phase_for_event(event: &MjaiEvent, state: &GameState, actor: usize) -> ActionPhase {
+    if matches!(event, MjaiEvent::Dahai { .. }) && state.players[actor].riichi_declared {
+        ActionPhase::RiichiSelect
+    } else {
+        ActionPhase::Normal
+    }
+}
+
+fn finalize_prepared_replay_decision(
+    actor: usize,
+    env_action: EngineAction,
+    obs: Observation,
+    phase: ActionPhase,
+    state: &GameState,
+    safety: &[SafetyInfo; 4],
+    encoder: &mut ObservationEncoder,
+) -> io::Result<Option<PreparedReplayDecision>> {
+    let hydra_action = riichienv_to_hydra(&env_action)
+        .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
+    let legal = obs.legal_actions_method();
+    let legal_mask = build_legal_mask(&legal, phase);
+    if !legal_mask[hydra_action.id() as usize] {
+        return Ok(None);
+    }
+
+    let obs_encoded = encode_observation(
+        encoder,
+        &obs,
+        &safety[actor],
+        state.drawn_tile.map(tile136_to_type),
+    );
+
+    Ok(Some(PreparedReplayDecision {
+        actor,
+        obs,
+        action_id: hydra_action.id(),
+        legal_mask,
+        obs_encoded,
+    }))
+}
+
+fn observation_for_replay_event(
+    state: &mut GameState,
+    actor: usize,
+    env_action: &EngineAction,
+) -> io::Result<Observation> {
+    state
+        .get_observation_for_replay(actor as u8, env_action, &env_action.to_mjai())
+        .map_err(|err| invalid_data(format!("replay observation failed: {err}")))
+}
+
+fn prepare_implicit_pass_decisions(
+    next_event: &MjaiEvent,
+    state: &mut GameState,
+    safety: &[SafetyInfo; 4],
+    encoder: &mut ObservationEncoder,
+) -> io::Result<Vec<PreparedReplayDecision>> {
+    let mut decisions = Vec::new();
+    if state.phase != Phase::WaitResponse {
+        return Ok(decisions);
+    }
+
+    let responding_actor = mjai_event_actor(next_event)
+        .filter(|actor| state.active_player_slice().contains(&(*actor as u8)));
+    let resolve_all_passes = responding_actor.is_none();
+
+    let active_players = state.active_player_slice().to_vec();
+    for pid in active_players {
+        if Some(pid as usize) == responding_actor {
+            continue;
+        }
+
+        let pass_action = EngineAction::new(ActionType::Pass, None, &[], Some(pid));
+        let obs = state
+            .get_observation_for_replay(pid, &pass_action, r#"{"type":"none"}"#)
+            .map_err(|err| invalid_data(format!("replay pass observation failed: {err}")))?;
+        let had_ron = obs
+            .legal_actions_method()
+            .iter()
+            .any(|action| action.action_type == ActionType::Ron);
+        if let Some(decision) = finalize_prepared_replay_decision(
+            pid as usize,
+            pass_action,
+            obs,
+            ActionPhase::Normal,
+            state,
+            safety,
+            encoder,
+        )? {
+            decisions.push(decision);
+        }
+
+        if had_ron {
+            state.players[pid as usize].missed_agari_doujun = true;
+            if state.players[pid as usize].riichi_declared {
+                state.players[pid as usize].missed_agari_riichi = true;
+            }
+        }
+    }
+
+    if resolve_all_passes {
+        state.resolve_replay_all_passes();
+    }
+
+    Ok(decisions)
+}
+
+pub(crate) fn prepare_replay_decisions(
+    event: &MjaiEvent,
+    state: &mut GameState,
+    safety: &[SafetyInfo; 4],
+    encoder: &mut ObservationEncoder,
+) -> io::Result<Vec<PreparedReplayDecision>> {
+    let mut decisions = prepare_implicit_pass_decisions(event, state, safety, encoder)?;
+    if !should_sample_replay_event(event) {
+        return Ok(decisions);
+    }
+
+    let env_action = mjai_event_to_action(event)
+        .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
+    let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) else {
+        return Ok(decisions);
+    };
+
+    let obs = observation_for_replay_event(state, actor, &env_action)?;
+    if let Some(decision) = finalize_prepared_replay_decision(
+        actor,
+        env_action,
+        obs,
+        replay_phase_for_event(event, state, actor),
+        state,
+        safety,
+        encoder,
+    )? {
+        decisions.push(decision);
+    }
+
+    Ok(decisions)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SidecarProvenance {
     pub source_net_hash: Option<u64>,
@@ -255,47 +396,9 @@ pub(crate) fn prepare_replay_decision(
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
 ) -> io::Result<Option<PreparedReplayDecision>> {
-    if !should_sample_replay_event(event) {
-        return Ok(None);
-    }
-
-    let env_action = mjai_event_to_action(event)
-        .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
-    let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) else {
-        return Ok(None);
-    };
-
-    let obs = state
-        .get_observation_for_replay(actor as u8, &env_action, &env_action.to_mjai())
-        .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
-    let hydra_action = riichienv_to_hydra(&env_action)
-        .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
-    let phase = if matches!(event, MjaiEvent::Dahai { .. }) && state.players[actor].riichi_declared
-    {
-        ActionPhase::RiichiSelect
-    } else {
-        ActionPhase::Normal
-    };
-    let legal = obs.legal_actions_method();
-    let legal_mask = build_legal_mask(&legal, phase);
-    if !legal_mask[hydra_action.id() as usize] {
-        return Ok(None);
-    }
-
-    let obs_encoded = encode_observation(
-        encoder,
-        &obs,
-        &safety[actor],
-        state.drawn_tile.map(tile136_to_type),
-    );
-
-    Ok(Some(PreparedReplayDecision {
-        actor,
-        obs,
-        action_id: hydra_action.id(),
-        legal_mask,
-        obs_encoded,
-    }))
+    Ok(prepare_replay_decisions(event, state, safety, encoder)?
+        .into_iter()
+        .find(|decision| decision.action_id != hydra_core::action::PASS))
 }
 
 fn lookup_joined_label<T, F>(
@@ -347,7 +450,7 @@ fn load_game_from_events_internal(
     let mut samples = Vec::with_capacity(events.len());
 
     for (idx, event) in events.iter().enumerate() {
-        if let Some(decision) = prepare_replay_decision(event, &mut state, &safety, &mut encoder)? {
+        for decision in prepare_replay_decisions(event, &mut state, &safety, &mut encoder)? {
             let actor = decision.actor;
             let legal_mask = bool_mask_to_f32(decision.legal_mask);
             let mut tenpai = [0.0; 3];
@@ -1448,5 +1551,65 @@ mod tests {
         let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
 
         assert!(!game.samples.is_empty());
+    }
+
+    #[test]
+    fn load_game_from_reader_emits_pass_sample_for_skipped_pon_window() {
+        let log = [
+            r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["5m","5m","1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S"],["1p","2p","3p","4p","5p","6p","7p","8p","9p","1s","2s","3s","4s"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"]]}"#,
+            r#"{"type":"tsumo","actor":0,"pai":"5p"}"#,
+            r#"{"type":"dahai","actor":0,"pai":"5m","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ];
+
+        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.action == hydra_core::action::PASS),
+            "expected replay loader to emit a pass sample for the skipped pon window"
+        );
+    }
+
+    #[test]
+    fn prepare_replay_decision_emits_pass_without_mutating_response_state() {
+        let events = read_mjai_events(Cursor::new(
+            [
+                r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+                r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["5m","5m","1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S"],["1p","2p","3p","4p","5p","6p","7p","8p","9p","1s","2s","3s","4s"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"]]}"#,
+                r#"{"type":"tsumo","actor":0,"pai":"5p"}"#,
+                r#"{"type":"dahai","actor":0,"pai":"5m","tsumogiri":false}"#,
+                r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            ]
+            .join("\n"),
+        ))
+        .expect("parse events");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+
+        for event in events.iter().take(4) {
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        let response_before = state.active_player_slice().to_vec();
+        let decisions = prepare_replay_decisions(&events[4], &mut state, &safety, &mut encoder)
+            .expect("prepare replay decisions");
+
+        let pass = decisions
+            .iter()
+            .find(|decision| decision.action_id == hydra_core::action::PASS)
+            .expect("pass decision should exist");
+        assert_eq!(pass.actor, 1);
+        assert!(pass.legal_mask[hydra_core::action::PASS as usize]);
+        assert!(response_before.is_empty() || response_before.as_slice() == [1]);
+        assert!(state.active_player_slice().is_empty());
+        assert_eq!(state.phase, riichienv_core::action::Phase::WaitAct);
     }
 }
