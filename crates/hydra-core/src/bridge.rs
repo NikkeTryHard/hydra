@@ -380,15 +380,15 @@ pub fn build_search_features(
 
     if let Some(mixture) = context.mixture {
         let weights = mixture.weights();
-        let mut ranked: Vec<(usize, f64)> = weights.into_iter().enumerate().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut ranked: [usize; NUM_MIXTURE_COMPONENTS] = std::array::from_fn(|idx| idx);
+        ranked.sort_by(|&a, &b| {
+            weights[b]
+                .partial_cmp(&weights[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        for (rank, (component_idx, weight)) in ranked
-            .iter()
-            .take(NUM_MIXTURE_COMPONENTS)
-            .copied()
-            .enumerate()
-        {
+        for (rank, component_idx) in ranked.iter().copied().enumerate() {
+            let weight = weights[component_idx];
             features.mixture_weights[rank] = weight as f32;
             for zone in 0..NUM_BELIEF_ZONES {
                 let channel = rank * NUM_BELIEF_ZONES + zone;

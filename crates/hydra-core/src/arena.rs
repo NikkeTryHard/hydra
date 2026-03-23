@@ -74,6 +74,10 @@ impl TrajectoryDeltaQLabel {
         Some(Self { target, mask })
     }
 
+    pub fn to_array_pair(self) -> ([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE]) {
+        (self.target, self.mask)
+    }
+
     pub fn to_vec_pair(self) -> (Vec<f32>, Vec<f32>) {
         label_to_vec_pair(self.target, self.mask)
     }
@@ -83,6 +87,10 @@ impl TrajectoryExitLabel {
     pub fn from_slices(target: &[f32], mask: &[f32]) -> Option<Self> {
         let (target, mask) = label_from_slices(target, mask)?;
         Some(Self { target, mask })
+    }
+
+    pub fn to_array_pair(self) -> ([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE]) {
+        (self.target, self.mask)
     }
 
     pub fn to_vec_pair(self) -> (Vec<f32>, Vec<f32>) {
@@ -926,11 +934,9 @@ mod tests {
         assert_eq!(arena.fill_ratio(), 0.5);
         assert_eq!(arena.utilization(), "2/4 (50%)");
         assert_eq!(arena.avg_trajectory_length(), 1.5);
-        assert!(
-            arena
-                .stats_summary()
-                .contains("games=2 steps=3 buffered=2 complete=2")
-        );
+        assert!(arena
+            .stats_summary()
+            .contains("games=2 steps=3 buffered=2 complete=2"));
         assert_eq!(arena.collect_player_steps(1).len(), 2);
         assert_eq!(arena.compute_rewards(1), vec![vec![-0.5], vec![2.0]]);
         assert_eq!(arena.placement_distribution(1), [0.5, 0.0, 0.5, 0.0]);
@@ -977,11 +983,10 @@ mod tests {
             mask: exit_mask,
         });
         traj.steps.push(step);
-        assert!(
-            traj.validate()
-                .unwrap_err()
-                .contains("exit label masks illegal action")
-        );
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("exit label masks illegal action"));
 
         let mut traj = Trajectory::new(1, 2);
         let mut step = legal_step(0, 0, 0.0, true, 0);
@@ -994,11 +999,10 @@ mod tests {
             mask: delta_mask,
         });
         traj.steps.push(step);
-        assert!(
-            traj.validate()
-                .unwrap_err()
-                .contains("delta_q target at action 0 is not finite")
-        );
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("delta_q target at action 0 is not finite"));
     }
 
     #[test]
@@ -1058,22 +1062,20 @@ mod tests {
         let mut step = legal_step(0, 0, 0.0, true, 0);
         step.legal_mask = [false; HYDRA_ACTION_SPACE];
         traj.steps.push(step);
-        assert!(
-            traj.validate()
-                .unwrap_err()
-                .contains("legal_mask has no legal actions")
-        );
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("legal_mask has no legal actions"));
 
         let mut traj = Trajectory::new(1, 2);
         let mut step = legal_step(0, 0, 0.0, true, 0);
         step.legal_mask[0] = false;
         step.legal_mask[1] = true;
         traj.steps.push(step);
-        assert!(
-            traj.validate()
-                .unwrap_err()
-                .contains("selected action 0 is not marked legal")
-        );
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("selected action 0 is not marked legal"));
 
         let mut traj = Trajectory::new(1, 2);
         let mut step = legal_step(0, 0, 0.0, true, 0);
@@ -1086,11 +1088,10 @@ mod tests {
             mask: exit_mask,
         });
         traj.steps.push(step);
-        assert!(
-            traj.validate()
-                .unwrap_err()
-                .contains("exit target mass over masked actions is 0.7")
-        );
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("exit target mass over masked actions is 0.7"));
     }
 
     #[test]
@@ -1104,11 +1105,10 @@ mod tests {
             mask: delta_mask,
         });
         traj.steps.push(step);
-        assert!(
-            traj.validate()
-                .unwrap_err()
-                .contains("delta_q mask at action 0 is not approximately binary")
-        );
+        assert!(traj
+            .validate()
+            .unwrap_err()
+            .contains("delta_q mask at action 0 is not approximately binary"));
 
         let mut traj = Trajectory::new(1, 2);
         let mut step = legal_step(0, 0, 0.0, true, 0);

@@ -260,6 +260,17 @@ impl HandEvaluator {
     pub fn get_waits(&self) -> Vec<u32> {
         self.get_waits_u8().iter().map(|&x| x as u32).collect()
     }
+
+    #[inline]
+    pub fn get_waits_mask(&self) -> u64 {
+        let mut waits_buf = [0u8; 34];
+        let waits_count = self.get_waits_u8_into(&mut waits_buf);
+        let mut mask = 0u64;
+        for &tile in &waits_buf[..waits_count as usize] {
+            mask |= 1u64 << tile;
+        }
+        mask
+    }
 }
 
 #[cfg(feature = "python")]
