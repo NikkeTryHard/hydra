@@ -2,7 +2,7 @@ use burn::prelude::*;
 
 use crate::config::{GAE_GAMMA, GAE_LAMBDA};
 use crate::training::exit::{collate_delta_q_targets, collate_exit_targets};
-use crate::training::gae::{GaeConfig, compute_per_player_gae, normalize_advantages};
+use crate::training::gae::{compute_per_player_gae, normalize_advantages, GaeConfig};
 use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;
 use hydra_core::action::HYDRA_ACTION_SPACE;
@@ -117,8 +117,10 @@ pub fn trajectories_to_rl_batch<B: Backend>(
     let mut score_pdf_target = vec![0.0f32; total_steps * SCORE_BINS];
     let mut score_cdf_target = vec![0.0f32; total_steps * SCORE_BINS];
     let base_logits = vec![0.0f32; total_steps * HYDRA_ACTION_SPACE];
-    let mut exit_samples = Vec::with_capacity(total_steps);
-    let mut delta_q_samples = Vec::with_capacity(total_steps);
+    let mut exit_samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>> =
+        Vec::with_capacity(total_steps);
+    let mut delta_q_samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>> =
+        Vec::with_capacity(total_steps);
 
     let mut global_step = 0usize;
     for (trajectory_idx, trajectory) in trajectories.iter().enumerate() {
@@ -139,8 +141,8 @@ pub fn trajectories_to_rl_batch<B: Backend>(
                     0.0
                 });
             }
-            exit_samples.push(step.exit_label.map(TrajectoryExitLabel::to_vec_pair));
-            delta_q_samples.push(step.delta_q_label.map(TrajectoryDeltaQLabel::to_vec_pair));
+            exit_samples.push(step.exit_label.map(TrajectoryExitLabel::to_array_pair));
+            delta_q_samples.push(step.delta_q_label.map(TrajectoryDeltaQLabel::to_array_pair));
 
             policy_target[global_step * HYDRA_ACTION_SPACE + step.action as usize] = 1.0;
             value_target.push(step.reward);
