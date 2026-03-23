@@ -66,10 +66,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(feature = "python")]
-impl From<RiichiError> for pyo3::PyErr {
-    fn from(err: RiichiError) -> pyo3::PyErr {
-        pyo3::exceptions::PyValueError::new_err(err.to_string())
-    }
-}

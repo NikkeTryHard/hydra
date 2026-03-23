@@ -5,10 +5,7 @@ use crate::score;
 use crate::types::{Conditions, Hand, Meld, MeldType, WinResult, Wind};
 use crate::yaku;
 use crate::yaku_3p;
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
 
-#[cfg_attr(feature = "python", pyclass)]
 pub struct HandEvaluator3P {
     pub hand: Hand,      // Normalised for agari detection
     pub full_hand: Hand, // Full counts for dora/yaku
@@ -259,49 +256,6 @@ impl HandEvaluator3P {
 
     pub fn get_waits(&self) -> Vec<u32> {
         self.get_waits_u8().iter().map(|&x| x as u32).collect()
-    }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl HandEvaluator3P {
-    #[staticmethod]
-    #[pyo3(name = "hand_from_text")]
-    pub fn hand_from_text_py(text: &str) -> PyResult<Self> {
-        Self::hand_from_text(text).map_err(Into::into)
-    }
-
-    #[new]
-    #[pyo3(signature = (tiles_136, melds=vec![]))]
-    pub fn py_new(tiles_136: Vec<u8>, melds: Vec<Meld>) -> Self {
-        Self::new(&tiles_136, &melds)
-    }
-
-    #[pyo3(signature = (win_tile, dora_indicators=vec![], ura_indicators=vec![], conditions=None))]
-    #[pyo3(name = "calc")]
-    pub fn calc_py(
-        &self,
-        win_tile: u8,
-        dora_indicators: Vec<u8>,
-        ura_indicators: Vec<u8>,
-        conditions: Option<Conditions>,
-    ) -> WinResult {
-        self.calc(win_tile, &dora_indicators, &ura_indicators, conditions)
-    }
-
-    #[pyo3(name = "is_tenpai")]
-    pub fn is_tenpai_py(&self) -> bool {
-        self.is_tenpai()
-    }
-
-    #[pyo3(name = "get_waits_u8")]
-    pub fn get_waits_u8_py(&self) -> Vec<u8> {
-        self.get_waits_u8()
-    }
-
-    #[pyo3(name = "get_waits")]
-    pub fn get_waits_py(&self) -> Vec<u32> {
-        self.get_waits()
     }
 }
 

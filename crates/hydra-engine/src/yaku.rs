@@ -1,15 +1,7 @@
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
 use crate::agari::{self, Division, Mentsu};
 use crate::types::{Hand, Meld};
 
-// ---------------------------------------------------------------------------
-// Yaku struct (exposed to Python via PyO3)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all))]
 /// A single yaku (winning hand pattern) with IDs and localized names.
 pub struct Yaku {
     /// Internal yaku identifier (matches MJSoul ID).
@@ -22,17 +14,6 @@ pub struct Yaku {
     pub tenhou_id: i32,
     /// MJSoul-compatible yaku ID.
     pub mjsoul_id: i32,
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl Yaku {
-    fn __repr__(&self) -> String {
-        format!(
-            "Yaku(id={}, name='{}', name_en='{}', tenhou_id={}, mjsoul_id={})",
-            self.id, self.name, self.name_en, self.tenhou_id, self.mjsoul_id
-        )
-    }
 }
 
 /// Ref: https://tenhou.net/1/script/tenhou.js for tenhou_id.
@@ -108,29 +89,6 @@ pub fn get_yaku_by_id(id: u32) -> Option<Yaku> {
             mjsoul_id,
         },
     )
-}
-
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(name = "get_yaku_by_id")]
-pub fn get_yaku_by_id_py(id: u32) -> Option<Yaku> {
-    get_yaku_by_id(id)
-}
-
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(name = "get_all_yaku")]
-pub fn get_all_yaku_py() -> Vec<Yaku> {
-    YAKU_TABLE
-        .iter()
-        .map(|&(id, name, name_en, tenhou_id, mjsoul_id)| Yaku {
-            id,
-            name: name.to_string(),
-            name_en: name_en.to_string(),
-            tenhou_id,
-            mjsoul_id,
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
