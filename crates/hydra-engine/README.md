@@ -1,6 +1,6 @@
 # hydra-engine
 
-Internal game engine for the Hydra Riichi Mahjong AI. Vendored from [smly/RiichiEnv](https://github.com/smly/RiichiEnv) (`riichienv-core` v0.3.4, Apache-2.0).
+Internal game engine for the Hydra Riichi Mahjong AI. Vendored from [smly/RiichiEnv](https://github.com/smly/RiichiEnv) (`riichienv-core` v0.4.7, Apache-2.0).
 
 ## Overview
 
@@ -12,7 +12,7 @@ This is a workspace-internal crate. It isn't published to crates.io.
 
 ## Origin and License
 
-- Vendored from `riichienv-core` v0.3.4 by [smly](https://github.com/smly) (Apache-2.0).
+- Vendored from `riichienv-core` v0.4.7 by [smly](https://github.com/smly) (Apache-2.0).
 - Correctness verified upstream against 1M+ hanchan using Mortal as a black-box MJAI player, zero errors ([source](https://github.com/smly/RiichiEnv)).
 - The lib name stays `riichienv_core` for backward compatibility with `hydra-core` imports.
 - Original license preserved (Apache-2.0). Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) are BSL-1.1-licensed (same as `hydra-core`).
@@ -78,7 +78,7 @@ Measured on Intel Core Ultra 7 265KF, 20 cores, `RAYON_NUM_THREADS=4`.
 Trivial agent (first legal action), Criterion median. Full methodology
 in [research/infrastructure/ENGINE_BENCHMARKS.md](../../research/infrastructure/ENGINE_BENCHMARKS.md).
 
-| Benchmark | hydra-engine | riichienv-core 0.3.4 | Delta |
+| Benchmark | hydra-engine | riichienv-core 0.4.7 | Delta |
 |-----------|-------------|---------------------|-------|
 | Single game (1 core) | 396us | 933us | **2.36x faster** |
 | Batch 100 (1 core, seq) | 45.1ms (2,217/sec) | 94.1ms (1,063/sec) | **2.09x faster** |
