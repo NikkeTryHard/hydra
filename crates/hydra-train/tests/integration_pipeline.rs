@@ -490,6 +490,14 @@ fn exit_rl_step_with_target() {
     let accepted = build_exit_from_afbs_tree(&tree, root, &base_pi, &legal_f32, 8, 5.0)
         .expect("accepted exit target from child visits");
 
+    let accepted = {
+        let mut target = [0.0f32; 46];
+        let mut mask = [0.0f32; 46];
+        target.copy_from_slice(&accepted.0);
+        mask.copy_from_slice(&accepted.1);
+        (target, mask)
+    };
+
     let samples = vec![Some(accepted.clone()), Some(accepted)];
     let (exit_target, exit_mask) = collate_exit_targets::<TestBackend>(&samples, &device);
 
