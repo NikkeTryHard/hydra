@@ -3133,7 +3133,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hydra-core"
-version = "0.1.0"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "criterion",
@@ -3156,6 +3156,7 @@ version = "0.3.4"
 dependencies = [
  "ahash",
  "base64",
+ "criterion",
  "flate2",
  "hex",
  "ndarray 0.17.2",
