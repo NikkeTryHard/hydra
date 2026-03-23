@@ -545,6 +545,20 @@ impl GameState {
             }
         }
 
+        if !exists && env_action.action_type == ActionType::Kakan && self.drawn_tile.is_some() {
+            self.set_single_active_player(pid);
+            let new_obs = self.get_observation(pid);
+            let is_legal_retry = new_obs
+                ._legal_actions
+                .iter()
+                .any(|a| Self::replay_action_matches_legal(a, env_action));
+
+            if is_legal_retry {
+                obs = new_obs;
+                exists = true;
+            }
+        }
+
         self.phase = original_phase;
         self.active_players = original_active_players;
         self.active_player_count = original_active_player_count;
@@ -3516,6 +3530,72 @@ mod tests {
         assert!(GameState::replay_tile_matches_mjai_semantics(16, 16));
         assert!(!GameState::replay_tile_matches_mjai_semantics(16, 17));
         assert!(GameState::replay_tile_matches_mjai_semantics(0, 3));
+    }
+
+    #[test]
+    fn replay_observation_accepts_sparse_kakan_action_when_drawn_tile_matches() {
+        let rule = GameRule::default_mjsoul();
+        let mut state = GameState::new(0, false, Some(1), 0, rule);
+        state.apply_mjai_event(MjaiEvent::StartKyoku {
+            bakaze: "E".to_string(),
+            kyoku: 1,
+            honba: 0,
+            kyoutaku: 0,
+            oya: 0,
+            dora_marker: "1p".to_string(),
+            scores: vec![25000, 25000, 25000, 25000],
+            tehais: vec![
+                vec![
+                    "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p",
+                    "5p",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+                vec![
+                    "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S", "W", "N",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+                vec![
+                    "1p", "1p", "1p", "2p", "3p", "4p", "5p", "6p", "7p", "8p", "9p", "E", "S",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+                vec![
+                    "6m", "6m", "6m", "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "P",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            ],
+        });
+        state.apply_mjai_event(MjaiEvent::Pon {
+            actor: 3,
+            target: 0,
+            pai: "6m".to_string(),
+            consumed: vec!["6m".to_string(), "6m".to_string()],
+        });
+        state.apply_mjai_event(MjaiEvent::Tsumo {
+            actor: 3,
+            pai: "6m".to_string(),
+        });
+
+        let replay_kakan = Action::new(ActionType::Kakan, Some(20), &[], Some(3));
+        let obs = state
+            .get_observation_for_replay(
+                3,
+                &replay_kakan,
+                r#"{"actor":3,"pai":"6m","type":"kakan"}"#,
+            )
+            .expect("sparse kakan replay action should be accepted");
+
+        assert!(obs
+            .legal_actions_ref()
+            .iter()
+            .any(|action| action.action_type == ActionType::Kakan));
     }
 
     #[test]
