@@ -149,6 +149,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_reports_help_flag() {
+        for flag in ["--help", "-h"] {
+            let args = vec!["train".to_string(), flag.to_string()];
+            let err = parse_args(args).expect_err("help flag should short-circuit");
+            assert!(err.contains("Usage:"));
+        }
+    }
+
+    #[test]
+    fn parse_args_reports_version_flag() {
+        for flag in ["--version", "-V"] {
+            let args = vec!["train".to_string(), flag.to_string()];
+            let err = parse_args(args).expect_err("version flag should short-circuit");
+            assert!(err.contains(env!("CARGO_PKG_VERSION")));
+        }
+    }
+
+    #[test]
     fn parse_args_rejects_extra_args() {
         let args = vec![
             "train".to_string(),
@@ -157,6 +175,28 @@ mod tests {
         ];
         let err = parse_args(args).expect_err("extra args should fail");
         assert!(err.contains("Usage:"));
+    }
+
+    #[test]
+    fn parse_args_help_flag_after_config_short_circuits() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--help".to_string(),
+        ];
+        let err = parse_args(args).expect_err("help after config should short-circuit");
+        assert!(err.contains("Usage:"));
+    }
+
+    #[test]
+    fn parse_args_version_flag_after_config_short_circuits() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--version".to_string(),
+        ];
+        let err = parse_args(args).expect_err("version after config should short-circuit");
+        assert!(err.contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

@@ -281,6 +281,10 @@ pub(crate) fn usage(program: &str) -> String {
     )
 }
 
+pub(crate) fn version(program: &str) -> String {
+    format!("{program} {}", env!("CARGO_PKG_VERSION"))
+}
+
 fn parse_probe_kind(value: &str) -> Result<ProbeKind, String> {
     match value {
         "train" => Ok(ProbeKind::Train),
@@ -305,7 +309,13 @@ where
 {
     let mut args = args.into_iter();
     let program = args.next().unwrap_or_else(|| "train".to_string());
-    let config = args.next().ok_or_else(|| usage(&program))?;
+    let first = args.next().ok_or_else(|| usage(&program))?;
+    match first.as_str() {
+        "--help" | "-h" => return Err(usage(&program)),
+        "--version" | "-V" => return Err(version(&program)),
+        _ => {}
+    }
+    let config = first;
     let mut probe_kind = None;
     let mut candidate_microbatch = None;
     let mut warmup_steps = None;
@@ -317,6 +327,8 @@ where
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--help" | "-h" => return Err(usage(&program)),
+            "--version" | "-V" => return Err(version(&program)),
             "--preflight" => {
                 preflight = true;
             }
