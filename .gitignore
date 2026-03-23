@@ -25,3 +25,4 @@ handoff_zips/
 .pixi-env/
 output/
 out/
+dist/

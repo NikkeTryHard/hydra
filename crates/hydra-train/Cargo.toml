@@ -21,6 +21,10 @@ path = "src/bin/mjai_audit.rs"
 name = "recompress"
 path = "src/bin/recompress.rs"
 
+[[bin]]
+name = "repack_tar"
+path = "src/bin/repack_tar.rs"
+
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 burn = { version = "0.20", features = ["train", "tch"] }
