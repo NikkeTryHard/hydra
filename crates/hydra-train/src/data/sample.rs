@@ -3,7 +3,7 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_type};
+use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
 
 use crate::training::exit::collate_exit_targets;
 use crate::training::losses::HydraTargets;
@@ -177,7 +177,7 @@ pub struct MjaiBatch<B: Backend> {
 
 pub(crate) type CollatedHydraBatch<B> = Result<Option<(Tensor<B, 3>, HydraTargets<B>)>, String>;
 pub(crate) type CollatedSampleBatch<B> = Result<Option<(Tensor<B, 3>, MjaiBatch<B>)>, String>;
-type OptionalActionTargets = Option<(Vec<f32>, Vec<f32>)>;
+type OptionalActionTargets = Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>;
 
 struct CollateBuffers {
     obs_flat: Vec<f32>,
@@ -193,8 +193,8 @@ struct CollateBuffers {
     safety_residual_flat: Vec<f32>,
     safety_residual_mask_flat: Vec<f32>,
     any_safety_residual: bool,
-    exit_samples: Vec<Option<(Vec<f32>, Vec<f32>)>>,
-    delta_q_samples: Vec<Option<(Vec<f32>, Vec<f32>)>>,
+    exit_samples: Vec<OptionalActionTargets>,
+    delta_q_samples: Vec<OptionalActionTargets>,
     belief_fields_flat: Vec<f32>,
     mixture_weights_flat: Vec<f32>,
     any_belief_fields: bool,
@@ -241,7 +241,7 @@ fn collate_optional_target_pair(
     mask: Option<[f32; HYDRA_ACTION_SPACE]>,
 ) -> Result<OptionalActionTargets, String> {
     match (target, mask) {
-        (Some(target), Some(mask)) => Ok(Some((target.to_vec(), mask.to_vec()))),
+        (Some(target), Some(mask)) => Ok(Some((target, mask))),
         (None, None) => Ok(None),
         _ => Err(format!("{name} target/mask mismatch for sample collation")),
     }
