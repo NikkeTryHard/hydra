@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
-STAGE_ROOT="${ROOT_DIR}/.tmp-kaggle-bundle"
+TMP_BASE="/home/nikketryhard/tmp"
+mkdir -p "${TMP_BASE}"
+STAGE_ROOT="${TMP_BASE}/hydra-tmp-kaggle-bundle"
 STAGE_DIR="${STAGE_ROOT}/hydra"
 OUT_DIR="${ROOT_DIR}/notebooks/offline-bundle"
 ZIP_PATH="${OUT_DIR}/hydra-kaggle-offline-bundle.zip"
@@ -82,7 +84,7 @@ import os
 from pathlib import Path
 
 root = Path(os.environ['ROOT_DIR_ENV'])
-stage_dir = root / '.tmp-kaggle-bundle' / 'hydra'
+stage_dir = Path('/home/nikketryhard/tmp/hydra-tmp-kaggle-bundle/hydra')
 manifest_path = stage_dir / 'bundle-manifest.json'
 
 included_files = [
@@ -156,7 +158,7 @@ from pathlib import Path
 import zipfile
 
 root_dir = Path(os.environ['ROOT_DIR_ENV'])
-root = root_dir / '.tmp-kaggle-bundle'
+root = Path('/home/nikketryhard/tmp/hydra-tmp-kaggle-bundle')
 out = root_dir / 'notebooks' / 'offline-bundle' / 'hydra-kaggle-offline-bundle.zip'
 
 with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
