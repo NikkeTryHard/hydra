@@ -3,14 +3,12 @@ use hydra_core::afbs::{AfbsTree, NodeIdx};
 use hydra_core::arena::TrajectoryStep;
 use hydra_core::encoder::OBS_SIZE;
 use riichienv_core::action::Action;
-use riichienv_core::observation::Observation;
 
 use super::StepRecord;
 
 #[derive(Clone)]
 pub(super) struct PendingPolicyRequest {
     pub(super) pid: u8,
-    pub(super) obs: Observation,
     pub(super) obs_encoded: [f32; OBS_SIZE],
     pub(super) drawn_tile_before_action: Option<u8>,
     pub(super) turn: u32,

@@ -12,11 +12,12 @@ use hydra_core::arena::{
     Trajectory, TrajectoryDeltaQLabel, TrajectoryExitLabel, TrajectoryStep,
     sample_action_with_temperature,
 };
-use hydra_core::bridge::encode_observation;
+use hydra_core::bridge::{encode_observation, encode_observation_ref};
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::observation::Observation;
+use riichienv_core::observation_ref::ObservationRef;
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 
@@ -121,6 +122,23 @@ impl NnActionSelector {
             last_discard: obs.last_discard.and_then(|tile| u8::try_from(tile).ok()),
             hand: hand_from_observation(obs, player),
             hand_len: obs.hands[player as usize].len().min(14) as u8,
+        });
+        encoded
+    }
+
+    pub fn encode_observation_ref(
+        &mut self,
+        obs: &ObservationRef<'_>,
+        legal_actions: &[Action],
+        player: u8,
+    ) -> [f32; OBS_SIZE] {
+        let encoded = encode_observation_ref(&mut self.encoder, obs, &self.safety[player as usize]);
+        self.pending_obs = Some(encoded);
+        self.pending_context = Some(PendingContext {
+            phase: infer_action_phase(legal_actions),
+            last_discard: obs.discards[(player as usize + 3) % 4].last().copied(),
+            hand: hand_from_observation_ref(obs),
+            hand_len: obs.observer_hand.len().min(14) as u8,
         });
         encoded
     }
@@ -531,8 +549,8 @@ impl CooperativeGameRunner {
                 (turn_state.players[turn_state.next_index], turn_state.turn)
             };
 
-            let obs = self.state.get_observation(pid);
-            if obs.legal_actions_ref().is_empty() {
+            self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+            if self.legal_buf.is_empty() {
                 self.turn_state
                     .as_mut()
                     .expect("pending turn state")
@@ -540,11 +558,10 @@ impl CooperativeGameRunner {
                 continue;
             }
 
-            let drawn_tile = self.state.drawn_tile.map(|tile| tile / 4);
-            let obs_encoded = self.selector.encode_observation(&obs, pid, drawn_tile);
+            let obs = self.state.observe(pid);
+            let obs_encoded = self.selector.encode_observation_ref(&obs, &self.legal_buf, pid);
             self.pending_policy_obs = Some(PendingPolicyRequest {
                 pid,
-                obs,
                 obs_encoded,
                 drawn_tile_before_action: self.state.drawn_tile,
                 turn,
@@ -618,8 +635,9 @@ impl CooperativeGameRunner {
                 turn_state.pending_steps.len() - 1
             };
 
+            let owned_obs = self.state.get_observation(pending.pid);
             if let Some(prepared) =
-                self.prepare_exit_search(&pending.obs, &step_record, pending.turn)
+                self.prepare_exit_search(&owned_obs, &step_record, pending.turn)
             {
                 let pending_exit = self
                     .pending_exit_search
@@ -1057,20 +1075,15 @@ fn run_player_decision<F, E>(
         u32,
     ) -> Option<TrajectorySearchLabels>,
 {
-    let obs = env.state.get_observation(pid);
-    if obs.legal_actions_ref().is_empty() {
-        return;
-    }
-
-    let drawn_tile = env.state.drawn_tile.map(|tile| tile / 4);
-    let encoded = env.selector.encode_observation(&obs, pid, drawn_tile);
-    let logits = (env.infer_fn)(&encoded);
-    env.selector.set_logits(logits);
-
     env.state.get_legal_actions_into(pid, env.legal_buf);
     if env.legal_buf.is_empty() {
         return;
     }
+
+    let obs = env.state.observe(pid);
+    let encoded = env.selector.encode_observation_ref(&obs, env.legal_buf, pid);
+    let logits = (env.infer_fn)(&encoded);
+    env.selector.set_logits(logits);
 
     let drawn_tile_before_action = env.state.drawn_tile;
     let action = <NnActionSelector as hydra_core::game_loop::ActionSelector>::select_action(
@@ -1084,8 +1097,10 @@ fn run_player_decision<F, E>(
 
     if let Some(step_record) = env.selector.take_last_step() {
         let player_safety = env.selector.safety(pid);
+        let owned_obs = env.state.get_observation(pid);
         let search_labels =
-            exit_label_fn(env.state, &obs, &step_record, player_safety, turn).unwrap_or_default();
+            exit_label_fn(env.state, &owned_obs, &step_record, player_safety, turn)
+                .unwrap_or_default();
         env.trajectory.steps.push(TrajectoryStep {
             obs: step_record.obs,
             action: step_record.action,
@@ -1112,22 +1127,17 @@ fn run_mixed_player_decision<B: Backend>(
     chosen_actions: &mut [Option<Action>; 4],
     pid: u8,
 ) {
-    let obs = state.get_observation(pid);
-    if obs.legal_actions_ref().is_empty() {
-        return;
-    }
-
-    let drawn_tile = state.drawn_tile.map(|tile| tile / 4);
-    let encoded = selector.encode_observation(&obs, pid, drawn_tile);
-    let logits = seat_models[pid as usize]
-        .policy_value_cpu(&encoded, device)
-        .0;
-    selector.set_logits(logits);
-
     state.get_legal_actions_into(pid, legal_buf);
     if legal_buf.is_empty() {
         return;
     }
+
+    let obs = state.observe(pid);
+    let encoded = selector.encode_observation_ref(&obs, legal_buf, pid);
+    let logits = seat_models[pid as usize]
+        .policy_value_cpu(&encoded, device)
+        .0;
+    selector.set_logits(logits);
 
     let drawn_tile_before_action = state.drawn_tile;
     let action = <NnActionSelector as hydra_core::game_loop::ActionSelector>::select_action(
@@ -1160,6 +1170,14 @@ fn hand_from_observation(obs: &Observation, player: u8) -> [u8; 14] {
         if let Ok(tile_u8) = u8::try_from(tile) {
             hand[idx] = tile_u8;
         }
+    }
+    hand
+}
+
+fn hand_from_observation_ref(obs: &ObservationRef<'_>) -> [u8; 14] {
+    let mut hand = [0u8; 14];
+    for (idx, &tile) in obs.observer_hand.iter().take(14).enumerate() {
+        hand[idx] = tile;
     }
     hand
 }
