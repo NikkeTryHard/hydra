@@ -1,6 +1,6 @@
 [package]
 name = "hydra-core"
-version = "0.1.0"
+version = "0.4.7"
 edition = "2024"
 license-file = "LICENSE"
 description = "Hydra Riichi Mahjong game engine - simulator, encoder, and batch runner"
@@ -36,4 +36,3 @@ harness = false
 [[bench]]
 name = "ct_smc_bench"
 harness = false
-
