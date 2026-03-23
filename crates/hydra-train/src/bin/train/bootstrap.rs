@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
-use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::Adam;
 use burn::optim::Optimizer;
+use burn::optim::adaptor::OptimizerAdaptor;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use colored::Colorize;
@@ -13,7 +13,7 @@ use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, DataManifest, StreamingLoaderConfig,
+    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
 };
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::bc::{BCTrainerConfig, BcExitConfig};
@@ -22,14 +22,14 @@ use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationCont
 use hydra_train::training::losses::HydraLoss;
 use hydra_train::training::replay_delta_q::DeltaQSidecarIndex;
 use hydra_train::training::replay_exit::{
-    source_net_hash_from_checkpoint_identity, ExitSidecarIndex,
+    ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
 };
 use hydra_train::training::rl::RlConfig;
 
-use super::artifacts::{read_preflight_cache, BcArtifactPaths, RlArtifactPaths, RlPreflightPaths};
+use super::artifacts::{BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, read_preflight_cache};
 use super::config::{
-    configure_threads, device_label, train_device, train_microbatch_size,
-    trainer_config_from_train_config, validate_config, RlTrainConfig, TrainConfig,
+    RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
+    train_microbatch_size, trainer_config_from_train_config, validate_config,
 };
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::{build_bc_exit_config, build_loss_config, build_rl_loss_config};
@@ -37,9 +37,9 @@ use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::timestamped;
 use super::progress::BannerStats;
 use super::resume::{
-    rl_runtime_resume_contract, runtime_resume_contract, validate_resume_runtime_compatibility,
-    validate_rl_resume_runtime_compatibility, ResumeContext, RlResumeContext,
-    RlRuntimeResumeContract,
+    ResumeContext, RlResumeContext, RlRuntimeResumeContract, rl_runtime_resume_contract,
+    runtime_resume_contract, validate_resume_runtime_compatibility,
+    validate_rl_resume_runtime_compatibility,
 };
 use super::schedule::schedule_total_steps;
 use super::{TrainBackend, ValidBackend};
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn rl_bootstrap_applies_preflight_cache_override() {
-        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
+        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -723,7 +723,7 @@ mod tests {
 
     #[test]
     fn rl_bootstrap_ignores_stale_preflight_cache() {
-        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
+        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
             PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
@@ -832,7 +832,7 @@ mod tests {
 
     #[test]
     fn initialize_training_bootstrap_ignores_matching_preflight_cache_on_fresh_run() {
-        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -906,18 +906,15 @@ mod tests {
             "BC bootstrap should keep configured train microbatch even when matching preflight cache exists"
         );
         assert_eq!(
-            bootstrap.current_runtime.train_microbatch_size,
-            original_microbatch,
+            bootstrap.current_runtime.train_microbatch_size, original_microbatch,
             "BC bootstrap should keep configured runtime train microbatch even when matching preflight cache exists"
         );
         assert_eq!(
-            bootstrap.current_runtime.validation_microbatch_size,
-            original_validation_microbatch,
+            bootstrap.current_runtime.validation_microbatch_size, original_validation_microbatch,
             "BC bootstrap should keep configured validation microbatch even when matching preflight cache exists"
         );
         assert_eq!(
-            bootstrap.current_runtime.accum_steps,
-            original_accum_steps,
+            bootstrap.current_runtime.accum_steps, original_accum_steps,
             "BC bootstrap should keep configured accum_steps even when matching preflight cache exists"
         );
         cleanup_dir(&root_dir);
@@ -925,7 +922,7 @@ mod tests {
 
     #[test]
     fn initialize_training_bootstrap_ignores_stale_preflight_cache_at_epoch_boundary() {
-        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
             PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
@@ -1020,7 +1017,7 @@ mod tests {
 
     #[test]
     fn initialize_training_bootstrap_applies_matching_preflight_cache_at_epoch_boundary() {
-        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -1103,7 +1100,10 @@ mod tests {
         assert_eq!(bootstrap.current_runtime.accum_steps, 8);
         assert_eq!(bootstrap.microbatch_size, 32);
         assert_eq!(bootstrap.loader_config.buffer_games, original_buffer_games);
-        assert_eq!(bootstrap.loader_config.buffer_samples, original_buffer_samples);
+        assert_eq!(
+            bootstrap.loader_config.buffer_samples,
+            original_buffer_samples
+        );
         assert_eq!(
             bootstrap.loader_config.archive_queue_bound,
             original_archive_queue_bound

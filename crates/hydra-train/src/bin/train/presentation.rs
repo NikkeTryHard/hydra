@@ -2,8 +2,8 @@ use colored::Colorize;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::{
@@ -11,8 +11,8 @@ use hydra_train::preflight::{
 };
 
 use super::artifacts::BcArtifactPaths;
-use super::config::display_num_threads;
 use super::config::TrainConfig;
+use super::config::display_num_threads;
 use super::probe_summary::summarize_probe_results;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
@@ -892,10 +892,10 @@ mod tests {
         );
         assert!(done.contains("phase=done throughput=0.00 samples/s elapsed=1.25s"));
 
-        assert!(format_probe_progress_line(
-            "probe_progress kind=train candidate_mb=64 phase=unknown"
-        )
-        .is_none());
+        assert!(
+            format_probe_progress_line("probe_progress kind=train candidate_mb=64 phase=unknown")
+                .is_none()
+        );
         assert!(format_probe_progress_line("probe_progress kind=train phase=measure").is_none());
     }
 
