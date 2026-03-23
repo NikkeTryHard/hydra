@@ -62,7 +62,7 @@ Changes from upstream `riichienv-core`, all targeting training throughput:
 | `mjai_event` | `MjaiEvent` typed enum and `mjai_event!` macro for zero-cost logging (Hydra addition) |
 | `yaku` | Yaku (winning hand pattern) definitions and detection (4-player) |
 | `agari` | Agari (winning hand) table lookups |
-| `replay` | MJAI and MJSoul replay parsing with step-by-step iteration (requires `python` feature) |
+| `replay` | MJAI and MJSoul replay parsing with step-by-step iteration |
 | `errors` | Error types (`RiichiError`) and result alias (`RiichiResult`) |
 
 ## Tile Representation

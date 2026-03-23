@@ -56,7 +56,6 @@ fn copy_and_sorted_insert(src: &[u8], extra: u8) -> ([u8; 5], usize) {
 }
 
 /// Full game state for a 4-player Riichi Mahjong game.
-#[cfg_attr(feature = "python", pyo3::pyclass)]
 #[derive(Debug, Clone)]
 pub struct GameState {
     /// Wall state containing tiles, dora indicators, and draw cursors.
@@ -504,6 +503,7 @@ impl GameState {
         let original_claims = self.current_claims;
         let original_claim_counts = self.current_claim_counts;
         let original_riichi = self.players[pid as usize].riichi_declared;
+        let original_current_player = self.current_player;
 
         match env_action.action_type {
             ActionType::Ron | ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
@@ -560,6 +560,7 @@ impl GameState {
         }
 
         self.phase = original_phase;
+        self.current_player = original_current_player;
         self.active_players = original_active_players;
         self.active_player_count = original_active_player_count;
         self.current_claims = original_claims;
@@ -578,6 +579,19 @@ impl GameState {
         }
 
         Ok(obs)
+    }
+
+    pub fn replay_observation_contains_action(obs: &Observation, env_action: &Action) -> bool {
+        obs._legal_actions
+            .iter()
+            .any(|action| Self::replay_action_matches_legal(action, env_action))
+    }
+
+    pub fn resolve_replay_all_passes(&mut self) {
+        self.clear_claims();
+        self.clear_active_players();
+        self._accept_riichi();
+        self.phase = Phase::WaitAct;
     }
 
     /// Advance the game by one step, validating all player actions.
@@ -632,7 +646,7 @@ impl GameState {
                         return true;
                     }
 
-                    // Allow None from python for context-implied actions
+                    // Allow tile-less replay actions for context-implied actions.
                     if act.tile.is_none() {
                         return matches!(
                             l.action_type,
@@ -3798,6 +3812,78 @@ mod tests {
                 && action.tile == Some(retry_tile)));
         assert!(!state.players[0].riichi_declared);
         assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.active_player_slice(), &[0]);
+    }
+
+    #[test]
+    fn replay_observation_rejects_wait_act_discard_that_is_only_tile_semantic_match_in_hand() {
+        let mut state = GameState::new(1, true, Some(7), 0, GameRule::default_tenhou());
+        let replay_tile = state.players[0]
+            .hand_slice()
+            .iter()
+            .copied()
+            .find(|&tile| {
+                !state.players[0]
+                    .forbidden_slice()
+                    .iter()
+                    .any(|&forbidden| forbidden / 4 == tile / 4)
+            })
+            .expect("fresh state should have at least one discardable hand tile");
+        state.players[0].push_forbidden(replay_tile);
+
+        let baseline_obs = state.get_observation(0);
+        assert!(baseline_obs
+            ._legal_actions
+            .iter()
+            .filter(|action| action.action_type == ActionType::Discard)
+            .all(|action| action.tile.is_some_and(|tile| tile / 4 != replay_tile / 4)));
+
+        let err = state
+            .get_observation_for_replay(
+                0,
+                &Action::new(ActionType::Discard, Some(replay_tile), &[], Some(0)),
+                "{\"type\":\"dahai\"}",
+            )
+            .expect_err(
+                "replay discard should stay illegal when only a hand tile semantically matches",
+            );
+
+        assert!(matches!(err, RiichiError::InvalidState { .. }));
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.current_player, 0);
+        assert_eq!(state.active_player_slice(), &[0]);
+        assert!(state.players[0]
+            .forbidden_slice()
+            .iter()
+            .any(|&forbidden| forbidden / 4 == replay_tile / 4));
+    }
+
+    #[test]
+    fn replay_observation_rejects_wait_act_discard_for_non_current_player_even_with_drawn_tile() {
+        let mut state = fresh_state();
+        let replay_tile = state.players[1]
+            .hand_slice()
+            .iter()
+            .copied()
+            .find(|&tile| {
+                state.players[1]
+                    .forbidden_slice()
+                    .iter()
+                    .all(|&forbidden| forbidden / 4 != tile / 4)
+            })
+            .expect("player 1 should have at least one non-forbidden tile in hand");
+
+        let err = state
+            .get_observation_for_replay(
+                1,
+                &Action::new(ActionType::Discard, Some(replay_tile), &[], Some(1)),
+                "{\"type\":\"dahai\"}",
+            )
+            .expect_err("non-current player discard should stay illegal during wait-act replay");
+
+        assert!(matches!(err, RiichiError::InvalidState { .. }));
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.current_player, 0);
         assert_eq!(state.active_player_slice(), &[0]);
     }
 

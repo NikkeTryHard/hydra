@@ -116,6 +116,11 @@ impl GameStateEventHandler for GameState {
                 self.phase = Phase::WaitAct;
                 self.set_single_active_player(self.current_player);
                 self.needs_tsumo = true;
+                let oya_idx = self.oya as usize;
+                if self.players[oya_idx].hand_len == 14 {
+                    self.drawn_tile = self.players[oya_idx].hand_slice().last().copied();
+                    self.needs_tsumo = false;
+                }
                 self.is_done = false;
             }
             MjaiEvent::Tsumo { actor, pai } => {
@@ -130,19 +135,44 @@ impl GameStateEventHandler for GameState {
                 if self.wall.tile_count > 0 {
                     self.wall.draw_back();
                 }
+                self.phase = Phase::WaitAct;
+                self.set_single_active_player(actor as u8);
                 self.needs_tsumo = false;
             }
             MjaiEvent::Dahai { actor, pai, .. } => {
                 let tile = parse_mjai_tile(&pai);
-                self.current_player = actor as u8;
+                let actor_u8 = actor as u8;
+                self.current_player = actor_u8;
                 remove_replay_hand_tile_by_mjai(&mut self.players[actor], tile, &pai);
                 self.players[actor].push_discard(tile, false, false);
-                self.last_discard = Some((actor as u8, tile));
+                self.last_discard = Some((actor_u8, tile));
                 self.drawn_tile = None;
 
                 if self.players[actor].riichi_stage {
                     self.players[actor].riichi_declared = true;
+                    self.players[actor].riichi_stage = false;
                 }
+
+                self.current_claim_counts = [0; 4];
+                self.active_player_count = 0;
+                for pid in 0..4u8 {
+                    if pid == actor_u8 {
+                        continue;
+                    }
+                    let (claim_count, _missed) =
+                        self._get_claim_actions_into_claims(pid, actor_u8, tile);
+                    if claim_count > 0 {
+                        let idx = self.active_player_count as usize;
+                        self.active_players[idx] = pid;
+                        self.active_player_count += 1;
+                    }
+                }
+
+                self.phase = if self.active_player_count > 0 {
+                    Phase::WaitResponse
+                } else {
+                    Phase::WaitAct
+                };
                 self.needs_tsumo = true;
             }
             MjaiEvent::Pon {
@@ -170,7 +200,14 @@ impl GameStateEventHandler for GameState {
                     Some(tile),
                 ));
                 self.drawn_tile = None;
+                self.phase = Phase::WaitAct;
+                self.active_players[0] = actor as u8;
+                self.active_player_count = 1;
                 self.needs_tsumo = false;
+                self.players[actor].clear_forbidden();
+                if self.rule.kuikae_forbidden {
+                    self.players[actor].push_forbidden(tile);
+                }
             }
             MjaiEvent::Chi {
                 actor,
@@ -197,7 +234,28 @@ impl GameStateEventHandler for GameState {
                     Some(tile),
                 ));
                 self.drawn_tile = None;
+                self.phase = Phase::WaitAct;
+                self.active_players[0] = actor as u8;
+                self.active_player_count = 1;
                 self.needs_tsumo = false;
+                self.players[actor].clear_forbidden();
+                if self.rule.kuikae_forbidden {
+                    self.players[actor].push_forbidden(tile);
+                    let tile_type = tile / 4;
+                    let mut consumed_types = [c1 / 4, c2 / 4];
+                    consumed_types.sort();
+                    if consumed_types[0] == tile_type + 1 && consumed_types[1] == tile_type + 2 {
+                        if tile_type % 9 <= 5 {
+                            self.players[actor].push_forbidden((tile_type + 3) * 4);
+                        }
+                    } else if tile_type >= 2
+                        && consumed_types[0] == tile_type - 2
+                        && consumed_types[1] == tile_type - 1
+                        && tile_type % 9 >= 3
+                    {
+                        self.players[actor].push_forbidden((tile_type - 3) * 4);
+                    }
+                }
             }
             MjaiEvent::Kan {
                 actor,
@@ -1132,6 +1190,98 @@ mod tests {
         assert_eq!(state.last_discard, Some((2, parse_mjai_tile("6m"))));
         assert_eq!(state.players[2].discard_len, 1);
         assert!(state.players[2].riichi_declared);
+    }
+
+    #[test]
+    fn replay_dahai_populates_response_claims_for_other_players() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+        state.apply_mjai_event(start_kyoku_with_tehais([
+            vec![
+                "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p",
+            ],
+            vec![
+                "5m", "5m", "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S",
+            ],
+            vec![
+                "1p", "2p", "3p", "4p", "5p", "6p", "7p", "8p", "9p", "1s", "2s", "3s", "4s",
+            ],
+            vec![
+                "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S", "W", "N",
+            ],
+        ]));
+
+        state.apply_mjai_event(MjaiEvent::Dahai {
+            actor: 0,
+            pai: "5m".to_string(),
+            tsumogiri: false,
+        });
+
+        assert_eq!(state.phase, Phase::WaitResponse);
+        assert_eq!(state.active_player_slice(), &[1]);
+        let claims = state.claims_slice(1);
+        assert!(claims
+            .iter()
+            .any(|action| action.action_type == ActionType::Pon));
+        let mut legal = Vec::new();
+        state.get_legal_actions_into(1, &mut legal);
+        assert!(legal
+            .iter()
+            .any(|action| action.action_type == ActionType::Pon));
+        assert!(legal
+            .iter()
+            .any(|action| action.action_type == ActionType::Pass));
+    }
+
+    #[test]
+    fn replay_dahai_clears_riichi_stage_after_declared_discard() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+        state.apply_mjai_event(start_kyoku_event());
+        state.players[2].riichi_stage = true;
+
+        state.apply_mjai_event(MjaiEvent::Dahai {
+            actor: 2,
+            pai: "6m".to_string(),
+            tsumogiri: false,
+        });
+
+        assert!(state.players[2].riichi_declared);
+        assert!(!state.players[2].riichi_stage);
+    }
+
+    #[test]
+    fn replay_chi_sets_kuikae_forbidden_discards() {
+        let mut rule = GameRule::default_tenhou();
+        rule.kuikae_forbidden = true;
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+        state.apply_mjai_event(start_kyoku_with_tehais([
+            vec![
+                "1p", "2p", "3p", "4p", "5p", "6p", "7p", "8p", "9p", "1s", "2s", "3s", "4s",
+            ],
+            vec![
+                "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p", "5p",
+            ],
+            vec![
+                "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S", "W", "N",
+            ],
+            vec![
+                "1m", "1m", "1p", "1p", "1s", "1s", "E", "E", "S", "S", "W", "W", "N",
+            ],
+        ]));
+
+        state.apply_mjai_event(MjaiEvent::Chi {
+            actor: 1,
+            target: 0,
+            pai: "1m".to_string(),
+            consumed: vec!["2m".to_string(), "3m".to_string()],
+        });
+
+        let forbidden = state.players[1].forbidden_slice();
+        assert!(forbidden.contains(&parse_mjai_tile("1m")));
+        assert!(forbidden.contains(&parse_mjai_tile("4m")));
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert_eq!(state.active_player_slice(), &[1]);
     }
 
     #[test]

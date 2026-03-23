@@ -1626,4 +1626,554 @@ mod unit_tests {
         assert_eq!(discarder_amt, 48000, "Discarder pays remainder (48000)");
         assert_eq!(deltas[w_pid], 64000, "Winner receives 64000");
     }
+
+    #[derive(serde::Deserialize)]
+    struct BenchData {
+        cases: Vec<AgariCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct NegativeData {
+        cases: Vec<NegativeCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct AgariCase {
+        tiles_136: Vec<u8>,
+        melds: Vec<BenchMeld>,
+        win_tile_136: u8,
+        dora_indicators: Vec<u8>,
+        ura_indicators: Vec<u8>,
+        conditions: BenchConditions,
+        expected: BenchExpected,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct BenchMeld {
+        meld_type: String,
+        tiles: Vec<u8>,
+        opened: bool,
+        from_who: i8,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct BenchConditions {
+        tsumo: bool,
+        riichi: bool,
+        double_riichi: bool,
+        ippatsu: bool,
+        haitei: bool,
+        houtei: bool,
+        rinshan: bool,
+        chankan: bool,
+        tsumo_first_turn: bool,
+        player_wind: u8,
+        round_wind: u8,
+        honba: u32,
+        #[serde(default)]
+        kita_count: u8,
+        #[serde(default)]
+        is_sanma: bool,
+        #[serde(default = "default_num_players")]
+        num_players: u8,
+    }
+
+    fn default_num_players() -> u8 {
+        4
+    }
+
+    #[derive(serde::Deserialize)]
+    struct BenchExpected {
+        is_win: bool,
+        han: u32,
+        fu: u32,
+        yaku: Vec<u32>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct NegativeCase {
+        counts_34: Vec<u8>,
+        is_tenpai: bool,
+    }
+
+    struct ScoreReferenceCase {
+        han: u8,
+        fu: u8,
+        is_oya: bool,
+        is_tsumo: bool,
+        honba: u32,
+        num_players: u8,
+        exp_ron: u32,
+        exp_oya: u32,
+        exp_ko: u32,
+    }
+
+    fn parse_bench_meld_type(s: &str) -> crate::types::MeldType {
+        match s {
+            "chi" => crate::types::MeldType::Chi,
+            "pon" => crate::types::MeldType::Pon,
+            "daiminkan" => crate::types::MeldType::Daiminkan,
+            "ankan" => crate::types::MeldType::Ankan,
+            "kakan" => crate::types::MeldType::Kakan,
+            _ => panic!("Unknown meld type: {s}"),
+        }
+    }
+
+    fn to_bench_meld(bm: &BenchMeld) -> crate::types::Meld {
+        crate::types::Meld::new(
+            parse_bench_meld_type(&bm.meld_type),
+            &bm.tiles,
+            bm.opened,
+            bm.from_who,
+            None,
+        )
+    }
+
+    fn to_bench_conditions(bc: &BenchConditions) -> crate::types::Conditions {
+        crate::types::Conditions {
+            tsumo: bc.tsumo,
+            riichi: bc.riichi,
+            double_riichi: bc.double_riichi,
+            ippatsu: bc.ippatsu,
+            haitei: bc.haitei,
+            houtei: bc.houtei,
+            rinshan: bc.rinshan,
+            chankan: bc.chankan,
+            tsumo_first_turn: bc.tsumo_first_turn,
+            player_wind: crate::types::Wind::from(bc.player_wind),
+            round_wind: crate::types::Wind::from(bc.round_wind),
+            riichi_sticks: 0,
+            honba: bc.honba,
+            kita_count: bc.kita_count,
+            is_sanma: bc.is_sanma,
+            num_players: bc.num_players,
+        }
+    }
+
+    fn load_bench_data(path: &str) -> BenchData {
+        let full_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
+        let contents = std::fs::read_to_string(&full_path)
+            .unwrap_or_else(|err| panic!("Failed to read {full_path}: {err}"));
+        serde_json::from_str(&contents)
+            .unwrap_or_else(|err| panic!("Failed to parse {full_path}: {err}"))
+    }
+
+    fn load_negative_data(path: &str) -> NegativeData {
+        let full_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
+        let contents = std::fs::read_to_string(&full_path)
+            .unwrap_or_else(|err| panic!("Failed to read {full_path}: {err}"));
+        serde_json::from_str(&contents)
+            .unwrap_or_else(|err| panic!("Failed to parse {full_path}: {err}"))
+    }
+
+    #[test]
+    fn agari_benchmark_cases_match_expected_results_for_4p() {
+        let data = load_bench_data("benches/data/agari_4p.json");
+        assert!(!data.cases.is_empty(), "4P agari data should not be empty");
+
+        for (idx, case) in data.cases.iter().enumerate() {
+            let melds: Vec<crate::types::Meld> = case.melds.iter().map(to_bench_meld).collect();
+            let evaluator = crate::hand_evaluator::HandEvaluator::new(&case.tiles_136, &melds);
+            let result = evaluator.calc(
+                case.win_tile_136,
+                &case.dora_indicators,
+                &case.ura_indicators,
+                Some(to_bench_conditions(&case.conditions)),
+            );
+
+            assert_eq!(
+                result.is_win, case.expected.is_win,
+                "4P case {idx}: win mismatch"
+            );
+            assert_eq!(result.han, case.expected.han, "4P case {idx}: han mismatch");
+            assert_eq!(result.fu, case.expected.fu, "4P case {idx}: fu mismatch");
+
+            let mut actual_yaku = result.yaku_slice().to_vec();
+            let mut expected_yaku = case.expected.yaku.clone();
+            actual_yaku.sort();
+            expected_yaku.sort();
+            assert_eq!(actual_yaku, expected_yaku, "4P case {idx}: yaku mismatch");
+        }
+    }
+
+    #[test]
+    fn agari_benchmark_cases_match_expected_results_for_3p() {
+        let path = format!(
+            "{}/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            "benches/data/agari_3p.json"
+        );
+        if !std::path::Path::new(&path).exists() {
+            return;
+        }
+
+        let data = load_bench_data("benches/data/agari_3p.json");
+        assert!(!data.cases.is_empty(), "3P agari data should not be empty");
+
+        for (idx, case) in data.cases.iter().enumerate() {
+            let melds: Vec<crate::types::Meld> = case.melds.iter().map(to_bench_meld).collect();
+            let evaluator = crate::hand_evaluator_3p::HandEvaluator3P::new(&case.tiles_136, &melds);
+            let result = evaluator.calc(
+                case.win_tile_136,
+                &case.dora_indicators,
+                &case.ura_indicators,
+                Some(to_bench_conditions(&case.conditions)),
+            );
+
+            assert_eq!(
+                result.is_win, case.expected.is_win,
+                "3P case {idx}: win mismatch"
+            );
+            assert_eq!(result.han, case.expected.han, "3P case {idx}: han mismatch");
+            assert_eq!(result.fu, case.expected.fu, "3P case {idx}: fu mismatch");
+
+            let mut actual_yaku = result.yaku_slice().to_vec();
+            let mut expected_yaku = case.expected.yaku.clone();
+            actual_yaku.sort();
+            expected_yaku.sort();
+            assert_eq!(actual_yaku, expected_yaku, "3P case {idx}: yaku mismatch");
+        }
+    }
+
+    #[test]
+    fn agari_negative_corpus_has_valid_tile_counts() {
+        let data = load_negative_data("benches/data/hands_negative.json");
+        assert!(
+            !data.cases.is_empty(),
+            "negative agari corpus should not be empty"
+        );
+
+        for (idx, case) in data.cases.iter().enumerate() {
+            let total: u8 = case.counts_34.iter().sum();
+            assert!(
+                total == 13 || total == 14,
+                "negative case {idx} should have 13 or 14 tiles, got {total}"
+            );
+            assert!(
+                case.counts_34.iter().any(|&count| count > 0),
+                "negative case {idx} should not be empty"
+            );
+            if case.is_tenpai {
+                assert!(
+                    total == 13 || total == 14,
+                    "tenpai-tagged case {idx} tile count invalid"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn calculate_score_matches_upstream_corpus_reference_cases() {
+        let cases = [
+            ScoreReferenceCase {
+                han: 1,
+                fu: 30,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 1000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 1,
+                fu: 30,
+                is_oya: false,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 500,
+                exp_ko: 300,
+            },
+            ScoreReferenceCase {
+                han: 3,
+                fu: 30,
+                is_oya: true,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 5800,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 5,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 8000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 5,
+                fu: 0,
+                is_oya: true,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 0,
+                exp_ko: 4000,
+            },
+            ScoreReferenceCase {
+                han: 5,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 4000,
+                exp_ko: 2000,
+            },
+            ScoreReferenceCase {
+                han: 6,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 12000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 8,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 16000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 11,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 24000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 13,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 32000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 13,
+                fu: 0,
+                is_oya: true,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 48000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 13,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 16000,
+                exp_ko: 8000,
+            },
+            ScoreReferenceCase {
+                han: 13,
+                fu: 0,
+                is_oya: true,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 0,
+                exp_ko: 16000,
+            },
+            ScoreReferenceCase {
+                han: 26,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 64000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 26,
+                fu: 0,
+                is_oya: true,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 96000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 26,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 32000,
+                exp_ko: 16000,
+            },
+            ScoreReferenceCase {
+                han: 26,
+                fu: 0,
+                is_oya: true,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 0,
+                exp_ko: 32000,
+            },
+            ScoreReferenceCase {
+                han: 26,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 2,
+                num_players: 4,
+                exp_ron: 64600,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 39,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 96000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 39,
+                fu: 0,
+                is_oya: true,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 0,
+                exp_oya: 0,
+                exp_ko: 48000,
+            },
+            ScoreReferenceCase {
+                han: 52,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 128000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 65,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 4,
+                exp_ron: 160000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 13,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 3,
+                exp_ron: 32000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 13,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 3,
+                exp_ron: 0,
+                exp_oya: 16000,
+                exp_ko: 8000,
+            },
+            ScoreReferenceCase {
+                han: 26,
+                fu: 0,
+                is_oya: false,
+                is_tsumo: false,
+                honba: 0,
+                num_players: 3,
+                exp_ron: 64000,
+                exp_oya: 0,
+                exp_ko: 0,
+            },
+            ScoreReferenceCase {
+                han: 26,
+                fu: 0,
+                is_oya: true,
+                is_tsumo: true,
+                honba: 0,
+                num_players: 3,
+                exp_ron: 0,
+                exp_oya: 0,
+                exp_ko: 32000,
+            },
+        ];
+
+        for (idx, case) in cases.iter().enumerate() {
+            let result = crate::score::calculate_score(
+                case.han,
+                case.fu,
+                case.is_oya,
+                case.is_tsumo,
+                case.honba,
+                case.num_players,
+            );
+            assert_eq!(
+                result.pay_ron, case.exp_ron,
+                "score case {idx}: ron mismatch"
+            );
+            assert_eq!(
+                result.pay_tsumo_oya, case.exp_oya,
+                "score case {idx}: tsumo_oya mismatch"
+            );
+            assert_eq!(
+                result.pay_tsumo_ko, case.exp_ko,
+                "score case {idx}: tsumo_ko mismatch"
+            );
+        }
+    }
 }

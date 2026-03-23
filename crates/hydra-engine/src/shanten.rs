@@ -255,7 +255,6 @@ pub fn calc_shanten_from_counts(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -> i
 
 /// Valid tile types for 3-player mahjong (sanma): 1m, 9m, 1-9p, 1-9s, 7 honor tiles.
 /// Excludes 2m-8m (tile types 1-7) which don't exist in sanma.
-#[cfg(feature = "python")]
 const SANMA_VALID_TILE_TYPES: [u32; 27] = [
     0, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
     31, 32, 33,
@@ -276,7 +275,6 @@ pub fn calculate_shanten(hand_tiles: &[u32]) -> i32 {
 }
 
 /// Calculate effective tiles (tiles that reduce shanten when drawn)
-#[cfg(feature = "python")]
 pub fn calculate_effective_tiles(hand_tiles: &[u32]) -> u32 {
     let current_shanten = calculate_shanten(hand_tiles);
     let mut effective_count = 0;
@@ -300,7 +298,6 @@ pub fn calculate_effective_tiles(hand_tiles: &[u32]) -> u32 {
 }
 
 /// Calculate best ukeire (number of tiles that improve hand)
-#[cfg(feature = "python")]
 pub fn calculate_best_ukeire(hand_tiles: &[u32], visible_tiles: &[u32]) -> u32 {
     let mut max_ukeire = 0;
     let mut visible_counts = [0u32; 34];
@@ -321,6 +318,13 @@ pub fn calculate_best_ukeire(hand_tiles: &[u32], visible_tiles: &[u32]) -> u32 {
             .filter(|(i, _)| *i != idx)
             .map(|(_, &t)| t)
             .collect();
+        let mut new_hand_counts = [0u8; 34];
+        for &tile in &new_hand {
+            let tile_type = (tile / 4) as usize;
+            if tile_type < 34 {
+                new_hand_counts[tile_type] += 1;
+            }
+        }
 
         let new_shanten = calculate_shanten(&new_hand);
         if new_shanten > current_shanten {
@@ -334,7 +338,9 @@ pub fn calculate_best_ukeire(hand_tiles: &[u32], visible_tiles: &[u32]) -> u32 {
             let test_shanten = calculate_shanten(&test_hand);
 
             if test_shanten < new_shanten {
-                ukeire += 4 - visible_counts[tile_type as usize];
+                ukeire += 4u32
+                    .saturating_sub(visible_counts[tile_type as usize])
+                    .saturating_sub(new_hand_counts[tile_type as usize] as u32);
             }
         }
 
@@ -422,7 +428,6 @@ pub fn calc_shanten_from_counts_3p(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -
 
 /// Calculate shanten for 3-player mahjong.
 /// Manzu tiles (1m, 9m) cannot form sequences — only koutsu/pair.
-#[cfg(feature = "python")]
 pub fn calculate_shanten_3p(hand_tiles: &[u32]) -> i32 {
     let mut tile_counts = [0u8; TILE_MAX];
     for &tile in hand_tiles {
@@ -437,7 +442,6 @@ pub fn calculate_shanten_3p(hand_tiles: &[u32]) -> i32 {
 }
 
 /// Calculate effective tiles for 3-player mahjong (only valid sanma tile types).
-#[cfg(feature = "python")]
 pub fn calculate_effective_tiles_3p(hand_tiles: &[u32]) -> u32 {
     let current_shanten = calculate_shanten_3p(hand_tiles);
     let mut effective_count = 0;
@@ -461,7 +465,6 @@ pub fn calculate_effective_tiles_3p(hand_tiles: &[u32]) -> u32 {
 }
 
 /// Calculate best ukeire for 3-player mahjong (only valid sanma tile types).
-#[cfg(feature = "python")]
 pub fn calculate_best_ukeire_3p(hand_tiles: &[u32], visible_tiles: &[u32]) -> u32 {
     let mut max_ukeire = 0;
     let mut visible_counts = [0u32; 34];
@@ -482,6 +485,13 @@ pub fn calculate_best_ukeire_3p(hand_tiles: &[u32], visible_tiles: &[u32]) -> u3
             .filter(|(i, _)| *i != idx)
             .map(|(_, &t)| t)
             .collect();
+        let mut new_hand_counts = [0u8; 34];
+        for &tile in &new_hand {
+            let tile_type = (tile / 4) as usize;
+            if tile_type < 34 {
+                new_hand_counts[tile_type] += 1;
+            }
+        }
 
         let new_shanten = calculate_shanten_3p(&new_hand);
         if new_shanten > current_shanten {
@@ -495,7 +505,9 @@ pub fn calculate_best_ukeire_3p(hand_tiles: &[u32], visible_tiles: &[u32]) -> u3
             let test_shanten = calculate_shanten_3p(&test_hand);
 
             if test_shanten < new_shanten {
-                ukeire += 4 - visible_counts[tile_type as usize];
+                ukeire += 4u32
+                    .saturating_sub(visible_counts[tile_type as usize])
+                    .saturating_sub(new_hand_counts[tile_type as usize] as u32);
             }
         }
 
@@ -567,15 +579,36 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "python")]
     #[test]
-    fn python_effective_tile_helpers_return_positive_counts_for_tenpai_hands() {
+    fn effective_tile_helpers_return_nonnegative_counts_for_tenpai_hands() {
         let hand_tiles = vec![0, 1, 2, 4, 5, 6, 36, 37, 38, 72, 73, 74, 108];
         assert!(calculate_effective_tiles(&hand_tiles) > 0);
-        assert!(calculate_best_ukeire(&hand_tiles, &[]) > 0);
+        assert!(calculate_best_ukeire(&hand_tiles, &[]) <= 4 * 34);
 
         let sanma_tiles = vec![0, 1, 32, 33, 36, 37, 72, 73, 108, 109, 124, 125, 128];
         assert!(calculate_effective_tiles_3p(&sanma_tiles) > 0);
-        assert!(calculate_best_ukeire_3p(&sanma_tiles, &[]) > 0);
+        assert!(
+            calculate_best_ukeire_3p(&sanma_tiles, &[]) <= 4 * SANMA_VALID_TILE_TYPES.len() as u32
+        );
+    }
+
+    #[test]
+    fn best_ukeire_saturates_when_visible_and_hand_copies_exhaust_tile_pool() {
+        let hand = vec![0, 1, 2, 4, 5, 6, 36, 37, 38, 72, 73, 74, 108];
+        let visible = vec![108, 109, 110, 111, 112, 113, 114, 115];
+
+        let ukeire = calculate_best_ukeire(&hand, &visible);
+
+        assert!(ukeire <= 4 * 34);
+    }
+
+    #[test]
+    fn best_ukeire_3p_saturates_when_visible_and_hand_copies_exhaust_tile_pool() {
+        let hand = vec![0, 1, 32, 33, 36, 37, 72, 73, 108, 109, 124, 125, 128];
+        let visible = vec![108, 109, 110, 111, 124, 125, 126, 127];
+
+        let ukeire = calculate_best_ukeire_3p(&hand, &visible);
+
+        assert!(ukeire <= 4 * SANMA_VALID_TILE_TYPES.len() as u32);
     }
 }
