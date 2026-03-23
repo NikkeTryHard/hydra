@@ -468,6 +468,40 @@ pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
     load_game_from_events(events)
 }
 
+pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Result<Option<String>> {
+    let events = read_mjai_events(reader)
+        .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+
+    let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+    let mut safety = array::from_fn(|_| SafetyInfo::default());
+    let mut encoder = ObservationEncoder::new();
+    let mut legal_buf = Vec::with_capacity(64);
+
+    for (idx, event) in events.iter().enumerate() {
+        match prepare_replay_decision(event, &mut state, &safety, &mut encoder) {
+            Ok(_) => {}
+            Err(err) => {
+                let actor = mjai_event_actor(event)
+                    .ok_or_else(|| invalid_data("failing sampled event missing actor"))?
+                    as u8;
+                let env_action = mjai_event_to_action(event)
+                    .map_err(|conv| invalid_data(format!("replay action conversion failed: {conv}")))?
+                    .ok_or_else(|| invalid_data("failing sampled event missing env action"))?;
+                state.get_legal_actions_into(actor, &mut legal_buf);
+                return Ok(Some(format!(
+                    "EVENT_INDEX: {idx}\nEVENT: {:?}\nENV_ACTION: {:?}\nSTATE_PHASE: {:?}\nSTATE_DRAWN: {:?}\nLEGAL_ACTIONS: {:?}\nERROR: {}",
+                    event, env_action, state.phase, state.drawn_tile, legal_buf, err
+                )));
+            }
+        }
+
+        update_safety(&mut safety, event)?;
+        state.apply_mjai_event(event.clone());
+    }
+
+    Ok(None)
+}
+
 pub fn load_game_from_reader_with_sidecar<R: BufRead>(
     source_identity: &str,
     exit_provenance: SidecarProvenance,
