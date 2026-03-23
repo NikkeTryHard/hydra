@@ -1,0 +1,392 @@
+# syntax=docker/dockerfile:1.7
+
+# Kaggle compatibility builder/export image.
+#
+# Goal:
+# - build Hydra's `train` binary in an older Ubuntu 22.04 / glibc 2.35 userspace
+# - stay compatible with Hydra's current tch / torch-sys expectations while targeting an older ABI floor
+# - make it easy to export a Kaggle artifact bundle instead of relying on a host-built binary
+
+FROM ubuntu:22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:${PATH} \
+    LIBTORCH_USE_PYTORCH=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    clang \
+    curl \
+    git \
+    mold \
+    pkg-config \
+    protobuf-compiler \
+    python3 \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+ENV PATH=/root/.local/bin:${PATH}
+
+RUN python3 -m venv /opt/pytorch-venv && \
+    uv pip install --python /opt/pytorch-venv/bin/python --index-url https://download.pytorch.org/whl/cu128 torch==2.9.0
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY scripts/ scripts/
+
+RUN chmod +x scripts/rustc-wrapper.sh
+
+ENV PATH=/opt/pytorch-venv/bin:/root/.local/bin:${PATH}
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    CARGO_BUILD_RUSTC_WRAPPER=/app/scripts/rustc-wrapper.sh \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C link-arg=-fuse-ld=/usr/bin/mold -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc' \
+    cargo build --release -p hydra-train && \
+    cp /app/target/release/train /tmp/train && \
+    cp /app/target/release/mjai_audit /tmp/mjai_audit && \
+    cp /app/target/release/recompress /tmp/recompress
+
+RUN mkdir -p /kaggle-artifact/bin /kaggle-artifact/lib && \
+    cp /tmp/train /kaggle-artifact/bin/train && \
+    cp /tmp/mjai_audit /kaggle-artifact/bin/mjai_audit && \
+    cp /tmp/recompress /kaggle-artifact/bin/recompress && \
+    /opt/pytorch-venv/bin/python - <<'PY'
+import hashlib
+import os
+import pathlib
+import shutil
+import subprocess
+import torch
+
+artifact_root = pathlib.Path('/kaggle-artifact')
+target = artifact_root / 'lib'
+train_path = artifact_root / 'bin' / 'train'
+torch_root = pathlib.Path(torch.__file__).resolve().parent
+site_packages = torch_root.parent
+
+required_sentinels = [
+    'libtorch_cpu.so',
+    'libtorch_cuda.so',
+    'libc10.so',
+    'libc10_cuda.so',
+    'libcusparseLt.so.0',
+]
+
+forbidden_prefixes = [
+    'libc.so',
+    'ld-linux',
+    'libstdc++.so',
+    'libgcc_s.so',
+    'libm.so',
+    'libpthread.so',
+    'librt.so',
+    'libdl.so',
+    'libutil.so',
+]
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def discover_runtime_search_dirs() -> list[pathlib.Path]:
+    candidates = [torch_root / 'lib']
+    nvidia_root = site_packages / 'nvidia'
+    if nvidia_root.exists():
+        candidates.extend(sorted(nvidia_root.glob('*/lib')))
+    ordered: list[pathlib.Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        resolved = candidate.resolve()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(resolved)
+    return ordered
+
+def ldd_entries(path: pathlib.Path, env: dict[str, str]) -> tuple[str, list[dict[str, str]], list[str]]:
+    result = subprocess.run(
+        ['ldd', str(path)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            f'ldd failed for {path} with exit code {result.returncode}\n'
+            f'STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}'
+        )
+    entries: list[dict[str, str]] = []
+    unresolved: list[str] = []
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if '=>' not in line:
+            continue
+        lib_name = line.split('=>', 1)[0].strip()
+        rhs = line.split('=>', 1)[1].strip()
+        if rhs == 'not found':
+            unresolved.append(lib_name)
+            continue
+        resolved_path = rhs.split('(', 1)[0].strip()
+        entries.append({'name': lib_name, 'resolved_path': resolved_path})
+    return result.stdout, entries, unresolved
+
+runtime_search_dirs = discover_runtime_search_dirs()
+env = os.environ.copy()
+env['LD_LIBRARY_PATH'] = ':'.join(str(path) for path in runtime_search_dirs)
+
+ldd_stdout, entries, unresolved = ldd_entries(train_path, env)
+if unresolved:
+    raise SystemExit('Could not resolve train runtime closure from builder torch install: ' + ', '.join(unresolved))
+
+copied_names: set[str] = set()
+for entry in entries:
+    lib_name = entry['name']
+    if any(lib_name.startswith(prefix) for prefix in forbidden_prefixes):
+        continue
+    source_path = pathlib.Path(entry['resolved_path'])
+    if not source_path.exists() or not source_path.is_file():
+        raise SystemExit(f'Runtime dependency did not resolve to a file: {lib_name} -> {source_path}')
+    if lib_name in copied_names:
+        continue
+    shutil.copy2(source_path, target / lib_name)
+    copied_names.add(lib_name)
+
+missing = [name for name in required_sentinels if not (target / name).exists()]
+if missing:
+    raise SystemExit(f'Missing required runtime libs: {", ".join(missing)}')
+
+manifest_entries = []
+for path in sorted(target.iterdir(), key=lambda candidate: candidate.name):
+    if not path.is_file():
+        continue
+    manifest_entries.append((path.name, path.stat().st_size, sha256_file(path)))
+
+manifest_path = artifact_root / 'lib-manifest.tsv'
+with manifest_path.open('w', encoding='utf-8') as handle:
+    handle.write('name\tsize_bytes\tsha256\n')
+    for name, size, digest in manifest_entries:
+        handle.write(f'{name}\t{size}\t{digest}\n')
+
+summary_path = artifact_root / 'lib-summary.txt'
+total_bytes = sum(size for _, size, _ in manifest_entries)
+largest_entries = sorted(manifest_entries, key=lambda entry: entry[1], reverse=True)[:10]
+with summary_path.open('w', encoding='utf-8') as handle:
+    handle.write(f'lib_count={len(manifest_entries)}\n')
+    handle.write(f'total_bytes={total_bytes}\n')
+    handle.write('search_dirs=\n')
+    for directory in runtime_search_dirs:
+        handle.write(f'  {directory}\n')
+    handle.write('largest_files=\n')
+    for name, size, digest in largest_entries:
+        handle.write(f'  {name}\t{size}\t{digest}\n')
+PY
+
+RUN python3 - <<'PY'
+import os
+import pathlib
+import subprocess
+
+lib_dir = pathlib.Path('/kaggle-artifact/lib')
+train_path = pathlib.Path('/kaggle-artifact/bin/train')
+required_sentinels = [
+    'libtorch_cpu.so',
+    'libtorch_cuda.so',
+    'libc10.so',
+    'libc10_cuda.so',
+    'libcusparseLt.so.0',
+]
+
+env = os.environ.copy()
+env['LD_LIBRARY_PATH'] = str(lib_dir)
+ldd = subprocess.run(
+    ['ldd', str(train_path)],
+    text=True,
+    capture_output=True,
+    check=False,
+    env=env,
+)
+pathlib.Path('/kaggle-artifact/ldd-train.txt').write_text(ldd.stdout, encoding='utf-8')
+if ldd.returncode != 0:
+    raise SystemExit(f'ldd failed for exported train binary with exit code {ldd.returncode}')
+if 'not found' in ldd.stdout:
+    raise SystemExit('ldd reported unresolved train dependencies')
+
+resolved_sentinels = set()
+artifact_resolved = []
+system_resolved = []
+for line in ldd.stdout.splitlines():
+    if '=>' not in line:
+        continue
+    lib_name = line.split('=>', 1)[0].strip()
+    rhs = line.split('=>', 1)[1].strip()
+    if rhs == 'not found':
+        continue
+    resolved_path = rhs.split('(', 1)[0].strip()
+    if lib_name in required_sentinels and resolved_path.startswith(f'{lib_dir}/'):
+        resolved_sentinels.add(lib_name)
+    if resolved_path.startswith(f'{lib_dir}/'):
+        artifact_resolved.append(lib_name)
+    else:
+        system_resolved.append((lib_name, resolved_path))
+
+missing_sentinels = [name for name in required_sentinels if name not in resolved_sentinels]
+if missing_sentinels:
+    raise SystemExit(
+        'Required train runtime libs did not resolve from artifact lib dir: '
+        + ', '.join(missing_sentinels)
+    )
+
+exported_libs = sorted(path.name for path in lib_dir.iterdir() if path.is_file())
+resolved_libs = sorted(set(artifact_resolved))
+if exported_libs != resolved_libs:
+    missing = sorted(set(resolved_libs) - set(exported_libs))
+    extras = sorted(set(exported_libs) - set(resolved_libs))
+    raise SystemExit(
+        'Artifact lib dir does not match the train ldd closure. '
+        f'missing_from_lib_dir={missing} extras_in_lib_dir={extras}'
+    )
+
+summary_lines = [
+    f'artifact_resolved_libs={len(resolved_libs)}',
+    'artifact_resolved_names=',
+]
+summary_lines.extend(f'  {name}' for name in resolved_libs)
+summary_lines.append('system_runtime_deps=')
+summary_lines.extend(f'  {name}\t{resolved_path}' for name, resolved_path in system_resolved)
+pathlib.Path('/kaggle-artifact/ldd-train-summary.txt').write_text('\n'.join(summary_lines) + '\n', encoding='utf-8')
+PY
+
+RUN bash -lc "strings /kaggle-artifact/bin/train | grep -E 'GLIBC_|GLIBCXX_|CXXABI_' | tail -n 50 || true" > /kaggle-artifact/abi-symbols.txt
+
+RUN /opt/pytorch-venv/bin/python - <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+import torch
+
+artifact_root = pathlib.Path('/kaggle-artifact')
+lib_dir = artifact_root / 'lib'
+binary_path = artifact_root / 'bin' / 'train'
+runtime_manifest_path = artifact_root / 'runtime-manifest.json'
+runtime_search_dirs = []
+torch_root = pathlib.Path(torch.__file__).resolve().parent
+site_packages = torch_root.parent
+for candidate in [torch_root / 'lib', *sorted((site_packages / 'nvidia').glob('*/lib'))]:
+    if candidate.exists():
+        runtime_search_dirs.append(str(candidate.resolve()))
+
+required_sentinels = [
+    'libtorch_cpu.so',
+    'libtorch_cuda.so',
+    'libc10.so',
+    'libc10_cuda.so',
+    'libcusparseLt.so.0',
+]
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+lib_entries = []
+for path in sorted(lib_dir.iterdir(), key=lambda candidate: candidate.name):
+    if not path.is_file():
+        continue
+    lib_entries.append(
+        {
+            'name': path.name,
+            'path': f'lib/{path.name}',
+            'size_bytes': path.stat().st_size,
+            'sha256': sha256_file(path),
+        }
+    )
+
+metadata_entries = []
+for relative_path in [
+    'ldd-train.txt',
+    'ldd-train-summary.txt',
+    'abi-symbols.txt',
+    'lib-summary.txt',
+    'lib-manifest.tsv',
+]:
+    path = artifact_root / relative_path
+    if not path.exists():
+        raise SystemExit(f'Expected metadata file missing before runtime manifest generation: {path}')
+    metadata_entries.append(
+        {
+            'path': relative_path,
+            'size_bytes': path.stat().st_size,
+            'sha256': sha256_file(path),
+        }
+    )
+
+system_runtime_deps = []
+for raw_line in (artifact_root / 'ldd-train.txt').read_text(encoding='utf-8').splitlines():
+    if '=>' not in raw_line:
+        continue
+    lib_name = raw_line.split('=>', 1)[0].strip()
+    rhs = raw_line.split('=>', 1)[1].strip()
+    if rhs == 'not found':
+        raise SystemExit('runtime manifest generation encountered unresolved ldd dependency')
+    resolved_path = rhs.split('(', 1)[0].strip()
+    if not resolved_path.startswith(f'{lib_dir}/'):
+        system_runtime_deps.append({'name': lib_name, 'resolved_path': resolved_path})
+
+runtime_manifest = {
+    'schema_version': 1,
+    'artifact_kind': 'hydra-kaggle-compat-runtime',
+    'producer': {
+        'dockerfile': 'docker/train/Dockerfile.kaggle-compat',
+        'base_image': 'ubuntu:22.04',
+        'python_executable': sys.executable,
+        'torch_version': getattr(torch, '__version__', 'unknown'),
+        'runtime_search_dirs': runtime_search_dirs,
+    },
+    'binary': {
+        'path': 'bin/train',
+        'size_bytes': binary_path.stat().st_size,
+        'sha256': sha256_file(binary_path),
+        'help_arg': '--help',
+    },
+    'lib_dir': 'lib',
+    'required_runtime_sentinels': required_sentinels,
+    'required_runtime_libraries': lib_entries,
+    'metadata_files': metadata_entries,
+    'validation': {
+        'ldd_output_path': 'ldd-train.txt',
+        'ldd_summary_path': 'ldd-train-summary.txt',
+        'artifact_resolved_lib_count': len(lib_entries),
+        'system_runtime_dependencies': system_runtime_deps,
+    },
+}
+
+runtime_manifest_path.write_text(json.dumps(runtime_manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+PY
+
+WORKDIR /kaggle-artifact
+
+FROM scratch AS artifact
+COPY --from=builder /kaggle-artifact/ /
