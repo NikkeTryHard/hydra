@@ -407,8 +407,7 @@ impl GameStateLegalActions for GameState {
                                 &pre[..pre_len],
                                 self.players[pid_us].melds_slice(),
                             );
-                            let mut waits_pre = calc_pre.get_waits();
-                            waits_pre.sort();
+                            let waits_pre = calc_pre.get_waits_mask();
 
                             // Build hand_post (hand without tiles of this type)
                             let mut post = [0u8; 14];
@@ -419,23 +418,25 @@ impl GameStateLegalActions for GameState {
                                     post_len += 1;
                                 }
                             }
-                            let mut melds_post = self.players[pid_us].melds_slice().to_vec();
+                            let mut melds_post = [Meld::default(); 4];
+                            let melds_pre = self.players[pid_us].melds_slice();
+                            let meld_count = melds_pre.len();
+                            melds_post[..meld_count].copy_from_slice(melds_pre);
                             let lowest = t34 * 4;
-                            melds_post.push(Meld::new(
+                            melds_post[meld_count] = Meld::new(
                                 MeldType::Ankan,
                                 &[lowest, lowest + 1, lowest + 2, lowest + 3],
                                 false,
                                 -1,
                                 None,
-                            ));
+                            );
                             let calc_post = crate::hand_evaluator::HandEvaluator::new(
                                 &post[..post_len],
-                                &melds_post,
+                                &melds_post[..meld_count + 1],
                             );
-                            let mut waits_post = calc_post.get_waits();
-                            waits_post.sort();
+                            let waits_post = calc_post.get_waits_mask();
 
-                            if waits_pre == waits_post && !waits_pre.is_empty() {
+                            if waits_pre == waits_post && waits_pre != 0 {
                                 let consume = [lowest, lowest + 1, lowest + 2, lowest + 3];
                                 buf.push(Action::new(
                                     ActionType::Ankan,
