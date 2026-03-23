@@ -309,7 +309,7 @@ pub fn build_delta_q_from_afbs_tree(
 /// returns `(None, None)`. Otherwise, samples without targets get zero
 /// target and zero mask rows, ensuring per-sample masking in the loss.
 pub fn collate_exit_targets<B: Backend>(
-    samples: &[Option<(Vec<f32>, Vec<f32>)>],
+    samples: &[Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>],
     device: &B::Device,
 ) -> (Option<Tensor<B, 2>>, Option<Tensor<B, 2>>) {
     if samples.is_empty() || samples.iter().all(|s| s.is_none()) {
@@ -333,7 +333,7 @@ pub fn collate_exit_targets<B: Backend>(
 }
 
 pub fn collate_delta_q_targets<B: Backend>(
-    samples: &[Option<(Vec<f32>, Vec<f32>)>],
+    samples: &[Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>],
     device: &B::Device,
 ) -> (Option<Tensor<B, 2>>, Option<Tensor<B, 2>>) {
     if samples.is_empty() || samples.iter().all(|s| s.is_none()) {
@@ -653,8 +653,8 @@ mod tests {
     #[test]
     fn collate_delta_q_targets_mixed_batch() {
         let device = Default::default();
-        let mut target = vec![0.0f32; HYDRA_ACTION_SPACE];
-        let mut mask = vec![0.0f32; HYDRA_ACTION_SPACE];
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
         target[1] = 0.4;
         target[2] = -0.3;
         mask[1] = 1.0;
@@ -679,7 +679,8 @@ mod tests {
         use burn::backend::NdArray;
         type B = NdArray<f32>;
         let device = Default::default();
-        let samples: Vec<Option<(Vec<f32>, Vec<f32>)>> = vec![None, None, None];
+        let samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>> =
+            vec![None, None, None];
         let (target, mask) = collate_exit_targets::<B>(&samples, &device);
         assert!(target.is_none());
         assert!(mask.is_none());
@@ -690,7 +691,7 @@ mod tests {
         use burn::backend::NdArray;
         type B = NdArray<f32>;
         let device = Default::default();
-        let samples: Vec<Option<(Vec<f32>, Vec<f32>)>> = vec![];
+        let samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>> = vec![];
         let (target, mask) = collate_exit_targets::<B>(&samples, &device);
         assert!(target.is_none());
         assert!(mask.is_none());
@@ -702,14 +703,14 @@ mod tests {
         type B = NdArray<f32>;
         let device = Default::default();
 
-        let mut t1 = vec![0.0f32; HYDRA_ACTION_SPACE];
+        let mut t1 = [0.0f32; HYDRA_ACTION_SPACE];
         t1[1] = 0.6;
         t1[2] = 0.4;
-        let mut m1 = vec![0.0f32; HYDRA_ACTION_SPACE];
+        let mut m1 = [0.0f32; HYDRA_ACTION_SPACE];
         m1[1] = 1.0;
         m1[2] = 1.0;
 
-        let samples = vec![Some((t1.clone(), m1.clone())), None, Some((t1, m1))];
+        let samples = vec![Some((t1, m1)), None, Some((t1, m1))];
         let (target, mask) = collate_exit_targets::<B>(&samples, &device);
         let target = target.expect("should be Some when any sample has exit target");
         let mask = mask.expect("should be Some when any sample has exit mask");
