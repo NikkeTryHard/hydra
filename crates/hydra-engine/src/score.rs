@@ -1,7 +1,3 @@
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
-#[cfg_attr(feature = "python", pyclass(get_all))]
 #[derive(Debug, Clone)]
 /// Score breakdown for a winning hand.
 pub struct Score {

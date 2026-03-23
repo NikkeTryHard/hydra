@@ -21,7 +21,5 @@ pub mod rule;
 pub mod shanten;
 pub mod state;
 pub mod state_3p;
-#[cfg(feature = "python")]
-mod yaku_checker;
 
 pub use hand_evaluator::check_riichi_candidates;

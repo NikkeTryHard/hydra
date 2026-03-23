@@ -1,7 +1,3 @@
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-#[cfg(feature = "python")]
-use pyo3::types::{PyDict, PyDictMethods};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -24,10 +20,6 @@ const TILE34_TO_COMPACT: [u8; 34] = [
 ];
 
 /// The current phase of the game turn.
-#[cfg_attr(
-    feature = "python",
-    pyclass(module = "riichienv._riichienv", eq, eq_int)
-)]
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Phase {
@@ -37,19 +29,7 @@ pub enum Phase {
     WaitResponse = 1,
 }
 
-#[cfg(feature = "python")]
-#[pymethods]
-impl Phase {
-    fn __hash__(&self) -> i32 {
-        *self as i32
-    }
-}
-
 /// The type of action a player can take during a mahjong game.
-#[cfg_attr(
-    feature = "python",
-    pyclass(module = "riichienv._riichienv", eq, eq_int)
-)]
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ActionType {
@@ -79,16 +59,7 @@ pub enum ActionType {
     Kita = 11,
 }
 
-#[cfg(feature = "python")]
-#[pymethods]
-impl ActionType {
-    fn __hash__(&self) -> i32 {
-        *self as i32
-    }
-}
-
 /// A player action in a mahjong game (discard, meld, win declaration, etc.).
-#[cfg_attr(feature = "python", pyclass(module = "riichienv._riichienv"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Action {
     /// The type of action being performed.
@@ -518,93 +489,5 @@ mod tests {
 
         let kakan = Action::new(ActionType::Kakan, None, &[108, 109, 110, 111], None);
         assert_eq!(encoder.encode(&kakan).unwrap(), 49);
-    }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl Action {
-    #[new]
-    #[pyo3(signature = (r#type=ActionType::Pass, tile=None, consume_tiles=vec![], actor=None))]
-    pub fn py_new(
-        r#type: ActionType,
-        tile: Option<u8>,
-        consume_tiles: Vec<u8>,
-        actor: Option<u8>,
-    ) -> Self {
-        Self::new(r#type, tile, &consume_tiles, actor)
-    }
-
-    #[pyo3(name = "to_dict")]
-    pub fn to_dict_py<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let dict = PyDict::new(py);
-        dict.set_item("type", self.action_type as i32)?;
-        dict.set_item("tile", self.tile)?;
-
-        let cons: Vec<u32> = self.consume_slice().iter().map(|&x| x as u32).collect();
-        dict.set_item("consume_tiles", cons)?;
-        dict.set_item("actor", self.actor)?;
-        Ok(dict.unbind().into())
-    }
-
-    #[pyo3(name = "to_mjai")]
-    pub fn to_mjai_py(&self) -> PyResult<String> {
-        Ok(self.to_mjai())
-    }
-
-    fn __repr__(&self) -> String {
-        self.repr()
-    }
-
-    fn __str__(&self) -> String {
-        self.repr()
-    }
-
-    #[getter]
-    fn get_action_type(&self) -> ActionType {
-        self.action_type
-    }
-
-    #[setter]
-    fn set_action_type(&mut self, action_type: ActionType) {
-        self.action_type = action_type;
-    }
-
-    #[getter]
-    fn get_tile(&self) -> Option<u8> {
-        self.tile
-    }
-
-    #[setter]
-    fn set_tile(&mut self, tile: Option<u8>) {
-        self.tile = tile;
-    }
-
-    #[getter]
-    fn get_consume_tiles(&self) -> Vec<u32> {
-        self.consume_slice().iter().map(|&x| x as u32).collect()
-    }
-
-    #[setter]
-    fn set_consume_tiles(&mut self, value: Vec<u8>) {
-        let count = value.len().min(4);
-        self.consume_tiles = [0u8; 4];
-        self.consume_tiles[..count].copy_from_slice(&value[..count]);
-        self.consume_count = count as u8;
-    }
-
-    #[getter]
-    fn get_actor(&self) -> Option<u8> {
-        self.actor
-    }
-
-    #[setter]
-    fn set_actor(&mut self, actor: Option<u8>) {
-        self.actor = actor;
-    }
-
-    #[pyo3(name = "encode")]
-    pub fn encode_py(&self) -> PyResult<i32> {
-        self.encode().map_err(Into::into)
     }
 }

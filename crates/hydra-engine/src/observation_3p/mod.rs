@@ -1,10 +1,3 @@
-#[cfg(feature = "python")]
-mod encode;
-#[cfg(feature = "python")]
-pub(crate) mod helpers;
-#[cfg(feature = "python")]
-mod python;
-
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 
@@ -12,10 +5,6 @@ use crate::action::{Action, ActionEncoder};
 use crate::errors::{RiichiError, RiichiResult};
 use crate::types::Meld;
 
-#[cfg_attr(
-    feature = "python",
-    pyo3::pyclass(module = "riichienv._riichienv", get_all)
-)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation3P {
     pub player_id: u8,

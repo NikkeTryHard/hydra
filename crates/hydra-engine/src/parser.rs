@@ -1,8 +1,6 @@
 #![allow(clippy::useless_conversion)]
 use crate::errors::{RiichiError, RiichiResult};
 use crate::types::{Meld, MeldType};
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
 use std::iter::Peekable;
 use std::str::Chars;
 
@@ -106,13 +104,6 @@ pub fn parse_hand(text: &str) -> RiichiResult<(Vec<u32>, Vec<Meld>)> {
     Ok((tiles.iter().map(|&x| x as u32).collect(), melds))
 }
 
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(name = "parse_hand")]
-pub fn parse_hand_py(text: &str) -> PyResult<(Vec<u32>, Vec<Meld>)> {
-    parse_hand(text).map_err(Into::into)
-}
-
 /// Parse a single tile from an MPSZ string and return its 136-format ID.
 pub fn parse_tile(text: &str) -> RiichiResult<u8> {
     let (tiles, melds) = parse_hand_internal(text)?;
@@ -138,13 +129,6 @@ pub fn parse_tile(text: &str) -> RiichiResult<u8> {
         });
     }
     Ok(tiles[0])
-}
-
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(name = "parse_tile")]
-pub fn parse_tile_py(text: &str) -> PyResult<u8> {
-    parse_tile(text).map_err(Into::into)
 }
 
 fn is_suit(c: char) -> bool {
