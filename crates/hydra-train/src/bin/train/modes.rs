@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
-use hydra_train::eval::{PairedArenaEvalConfig, run_paired_delta_q_arena_confirmation};
+use hydra_train::eval::{run_paired_delta_q_arena_confirmation, PairedArenaEvalConfig};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 use hydra_train::training::delta_q_promotion::{
@@ -11,12 +11,12 @@ use hydra_train::training::delta_q_promotion::{
 };
 
 use super::artifacts::{
-    BcArtifactPaths, PersistedDeltaQPromotionArtifact, write_delta_q_promotion_artifact,
+    write_delta_q_promotion_artifact, BcArtifactPaths, PersistedDeltaQPromotionArtifact,
 };
-use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
-use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
-use super::config::{TrainConfig, configure_threads, device_label, validate_config};
-use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
+use super::bootstrap::{initialize_rl_training_bootstrap, RlTrainingBootstrap, RlTrainingRuntime};
+use super::bootstrap::{initialize_training_bootstrap, TrainingBootstrap, TrainingRuntime};
+use super::config::{configure_threads, device_label, validate_config, TrainConfig};
+use super::epoch_runner::{run_epoch, EpochRunnerContext, EpochRuntimeMut};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use super::presentation::{
     explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
@@ -27,8 +27,9 @@ use super::probe_request::ProbeRequest;
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
+use super::validation::materialize_validation_samples;
 use super::validation::{
-    ValidationContext, ValidationRuntime, run_validation_with_policy_baseline,
+    run_validation_with_policy_baseline, ValidationContext, ValidationRuntime,
 };
 
 pub(super) fn handle_preflight_mode(
@@ -78,6 +79,23 @@ pub(super) fn handle_preflight_mode(
         "{}",
         format_bc_preflight_selection_message(preflight.runtime, preflight.explicit)
     );
+    if let Some(benchmark) = preflight.benchmark.as_ref() {
+        println!(
+            "{}",
+            format_preflight_selection_line(format!(
+                "benchmark winner mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?})",
+                benchmark.metadata.mode,
+                benchmark.score.wall_clock_samples_per_second,
+                benchmark.score.train_only_samples_per_second,
+                benchmark.runtime.train_microbatch_size,
+                benchmark.runtime.validation_microbatch_size,
+                benchmark.runtime.loader.archive_queue_bound,
+                benchmark.runtime.loader.buffer_samples,
+                benchmark.runtime.loader.buffer_games,
+                benchmark.runtime.loader.num_threads,
+            ))
+        );
+    }
     print_probe_table(
         "Preflight train table",
         ProbeKind::Train,
@@ -207,6 +225,8 @@ pub(super) fn handle_training_mode(
         &train_cfg,
     );
     resume.print_banner_with_effective_runtime(Some(current_runtime));
+    let cached_validation_samples =
+        materialize_validation_samples(&config, &loader_config, &manifest)?;
 
     for epoch in resume.start_epoch..config.num_epochs {
         let outcome = run_epoch(
@@ -228,6 +248,7 @@ pub(super) fn handle_training_mode(
                 current_runtime,
                 run_start: &run_start,
                 head_controller: &mut head_controller,
+                cached_validation_samples: cached_validation_samples.as_deref(),
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -321,6 +342,7 @@ pub(super) fn handle_delta_q_promotion_mode(
             config: &config,
             loader_config: &loader_config,
             manifest: &manifest,
+            cached_samples: None,
             device: &train_device,
             loss_fn: &valid_loss_fn,
             exit_cfg: &bc_exit_cfg,
@@ -762,10 +784,10 @@ mod tests {
         .expect("arena confirmation request should exist");
         assert!(request.same_seeds);
         assert_eq!(request.min_games, 10_000);
-        assert!(
-            default_arena_confirmation_request(DeltaQPromotionRecommendation::RejectAtOfflineGate,)
-                .is_none()
-        );
+        assert!(default_arena_confirmation_request(
+            DeltaQPromotionRecommendation::RejectAtOfflineGate,
+        )
+        .is_none());
     }
 
     #[test]
@@ -1354,10 +1376,8 @@ mod tests {
         let probe_message =
             format_probe_only_status_message(dummy_probe_request(ProbeKind::Validation));
         assert!(probe_message.contains("Probe-only:"));
-        assert!(
-            probe_message
-                .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8")
-        );
+        assert!(probe_message
+            .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8"));
 
         let rl_message = format_rl_preflight_selection_message(32, 8);
         assert!(rl_message.contains("Preflight:"));
