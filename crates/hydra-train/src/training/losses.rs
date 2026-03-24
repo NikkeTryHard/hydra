@@ -1238,6 +1238,30 @@ pub mod tests {
     }
 
     #[test]
+    fn test_zero_weight_advanced_heads_keep_baseline_losses_unchanged() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
+        let outputs = model.forward(x.clone());
+        let optimized_outputs = model.forward_active(x, &HydraLossConfig::new());
+        let targets = make_dummy_targets::<B>(&device, 2);
+        let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new());
+        let baseline = loss_fn.total_loss(&outputs, &targets);
+        let optimized = loss_fn.total_loss(&optimized_outputs, &targets);
+
+        let scalar = |t: Tensor<B, 1>| t.into_scalar().elem::<f32>();
+        assert!((scalar(baseline.total) - scalar(optimized.total)).abs() < 1e-6);
+        assert!((scalar(baseline.policy) - scalar(optimized.policy)).abs() < 1e-6);
+        assert!((scalar(baseline.value) - scalar(optimized.value)).abs() < 1e-6);
+        assert!((scalar(baseline.grp) - scalar(optimized.grp)).abs() < 1e-6);
+        assert!((scalar(baseline.tenpai) - scalar(optimized.tenpai)).abs() < 1e-6);
+        assert!((scalar(baseline.danger) - scalar(optimized.danger)).abs() < 1e-6);
+        assert!((scalar(baseline.opp_next) - scalar(optimized.opp_next)).abs() < 1e-6);
+        assert!((scalar(baseline.score_pdf) - scalar(optimized.score_pdf)).abs() < 1e-6);
+        assert!((scalar(baseline.score_cdf) - scalar(optimized.score_cdf)).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_default_weights_match_roadmap() {
         let cfg = HydraLossConfig::new();
         assert!((cfg.w_pi - 1.0).abs() < 1e-6);
@@ -1274,25 +1298,19 @@ pub mod tests {
 
     #[test]
     fn test_validate_rejects_negative_primary_weights() {
-        assert!(
-            HydraLossConfig::new()
-                .with_w_tenpai(-0.1)
-                .validate()
-                .is_err()
-        );
-        assert!(
-            HydraLossConfig::new()
-                .with_w_danger(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_tenpai(-0.1)
+            .validate()
+            .is_err());
+        assert!(HydraLossConfig::new()
+            .with_w_danger(-0.1)
+            .validate()
+            .is_err());
         assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
-        assert!(
-            HydraLossConfig::new()
-                .with_w_score(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_score(-0.1)
+            .validate()
+            .is_err());
     }
 
     #[test]
