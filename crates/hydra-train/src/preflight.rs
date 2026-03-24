@@ -44,8 +44,44 @@ pub fn default_loader_runtime_rounds() -> usize {
     2
 }
 
+pub fn default_real_benchmark_enabled() -> bool {
+    true
+}
+
+pub fn default_real_benchmark_train_candidates() -> usize {
+    4
+}
+
+pub fn default_real_benchmark_validation_candidates() -> usize {
+    4
+}
+
+pub fn default_real_benchmark_loader_candidates() -> usize {
+    3
+}
+
+pub fn default_real_benchmark_max_finalists() -> usize {
+    8
+}
+
+pub fn default_real_benchmark_warmup_steps() -> usize {
+    8
+}
+
+pub fn default_real_benchmark_train_steps() -> usize {
+    64
+}
+
+pub fn default_real_benchmark_tie_margin_ratio() -> f64 {
+    0.02
+}
+
+pub fn default_real_benchmark_extra_finalists() -> usize {
+    2
+}
+
 pub fn default_finalist_margin_ratio() -> f64 {
-    0.015
+    0.05
 }
 
 pub fn default_finalist_max_candidates() -> usize {
@@ -143,6 +179,24 @@ pub struct PreflightConfig {
     pub measure_noise_tolerance_ratio: f64,
     #[serde(default = "default_loader_runtime_rounds")]
     pub loader_runtime_rounds: usize,
+    #[serde(default = "default_real_benchmark_enabled")]
+    pub real_benchmark_enabled: bool,
+    #[serde(default = "default_real_benchmark_train_candidates")]
+    pub real_benchmark_train_candidates: usize,
+    #[serde(default = "default_real_benchmark_validation_candidates")]
+    pub real_benchmark_validation_candidates: usize,
+    #[serde(default = "default_real_benchmark_loader_candidates")]
+    pub real_benchmark_loader_candidates: usize,
+    #[serde(default = "default_real_benchmark_max_finalists")]
+    pub real_benchmark_max_finalists: usize,
+    #[serde(default = "default_real_benchmark_warmup_steps")]
+    pub real_benchmark_warmup_steps: usize,
+    #[serde(default = "default_real_benchmark_train_steps")]
+    pub real_benchmark_train_steps: usize,
+    #[serde(default = "default_real_benchmark_tie_margin_ratio")]
+    pub real_benchmark_tie_margin_ratio: f64,
+    #[serde(default = "default_real_benchmark_extra_finalists")]
+    pub real_benchmark_extra_finalists: usize,
     #[serde(default = "default_finalist_margin_ratio")]
     pub finalist_margin_ratio: f64,
     #[serde(default = "default_finalist_max_candidates")]
@@ -196,6 +250,15 @@ impl Default for PreflightConfig {
             validation_growth_max_steps: default_validation_growth_max_steps(),
             measure_noise_tolerance_ratio: default_measure_noise_tolerance_ratio(),
             loader_runtime_rounds: default_loader_runtime_rounds(),
+            real_benchmark_enabled: default_real_benchmark_enabled(),
+            real_benchmark_train_candidates: default_real_benchmark_train_candidates(),
+            real_benchmark_validation_candidates: default_real_benchmark_validation_candidates(),
+            real_benchmark_loader_candidates: default_real_benchmark_loader_candidates(),
+            real_benchmark_max_finalists: default_real_benchmark_max_finalists(),
+            real_benchmark_warmup_steps: default_real_benchmark_warmup_steps(),
+            real_benchmark_train_steps: default_real_benchmark_train_steps(),
+            real_benchmark_tie_margin_ratio: default_real_benchmark_tie_margin_ratio(),
+            real_benchmark_extra_finalists: default_real_benchmark_extra_finalists(),
             finalist_margin_ratio: default_finalist_margin_ratio(),
             finalist_max_candidates: default_finalist_max_candidates(),
             finalist_extra_measure_steps: default_finalist_extra_measure_steps(),
@@ -295,6 +358,69 @@ pub struct EffectiveRuntimeConfig {
     pub loader: LoaderRuntimeConfig,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct BenchmarkRuntimeConfig {
+    pub train_microbatch_size: usize,
+    pub validation_microbatch_size: usize,
+    pub accum_steps: usize,
+    pub loader: LoaderRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchmarkMode {
+    #[default]
+    NotRecorded,
+    CadenceAwareProjection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct BenchmarkMetadata {
+    #[serde(default)]
+    pub mode: BenchmarkMode,
+    #[serde(default)]
+    pub selection_metric: String,
+    #[serde(default)]
+    pub train_probe_candidates_considered: usize,
+    #[serde(default)]
+    pub validation_probe_candidates_considered: usize,
+    #[serde(default)]
+    pub loader_candidates_considered: usize,
+    #[serde(default)]
+    pub finalists_benchmarked: usize,
+    #[serde(default)]
+    pub warmup_steps: usize,
+    #[serde(default)]
+    pub measured_train_steps: usize,
+    #[serde(default)]
+    pub projected_validation_events: f64,
+    #[serde(default)]
+    pub projected_checkpoint_events: f64,
+    #[serde(default)]
+    pub projected_logging_events: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BenchmarkScore {
+    pub wall_clock_samples_per_second: f64,
+    pub train_only_samples_per_second: f64,
+    pub train_seconds: f64,
+    pub validation_seconds: f64,
+    pub checkpoint_seconds: f64,
+    pub logging_seconds: f64,
+    pub total_elapsed_seconds: f64,
+    pub train_steps: usize,
+    pub validation_samples: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BenchmarkResult {
+    pub runtime: BenchmarkRuntimeConfig,
+    pub score: BenchmarkScore,
+    #[serde(default)]
+    pub metadata: BenchmarkMetadata,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExplicitSettings {
     pub train_microbatch_explicit: bool,
@@ -305,6 +431,8 @@ pub struct ExplicitSettings {
 pub struct PreflightCacheEntry {
     pub cache_key: PreflightCacheKey,
     pub runtime: EffectiveRuntimeConfig,
+    #[serde(default)]
+    pub benchmark: Option<BenchmarkResult>,
 }
 
 pub fn candidate_ladder(config: &PreflightConfig, batch_size: usize) -> Vec<usize> {
@@ -437,5 +565,17 @@ mod tests {
     #[test]
     fn default_cache_name_is_stable() {
         assert_eq!(default_cache_name(), PathBuf::from("preflight_cache.json"));
+    }
+
+    #[test]
+    fn benchmark_metadata_defaults_are_backward_safe() {
+        let metadata = BenchmarkMetadata::default();
+
+        assert_eq!(metadata.mode, BenchmarkMode::NotRecorded);
+        assert!(metadata.selection_metric.is_empty());
+        assert_eq!(metadata.finalists_benchmarked, 0);
+        assert_eq!(metadata.projected_validation_events, 0.0);
+        assert_eq!(metadata.projected_checkpoint_events, 0.0);
+        assert_eq!(metadata.projected_logging_events, 0.0);
     }
 }

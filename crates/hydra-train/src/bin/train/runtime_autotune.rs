@@ -28,6 +28,13 @@ use super::schedule::effective_lr;
 
 type RuntimeTuple = (usize, usize, usize);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RankedLoaderRuntime {
+    pub(super) loader: LoaderRuntimeConfig,
+    pub(super) tuple: RuntimeTuple,
+    pub(super) train_samples_per_second: f64,
+}
+
 fn apply_runtime_tuple(config: &mut TrainConfig, tuple: RuntimeTuple) {
     config.archive_queue_bound = tuple.0;
     config.buffer_samples = tuple.1;
@@ -40,6 +47,17 @@ fn current_runtime_tuple(config: &TrainConfig) -> RuntimeTuple {
         config.buffer_samples,
         config.buffer_games,
     )
+}
+
+fn loader_runtime_from_tuple(config: &TrainConfig, tuple: RuntimeTuple) -> LoaderRuntimeConfig {
+    LoaderRuntimeConfig {
+        num_threads: Some(super::config::default_num_threads_for_system())
+            .filter(|_| config.num_threads.is_none())
+            .or(config.num_threads),
+        buffer_games: tuple.2,
+        buffer_samples: tuple.1,
+        archive_queue_bound: tuple.0,
+    }
 }
 
 fn should_refine_close_tuples(close_tuples: &[RuntimeTuple]) -> bool {
@@ -447,11 +465,25 @@ pub(super) fn score_tuple_samples_mean(scores: &[f64]) -> f64 {
     scores.iter().sum::<f64>() / scores.len() as f64
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn autotune_loader_runtime(
     config: &TrainConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
 ) -> Result<LoaderRuntimeConfig, String> {
+    Ok(autotune_ranked_loader_runtime(config, manifest, train_device, 1)?
+        .into_iter()
+        .next()
+        .map(|ranked| ranked.loader)
+        .unwrap_or_else(|| loader_runtime_config(config)))
+}
+
+pub(super) fn autotune_ranked_loader_runtime(
+    config: &TrainConfig,
+    manifest: &DataManifest,
+    train_device: &LibTorchDevice,
+    limit: usize,
+) -> Result<Vec<RankedLoaderRuntime>, String> {
     let runtime_tuning_started = Instant::now();
     let mut tuned = config.clone();
     tuned.num_threads = loader_runtime_config(&tuned).num_threads;
@@ -609,7 +641,58 @@ pub(super) fn autotune_loader_runtime(
         )
     );
 
-    Ok(loader_runtime_config(&tuned))
+    let tuned_loader = loader_runtime_config(&tuned);
+    let shortlist_limit = limit.max(1);
+    let current_tuple = current_runtime_tuple(&tuned);
+    let mut ranked_tuples = Vec::new();
+    ranked_tuples.push(best_tuple);
+    if !ranked_tuples.contains(&current_tuple) {
+        ranked_tuples.push(current_tuple);
+    }
+    for tuple in close_runtime_tuples(
+        &coarse_scores,
+        best_score,
+        config.preflight.loader_tuple_margin_ratio,
+        shortlist_limit,
+    ) {
+        if !ranked_tuples.contains(&tuple) {
+            ranked_tuples.push(tuple);
+        }
+        if ranked_tuples.len() >= shortlist_limit {
+            break;
+        }
+    }
+    if !ranked_tuples.contains(&current_tuple) && ranked_tuples.len() < shortlist_limit {
+        ranked_tuples.push(current_tuple);
+    }
+
+    let mut ranked = ranked_tuples
+        .into_iter()
+        .take(shortlist_limit)
+        .map(|tuple| RankedLoaderRuntime {
+            loader: if tuple == current_tuple {
+                tuned_loader
+            } else {
+                loader_runtime_from_tuple(config, tuple)
+            },
+            tuple,
+            train_samples_per_second: score_cache
+                .get(&tuple)
+                .map(|scores| score_tuple_samples_mean(scores))
+                .unwrap_or(0.0),
+        })
+        .collect::<Vec<_>>();
+    if ranked.is_empty() {
+        ranked.push(RankedLoaderRuntime {
+            loader: tuned_loader,
+            tuple: current_tuple,
+            train_samples_per_second: score_cache
+                .get(&current_tuple)
+                .map(|scores| score_tuple_samples_mean(scores))
+                .unwrap_or(0.0),
+        });
+    }
+    Ok(ranked)
 }
 
 #[cfg(test)]
