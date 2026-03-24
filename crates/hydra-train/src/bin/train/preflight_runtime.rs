@@ -5,28 +5,35 @@ use std::time::{Duration, Instant};
 
 use burn::backend::libtorch::LibTorchDevice;
 use burn::module::AutodiffModule;
-use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
+use burn::optim::adaptor::OptimizerAdaptor;
+use burn::optim::{Adam, GradientsAccumulator, GradientsParams, Optimizer};
 use colored::Colorize;
 use hydra_train::data::pipeline::{
-    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
-    stream_val_pass,
+    scan_data_sources_with_progress, stream_train_epoch, stream_val_pass, DataManifest,
+    StreamingLoaderConfig,
 };
-use hydra_train::data::sample::{MjaiSample, collate_samples};
+use hydra_train::data::sample::{collate_batch_samples, collate_samples, MjaiSample};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, PreflightCacheEntry, ProbeKind, ProbeResult,
-    ProbeStatus, candidate_ladder, resolve_runtime_config,
+    candidate_ladder, resolve_runtime_config, BenchmarkMetadata, BenchmarkMode, BenchmarkResult,
+    BenchmarkRuntimeConfig, BenchmarkScore, EffectiveRuntimeConfig, ExplicitSettings,
+    LoaderRuntimeConfig, PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
 };
+use hydra_train::training::bc::{bc_total_with_exit, gated_bc_context};
+use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::losses::HydraLoss;
+use tboard::EventWriter;
 
 use super::artifacts::{
-    BcArtifactPaths, PreflightPaths, RlArtifactPaths, RlPreflightPaths, write_preflight_cache,
+    append_step_log, log_tensorboard, save_latest_checkpoint_and_state, write_preflight_cache,
+    BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightPaths,
+    RlArtifactPaths, RlPreflightPaths,
 };
 use super::config::{
-    ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
-    train_device, trainer_config_from_train_config,
+    configure_threads, default_num_threads_for_system, train_device,
+    trainer_config_from_train_config, ProbeChildRequest, TrainConfig,
 };
-use super::loss_policy::build_loss_config;
+use super::loss_policy::{build_bc_exit_config, build_loss_config};
 use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::{
     format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
@@ -38,22 +45,32 @@ use super::probe_process::{
     mem_available_bytes, probe_result_path, rl_probe_required_free_bytes, rl_probe_result_path,
     write_probe_result,
 };
-use super::probe_request::{ProbeRequest, probe_child_request_from_cli};
+use super::probe_request::{probe_child_request_from_cli, ProbeRequest};
 use super::probe_search::{
-    ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec, finalize_probe_search,
-    maybe_expand_probe_candidates, probe_candidate_ladder, refine_probe_winner_locally,
-    refine_top_k_probe_candidates_locally, rerun_probe_finalists, run_candidate_attempts,
+    finalize_probe_search, maybe_expand_probe_candidates, probe_candidate_ladder,
+    refine_probe_winner_locally, refine_top_k_probe_candidates_locally, rerun_probe_finalists,
+    run_candidate_attempts, ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec,
 };
-use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
-use super::runtime_autotune::autotune_loader_runtime;
+use super::probe_summary::{
+    best_probe_summary, format_probe_selection_summary, probe_kind_name, summarize_probe_results,
+    ProbeCandidateSummary,
+};
+use super::progress::{ScalarAverages, StepLogEntry};
+use super::resume::{runtime_resume_contract, BestValidation, EpochContinuation};
+use super::runtime_autotune::{autotune_ranked_loader_runtime, RankedLoaderRuntime};
 use super::schedule::effective_lr;
-use super::validation::validation_batch_stats;
+use super::validation::{
+    run_validation, validation_batch_stats, ValidationContext, ValidationRuntime, ValidationSummary,
+};
 use super::{TrainBackend, ValidBackend};
+
+type BenchmarkOptimizer = OptimizerAdaptor<Adam, HydraModel<TrainBackend>, TrainBackend>;
 
 pub(super) struct PreflightRuntime {
     pub(super) runtime: EffectiveRuntimeConfig,
     pub(super) train_probe_results: Vec<ProbeResult>,
     pub(super) validation_probe_results: Vec<ProbeResult>,
+    pub(super) benchmark: Option<BenchmarkResult>,
     pub(super) explicit: ExplicitSettings,
 }
 
@@ -62,6 +79,22 @@ pub(super) struct RlPreflightRuntime {
     pub(super) selected_microbatch_size: usize,
     pub(super) rl_games_probe_results: Vec<ProbeResult>,
     pub(super) rl_microbatch_probe_results: Vec<ProbeResult>,
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkFinalist {
+    runtime: BenchmarkRuntimeConfig,
+    train_probe_samples_per_second: f64,
+    validation_probe_samples_per_second: f64,
+    loader_probe_samples_per_second: f64,
+}
+
+struct TrainBenchmarkOutcome {
+    model: HydraModel<TrainBackend>,
+    optimizer: BenchmarkOptimizer,
+    head_controller: HeadActivationController,
+    stats: ScalarAverages,
+    elapsed_seconds: f64,
 }
 
 fn emit_probe_progress(line: &str) -> Result<(), String> {
@@ -372,6 +405,696 @@ fn search_validation_microbatch(
         ))
     );
     Ok((selected_summary.candidate_microbatch, results))
+}
+
+fn diverse_probe_candidates(
+    results: &[ProbeResult],
+    selected_microbatch: usize,
+    limit: usize,
+    margin_ratio: f64,
+) -> Vec<ProbeCandidateSummary> {
+    let mut summaries = summarize_probe_results(results)
+        .into_iter()
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .average_samples_per_second
+            .unwrap_or(0.0)
+            .partial_cmp(&left.average_samples_per_second.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.candidate_microbatch.cmp(&right.candidate_microbatch))
+    });
+    if summaries.is_empty() {
+        return summaries;
+    }
+
+    let best_score = summaries[0].average_samples_per_second.unwrap_or(0.0);
+    let minimum_score = best_score * (1.0 - margin_ratio.max(0.0));
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut selected_index = None;
+    for (idx, summary) in summaries.iter().enumerate() {
+        if summary.candidate_microbatch == selected_microbatch {
+            selected_index = Some(idx);
+        }
+        if summary.average_samples_per_second.unwrap_or(0.0) >= minimum_score
+            && seen.insert(summary.candidate_microbatch)
+        {
+            selected.push(summary.clone());
+        }
+    }
+
+    if let Some(idx) = selected_index {
+        for neighbor in [idx.saturating_sub(1), idx, (idx + 1).min(summaries.len() - 1)] {
+            let summary = &summaries[neighbor];
+            if seen.insert(summary.candidate_microbatch) {
+                selected.push(summary.clone());
+            }
+        }
+    }
+
+    if let Some(summary) = summaries
+        .iter()
+        .find(|summary| summary.candidate_microbatch == selected_microbatch)
+        && seen.insert(summary.candidate_microbatch)
+    {
+        selected.push(summary.clone());
+    }
+
+    selected.sort_by(|left, right| {
+        right
+            .average_samples_per_second
+            .unwrap_or(0.0)
+            .partial_cmp(&left.average_samples_per_second.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.candidate_microbatch.cmp(&right.candidate_microbatch))
+    });
+    selected.truncate(limit.max(1));
+    selected
+}
+
+fn select_loader_finalists(
+    ranked: &[RankedLoaderRuntime],
+    limit: usize,
+    margin_ratio: f64,
+    selected: LoaderRuntimeConfig,
+) -> Vec<RankedLoaderRuntime> {
+    if ranked.is_empty() {
+        return Vec::new();
+    }
+    let best_score = ranked[0].train_samples_per_second;
+    let minimum_score = best_score * (1.0 - margin_ratio.max(0.0));
+    let mut finalists = Vec::new();
+    let mut seen = BTreeSet::new();
+    for loader in ranked {
+        let key = (
+            loader.loader.archive_queue_bound,
+            loader.loader.buffer_samples,
+            loader.loader.buffer_games,
+            loader.loader.num_threads.unwrap_or(0),
+        );
+        if loader.train_samples_per_second >= minimum_score && seen.insert(key) {
+            finalists.push(*loader);
+        }
+    }
+    let selected_key = (
+        selected.archive_queue_bound,
+        selected.buffer_samples,
+        selected.buffer_games,
+        selected.num_threads.unwrap_or(0),
+    );
+    if let Some(loader) = ranked.iter().find(|loader| loader.loader == selected)
+        && seen.insert(selected_key)
+    {
+        finalists.push(*loader);
+    }
+    finalists.truncate(limit.max(1));
+    finalists
+}
+
+fn benchmark_runtime_matches_selected(
+    candidate: &BenchmarkRuntimeConfig,
+    selected: &EffectiveRuntimeConfig,
+) -> bool {
+    candidate.train_microbatch_size == selected.selected.train_microbatch_size
+        && candidate.validation_microbatch_size == selected.selected.validation_microbatch_size
+        && candidate.accum_steps == selected.selected.accum_steps
+        && candidate.loader == selected.loader
+}
+
+fn build_stage_two_finalists(
+    config: &TrainConfig,
+    selected: &EffectiveRuntimeConfig,
+    train_candidates: &[ProbeCandidateSummary],
+    validation_candidates: &[ProbeCandidateSummary],
+    loader_candidates: &[RankedLoaderRuntime],
+    train_probe_results: &[ProbeResult],
+    validation_probe_results: &[ProbeResult],
+    ranked_loaders: &[RankedLoaderRuntime],
+) -> Vec<BenchmarkFinalist> {
+    let mut finalists = Vec::new();
+    let mut seen = BTreeSet::new();
+    for train_summary in train_candidates {
+        for validation_summary in validation_candidates {
+            for loader in loader_candidates {
+                let runtime = BenchmarkRuntimeConfig {
+                    train_microbatch_size: train_summary
+                        .candidate_microbatch
+                        .min(config.batch_size),
+                    validation_microbatch_size: validation_summary.candidate_microbatch.max(1),
+                    accum_steps: config
+                        .batch_size
+                        .div_ceil(train_summary.candidate_microbatch.max(1))
+                        .max(1),
+                    loader: loader.loader,
+                };
+                let key = (
+                    runtime.train_microbatch_size,
+                    runtime.validation_microbatch_size,
+                    runtime.accum_steps,
+                    runtime.loader.archive_queue_bound,
+                    runtime.loader.buffer_samples,
+                    runtime.loader.buffer_games,
+                    runtime.loader.num_threads.unwrap_or(0),
+                );
+                if seen.insert(key) {
+                    finalists.push(BenchmarkFinalist {
+                        runtime,
+                        train_probe_samples_per_second: train_summary
+                            .average_samples_per_second
+                            .unwrap_or(0.0),
+                        validation_probe_samples_per_second: validation_summary
+                            .average_samples_per_second
+                            .unwrap_or(0.0),
+                        loader_probe_samples_per_second: loader.train_samples_per_second,
+                    });
+                }
+            }
+        }
+    }
+    if !finalists
+        .iter()
+        .any(|candidate| benchmark_runtime_matches_selected(&candidate.runtime, selected))
+    {
+        finalists.push(BenchmarkFinalist {
+            runtime: BenchmarkRuntimeConfig {
+                train_microbatch_size: selected.selected.train_microbatch_size,
+                validation_microbatch_size: selected.selected.validation_microbatch_size,
+                accum_steps: selected.selected.accum_steps,
+                loader: selected.loader,
+            },
+            train_probe_samples_per_second: candidate_average(
+                train_probe_results,
+                selected.selected.train_microbatch_size,
+            )
+            .unwrap_or(0.0),
+            validation_probe_samples_per_second: candidate_average(
+                validation_probe_results,
+                selected.selected.validation_microbatch_size,
+            )
+            .unwrap_or(0.0),
+            loader_probe_samples_per_second: ranked_loaders
+                .iter()
+                .find(|loader| loader.loader == selected.loader)
+                .map(|loader| loader.train_samples_per_second)
+                .unwrap_or(0.0),
+        });
+    }
+    finalists.sort_by(|left, right| {
+        let left_score = left.train_probe_samples_per_second
+            + left.validation_probe_samples_per_second
+            + left.loader_probe_samples_per_second;
+        let right_score = right.train_probe_samples_per_second
+            + right.validation_probe_samples_per_second
+            + right.loader_probe_samples_per_second;
+        right_score
+            .partial_cmp(&left_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.runtime
+                    .train_microbatch_size
+                    .cmp(&right.runtime.train_microbatch_size)
+            })
+    });
+    finalists.truncate(config.preflight.real_benchmark_max_finalists.max(1));
+    finalists
+}
+
+fn benchmark_loader_config(
+    config: &TrainConfig,
+    loader: LoaderRuntimeConfig,
+) -> StreamingLoaderConfig {
+    StreamingLoaderConfig {
+        buffer_games: loader.buffer_games,
+        buffer_samples: loader.buffer_samples,
+        train_fraction: config.train_fraction,
+        seed: config.seed,
+        archive_queue_bound: loader.archive_queue_bound,
+        max_skip_logs_per_source: config.max_skip_logs_per_source,
+        aggregate_skip_logs: true,
+        exit_sidecar: None,
+        exit_sidecar_source_net_hash: None,
+        exit_sidecar_source_version: None,
+        delta_q_sidecar: None,
+        delta_q_sidecar_source_net_hash: None,
+        delta_q_sidecar_source_version: None,
+    }
+}
+
+fn benchmark_train_config(config: &TrainConfig, runtime: BenchmarkRuntimeConfig) -> TrainConfig {
+    let mut tuned = config.clone();
+    tuned.microbatch_size = Some(runtime.train_microbatch_size);
+    tuned.validation_microbatch_size = Some(runtime.validation_microbatch_size);
+    tuned.num_threads = runtime.loader.num_threads;
+    tuned.buffer_games = runtime.loader.buffer_games;
+    tuned.buffer_samples = runtime.loader.buffer_samples;
+    tuned.archive_queue_bound = runtime.loader.archive_queue_bound;
+    tuned
+}
+
+fn benchmark_validation_config(
+    config: &TrainConfig,
+    runtime: BenchmarkRuntimeConfig,
+) -> TrainConfig {
+    let mut tuned = benchmark_train_config(config, runtime);
+    if tuned.max_validation_batches.is_none() && tuned.max_validation_samples.is_none() {
+        tuned.max_validation_samples = Some(
+            runtime
+                .validation_microbatch_size
+                .saturating_mul(8)
+                .max(config.batch_size),
+        );
+    }
+    tuned
+}
+
+fn benchmark_projected_events(train_steps: usize, interval: usize) -> f64 {
+    train_steps as f64 / interval.max(1) as f64
+}
+
+fn benchmark_metadata(
+    config: &TrainConfig,
+    train_candidates: usize,
+    validation_candidates: usize,
+    loader_candidates: usize,
+    finalists_benchmarked: usize,
+) -> BenchmarkMetadata {
+    let measured_train_steps = config.preflight.real_benchmark_train_steps.max(1);
+    BenchmarkMetadata {
+        mode: BenchmarkMode::CadenceAwareProjection,
+        selection_metric: "wall_clock_effective_throughput".to_string(),
+        train_probe_candidates_considered: train_candidates,
+        validation_probe_candidates_considered: validation_candidates,
+        loader_candidates_considered: loader_candidates,
+        finalists_benchmarked,
+        warmup_steps: config.preflight.real_benchmark_warmup_steps.max(1),
+        measured_train_steps,
+        projected_validation_events: benchmark_projected_events(
+            measured_train_steps,
+            config.validate_every_n_steps,
+        ),
+        projected_checkpoint_events: benchmark_projected_events(
+            measured_train_steps,
+            config.checkpoint_every_n_steps,
+        ),
+        projected_logging_events: benchmark_projected_events(
+            measured_train_steps,
+            config.log_every_n_steps,
+        ),
+    }
+}
+
+fn benchmark_score(
+    config: &TrainConfig,
+    train_seconds: f64,
+    validation_seconds: f64,
+    checkpoint_seconds: f64,
+    logging_seconds: f64,
+    validation_samples: usize,
+) -> BenchmarkScore {
+    let train_steps = config.preflight.real_benchmark_train_steps.max(1);
+    let train_samples = train_steps * config.batch_size;
+    let projected_validation_events =
+        benchmark_projected_events(train_steps, config.validate_every_n_steps);
+    let projected_checkpoint_events =
+        benchmark_projected_events(train_steps, config.checkpoint_every_n_steps);
+    let projected_logging_events =
+        benchmark_projected_events(train_steps, config.log_every_n_steps);
+    let total_elapsed_seconds = train_seconds
+        + validation_seconds * projected_validation_events
+        + checkpoint_seconds * projected_checkpoint_events
+        + logging_seconds * projected_logging_events;
+    BenchmarkScore {
+        wall_clock_samples_per_second: measure_samples_per_second(
+            train_samples,
+            Duration::from_secs_f64(total_elapsed_seconds.max(f64::EPSILON)),
+        ),
+        train_only_samples_per_second: measure_samples_per_second(
+            train_samples,
+            Duration::from_secs_f64(train_seconds.max(f64::EPSILON)),
+        ),
+        train_seconds,
+        validation_seconds,
+        checkpoint_seconds,
+        logging_seconds,
+        total_elapsed_seconds,
+        train_steps,
+        validation_samples,
+    }
+}
+
+fn benchmark_train_window(
+    config: &TrainConfig,
+    manifest: &DataManifest,
+    train_device: &LibTorchDevice,
+) -> Result<TrainBenchmarkOutcome, String> {
+    let train_cfg = trainer_config_from_train_config(config);
+    let mut model = HydraModelConfig::learner().init::<TrainBackend>(train_device);
+    let mut optimizer: BenchmarkOptimizer = train_cfg.optimizer_config().init();
+    let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
+    let mut head_controller = HeadActivationController::new(
+        HeadActivationConfig::default_with_params(HydraModelConfig::learner().estimated_params()),
+    );
+    let loader = benchmark_loader_config(
+        config,
+        LoaderRuntimeConfig {
+            num_threads: config.num_threads,
+            buffer_games: config.buffer_games,
+            buffer_samples: config.buffer_samples,
+            archive_queue_bound: config.archive_queue_bound,
+        },
+    );
+    let microbatch_size = config
+        .microbatch_size
+        .unwrap_or(config.batch_size)
+        .min(config.batch_size)
+        .max(1);
+    let warmup_steps = config.preflight.real_benchmark_warmup_steps.max(1);
+    let measured_train_steps = config.preflight.real_benchmark_train_steps.max(1);
+    let target_steps = warmup_steps + measured_train_steps;
+    let mut completed_steps = 0usize;
+    let mut pending_samples = std::collections::VecDeque::new();
+    let mut measured_stats = ScalarAverages::default();
+    let mut measure_start = None;
+
+    for buffer_result in stream_train_epoch(manifest, &loader, 0, None) {
+        let buffer =
+            buffer_result.map_err(|err| format!("benchmark train stream failed: {err}"))?;
+        pending_samples.extend(buffer);
+        while pending_samples.len() >= config.batch_size {
+            let logical_batch: Vec<MjaiSample> =
+                pending_samples.drain(..config.batch_size).collect();
+            let logical_batch_len = logical_batch.len().max(1) as f32;
+            let mut accumulator: GradientsAccumulator<HydraModel<TrainBackend>> =
+                GradientsAccumulator::new();
+            let mut step_batches = Vec::new();
+
+            for chunk in logical_batch.chunks(microbatch_size) {
+                let Some((obs, batch)) =
+                    collate_batch_samples::<TrainBackend>(chunk, config.augment, train_device)
+                        .map_err(|err| format!("benchmark train collation failed: {err}"))?
+                else {
+                    continue;
+                };
+                let targets = batch.to_hydra_targets();
+                let (active_loss_fn, warmup_heads) =
+                    gated_bc_context(Some(&mut head_controller), &loss_fn, &targets);
+                let output =
+                    model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+                let breakdown = active_loss_fn.total_loss(&output, &targets);
+                let total = bc_total_with_exit(&output, &batch, &targets, &active_loss_fn, &exit_cfg);
+                step_batches.push(validation_batch_stats(
+                    chunk.len(),
+                    &output,
+                    &batch,
+                    &targets,
+                    &breakdown,
+                    &total,
+                    &exit_cfg,
+                ));
+                let chunk_weight = chunk.len() as f32 / logical_batch_len;
+                let grads = (total * chunk_weight).backward();
+                let grads = GradientsParams::from_grads(grads, &model);
+                accumulator.accumulate(&model, grads);
+            }
+
+            if !step_batches.is_empty() {
+                let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
+                let grads = accumulator.grads();
+                model = optimizer.step(lr, model, grads);
+                head_controller.tick_warmup();
+            }
+
+            let next_completed_steps = completed_steps + 1;
+            if next_completed_steps == warmup_steps {
+                measure_start = Some(Instant::now());
+            } else if next_completed_steps > warmup_steps {
+                for batch_stats in step_batches {
+                    measured_stats.record_batch(batch_stats);
+                }
+            }
+            completed_steps = next_completed_steps;
+
+            if completed_steps >= target_steps {
+                let elapsed_seconds = measure_start
+                    .map(|start| start.elapsed().as_secs_f64())
+                    .unwrap_or_default();
+                return Ok(TrainBenchmarkOutcome {
+                    model,
+                    optimizer,
+                    head_controller,
+                    stats: measured_stats.finalize(),
+                    elapsed_seconds,
+                });
+            }
+        }
+    }
+
+    Err("not enough train data to finish stage-2 benchmark train window".to_string())
+}
+
+fn benchmark_validation_pass(
+    config: &TrainConfig,
+    manifest: &DataManifest,
+    train_device: &LibTorchDevice,
+    outcome: &mut TrainBenchmarkOutcome,
+) -> Result<(ValidationSummary, f64), String> {
+    let valid_loss_fn =
+        HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
+    let loader = benchmark_loader_config(
+        config,
+        LoaderRuntimeConfig {
+            num_threads: config.num_threads,
+            buffer_games: config.buffer_games,
+            buffer_samples: config.buffer_samples,
+            archive_queue_bound: config.archive_queue_bound,
+        },
+    );
+    let started = Instant::now();
+    let summary = run_validation(
+        &outcome.model,
+        ValidationContext {
+            config,
+            loader_config: &loader,
+            manifest,
+            cached_samples: None,
+            device: train_device,
+            loss_fn: &valid_loss_fn,
+            exit_cfg: &exit_cfg,
+        },
+        ValidationRuntime {
+            head_controller: Some(&mut outcome.head_controller),
+            progress: None,
+        },
+    )?;
+    Ok((summary, started.elapsed().as_secs_f64()))
+}
+
+fn benchmark_checkpoint_cost(
+    artifacts: &BcArtifactPaths,
+    config: &TrainConfig,
+    outcome: &TrainBenchmarkOutcome,
+) -> Result<f64, String> {
+    let continuation = EpochContinuation {
+        next_epoch: 0,
+        skip_optimizer_steps_in_epoch: 0,
+        epoch_completed: false,
+    };
+    let started = Instant::now();
+    save_latest_checkpoint_and_state(
+        artifacts,
+        &outcome.model,
+        &outcome.optimizer,
+        LatestCheckpointState {
+            global_step: config.preflight.real_benchmark_train_steps.max(1),
+            train_loss: outcome.stats.total_loss,
+            best_validation: None,
+            continuation: &continuation,
+            runtime: runtime_resume_contract(config),
+        },
+    )?;
+    Ok(started.elapsed().as_secs_f64())
+}
+
+fn benchmark_logging_cost(
+    artifacts: &BcArtifactPaths,
+    config: &TrainConfig,
+    train_stats: &ScalarAverages,
+    validation_summary: &ValidationSummary,
+) -> Result<f64, String> {
+    let global_step = config.preflight.real_benchmark_train_steps.max(1);
+    let lr = effective_lr(
+        &trainer_config_from_train_config(config),
+        global_step,
+        (config.preflight.real_benchmark_warmup_steps
+            + config.preflight.real_benchmark_train_steps)
+            .max(1),
+    );
+    let best_validation = Some(BestValidation {
+        policy_loss: validation_summary.policy_loss,
+        agreement: validation_summary.agreement,
+    });
+    let step_entry = StepLogEntry {
+        global_step,
+        epoch: 1,
+        lr,
+        train_total_loss: train_stats.total_loss,
+        train_policy_agreement: train_stats.policy_agreement,
+        train_loss_policy: train_stats.loss_policy,
+        train_loss_value: train_stats.loss_value,
+        train_loss_grp: train_stats.loss_grp,
+        train_loss_tenpai: train_stats.loss_tenpai,
+        train_loss_danger: train_stats.loss_danger,
+        train_loss_opp_next: train_stats.loss_opp_next,
+        train_loss_score_pdf: train_stats.loss_score_pdf,
+        train_loss_score_cdf: train_stats.loss_score_cdf,
+        val_total_loss: Some(validation_summary.total_loss),
+        val_policy_loss: Some(validation_summary.policy_loss),
+        val_policy_agreement: Some(validation_summary.agreement),
+        val_delta_q_promotion: validation_summary.delta_q_promotion_snapshot,
+        best_val_policy_loss: best_validation.map(|value| value.policy_loss),
+        best_val_agreement: best_validation.map(|value| value.agreement),
+    };
+    let started = Instant::now();
+    append_step_log(&artifacts.step_log_path, &step_entry)?;
+    if config.tensorboard {
+        artifacts.create_tensorboard_dirs()?;
+        let mut tb = EventWriter::create(&artifacts.tb_session_dir)
+            .map_err(|err| format!("preflight benchmark tensorboard init: {err}"))?;
+        log_tensorboard(
+            &mut tb,
+            global_step,
+            train_stats,
+            Some(validation_summary),
+            lr,
+            best_validation,
+        )?;
+    }
+    Ok(started.elapsed().as_secs_f64())
+}
+
+fn run_stage_two_finalist_benchmark(
+    config: &TrainConfig,
+    manifest: &DataManifest,
+    train_device: &LibTorchDevice,
+    artifacts: &BcArtifactPaths,
+    finalists: &[BenchmarkFinalist],
+    train_candidates: usize,
+    validation_candidates: usize,
+    loader_candidates: usize,
+) -> Result<BenchmarkResult, String> {
+    let benchmark_paths = PreflightBenchmarkPaths::new(artifacts);
+    benchmark_paths.create_root_dir()?;
+    let initial_count = finalists.len().min(config.preflight.real_benchmark_max_finalists.max(1));
+    let mut finalists_to_benchmark = finalists[..initial_count].to_vec();
+    let mut benchmarked = 0usize;
+    let mut best: Option<BenchmarkResult> = None;
+    let mut scored_results = Vec::new();
+    let mut tie_expansion_triggered = false;
+    let mut candidate_index = 0usize;
+    while candidate_index < finalists_to_benchmark.len() {
+        let finalist = &finalists_to_benchmark[candidate_index];
+        let benchmark_config = benchmark_validation_config(config, finalist.runtime);
+        let candidate_output_dir = benchmark_paths.create_candidate_dir(candidate_index)?;
+        let candidate_artifacts = BcArtifactPaths::new(&candidate_output_dir, 0);
+        candidate_artifacts.create_root_dir()?;
+        let mut train_outcome = benchmark_train_window(&benchmark_config, manifest, train_device)?;
+        let (validation_summary, validation_seconds) = benchmark_validation_pass(
+            &benchmark_config,
+            manifest,
+            train_device,
+            &mut train_outcome,
+        )?;
+        let checkpoint_seconds =
+            benchmark_checkpoint_cost(&candidate_artifacts, &benchmark_config, &train_outcome)?;
+        let logging_seconds = benchmark_logging_cost(
+            &candidate_artifacts,
+            &benchmark_config,
+            &train_outcome.stats,
+            &validation_summary,
+        )?;
+        let score = benchmark_score(
+            &benchmark_config,
+            train_outcome.elapsed_seconds,
+            validation_seconds,
+            checkpoint_seconds,
+            logging_seconds,
+            validation_summary.samples,
+        );
+        let result = BenchmarkResult {
+            runtime: finalist.runtime,
+            score,
+            metadata: benchmark_metadata(
+                config,
+                train_candidates,
+                validation_candidates,
+                loader_candidates,
+                benchmarked + 1,
+            ),
+        };
+        println!(
+            "{}",
+            format_preflight_summary_line(
+                "Preflight benchmark:",
+                format!(
+                    "candidate={} train_mb={} val_mb={} loader=({}, {}, {}, {:?}) effective={:.2} train_only={:.2}",
+                    candidate_index + 1,
+                    result.runtime.train_microbatch_size,
+                    result.runtime.validation_microbatch_size,
+                    result.runtime.loader.archive_queue_bound,
+                    result.runtime.loader.buffer_samples,
+                    result.runtime.loader.buffer_games,
+                    result.runtime.loader.num_threads,
+                    result.score.wall_clock_samples_per_second,
+                    result.score.train_only_samples_per_second,
+                ),
+            )
+        );
+        if best.as_ref().is_none_or(|current| {
+            result.score.wall_clock_samples_per_second > current.score.wall_clock_samples_per_second
+        }) {
+            best = Some(result.clone());
+        }
+        scored_results.push(result.clone());
+        benchmarked += 1;
+        candidate_index += 1;
+        if candidate_index == finalists_to_benchmark.len() {
+            let mut ranked = scored_results.clone();
+            ranked.sort_by(|left, right| {
+                right
+                    .score
+                    .wall_clock_samples_per_second
+                    .partial_cmp(&left.score.wall_clock_samples_per_second)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if ranked.len() >= 2 {
+                let best_score = ranked[0].score.wall_clock_samples_per_second;
+                let next_score = ranked[1].score.wall_clock_samples_per_second;
+                let tie_margin = config.preflight.real_benchmark_tie_margin_ratio.max(0.0);
+                let threshold = best_score * (1.0 - tie_margin);
+                if next_score >= threshold {
+                    let current_len = finalists_to_benchmark.len();
+                    let target_len = (current_len + config.preflight.real_benchmark_extra_finalists)
+                        .min(finalists.len());
+                    if target_len > current_len {
+                        finalists_to_benchmark
+                            .extend_from_slice(&finalists[current_len..target_len]);
+                        tie_expansion_triggered = true;
+                    }
+                }
+            }
+        }
+    }
+    let mut best = best
+        .ok_or_else(|| "stage-2 preflight benchmark had no finalists to score".to_string())?;
+    best.metadata.finalists_benchmarked = benchmarked;
+    if tie_expansion_triggered {
+        best.metadata.selection_metric.push_str(" + tie_expansion");
+    }
+    Ok(best)
 }
 
 fn search_rl_runtime_candidate(
@@ -701,12 +1424,21 @@ pub(super) fn probe_validation_candidate(
             };
             let targets = batch.to_hydra_targets();
             let output = model_valid.forward(obs);
+            let breakdown = loss_fn.total_loss(&output, &targets);
+            let total = hydra_train::training::bc::bc_total_with_exit(
+                &output,
+                &batch,
+                &targets,
+                &loss_fn,
+                &hydra_train::training::bc::BcExitConfig::default(),
+            );
             let _ = validation_batch_stats(
                 chunk.len(),
                 &output,
                 &batch,
                 &targets,
-                &loss_fn,
+                &breakdown,
+                &total,
                 &hydra_train::training::bc::BcExitConfig::default(),
             );
             emit_probe_step_progress(
@@ -992,7 +1724,7 @@ pub(super) fn run_preflight(
         train_microbatch_explicit: config.microbatch_size.is_some(),
         validation_microbatch_explicit: config.validation_microbatch_size.is_some(),
     };
-    let phase_pb = make_bar(5, "[{bar:30.magenta/black}] {pos}/{len} {msg}")?;
+    let phase_pb = make_bar(6, "[{bar:30.magenta/black}] {pos}/{len} {msg}")?;
     phase_pb.set_message(preflight_phase_label("train microbatch probe"));
 
     let train_seed = config
@@ -1036,11 +1768,89 @@ pub(super) fn run_preflight(
     phase_pb.inc(1);
     phase_pb.set_message(preflight_phase_label("loader runtime tuning"));
     let train_device = train_device(&config.device)?;
-    let loader = autotune_loader_runtime(&tuned_config, &manifest, &train_device)?;
-    let runtime = EffectiveRuntimeConfig { selected, loader };
+    let ranked_loaders = autotune_ranked_loader_runtime(
+        &tuned_config,
+        &manifest,
+        &train_device,
+        config.preflight.real_benchmark_loader_candidates.max(1),
+    )?;
+    let loader = ranked_loaders
+        .first()
+        .map(|ranked| ranked.loader)
+        .ok_or_else(|| "loader runtime autotune returned no ranked candidates".to_string())?;
+    let mut runtime = EffectiveRuntimeConfig { selected, loader };
+    phase_pb.inc(1);
+    phase_pb.set_message(preflight_phase_label("stage-2 finalist benchmark"));
+    let benchmark = if config.preflight.real_benchmark_enabled {
+        let train_candidates = diverse_probe_candidates(
+            &train_probe_results,
+            selected.train_microbatch_size,
+            config.preflight.real_benchmark_train_candidates,
+            config.preflight.finalist_margin_ratio,
+        );
+        let validation_candidates = diverse_probe_candidates(
+            &validation_probe_results,
+            selected.validation_microbatch_size,
+            config.preflight.real_benchmark_validation_candidates,
+            config.preflight.finalist_margin_ratio,
+        );
+        let loader_candidates = select_loader_finalists(
+            &ranked_loaders,
+            config.preflight.real_benchmark_loader_candidates,
+            config.preflight.finalist_margin_ratio,
+            runtime.loader,
+        );
+        let finalists = build_stage_two_finalists(
+            config,
+            &runtime,
+            &train_candidates,
+            &validation_candidates,
+            &loader_candidates,
+            &train_probe_results,
+            &validation_probe_results,
+            &ranked_loaders,
+        );
+        let best = run_stage_two_finalist_benchmark(
+            config,
+            &manifest,
+            &train_device,
+            artifacts,
+            &finalists,
+            train_candidates.len(),
+            validation_candidates.len(),
+            loader_candidates.len(),
+        )?;
+        runtime = EffectiveRuntimeConfig {
+            selected: resolve_runtime_config(
+                config.batch_size,
+                explicit,
+                best.runtime.train_microbatch_size,
+                best.runtime.validation_microbatch_size,
+            ),
+            loader: best.runtime.loader,
+        };
+        println!(
+            "{}",
+            format_preflight_selection_line(format!(
+                "stage-2 winner train_mb={} val_mb={} accum_steps={} wall_clock_effective={:.2} samples/s mode={:?}",
+                best.runtime.train_microbatch_size,
+                best.runtime.validation_microbatch_size,
+                runtime.selected.accum_steps,
+                best.score.wall_clock_samples_per_second,
+                best.metadata.mode,
+            ))
+        );
+        Some(best)
+    } else {
+        None
+    };
     write_preflight_cache(
         &paths.cache_path,
-        &PreflightCacheEntry { cache_key, runtime },
+        &PreflightCacheEntry {
+            cache_key,
+            runtime,
+            benchmark: benchmark.clone(),
+        },
     )?;
     phase_pb.inc(1);
     phase_pb.finish_with_message("preflight complete".green().to_string());
@@ -1048,6 +1858,7 @@ pub(super) fn run_preflight(
         runtime,
         train_probe_results,
         validation_probe_results,
+        benchmark,
         explicit,
     })
 }
@@ -1116,6 +1927,7 @@ pub(super) fn run_rl_preflight(
                     archive_queue_bound: config.archive_queue_bound,
                 },
             },
+            benchmark: None,
         },
     )?;
     println!(
@@ -1152,7 +1964,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::config::{ProbeChildRequest, ProbeCliRequest, RlTrainConfig, loader_runtime_config};
+    use crate::config::{loader_runtime_config, ProbeChildRequest, ProbeCliRequest, RlTrainConfig};
     use hydra_train::preflight::{PreflightConfig, ProbeStatus};
 
     fn dummy_config() -> TrainConfig {
@@ -1424,7 +2236,7 @@ mod tests {
     #[test]
     fn loader_runtime_config_uses_deterministic_auto_threads_when_unset() {
         let config = dummy_config();
-        let loader = autotune_loader_runtime(
+        let loader = crate::runtime_autotune::autotune_loader_runtime(
             &config,
             &DataManifest {
                 sources: Vec::new(),
@@ -2303,15 +3115,11 @@ mod tests {
         config.preflight.rl_probe_memory_headroom_ratio = 0.0;
         config.preflight.rl_probe_growth_safety_factor = 1.0;
 
-        let blocked = maybe_block_host_ram_growth_probe(
-            &config,
-            ProbeKind::RlMicrobatch,
-            64,
-            Some(32),
-        )
-        .expect(
-            "growth probe should be blocked when required free memory matches available memory",
-        );
+        let blocked =
+            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlMicrobatch, 64, Some(32))
+                .expect(
+                "growth probe should be blocked when required free memory matches available memory",
+            );
 
         assert_eq!(blocked.kind, ProbeKind::RlMicrobatch);
         assert_eq!(blocked.candidate_microbatch, 64);
