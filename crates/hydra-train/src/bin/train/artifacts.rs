@@ -9,7 +9,7 @@ use tboard::EventWriter;
 
 use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
-use hydra_train::preflight::{PreflightCacheEntry, default_cache_name};
+use hydra_train::preflight::{default_cache_name, PreflightCacheEntry};
 use hydra_train::training::bc::CheckpointMeta;
 use hydra_train::training::delta_q_promotion::{
     DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPolicyTransferReport,
@@ -17,13 +17,13 @@ use hydra_train::training::delta_q_promotion::{
     DeltaQPromotionResult,
 };
 
-use super::TrainBackend;
 use super::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
 use super::resume::{
-    BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
-    current_timestamp_s, write_resume_state,
+    build_resume_state, current_timestamp_s, write_resume_state, BestValidation, EpochContinuation,
+    RlResumeState, RuntimeResumeContract,
 };
 use super::validation::ValidationSummary;
+use super::TrainBackend;
 
 pub(crate) struct BcArtifactPaths {
     pub(crate) root: PathBuf,
@@ -52,6 +52,10 @@ pub(crate) struct PreflightPaths {
     pub(crate) cache_path: PathBuf,
 }
 
+pub(crate) struct PreflightBenchmarkPaths {
+    pub(crate) root: PathBuf,
+}
+
 pub(crate) struct RlPreflightPaths {
     pub(crate) cache_path: PathBuf,
 }
@@ -69,6 +73,38 @@ impl PreflightPaths {
         Self {
             cache_path: artifacts.root.join(default_cache_name()),
         }
+    }
+}
+
+impl PreflightBenchmarkPaths {
+    pub(crate) fn new(artifacts: &BcArtifactPaths) -> Self {
+        Self {
+            root: artifacts.root.join("preflight_benchmark"),
+        }
+    }
+
+    pub(crate) fn create_root_dir(&self) -> Result<(), String> {
+        fs::create_dir_all(&self.root).map_err(|err| {
+            format!(
+                "failed to create preflight benchmark dir {}: {err}",
+                self.root.display()
+            )
+        })
+    }
+
+    pub(crate) fn candidate_dir(&self, candidate_index: usize) -> PathBuf {
+        self.root.join(format!("candidate_{candidate_index:02}"))
+    }
+
+    pub(crate) fn create_candidate_dir(&self, candidate_index: usize) -> Result<PathBuf, String> {
+        let path = self.candidate_dir(candidate_index);
+        fs::create_dir_all(&path).map_err(|err| {
+            format!(
+                "failed to create preflight benchmark candidate dir {}: {err}",
+                path.display()
+            )
+        })?;
+        Ok(path)
     }
 }
 
@@ -542,6 +578,7 @@ mod tests {
                     archive_queue_bound: 32,
                 },
             },
+            benchmark: None,
         }
     }
 
@@ -930,14 +967,12 @@ mod tests {
         assert!(tags.iter().any(|tag| tag == "val/policy_agreement"));
         assert!(tags.iter().any(|tag| tag == "val/policy_loss"));
         assert!(tags.iter().any(|tag| tag == "val/total_loss"));
-        assert!(
-            tags.iter()
-                .any(|tag| tag == "val/delta_q_candidate_top1_agreement")
-        );
-        assert!(
-            tags.iter()
-                .any(|tag| tag == "val/delta_q_offline_gate_passed")
-        );
+        assert!(tags
+            .iter()
+            .any(|tag| tag == "val/delta_q_candidate_top1_agreement"));
+        assert!(tags
+            .iter()
+            .any(|tag| tag == "val/delta_q_offline_gate_passed"));
         assert!(tags.iter().any(|tag| tag == "lr"));
         assert!(tags.iter().any(|tag| tag == "val/best_policy_loss"));
         assert!(tags.iter().any(|tag| tag == "val/best_policy_agreement"));
