@@ -3,11 +3,10 @@ use burn::prelude::*;
 use indicatif::ProgressBar;
 
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_pass};
-use hydra_train::data::sample::collate_batch_samples;
+use hydra_train::data::sample::{MjaiSample, collate_batch_samples};
 use hydra_train::model::{HydraModel, HydraOutput};
 use hydra_train::training::bc::{
     BcExitConfig, bc_total_with_exit, gated_bc_context, policy_agreement,
-    target_actions_from_policy_target,
 };
 use hydra_train::training::delta_q_promotion::{
     DeltaQPolicyTransferReport, DeltaQPolicyTransferResult, DeltaQPolicyTransferThresholds,
@@ -27,6 +26,7 @@ pub(super) struct ValidationContext<'a> {
     pub(super) config: &'a TrainConfig,
     pub(super) loader_config: &'a StreamingLoaderConfig,
     pub(super) manifest: &'a DataManifest,
+    pub(super) cached_samples: Option<&'a [MjaiSample]>,
     pub(super) device: &'a <ValidBackend as Backend>::Device,
     pub(super) loss_fn: &'a HydraLoss<ValidBackend>,
     pub(super) exit_cfg: &'a BcExitConfig,
@@ -110,20 +110,22 @@ pub(super) fn validation_batch_stats<B: Backend>(
     output: &HydraOutput<B>,
     batch: &hydra_train::data::sample::MjaiBatch<B>,
     targets: &HydraTargets<B>,
-    loss_fn: &HydraLoss<B>,
+    breakdown: &hydra_train::training::losses::LossBreakdown<B>,
+    total_loss: &Tensor<B, 1>,
     exit_cfg: &BcExitConfig,
 ) -> BatchStats {
-    let target_actions = target_actions_from_policy_target(targets.policy_target.clone());
     let agreement = policy_agreement(
         output.policy_logits.clone(),
         targets.legal_mask.clone(),
-        target_actions,
+        batch.actions.clone(),
     );
-    let breakdown = loss_fn.total_loss(output, targets);
     let mut stats = batch_stats_from_breakdown(sample_count, agreement, &breakdown);
-    stats.total_loss = bc_total_with_exit(output, batch, targets, loss_fn, exit_cfg)
-        .into_scalar()
-        .elem::<f64>();
+    if batch.exit_target.is_some() && batch.exit_mask.is_some() && exit_cfg.exit_weight > 0.0 {
+        stats.total_loss = total_loss
+            .clone()
+            .into_scalar()
+            .elem::<f64>();
+    }
     stats
 }
 
@@ -159,6 +161,7 @@ pub(super) fn run_validation_with_policy_baseline(
         config,
         loader_config,
         manifest,
+        cached_samples,
         device,
         loss_fn,
         exit_cfg,
@@ -178,9 +181,54 @@ pub(super) fn run_validation_with_policy_baseline(
     let mut delta_q_policy_transfer = DeltaQPolicyTransferReport::new();
     let mut saw_delta_q_targets = false;
 
-    for buffer_result in stream_val_pass(manifest, loader_config, progress) {
-        let buffer = buffer_result.map_err(|err| format!("validation stream failed: {err}"))?;
-        for chunk in buffer.chunks(validation_batch_size) {
+    let run_chunk = |capped_chunk: &[MjaiSample],
+                     stats: &mut ScalarAverages,
+                     total_samples: &mut usize,
+                     head_controller: &mut Option<&mut HeadActivationController>,
+                     delta_q_promotion: &mut DeltaQPromotionReport,
+                     delta_q_policy_transfer: &mut DeltaQPolicyTransferReport,
+                     saw_delta_q_targets: &mut bool|
+     -> Result<(), String> {
+        let Some((obs, batch)) =
+            collate_batch_samples::<ValidBackend>(capped_chunk, false, device)
+                .map_err(|err| format!("validation collation failed: {err}"))?
+        else {
+            return Ok(());
+        };
+        let targets = batch.to_hydra_targets();
+        let (active_loss_fn, warmup_heads) =
+            gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
+        let output = model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+        let breakdown = active_loss_fn.total_loss(&output, &targets);
+        let total = bc_total_with_exit(&output, &batch, &targets, &active_loss_fn, exit_cfg);
+        let batch_stats = validation_batch_stats(
+            capped_chunk.len(),
+            &output,
+            &batch,
+            &targets,
+            &breakdown,
+            &total,
+            exit_cfg,
+        );
+        if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
+            let baseline_output = baseline_valid.forward(obs);
+            delta_q_promotion.merge(&collect_promotion_metrics_from_outputs(
+                &output, &targets, 0.75,
+            ));
+            delta_q_policy_transfer.merge(&collect_policy_transfer_metrics_from_policy_outputs(
+                output.policy_logits.clone(),
+                baseline_output.policy_logits.clone(),
+                &targets,
+            ));
+            *saw_delta_q_targets = true;
+        }
+        stats.record_batch(batch_stats);
+        *total_samples += capped_chunk.len();
+        Ok(())
+    };
+
+    if let Some(cached_samples) = cached_samples {
+        for chunk in cached_samples.chunks(validation_batch_size) {
             if let Some(limit) = validation_sample_limit
                 && total_samples >= limit
             {
@@ -195,46 +243,49 @@ pub(super) fn run_validation_with_policy_baseline(
             if capped_chunk.is_empty() {
                 break;
             }
-            let Some((obs, batch)) =
-                collate_batch_samples::<ValidBackend>(capped_chunk, false, device)
-                    .map_err(|err| format!("validation collation failed: {err}"))?
-            else {
-                continue;
-            };
-            let targets = batch.to_hydra_targets();
-            let (active_loss_fn, warmup_heads) =
-                gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
-            let output =
-                model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
-            let baseline_output = baseline_valid.forward(obs);
-            let batch_stats = validation_batch_stats(
-                capped_chunk.len(),
-                &output,
-                &batch,
-                &targets,
-                &active_loss_fn,
-                exit_cfg,
-            );
-            if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
-                delta_q_promotion.merge(&collect_promotion_metrics_from_outputs(
-                    &output, &targets, 0.75,
-                ));
-                delta_q_policy_transfer.merge(
-                    &collect_policy_transfer_metrics_from_policy_outputs(
-                        output.policy_logits.clone(),
-                        baseline_output.policy_logits.clone(),
-                        &targets,
-                    ),
-                );
-                saw_delta_q_targets = true;
-            }
-            stats.record_batch(batch_stats);
-            total_samples += capped_chunk.len();
+            run_chunk(
+                capped_chunk,
+                &mut stats,
+                &mut total_samples,
+                &mut head_controller,
+                &mut delta_q_promotion,
+                &mut delta_q_policy_transfer,
+                &mut saw_delta_q_targets,
+            )?;
         }
-        if let Some(limit) = validation_sample_limit
-            && total_samples >= limit
-        {
-            break;
+    } else {
+        for buffer_result in stream_val_pass(manifest, loader_config, progress) {
+            let buffer = buffer_result.map_err(|err| format!("validation stream failed: {err}"))?;
+            for chunk in buffer.chunks(validation_batch_size) {
+                if let Some(limit) = validation_sample_limit
+                    && total_samples >= limit
+                {
+                    break;
+                }
+                let capped_chunk = if let Some(limit) = validation_sample_limit {
+                    let remaining = limit.saturating_sub(total_samples);
+                    &chunk[..chunk.len().min(remaining)]
+                } else {
+                    chunk
+                };
+                if capped_chunk.is_empty() {
+                    break;
+                }
+                run_chunk(
+                    capped_chunk,
+                    &mut stats,
+                    &mut total_samples,
+                    &mut head_controller,
+                    &mut delta_q_promotion,
+                    &mut delta_q_policy_transfer,
+                    &mut saw_delta_q_targets,
+                )?;
+            }
+            if let Some(limit) = validation_sample_limit
+                && total_samples >= limit
+            {
+                break;
+            }
         }
     }
 
@@ -296,6 +347,32 @@ pub(super) fn run_validation_with_policy_baseline(
             delta_q_policy_transfer_snapshot,
         })
     }
+}
+
+pub(super) fn materialize_validation_samples(
+    config: &TrainConfig,
+    loader_config: &StreamingLoaderConfig,
+    manifest: &DataManifest,
+) -> Result<Option<Vec<MjaiSample>>, String> {
+    let Some(limit) = validation_sample_limit(config) else {
+        return Ok(None);
+    };
+    let mut samples = Vec::with_capacity(limit);
+    for buffer_result in stream_val_pass(manifest, loader_config, None) {
+        let buffer = buffer_result.map_err(|err| format!("validation stream failed: {err}"))?;
+        if buffer.is_empty() {
+            continue;
+        }
+        let remaining = limit.saturating_sub(samples.len());
+        if remaining == 0 {
+            break;
+        }
+        samples.extend(buffer.into_iter().take(remaining));
+        if samples.len() >= limit {
+            break;
+        }
+    }
+    Ok(Some(samples))
 }
 
 #[cfg(test)]
@@ -591,7 +668,17 @@ mod tests {
         let loss_fn = HydraLoss::<ValidBackend>::new(HydraLossConfig::new());
         let exit_cfg = BcExitConfig::default();
 
-        let stats = validation_batch_stats(2, &output, &batch, &targets, &loss_fn, &exit_cfg);
+        let breakdown = loss_fn.total_loss(&output, &targets);
+        let total = bc_total_with_exit(&output, &batch, &targets, &loss_fn, &exit_cfg);
+        let stats = validation_batch_stats(
+            2,
+            &output,
+            &batch,
+            &targets,
+            &breakdown,
+            &total,
+            &exit_cfg,
+        );
         let expected_total = bc_total_with_exit(&output, &batch, &targets, &loss_fn, &exit_cfg)
             .into_scalar()
             .elem::<f64>();
@@ -625,6 +712,7 @@ mod tests {
                 config: &config,
                 loader_config: &loader_config,
                 manifest: &manifest,
+                cached_samples: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -663,6 +751,7 @@ mod tests {
                 config: &config,
                 loader_config: &loader_config,
                 manifest: &manifest,
+                cached_samples: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -681,6 +770,7 @@ mod tests {
                 config: &config,
                 loader_config: &loader_config,
                 manifest: &manifest,
+                cached_samples: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),

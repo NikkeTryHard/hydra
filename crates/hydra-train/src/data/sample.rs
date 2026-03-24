@@ -4,6 +4,7 @@ use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
+use std::cell::RefCell;
 
 use crate::training::exit::collate_exit_targets;
 use crate::training::losses::HydraTargets;
@@ -75,6 +76,10 @@ const GRP_CLASS_COUNT: usize = 24;
 const BELIEF_FIELD_PLANES: usize = 16;
 const BELIEF_FIELD_SIZE: usize = BELIEF_FIELD_PLANES * TILE_COUNT;
 const SPATIAL_TARGET_SIZE: usize = OPPONENT_COUNT * TILE_COUNT;
+
+thread_local! {
+    static COLLATE_SCRATCH: RefCell<Option<CollateBuffers>> = const { RefCell::new(None) };
+}
 
 const SCORE_BIN_MIN: f32 = -50000.0;
 const SCORE_BIN_MAX: f32 = 60000.0;
@@ -314,11 +319,22 @@ fn collate_with_writer<'a, B: Backend, I>(
 where
     I: IntoIterator<Item = (&'a MjaiSample, Option<&'a [u8; 3]>)>,
 {
-    let mut buffers = CollateBuffers::new(batch);
-    for (index, (sample, perm)) in samples.into_iter().enumerate() {
-        buffers.write_sample(index, sample, perm)?;
-    }
-    Ok(buffers.into_batch(batch, device))
+    COLLATE_SCRATCH.with(|scratch| {
+        let mut slot = scratch.borrow_mut();
+        let mut buffers = match slot.take() {
+            Some(mut buffers) if buffers.capacity_batch() >= batch => {
+                buffers.reset_for_batch(batch);
+                buffers
+            }
+            _ => CollateBuffers::new(batch),
+        };
+        for (index, (sample, perm)) in samples.into_iter().enumerate() {
+            buffers.write_sample(index, sample, perm)?;
+        }
+        let batch_out = buffers.to_batch(batch, device);
+        *slot = Some(buffers);
+        Ok(batch_out)
+    })
 }
 
 fn build_batch_from_samples<B: Backend>(
@@ -411,6 +427,38 @@ impl CollateBuffers {
             pdf_flat: vec![0.0f32; batch * SCORE_BINS],
             cdf_flat: vec![0.0f32; batch * SCORE_BINS],
         }
+    }
+
+    fn capacity_batch(&self) -> usize {
+        self.actions.len()
+    }
+
+    fn reset_for_batch(&mut self, batch: usize) {
+        debug_assert!(self.capacity_batch() >= batch);
+        self.obs_flat[..batch * OBS_SIZE].fill(0.0);
+        self.actions[..batch].fill(0);
+        self.mask_flat[..batch * HYDRA_ACTION_SPACE].fill(0.0);
+        self.values[..batch].fill(0.0);
+        self.grp_flat[..batch * GRP_CLASS_COUNT].fill(0.0);
+        self.oracle_flat[..batch * PLAYER_COUNT].fill(0.0);
+        self.oracle_mask[..batch].fill(0.0);
+        self.tenpai_flat[..batch * OPPONENT_COUNT].fill(0.0);
+        self.danger_flat[..batch * SPATIAL_TARGET_SIZE].fill(0.0);
+        self.dmask_flat[..batch * SPATIAL_TARGET_SIZE].fill(0.0);
+        self.safety_residual_flat[..batch * HYDRA_ACTION_SPACE].fill(0.0);
+        self.safety_residual_mask_flat[..batch * HYDRA_ACTION_SPACE].fill(0.0);
+        self.any_safety_residual = false;
+        self.exit_samples[..batch].fill(None);
+        self.delta_q_samples[..batch].fill(None);
+        self.belief_fields_flat[..batch * BELIEF_FIELD_SIZE].fill(0.0);
+        self.mixture_weights_flat[..batch * PLAYER_COUNT].fill(0.0);
+        self.any_belief_fields = false;
+        self.any_mixture_weights = false;
+        self.belief_fields_mask[..batch].fill(0.0);
+        self.mixture_weight_mask[..batch].fill(0.0);
+        self.opp_flat[..batch * SPATIAL_TARGET_SIZE].fill(0.0);
+        self.pdf_flat[..batch * SCORE_BINS].fill(0.0);
+        self.cdf_flat[..batch * SCORE_BINS].fill(0.0);
     }
 
     fn write_sample(
@@ -506,48 +554,63 @@ impl CollateBuffers {
         Ok(())
     }
 
-    fn into_batch<B: Backend>(self, batch: usize, device: &B::Device) -> MjaiBatch<B> {
-        let (exit_target, exit_mask) = collate_exit_targets::<B>(&self.exit_samples, device);
-        let (delta_q_target, delta_q_mask) =
-            crate::training::exit::collate_delta_q_targets::<B>(&self.delta_q_samples, device);
+    fn to_batch<B: Backend>(&self, batch: usize, device: &B::Device) -> MjaiBatch<B> {
+        let (exit_target, exit_mask) =
+            collate_exit_targets::<B>(&self.exit_samples[..batch], device);
+        let (delta_q_target, delta_q_mask) = crate::training::exit::collate_delta_q_targets::<B>(
+            &self.delta_q_samples[..batch],
+            device,
+        );
         MjaiBatch {
-            obs: Tensor::<B, 1>::from_floats(self.obs_flat.as_slice(), device).reshape([
+            obs: Tensor::<B, 1>::from_floats(&self.obs_flat[..batch * OBS_SIZE], device).reshape([
                 batch,
                 NUM_CHANNELS,
                 TILE_COUNT,
             ]),
-            actions: Tensor::<B, 1, Int>::from_ints(self.actions.as_slice(), device),
-            legal_mask: Tensor::<B, 1>::from_floats(self.mask_flat.as_slice(), device)
-                .reshape([batch, HYDRA_ACTION_SPACE]),
-            value_target: Tensor::<B, 1>::from_floats(self.values.as_slice(), device),
-            grp_target: Tensor::<B, 1>::from_floats(self.grp_flat.as_slice(), device)
-                .reshape([batch, GRP_CLASS_COUNT]),
+            actions: Tensor::<B, 1, Int>::from_ints(&self.actions[..batch], device),
+            legal_mask: Tensor::<B, 1>::from_floats(
+                &self.mask_flat[..batch * HYDRA_ACTION_SPACE],
+                device,
+            )
+            .reshape([batch, HYDRA_ACTION_SPACE]),
+            value_target: Tensor::<B, 1>::from_floats(&self.values[..batch], device),
+            grp_target: Tensor::<B, 1>::from_floats(
+                &self.grp_flat[..batch * GRP_CLASS_COUNT],
+                device,
+            )
+            .reshape([batch, GRP_CLASS_COUNT]),
             oracle_target: optional_tensor_2d::<B>(
-                self.oracle_flat.as_slice(),
-                self.oracle_mask.iter().any(|&v| v > 0.0),
+                &self.oracle_flat[..batch * PLAYER_COUNT],
+                self.oracle_mask[..batch].iter().any(|&v| v > 0.0),
                 batch,
                 PLAYER_COUNT,
                 device,
             ),
-            oracle_target_mask: Tensor::<B, 1>::from_floats(self.oracle_mask.as_slice(), device),
-            tenpai_target: Tensor::<B, 1>::from_floats(self.tenpai_flat.as_slice(), device)
-                .reshape([batch, OPPONENT_COUNT]),
-            danger_target: Tensor::<B, 1>::from_floats(self.danger_flat.as_slice(), device)
-                .reshape([batch, OPPONENT_COUNT, TILE_COUNT]),
-            danger_mask: Tensor::<B, 1>::from_floats(self.dmask_flat.as_slice(), device).reshape([
-                batch,
-                OPPONENT_COUNT,
-                TILE_COUNT,
-            ]),
+            oracle_target_mask: Tensor::<B, 1>::from_floats(&self.oracle_mask[..batch], device),
+            tenpai_target: Tensor::<B, 1>::from_floats(
+                &self.tenpai_flat[..batch * OPPONENT_COUNT],
+                device,
+            )
+            .reshape([batch, OPPONENT_COUNT]),
+            danger_target: Tensor::<B, 1>::from_floats(
+                &self.danger_flat[..batch * SPATIAL_TARGET_SIZE],
+                device,
+            )
+            .reshape([batch, OPPONENT_COUNT, TILE_COUNT]),
+            danger_mask: Tensor::<B, 1>::from_floats(
+                &self.dmask_flat[..batch * SPATIAL_TARGET_SIZE],
+                device,
+            )
+            .reshape([batch, OPPONENT_COUNT, TILE_COUNT]),
             safety_residual_target: optional_tensor_2d::<B>(
-                self.safety_residual_flat.as_slice(),
+                &self.safety_residual_flat[..batch * HYDRA_ACTION_SPACE],
                 self.any_safety_residual,
                 batch,
                 HYDRA_ACTION_SPACE,
                 device,
             ),
             safety_residual_mask: optional_tensor_2d::<B>(
-                self.safety_residual_mask_flat.as_slice(),
+                &self.safety_residual_mask_flat[..batch * HYDRA_ACTION_SPACE],
                 self.any_safety_residual,
                 batch,
                 HYDRA_ACTION_SPACE,
@@ -558,7 +621,7 @@ impl CollateBuffers {
             delta_q_target,
             delta_q_mask,
             belief_fields_target: optional_tensor_3d::<B>(
-                self.belief_fields_flat.as_slice(),
+                &self.belief_fields_flat[..batch * BELIEF_FIELD_SIZE],
                 self.any_belief_fields,
                 batch,
                 BELIEF_FIELD_PLANES,
@@ -566,28 +629,37 @@ impl CollateBuffers {
                 device,
             ),
             mixture_weight_target: optional_tensor_2d::<B>(
-                self.mixture_weights_flat.as_slice(),
+                &self.mixture_weights_flat[..batch * PLAYER_COUNT],
                 self.any_mixture_weights,
                 batch,
                 PLAYER_COUNT,
                 device,
             ),
             belief_fields_mask: optional_mask_tensor_1d::<B>(
-                self.belief_fields_mask.as_slice(),
+                &self.belief_fields_mask[..batch],
                 self.any_belief_fields,
                 device,
             ),
             mixture_weight_mask: optional_mask_tensor_1d::<B>(
-                self.mixture_weight_mask.as_slice(),
+                &self.mixture_weight_mask[..batch],
                 self.any_mixture_weights,
                 device,
             ),
-            opp_next_target: Tensor::<B, 1>::from_floats(self.opp_flat.as_slice(), device)
-                .reshape([batch, OPPONENT_COUNT, TILE_COUNT]),
-            score_pdf_target: Tensor::<B, 1>::from_floats(self.pdf_flat.as_slice(), device)
-                .reshape([batch, SCORE_BINS]),
-            score_cdf_target: Tensor::<B, 1>::from_floats(self.cdf_flat.as_slice(), device)
-                .reshape([batch, SCORE_BINS]),
+            opp_next_target: Tensor::<B, 1>::from_floats(
+                &self.opp_flat[..batch * SPATIAL_TARGET_SIZE],
+                device,
+            )
+            .reshape([batch, OPPONENT_COUNT, TILE_COUNT]),
+            score_pdf_target: Tensor::<B, 1>::from_floats(
+                &self.pdf_flat[..batch * SCORE_BINS],
+                device,
+            )
+            .reshape([batch, SCORE_BINS]),
+            score_cdf_target: Tensor::<B, 1>::from_floats(
+                &self.cdf_flat[..batch * SCORE_BINS],
+                device,
+            )
+            .reshape([batch, SCORE_BINS]),
         }
     }
 }

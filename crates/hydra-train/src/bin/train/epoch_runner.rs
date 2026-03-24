@@ -61,6 +61,7 @@ pub(super) struct EpochRunnerContext<'a> {
     pub(super) current_runtime: RuntimeResumeContract,
     pub(super) run_start: &'a Instant,
     pub(super) head_controller: &'a mut HeadActivationController,
+    pub(super) cached_validation_samples: Option<&'a [MjaiSample]>,
 }
 
 pub(super) struct EpochRuntimeMut<'a, O, W>
@@ -100,6 +101,7 @@ struct ValidationStepContext<'a> {
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
     session_start_global_step: usize,
+    cached_validation_samples: Option<&'a [MjaiSample]>,
 }
 
 struct IntervalStepSummaryContext<'a> {
@@ -142,6 +144,13 @@ struct EpochEndValidationContext<'a> {
     valid_loss_fn: &'a HydraLoss<ValidBackend>,
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
+    cached_validation_samples: Option<&'a [MjaiSample]>,
+}
+
+#[derive(Clone)]
+struct ValidationEvent {
+    global_step: usize,
+    summary: ValidationSummary,
 }
 
 struct EpochFinalizeContext<'a> {
@@ -271,6 +280,7 @@ fn maybe_run_interval_validation(
         bc_exit_cfg,
         artifacts,
         session_start_global_step,
+        cached_validation_samples,
     } = context;
     let session_step = session_steps_completed(global_step, session_start_global_step);
     if session_step == 0 || !session_step.is_multiple_of(config.validate_every_n_steps) {
@@ -300,6 +310,7 @@ fn maybe_run_interval_validation(
             config,
             loader_config,
             manifest,
+            cached_samples: cached_validation_samples,
             device: train_device,
             loss_fn: valid_loss_fn,
             exit_cfg: bc_exit_cfg,
@@ -563,6 +574,7 @@ fn run_epoch_end_validation(
         valid_loss_fn,
         bc_exit_cfg,
         artifacts,
+        cached_validation_samples,
     } = context;
     if !should_run_epoch_end_validation(epoch, config.num_epochs, config.validation_every_n_epochs)
     {
@@ -586,6 +598,7 @@ fn run_epoch_end_validation(
             config,
             loader_config,
             manifest,
+            cached_samples: cached_validation_samples,
             device: train_device,
             loss_fn: valid_loss_fn,
             exit_cfg: bc_exit_cfg,
@@ -775,6 +788,7 @@ where
         current_runtime,
         run_start,
         head_controller,
+        cached_validation_samples,
     } = context;
     let EpochRuntimeMut {
         model,
@@ -820,6 +834,7 @@ where
     let mut assumed_games_seen = 0usize;
     let mut remaining_games = manifest.train_count;
     let mut epoch_optimizer_steps = steps_to_skip;
+    let mut last_interval_validation: Option<ValidationEvent> = None;
 
     for buffer_result in stream_train_epoch(manifest, loader_config, epoch, Some(&load_pb)) {
         let buffer = buffer_result.map_err(|err| format!("training stream failed: {err}"))?;
@@ -903,6 +918,7 @@ where
                     bc_exit_cfg,
                     artifacts,
                     session_start_global_step,
+                    cached_validation_samples,
                 },
                 model,
                 Some(head_controller),
@@ -910,6 +926,12 @@ where
                 *global_step,
                 step_window.finalize().total_loss,
             )?;
+            if let Some(summary) = val_summary.clone() {
+                last_interval_validation = Some(ValidationEvent {
+                    global_step: *global_step,
+                    summary,
+                });
+            }
 
             if session_step > 0 && session_step.is_multiple_of(config.log_every_n_steps) {
                 let window_stats = std::mem::take(&mut step_window).finalize();
@@ -1037,22 +1059,30 @@ where
         });
     }
 
-    let val_summary = run_epoch_end_validation(
-        epoch,
-        model,
-        EpochEndValidationContext {
-            config,
-            loader_config,
-            manifest,
-            train_device,
-            valid_loss_fn,
-            bc_exit_cfg,
-            artifacts,
-        },
-        Some(head_controller),
-        best_validation,
-        train_stats.total_loss,
-    )?;
+    let val_summary = if let Some(last_validation) = last_interval_validation.as_ref()
+        && last_validation.global_step == *global_step
+        && should_run_epoch_end_validation(epoch, config.num_epochs, config.validation_every_n_epochs)
+    {
+        Some(last_validation.summary.clone())
+    } else {
+        run_epoch_end_validation(
+            epoch,
+            model,
+            EpochEndValidationContext {
+                config,
+                loader_config,
+                manifest,
+                train_device,
+                valid_loss_fn,
+                bc_exit_cfg,
+                artifacts,
+                cached_validation_samples,
+            },
+            Some(head_controller),
+            best_validation,
+            train_stats.total_loss,
+        )?
+    };
 
     finalize_epoch_outputs(
         tb,
@@ -1363,6 +1393,7 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 session_start_global_step: 10,
+                cached_validation_samples: None,
             },
             &model,
             None,
@@ -1383,6 +1414,7 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 session_start_global_step: 10,
+                cached_validation_samples: None,
             },
             &model,
             None,
@@ -1573,6 +1605,7 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 session_start_global_step: 10,
+                cached_validation_samples: None,
             },
             &model,
             None,
@@ -1629,6 +1662,7 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 session_start_global_step: 10,
+                cached_validation_samples: None,
             },
             &model,
             None,
@@ -1795,6 +1829,7 @@ mod tests {
                 valid_loss_fn: &valid_loss_fn,
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
+                cached_validation_samples: None,
             },
             None,
             &mut best_validation,
@@ -1838,6 +1873,7 @@ mod tests {
                 valid_loss_fn: &valid_loss_fn,
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
+                cached_validation_samples: None,
             },
             None,
             &mut best_validation,
@@ -2002,6 +2038,7 @@ mod tests {
                 current_runtime: dummy_runtime_resume_contract(),
                 run_start: &run_start,
                 head_controller: &mut head_controller,
+                cached_validation_samples: None,
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -2097,6 +2134,7 @@ mod tests {
                 current_runtime: dummy_runtime_resume_contract(),
                 run_start: &run_start,
                 head_controller: &mut head_controller,
+                cached_validation_samples: None,
             },
             EpochRuntimeMut {
                 model: &mut model,

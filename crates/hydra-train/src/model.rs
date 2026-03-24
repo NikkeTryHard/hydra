@@ -82,6 +82,19 @@ impl<B: Backend> HydraOutput<B> {
     }
 }
 
+fn zero_linear_head<B: Backend>(batch: usize, width: usize, device: &B::Device) -> Tensor<B, 2> {
+    Tensor::<B, 2>::zeros([batch, width], device)
+}
+
+fn zero_spatial_head<B: Backend>(
+    batch: usize,
+    channels: usize,
+    width: usize,
+    device: &B::Device,
+) -> Tensor<B, 3> {
+    Tensor::<B, 3>::zeros([batch, channels, width], device)
+}
+
 #[derive(Module, Debug)]
 pub struct HydraModel<B: Backend> {
     backbone: SEResNet<B>,
@@ -420,6 +433,8 @@ impl<B: Backend> HydraModel<B> {
         let oracle_input = pooled.clone().detach();
         let is_warmup =
             |head: crate::training::head_gates::AdvancedHead| warmup_heads.contains(&head);
+        let batch = pooled.dims()[0];
+        let device = pooled.device();
 
         let policy_logits = self.policy.forward(pooled.clone());
         let value = self.value.forward(pooled.clone());
@@ -429,12 +444,48 @@ impl<B: Backend> HydraModel<B> {
         let grp = self.grp.forward(pooled.clone());
         let opp_next_discard = self.opp_next_discard.forward(spatial.clone());
         let danger = self.danger.forward(spatial.clone());
-        let oracle_critic = self.oracle_critic.forward(oracle_input);
-        let belief_fields = self.belief_field.forward(spatial);
-        let mixture_weight_logits = self.mixture_weight.forward(pooled.clone());
-        let opponent_hand_type = self.opponent_hand_type.forward(pooled.clone());
-        let delta_q = self.delta_q.forward(pooled.clone());
-        let safety_residual = self.safety_residual.forward(pooled);
+        let oracle_critic = if loss_cfg.w_oracle_critic > 0.0
+            && !is_warmup(crate::training::head_gates::AdvancedHead::OracleCritic)
+        {
+            self.oracle_critic.forward(oracle_input)
+        } else {
+            zero_linear_head(batch, 4, &device)
+        };
+        let belief_fields = if loss_cfg.w_belief_fields > 0.0
+            && !is_warmup(crate::training::head_gates::AdvancedHead::BeliefFields)
+        {
+            self.belief_field.forward(spatial.clone())
+        } else {
+            zero_spatial_head(batch, 16, 34, &device)
+        };
+        let mixture_weight_logits = if loss_cfg.w_mixture_weight > 0.0
+            && !is_warmup(crate::training::head_gates::AdvancedHead::MixtureWeight)
+        {
+            self.mixture_weight.forward(pooled.clone())
+        } else {
+            zero_linear_head(batch, 4, &device)
+        };
+        let opponent_hand_type = if loss_cfg.w_opponent_hand_type > 0.0
+            && !is_warmup(crate::training::head_gates::AdvancedHead::OpponentHandType)
+        {
+            self.opponent_hand_type.forward(pooled.clone())
+        } else {
+            zero_linear_head(batch, 24, &device)
+        };
+        let delta_q = if loss_cfg.w_delta_q > 0.0
+            && !is_warmup(crate::training::head_gates::AdvancedHead::DeltaQ)
+        {
+            self.delta_q.forward(pooled.clone())
+        } else {
+            zero_linear_head(batch, HYDRA_ACTION_SPACE, &device)
+        };
+        let safety_residual = if loss_cfg.w_safety_residual > 0.0
+            && !is_warmup(crate::training::head_gates::AdvancedHead::SafetyResidual)
+        {
+            self.safety_residual.forward(pooled)
+        } else {
+            zero_linear_head(batch, HYDRA_ACTION_SPACE, &device)
+        };
 
         HydraOutput {
             policy_logits,
@@ -469,48 +520,12 @@ impl<B: Backend> HydraModel<B> {
             } else {
                 danger.detach()
             },
-            oracle_critic: if loss_cfg.w_oracle_critic > 0.0
-                && !is_warmup(crate::training::head_gates::AdvancedHead::OracleCritic)
-            {
-                oracle_critic
-            } else {
-                oracle_critic.detach()
-            },
-            belief_fields: if loss_cfg.w_belief_fields > 0.0
-                && !is_warmup(crate::training::head_gates::AdvancedHead::BeliefFields)
-            {
-                belief_fields
-            } else {
-                belief_fields.detach()
-            },
-            mixture_weight_logits: if loss_cfg.w_mixture_weight > 0.0
-                && !is_warmup(crate::training::head_gates::AdvancedHead::MixtureWeight)
-            {
-                mixture_weight_logits
-            } else {
-                mixture_weight_logits.detach()
-            },
-            opponent_hand_type: if loss_cfg.w_opponent_hand_type > 0.0
-                && !is_warmup(crate::training::head_gates::AdvancedHead::OpponentHandType)
-            {
-                opponent_hand_type
-            } else {
-                opponent_hand_type.detach()
-            },
-            delta_q: if loss_cfg.w_delta_q > 0.0
-                && !is_warmup(crate::training::head_gates::AdvancedHead::DeltaQ)
-            {
-                delta_q
-            } else {
-                delta_q.detach()
-            },
-            safety_residual: if loss_cfg.w_safety_residual > 0.0
-                && !is_warmup(crate::training::head_gates::AdvancedHead::SafetyResidual)
-            {
-                safety_residual
-            } else {
-                safety_residual.detach()
-            },
+            oracle_critic,
+            belief_fields,
+            mixture_weight_logits,
+            opponent_hand_type,
+            delta_q,
+            safety_residual,
         }
     }
 
@@ -721,6 +736,49 @@ mod tests {
             x.grad(&grads).is_some(),
             "active delta_q loss should backpropagate through the shared backbone"
         );
+    }
+
+    #[test]
+    fn inactive_advanced_heads_return_zero_tensors() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, INPUT_CHANNELS, 34], &device);
+        let loss_cfg = crate::training::losses::HydraLossConfig::new();
+        let out = model.forward_active(x, &loss_cfg);
+
+        for &value in out.oracle_critic.to_data().as_slice::<f32>().expect("f32") {
+            assert_eq!(value, 0.0);
+        }
+        for &value in out.belief_fields.to_data().as_slice::<f32>().expect("f32") {
+            assert_eq!(value, 0.0);
+        }
+        for &value in out
+            .mixture_weight_logits
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+        {
+            assert_eq!(value, 0.0);
+        }
+        for &value in out
+            .opponent_hand_type
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+        {
+            assert_eq!(value, 0.0);
+        }
+        for &value in out.delta_q.to_data().as_slice::<f32>().expect("f32") {
+            assert_eq!(value, 0.0);
+        }
+        for &value in out
+            .safety_residual
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+        {
+            assert_eq!(value, 0.0);
+        }
     }
 
     #[test]
