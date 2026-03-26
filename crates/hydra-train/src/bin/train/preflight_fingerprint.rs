@@ -3,13 +3,20 @@ use std::fs;
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::{HardwareFingerprint, PreflightCacheKey, WorkloadFingerprint};
 
-use super::config::{AdvancedLossConfig, TrainConfig};
+use super::config::{AdvancedLossConfig, PrecisionMode, TrainConfig};
 
 fn total_memory_bytes() -> Option<u64> {
     let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
     let line = meminfo.lines().find(|line| line.starts_with("MemTotal:"))?;
     let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
     Some(kb.saturating_mul(1024))
+}
+
+pub(super) fn precision_mode_signature(mode: PrecisionMode) -> String {
+    match mode {
+        PrecisionMode::Fp32 => "fp32".to_string(),
+        PrecisionMode::Bf16Autocast => "bf16_autocast".to_string(),
+    }
 }
 
 pub(super) fn advanced_loss_signature(config: Option<&AdvancedLossConfig>) -> String {
@@ -27,6 +34,7 @@ pub(super) fn workload_fingerprint(
     WorkloadFingerprint {
         batch_size: config.batch_size,
         augment: config.augment,
+        precision_mode: precision_mode_signature(config.precision_mode),
         train_fraction_bits: config.train_fraction.to_bits(),
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         max_validation_batches: config.max_validation_batches,
@@ -80,7 +88,7 @@ mod tests {
     use super::*;
     use hydra_train::preflight::PreflightConfig;
 
-    use crate::config::{AdvancedLossConfig, BcHyperparamConfig};
+    use crate::config::{AdvancedLossConfig, BcHyperparamConfig, PrecisionMode};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -100,6 +108,7 @@ mod tests {
             rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
+            precision_mode: PrecisionMode::Fp32,
             buffer_games: 16,
             buffer_samples: 128,
             num_threads: Some(2),
@@ -137,6 +146,7 @@ mod tests {
     #[test]
     fn workload_fingerprint_captures_model_and_config_shape() {
         let mut config = dummy_config();
+        config.precision_mode = PrecisionMode::Bf16Autocast;
         config.advanced_loss = Some(AdvancedLossConfig {
             exit: Some(0.25),
             safety_residual: Some(0.75),
@@ -150,6 +160,7 @@ mod tests {
         let fingerprint = workload_fingerprint(&config, &model_config);
         assert_eq!(fingerprint.batch_size, 256);
         assert!(fingerprint.augment);
+        assert_eq!(fingerprint.precision_mode, "bf16_autocast");
         assert_eq!(fingerprint.train_fraction_bits, 0.875f32.to_bits());
         assert_eq!(fingerprint.max_skip_logs_per_source, 4);
         assert_eq!(fingerprint.max_validation_batches, Some(3));
@@ -183,7 +194,23 @@ mod tests {
         assert_eq!(cache_key.hardware.device_label, "cuda:0");
         assert_eq!(cache_key.hardware.cpu_logical_cores, 32);
         assert_eq!(cache_key.workload.batch_size, config.batch_size);
+        assert_eq!(cache_key.workload.precision_mode, "fp32");
         assert!(cache_key.workload.model_signature.contains("blocks:12"));
+    }
+
+    #[test]
+    fn precision_mode_changes_preflight_cache_key() {
+        let fp32 = dummy_config();
+        let mut bf16 = dummy_config();
+        bf16.precision_mode = PrecisionMode::Bf16Autocast;
+        let model_config = HydraModelConfig::learner();
+
+        let fp32_key = preflight_cache_key(&fp32, &model_config, "cuda:0", 32);
+        let bf16_key = preflight_cache_key(&bf16, &model_config, "cuda:0", 32);
+
+        assert_eq!(fp32_key.workload.precision_mode, "fp32");
+        assert_eq!(bf16_key.workload.precision_mode, "bf16_autocast");
+        assert_ne!(fp32_key, bf16_key);
     }
 
     #[test]
