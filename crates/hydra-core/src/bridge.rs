@@ -528,19 +528,18 @@ pub fn extract_hand_ref(obs: &ObservationRef<'_>) -> [u8; NUM_TILE_TYPES] {
 /// Extract discard info for all 4 players from an ObservationRef.
 ///
 /// Player indices are RELATIVE to the observer (index 0 = observer).
-/// Note: tsumogiri flags are not available on ObservationRef, so all
-/// discards default to tedashi=true (conservative for safety encoding).
 #[inline]
 pub fn extract_discards_ref(obs: &ObservationRef<'_>) -> [PlayerDiscards; 4] {
     let observer = obs.player_id as usize;
     std::array::from_fn(|relative_idx| {
         let abs = (observer + relative_idx) % 4;
         let disc = obs.discards[abs];
+        let tedashi = obs.tsumogiri_flags[abs];
         let mut pd = PlayerDiscards::new();
         for (turn, &tile136) in disc.iter().enumerate() {
             pd.push(DiscardEntry {
                 tile: (tile136 / 4),
-                is_tedashi: true,
+                is_tedashi: tedashi.get(turn).copied().unwrap_or(false),
                 turn: turn as u16,
             });
         }
@@ -689,6 +688,7 @@ pub fn encode_observation_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riichienv_core::action::{Action, ActionType};
     use riichienv_core::rule::GameRule;
     use riichienv_core::state::GameState;
 
@@ -716,6 +716,37 @@ mod tests {
         let discards = extract_discards(&obs);
         for pd in &discards {
             assert_eq!(pd.len, 0);
+        }
+    }
+
+    #[test]
+    fn extract_discards_ref_matches_owned_observation_tedashi_flags() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState::new(0, true, Some(42), 0, rule);
+        let pid = state.current_player;
+        if let Some(tile136) = state.players[pid as usize].hand_slice().first().copied() {
+            let mut actions = [None; 4];
+            actions[pid as usize] =
+                Some(Action::new(ActionType::Discard, Some(tile136), &[], None));
+            state.step_unchecked(&actions);
+        }
+
+        let owned = extract_discards(&state.get_observation(state.current_player));
+        let observed = state.observe(state.current_player);
+        let borrowed = extract_discards_ref(&observed);
+
+        for rel in 0..4 {
+            assert_eq!(owned[rel].len, borrowed[rel].len);
+            for idx in 0..owned[rel].len as usize {
+                assert_eq!(
+                    owned[rel].as_slice()[idx].tile,
+                    borrowed[rel].as_slice()[idx].tile
+                );
+                assert_eq!(
+                    owned[rel].as_slice()[idx].is_tedashi,
+                    borrowed[rel].as_slice()[idx].is_tedashi
+                );
+            }
         }
     }
 
