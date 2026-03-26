@@ -1,0 +1,447 @@
+{
+  "version": 1,
+  "repo_root": "../..",
+  "defaults": {
+    "title": "Hydra prompt — genie hidden-world modeling packet",
+    "artifact_container_tag": "artifacts",
+    "artifact_ids": [
+      "genie-objective"
+    ],
+    "shell_sections": []
+  },
+  "artifacts": [
+    {
+      "id": "genie-objective",
+      "type": "literal",
+      "label": "Genie objective and framing",
+      "explanation": "Task-local reminder for the hidden-world-modeling genie packet. This keeps the agent aimed at Hydra strength, not theory beauty for its own sake.",
+      "fence_language": "text",
+      "content_lines": [
+        "Goal: maximize Hydra strength by solving the hidden-world modeling lane as strongly as possible.",
+        "Interpret the lane as public-state posterior inference over concealed tile allocation and opponent latent state under finite-tile conservation.",
+        "Do not stop at existence checks. We want the strongest surviving formulation, the canonical target object, the teacher hierarchy, the buildable tranche, and the exact gates that would justify promotion.",
+        "Cross-field imports are welcome, but only if they survive Hydra doctrine, runtime contracts, public-information legality, and multiplayer imperfect-information caveats.",
+        "The packet intentionally includes random-but-useful outside fields like SLAM, medical uncertainty calibration, weather data assimilation, and active inference."
+      ]
+    },
+    {
+      "id": "repo-readme",
+      "type": "file_full",
+      "path": "README.md",
+      "label": "Repo routing and project goal",
+      "explanation": "Top-level routing artifact showing Hydra’s explicit goal, authority order, and project identity around opponent modeling and inference-time search.",
+      "source_label": "README",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "hydra-reconciliation-full",
+      "type": "file_full",
+      "path": "research/design/HYDRA_RECONCILIATION.md",
+      "label": "Promoted operational doctrine and Hydra v1 roadmap",
+      "explanation": "Primary active-path doctrine. This is the most important local artifact for distinguishing shipped baseline, staged challenger lanes, and reserve-only ideas.",
+      "source_label": "RECON",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "current-status-full",
+      "type": "file_full",
+      "path": "docs/CURRENT_STATUS.md",
+      "label": "Current shipped vs staged repo truth",
+      "explanation": "Current-status snapshot used to stop the agent from treating doctrine or archive notes as already-live behavior.",
+      "source_label": "STATUS",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "game-engine-runtime-contract",
+      "type": "file_range",
+      "path": "docs/GAME_ENGINE.md",
+      "start_line": 122,
+      "end_line": 124,
+      "label": "Live encoder/runtime contract",
+      "explanation": "Tiny but critical runtime truth slice showing the live fixed-superset 192x34 contract and the role of search/belief and Hand-EV planes.",
+      "source_label": "ENGINE",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "game-engine-runtime-note",
+      "type": "file_range",
+      "path": "docs/GAME_ENGINE.md",
+      "start_line": 334,
+      "end_line": 334,
+      "label": "Runtime note on CT-SMC Hand-EV and Group C planes",
+      "explanation": "Direct runtime note that the bridge already upgrades Hand-EV when CT-SMC context exists and populates Group C search/belief planes from live context.",
+      "source_label": "ENGINE",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "hydra-final-full",
+      "type": "file_full",
+      "path": "research/design/HYDRA_FINAL.md",
+      "label": "North-star architecture doctrine",
+      "explanation": "Promoted max-ceiling doctrine. This is where Hydra’s strongest hidden-world, CT-SMC, search, and calibration ambitions are most explicit.",
+      "source_label": "FINAL",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "archive-roadmap-belief-lanes",
+      "type": "file_range",
+      "path": "research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md",
+      "start_line": 113,
+      "end_line": 176,
+      "label": "Archive roadmap narrowing for belief, Hand-EV, and staged lanes",
+      "explanation": "Derived archive prioritization slice showing belief-before-mixture discipline, stronger belief baseline status, Hand-EV staging, and lane sequencing constraints.",
+      "source_label": "ARCHIVE",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "archive-roadmap-belief-diagnosis",
+      "type": "file_range",
+      "path": "research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md",
+      "start_line": 196,
+      "end_line": 218,
+      "label": "Archive diagnosis of Stage-A belief and belief-before-mixture closure",
+      "explanation": "Sharper archive reading that current Stage-A belief is a duplicated aggregate object and that the honest first closure is public-posterior belief before any mixture-weight activation.",
+      "source_label": "ARCHIVE",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "opponent-modeling-sinkhorn-range",
+      "type": "file_range",
+      "path": "research/design/OPPONENT_MODELING.md",
+      "start_line": 647,
+      "end_line": 689,
+      "label": "Constraint-consistent hidden-state modeling via Sinkhorn",
+      "explanation": "High-signal local cross-field import from optimal transport and constrained structured prediction into Mahjong hidden-state inference.",
+      "source_label": "OPPMODEL",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "reward-design-full",
+      "type": "file_full",
+      "path": "research/design/REWARD_DESIGN.md",
+      "label": "Reward design and variance-reduction analysis",
+      "explanation": "Hydra’s reward/reference surface connecting Mahjong-specific RVR to cross-domain variance-reduction precedents like Suphx and centralized critics.",
+      "source_label": "REWARD",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "impl-roadmap-ctsmc-build-plan",
+      "type": "file_range",
+      "path": "research/design/IMPLEMENTATION_ROADMAP.md",
+      "start_line": 622,
+      "end_line": 676,
+      "label": "Implementation roadmap CT-SMC exact sampler plan",
+      "explanation": "Concrete build-plan slice for CT-SMC exact DP sampling, ESS, resampling, and target tests. Useful for turning doctrine into a buildable research object.",
+      "source_label": "IMPL",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "belief-teacher-code",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/teacher/belief.rs",
+      "start_line": 90,
+      "end_line": 166,
+      "label": "Current Stage-A belief teacher implementation",
+      "explanation": "Live code for the current Stage-A belief teacher. Critical for seeing exactly how the present belief object is built, gated, and emitted.",
+      "source_label": "BELIEF",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "mjai-loader-belief-join",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/data/mjai_loader.rs",
+      "start_line": 473,
+      "end_line": 524,
+      "label": "Replay loader seam for belief, ExIt, DeltaQ, and safety residual",
+      "explanation": "Shows the active replay/sample seam where belief fields and mixture weights are joined alongside other auxiliary targets, proving the carrier path already exists.",
+      "source_label": "LOADER",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "sinkhorn-mixture-core",
+      "type": "file_range",
+      "path": "crates/hydra-core/src/sinkhorn.rs",
+      "start_line": 196,
+      "end_line": 360,
+      "label": "Mixture-SIB construction and posterior update machinery",
+      "explanation": "Live Sinkhorn / mixture code showing construction, Bayesian update, entropy regularization, splitting, merging, and posterior-step mechanics.",
+      "source_label": "SINK",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "model-output-surface",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/model.rs",
+      "start_line": 1,
+      "end_line": 25,
+      "label": "Hydra model output surface",
+      "explanation": "Compact top-of-file artifact showing the full live output surface including belief, mixture, opponent-hand-type, DeltaQ, and safety residual heads.",
+      "source_label": "MODEL",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "model-head-gating-forward",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/model.rs",
+      "start_line": 440,
+      "end_line": 550,
+      "label": "Forward pass and advanced-head gating",
+      "explanation": "Live code showing how belief, mixture, opponent, DeltaQ, safety residual, and oracle heads are gated in loss-aware forward paths and in the all-heads forward path.",
+      "source_label": "MODEL",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "bridge-handev-and-search-context",
+      "type": "file_range",
+      "path": "crates/hydra-core/src/bridge.rs",
+      "start_line": 319,
+      "end_line": 384,
+      "label": "Bridge-side Hand-EV and Group C context construction",
+      "explanation": "Bridge slice showing public Hand-EV, CT-SMC-weighted Hand-EV, and the runtime hook for building Group C search/belief planes from available context.",
+      "source_label": "BRIDGE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer15-stage-a-reject",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_15_combined.md",
+      "start_line": 170,
+      "end_line": 228,
+      "label": "Target taxonomy and keep-off logic for Stage-A belief and mixture",
+      "explanation": "Archive handoff slice spelling out why current Stage-A belief and mixture targets fail on semantic correctness even though the plumbing exists.",
+      "source_label": "A15",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer15-public-posterior-target",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_15_combined.md",
+      "start_line": 257,
+      "end_line": 335,
+      "label": "Public posterior expected allocation as semantic target object",
+      "explanation": "Archive handoff slice defining the correct public-posterior target object and explaining why Stage-A is semantically wrong.",
+      "source_label": "A15",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer15-belief-activation-gates",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_15_combined.md",
+      "start_line": 452,
+      "end_line": 502,
+      "label": "Belief activation gates and required future closure",
+      "explanation": "Archive handoff slice specifying the minimum conditions for honest belief activation, including public-history conditioning, true column sizes, and weighted CT-SMC expectations.",
+      "source_label": "A15",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer27-repo-grounded-closure",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_27_combined.md",
+      "start_line": 337,
+      "end_line": 554,
+      "label": "Repo-grounded belief-before-mixture closure blueprint",
+      "explanation": "Strong narrowing artifact that explains how belief can move before mixture using the current carrier surfaces while keeping mixture off and preserving train-bin safety gates.",
+      "source_label": "A27",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer28-semantic-object-closure",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_28_combined.md",
+      "start_line": 275,
+      "end_line": 509,
+      "label": "Semantic-object belief closure and Stage-A diagnosis",
+      "explanation": "Strong semantic artifact diagnosing current Stage-A as a duplicated aggregate projection and defining the honest replacement object as the public posterior expected hidden allocation.",
+      "source_label": "A28",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "cross-field-techniques-full",
+      "type": "file_full",
+      "path": "research/intel/CROSS_FIELD_TECHNIQUES.md",
+      "label": "Cross-field techniques already discussed inside Hydra",
+      "explanation": "High-signal local cross-field transfer surface covering Bayesian sequential update, Rao-Blackwellized particle filtering, FastSLAM, and active-inference/POMDP ideas in Hydra terms.",
+      "source_label": "XFIELD",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "references-full",
+      "type": "file_full",
+      "path": "research/intel/REFERENCES.md",
+      "label": "Reference index for Hydra-adjacent methods",
+      "explanation": "Citation index for Hydra-adjacent papers, tools, and repos. Useful as a local evidence anchor and provenance map.",
+      "source_label": "REFS",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "training-paradigms-full",
+      "type": "file_full",
+      "path": "research/comparisons/TRAINING_PARADIGMS.md",
+      "label": "Comparative training paradigms for IIGs and world models",
+      "explanation": "Local comparison surface for CFR, ReBeL, DeepStack-style values, learned world models, and adjacent training paradigms relevant to Hydra’s hidden-world lane.",
+      "source_label": "PARADIGM",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "belief-state-survey-full",
+      "type": "file_full",
+      "path": "research/evidence/BELIEF_STATE_SURVEY.md",
+      "label": "Belief-state survey across poker, ISMCTS, CSP, and Hydra mapping",
+      "explanation": "One of the strongest local survey artifacts for hidden-world inference, belief-state search, Pluribus, Libratus, DeepStack, ISMCTS, and constrained belief states.",
+      "source_label": "BSURVEY",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "multiplayer-search-research-full",
+      "type": "file_full",
+      "path": "research/evidence/multiplayer_search_research.md",
+      "label": "Multiplayer imperfect-information search caveats and precedents",
+      "explanation": "Local evidence file on ReBeL, Student of Games, GT-CFR, and Pluribus, especially useful for keeping multiplayer theory claims honest in the genie packet.",
+      "source_label": "MSEARCH",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "external-artifact-bank",
+      "type": "file_full",
+      "path": "research/agent_handoffs/genie_hidden_world_external_artifact_bank.md",
+      "label": "Curated external artifact bank across random high-signal fields",
+      "explanation": "Curated outside artifact bank with links, packaging labels, transfer arguments, and caveats across calibration, SLAM, particle filters, data assimilation, active inference, Pluribus, and Suphx.",
+      "source_label": "EXTBANK",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "external-pdf-extractions",
+      "type": "file_full",
+      "path": "research/agent_handoffs/genie_hidden_world_external_pdf_extractions.md",
+      "label": "PDF extraction notes for cross-field external artifacts",
+      "explanation": "Hydra-facing extraction notes from downloaded PDFs. Useful because they compress long papers into transfer-ready mechanisms while preserving links back to the primary sources.",
+      "source_label": "PDFX",
+      "fence_language": "md",
+      "show_line_numbers": true
+    }
+  ],
+  "variants": [
+    {
+      "name": "genie-hidden-world-broad-fuse-loop",
+      "title": "Hydra prompt — genie hidden-world modeling broad_novel_fuse_loop",
+      "shell_source_path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_002_broad_novel_fuse_loop.md",
+      "output_file": "genie-hidden-world-broad-fuse-loop.md",
+      "artifact_ids": [
+        "repo-readme",
+        "hydra-reconciliation-full",
+        "current-status-full",
+        "game-engine-runtime-contract",
+        "game-engine-runtime-note",
+        "hydra-final-full",
+        "archive-roadmap-belief-lanes",
+        "archive-roadmap-belief-diagnosis",
+        "opponent-modeling-sinkhorn-range",
+        "reward-design-full",
+        "impl-roadmap-ctsmc-build-plan",
+        "belief-teacher-code",
+        "mjai-loader-belief-join",
+        "sinkhorn-mixture-core",
+        "model-output-surface",
+        "model-head-gating-forward",
+        "bridge-handev-and-search-context",
+        "answer15-stage-a-reject",
+        "answer15-public-posterior-target",
+        "answer15-belief-activation-gates",
+        "answer27-repo-grounded-closure",
+        "answer28-semantic-object-closure",
+        "cross-field-techniques-full",
+        "references-full",
+        "training-paradigms-full",
+        "belief-state-survey-full",
+        "multiplayer-search-research-full",
+        "external-artifact-bank",
+        "external-pdf-extractions"
+      ],
+      "shell_sections": [
+        {
+          "tag": "role",
+          "mode": "append",
+          "lines": [
+            "You are solving Hydra’s hidden-world modeling lane: the strongest deployable, public-information-visible model of concealed tile allocation and opponent latent state under finite-tile conservation.",
+            "Your job is to find the strongest formulation that survives Hydra doctrine, runtime contracts, and archive narrowing, not to inherit the current framing blindly.",
+            "Treat the packet as a genie-grade research brief: you may preserve hard breakthroughs, but you must still separate genie-only leaps from the narrowest honest buildable tranche."
+          ]
+        },
+        {
+          "tag": "task",
+          "mode": "append",
+          "lines": [
+            "Determine the strongest surviving hidden-world target object for Hydra after the shipped stronger belief baseline: what exact public-posterior / expected hidden-allocation / world-model object should exist, what teacher or proxy can supervise it honestly, what cross-field fragments survive fusion, and what narrower buildable tranche should come next.",
+            "We want a detailed answer that makes clear:",
+            "- what the current artifact set supports directly, what is only inference, and what is still blocked",
+            "- what the current Stage-A / stronger-baseline framing gets right and wrong",
+            "- what the canonical target object should be for student-facing belief supervision and for search-grade hidden-world reasoning",
+            "- what teacher hierarchy should exist: search-grade teacher, amortized fast-path teacher, diagnostics-only objects, and forbidden objects",
+            "- whether a stronger adjacent-field formulation exists and whether useful fragments from multiple fields can be fused into a better formulation",
+            "- what exact formulas, constraints, or objective decompositions should survive after those fused ideas are validated against the artifacts",
+            "- what the narrowest buildable surviving path is inside current Hydra reality",
+            "- what promotion gates, calibration checks, and falsification experiments should control activation",
+            "- which ideas are genie-only breakthroughs, which are near-term buildable, and which should be explicitly rejected",
+            "Use the artifacts below to derive your conclusions."
+          ]
+        },
+        {
+          "tag": "rules",
+          "mode": "append",
+          "lines": [
+            "Do not confuse `HYDRA_FINAL.md` with live doctrine: `HYDRA_FINAL.md` defines ceiling, while `HYDRA_RECONCILIATION.md`, `docs/CURRENT_STATUS.md`, `docs/GAME_ENGINE.md`, and current code define active-path, staged, and runtime truth.",
+            "Respect information-state legality: deployable student targets must be functions of public information. Oracle or hidden-state objects are allowed only as teachers, baselines, diagnostics, or validation tools unless you show a valid public-information reduction.",
+            "Treat this lane as belief-before-mixture and public-posterior-before-richer-opponent-target expansion; do not auto-promote `mixture_weight`, broad latent-opponent expansion, or search-everywhere identity just because they appear in north-star or reserve docs.",
+            "Any fused proposal must reconcile with Hydra’s finite shared hidden pool, hard tile-conservation constraints, live `192x34` / 46-action contract, and already-shipped safety, Hand-EV, ExIt, and DeltaQ surfaces.",
+            "For every major claim, label what is directly artifact-supported, inferred-but-credible, reserve-only, genie-only, or blocked-by-missing teacher/runtime/validation.",
+            "Do not let reward-side cleverness replace missing hidden-world semantics. Reward variance reduction, oracle critics, or search-guided training can strengthen the lane, but they do not by themselves define the correct public-posterior object.",
+            "When importing cross-field ideas, state the exact transfer object and where the analogy breaks. Do not keep an outside formulation just because it sounds deep.",
+            "Treat the current Stage-A belief path as suspect by default: duplicated aggregate structure, weak trust/entropy gates, and non-canonical component identity must be actively disproven by the artifacts before any activation recommendation survives.",
+            "If a proposal depends on a canonical mixture decomposition or stable component labels, show the exact canonicalization contract. If you cannot, keep mixture-style supervision staged or off.",
+            "Do not finish with a vague survey. End with a ranked blueprint that makes the implementation and validation path testable."
+          ]
+        },
+        {
+          "tag": "style",
+          "mode": "append",
+          "lines": [
+            "Bias toward exact semantics over vibe: name the target object, teacher object, loss/object pairing, runtime insertion point, and promotion gate.",
+            "No generic survey energy; spend the space on why a candidate hidden-world formulation survives Hydra’s current doctrine better than nearby alternatives.",
+            "When useful, compare candidates in compact tables keyed by information legality, conservation faithfulness, calibration tractability, runtime compatibility, multiplayer robustness, and promotion readiness.",
+            "Include formulas when needed, code-like sketches when helpful, and worked examples when they make the survival or failure of a formulation easier to verify.",
+            "If you use the external papers, make the transfer concrete enough that a reviewer could say which mechanism belongs in Hydra and which should be rejected."
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,347 @@
+{
+  "version": 1,
+  "repo_root": "../..",
+  "defaults": {
+    "title": "Hydra prompt — hidden-world follow-up packet",
+    "artifact_container_tag": "artifacts",
+    "artifact_ids": [
+      "pass-two-objective"
+    ],
+    "shell_sections": []
+  },
+  "artifacts": [
+    {
+      "id": "pass-two-objective",
+      "type": "literal",
+      "label": "Pass-two objective",
+      "explanation": "Compact reminder that this packet is for design closure, not rediscovery.",
+      "fence_language": "text",
+      "content_lines": [
+        "Pass two is not a rediscovery pass.",
+        "Assume pass one already narrowed the hidden-world lane.",
+        "Now choose the strongest design stack, define the shortest honest tranche, and state where Hydra must be willing to be wrong to get stronger."
+      ]
+    },
+    {
+      "id": "pass-two-output-contract",
+      "type": "literal",
+      "label": "Pass-two answer contract",
+      "explanation": "Keeps the generated packet aligned with the follow-up prompt contract without bloating the shell.",
+      "fence_language": "text",
+      "content_lines": [
+        "Required top-level sections: Executive Verdict; Best Full Design; Shortest Honest Tranche; Algorithm Family Decision Table; Teacher Hierarchy; Training Recipe; Evaluation Gates; Kill Criteria; Where Hydra Is Wrong; What Stays Open; Minimal Experiment Matrix.",
+        "Do not rerun pass-one diagnosis. Produce a ranked design verdict.",
+        "Current Hydra support is build-cost evidence, not a veto on stronger designs."
+      ]
+    },
+    {
+      "id": "repo-readme",
+      "type": "file_full",
+      "path": "README.md",
+      "label": "Repo routing and project goal",
+      "explanation": "Top-level routing artifact showing Hydra’s goal and repo routing logic.",
+      "source_label": "README",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "hydra-reconciliation-slices",
+      "type": "file_range",
+      "path": "research/design/HYDRA_RECONCILIATION.md",
+      "start_line": 133,
+      "end_line": 160,
+      "label": "Current staged-vs-later hidden-world and DeltaQ sequencing",
+      "explanation": "Active-path slice showing belief baseline, DeltaQ lane, staged mixture/opponent closure, and later CT-SMC / AFBS promotions.",
+      "source_label": "RECON",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "current-status-slices",
+      "type": "file_range",
+      "path": "docs/CURRENT_STATUS.md",
+      "start_line": 34,
+      "end_line": 75,
+      "label": "Current shipped vs staged status for belief, DeltaQ, and CT-SMC lanes",
+      "explanation": "Promoted current-status slice showing what is shipped, not default-on, staged, and reserve-shelf.",
+      "source_label": "STATUS",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "impl-roadmap-ctsmc-build-plan",
+      "type": "file_range",
+      "path": "research/design/IMPLEMENTATION_ROADMAP.md",
+      "start_line": 622,
+      "end_line": 676,
+      "label": "CT-SMC implementation roadmap slice",
+      "explanation": "Concrete CT-SMC roadmap slice for buildability and migration planning.",
+      "source_label": "IMPL",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "belief-teacher-code",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/teacher/belief.rs",
+      "start_line": 90,
+      "end_line": 166,
+      "label": "Current Stage-A belief teacher implementation",
+      "explanation": "Grounds what the current teacher path actually emits and gates.",
+      "source_label": "BELIEF",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "sinkhorn-mixture-core",
+      "type": "file_range",
+      "path": "crates/hydra-core/src/sinkhorn.rs",
+      "start_line": 196,
+      "end_line": 360,
+      "label": "Mixture-SIB construction and posterior update machinery",
+      "explanation": "Shows the current hidden-state carrier mechanics and where posterior updates actually live.",
+      "source_label": "SINK",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "ct-smc-core",
+      "type": "file_range",
+      "path": "crates/hydra-core/src/ct_smc.rs",
+      "start_line": 1,
+      "end_line": 47,
+      "label": "CT-SMC config and defaults",
+      "explanation": "Defines the concrete particle/ESS budget and validation surface for the current CT-SMC implementation.",
+      "source_label": "CTSMC",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "ct-smc-update-and-means",
+      "type": "file_range",
+      "path": "crates/hydra-core/src/ct_smc.rs",
+      "start_line": 280,
+      "end_line": 440,
+      "label": "CT-SMC update, ESS, weighted means, and resampling",
+      "explanation": "High-value pass-two artifact for deciding whether weighted world posteriors are already strong enough to anchor the teacher path.",
+      "source_label": "CTSMC",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "loss-policy-blocks",
+      "type": "file_full",
+      "path": "crates/hydra-train/src/bin/train/loss_policy.rs",
+      "label": "Current train-bin loss blocking rules",
+      "explanation": "Shows exactly which advanced losses are blocked in the train entrypoints and therefore where contract migration pressure exists.",
+      "source_label": "LOSSPOL",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "head-gates-core",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/training/head_gates.rs",
+      "start_line": 1,
+      "end_line": 260,
+      "label": "Head activation discipline and gating surfaces",
+      "explanation": "Strong pass-two artifact for promotion-gate reuse or replacement: density, conflict, warmup, and target-presence mechanics.",
+      "source_label": "HGATE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "delta-q-promotion-core",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/training/delta_q_promotion.rs",
+      "start_line": 30,
+      "end_line": 220,
+      "label": "DeltaQ promotion reports and thresholds",
+      "explanation": "Concrete in-repo template for designing belief-lane promotion and rejection logic.",
+      "source_label": "DQPROM",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "validation-loop-surface",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/bin/train/validation.rs",
+      "start_line": 40,
+      "end_line": 220,
+      "label": "Validation loop and promotion snapshot collection",
+      "explanation": "Shows how validation summaries and promotion metrics are actually collected in train-bin flows.",
+      "source_label": "VALID",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "eval-and-arena-gates",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/eval.rs",
+      "start_line": 34,
+      "end_line": 240,
+      "label": "Eval results, benchmark gates, and paired arena decisions",
+      "explanation": "High-value artifact for turning pass-two recommendations into measurable promotion rules.",
+      "source_label": "EVAL",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "exit-validation-template",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/training/exit_validation.rs",
+      "start_line": 19,
+      "end_line": 240,
+      "label": "Existing label-producer validation harness template",
+      "explanation": "A strong local template for what a hidden-world teacher validation harness could look like: emission, coverage, KL, and thresholded pass/fail logic.",
+      "source_label": "EXITVAL",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "testing-slices",
+      "type": "file_range",
+      "path": "research/design/TESTING.md",
+      "start_line": 98,
+      "end_line": 260,
+      "label": "Golden tests, cross-validation, and training smoke tests",
+      "explanation": "Pass-two falsification surface: encoder goldens, roundtrip/cross-validation, and training-stack smoke tests.",
+      "source_label": "TEST",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer15-belief-gates",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_15_combined.md",
+      "start_line": 452,
+      "end_line": 502,
+      "label": "Belief activation gates and required future closure",
+      "explanation": "Compact archive slice on the minimum conditions for honest belief activation, useful for pass-two gate design.",
+      "source_label": "A15",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "reward-design-full",
+      "type": "file_full",
+      "path": "research/design/REWARD_DESIGN.md",
+      "label": "Reward design and variance-reduction analysis",
+      "explanation": "Pass-two design artifact for how the hidden-world lane should interact with reward-side variance reduction rather than competing with it.",
+      "source_label": "REWARD",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer27-closure-blueprint",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_27_combined.md",
+      "start_line": 337,
+      "end_line": 554,
+      "label": "Repo-grounded belief-before-mixture closure blueprint",
+      "explanation": "Pass-two blueprint slice that explains how belief can move before mixture using current carrier surfaces while mixture stays off.",
+      "source_label": "A27",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "answer28-semantic-object-closure",
+      "type": "file_range",
+      "path": "research/agent_handoffs/combined_all_variants/answer_28_combined.md",
+      "start_line": 275,
+      "end_line": 509,
+      "label": "Semantic-object belief closure and Stage-A diagnosis",
+      "explanation": "Pass-two semantic anchor for what current Stage-A still gets wrong and what the stronger object replaces.",
+      "source_label": "A28",
+      "fence_language": "md",
+      "show_line_numbers": true
+    },
+    {
+      "id": "followup-external-bank",
+      "type": "file_full",
+      "path": "research/agent_handoffs/genie_hidden_world_followup_external_artifacts.md",
+      "label": "Pass-two external design-closure artifact bank",
+      "explanation": "A small, focused external bank for pass-two decisions: calibration evaluation, offline-to-online RL, and privileged-information distillation.",
+      "source_label": "EXT2",
+      "fence_language": "md",
+      "show_line_numbers": true
+    }
+  ],
+  "variants": [
+    {
+      "name": "genie-hidden-world-pass-two",
+      "title": "Hydra prompt — hidden-world pass two generated packet",
+      "shell_source_path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_003_balanced_narrow_not_overconstrained.md",
+      "output_file": "genie_hidden_world_followup_generated.md",
+      "artifact_ids": [
+        "repo-readme",
+        "hydra-reconciliation-slices",
+        "current-status-slices",
+        "impl-roadmap-ctsmc-build-plan",
+        "belief-teacher-code",
+        "sinkhorn-mixture-core",
+        "ct-smc-core",
+        "ct-smc-update-and-means",
+        "loss-policy-blocks",
+        "head-gates-core",
+        "delta-q-promotion-core",
+        "validation-loop-surface",
+        "eval-and-arena-gates",
+        "exit-validation-template",
+        "testing-slices",
+        "answer15-belief-gates",
+        "reward-design-full",
+        "answer27-closure-blueprint",
+        "answer28-semantic-object-closure",
+        "followup-external-bank",
+        "pass-two-output-contract"
+      ],
+      "shell_sections": [
+        {
+          "tag": "role",
+          "mode": "append",
+          "lines": [
+            "You are solving hidden-world lane pass two: convert a narrowed diagnosis into the strongest actual strength-producing design stack.",
+            "You may overturn current Hydra support, current staging, and current interfaces if the stronger design requires it."
+          ]
+        },
+        {
+          "tag": "task",
+          "mode": "append",
+          "lines": [
+            "Work toward the strongest exact blueprint for the hidden-world lane after the target-object narrowing pass has already happened.",
+            "We want a detailed answer that makes clear:",
+            "- the best full design, even if it exceeds current Hydra support",
+            "- the shortest honest tranche that preserves the winning design's semantics",
+            "- the ranked algorithm-family decision table",
+            "- the teacher hierarchy and information fences",
+            "- the concrete training recipe",
+            "- the measurable evaluation gates and kill criteria",
+            "- exactly where Hydra is wrong if current assumptions block the stronger design",
+            "Use the artifacts below to derive your conclusions."
+          ]
+        },
+        {
+          "tag": "rules",
+          "mode": "append",
+          "lines": [
+            "Do not rerun pass-one diagnosis or spend the answer rediscovering the hidden-world object.",
+            "Current Hydra support is build-cost evidence, not a veto on stronger designs.",
+            "Keep deployable student objects public-information legal unless you explicitly fence them as teacher-only or diagnostics-only.",
+            "If a stronger design requires contract migration, say so explicitly instead of weakening the design to fit the current carrier.",
+            "Do not end in a survey. End in a ranked verdict with measurable gates and falsification criteria."
+          ]
+        },
+        {
+          "tag": "style",
+          "mode": "append",
+          "lines": [
+            "Bias toward exact design decisions: name objects, losses, transition order, validation surfaces, and kill conditions.",
+            "Use tables when they clarify family comparisons or promotion rules.",
+            "Make it possible for another strong agent to implement or falsify the recommendation later without guessing."
+          ]
+        }
+      ]
+    }
+  ]
+}
