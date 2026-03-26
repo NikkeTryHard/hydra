@@ -42,8 +42,14 @@ tar = "0.4"
 zstd = "0.13"
 ctrlc = "3.4"
 time = { version = "0.3", features = ["formatting"] }
+libloading = "0.8"
 
 [dev-dependencies]
 burn = { version = "0.20", features = ["ndarray"] }
 rand = "0.9"
 rand_chacha = "0.9"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "train_hotpaths_bench"
+harness = false
