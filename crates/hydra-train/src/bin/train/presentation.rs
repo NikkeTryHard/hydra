@@ -13,7 +13,7 @@ use hydra_train::preflight::{
 use super::artifacts::BcArtifactPaths;
 use super::config::TrainConfig;
 use super::config::display_num_threads;
-use super::probe_summary::summarize_probe_results;
+use super::probe_summary::probe_summary_iter;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
 
@@ -401,24 +401,19 @@ pub(super) fn format_probe_results_table(
         ProbeKind::RlGames => "rl_games",
         ProbeKind::RlMicrobatch => "rl_microbatch",
     };
-    let summaries = summarize_probe_results(results);
     let mut lines = vec![format!(
         "kind         selected  candidate_mb  attempts  status                       avg_throughput(samples/s)  avg_elapsed(s)"
     )];
     lines.push(
         "------------ ---------  ------------  --------  ---------------------------  -------------------------  --------------".to_string(),
     );
-    for summary in summaries {
+    for summary in probe_summary_iter(results) {
         let selected = if selected_candidate == Some(summary.candidate_microbatch) {
             "yes"
         } else {
             "no"
         };
-        let status = results
-            .iter()
-            .find(|result| result.candidate_microbatch == summary.candidate_microbatch)
-            .map(probe_failure_reason)
-            .unwrap_or_else(|| probe_status_label(&summary.status));
+        let status = probe_status_label(&summary.status);
         let throughput = summary
             .average_samples_per_second
             .map(|value| format!("{value:.2}"))
