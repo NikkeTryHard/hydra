@@ -4,31 +4,38 @@ use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
+use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
-use hydra_train::data::sample::{MjaiSample, collate_batch_samples};
+use hydra_train::data::sample::{MjaiSample, collate_samples_owned};
 use hydra_train::model::HydraModel;
+use hydra_train::preflight::{
+    PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL, PROFILING_STAGE_CHECKPOINT,
+    PROFILING_STAGE_LOGGING, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
+};
 use hydra_train::training::bc::{
-    BCTrainerConfig, BcExitConfig, bc_total_with_exit, gated_bc_context, policy_agreement,
-    target_actions_from_policy_target,
+    BCTrainerConfig, BcExitConfig, bc_total_with_exit_from_breakdown, gated_bc_context,
 };
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
 
+use super::TrainBackend;
 use super::artifacts::{
-    BcArtifactPaths, LatestCheckpointState, PersistedDeltaQPromotionArtifact, append_step_log,
-    append_training_log, log_tensorboard, save_checkpoint, save_latest_checkpoint_and_state,
-    write_delta_q_promotion_artifact,
+    BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
+    append_step_log_to_writer, append_training_log_to_writer, log_tensorboard, save_checkpoint,
+    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
 };
 use super::config::{TrainConfig, validation_sample_limit};
+use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
 use super::progress::{
-    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_stats_from_breakdown,
+    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_metric_sums_from_outputs,
+    batch_stats_from_metric_sums,
 };
 use super::resume::{
     BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
@@ -41,17 +48,22 @@ use super::status::{
 use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, is_better_validation, run_validation,
 };
-use super::{TrainBackend, ValidBackend};
 
-pub(super) struct EpochRunnerContext<'a> {
+type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
+
+pub(super) struct EpochRunnerContext<'a, B = TrainBackend>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
     pub(super) epoch: usize,
     pub(super) config: &'a TrainConfig,
     pub(super) manifest: &'a DataManifest,
     pub(super) loader_config: &'a StreamingLoaderConfig,
     pub(super) artifacts: &'a BcArtifactPaths,
     pub(super) train_cfg: &'a BCTrainerConfig,
-    pub(super) loss_fn: &'a HydraLoss<TrainBackend>,
-    pub(super) valid_loss_fn: &'a HydraLoss<ValidBackend>,
+    pub(super) loss_fn: &'a HydraLoss<B>,
+    pub(super) valid_loss_fn: &'a HydraLoss<ValidBackendOf<B>>,
     pub(super) bc_exit_cfg: &'a BcExitConfig,
     pub(super) train_device: &'a LibTorchDevice,
     pub(super) session_start_global_step: usize,
@@ -64,16 +76,19 @@ pub(super) struct EpochRunnerContext<'a> {
     pub(super) cached_validation_samples: Option<&'a [MjaiSample]>,
 }
 
-pub(super) struct EpochRuntimeMut<'a, O, W>
+pub(super) struct EpochRuntimeMut<'a, O, W, B = TrainBackend>
 where
-    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
     W: Write,
 {
-    pub(super) model: &'a mut HydraModel<TrainBackend>,
+    pub(super) model: &'a mut Option<HydraModel<B>>,
     pub(super) optimizer: &'a mut O,
     pub(super) global_step: &'a mut usize,
     pub(super) best_validation: &'a mut Option<BestValidation>,
     pub(super) tb: &'a mut Option<EventWriter<W>>,
+    pub(super) training_log: &'a mut JsonlAppender,
+    pub(super) step_log: &'a mut JsonlAppender,
     pub(super) last_log_step: &'a mut usize,
     pub(super) last_log_time: &'a mut Instant,
 }
@@ -82,22 +97,29 @@ pub(super) struct EpochRunOutcome {
     pub(super) stop_after_epoch: bool,
 }
 
-struct TrainLogicalBatchConfig<'a> {
+struct TrainLogicalBatchConfig<'a, B = TrainBackend>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
     microbatch_size: usize,
     augment: bool,
     train_device: &'a LibTorchDevice,
-    loss_fn: &'a HydraLoss<TrainBackend>,
+    loss_fn: &'a HydraLoss<B>,
     bc_exit_cfg: &'a BcExitConfig,
     lr: f64,
 }
 
-struct ValidationStepContext<'a> {
+struct ValidationStepContext<'a, B = TrainBackend>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
     multi: &'a MultiProgress,
     config: &'a TrainConfig,
     loader_config: &'a StreamingLoaderConfig,
     manifest: &'a DataManifest,
     train_device: &'a LibTorchDevice,
-    valid_loss_fn: &'a HydraLoss<ValidBackend>,
+    valid_loss_fn: &'a HydraLoss<ValidBackendOf<B>>,
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
     session_start_global_step: usize,
@@ -105,7 +127,6 @@ struct ValidationStepContext<'a> {
 }
 
 struct IntervalStepSummaryContext<'a> {
-    artifacts: &'a BcArtifactPaths,
     manifest: &'a DataManifest,
     config: &'a TrainConfig,
     session_start_global_step: usize,
@@ -119,6 +140,7 @@ struct IntervalStepSummaryContext<'a> {
     epoch_optimizer_steps: usize,
     window_stats: ScalarAverages,
     step_rate: f64,
+    profiling: Option<ProfilingEnvelope>,
 }
 
 struct PeriodicCheckpointContext<'a> {
@@ -136,12 +158,16 @@ struct PeriodicCheckpointState {
     best_validation: Option<BestValidation>,
 }
 
-struct EpochEndValidationContext<'a> {
+struct EpochEndValidationContext<'a, B = TrainBackend>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
     config: &'a TrainConfig,
     loader_config: &'a StreamingLoaderConfig,
     manifest: &'a DataManifest,
     train_device: &'a LibTorchDevice,
-    valid_loss_fn: &'a HydraLoss<ValidBackend>,
+    valid_loss_fn: &'a HydraLoss<ValidBackendOf<B>>,
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
     cached_validation_samples: Option<&'a [MjaiSample]>,
@@ -154,7 +180,6 @@ struct ValidationEvent {
 }
 
 struct EpochFinalizeContext<'a> {
-    artifacts: &'a BcArtifactPaths,
     config: &'a TrainConfig,
     train_cfg: &'a BCTrainerConfig,
     epoch: usize,
@@ -163,6 +188,7 @@ struct EpochFinalizeContext<'a> {
     val_summary: Option<ValidationSummary>,
     best_validation: Option<BestValidation>,
     final_lr: f64,
+    profiling: Option<ProfilingEnvelope>,
 }
 
 fn should_run_epoch_end_validation(epoch: usize, num_epochs: usize, every_n_epochs: usize) -> bool {
@@ -185,15 +211,72 @@ fn build_epoch_continuation(
     }
 }
 
-fn train_logical_batch<O>(
+fn merge_optional_profiling(
+    target: &mut Option<ProfilingEnvelope>,
+    source: Option<&ProfilingEnvelope>,
+) {
+    let Some(source) = source.cloned() else {
+        return;
+    };
+    if let Some(target) = target.as_mut() {
+        target.merge_assign(&source);
+    } else {
+        *target = Some(source);
+    }
+}
+
+fn bc_interval_profiling(
+    train_seconds: f64,
+    validation: Option<ProfilingEnvelope>,
+    logging_seconds: f64,
+) -> ProfilingEnvelope {
+    ProfilingEnvelope::from_children(
+        PROFILING_STAGE_BC_INTERVAL,
+        vec![
+            ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, train_seconds),
+            validation.unwrap_or_else(|| ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 0.0)),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, logging_seconds),
+        ],
+    )
+}
+
+fn bc_epoch_profiling(
+    train_seconds: f64,
+    validation: Option<ProfilingEnvelope>,
+    checkpoint_seconds: f64,
+    logging_seconds: f64,
+) -> ProfilingEnvelope {
+    ProfilingEnvelope::from_children(
+        PROFILING_STAGE_BC_EPOCH,
+        vec![
+            ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, train_seconds),
+            validation.unwrap_or_else(|| ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 0.0)),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_CHECKPOINT, checkpoint_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, logging_seconds),
+        ],
+    )
+}
+
+fn epoch_model<B>(model_slot: &Option<HydraModel<B>>) -> Result<&HydraModel<B>, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
+    model_slot
+        .as_ref()
+        .ok_or_else(|| "epoch runner model slot should stay populated".to_string())
+}
+
+fn train_logical_batch<B, O>(
     logical_batch: &[MjaiSample],
-    config: TrainLogicalBatchConfig<'_>,
+    config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
-    model: &mut HydraModel<TrainBackend>,
+    model_slot: &mut Option<HydraModel<B>>,
     optimizer: &mut O,
 ) -> Result<Vec<BatchStats>, String>
 where
-    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
 {
     let TrainLogicalBatchConfig {
         microbatch_size,
@@ -207,44 +290,64 @@ where
         return Ok(Vec::new());
     }
 
-    let mut accumulator: GradientsAccumulator<HydraModel<TrainBackend>> =
-        GradientsAccumulator::new();
-    let mut batch_stats = Vec::new();
+    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
     let logical_batch_len = logical_batch.len().max(1) as f32;
+    let mut total_samples = 0usize;
+    let mut microbatch_count = 0usize;
+    let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
 
     for chunk in logical_batch.chunks(microbatch_size.max(1)) {
-        let Some((obs, batch)) =
-            collate_batch_samples::<TrainBackend>(chunk, augment, train_device)
-                .map_err(|err| format!("training collation failed: {err}"))?
+        let Some((obs, batch, targets)) = collate_samples_owned::<B>(chunk, augment, train_device)
+            .map_err(|err| format!("training collation failed: {err}"))?
         else {
             continue;
         };
-        let targets = batch.to_hydra_targets();
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let model = epoch_model(model_slot)?;
         let output = model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
-        let agreement = policy_agreement(
-            output.policy_logits.clone(),
-            targets.legal_mask.clone(),
-            target_actions_from_policy_target(targets.policy_target.clone()),
-        );
         let breakdown = active_loss_fn.total_loss(&output, &targets);
-        let total = bc_total_with_exit(&output, &batch, &targets, &active_loss_fn, bc_exit_cfg);
-        batch_stats.push(batch_stats_from_breakdown(
-            chunk.len(),
-            agreement,
-            &breakdown,
-        ));
+        let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
 
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
-        let grads = (total * chunk_weight).backward();
+        let weighted_chunk_total = total.clone() * chunk_weight;
+        let chunk_metric_sums = batch_metric_sums_from_outputs(
+            chunk.len(),
+            output.policy_logits.clone(),
+            targets.legal_mask.clone(),
+            batch.actions.clone(),
+            total.clone(),
+            &breakdown,
+        ) * chunk_weight;
+
+        metric_sums = Some(match metric_sums.take() {
+            Some(existing) => existing + chunk_metric_sums,
+            None => chunk_metric_sums,
+        });
+        total_samples += chunk.len();
+        microbatch_count += 1;
+
+        let grads = weighted_chunk_total.backward();
         let grads = GradientsParams::from_grads(grads, model);
         accumulator.accumulate(model, grads);
     }
 
+    let batch_stats = metric_sums
+        .map(|metric_sums| {
+            vec![batch_stats_from_metric_sums(
+                total_samples,
+                microbatch_count,
+                metric_sums,
+            )]
+        })
+        .unwrap_or_default();
+
     if !batch_stats.is_empty() {
         let grads = accumulator.grads();
-        *model = optimizer.step(lr, model.clone(), grads);
+        let model = model_slot
+            .take()
+            .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
+        *model_slot = Some(optimizer.step(lr, model, grads));
         head_controller.tick_warmup();
     }
 
@@ -262,14 +365,18 @@ fn record_drained_batch_stats(
     }
 }
 
-fn maybe_run_interval_validation(
-    context: ValidationStepContext<'_>,
-    model: &HydraModel<TrainBackend>,
+fn maybe_run_interval_validation<B>(
+    context: ValidationStepContext<'_, B>,
+    model: &HydraModel<B>,
     head_controller: Option<&mut HeadActivationController>,
     best_validation: &mut Option<BestValidation>,
     global_step: usize,
     step_window_total_loss: f64,
-) -> Result<Option<ValidationSummary>, String> {
+) -> Result<Option<ValidationSummary>, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
     let ValidationStepContext {
         multi,
         config,
@@ -304,6 +411,8 @@ fn maybe_run_interval_validation(
         )))
         .map_err(|err| format!("failed to print validation start summary: {err}"))?;
 
+    let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
+    let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
     let summary = run_validation(
         model,
         ValidationContext {
@@ -392,13 +501,14 @@ fn maybe_run_interval_validation(
 fn emit_interval_step_summary<W>(
     multi: &MultiProgress,
     tb: &mut Option<EventWriter<W>>,
+    step_log: &mut JsonlAppender,
     context: IntervalStepSummaryContext<'_>,
 ) -> Result<(), String>
 where
     W: Write,
 {
+    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
     let IntervalStepSummaryContext {
-        artifacts,
         manifest,
         config,
         session_start_global_step,
@@ -412,7 +522,9 @@ where
         epoch_optimizer_steps,
         window_stats,
         step_rate,
+        mut profiling,
     } = context;
+    let logging_started = Instant::now();
     multi
         .println(timestamped(format!(
             "{} {} {} {} {} {} {} {}",
@@ -474,6 +586,25 @@ where
         )?;
     }
 
+    let logging_seconds = logging_started.elapsed().as_secs_f64();
+    if let Some(existing) = profiling.as_mut() {
+        existing.merge_assign(&ProfilingEnvelope::from_children(
+            existing.stage.clone(),
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    } else {
+        profiling = Some(ProfilingEnvelope::from_children(
+            PROFILING_STAGE_BC_INTERVAL,
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    }
+
     let step_entry = StepLogEntry {
         global_step,
         epoch: epoch + 1,
@@ -494,21 +625,23 @@ where
         val_delta_q_promotion: val_summary
             .as_ref()
             .and_then(|summary| summary.delta_q_promotion_snapshot),
+        profiling,
         best_val_policy_loss: best_validation.map(|best| best.policy_loss),
         best_val_agreement: best_validation.map(|best| best.agreement),
     };
-    append_step_log(&artifacts.step_log_path, &step_entry)?;
+    append_step_log_to_writer(step_log, &step_entry)?;
     Ok(())
 }
 
-fn maybe_save_periodic_checkpoint<O>(
-    model: &HydraModel<TrainBackend>,
+fn maybe_save_periodic_checkpoint<B, O>(
+    model: &HydraModel<B>,
     optimizer: &O,
     context: PeriodicCheckpointContext<'_>,
     state: PeriodicCheckpointState,
 ) -> Result<(), String>
 where
-    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
 {
     let PeriodicCheckpointContext {
         config,
@@ -558,14 +691,18 @@ fn emit_paused_training_message(continuation: &EpochContinuation) {
     );
 }
 
-fn run_epoch_end_validation(
+fn run_epoch_end_validation<B>(
     epoch: usize,
-    model: &HydraModel<TrainBackend>,
-    context: EpochEndValidationContext<'_>,
+    model: &HydraModel<B>,
+    context: EpochEndValidationContext<'_, B>,
     head_controller: Option<&mut HeadActivationController>,
     best_validation: &mut Option<BestValidation>,
     train_total_loss: f64,
-) -> Result<Option<ValidationSummary>, String> {
+) -> Result<Option<ValidationSummary>, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
     let EpochEndValidationContext {
         config,
         loader_config,
@@ -671,13 +808,14 @@ fn run_epoch_end_validation(
 
 fn finalize_epoch_outputs<W>(
     tb: &mut Option<EventWriter<W>>,
+    training_log: &mut JsonlAppender,
     context: EpochFinalizeContext<'_>,
 ) -> Result<(), String>
 where
     W: Write,
 {
+    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
     let EpochFinalizeContext {
-        artifacts,
         config,
         train_cfg,
         epoch,
@@ -686,7 +824,9 @@ where
         val_summary,
         best_validation,
         final_lr,
+        mut profiling,
     } = context;
+    let logging_started = Instant::now();
     if let Some(ref mut tb_writer) = tb.as_mut() {
         log_tensorboard(
             tb_writer,
@@ -697,32 +837,6 @@ where
             best_validation,
         )?;
     }
-
-    let entry = EpochLogEntry {
-        epoch: epoch + 1,
-        global_step,
-        lr: final_lr,
-        train_total_loss: train_stats.total_loss,
-        train_policy_agreement: train_stats.policy_agreement,
-        train_loss_policy: train_stats.loss_policy,
-        train_loss_value: train_stats.loss_value,
-        train_loss_grp: train_stats.loss_grp,
-        train_loss_tenpai: train_stats.loss_tenpai,
-        train_loss_danger: train_stats.loss_danger,
-        train_loss_opp_next: train_stats.loss_opp_next,
-        train_loss_score_pdf: train_stats.loss_score_pdf,
-        train_loss_score_cdf: train_stats.loss_score_cdf,
-        val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
-        val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
-        val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
-        val_delta_q_promotion: val_summary
-            .as_ref()
-            .and_then(|summary| summary.delta_q_promotion_snapshot),
-        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
-        best_val_agreement: best_validation.map(|best| best.agreement),
-        num_batches: train_stats.num_batches,
-    };
-    append_training_log(&artifacts.training_log_path, &entry)?;
 
     let lr_message = lr_status_message(global_step, train_cfg.warmup_steps, final_lr);
     println!(
@@ -759,17 +873,66 @@ where
         ))
     );
 
+    let logging_seconds = logging_started.elapsed().as_secs_f64();
+    if let Some(existing) = profiling.as_mut() {
+        existing.merge_assign(&ProfilingEnvelope::from_children(
+            existing.stage.clone(),
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    } else {
+        profiling = Some(ProfilingEnvelope::from_children(
+            PROFILING_STAGE_BC_EPOCH,
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    }
+
+    let entry = EpochLogEntry {
+        epoch: epoch + 1,
+        global_step,
+        lr: final_lr,
+        train_total_loss: train_stats.total_loss,
+        train_policy_agreement: train_stats.policy_agreement,
+        train_loss_policy: train_stats.loss_policy,
+        train_loss_value: train_stats.loss_value,
+        train_loss_grp: train_stats.loss_grp,
+        train_loss_tenpai: train_stats.loss_tenpai,
+        train_loss_danger: train_stats.loss_danger,
+        train_loss_opp_next: train_stats.loss_opp_next,
+        train_loss_score_pdf: train_stats.loss_score_pdf,
+        train_loss_score_cdf: train_stats.loss_score_cdf,
+        val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
+        val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
+        val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
+        val_delta_q_promotion: val_summary
+            .as_ref()
+            .and_then(|summary| summary.delta_q_promotion_snapshot),
+        profiling,
+        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
+        best_val_agreement: best_validation.map(|best| best.agreement),
+        num_batches: train_stats.num_batches,
+    };
+    append_training_log_to_writer(training_log, &entry)?;
+
     Ok(())
 }
 
-pub(super) fn run_epoch<O, W>(
-    context: EpochRunnerContext<'_>,
-    runtime: EpochRuntimeMut<'_, O, W>,
+pub(super) fn run_epoch<B, O, W>(
+    context: EpochRunnerContext<'_, B>,
+    runtime: EpochRuntimeMut<'_, O, W, B>,
 ) -> Result<EpochRunOutcome, String>
 where
-    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
     W: Write,
 {
+    let _epoch_scope = nvtx::scope(PROFILING_STAGE_BC_EPOCH);
     let EpochRunnerContext {
         epoch,
         config,
@@ -791,11 +954,13 @@ where
         cached_validation_samples,
     } = context;
     let EpochRuntimeMut {
-        model,
+        model: model_slot,
         optimizer,
         global_step,
         best_validation,
         tb,
+        training_log,
+        step_log,
         last_log_step,
         last_log_time,
     } = runtime;
@@ -835,6 +1000,11 @@ where
     let mut remaining_games = manifest.train_count;
     let mut epoch_optimizer_steps = steps_to_skip;
     let mut last_interval_validation: Option<ValidationEvent> = None;
+    let epoch_started = Instant::now();
+    let mut step_window_train_seconds = 0.0;
+    let mut step_window_validation_profiling: Option<ProfilingEnvelope> = None;
+    let mut epoch_train_seconds = 0.0;
+    let mut epoch_validation_profiling: Option<ProfilingEnvelope> = None;
 
     for buffer_result in stream_train_epoch(manifest, loader_config, epoch, Some(&load_pb)) {
         let buffer = buffer_result.map_err(|err| format!("training stream failed: {err}"))?;
@@ -875,22 +1045,29 @@ where
             let lr = effective_lr(train_cfg, *global_step, total_steps);
             let logical_batch: Vec<MjaiSample> =
                 pending_samples.drain(..config.batch_size).collect();
-            let drained = train_logical_batch(
-                &logical_batch,
-                TrainLogicalBatchConfig {
-                    microbatch_size,
-                    augment: config.augment,
-                    train_device,
-                    loss_fn,
-                    bc_exit_cfg,
-                    lr,
-                },
-                head_controller,
-                model,
-                optimizer,
-            )?;
+            let train_started = Instant::now();
+            let drained = {
+                let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
+                train_logical_batch(
+                    &logical_batch,
+                    TrainLogicalBatchConfig {
+                        microbatch_size,
+                        augment: config.augment,
+                        train_device,
+                        loss_fn,
+                        bc_exit_cfg,
+                        lr,
+                    },
+                    head_controller,
+                    model_slot,
+                    optimizer,
+                )?
+            };
+            let train_seconds = train_started.elapsed().as_secs_f64();
 
             record_drained_batch_stats(drained, &mut stats, &mut step_window);
+            step_window_train_seconds += train_seconds;
+            epoch_train_seconds += train_seconds;
             epoch_optimizer_steps += 1;
             *global_step += 1;
             train_pb.inc(1);
@@ -920,13 +1097,21 @@ where
                     session_start_global_step,
                     cached_validation_samples,
                 },
-                model,
+                epoch_model(model_slot)?,
                 Some(head_controller),
                 best_validation,
                 *global_step,
                 step_window.finalize().total_loss,
             )?;
             if let Some(summary) = val_summary.clone() {
+                merge_optional_profiling(
+                    &mut step_window_validation_profiling,
+                    summary.profiling.as_ref(),
+                );
+                merge_optional_profiling(
+                    &mut epoch_validation_profiling,
+                    summary.profiling.as_ref(),
+                );
                 last_interval_validation = Some(ValidationEvent {
                     global_step: *global_step,
                     summary,
@@ -939,12 +1124,18 @@ where
                 let step_rate = steps_per_second(window_steps, last_log_time.elapsed());
                 *last_log_step = *global_step;
                 *last_log_time = Instant::now();
+                let interval_profiling = bc_interval_profiling(
+                    step_window_train_seconds,
+                    step_window_validation_profiling.take(),
+                    0.0,
+                );
+                step_window_train_seconds = 0.0;
 
                 emit_interval_step_summary(
                     &multi,
                     tb,
+                    step_log,
                     IntervalStepSummaryContext {
-                        artifacts,
                         manifest,
                         config,
                         session_start_global_step,
@@ -958,12 +1149,13 @@ where
                         epoch_optimizer_steps,
                         window_stats,
                         step_rate,
+                        profiling: Some(interval_profiling),
                     },
                 )?;
             }
 
             maybe_save_periodic_checkpoint(
-                model,
+                epoch_model(model_slot)?,
                 optimizer,
                 PeriodicCheckpointContext {
                     config,
@@ -1014,7 +1206,7 @@ where
                 lr,
             },
             head_controller,
-            model,
+            model_slot,
             optimizer,
         )?;
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
@@ -1039,18 +1231,23 @@ where
     ));
 
     let continuation = build_epoch_continuation(epoch, epoch_completed, epoch_optimizer_steps);
-    save_latest_checkpoint_and_state(
-        artifacts,
-        model,
-        optimizer,
-        LatestCheckpointState {
-            global_step: *global_step,
-            train_loss: train_stats.total_loss,
-            best_validation: *best_validation,
-            continuation: &continuation,
-            runtime: current_runtime,
-        },
-    )?;
+    let checkpoint_started = Instant::now();
+    {
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+        save_latest_checkpoint_and_state(
+            artifacts,
+            epoch_model(model_slot)?,
+            optimizer,
+            LatestCheckpointState {
+                global_step: *global_step,
+                train_loss: train_stats.total_loss,
+                best_validation: *best_validation,
+                continuation: &continuation,
+                runtime: current_runtime,
+            },
+        )?;
+    }
+    let checkpoint_seconds = checkpoint_started.elapsed().as_secs_f64();
 
     if !continuation.epoch_completed {
         emit_paused_training_message(&continuation);
@@ -1059,15 +1256,25 @@ where
         });
     }
 
-    let val_summary = if let Some(last_validation) = last_interval_validation.as_ref()
-        && last_validation.global_step == *global_step
-        && should_run_epoch_end_validation(epoch, config.num_epochs, config.validation_every_n_epochs)
-    {
-        Some(last_validation.summary.clone())
+    let reused_interval_validation =
+        last_interval_validation
+            .as_ref()
+            .is_some_and(|last_validation| {
+                last_validation.global_step == *global_step
+                    && should_run_epoch_end_validation(
+                        epoch,
+                        config.num_epochs,
+                        config.validation_every_n_epochs,
+                    )
+            });
+    let val_summary = if reused_interval_validation {
+        last_interval_validation
+            .as_ref()
+            .map(|last_validation| last_validation.summary.clone())
     } else {
         run_epoch_end_validation(
             epoch,
-            model,
+            epoch_model(model_slot)?,
             EpochEndValidationContext {
                 config,
                 loader_config,
@@ -1083,11 +1290,27 @@ where
             train_stats.total_loss,
         )?
     };
+    let epoch_elapsed_seconds = epoch_started.elapsed().as_secs_f64();
+    if !reused_interval_validation {
+        merge_optional_profiling(
+            &mut epoch_validation_profiling,
+            val_summary
+                .as_ref()
+                .and_then(|summary| summary.profiling.as_ref()),
+        );
+    }
+    let mut epoch_profiling = bc_epoch_profiling(
+        epoch_train_seconds,
+        epoch_validation_profiling,
+        checkpoint_seconds,
+        0.0,
+    );
+    epoch_profiling.elapsed_seconds = epoch_elapsed_seconds;
 
     finalize_epoch_outputs(
         tb,
+        training_log,
         EpochFinalizeContext {
-            artifacts,
             config,
             train_cfg,
             epoch,
@@ -1096,6 +1319,7 @@ where
             val_summary,
             best_validation: *best_validation,
             final_lr,
+            profiling: Some(epoch_profiling),
         },
     )?;
 
@@ -1114,6 +1338,7 @@ mod tests {
 
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use burn::backend::libtorch::LibTorchDevice;
@@ -1126,9 +1351,12 @@ mod tests {
     use crate::config::{BcHyperparamConfig, TrainConfig};
     use crate::resume::read_resume_state;
 
+    type TestValidBackend = ValidBackendOf<TrainBackend>;
+
     fn batch_stats(sample_count: usize, total_loss: f64, policy_agreement: f64) -> BatchStats {
         BatchStats {
             sample_count,
+            batch_count: 1,
             total_loss,
             policy_agreement,
             loss_policy: total_loss + 0.1,
@@ -1174,6 +1402,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -1193,6 +1422,7 @@ mod tests {
             policy_loss,
             agreement,
             samples: 64,
+            profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,
             delta_q_promotion_snapshot: None,
@@ -1208,6 +1438,7 @@ mod tests {
             train_microbatch_size: 4,
             validation_microbatch_size: 4,
             accum_steps: 4,
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -1231,8 +1462,37 @@ mod tests {
         HydraModelConfig::learner().init::<TrainBackend>(device)
     }
 
-    fn dummy_valid_loss() -> HydraLoss<ValidBackend> {
-        HydraLoss::<ValidBackend>::new(HydraLossConfig::new())
+    fn dummy_train_sample(action: u8) -> MjaiSample {
+        let mut legal_mask = [0.0f32; hydra_core::action::HYDRA_ACTION_SPACE];
+        legal_mask[action as usize] = 1.0;
+        legal_mask[45] = 1.0;
+        MjaiSample {
+            obs: [0.1f32; hydra_core::encoder::OBS_SIZE],
+            action,
+            legal_mask,
+            placement: 0,
+            score_delta: 0,
+            grp_label: 0,
+            oracle_target: None,
+            tenpai: [0.0; 3],
+            opp_next: [0, 1, 255],
+            danger: [0.0; 102],
+            danger_mask: [1.0; 102],
+            safety_residual: None,
+            safety_residual_mask: None,
+            exit_target: None,
+            exit_mask: None,
+            delta_q_target: None,
+            delta_q_mask: None,
+            belief_fields: None,
+            mixture_weights: None,
+            belief_fields_present: false,
+            mixture_weights_present: false,
+        }
+    }
+
+    fn dummy_valid_loss() -> HydraLoss<TestValidBackend> {
+        HydraLoss::<TestValidBackend>::new(HydraLossConfig::new())
     }
 
     fn dummy_train_loss() -> HydraLoss<TrainBackend> {
@@ -1245,11 +1505,162 @@ mod tests {
         serde_json::from_str(line).expect("parse jsonl entry")
     }
 
+    fn modified_time(path: &Path) -> SystemTime {
+        fs::metadata(path)
+            .expect("read file metadata")
+            .modified()
+            .expect("read file modified time")
+    }
+
     fn assert_close(actual: f64, expected: f64) {
         assert!(
             (actual - expected).abs() < 1e-12,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    fn train_logical_batch_empty_keeps_model_slot_populated() {
+        let device = LibTorchDevice::Cpu;
+        let mut model_slot = Some(dummy_model(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let train_loss_fn = dummy_train_loss();
+        let logical_batch: Vec<MjaiSample> = Vec::new();
+
+        let drained = train_logical_batch(
+            &logical_batch,
+            TrainLogicalBatchConfig {
+                microbatch_size: 4,
+                augment: false,
+                train_device: &device,
+                loss_fn: &train_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                lr: 1.0e-4,
+            },
+            &mut head_controller,
+            &mut model_slot,
+            &mut optimizer,
+        )
+        .expect("train logical batch with empty samples");
+
+        assert!(drained.is_empty());
+        assert!(model_slot.is_some());
+    }
+
+    #[test]
+    fn train_logical_batch_reports_clear_error_when_model_slot_is_empty() {
+        let device = LibTorchDevice::Cpu;
+        let mut model_slot = None;
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let train_loss_fn = dummy_train_loss();
+        let logical_batch = vec![dummy_train_sample(0)];
+
+        let result = train_logical_batch(
+            &logical_batch,
+            TrainLogicalBatchConfig {
+                microbatch_size: 1,
+                augment: false,
+                train_device: &device,
+                loss_fn: &train_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                lr: 1.0e-4,
+            },
+            &mut head_controller,
+            &mut model_slot,
+            &mut optimizer,
+        );
+
+        let err = match result {
+            Ok(_) => panic!("empty model slot should return a clear error"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("epoch runner model slot should stay populated"));
+        assert!(model_slot.is_none());
+    }
+
+    #[test]
+    fn train_logical_batch_non_empty_keeps_model_slot_populated_and_returns_stats() {
+        let device = LibTorchDevice::Cpu;
+        let mut model_slot = Some(dummy_model(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let train_loss_fn = dummy_train_loss();
+        let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
+
+        let drained = train_logical_batch(
+            &logical_batch,
+            TrainLogicalBatchConfig {
+                microbatch_size: 1,
+                augment: false,
+                train_device: &device,
+                loss_fn: &train_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                lr: 1.0e-4,
+            },
+            &mut head_controller,
+            &mut model_slot,
+            &mut optimizer,
+        )
+        .expect("train logical batch with samples");
+
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].sample_count, 2);
+        assert_eq!(drained[0].batch_count, 2);
+        assert!(drained.iter().all(|stats| stats.total_loss.is_finite()));
+        assert!(
+            drained
+                .iter()
+                .all(|stats| stats.policy_agreement.is_finite())
+        );
+        assert!(model_slot.is_some());
+    }
+
+    #[test]
+    fn emit_interval_step_summary_records_logging_scope_order() {
+        let artifacts = test_artifacts("nvtx_interval_logging_scope");
+        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+            .expect("open step log appender");
+        let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let multi = MultiProgress::new();
+        let config = dummy_config();
+        let manifest = dummy_manifest(true);
+        let validation_summary = dummy_validation_summary(0.4, 0.7);
+
+        let (_, events) = crate::nvtx::with_test_recorder(|| {
+            emit_interval_step_summary(
+                &multi,
+                &mut tb,
+                &mut step_log,
+                IntervalStepSummaryContext {
+                    manifest: &manifest,
+                    config: &config,
+                    session_start_global_step: 0,
+                    global_step: 5,
+                    epoch: 1,
+                    lr: 1.0e-4,
+                    best_validation: Some(BestValidation {
+                        policy_loss: 0.5,
+                        agreement: 0.6,
+                    }),
+                    val_summary: Some(validation_summary),
+                    seen_samples: 16,
+                    assumed_games_seen: 4,
+                    epoch_optimizer_steps: 5,
+                    window_stats: ScalarAverages::default().finalize(),
+                    step_rate: 12.0,
+                    profiling: None,
+                },
+            )
+            .expect("emit interval step summary should succeed");
+        });
+
+        assert_eq!(events, vec!["push:logging", "pop:logging"]);
     }
 
     #[test]
@@ -1691,13 +2102,15 @@ mod tests {
         let manifest = dummy_manifest(false);
         let multi = MultiProgress::new();
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+            .expect("open step log appender");
         let window_stats = ScalarAverages::default();
 
         emit_interval_step_summary(
             &multi,
             &mut tb,
+            &mut step_log,
             IntervalStepSummaryContext {
-                artifacts: &artifacts,
                 manifest: &manifest,
                 config: &config,
                 session_start_global_step: 0,
@@ -1711,6 +2124,7 @@ mod tests {
                 epoch_optimizer_steps: 2,
                 window_stats,
                 step_rate: 12.5,
+                profiling: None,
             },
         )
         .expect("emit skipped validation interval summary");
@@ -1719,6 +2133,9 @@ mod tests {
         assert_eq!(entry["global_step"].as_u64(), Some(9));
         assert_eq!(entry["epoch"].as_u64(), Some(2));
         assert_close(entry["lr"].as_f64().expect("step log lr"), 1.0e-4);
+        assert_eq!(entry["profiling"]["stage"].as_str(), Some("bc_interval"));
+        assert!(entry["profiling"]["elapsed_seconds"].as_f64().is_some());
+        assert!(entry["profiling"]["children"].is_array());
         assert_eq!(entry["val_total_loss"], serde_json::Value::Null);
         assert_eq!(entry["val_policy_loss"], serde_json::Value::Null);
         assert_eq!(entry["best_val_policy_loss"], serde_json::Value::Null);
@@ -1731,6 +2148,8 @@ mod tests {
         let manifest = dummy_manifest(true);
         let multi = MultiProgress::new();
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+            .expect("open step log appender");
         let mut window_stats = ScalarAverages::default();
         window_stats.record_batch(batch_stats(4, 2.5, 0.4));
         let window_stats = window_stats.finalize();
@@ -1739,8 +2158,8 @@ mod tests {
         emit_interval_step_summary(
             &multi,
             &mut tb,
+            &mut step_log,
             IntervalStepSummaryContext {
-                artifacts: &artifacts,
                 manifest: &manifest,
                 config: &config,
                 session_start_global_step: 5,
@@ -1757,6 +2176,7 @@ mod tests {
                 epoch_optimizer_steps: 3,
                 window_stats,
                 step_rate: 3.0,
+                profiling: None,
             },
         )
         .expect("emit interval summary with validation");
@@ -1802,6 +2222,9 @@ mod tests {
                 .expect("best val agreement"),
             0.7,
         );
+        assert_eq!(entry["profiling"]["stage"].as_str(), Some("bc_interval"));
+        assert!(entry["profiling"]["elapsed_seconds"].as_f64().is_some());
+        assert!(entry["profiling"]["children"].is_array());
     }
 
     #[test]
@@ -1905,6 +2328,9 @@ mod tests {
         let artifacts = test_artifacts("finalize_epoch_outputs");
         let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut training_log =
+            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+                .expect("open training log appender");
         let mut train_stats = ScalarAverages::default();
         train_stats.record_batch(batch_stats(4, 3.5, 0.55));
         let train_stats = train_stats.finalize();
@@ -1912,8 +2338,8 @@ mod tests {
 
         finalize_epoch_outputs(
             &mut tb,
+            &mut training_log,
             EpochFinalizeContext {
-                artifacts: &artifacts,
                 config: &config,
                 train_cfg: &train_cfg,
                 epoch: 2,
@@ -1925,6 +2351,7 @@ mod tests {
                     agreement: 0.7,
                 }),
                 final_lr: 2.0e-4,
+                profiling: None,
             },
         )
         .expect("finalize epoch outputs");
@@ -1959,6 +2386,9 @@ mod tests {
                 .expect("best val agreement"),
             0.7,
         );
+        assert_eq!(entry["profiling"]["stage"].as_str(), Some("bc_epoch"));
+        assert!(entry["profiling"]["elapsed_seconds"].as_f64().is_some());
+        assert!(entry["profiling"]["children"].is_array());
     }
 
     #[test]
@@ -1967,11 +2397,14 @@ mod tests {
         let artifacts = test_artifacts("finalize_epoch_outputs_skipped_validation");
         let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut training_log =
+            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+                .expect("open training log appender");
 
         finalize_epoch_outputs(
             &mut tb,
+            &mut training_log,
             EpochFinalizeContext {
-                artifacts: &artifacts,
                 config: &config,
                 train_cfg: &train_cfg,
                 epoch: 0,
@@ -1980,6 +2413,7 @@ mod tests {
                 val_summary: None,
                 best_validation: None,
                 final_lr: 5.0e-5,
+                profiling: None,
             },
         )
         .expect("finalize epoch outputs without validation");
@@ -1993,6 +2427,9 @@ mod tests {
         assert_eq!(entry["val_policy_loss"], serde_json::Value::Null);
         assert_eq!(entry["best_val_policy_loss"], serde_json::Value::Null);
         assert_eq!(entry["best_val_agreement"], serde_json::Value::Null);
+        assert_eq!(entry["profiling"]["stage"].as_str(), Some("bc_epoch"));
+        assert!(entry["profiling"]["elapsed_seconds"].as_f64().is_some());
+        assert!(entry["profiling"]["children"].is_array());
     }
 
     #[test]
@@ -2008,11 +2445,16 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let valid_loss_fn = dummy_valid_loss();
         let device = LibTorchDevice::Cpu;
-        let mut model = dummy_model(&device);
+        let mut model = Some(dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut global_step = 7usize;
         let mut best_validation = None;
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut training_log =
+            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+                .expect("open training log appender");
+        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+            .expect("open step log appender");
         let mut last_log_step = 0usize;
         let mut last_log_time = Instant::now();
         let run_start = Instant::now();
@@ -2046,6 +2488,8 @@ mod tests {
                 global_step: &mut global_step,
                 best_validation: &mut best_validation,
                 tb: &mut tb,
+                training_log: &mut training_log,
+                step_log: &mut step_log,
                 last_log_step: &mut last_log_step,
                 last_log_time: &mut last_log_time,
             },
@@ -2101,7 +2545,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let valid_loss_fn = dummy_valid_loss();
         let device = LibTorchDevice::Cpu;
-        let mut model = dummy_model(&device);
+        let mut model = Some(dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut global_step = 12usize;
         let mut best_validation = Some(BestValidation {
@@ -2109,6 +2553,11 @@ mod tests {
             agreement: 0.5,
         });
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut training_log =
+            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+                .expect("open training log appender");
+        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+            .expect("open step log appender");
         let mut last_log_step = 11usize;
         let mut last_log_time = Instant::now();
         let run_start = Instant::now();
@@ -2142,6 +2591,8 @@ mod tests {
                 global_step: &mut global_step,
                 best_validation: &mut best_validation,
                 tb: &mut tb,
+                training_log: &mut training_log,
+                step_log: &mut step_log,
                 last_log_step: &mut last_log_step,
                 last_log_time: &mut last_log_time,
             },
@@ -2170,5 +2621,237 @@ mod tests {
         assert_eq!(entry["val_total_loss"], serde_json::Value::Null);
         assert_eq!(entry["best_val_policy_loss"].as_f64(), Some(0.4));
         assert!(!artifacts.best_model_base.with_extension("mpk").exists());
+    }
+
+    #[test]
+    fn run_epoch_empty_manifest_completes_with_latest_state_and_best_checkpoint() {
+        let config = dummy_config();
+        let loader_config = StreamingLoaderConfig::default();
+        let manifest = dummy_manifest(false);
+        let artifacts = test_artifacts("run_epoch_empty_manifest_checkpoint_contract");
+        let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
+        let train_loss_fn = dummy_train_loss();
+        let valid_loss_fn = dummy_valid_loss();
+        let device = LibTorchDevice::Cpu;
+        let mut model = Some(dummy_model(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut global_step = 7usize;
+        let mut best_validation = None;
+        let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut training_log =
+            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+                .expect("open training log appender");
+        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+            .expect("open step log appender");
+        let mut last_log_step = 0usize;
+        let mut last_log_time = Instant::now();
+        let run_start = Instant::now();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        run_epoch(
+            EpochRunnerContext {
+                epoch: 1,
+                config: &config,
+                manifest: &manifest,
+                loader_config: &loader_config,
+                artifacts: &artifacts,
+                train_cfg: &train_cfg,
+                loss_fn: &train_loss_fn,
+                valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                train_device: &device,
+                session_start_global_step: 0,
+                steps_to_skip: 3,
+                microbatch_size: 4,
+                total_steps: 100,
+                current_runtime: dummy_runtime_resume_contract(),
+                run_start: &run_start,
+                head_controller: &mut head_controller,
+                cached_validation_samples: None,
+            },
+            EpochRuntimeMut {
+                model: &mut model,
+                optimizer: &mut optimizer,
+                global_step: &mut global_step,
+                best_validation: &mut best_validation,
+                tb: &mut tb,
+                training_log: &mut training_log,
+                step_log: &mut step_log,
+                last_log_step: &mut last_log_step,
+                last_log_time: &mut last_log_time,
+            },
+        )
+        .expect("run epoch with empty manifest");
+
+        let state = read_resume_state(&artifacts.latest_state_path).expect("read latest state");
+        assert_eq!(state.next_epoch, 2);
+        assert_eq!(state.skip_optimizer_steps_in_epoch, 0);
+        assert_eq!(state.global_step, 7);
+        assert_eq!(state.best_validation, None);
+        assert!(artifacts.latest_model_base.with_extension("mpk").exists());
+        assert!(
+            artifacts
+                .latest_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
+        assert!(
+            artifacts
+                .latest_optimizer_base
+                .with_extension("bin")
+                .exists()
+        );
+        assert!(artifacts.best_model_base.with_extension("mpk").exists());
+        assert!(
+            artifacts
+                .best_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn latest_checkpoint_can_refresh_state_without_rewriting_payload_files() {
+        let artifacts = test_artifacts("latest_checkpoint_refreshes_state_only");
+        let device = LibTorchDevice::Cpu;
+        let model = dummy_model(&device);
+        let optimizer = AdamConfig::new().init();
+
+        save_latest_checkpoint_and_state(
+            &artifacts,
+            &model,
+            &optimizer,
+            LatestCheckpointState {
+                global_step: 15,
+                train_loss: 1.25,
+                best_validation: Some(BestValidation {
+                    policy_loss: 0.7,
+                    agreement: 0.8,
+                }),
+                continuation: &EpochContinuation {
+                    next_epoch: 3,
+                    skip_optimizer_steps_in_epoch: 7,
+                    epoch_completed: false,
+                },
+                runtime: dummy_runtime_resume_contract(),
+            },
+        )
+        .expect("initial latest checkpoint save");
+
+        let latest_model_path = artifacts.latest_model_base.with_extension("mpk");
+        let latest_meta_path = artifacts.latest_model_base.with_extension("meta.json");
+        let latest_optimizer_path = artifacts.latest_optimizer_base.with_extension("bin");
+        let model_before = modified_time(&latest_model_path);
+        let meta_before = modified_time(&latest_meta_path);
+        let optimizer_before = modified_time(&latest_optimizer_path);
+        let state_before = modified_time(&artifacts.latest_state_path);
+        thread::sleep(std::time::Duration::from_millis(1100));
+
+        save_latest_checkpoint_and_state(
+            &artifacts,
+            &model,
+            &optimizer,
+            LatestCheckpointState {
+                global_step: 15,
+                train_loss: 1.25,
+                best_validation: Some(BestValidation {
+                    policy_loss: 0.7,
+                    agreement: 0.8,
+                }),
+                continuation: &EpochContinuation {
+                    next_epoch: 4,
+                    skip_optimizer_steps_in_epoch: 0,
+                    epoch_completed: true,
+                },
+                runtime: dummy_runtime_resume_contract(),
+            },
+        )
+        .expect("refresh latest checkpoint state without rewriting payloads");
+
+        let state = read_resume_state(&artifacts.latest_state_path).expect("read latest state");
+        assert_eq!(state.next_epoch, 4);
+        assert_eq!(state.skip_optimizer_steps_in_epoch, 0);
+        assert_eq!(state.global_step, 15);
+        assert_eq!(modified_time(&latest_model_path), model_before);
+        assert_eq!(modified_time(&latest_meta_path), meta_before);
+        assert_eq!(modified_time(&latest_optimizer_path), optimizer_before);
+        assert!(modified_time(&artifacts.latest_state_path) > state_before);
+    }
+
+    #[test]
+    fn run_epoch_empty_manifest_records_bc_epoch_scope_order() {
+        let config = dummy_config();
+        let loader_config = StreamingLoaderConfig::default();
+        let manifest = dummy_manifest(false);
+        let artifacts = test_artifacts("nvtx_bc_epoch_scope");
+        let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
+        let train_loss_fn = dummy_train_loss();
+        let valid_loss_fn = dummy_valid_loss();
+        let device = LibTorchDevice::Cpu;
+        let mut model = Some(dummy_model(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut global_step = 4usize;
+        let mut best_validation = None;
+        let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut training_log =
+            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+                .expect("open training log appender");
+        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+            .expect("open step log appender");
+        let mut last_log_step = 0usize;
+        let mut last_log_time = Instant::now();
+        let run_start = Instant::now();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        let (_, events) = crate::nvtx::with_test_recorder(|| {
+            run_epoch(
+                EpochRunnerContext {
+                    epoch: 1,
+                    config: &config,
+                    manifest: &manifest,
+                    loader_config: &loader_config,
+                    artifacts: &artifacts,
+                    train_cfg: &train_cfg,
+                    loss_fn: &train_loss_fn,
+                    valid_loss_fn: &valid_loss_fn,
+                    bc_exit_cfg: &BcExitConfig::default(),
+                    train_device: &device,
+                    session_start_global_step: 0,
+                    steps_to_skip: 0,
+                    microbatch_size: 4,
+                    total_steps: 100,
+                    current_runtime: dummy_runtime_resume_contract(),
+                    run_start: &run_start,
+                    head_controller: &mut head_controller,
+                    cached_validation_samples: None,
+                },
+                EpochRuntimeMut {
+                    model: &mut model,
+                    optimizer: &mut optimizer,
+                    global_step: &mut global_step,
+                    best_validation: &mut best_validation,
+                    tb: &mut tb,
+                    training_log: &mut training_log,
+                    step_log: &mut step_log,
+                    last_log_step: &mut last_log_step,
+                    last_log_time: &mut last_log_time,
+                },
+            )
+            .expect("run epoch with empty manifest should succeed");
+        });
+
+        assert_eq!(
+            events,
+            vec![
+                "push:bc_epoch",
+                "push:checkpoint",
+                "pop:checkpoint",
+                "push:logging",
+                "pop:logging",
+                "pop:bc_epoch",
+            ]
+        );
     }
 }

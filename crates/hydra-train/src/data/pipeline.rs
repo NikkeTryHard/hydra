@@ -72,7 +72,7 @@ impl Default for StreamingLoaderConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DataManifest {
     pub sources: Vec<DataSource>,
     pub total_games: usize,
@@ -81,7 +81,7 @@ pub struct DataManifest {
     pub counts_exact: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum DataSource {
     Archive(PathBuf),
     LooseFile(PathBuf),

@@ -3,6 +3,7 @@ use burn::tensor::activation;
 use std::marker::PhantomData;
 
 use crate::model::HydraOutput;
+use crate::training::head_gates::TargetPresence;
 
 #[derive(Clone)]
 pub struct HydraTargets<B: Backend> {
@@ -27,6 +28,7 @@ pub struct HydraTargets<B: Backend> {
     pub safety_residual_target: Option<Tensor<B, 2>>,
     pub safety_residual_mask: Option<Tensor<B, 2>>,
     pub oracle_guidance_mask: Option<Tensor<B, 1>>,
+    pub target_presence: Option<TargetPresence>,
 }
 
 impl<B: Backend> HydraTargets<B> {
@@ -94,6 +96,7 @@ impl<B: Backend> HydraTargets<B> {
                 .oracle_guidance_mask
                 .as_ref()
                 .map(|t| t.clone().slice(r2)),
+            target_presence: None,
         }
     }
 }
@@ -325,7 +328,7 @@ pub fn masked_action_mse<B: Backend>(
     let diff = pred - target;
     let sq = diff.clone() * diff * 0.5;
     let masked = sq * mask.clone();
-    let denom = mask.sum().into_scalar().elem::<f32>().max(1.0);
+    let denom = mask.sum().clamp_min(1.0);
     masked.sum() / denom
 }
 
@@ -385,16 +388,32 @@ pub fn policy_ce_with_temperature<B: Backend>(
 }
 
 pub fn loss_abs<B: Backend>(loss: &Tensor<B, 1>) -> f32 {
-    loss.clone().abs().into_scalar().elem::<f32>()
+    loss.clone()
+        .abs()
+        .into_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("loss scalar should be readable as f32")[0]
 }
 
 pub fn loss_is_finite<B: Backend>(loss: &Tensor<B, 1>) -> bool {
-    let v: f32 = loss.clone().into_scalar().elem();
+    let v = loss
+        .clone()
+        .into_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("loss scalar should be readable as f32")[0];
     v.is_finite()
 }
 
 pub fn total_loss_scalar<B: Backend>(breakdown: &LossBreakdown<B>) -> f32 {
-    breakdown.total.clone().into_scalar().elem::<f32>()
+    breakdown
+        .total
+        .clone()
+        .into_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("total loss scalar should be readable as f32")[0]
 }
 
 pub fn batch_kl_from_target<B: Backend>(
@@ -408,7 +427,11 @@ pub fn batch_kl_from_target<B: Backend>(
 }
 
 pub fn grad_norm_approx<B: Backend>(loss: Tensor<B, 1>) -> f32 {
-    loss.abs().into_scalar().elem::<f32>()
+    loss.abs()
+        .into_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("grad norm scalar should be readable as f32")[0]
 }
 
 pub fn batch_value_variance<B: Backend>(values: Tensor<B, 2>) -> Tensor<B, 1> {
@@ -536,26 +559,33 @@ pub struct LossBreakdown<B: Backend> {
 
 impl<B: Backend> LossBreakdown<B> {
     pub fn all_finite(&self) -> bool {
-        let s = |t: &Tensor<B, 1>| -> f32 { t.clone().into_scalar().elem() };
-        [
-            s(&self.policy),
-            s(&self.value),
-            s(&self.grp),
-            s(&self.tenpai),
-            s(&self.danger),
-            s(&self.opp_next),
-            s(&self.score_pdf),
-            s(&self.score_cdf),
-            s(&self.oracle_critic),
-            s(&self.belief_fields),
-            s(&self.mixture_weight),
-            s(&self.opponent_hand_type),
-            s(&self.delta_q),
-            s(&self.safety_residual),
-            s(&self.total),
-        ]
-        .iter()
-        .all(|v| v.is_finite())
+        let metrics = Tensor::cat(
+            vec![
+                self.policy.clone(),
+                self.value.clone(),
+                self.grp.clone(),
+                self.tenpai.clone(),
+                self.danger.clone(),
+                self.opp_next.clone(),
+                self.score_pdf.clone(),
+                self.score_cdf.clone(),
+                self.oracle_critic.clone(),
+                self.belief_fields.clone(),
+                self.mixture_weight.clone(),
+                self.opponent_hand_type.clone(),
+                self.delta_q.clone(),
+                self.safety_residual.clone(),
+                self.total.clone(),
+            ],
+            0,
+        )
+        .into_data()
+        .convert::<f32>();
+        metrics
+            .as_slice::<f32>()
+            .expect("loss breakdown scalars should be readable as f32")
+            .iter()
+            .all(|v| v.is_finite())
     }
 }
 
@@ -1298,19 +1328,25 @@ pub mod tests {
 
     #[test]
     fn test_validate_rejects_negative_primary_weights() {
-        assert!(HydraLossConfig::new()
-            .with_w_tenpai(-0.1)
-            .validate()
-            .is_err());
-        assert!(HydraLossConfig::new()
-            .with_w_danger(-0.1)
-            .validate()
-            .is_err());
+        assert!(
+            HydraLossConfig::new()
+                .with_w_tenpai(-0.1)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            HydraLossConfig::new()
+                .with_w_danger(-0.1)
+                .validate()
+                .is_err()
+        );
         assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
-        assert!(HydraLossConfig::new()
-            .with_w_score(-0.1)
-            .validate()
-            .is_err());
+        assert!(
+            HydraLossConfig::new()
+                .with_w_score(-0.1)
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
@@ -1403,6 +1439,24 @@ pub mod tests {
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
+            target_presence: None,
         }
+    }
+
+    #[test]
+    fn slice_batch_clears_cached_target_presence() {
+        let device = Default::default();
+        let mut targets = make_dummy_targets::<B>(&device, 4);
+        targets.target_presence = Some(crate::training::head_gates::TargetPresence {
+            counts: [1, 2, 3, 4, 5, 6],
+            delta_q_actions_present: 7,
+            batch_size: 4,
+        });
+
+        let sliced = targets.slice_batch(1, 3);
+        assert!(
+            sliced.target_presence.is_none(),
+            "sliced targets must drop cached full-batch presence metadata"
+        );
     }
 }
