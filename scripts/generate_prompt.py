@@ -1145,10 +1145,14 @@ def render_artifact_content(repo_root: Path, artifact: ArtifactSpec) -> list[str
     prefix_label = (
         artifact.source_label or artifact.artifact_id or artifact.path.stem.upper()
     )
-    return [
-        f"[{prefix_label} L{line_number:04d}] {line}"
-        for line_number, line in enumerate(selected, start=start_number)
-    ]
+    rendered_lines: list[str] = []
+    for line_number, line in enumerate(selected, start=start_number):
+        numbered_prefix = f"[{prefix_label} L{line_number:04d}]"
+        trimmed_line = line.rstrip()
+        rendered_lines.append(
+            f"{numbered_prefix} {trimmed_line}" if trimmed_line else numbered_prefix
+        )
+    return rendered_lines
 
 
 def list_variant_names(config: PromptConfig) -> list[str]:

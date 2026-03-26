@@ -286,6 +286,48 @@ Canonical style
         self.assertIn("[EX L0003] gamma", rendered)
         self.assertNotIn("[EX L0001] alpha", rendered)
 
+    def test_render_numbered_blank_lines_omit_trailing_space(self) -> None:
+        repo_root = self.make_repo()
+        (repo_root / "docs/blank-lines.md").write_text(
+            "alpha\n\nbeta\n",
+            encoding="utf-8",
+        )
+        config_path = self.write_config(
+            repo_root,
+            {
+                "version": 1,
+                "repo_root": "..",
+                "defaults": {
+                    "shell_sections": [
+                        {"tag": "role", "lines": ["Produce a blueprint."]},
+                        {"tag": "task", "lines": ["Use the artifacts below."]},
+                    ],
+                    "artifact_ids": ["blank-lines"],
+                },
+                "artifacts": [
+                    {
+                        "id": "blank-lines",
+                        "type": "file_full",
+                        "path": "docs/blank-lines.md",
+                        "label": "Blank-line artifact",
+                        "explanation": "Preserve numbering without adding trailing-space noise.",
+                        "source_label": "BL",
+                    }
+                ],
+                "variants": [
+                    {"name": "main", "shell_sections": [], "artifact_ids": []}
+                ],
+            },
+        )
+
+        config = self.load_config(config_path)
+        rendered = generate_prompt.render_prompt(config, "main")
+
+        self.assertIn("[BL L0001] alpha", rendered)
+        self.assertIn("[BL L0003] beta", rendered)
+        self.assertIn("[BL L0002]", rendered)
+        self.assertNotIn("[BL L0002] ", rendered)
+
     def test_render_literal_artifact(self) -> None:
         repo_root = self.make_repo()
         config_path = self.write_config(
