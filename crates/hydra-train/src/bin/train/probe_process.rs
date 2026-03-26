@@ -1,20 +1,54 @@
+#[cfg(not(test))]
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Child;
+#[cfg(not(test))]
+use std::process::Command;
+use std::process::ExitStatus;
+#[cfg(not(test))]
+use std::process::Stdio;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+#[cfg(not(test))]
 use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(test))]
+use std::time::Instant;
 
 use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
 use super::artifacts::{BcArtifactPaths, RlArtifactPaths};
-use super::presentation::{format_probe_progress_line, with_utc_timestamp};
+use super::presentation::format_probe_progress_line;
+#[cfg(not(test))]
+use super::presentation::with_utc_timestamp;
 use super::probe_request::ProbeRequest;
 use super::probe_summary::probe_kind_name;
 
+#[cfg(not(test))]
+fn probe_child_executable() -> Result<PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let proc_self = PathBuf::from("/proc/self/exe");
+        if proc_self.exists() {
+            return Ok(proc_self);
+        }
+    }
+
+    let current = env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?;
+    if current.exists() {
+        Ok(current)
+    } else {
+        Err(format!(
+            "current executable path does not exist: {}",
+            current.display()
+        ))
+    }
+}
+
+#[cfg(not(test))]
 fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
     static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
     static HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
@@ -102,6 +136,7 @@ where
     })
 }
 
+#[cfg(not(test))]
 fn spawn_probe_heartbeat(
     interrupted: Arc<AtomicBool>,
     kind: ProbeKind,
@@ -292,14 +327,57 @@ pub(super) fn execute_probe_request(
     config_path: &Path,
     request: ProbeRequest,
     result_path: &Path,
-    classify_probe_detail: impl Fn(&str) -> ProbeStatus,
+    #[cfg_attr(test, allow(unused_variables))] classify_probe_detail: impl Fn(&str) -> ProbeStatus,
 ) -> Result<ProbeResult, String> {
-    let _config = super::config::read_config(config_path)?;
-    fs::remove_file(result_path).ok();
-    let interrupted = interrupt_flag()?;
-    interrupted.store(false, Ordering::SeqCst);
-    let mut child =
-        Command::new(env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?)
+    #[cfg(test)]
+    {
+        let config = super::config::read_config(config_path)?;
+        let child_request = super::config::ProbeChildRequest {
+            request: super::config::ProbeCliRequest {
+                kind: request.kind,
+                candidate_microbatch: request.candidate_microbatch,
+                warmup_steps: Some(request.warmup_steps),
+                measure_steps: Some(request.measure_steps),
+            },
+            result_path: result_path.to_path_buf(),
+            manifest_cache_path: Some(
+                super::artifacts::PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0))
+                    .manifest_cache_path,
+            ),
+        };
+        fs::remove_file(result_path).ok();
+        let use_actor_model = matches!(
+            config.precision_mode,
+            super::config::PrecisionMode::Bf16Autocast
+        ) && matches!(request.kind, ProbeKind::Train | ProbeKind::Validation);
+        if use_actor_model {
+            super::preflight_runtime::run_probe_only_with_test_model_config(
+                &config,
+                &hydra_train::model::HydraModelConfig::actor(),
+                request,
+                result_path,
+            )?;
+        } else {
+            super::preflight_runtime::run_probe_child_mode(&config, Some(child_request))?;
+        }
+        let result = read_probe_result(result_path)?;
+        fs::remove_file(result_path).ok();
+        Ok(result)
+    }
+
+    #[cfg(not(test))]
+    {
+        #[cfg(not(test))]
+        let _config = super::config::read_config(config_path)?;
+        let manifest_cache_path =
+            super::artifacts::PreflightPaths::new(&BcArtifactPaths::new(&_config.output_dir, 0))
+                .manifest_cache_path;
+
+        fs::remove_file(result_path).ok();
+        let interrupted = interrupt_flag()?;
+        interrupted.store(false, Ordering::SeqCst);
+        let child_exe = probe_child_executable()?;
+        let mut child = Command::new(&child_exe)
             .arg(config_path)
             .arg("--probe-kind")
             .arg(probe_kind_name(request.kind))
@@ -311,73 +389,81 @@ pub(super) fn execute_probe_request(
             .arg(request.measure_steps.to_string())
             .arg("--probe-result-path")
             .arg(result_path)
+            .arg("--probe-manifest-cache-path")
+            .arg(&manifest_cache_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|err| format!("failed to spawn preflight probe child: {err}"))?;
-    let stdout_handle = child
-        .stdout
-        .take()
-        .map(|stdout| spawn_output_forwarder(stdout, false));
-    let stderr_handle = child
-        .stderr
-        .take()
-        .map(|stderr| spawn_output_forwarder(stderr, true));
-    let heartbeat_handle = spawn_probe_heartbeat(
-        interrupted.clone(),
-        request.kind,
-        request.candidate_microbatch,
-    );
-    if wait_for_probe_child(&mut child, interrupted.as_ref())?.is_none() {
-        fs::remove_file(result_path).ok();
+            .map_err(|err| {
+                format!(
+                    "failed to spawn preflight probe child {}: {err}",
+                    child_exe.display()
+                )
+            })?;
+        let stdout_handle = child
+            .stdout
+            .take()
+            .map(|stdout| spawn_output_forwarder(stdout, false));
+        let stderr_handle = child
+            .stderr
+            .take()
+            .map(|stderr| spawn_output_forwarder(stderr, true));
+        let heartbeat_handle = spawn_probe_heartbeat(
+            interrupted.clone(),
+            request.kind,
+            request.candidate_microbatch,
+        );
+        if wait_for_probe_child(&mut child, interrupted.as_ref())?.is_none() {
+            fs::remove_file(result_path).ok();
+            interrupted.store(true, Ordering::SeqCst);
+            let _ = heartbeat_handle.join();
+            if let Some(handle) = stdout_handle {
+                let _ = join_output_forwarder(handle, "stdout");
+            }
+            if let Some(handle) = stderr_handle {
+                let _ = join_output_forwarder(handle, "stderr");
+            }
+            return Err("preflight interrupted; probe child terminated".to_string());
+        }
         interrupted.store(true, Ordering::SeqCst);
         let _ = heartbeat_handle.join();
-        if let Some(handle) = stdout_handle {
-            let _ = join_output_forwarder(handle, "stdout");
-        }
-        if let Some(handle) = stderr_handle {
-            let _ = join_output_forwarder(handle, "stderr");
-        }
-        return Err("preflight interrupted; probe child terminated".to_string());
-    }
-    interrupted.store(true, Ordering::SeqCst);
-    let _ = heartbeat_handle.join();
-    let stdout = match stdout_handle {
-        Some(handle) => join_output_forwarder(handle, "stdout")?,
-        None => Vec::new(),
-    };
-    let stderr = match stderr_handle {
-        Some(handle) => join_output_forwarder(handle, "stderr")?,
-        None => Vec::new(),
-    };
-    let status = child
-        .try_wait()
-        .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
-        .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
-    let output = child_output(status, stdout, stderr);
+        let stdout = match stdout_handle {
+            Some(handle) => join_output_forwarder(handle, "stdout")?,
+            None => Vec::new(),
+        };
+        let stderr = match stderr_handle {
+            Some(handle) => join_output_forwarder(handle, "stderr")?,
+            None => Vec::new(),
+        };
+        let status = child
+            .try_wait()
+            .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
+            .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
+        let output = child_output(status, stdout, stderr);
 
-    if result_path.exists() {
-        let result = read_probe_result(result_path)?;
-        fs::remove_file(result_path).ok();
-        return Ok(result);
-    }
+        if result_path.exists() {
+            let result = read_probe_result(result_path)?;
+            fs::remove_file(result_path).ok();
+            return Ok(result);
+        }
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
-    let combined = format!("stdout={stdout} stderr={stderr}");
-    let status = classify_probe_detail(&combined);
-    let detail = probe_failure_detail(status.clone(), stdout, stderr, output.status.code());
-    Ok(ProbeResult {
-        kind: request.kind,
-        candidate_microbatch: request.candidate_microbatch,
-        status,
-        measured_samples_per_second: None,
-        elapsed_seconds: None,
-        detail,
-    })
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = stdout.trim();
+        let stderr = stderr.trim();
+        let combined = format!("stdout={stdout} stderr={stderr}");
+        let status = classify_probe_detail(&combined);
+        let detail = probe_failure_detail(status.clone(), stdout, stderr, output.status.code());
+        Ok(ProbeResult {
+            kind: request.kind,
+            candidate_microbatch: request.candidate_microbatch,
+            status,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +517,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: default_max_validation_samples(),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 

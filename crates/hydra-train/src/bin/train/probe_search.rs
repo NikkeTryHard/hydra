@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use colored::Colorize;
@@ -276,6 +277,18 @@ where
     if candidates.is_empty() {
         return Ok(());
     }
+    let successful_elapsed = summaries
+        .iter()
+        .filter_map(|summary| {
+            (summary.status == ProbeStatus::Success)
+                .then_some(
+                    summary
+                        .average_elapsed_seconds
+                        .map(|elapsed| (summary.candidate_microbatch, elapsed)),
+                )
+                .flatten()
+        })
+        .collect::<Vec<_>>();
     println!(
         "{}",
         super::presentation::format_preflight_summary_line(
@@ -288,16 +301,11 @@ where
             )
         )
     );
-    let successful_summaries = summaries
-        .iter()
-        .filter(|summary| summary.status == ProbeStatus::Success)
-        .cloned()
-        .collect::<Vec<_>>();
     for candidate in candidates {
-        let seconds_per_step = successful_summaries
+        let seconds_per_step = successful_elapsed
             .iter()
-            .min_by_key(|summary| summary.candidate_microbatch.abs_diff(candidate))
-            .and_then(|summary| summary.average_elapsed_seconds)
+            .min_by_key(|(summary_candidate, _)| summary_candidate.abs_diff(candidate))
+            .map(|(_, elapsed)| *elapsed)
             .map(|elapsed| {
                 elapsed
                     / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
@@ -357,13 +365,14 @@ where
     if candidates.is_empty() {
         return Ok(());
     }
+    let successful_candidates = summaries
+        .iter()
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .map(|summary| summary.candidate_microbatch)
+        .collect::<BTreeSet<_>>();
     for _round in 0..config.preflight.search_coordinate_rounds.max(1) {
         for candidate in &candidates {
-            if results.iter().any(|result| {
-                result.kind == kind
-                    && result.candidate_microbatch == *candidate
-                    && result.status == ProbeStatus::Success
-            }) {
+            if successful_candidates.contains(candidate) {
                 continue;
             }
             let request = ProbeRequest {
@@ -422,20 +431,15 @@ where
         results,
         progress,
     )?;
-    let mut stable_results = results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .cloned()
-        .collect::<Vec<_>>();
     rerun_probe_finalists(
         config_path,
         result_path_for,
         kind,
         config,
-        &mut stable_results,
+        results,
         progress,
     )?;
-    best_probe_summary(&stable_results).ok_or(missing_error)
+    best_probe_summary(results).ok_or(missing_error)
 }
 
 pub(super) fn probe_candidate_ladder(
@@ -459,7 +463,6 @@ pub(super) fn probe_candidate_ladder(
         candidates.to_vec()
     };
     let mut results = Vec::new();
-    let mut stable_results = Vec::new();
     println!(
         "{}",
         super::presentation::format_preflight_summary_line(
@@ -479,7 +482,6 @@ pub(super) fn probe_candidate_ladder(
 
     for candidate in candidate_list {
         let mut stable = true;
-        let stable_start = results.len();
         let attempts = config.preflight.required_successes.max(1);
         let result_path_for = |kind, candidate, attempt| {
             super::probe_process::probe_result_path(artifacts, kind, candidate, attempt)
@@ -539,11 +541,8 @@ pub(super) fn probe_candidate_ladder(
                 break;
             }
         }
-        if stable {
-            stable_results.extend(results[stable_start..].iter().cloned());
-            if use_explicit_only {
-                return Ok((candidate, results));
-            }
+        if stable && use_explicit_only {
+            return Ok((candidate, results));
         }
     }
     progress.finish_with_message(
@@ -562,11 +561,6 @@ pub(super) fn probe_candidate_ladder(
         &mut results,
         &progress,
     )?;
-    stable_results = results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .cloned()
-        .collect();
     rerun_probe_finalists(
         config_path,
         |kind, candidate, attempt| {
@@ -574,7 +568,7 @@ pub(super) fn probe_candidate_ladder(
         },
         kind,
         config,
-        &mut stable_results,
+        &mut results,
         &progress,
     )?;
 
@@ -586,13 +580,13 @@ pub(super) fn probe_candidate_ladder(
         ));
     }
 
-    let selected_summary = best_probe_summary(&stable_results).ok_or_else(|| {
+    let selected_summary = best_probe_summary(&results).ok_or_else(|| {
         format!(
             "no stable {} microbatch found in preflight",
             probe_kind_name(kind)
         )
     })?;
-    if !stable_results.is_empty() {
+    if selected_summary.attempts > 0 {
         println!(
             "{}",
             super::presentation::format_preflight_selection_line(
@@ -644,6 +638,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
