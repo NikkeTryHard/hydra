@@ -414,6 +414,107 @@ PGO is most effective for branch-heavy code (exactly what the game engine is). T
 
 For training throughput, encode N observations into a single contiguous buffer (`[batch_size, 85, 34]` in row-major order). Pre-allocate once, reuse across training steps. Memory layout matches GPU tensor format, so the buffer can be `memcpy`'d directly to GPU via the burn-tch backend. KataGo and Mortal both use this caller-owned-buffer pattern.
 
+### 8.6 2026-03 Optimization Checkpoint
+
+This branch now includes a long run of low-risk, green, benchmark-backed optimizations across both `hydra-train` and `hydra-core`. The key point is not just that code changed, but that each slice was verified on its directly dependent test surface before moving on.
+
+#### Landed slices
+
+Training-side / orchestration:
+- BF16 BC rollout through training, probe, preflight, runtime-autotune, and stage-two benchmark surfaces
+- manifest-cache reuse across BC preflight / bootstrap / probe child paths
+- replay-loader event-local opponent-target caching, placement precompute, and sidecar/replay-key fast-path gating
+- validation baseline-forward trim (same-model short-circuit and policy-only distinct baseline path)
+- duplicate BC/validation batch materialization cleanup via owned collate helpers
+- BC/RL scalar-sync cleanup
+- model/inference CPU-bridge cleanup (`policy_cpu`, `value_cpu`, borrowed fill paths, CPU-side `infer_action`)
+- RL batch scratch reuse and scalar GAE cleanup
+- train-bin bookkeeping cleanup in `probe_search`, `probe_ladder`, `runtime_autotune`, and `probe_summary`
+- reporting helper cleanup (`delta_q_promotion`, `exit_validation`, `delta_q_validation`, `progress` fallback metrics)
+
+Core simulation / search:
+- `GameRunner` reuse in `hydra-core` batch simulation paths
+- `ObservationRef` discard-metadata parity with owned `Observation`
+- zero-copy child observation encoding in the hot self-play live-exit path
+
+Replay correctness:
+- replay `Tsumo` parity fixes in `hydra-engine` (hand-unique tile selection and forbidden-discard reset)
+
+#### Current benchmark snapshot
+
+Core benches (`cargo bench -p hydra-core --bench simulator_bench`, `ct_smc_bench`, `agari_bench`):
+
+| Benchmark | Current snapshot |
+|-----------|------------------|
+| `single_game_first_action` | ~418 µs |
+| `single_game_first_action_reuse` | ~472 µs |
+| `batch_100_games` | ~4.05 ms |
+| `encode_observation` | ~3.05 ms |
+| `encode_observation_ref` | ~3.05 ms |
+| `ct_smc_dp_128_samples` | ~2.12 ms |
+| `hand_evaluator/calc_4p` | ~705 µs |
+| `hand_evaluator/calc_3p` | ~290 µs |
+| `calculate_score` | ~62.5 ns |
+
+Training-side benches (`cargo bench -p hydra-train --bench train_hotpaths_bench`):
+
+| Benchmark | Current snapshot |
+|-----------|------------------|
+| `loader/load_game_from_reader` | ~10.7 ms |
+| `validation/collate_only` | ~33.7 µs |
+| `validation/forward_loss_only` | ~1.33–1.40 s |
+| `validation/collate_forward_loss` | ~0.55–1.10 s |
+| `selfplay_batch/trajectories_to_rl_batch` | ~30–31 µs |
+| `selfplay_batch/trajectories_to_rl_batch_reuse` | ~30.6 µs |
+| `model_cpu_bridge/policy_value_cpu` | ~0.58–0.73 s |
+| `model_cpu_bridge/policy_cpu` | ~0.93–0.99 s |
+| `model_cpu_bridge/value_cpu` | ~0.95–1.00 s |
+| `model_cpu_bridge/batch_policy_value_cpu_reuse` | ~2.46–3.50 s |
+| `model_cpu_bridge/batch_value_cpu_reuse` | ~2.28–3.72 s |
+
+#### Interpretation
+
+- The corrected `batch_100_games` benchmark shows the reused simulation path is genuinely better once the benchmark measures the actual production code path.
+- `ObservationRef` is now good enough for hot-path zero-copy use, but `encode_observation_ref` alone is not yet materially faster than owned encoding in the microbench. The win is in removing allocations/copies from hot call chains.
+- `ct_smc` remains nontrivial, but the obvious stack-allocation experiment regressed and was reverted. That’s a signal to stop guessing there and require stronger benchmark evidence.
+- On the training side, replay-loader and RL-batch collation are now relatively cheap compared to validation forward/loss, which remains the largest measured CPU cost center in the current benchmark harness.
+
+#### Practical next choices
+
+If more work continues from this checkpoint, the strongest evidence-backed directions are:
+
+1. **Deeper validation compute cost**
+   - the training benchmark now clearly shows validation forward/loss dominates collation
+   - future changes there should be benchmark-driven and semantics-locked
+
+2. **Broader `hydra-core` simulation / observation work**
+   - only if guided by simulator benchmarks, not intuition
+   - likely around larger observation or game-loop architecture rather than more helper churn
+
+3. **Stop here and benchmark end-to-end training**
+   - the branch already captures many low-risk wins
+   - an end-to-end train/preflight benchmark is now more valuable than more local helper edits
+
+#### Experiments worth NOT repeating blindly
+
+This branch also produced useful negative results. These are worth recording so future passes do not burn time re-running the same failed ideas.
+
+- **`ct_smc` stack-array rewrite**
+  - Replacing temporary `Vec`s in the hot sampling loop with fixed-size stack arrays looked attractive, but the measured `ct_smc_dp_128_samples` benchmark regressed and the change was reverted.
+  - Lesson: this path needs benchmark-first changes, not assumed allocation folklore.
+
+- **Approximate `TargetPresence` preservation in sliced targets**
+  - Trying to carry scaled-down `TargetPresence` metadata through `HydraTargets::slice_batch()` broke the existing contract and tests. That idea was reverted.
+  - Lesson: metadata reuse is only valuable when the metadata remains exact.
+
+- **Benchmark interpretations must match the actual code path**
+  - `batch_100_games` initially appeared to regress until the benchmark itself was updated to measure the reused simulation path rather than the old fresh-runner path.
+  - Lesson: late-stage optimization work needs benchmark maintenance as much as code changes.
+
+- **Zero-copy `ObservationRef` is mainly about allocation/copy reduction, not guaranteed encoder speedups**
+  - `encode_observation_ref` is not materially faster than owned `encode_observation` in the microbench.
+  - It is still worth using on hot simulation/search paths because it removes owned `Observation` construction and copies, but it should not be justified by the encoder benchmark alone.
+
 ---
 
 ## 9. Links and Resources
