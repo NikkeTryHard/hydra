@@ -26,3 +26,7 @@ handoff_zips/
 output/
 out/
 dist/
+
+# Generated Kaggle runtime payloads are intentionally local-only.
+/notebooks/offline-bundle/*.bin
+/notebooks/offline-bundle/*.zip

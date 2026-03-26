@@ -7,8 +7,8 @@ mkdir -p "${TMP_BASE}"
 STAGE_ROOT="${TMP_BASE}/hydra-tmp-kaggle-bundle"
 STAGE_DIR="${STAGE_ROOT}/hydra"
 OUT_DIR="${ROOT_DIR}/notebooks/offline-bundle"
-ZIP_PATH="${OUT_DIR}/hydra-kaggle-offline-bundle.zip"
 BIN_PATH="${OUT_DIR}/hydra-kaggle-offline-bundle.bin"
+LEGACY_ZIP_PATH="${OUT_DIR}/hydra-kaggle-offline-bundle.zip"
 COMPAT_DIR="${ROOT_DIR}/dist/kaggle-compat"
 NOTEBOOK_PATH="${ROOT_DIR}/notebooks/hydra_baseline_training.ipynb"
 README_PATH="${STAGE_DIR}/KAGGLE_OFFLINE_README.md"
@@ -150,7 +150,7 @@ manifest_path.write_text(json.dumps(bundle_manifest, indent=2, sort_keys=True) +
 PY
 
 mkdir -p "${OUT_DIR}"
-rm -f "${ZIP_PATH}" "${BIN_PATH}"
+rm -f "${BIN_PATH}" "${LEGACY_ZIP_PATH}"
 
 ROOT_DIR_ENV="${ROOT_DIR}" python3 - <<'PY'
 import os
@@ -159,7 +159,7 @@ import zipfile
 
 root_dir = Path(os.environ['ROOT_DIR_ENV'])
 root = Path('/home/nikketryhard/tmp/hydra-tmp-kaggle-bundle')
-out = root_dir / 'notebooks' / 'offline-bundle' / 'hydra-kaggle-offline-bundle.zip'
+out = root_dir / 'notebooks' / 'offline-bundle' / 'hydra-kaggle-offline-bundle.bin'
 
 with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
     for path in sorted(root.rglob('*')):
@@ -179,12 +179,9 @@ with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6
             zf.writestr(info, path.read_bytes())
 PY
 
-cp "${ZIP_PATH}" "${BIN_PATH}"
-
 cat <<EOF
 Kaggle offline bundle ready:
   ${BIN_PATH}
-  ${ZIP_PATH}
 
 Bundle contents are runtime-only:
   notebooks/hydra_baseline_training.ipynb
