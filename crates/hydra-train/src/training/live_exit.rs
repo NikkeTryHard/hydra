@@ -13,11 +13,14 @@
 use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
 use hydra_core::afbs::{AfbsTree, NodeIdx, predicted_child_hash};
 use hydra_core::arena::{TrajectoryDeltaQLabel, TrajectoryExitLabel, softmax_temperature};
+#[cfg(test)]
 use hydra_core::bridge::encode_observation;
+use hydra_core::bridge::encode_observation_ref;
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action, ActionType};
 use riichienv_core::observation::Observation;
+use riichienv_core::observation_ref::ObservationRef;
 use riichienv_core::state::GameState;
 
 use crate::selfplay::StepRecord;
@@ -77,6 +80,39 @@ impl SelfPlayExitAdapter {
             scratch_state: None,
         }
     }
+
+    pub fn reset(&mut self) {
+        self.scratch_state = None;
+    }
+
+    pub fn child_public_obs_after_discard_ref(
+        &mut self,
+        state: &GameState,
+        player: u8,
+        action: u8,
+        safety: &SafetyInfo,
+    ) -> Option<[f32; OBS_SIZE]> {
+        if action > 33 {
+            return None;
+        }
+
+        let hand = state.players[player as usize].hand_slice();
+        let tile136 = hand.iter().find(|&&t| t / 4 == action)?;
+        let riichienv_action = Action::new(ActionType::Discard, Some(*tile136), &[], None);
+
+        let child_state = self.scratch_state.get_or_insert_with(|| state.clone());
+        child_state.clone_from(state);
+        child_state.skip_mjai_logging = true;
+
+        let mut actions = [None; 4];
+        actions[player as usize] = Some(riichienv_action);
+        child_state.step_unchecked(&actions);
+
+        let child_obs = child_state.observe(player);
+        let encoded = encode_observation_ref(&mut self.encoder, &child_obs, safety);
+
+        Some(encoded)
+    }
 }
 
 impl Default for SelfPlayExitAdapter {
@@ -98,26 +134,7 @@ impl ExitSearchAdapter for SelfPlayExitAdapter {
         action: u8,
         safety: &SafetyInfo,
     ) -> Option<[f32; OBS_SIZE]> {
-        if action > 33 {
-            return None;
-        }
-
-        let hand = state.players[player as usize].hand_slice();
-        let tile136 = hand.iter().find(|&&t| t / 4 == action)?;
-        let riichienv_action = Action::new(ActionType::Discard, Some(*tile136), &[], None);
-
-        let child_state = self.scratch_state.get_or_insert_with(|| state.clone());
-        child_state.clone_from(state);
-        child_state.skip_mjai_logging = true;
-
-        let mut actions = [None; 4];
-        actions[player as usize] = Some(riichienv_action);
-        child_state.step_unchecked(&actions);
-
-        let child_obs = child_state.get_observation(player);
-        let encoded = encode_observation(&mut self.encoder, &child_obs, safety, None);
-
-        Some(encoded)
+        self.child_public_obs_after_discard_ref(state, player, action, safety)
     }
 }
 
@@ -257,6 +274,96 @@ where
     try_search_labels_from_context(state, obs, &ctx, safety, cfg, model_pv, adapter)
 }
 
+pub fn try_live_search_labels_selfplay<M>(
+    state: &GameState,
+    _obs: &ObservationRef<'_>,
+    step: &StepRecord,
+    safety: &SafetyInfo,
+    cfg: &ExitConfig,
+    model_pv: &mut M,
+    adapter: &mut SelfPlayExitAdapter,
+) -> Option<TrajectorySearchLabels>
+where
+    M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
+{
+    let ctx = RootDecisionContext::from_step(step);
+    if !compatible_discard_state(&ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 })) {
+        return None;
+    }
+
+    let legal_discards = legal_discard_actions(step);
+    if legal_discards.len() < 2 {
+        return None;
+    }
+
+    let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
+    let mut hard_slice = [0.0f32; 34];
+    for (idx, &action) in legal_discards.iter().enumerate() {
+        hard_slice[idx] = base_pi[action];
+    }
+    if !is_hard_state(
+        &hard_slice[..legal_discards.len()],
+        cfg.hard_state_threshold,
+    ) {
+        return None;
+    }
+
+    let budget = budget_from_legal_count(cfg, legal_discards.len());
+    let root_hash = adapter.root_hash(state, ctx.player_id, &ctx.obs_encoded);
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(root_hash, 1.0, false);
+    let priors: Vec<(u8, f32)> = legal_discards
+        .iter()
+        .map(|&a| (a as u8, base_pi[a]))
+        .collect();
+    seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
+
+    let player_safety = safety;
+    let mut values = Vec::with_capacity(legal_discards.len());
+    for &action in &legal_discards {
+        let child_obs = adapter.child_public_obs_after_discard_ref(
+            state,
+            ctx.player_id,
+            action as u8,
+            player_safety,
+        )?;
+        let (_child_logits, v_child) = model_pv(&child_obs);
+        if !v_child.is_finite() {
+            return None;
+        }
+        values.push(v_child);
+    }
+    let first_child_idx = tree.nodes[root as usize]
+        .children
+        .first()
+        .map(|&(_, idx)| idx);
+    tree.run_search_iterations(root, budget, &|child_idx| {
+        first_child_idx
+            .and_then(|first| child_idx.checked_sub(first))
+            .and_then(|offset| values.get(offset as usize).copied())
+            .unwrap_or(0.0)
+    });
+
+    let legal_f32 = ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
+    let exit = build_exit_from_afbs_tree(
+        &tree,
+        root,
+        &base_pi,
+        &legal_f32,
+        budget,
+        cfg.safety_valve_max_kl,
+    )
+    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
+    let delta_q = build_delta_q_from_afbs_tree(&tree, root, &legal_f32)
+        .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
+
+    if exit.is_none() && delta_q.is_none() {
+        None
+    } else {
+        Some(TrajectorySearchLabels { exit, delta_q })
+    }
+}
+
 /// Attempts to produce an ExIt label from a reusable root-decision context.
 ///
 /// This preserves the live producer semantics while decoupling the canonical
@@ -276,6 +383,31 @@ where
 {
     try_search_labels_from_context(state, obs, ctx, safety, cfg, model_pv, adapter)
         .and_then(|l| l.exit)
+}
+
+pub(crate) fn try_exit_label_from_context_with_batched_child_values<M, A>(
+    state: &GameState,
+    obs: &Observation,
+    ctx: &RootDecisionContext,
+    safety: &SafetyInfo,
+    cfg: &ExitConfig,
+    child_values: &mut M,
+    adapter: &mut A,
+) -> Option<TrajectoryExitLabel>
+where
+    M: FnMut(&[[f32; OBS_SIZE]]) -> Vec<f32>,
+    A: ExitSearchAdapter,
+{
+    try_search_labels_from_context_with_batched_child_values(
+        state,
+        obs,
+        ctx,
+        safety,
+        cfg,
+        child_values,
+        adapter,
+    )
+    .and_then(|labels| labels.exit)
 }
 
 pub fn try_search_labels_from_context<M, A>(
@@ -309,8 +441,14 @@ where
     let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
 
     // Step 4: hard-state gate
-    let hard_slice: Vec<f32> = legal_discards.iter().map(|&a| base_pi[a]).collect();
-    if !is_hard_state(&hard_slice, cfg.hard_state_threshold) {
+    let mut hard_slice = [0.0f32; 34];
+    for (idx, &action) in legal_discards.iter().enumerate() {
+        hard_slice[idx] = base_pi[action];
+    }
+    if !is_hard_state(
+        &hard_slice[..legal_discards.len()],
+        cfg.hard_state_threshold,
+    ) {
         return None;
     }
 
@@ -322,6 +460,9 @@ where
     let mut tree = AfbsTree::new();
     let root = tree.add_node(root_hash, 1.0, false);
 
+    let legal_discards = (0..=DISCARD_END as usize)
+        .filter(|&a| ctx.legal_mask[a])
+        .collect::<Vec<_>>();
     let priors: Vec<(u8, f32)> = legal_discards
         .iter()
         .map(|&a| (a as u8, base_pi[a]))
@@ -330,23 +471,130 @@ where
 
     // Step 7: evaluate each child with the model value head
     // Cache child values so repeated PUCT visits reuse the same score.
-    let mut value_by_child = std::collections::HashMap::<NodeIdx, f32>::new();
-    for &(action, child_idx) in &tree.nodes[root as usize].children.clone() {
-        let child_obs =
-            adapter.child_public_obs_after_discard(state, obs, ctx.player_id, action, safety)?;
+    let mut values = Vec::with_capacity(legal_discards.len());
+    for &action in &legal_discards {
+        let child_obs = adapter.child_public_obs_after_discard(
+            state,
+            obs,
+            ctx.player_id,
+            action as u8,
+            safety,
+        )?;
         let (_child_logits, v_child) = model_pv(&child_obs);
         if !v_child.is_finite() {
             return None;
         }
-        value_by_child.insert(child_idx, v_child);
+        values.push(v_child);
     }
+    let first_child_idx = tree.nodes[root as usize]
+        .children
+        .first()
+        .map(|&(_, idx)| idx);
 
     // Step 8: run root-only AFBS search with cached child values
     tree.run_search_iterations(root, budget, &|child_idx| {
-        value_by_child.get(&child_idx).copied().unwrap_or(0.0)
+        first_child_idx
+            .and_then(|first| child_idx.checked_sub(first))
+            .and_then(|offset| values.get(offset as usize).copied())
+            .unwrap_or(0.0)
     });
 
     // Step 9: build the label using the canonical visit-based teacher
+    let exit = build_exit_from_afbs_tree(
+        &tree,
+        root,
+        &base_pi,
+        &legal_f32,
+        budget,
+        cfg.safety_valve_max_kl,
+    )
+    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
+    let delta_q = build_delta_q_from_afbs_tree(&tree, root, &legal_f32)
+        .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
+
+    if exit.is_none() && delta_q.is_none() {
+        None
+    } else {
+        Some(TrajectorySearchLabels { exit, delta_q })
+    }
+}
+
+pub(crate) fn try_search_labels_from_context_with_batched_child_values<M, A>(
+    state: &GameState,
+    obs: &Observation,
+    ctx: &RootDecisionContext,
+    safety: &SafetyInfo,
+    cfg: &ExitConfig,
+    child_values: &mut M,
+    adapter: &mut A,
+) -> Option<TrajectorySearchLabels>
+where
+    M: FnMut(&[[f32; OBS_SIZE]]) -> Vec<f32>,
+    A: ExitSearchAdapter,
+{
+    let legal_f32 = ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
+    if !compatible_discard_state(&legal_f32) {
+        return None;
+    }
+
+    let legal_discards = (0..=DISCARD_END as usize)
+        .filter(|&a| ctx.legal_mask[a])
+        .collect::<Vec<_>>();
+    if legal_discards.len() < 2 {
+        return None;
+    }
+
+    let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
+    let mut hard_slice = [0.0f32; 34];
+    for (idx, &action) in legal_discards.iter().enumerate() {
+        hard_slice[idx] = base_pi[action];
+    }
+    if !is_hard_state(
+        &hard_slice[..legal_discards.len()],
+        cfg.hard_state_threshold,
+    ) {
+        return None;
+    }
+
+    let budget = budget_from_legal_count(cfg, legal_discards.len());
+    let root_hash = adapter.root_hash(state, ctx.player_id, &ctx.obs_encoded);
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(root_hash, 1.0, false);
+
+    let priors: Vec<(u8, f32)> = legal_discards
+        .iter()
+        .map(|&a| (a as u8, base_pi[a]))
+        .collect();
+    seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
+
+    let mut child_observations = Vec::with_capacity(legal_discards.len());
+    for &action in &legal_discards {
+        let child_obs = adapter.child_public_obs_after_discard(
+            state,
+            obs,
+            ctx.player_id,
+            action as u8,
+            safety,
+        )?;
+        child_observations.push(child_obs);
+    }
+
+    let values = child_values(&child_observations);
+    if values.len() != legal_discards.len() || values.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let first_child_idx = tree.nodes[root as usize]
+        .children
+        .first()
+        .map(|&(_, idx)| idx);
+
+    tree.run_search_iterations(root, budget, &|child_idx| {
+        first_child_idx
+            .and_then(|first| child_idx.checked_sub(first))
+            .and_then(|offset| values.get(offset as usize).copied())
+            .unwrap_or(0.0)
+    });
+
     let exit = build_exit_from_afbs_tree(
         &tree,
         root,
@@ -966,7 +1214,7 @@ mod tests {
         let diff: f32 = parent_obs
             .iter()
             .zip(child_obs.iter())
-            .map(|(a, b)| (a - b).abs())
+            .map(|(a, b)| (*a - *b).abs())
             .sum();
         assert!(
             diff > 0.1,
@@ -1146,6 +1394,64 @@ mod tests {
         );
 
         assert_eq!(via_ctx, via_step);
+    }
+
+    #[test]
+    fn try_search_labels_from_context_batched_child_values_matches_single_call_fixture() {
+        let (state, obs, _pid) = make_real_game_at_discard_phase();
+        let safety = SafetyInfo::new();
+
+        let hand = hydra_core::bridge::extract_hand(&obs);
+        let legal_tiles: Vec<usize> = hand
+            .iter()
+            .enumerate()
+            .filter(|&(_, c)| *c > 0)
+            .map(|(i, _)| i)
+            .collect();
+
+        if legal_tiles.len() < 2 {
+            return;
+        }
+
+        let step = make_discard_only_step(&legal_tiles[..legal_tiles.len().min(13)]);
+        let ctx = RootDecisionContext::from_step(&step);
+        let cfg = ExitConfig::default_phase3();
+        let values: Vec<(u8, f32)> = legal_tiles
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| (t as u8, 0.5 - i as f32 * 0.05))
+            .collect();
+
+        let mut model_a = make_stub_model(&values);
+        let mut model_b = make_stub_model(&values);
+        let mut adapter_a = SelfPlayExitAdapter::new();
+        let mut adapter_b = SelfPlayExitAdapter::new();
+
+        let via_single = try_search_labels_from_context(
+            &state,
+            &obs,
+            &ctx,
+            &safety,
+            &cfg,
+            &mut model_a,
+            &mut adapter_a,
+        );
+        let via_batched = try_search_labels_from_context_with_batched_child_values(
+            &state,
+            &obs,
+            &ctx,
+            &safety,
+            &cfg,
+            &mut |child_obs| {
+                child_obs
+                    .iter()
+                    .map(|obs_encoded| model_b(obs_encoded).1)
+                    .collect()
+            },
+            &mut adapter_b,
+        );
+
+        assert_eq!(via_batched, via_single);
     }
 
     #[test]
