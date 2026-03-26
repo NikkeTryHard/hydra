@@ -1,9 +1,11 @@
 use colored::Colorize;
 use std::path::PathBuf;
 
+use burn::backend::libtorch::LibTorchDevice;
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
-use hydra_train::eval::{run_paired_delta_q_arena_confirmation, PairedArenaEvalConfig};
+use burn::tensor::backend::{AutodiffBackend, Backend};
+use hydra_train::eval::{PairedArenaEvalConfig, run_paired_delta_q_arena_confirmation};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 use hydra_train::training::delta_q_promotion::{
@@ -11,12 +13,15 @@ use hydra_train::training::delta_q_promotion::{
 };
 
 use super::artifacts::{
-    write_delta_q_promotion_artifact, BcArtifactPaths, PersistedDeltaQPromotionArtifact,
+    BcArtifactPaths, PersistedDeltaQPromotionArtifact, write_delta_q_promotion_artifact,
 };
-use super::bootstrap::{initialize_rl_training_bootstrap, RlTrainingBootstrap, RlTrainingRuntime};
-use super::bootstrap::{initialize_training_bootstrap, TrainingBootstrap, TrainingRuntime};
-use super::config::{configure_threads, device_label, validate_config, TrainConfig};
-use super::epoch_runner::{run_epoch, EpochRunnerContext, EpochRuntimeMut};
+use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
+use super::bootstrap::{
+    TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap,
+    initialize_training_bootstrap_bf16,
+};
+use super::config::{TrainConfig, configure_threads, device_label, validate_config};
+use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use super::presentation::{
     explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
@@ -29,14 +34,134 @@ use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
 use super::validation::materialize_validation_samples;
 use super::validation::{
-    run_validation_with_policy_baseline, ValidationContext, ValidationRuntime,
+    ValidationContext, ValidationRuntime, run_validation_with_policy_baseline,
 };
+use super::{Bf16TrainBackend, TrainBackend};
+
+type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
+
+fn run_bc_training_mode_for_backend<B>(
+    bootstrap: TrainingBootstrap<B>,
+    runtime: TrainingRuntime<B>,
+) -> Result<(), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
+    let TrainingBootstrap {
+        config,
+        resume,
+        artifacts,
+        loader_config,
+        manifest,
+        train_cfg,
+        model_config,
+        device_name,
+        train_device,
+        current_runtime,
+        session_start_global_step,
+        total_steps,
+        microbatch_size,
+        banner_stats,
+        loss_fn,
+        valid_loss_fn,
+        bc_exit_cfg,
+    } = bootstrap;
+    let TrainingRuntime {
+        model,
+        mut optimizer,
+        mut best_validation,
+        mut global_step,
+        run_start,
+        mut last_log_step,
+        mut last_log_time,
+        mut tb,
+        mut training_log,
+        mut step_log,
+        mut head_controller,
+    } = runtime;
+
+    print_banner(
+        &model_config,
+        &config,
+        &artifacts,
+        &device_name,
+        &banner_stats,
+        &train_cfg,
+    );
+    resume.print_banner_with_effective_runtime(Some(current_runtime));
+    let cached_validation_samples =
+        materialize_validation_samples(&config, &loader_config, &manifest)?;
+    let mut model = Some(model);
+
+    for epoch in resume.start_epoch..config.num_epochs {
+        let outcome = run_epoch(
+            EpochRunnerContext {
+                epoch,
+                config: &config,
+                manifest: &manifest,
+                loader_config: &loader_config,
+                artifacts: &artifacts,
+                train_cfg: &train_cfg,
+                loss_fn: &loss_fn,
+                valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &bc_exit_cfg,
+                train_device: &train_device,
+                session_start_global_step,
+                steps_to_skip: resume.steps_to_skip_for_epoch(epoch),
+                microbatch_size,
+                total_steps,
+                current_runtime,
+                run_start: &run_start,
+                head_controller: &mut head_controller,
+                cached_validation_samples: cached_validation_samples.as_deref(),
+            },
+            EpochRuntimeMut {
+                model: &mut model,
+                optimizer: &mut optimizer,
+                global_step: &mut global_step,
+                best_validation: &mut best_validation,
+                tb: &mut tb,
+                training_log: &mut training_log,
+                step_log: &mut step_log,
+                last_log_step: &mut last_log_step,
+                last_log_time: &mut last_log_time,
+            },
+        )?;
+        if outcome.stop_after_epoch {
+            break;
+        }
+    }
+
+    println!(
+        "{}",
+        timestamped(format!(
+            "{} {}",
+            "Finished BC training. Best validation policy CE:"
+                .bold()
+                .cyan(),
+            format_best_validation_summary(best_validation.as_ref())
+                .bold()
+                .green()
+        ))
+    );
+
+    Ok(())
+}
 
 pub(super) fn handle_preflight_mode(
     config_path: &std::path::Path,
     config: &TrainConfig,
 ) -> Result<(), String> {
     validate_config(config)?;
+    if config.rl.is_some()
+        && matches!(
+            config.precision_mode,
+            crate::config::PrecisionMode::Bf16Autocast
+        )
+    {
+        return Err("precision_mode=bf16_autocast is not supported for preflight yet".to_string());
+    }
     configure_threads(config.num_threads)?;
     if config.rl.is_some() {
         let train_device = super::config::train_device(&config.device)?;
@@ -117,6 +242,14 @@ pub(super) fn handle_probe_mode(
     request: ProbeRequest,
 ) -> Result<(), String> {
     validate_config(config)?;
+    if matches!(request.kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch)
+        && matches!(
+            config.precision_mode,
+            crate::config::PrecisionMode::Bf16Autocast
+        )
+    {
+        return Err("precision_mode=bf16_autocast is not supported for probe mode yet".to_string());
+    }
     configure_threads(config.num_threads)?;
     let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
     artifacts.create_root_dir()?;
@@ -156,6 +289,14 @@ pub(super) fn handle_training_mode(
         format_warning_line(explicit_preflight_recommendation())
     );
     if let Some(rl_cfg) = config.rl.clone() {
+        if matches!(
+            config.precision_mode,
+            crate::config::PrecisionMode::Bf16Autocast
+        ) {
+            return Err(
+                "precision_mode=bf16_autocast is not supported for RL training yet".to_string(),
+            );
+        }
         let (bootstrap, runtime) = initialize_rl_training_bootstrap(config_path, config, rl_cfg)?;
         let RlTrainingBootstrap {
             config: _,
@@ -184,101 +325,16 @@ pub(super) fn handle_training_mode(
         let _runtime: RlTrainingRuntime = runtime;
         return run_rl_training_loop(bootstrap, _runtime);
     }
-    let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
-    let TrainingBootstrap {
-        config,
-        resume,
-        artifacts,
-        loader_config,
-        manifest,
-        train_cfg,
-        model_config,
-        device_name,
-        train_device,
-        current_runtime,
-        session_start_global_step,
-        total_steps,
-        microbatch_size,
-        banner_stats,
-        loss_fn,
-        valid_loss_fn,
-        bc_exit_cfg,
-    } = bootstrap;
-    let TrainingRuntime {
-        mut model,
-        mut optimizer,
-        mut best_validation,
-        mut global_step,
-        run_start,
-        mut last_log_step,
-        mut last_log_time,
-        mut tb,
-        mut head_controller,
-    } = runtime;
-
-    print_banner(
-        &model_config,
-        &config,
-        &artifacts,
-        &device_name,
-        &banner_stats,
-        &train_cfg,
-    );
-    resume.print_banner_with_effective_runtime(Some(current_runtime));
-    let cached_validation_samples =
-        materialize_validation_samples(&config, &loader_config, &manifest)?;
-
-    for epoch in resume.start_epoch..config.num_epochs {
-        let outcome = run_epoch(
-            EpochRunnerContext {
-                epoch,
-                config: &config,
-                manifest: &manifest,
-                loader_config: &loader_config,
-                artifacts: &artifacts,
-                train_cfg: &train_cfg,
-                loss_fn: &loss_fn,
-                valid_loss_fn: &valid_loss_fn,
-                bc_exit_cfg: &bc_exit_cfg,
-                train_device: &train_device,
-                session_start_global_step,
-                steps_to_skip: resume.steps_to_skip_for_epoch(epoch),
-                microbatch_size,
-                total_steps,
-                current_runtime,
-                run_start: &run_start,
-                head_controller: &mut head_controller,
-                cached_validation_samples: cached_validation_samples.as_deref(),
-            },
-            EpochRuntimeMut {
-                model: &mut model,
-                optimizer: &mut optimizer,
-                global_step: &mut global_step,
-                best_validation: &mut best_validation,
-                tb: &mut tb,
-                last_log_step: &mut last_log_step,
-                last_log_time: &mut last_log_time,
-            },
-        )?;
-        if outcome.stop_after_epoch {
-            break;
+    match config.precision_mode {
+        crate::config::PrecisionMode::Fp32 => {
+            let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
+            run_bc_training_mode_for_backend::<TrainBackend>(bootstrap, runtime)
+        }
+        crate::config::PrecisionMode::Bf16Autocast => {
+            let (bootstrap, runtime) = initialize_training_bootstrap_bf16(config_path, config)?;
+            run_bc_training_mode_for_backend::<Bf16TrainBackend>(bootstrap, runtime)
         }
     }
-
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} {}",
-            "Finished BC training. Best validation policy CE:"
-                .bold()
-                .cyan(),
-            format_best_validation_summary(best_validation.as_ref())
-                .bold()
-                .green()
-        ))
-    );
-
-    Ok(())
 }
 
 pub(super) fn handle_delta_q_promotion_mode(
@@ -286,6 +342,14 @@ pub(super) fn handle_delta_q_promotion_mode(
     config: TrainConfig,
     baseline_checkpoint: Option<PathBuf>,
 ) -> Result<(), String> {
+    if matches!(
+        config.precision_mode,
+        crate::config::PrecisionMode::Bf16Autocast
+    ) {
+        return Err(
+            "precision_mode=bf16_autocast is not supported for delta_q promotion yet".to_string(),
+        );
+    }
     let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
     let TrainingBootstrap {
         config,
@@ -673,6 +737,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -784,10 +849,10 @@ mod tests {
         .expect("arena confirmation request should exist");
         assert!(request.same_seeds);
         assert_eq!(request.min_games, 10_000);
-        assert!(default_arena_confirmation_request(
-            DeltaQPromotionRecommendation::RejectAtOfflineGate,
-        )
-        .is_none());
+        assert!(
+            default_arena_confirmation_request(DeltaQPromotionRecommendation::RejectAtOfflineGate,)
+                .is_none()
+        );
     }
 
     #[test]
@@ -850,6 +915,48 @@ mod tests {
     }
 
     #[test]
+    fn handle_preflight_mode_bc_branch_allows_bf16_past_top_level_gate() {
+        let data_dir = unique_test_path("bf16-bc-preflight-no-stable-data");
+        std::fs::create_dir_all(&data_dir).expect("create empty BF16 BC preflight data dir");
+        let output_dir = unique_test_path("bf16-bc-preflight-no-stable-out");
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        let config_path =
+            unique_test_path("bf16-bc-preflight-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid BF16 BC preflight config");
+        std::fs::write(&config_path, config_yaml).expect("write valid BF16 BC preflight config");
+
+        let err = handle_preflight_mode(&config_path, &config)
+            .expect_err("BF16 BC preflight should fall through the mode gate");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn handle_preflight_mode_rl_branch_still_rejects_bf16() {
+        let mut config = dummy_config();
+        config.rl = Some(RlTrainConfig::default());
+        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+
+        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
+            .expect_err("RL preflight should keep rejecting BF16");
+
+        assert_eq!(
+            err,
+            "precision_mode=bf16_autocast is not supported for preflight yet"
+        );
+    }
+
+    #[test]
     fn handle_probe_mode_returns_validation_errors_before_probe_runtime() {
         let mut config = dummy_config();
         config.batch_size = 0;
@@ -877,6 +984,60 @@ mod tests {
         .expect_err("invalid config should fail before RL probe wrapper work");
 
         assert_eq!(err, "batch_size must be greater than 0");
+    }
+
+    #[test]
+    fn handle_probe_mode_bc_branch_allows_bf16_past_top_level_gate() {
+        let data_dir = unique_test_path("bf16-bc-probe-no-stable-data");
+        std::fs::create_dir_all(&data_dir).expect("create empty BF16 BC probe data dir");
+        let output_dir = unique_test_path("bf16-bc-probe-no-stable-out");
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        let config_path = unique_test_path("bf16-bc-probe-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid BF16 BC probe config");
+        std::fs::write(&config_path, config_yaml).expect("write valid BF16 BC probe config");
+
+        let err = handle_probe_mode(
+            &config_path,
+            &config,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 64,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err("BF16 BC probe should fall through the mode gate");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn handle_probe_mode_rl_branch_still_rejects_bf16() {
+        let mut config = dummy_config();
+        config.rl = Some(RlTrainConfig::default());
+        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            dummy_probe_request(ProbeKind::RlMicrobatch),
+        )
+        .expect_err("RL probe mode should keep rejecting BF16");
+
+        assert_eq!(
+            err,
+            "precision_mode=bf16_autocast is not supported for probe mode yet"
+        );
     }
 
     #[test]
@@ -1192,7 +1353,7 @@ mod tests {
         let err = handle_preflight_mode(&config_path, &config)
             .expect_err("all-failing BC preflight should bubble the no-stable train error");
 
-        assert_eq!(err, "no stable train microbatch found in preflight");
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
         let _ = std::fs::remove_dir_all(data_dir);
         let _ = std::fs::remove_dir_all(output_dir);
         let _ = std::fs::remove_file(config_path);
@@ -1226,14 +1387,14 @@ mod tests {
     }
 
     #[test]
-    fn handle_preflight_mode_rl_branch_bubbles_no_stable_rl_games_result() {
+    fn handle_preflight_mode_rl_branch_rejects_invalid_device_before_slow_rl_preflight_work() {
         let data_dir = unique_test_path("rl-preflight-no-stable-data");
         std::fs::create_dir_all(&data_dir).expect("create empty RL preflight data dir");
         let output_dir = unique_test_path("rl-preflight-no-stable-out");
         let mut config = dummy_config();
         config.data_dir = data_dir.clone();
         config.output_dir = output_dir.clone();
-        config.device = "cpu".to_string();
+        config.device = "definitely-not-a-device".to_string();
         config.preflight.allow_override_explicit_microbatch = false;
         config.preflight.required_successes = 1;
         config.rl = Some(RlTrainConfig::default());
@@ -1243,9 +1404,9 @@ mod tests {
         std::fs::write(&config_path, config_yaml).expect("write valid RL preflight config");
 
         let err = handle_preflight_mode(&config_path, &config)
-            .expect_err("all-failing RL preflight should bubble the no-stable RL games error");
+            .expect_err("invalid RL device should fail before expensive RL preflight ladder work");
 
-        assert_eq!(err, "no stable rl_games candidate found in preflight");
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
         let _ = std::fs::remove_dir_all(data_dir);
         let _ = std::fs::remove_dir_all(output_dir);
         let _ = std::fs::remove_file(config_path);
@@ -1331,7 +1492,7 @@ mod tests {
         )
         .expect_err("all-failing probe ladder should bubble the no-stable-result error");
 
-        assert_eq!(err, "no stable validation microbatch found in preflight");
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
         let _ = std::fs::remove_dir_all(data_dir);
         let _ = std::fs::remove_dir_all(output_dir);
         let _ = std::fs::remove_file(config_path);
@@ -1365,7 +1526,7 @@ mod tests {
         )
         .expect_err("all-failing train probe ladder should bubble the no-stable-result error");
 
-        assert_eq!(err, "no stable train microbatch found in preflight");
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
         let _ = std::fs::remove_dir_all(data_dir);
         let _ = std::fs::remove_dir_all(output_dir);
         let _ = std::fs::remove_file(config_path);
@@ -1376,8 +1537,10 @@ mod tests {
         let probe_message =
             format_probe_only_status_message(dummy_probe_request(ProbeKind::Validation));
         assert!(probe_message.contains("Probe-only:"));
-        assert!(probe_message
-            .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8"));
+        assert!(
+            probe_message
+                .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8")
+        );
 
         let rl_message = format_rl_preflight_selection_message(32, 8);
         assert!(rl_message.contains("Preflight:"));
