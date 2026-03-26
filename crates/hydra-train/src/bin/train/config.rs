@@ -42,6 +42,8 @@ pub(crate) struct TrainConfig {
     pub(crate) bc: BcHyperparamConfig,
     #[serde(default = "default_device")]
     pub(crate) device: String,
+    #[serde(default)]
+    pub(crate) precision_mode: PrecisionMode,
     #[serde(default = "default_buffer_games")]
     pub(crate) buffer_games: usize,
     #[serde(default = "default_buffer_samples")]
@@ -70,6 +72,14 @@ pub(crate) struct TrainConfig {
     pub(crate) max_validation_samples: Option<usize>,
     #[serde(default)]
     pub(crate) preflight: PreflightConfig,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PrecisionMode {
+    #[default]
+    Fp32,
+    Bf16Autocast,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +143,7 @@ pub(crate) struct ProbeCliRequest {
 pub(crate) struct ProbeChildRequest {
     pub(crate) request: ProbeCliRequest,
     pub(crate) result_path: PathBuf,
+    pub(crate) manifest_cache_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +332,7 @@ where
     let mut warmup_steps = None;
     let mut measure_steps = None;
     let mut probe_result_path = None;
+    let mut probe_manifest_cache_path = None;
     let mut preflight = false;
     let mut delta_q_promotion = false;
     let mut delta_q_baseline_checkpoint = None;
@@ -364,6 +376,12 @@ where
                     .next()
                     .ok_or_else(|| "missing value for --probe-result-path".to_string())?;
                 probe_result_path = Some(PathBuf::from(value));
+            }
+            "--probe-manifest-cache-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --probe-manifest-cache-path".to_string())?;
+                probe_manifest_cache_path = Some(PathBuf::from(value));
             }
             _ => return Err(usage(&program)),
         }
@@ -429,6 +447,7 @@ where
                     measure_steps,
                 },
                 result_path,
+                manifest_cache_path: probe_manifest_cache_path,
             }),
         }),
         _ => Err(format!(

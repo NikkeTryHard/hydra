@@ -12,6 +12,8 @@ mod epoch_runner;
 mod loss_policy;
 #[path = "train/modes.rs"]
 mod modes;
+#[path = "train/nvtx.rs"]
+mod nvtx;
 #[path = "train/preflight_fingerprint.rs"]
 mod preflight_fingerprint;
 #[path = "train/preflight_runtime.rs"]
@@ -48,6 +50,7 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use burn::backend::{Autodiff, LibTorch};
+use burn::tensor::bf16;
 use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
@@ -72,7 +75,7 @@ use self::resume::{
 use hydra_train::preflight::PreflightConfig;
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
-type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
+type Bf16TrainBackend = Autodiff<LibTorch<bf16>>;
 
 fn run() -> Result<(), String> {
     color_control::set_override(true);
@@ -568,6 +571,7 @@ unexpected_field: true
             max_validation_batches: None,
             max_validation_samples: Some(8192),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         assert_eq!(schedule_total_steps(&cfg, 0), 1000);
         assert_eq!(schedule_total_steps(&cfg, 400), 1400);
@@ -921,6 +925,7 @@ preflight:
             policy_loss: 1.0,
             agreement: 0.35,
             samples: 8192,
+            profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,
             delta_q_promotion_snapshot: None,
@@ -941,6 +946,7 @@ preflight:
             policy_loss: 1.0,
             agreement: 0.40,
             samples: 8192,
+            profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,
             delta_q_promotion_snapshot: None,
@@ -997,6 +1003,7 @@ preflight:
             max_validation_batches: Some(32),
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
 
         assert_eq!(train_microbatch_size(&cfg), 64);
@@ -1047,6 +1054,7 @@ preflight:
             max_validation_batches: None,
             max_validation_samples: Some(0),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
 
         let err = validate_config(&cfg).expect_err("zero validation controls should fail");
@@ -1098,6 +1106,7 @@ preflight:
             max_validation_batches: None,
             max_validation_samples: Some(64),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
 
         validate_config(&cfg).expect("basic rl block should validate");
@@ -1247,6 +1256,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("invalid bc ranges should fail");
         assert!(err.contains("bc.min_learning_rate"));
@@ -1288,6 +1298,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("exit loss without sidecar should fail");
         assert!(err.contains("exit_sidecar_path"));
@@ -1329,6 +1340,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("delta_q loss without sidecar should fail");
         assert!(err.contains("delta_q_sidecar_path"));
