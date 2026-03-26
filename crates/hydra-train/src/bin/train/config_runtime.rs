@@ -273,7 +273,8 @@ pub(crate) fn validation_sample_limit(config: &TrainConfig) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::super::config::{
-        AdvancedLossConfig, BcHyperparamConfig, RlPhaseConfig, RlTrainConfig, TrainConfig,
+        AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, RlPhaseConfig, RlTrainConfig,
+        TrainConfig,
     };
     use super::*;
     use hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE;
@@ -297,6 +298,7 @@ mod tests {
             rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
+            precision_mode: PrecisionMode::Fp32,
             buffer_games: 16,
             buffer_samples: 128,
             num_threads: Some(6),
