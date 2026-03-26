@@ -42,7 +42,7 @@ pub(super) fn probe_request_from_cli(
 
 pub(super) fn probe_child_request_from_cli(
     child: Option<ProbeChildRequest>,
-) -> Result<Option<(ProbeRequest, PathBuf)>, String> {
+) -> Result<Option<(ProbeRequest, PathBuf, Option<PathBuf>)>, String> {
     let Some(child) = child else {
         return Ok(None);
     };
@@ -58,7 +58,11 @@ pub(super) fn probe_child_request_from_cli(
             .measure_steps
             .ok_or_else(|| "internal probe child missing resolved measure steps".to_string())?,
     };
-    Ok(Some((request, child.result_path)))
+    Ok(Some((
+        request,
+        child.result_path,
+        child.manifest_cache_path,
+    )))
 }
 
 pub(super) fn probe_candidate_ceiling(request: ProbeRequest) -> usize {
@@ -105,6 +109,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -168,21 +173,27 @@ mod tests {
 
     #[test]
     fn probe_child_request_from_cli_parses_child_probe_inputs() {
-        let (request, path) = probe_child_request_from_cli(Some(ProbeChildRequest {
-            request: ProbeCliRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 192,
-                warmup_steps: Some(4),
-                measure_steps: Some(12),
-            },
-            result_path: PathBuf::from("/tmp/probe.json"),
-        }))
-        .expect("child request should parse")
-        .expect("child request should be present");
+        let (request, path, manifest_cache_path) =
+            probe_child_request_from_cli(Some(ProbeChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Train,
+                    candidate_microbatch: 192,
+                    warmup_steps: Some(4),
+                    measure_steps: Some(12),
+                },
+                result_path: PathBuf::from("/tmp/probe.json"),
+                manifest_cache_path: Some(PathBuf::from("/tmp/manifest.json")),
+            }))
+            .expect("child request should parse")
+            .expect("child request should be present");
         assert_eq!(request.kind, ProbeKind::Train);
         assert_eq!(request.candidate_microbatch, 192);
         assert_eq!(request.warmup_steps, 4);
         assert_eq!(request.measure_steps, 12);
         assert_eq!(path, PathBuf::from("/tmp/probe.json"));
+        assert_eq!(
+            manifest_cache_path,
+            Some(PathBuf::from("/tmp/manifest.json"))
+        );
     }
 }
