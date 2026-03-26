@@ -80,6 +80,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: hydra_train::preflight::PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
