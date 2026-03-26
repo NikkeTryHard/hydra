@@ -3,33 +3,39 @@ use std::path::Path;
 use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
-use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::Adam;
 use burn::optim::Optimizer;
+use burn::optim::adaptor::OptimizerAdaptor;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
+use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, DataManifest, StreamingLoaderConfig,
+    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
 };
 use hydra_train::model::{HydraModel, HydraModelConfig};
+use hydra_train::preflight::ManifestCacheEntry;
+use hydra_train::selfplay::CooperativeSelfPlayCoordinator;
 use hydra_train::training::bc::{BCTrainerConfig, BcExitConfig};
 use hydra_train::training::gae::GaeConfig;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::losses::HydraLoss;
 use hydra_train::training::replay_delta_q::DeltaQSidecarIndex;
 use hydra_train::training::replay_exit::{
-    source_net_hash_from_checkpoint_identity, ExitSidecarIndex,
+    ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
 };
 use hydra_train::training::rl::RlConfig;
 
-use super::artifacts::{read_preflight_cache, BcArtifactPaths, RlArtifactPaths, RlPreflightPaths};
+use super::artifacts::{
+    BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, read_manifest_cache, read_preflight_cache,
+    write_manifest_cache,
+};
 use super::config::{
-    configure_threads, device_label, train_device, train_microbatch_size,
-    trainer_config_from_train_config, validate_config, RlTrainConfig, TrainConfig,
+    RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
+    train_microbatch_size, trainer_config_from_train_config, validate_config,
 };
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::{build_bc_exit_config, build_loss_config, build_rl_loss_config};
@@ -37,12 +43,50 @@ use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::timestamped;
 use super::progress::BannerStats;
 use super::resume::{
-    rl_runtime_resume_contract, runtime_resume_contract, validate_resume_runtime_compatibility,
-    validate_rl_resume_runtime_compatibility, ResumeContext, RlResumeContext,
-    RlRuntimeResumeContract,
+    ResumeContext, RlResumeContext, RlRuntimeResumeContract, rl_runtime_resume_contract,
+    runtime_resume_contract, validate_resume_runtime_compatibility,
+    validate_rl_resume_runtime_compatibility,
 };
 use super::schedule::schedule_total_steps;
-use super::{TrainBackend, ValidBackend};
+use super::{Bf16TrainBackend, TrainBackend};
+
+type JsonlAppender = super::artifacts::JsonlAppender;
+
+type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
+
+fn load_or_scan_manifest(
+    cache_path: &Path,
+    data_dir: &Path,
+    train_fraction: f32,
+    progress: &indicatif::ProgressBar,
+) -> Result<DataManifest, String> {
+    if let Some(cached) = read_manifest_cache(cache_path)?
+        && cached.data_dir == data_dir
+        && cached.train_fraction_bits == train_fraction.to_bits()
+    {
+        progress.finish_with_message(format!(
+            "reused manifest: {} train / {} val games",
+            cached.manifest.train_count, cached.manifest.val_count
+        ));
+        return Ok(cached.manifest);
+    }
+    let manifest = scan_data_sources_with_progress(data_dir, train_fraction, Some(progress))
+        .map_err(|err| {
+            format!(
+                "failed to scan MJAI data from {}: {err}",
+                data_dir.display()
+            )
+        })?;
+    write_manifest_cache(
+        cache_path,
+        &ManifestCacheEntry {
+            data_dir: data_dir.to_path_buf(),
+            train_fraction_bits: train_fraction.to_bits(),
+            manifest: manifest.clone(),
+        },
+    )?;
+    Ok(manifest)
+}
 
 fn apply_cached_bc_runtime_if_matching(
     config: &mut TrainConfig,
@@ -138,7 +182,10 @@ fn apply_cached_bc_runtime_if_matching(
     Ok(())
 }
 
-pub(super) struct TrainingBootstrap {
+pub(super) struct TrainingBootstrap<B>
+where
+    B: AutodiffBackend,
+{
     pub(super) config: TrainConfig,
     pub(super) resume: ResumeContext,
     pub(super) artifacts: BcArtifactPaths,
@@ -153,20 +200,25 @@ pub(super) struct TrainingBootstrap {
     pub(super) total_steps: usize,
     pub(super) microbatch_size: usize,
     pub(super) banner_stats: BannerStats,
-    pub(super) loss_fn: HydraLoss<TrainBackend>,
-    pub(super) valid_loss_fn: HydraLoss<ValidBackend>,
+    pub(super) loss_fn: HydraLoss<B>,
+    pub(super) valid_loss_fn: HydraLoss<ValidBackendOf<B>>,
     pub(super) bc_exit_cfg: BcExitConfig,
 }
 
-pub(super) struct TrainingRuntime {
-    pub(super) model: HydraModel<TrainBackend>,
-    pub(super) optimizer: OptimizerAdaptor<Adam, HydraModel<TrainBackend>, TrainBackend>,
+pub(super) struct TrainingRuntime<B>
+where
+    B: AutodiffBackend,
+{
+    pub(super) model: HydraModel<B>,
+    pub(super) optimizer: OptimizerAdaptor<Adam, HydraModel<B>, B>,
     pub(super) best_validation: Option<super::resume::BestValidation>,
     pub(super) global_step: usize,
     pub(super) run_start: Instant,
     pub(super) last_log_step: usize,
     pub(super) last_log_time: Instant,
     pub(super) tb: Option<EventWriter<std::fs::File>>,
+    pub(super) training_log: JsonlAppender,
+    pub(super) step_log: JsonlAppender,
     pub(super) head_controller: HeadActivationController,
 }
 
@@ -194,14 +246,20 @@ pub(super) struct RlTrainingRuntime {
     pub(super) last_log_step: usize,
     pub(super) last_log_time: Instant,
     pub(super) tb: Option<EventWriter<std::fs::File>>,
+    pub(super) step_log: JsonlAppender,
     pub(super) pipeline_state: PipelineState,
     pub(super) head_controller: HeadActivationController,
+    pub(super) self_play_coordinator: CooperativeSelfPlayCoordinator,
 }
 
-pub(super) fn initialize_training_bootstrap(
+fn initialize_training_bootstrap_for_backend<B>(
     _config_path: &Path,
     mut config: TrainConfig,
-) -> Result<(TrainingBootstrap, TrainingRuntime), String> {
+) -> Result<(TrainingBootstrap<B>, TrainingRuntime<B>), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    B::InnerBackend: Backend<Device = LibTorchDevice>,
+{
     validate_config(&config)?;
 
     let resume = ResumeContext::load(&config)?;
@@ -272,15 +330,14 @@ pub(super) fn initialize_training_bootstrap(
         "[scan] [{bar:40.cyan/blue}] {pos}/{len} sources {msg}",
     )?;
     scan_pb.set_message("Scanning archives...".to_string());
-    let manifest =
-        scan_data_sources_with_progress(&config.data_dir, config.train_fraction, Some(&scan_pb))
-            .map_err(|err| {
-                format!(
-                    "failed to scan MJAI data from {}: {err}",
-                    config.data_dir.display()
-                )
-            })?;
-    if manifest.counts_exact {
+    let preflight_paths = crate::artifacts::PreflightPaths::new(&artifacts);
+    let manifest = load_or_scan_manifest(
+        &preflight_paths.manifest_cache_path,
+        &config.data_dir,
+        config.train_fraction,
+        &scan_pb,
+    )?;
+    if !scan_pb.is_finished() && manifest.counts_exact {
         scan_pb.finish_with_message(format!(
             "found {} train / {} val games",
             manifest.train_count, manifest.val_count
@@ -304,7 +361,7 @@ pub(super) fn initialize_training_bootstrap(
     }
     let train_device = train_device(&config.device)?;
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    let mut model = model_config.init::<TrainBackend>(&train_device);
+    let mut model = model_config.init::<B>(&train_device);
     let checkpoint_identity = resume
         .checkpoint_base
         .as_ref()
@@ -359,9 +416,9 @@ pub(super) fn initialize_training_bootstrap(
     } else {
         train_cfg.optimizer_config().init()
     };
-    let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let loss_fn = HydraLoss::<B>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let valid_loss_fn =
-        HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+        HydraLoss::<ValidBackendOf<B>>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let bc_exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
     let total_steps = schedule_total_steps(&config, session_start_global_step);
     let microbatch_size = train_microbatch_size(&config);
@@ -379,6 +436,8 @@ pub(super) fn initialize_training_bootstrap(
     } else {
         None
     };
+    let training_log = super::artifacts::open_training_log_appender(&artifacts.training_log_path)?;
+    let step_log = super::artifacts::open_step_log_appender(&artifacts.step_log_path)?;
 
     let banner_stats = BannerStats {
         total_sources: manifest.sources.len(),
@@ -418,11 +477,39 @@ pub(super) fn initialize_training_bootstrap(
             last_log_step,
             last_log_time,
             tb,
+            training_log,
+            step_log,
             head_controller: HeadActivationController::new(
                 HeadActivationConfig::default_with_params(learner_params),
             ),
         },
     ))
+}
+
+pub(super) fn initialize_training_bootstrap(
+    config_path: &Path,
+    config: TrainConfig,
+) -> Result<
+    (
+        TrainingBootstrap<TrainBackend>,
+        TrainingRuntime<TrainBackend>,
+    ),
+    String,
+> {
+    initialize_training_bootstrap_for_backend::<TrainBackend>(config_path, config)
+}
+
+pub(super) fn initialize_training_bootstrap_bf16(
+    config_path: &Path,
+    config: TrainConfig,
+) -> Result<
+    (
+        TrainingBootstrap<Bf16TrainBackend>,
+        TrainingRuntime<Bf16TrainBackend>,
+    ),
+    String,
+> {
+    initialize_training_bootstrap_for_backend::<Bf16TrainBackend>(config_path, config)
 }
 
 pub(super) fn initialize_rl_training_bootstrap(
@@ -550,6 +637,7 @@ pub(super) fn initialize_rl_training_bootstrap(
     } else {
         None
     };
+    let step_log = super::artifacts::open_rl_step_log_appender(&artifacts.step_log_path)?;
     let pipeline_state = resume
         .state
         .as_ref()
@@ -587,8 +675,10 @@ pub(super) fn initialize_rl_training_bootstrap(
             last_log_step: session_start_global_step,
             last_log_time: Instant::now(),
             tb,
+            step_log,
             pipeline_state,
             head_controller,
+            self_play_coordinator: CooperativeSelfPlayCoordinator::new(),
         },
     ))
 }
@@ -596,12 +686,14 @@ pub(super) fn initialize_rl_training_bootstrap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifacts::PreflightPaths;
     use crate::config::{RlPhaseConfig, RlTrainConfig};
     use crate::resume::{
         build_resume_state, build_rl_resume_state, rl_runtime_resume_contract,
         test_runtime_resume_contract, write_resume_state,
     };
     use hydra_train::config::PipelineState;
+    use hydra_train::data::pipeline::DataSource;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -625,6 +717,19 @@ mod tests {
 
     fn cleanup_dir(path: &Path) {
         fs::remove_dir_all(path).ok();
+    }
+
+    fn tiny_real_mjai_replay() -> String {
+        [
+            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
     }
 
     fn latest_model_checkpoint_path(output_dir: &Path) -> PathBuf {
@@ -662,6 +767,7 @@ mod tests {
             rl: Some(RlTrainConfig::default()),
             bc: Default::default(),
             device: "cpu".to_string(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
             buffer_games: 16,
             buffer_samples: 128,
             num_threads: Some(1),
@@ -708,7 +814,7 @@ mod tests {
 
     #[test]
     fn rl_bootstrap_applies_preflight_cache_override() {
-        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
+        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -772,7 +878,7 @@ mod tests {
 
     #[test]
     fn rl_bootstrap_ignores_stale_preflight_cache() {
-        use crate::artifacts::{write_preflight_cache, RlPreflightPaths};
+        use crate::artifacts::{RlPreflightPaths, write_preflight_cache};
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
             PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
@@ -798,6 +904,7 @@ mod tests {
             workload: WorkloadFingerprint {
                 batch_size: 9999,
                 augment: false,
+                precision_mode: "fp32".to_string(),
                 train_fraction_bits: 0,
                 max_skip_logs_per_source: 0,
                 max_validation_batches: None,
@@ -882,7 +989,7 @@ mod tests {
 
     #[test]
     fn initialize_training_bootstrap_applies_matching_preflight_cache_on_fresh_run() {
-        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -960,7 +1067,7 @@ mod tests {
 
     #[test]
     fn initialize_training_bootstrap_ignores_stale_preflight_cache_at_epoch_boundary() {
-        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
             PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
@@ -1011,6 +1118,7 @@ mod tests {
             workload: WorkloadFingerprint {
                 batch_size: 9999,
                 augment: false,
+                precision_mode: "fp32".to_string(),
                 train_fraction_bits: 0,
                 max_skip_logs_per_source: 0,
                 max_validation_batches: None,
@@ -1056,7 +1164,7 @@ mod tests {
 
     #[test]
     fn initialize_training_bootstrap_applies_matching_preflight_cache_at_epoch_boundary() {
-        use crate::artifacts::{write_preflight_cache, PreflightPaths};
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
             EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
@@ -1164,6 +1272,88 @@ mod tests {
                 missing_data_dir.display()
             )),
             "unexpected error: {err}"
+        );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_rescans_when_manifest_cache_data_dir_mismatches() {
+        let root_dir = unique_temp_dir("bc_manifest_cache_mismatch");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+        let replay_path = data_dir.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("write real replay fixture");
+
+        let config = dummy_bc_config(data_dir.clone(), output_dir.clone());
+        let bc_artifacts = crate::artifacts::BcArtifactPaths::new(&config.output_dir, 0);
+        bc_artifacts.create_root_dir().expect("create bc dir");
+        let paths = PreflightPaths::new(&bc_artifacts);
+        write_manifest_cache(
+            &paths.manifest_cache_path,
+            &ManifestCacheEntry {
+                data_dir: root_dir.join("stale-data-dir"),
+                train_fraction_bits: config.train_fraction.to_bits(),
+                manifest: DataManifest {
+                    sources: vec![DataSource::LooseFile(root_dir.join("stale.mjai.json"))],
+                    total_games: 1,
+                    train_count: 1,
+                    val_count: 0,
+                    counts_exact: true,
+                },
+            },
+        )
+        .expect("write stale manifest cache");
+
+        let (bootstrap, _) = initialize_training_bootstrap(&output_dir, config)
+            .expect("bootstrap should rescan real data on stale manifest cache");
+
+        assert_eq!(bootstrap.manifest.sources.len(), 1);
+        assert_eq!(
+            bootstrap.manifest.sources[0],
+            DataSource::LooseFile(replay_path)
+        );
+        cleanup_dir(&root_dir);
+    }
+
+    #[test]
+    fn initialize_training_bootstrap_rescans_when_manifest_cache_train_fraction_mismatches() {
+        let root_dir = unique_temp_dir("bc_manifest_fraction_mismatch");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+        let replay_path = data_dir.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("write real replay fixture");
+
+        let config = dummy_bc_config(data_dir.clone(), output_dir.clone());
+        let bc_artifacts = crate::artifacts::BcArtifactPaths::new(&config.output_dir, 0);
+        bc_artifacts.create_root_dir().expect("create bc dir");
+        let paths = PreflightPaths::new(&bc_artifacts);
+        write_manifest_cache(
+            &paths.manifest_cache_path,
+            &ManifestCacheEntry {
+                data_dir: data_dir.clone(),
+                train_fraction_bits: 0.0f32.to_bits(),
+                manifest: DataManifest {
+                    sources: vec![DataSource::LooseFile(root_dir.join("stale.mjai.json"))],
+                    total_games: 1,
+                    train_count: 0,
+                    val_count: 1,
+                    counts_exact: true,
+                },
+            },
+        )
+        .expect("write stale train-fraction manifest cache");
+
+        let (bootstrap, _) = initialize_training_bootstrap(&output_dir, config)
+            .expect("bootstrap should rescan real data on stale train_fraction manifest cache");
+
+        assert_eq!(bootstrap.manifest.sources.len(), 1);
+        assert_eq!(
+            bootstrap.manifest.sources[0],
+            DataSource::LooseFile(replay_path)
         );
         cleanup_dir(&root_dir);
     }

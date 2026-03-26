@@ -7,7 +7,7 @@ use colored::Colorize;
 
 use hydra_train::config::PipelineState;
 
-use super::config::{RlPhaseConfig, RlTrainConfig};
+use super::config::{PrecisionMode, RlPhaseConfig, RlTrainConfig};
 
 use super::config::{TrainConfig, train_microbatch_size, validation_microbatch_size};
 
@@ -18,6 +18,7 @@ pub(crate) struct RuntimeResumeContract {
     pub(crate) train_microbatch_size: usize,
     pub(crate) validation_microbatch_size: usize,
     pub(crate) accum_steps: usize,
+    pub(crate) precision_mode: PrecisionMode,
 }
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -58,6 +59,7 @@ pub(crate) struct RlRuntimeResumeContract {
     pub(crate) games_per_batch: usize,
     pub(crate) microbatch_size: usize,
     pub(crate) phase: RlPhaseConfig,
+    pub(crate) precision_mode: PrecisionMode,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -268,6 +270,7 @@ pub(crate) fn runtime_resume_contract(config: &TrainConfig) -> RuntimeResumeCont
         train_microbatch_size,
         validation_microbatch_size: validation_microbatch_size(config),
         accum_steps: config.batch_size.div_ceil(train_microbatch_size).max(1),
+        precision_mode: config.precision_mode,
     }
 }
 
@@ -278,6 +281,7 @@ pub(crate) fn rl_runtime_resume_contract(rl: &RlTrainConfig) -> RlRuntimeResumeC
             .microbatch_size
             .unwrap_or(hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE),
         phase: rl.phase,
+        precision_mode: PrecisionMode::Fp32,
     }
 }
 
@@ -336,6 +340,7 @@ pub(crate) fn test_runtime_resume_contract(
         train_microbatch_size,
         validation_microbatch_size,
         accum_steps: batch_size.div_ceil(train_microbatch_size).max(1),
+        precision_mode: PrecisionMode::Fp32,
     }
 }
 
@@ -446,7 +451,7 @@ mod tests {
     use hydra_train::config::TrainingPhase;
     use std::fs;
 
-    use crate::config::{BcHyperparamConfig, TrainConfig};
+    use crate::config::{BcHyperparamConfig, PrecisionMode, TrainConfig};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -466,6 +471,7 @@ mod tests {
             rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
+            precision_mode: PrecisionMode::Fp32,
             buffer_games: 16,
             buffer_samples: 128,
             num_threads: Some(1),
@@ -544,6 +550,7 @@ mod tests {
         assert_eq!(bc.train_microbatch_size, 64);
         assert_eq!(bc.validation_microbatch_size, 32);
         assert_eq!(bc.accum_steps, 4);
+        assert_eq!(bc.precision_mode, PrecisionMode::Fp32);
 
         let rl = rl_runtime_resume_contract(&RlTrainConfig::default());
         assert_eq!(rl.games_per_batch, RlTrainConfig::default().games_per_batch);
@@ -552,6 +559,7 @@ mod tests {
             hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE
         );
         assert_eq!(rl.phase, RlTrainConfig::default().phase);
+        assert_eq!(rl.precision_mode, PrecisionMode::Fp32);
     }
 
     #[test]
@@ -573,6 +581,13 @@ mod tests {
         let err = validate_resume_runtime_compatibility(&state, mismatched_partial)
             .expect_err("partial epoch resume should require identical runtime contract");
         assert!(err.contains("partial-epoch resume requires identical runtime contract"));
+
+        state.skip_optimizer_steps_in_epoch = 1;
+        let mut mismatched_precision = current;
+        mismatched_precision.precision_mode = PrecisionMode::Bf16Autocast;
+        let err = validate_resume_runtime_compatibility(&state, mismatched_precision)
+            .expect_err("partial epoch resume should reject precision mode mismatch");
+        assert!(err.contains("partial-epoch resume requires identical runtime contract"));
     }
 
     #[test]
@@ -587,6 +602,7 @@ mod tests {
                 games_per_batch: 8,
                 microbatch_size: 16,
                 phase: RlPhaseConfig::ExitPondering,
+                precision_mode: PrecisionMode::Fp32,
             },
         );
 
@@ -596,6 +612,7 @@ mod tests {
                 games_per_batch: 16,
                 microbatch_size: 16,
                 phase: RlPhaseConfig::ExitPondering,
+                precision_mode: PrecisionMode::Fp32,
             },
         )
         .expect_err("RL runtime mismatch should be rejected");
@@ -618,6 +635,7 @@ runtime:
   train_microbatch_size: 64
   validation_microbatch_size: 32
   accum_steps: 4
+  precision_mode: fp32
 saved_at_unix_s: 1
 "#,
         );
@@ -637,6 +655,7 @@ runtime:
   train_microbatch_size: 64
   validation_microbatch_size: 32
   accum_steps: 4
+  precision_mode: fp32
 saved_at_unix_s: 1
 "#,
         );
@@ -662,6 +681,7 @@ runtime:
   games_per_batch: 8
   microbatch_size: 16
   phase: ExitPondering
+  precision_mode: fp32
 saved_at_unix_s: 1
 "#,
         );
@@ -717,6 +737,7 @@ saved_at_unix_s: 1
                     games_per_batch: 8,
                     microbatch_size: 16,
                     phase: RlPhaseConfig::ExitPondering,
+                    precision_mode: PrecisionMode::Fp32,
                 },
             )),
             optimizer_base: None,
@@ -763,6 +784,7 @@ saved_at_unix_s: 1
                 games_per_batch: 8,
                 microbatch_size: 16,
                 phase: RlPhaseConfig::ExitPondering,
+                precision_mode: PrecisionMode::Fp32,
             },
         ));
         assert!(rl_banner.contains("phase=ExitPondering"));
@@ -829,6 +851,7 @@ saved_at_unix_s: 1
                 games_per_batch: 8,
                 microbatch_size: 16,
                 phase: RlPhaseConfig::ExitPondering,
+                precision_mode: PrecisionMode::Fp32,
             },
         );
         let yaml = serde_yaml::to_string(&state).expect("RL resume state should serialize");
