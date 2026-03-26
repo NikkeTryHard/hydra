@@ -132,7 +132,11 @@ pub fn saf_features_from_observation(obs: &[f32]) -> [SafFeatures; HYDRA_ACTION_
 /// Convert observation-derived SaF features into a `[46, 8]` tensor.
 pub fn saf_tensor_from_observation<B: Backend>(obs: &[f32], device: &B::Device) -> Tensor<B, 2> {
     let features = saf_features_from_observation(obs);
-    let flat: Vec<f32> = features.iter().flat_map(|f| f.to_array()).collect();
+    let mut flat = [0.0f32; HYDRA_ACTION_SPACE * SAF_INPUT_DIM];
+    for (action, feature) in features.iter().enumerate() {
+        let start = action * SAF_INPUT_DIM;
+        flat[start..start + SAF_INPUT_DIM].copy_from_slice(&feature.to_array());
+    }
     Tensor::<B, 1>::from_floats(flat.as_slice(), device)
         .reshape([HYDRA_ACTION_SPACE, SAF_INPUT_DIM])
 }

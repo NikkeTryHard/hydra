@@ -621,31 +621,31 @@ pub fn collect_promotion_metrics_from_outputs<B: Backend>(
         return DeltaQPromotionReport::new();
     };
 
-    let policy = tensor_to_rows_f32(output.policy_logits.clone());
-    let delta_q = tensor_to_rows_f32(output.delta_q.clone());
-    let target = tensor_to_rows_f32(delta_q_target.clone());
-    let mask = tensor_to_rows_f32(delta_q_mask.clone());
-    let legal = tensor_to_rows_f32(targets.legal_mask.clone());
+    let (policy, policy_rows, policy_width) = tensor_flat_f32(output.policy_logits.clone());
+    let (delta_q, delta_q_rows, delta_q_width) = tensor_flat_f32(output.delta_q.clone());
+    let (target, target_rows, target_width) = tensor_flat_f32(delta_q_target.clone());
+    let (mask, mask_rows, mask_width) = tensor_flat_f32(delta_q_mask.clone());
+    let (legal, legal_rows, legal_width) = tensor_flat_f32(targets.legal_mask.clone());
 
-    let batch = policy
-        .len()
-        .min(delta_q.len())
-        .min(target.len())
-        .min(mask.len())
-        .min(legal.len());
+    let batch = policy_rows
+        .min(delta_q_rows)
+        .min(target_rows)
+        .min(mask_rows)
+        .min(legal_rows);
 
     let mut comparisons = Vec::with_capacity(batch);
     let mut report = DeltaQPromotionReport::new();
 
     for row in 0..batch {
+        let policy_row = &policy[row * policy_width..(row + 1) * policy_width];
+        let delta_q_row = &delta_q[row * delta_q_width..(row + 1) * delta_q_width];
+        let target_row = &target[row * target_width..(row + 1) * target_width];
+        let mask_row = &mask[row * mask_width..(row + 1) * mask_width];
+        let legal_row = &legal[row * legal_width..(row + 1) * legal_width];
         report.eligible_states += 1;
-        if let Some(comparison) = compare_delta_q_state(
-            &policy[row],
-            &delta_q[row],
-            &target[row],
-            &mask[row],
-            &legal[row],
-        ) {
+        if let Some(comparison) =
+            compare_delta_q_state(policy_row, delta_q_row, target_row, mask_row, legal_row)
+        {
             report.compared_states += 1;
             report.masked_entries += comparison.supported_actions as u64;
             report.supported_actions_sum += comparison.supported_actions as u64;
@@ -714,27 +714,31 @@ pub fn collect_policy_transfer_metrics_from_policy_outputs<B: Backend>(
         return DeltaQPolicyTransferReport::new();
     };
 
-    let candidate = tensor_to_rows_f32(candidate_policy_logits);
-    let baseline = tensor_to_rows_f32(baseline_policy_logits);
-    let target = tensor_to_rows_f32(delta_q_target.clone());
-    let mask = tensor_to_rows_f32(delta_q_mask.clone());
-    let legal = tensor_to_rows_f32(targets.legal_mask.clone());
+    let (candidate, candidate_rows, candidate_width) = tensor_flat_f32(candidate_policy_logits);
+    let (baseline, baseline_rows, baseline_width) = tensor_flat_f32(baseline_policy_logits);
+    let (target, target_rows, target_width) = tensor_flat_f32(delta_q_target.clone());
+    let (mask, mask_rows, mask_width) = tensor_flat_f32(delta_q_mask.clone());
+    let (legal, legal_rows, legal_width) = tensor_flat_f32(targets.legal_mask.clone());
 
-    let batch = candidate
-        .len()
-        .min(baseline.len())
-        .min(target.len())
-        .min(mask.len())
-        .min(legal.len());
+    let batch = candidate_rows
+        .min(baseline_rows)
+        .min(target_rows)
+        .min(mask_rows)
+        .min(legal_rows);
 
     let mut report = DeltaQPolicyTransferReport::new();
     for row in 0..batch {
+        let candidate_row = &candidate[row * candidate_width..(row + 1) * candidate_width];
+        let baseline_row = &baseline[row * baseline_width..(row + 1) * baseline_width];
+        let target_row = &target[row * target_width..(row + 1) * target_width];
+        let mask_row = &mask[row * mask_width..(row + 1) * mask_width];
+        let legal_row = &legal[row * legal_width..(row + 1) * legal_width];
         if let Some(comparison) = compare_policy_transfer_state(
-            &candidate[row],
-            &baseline[row],
-            &target[row],
-            &mask[row],
-            &legal[row],
+            candidate_row,
+            baseline_row,
+            target_row,
+            mask_row,
+            legal_row,
         ) {
             report.compared_states += 1;
             report.candidate_policy_regret_sum += comparison.candidate_regret;
@@ -846,8 +850,8 @@ fn argmax_over_actions(values: &[f32], actions: &[usize]) -> Option<usize> {
     best_action
 }
 
-fn tensor_to_rows_f32<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> Vec<Vec<f32>> {
-    let data = tensor.to_data();
+fn tensor_flat_f32<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> (Vec<f32>, usize, usize) {
+    let data = tensor.to_data().convert::<f32>();
     let values = data
         .as_slice::<f32>()
         .expect("promotion metrics require f32 tensor data")
@@ -855,14 +859,7 @@ fn tensor_to_rows_f32<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> Vec<V
     let dims = data.shape;
     let rows = dims.first().copied().unwrap_or(0);
     let row_width = dims.iter().skip(1).product::<usize>();
-    if row_width == 0 {
-        return Vec::new();
-    }
-    values
-        .chunks(row_width)
-        .take(rows)
-        .map(|chunk| chunk.to_vec())
-        .collect()
+    (values, rows, row_width)
 }
 
 fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
@@ -947,6 +944,7 @@ mod tests {
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
+            target_presence: None,
         }
     }
 

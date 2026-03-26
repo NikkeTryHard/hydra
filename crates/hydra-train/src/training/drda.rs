@@ -121,7 +121,10 @@ pub fn verify_rebase_preserves_pi<B: Backend>(
     let q = pi_after.clamp(eps, 1.0);
     let log_ratio = (p.clone() / q).log();
     let kl = (p * log_ratio).sum_dim(1).mean();
-    kl.into_scalar().elem::<f32>()
+    kl.into_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("kl scalar should be readable as f32")[0]
 }
 
 pub fn compute_rebase_kl<B: Backend>(
@@ -146,7 +149,13 @@ pub fn compute_new_base_logits<B: Backend>(
 }
 
 pub fn policy_head_is_zeroed<B: Backend>(logits: Tensor<B, 2>) -> bool {
-    let max_abs: f32 = logits.abs().max().into_scalar().elem();
+    let max_abs = logits
+        .abs()
+        .max()
+        .into_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("max-abs scalar should be readable as f32")[0];
     max_abs < 1e-6
 }
 
