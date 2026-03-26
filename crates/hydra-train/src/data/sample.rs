@@ -3,10 +3,11 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
+use hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_type};
 use std::cell::RefCell;
 
 use crate::training::exit::collate_exit_targets;
+use crate::training::head_gates::{AdvancedHead, TargetPresence};
 use crate::training::losses::HydraTargets;
 
 use crate::data::augment::{
@@ -178,10 +179,13 @@ pub struct MjaiBatch<B: Backend> {
     pub opp_next_target: Tensor<B, 3>,
     pub score_pdf_target: Tensor<B, 2>,
     pub score_cdf_target: Tensor<B, 2>,
+    pub target_presence: Option<TargetPresence>,
 }
 
 pub(crate) type CollatedHydraBatch<B> = Result<Option<(Tensor<B, 3>, HydraTargets<B>)>, String>;
 pub(crate) type CollatedSampleBatch<B> = Result<Option<(Tensor<B, 3>, MjaiBatch<B>)>, String>;
+pub(crate) type CollatedOwnedBatch<B> =
+    Result<Option<(Tensor<B, 3>, MjaiBatch<B>, HydraTargets<B>)>, String>;
 type OptionalActionTargets = Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>;
 
 struct CollateBuffers {
@@ -209,6 +213,7 @@ struct CollateBuffers {
     opp_flat: Vec<f32>,
     pdf_flat: Vec<f32>,
     cdf_flat: Vec<f32>,
+    target_presence: TargetPresence,
 }
 
 fn maybe_augment_action_vector(
@@ -426,6 +431,7 @@ impl CollateBuffers {
             opp_flat: vec![0.0f32; batch * SPATIAL_TARGET_SIZE],
             pdf_flat: vec![0.0f32; batch * SCORE_BINS],
             cdf_flat: vec![0.0f32; batch * SCORE_BINS],
+            target_presence: TargetPresence::with_batch_size(batch),
         }
     }
 
@@ -459,6 +465,7 @@ impl CollateBuffers {
         self.opp_flat[..batch * SPATIAL_TARGET_SIZE].fill(0.0);
         self.pdf_flat[..batch * SCORE_BINS].fill(0.0);
         self.cdf_flat[..batch * SCORE_BINS].fill(0.0);
+        self.target_presence = TargetPresence::with_batch_size(batch);
     }
 
     fn write_sample(
@@ -499,6 +506,7 @@ impl CollateBuffers {
             self.oracle_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT]
                 .copy_from_slice(&oracle);
             self.oracle_mask[index] = 1.0;
+            self.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
         }
         self.tenpai_flat[index * OPPONENT_COUNT..(index + 1) * OPPONENT_COUNT]
             .copy_from_slice(&sample.tenpai);
@@ -516,10 +524,20 @@ impl CollateBuffers {
                 [index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
                 .copy_from_slice(&values);
             self.any_safety_residual = true;
+            if values.iter().any(|&value| value > 0.0) {
+                self.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
+            }
         }
         self.exit_samples[index] = collate_optional_target_pair("exit", exit_target, exit_mask)?;
         self.delta_q_samples[index] =
             collate_optional_target_pair("delta_q", delta_q_target, delta_q_mask)?;
+        if let Some((_, mask)) = self.delta_q_samples[index].as_ref() {
+            let action_count = mask.iter().filter(|&&value| value > 0.0).count();
+            if action_count > 0 {
+                self.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
+                self.target_presence.delta_q_actions_present += action_count;
+            }
+        }
         if let Some(values) = belief_fields {
             self.belief_fields_flat[index * BELIEF_FIELD_SIZE..(index + 1) * BELIEF_FIELD_SIZE]
                 .copy_from_slice(&values);
@@ -531,6 +549,9 @@ impl CollateBuffers {
             &mut self.belief_fields_mask[index],
             &mut self.any_belief_fields,
         )?;
+        if self.belief_fields_mask[index] > 0.0 && self.oracle_mask[index] > 0.0 {
+            self.target_presence.counts[AdvancedHead::BeliefFields.index()] += 1;
+        }
         if let Some(values) = sample.mixture_weights {
             self.mixture_weights_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT]
                 .copy_from_slice(&values);
@@ -542,6 +563,9 @@ impl CollateBuffers {
             &mut self.mixture_weight_mask[index],
             &mut self.any_mixture_weights,
         )?;
+        if self.mixture_weight_mask[index] > 0.0 && self.oracle_mask[index] > 0.0 {
+            self.target_presence.counts[AdvancedHead::MixtureWeight.index()] += 1;
+        }
         for (opp, tile) in opp_next.iter().copied().enumerate() {
             if tile < TILE_COUNT as u8 {
                 self.opp_flat[index * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + tile as usize] = 1.0;
@@ -660,6 +684,7 @@ impl CollateBuffers {
                 device,
             )
             .reshape([batch, SCORE_BINS]),
+            target_presence: Some(self.target_presence.clone()),
         }
     }
 }
@@ -690,6 +715,7 @@ fn into_hydra_targets_inner<B: Backend>(batch: MjaiBatch<B>) -> HydraTargets<B> 
         belief_fields_mask: batch.belief_fields_mask,
         mixture_weight_mask: batch.mixture_weight_mask,
         oracle_guidance_mask: Some(batch.oracle_target_mask),
+        target_presence: batch.target_presence,
     }
 }
 
@@ -719,6 +745,7 @@ fn cloned_hydra_targets<B: Backend>(batch: &MjaiBatch<B>) -> HydraTargets<B> {
         belief_fields_mask: batch.belief_fields_mask.clone(),
         mixture_weight_mask: batch.mixture_weight_mask.clone(),
         oracle_guidance_mask: Some(batch.oracle_target_mask.clone()),
+        target_presence: batch.target_presence.clone(),
     }
 }
 
@@ -739,13 +766,21 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
 }
 
 pub fn score_to_placement(scores: [i32; 4], player: u8) -> u8 {
+    score_to_placements(scores)[player as usize]
+}
+
+pub fn score_to_placements(scores: [i32; 4]) -> [u8; 4] {
     let mut indexed: Vec<(i32, u8)> = scores
         .iter()
         .enumerate()
         .map(|(i, &s)| (s, i as u8))
         .collect();
     indexed.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    indexed.iter().position(|(_, p)| *p == player).unwrap_or(3) as u8
+    let mut placements = [3u8; 4];
+    for (placement, (_, player)) in indexed.into_iter().enumerate() {
+        placements[player as usize] = placement as u8;
+    }
+    placements
 }
 
 pub fn one_hot_action(action: u8, num_classes: usize) -> Vec<f32> {
@@ -776,6 +811,19 @@ pub fn collate_sample_refs<B: Backend>(
     Ok(Some((obs, batch.into_hydra_targets())))
 }
 
+pub fn collate_sample_refs_owned<B: Backend>(
+    samples: &[&MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> CollatedOwnedBatch<B> {
+    let Some(batch) = build_batch_from_sample_refs::<B>(samples, augment, device)? else {
+        return Ok(None);
+    };
+    let obs = batch.obs.clone();
+    let targets = cloned_hydra_targets(&batch);
+    Ok(Some((obs, batch, targets)))
+}
+
 pub fn collate_sample_refs_with_batch<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
@@ -797,6 +845,19 @@ pub fn collate_samples<B: Backend>(
         return Ok(None);
     };
     Ok(Some((obs, batch.into_hydra_targets())))
+}
+
+pub fn collate_samples_owned<B: Backend>(
+    samples: &[MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> CollatedOwnedBatch<B> {
+    let Some(batch) = build_batch_from_samples::<B>(samples, augment, device)? else {
+        return Ok(None);
+    };
+    let obs = batch.obs.clone();
+    let targets = cloned_hydra_targets(&batch);
+    Ok(Some((obs, batch, targets)))
 }
 
 pub fn collate_batch_samples<B: Backend>(
@@ -1202,6 +1263,50 @@ mod tests {
     }
 
     #[test]
+    fn batch_to_hydra_targets_carries_target_presence_metadata() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        sample.oracle_target = Some([0.1, -0.1, 0.2, -0.2]);
+        sample.belief_fields = Some([0.0; 16 * 34]);
+        sample.belief_fields_present = true;
+        sample.mixture_weights = Some([0.7, 0.3, 0.0, 0.0]);
+        sample.mixture_weights_present = true;
+        let mut delta_q_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut delta_q_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        delta_q_target[0] = 0.6;
+        delta_q_target[9] = -0.25;
+        delta_q_mask[0] = 1.0;
+        delta_q_mask[9] = 1.0;
+        sample.delta_q_target = Some(delta_q_target);
+        sample.delta_q_mask = Some(delta_q_mask);
+        let mut safety_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut safety_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        safety_target[3] = 0.5;
+        safety_mask[3] = 1.0;
+        sample.safety_residual = Some(safety_target);
+        sample.safety_residual_mask = Some(safety_mask);
+
+        let batch = collate_batch::<B>(&[sample], &device);
+        let presence = batch
+            .target_presence
+            .clone()
+            .expect("batch target presence");
+        assert_eq!(presence.batch_size, 1);
+        assert_eq!(presence.counts[AdvancedHead::OracleCritic.index()], 1);
+        assert_eq!(presence.counts[AdvancedHead::BeliefFields.index()], 1);
+        assert_eq!(presence.counts[AdvancedHead::MixtureWeight.index()], 1);
+        assert_eq!(presence.counts[AdvancedHead::DeltaQ.index()], 1);
+        assert_eq!(presence.counts[AdvancedHead::SafetyResidual.index()], 1);
+        assert_eq!(presence.delta_q_actions_present, 2);
+        let targets = batch.into_hydra_targets();
+        let target_presence = targets
+            .target_presence
+            .expect("targets should carry cached target presence");
+        assert_eq!(target_presence.batch_size, 1);
+        assert_eq!(target_presence.delta_q_actions_present, 2);
+    }
+
+    #[test]
     fn batch_to_hydra_targets_rejects_delta_q_when_pair_is_incomplete() {
         let device = Default::default();
         let mut target_only = dummy_sample(0, 0);
@@ -1418,6 +1523,71 @@ mod tests {
     }
 
     #[test]
+    fn collate_samples_owned_matches_split_batch_and_targets_without_augmentation() {
+        let device = Default::default();
+        let samples = vec![dummy_sample(2, 100), dummy_sample(7, -500)];
+
+        let (owned_obs, owned_batch, owned_targets) =
+            collate_samples_owned::<B>(&samples, false, &device)
+                .expect("owned collate")
+                .expect("owned batch present");
+        let (obs, batch) = collate_batch_samples::<B>(&samples, false, &device)
+            .expect("batch collate")
+            .expect("batch present");
+        let targets = batch.to_hydra_targets();
+
+        assert_eq!(owned_obs.to_data(), obs.to_data());
+        assert_eq!(owned_batch.obs.to_data(), batch.obs.to_data());
+        assert_eq!(owned_batch.actions.to_data(), batch.actions.to_data());
+        assert_eq!(
+            owned_targets.policy_target.to_data(),
+            targets.policy_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.legal_mask.to_data(),
+            targets.legal_mask.to_data()
+        );
+        assert_eq!(
+            owned_targets.value_target.to_data(),
+            targets.value_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.grp_target.to_data(),
+            targets.grp_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.danger_target.to_data(),
+            targets.danger_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.danger_mask.to_data(),
+            targets.danger_mask.to_data()
+        );
+        assert_eq!(
+            owned_targets.opp_next_target.to_data(),
+            targets.opp_next_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.score_pdf_target.to_data(),
+            targets.score_pdf_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.score_cdf_target.to_data(),
+            targets.score_cdf_target.to_data()
+        );
+        let owned_presence = owned_targets
+            .target_presence
+            .expect("owned target presence");
+        let split_presence = targets.target_presence.expect("target presence");
+        assert_eq!(owned_presence.batch_size, split_presence.batch_size);
+        assert_eq!(owned_presence.counts, split_presence.counts);
+        assert_eq!(
+            owned_presence.delta_q_actions_present,
+            split_presence.delta_q_actions_present
+        );
+    }
+
+    #[test]
     fn collate_sample_refs_matches_owned_collation_with_augmentation() {
         let device = Default::default();
         let mut sample = dummy_sample(0, 0);
@@ -1517,6 +1687,103 @@ mod tests {
                 .delta_q_mask
                 .expect("owned delta_q mask")
                 .to_data()
+        );
+    }
+
+    #[test]
+    fn collate_samples_owned_matches_split_batch_and_targets_with_augmentation() {
+        let device = Default::default();
+        let mut sample = dummy_sample(0, 0);
+        sample.obs = [0.0; OBS_SIZE];
+        sample.obs[40 * 34] = 1.0;
+        sample.opp_next = [0, 9, 27];
+        sample.danger[0] = 0.25;
+        sample.danger[34 + 9] = 0.5;
+        sample.danger_mask[18] = 1.0;
+        let mut safety_residual = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut safety_residual_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        safety_residual[0] = -0.75;
+        safety_residual[1] = 0.4;
+        safety_residual_mask[0] = 1.0;
+        safety_residual_mask[1] = 1.0;
+        sample.safety_residual = Some(safety_residual);
+        sample.safety_residual_mask = Some(safety_residual_mask);
+        let mut delta_q_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut delta_q_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        delta_q_target[0] = 0.6;
+        delta_q_target[1] = -0.25;
+        delta_q_mask[0] = 1.0;
+        delta_q_mask[1] = 1.0;
+        sample.delta_q_target = Some(delta_q_target);
+        sample.delta_q_mask = Some(delta_q_mask);
+
+        let owned_sample = sample;
+        let mut split_sample = dummy_sample(0, 0);
+        split_sample.obs = [0.0; OBS_SIZE];
+        split_sample.obs[40 * 34] = 1.0;
+        split_sample.opp_next = [0, 9, 27];
+        split_sample.danger[0] = 0.25;
+        split_sample.danger[34 + 9] = 0.5;
+        split_sample.danger_mask[18] = 1.0;
+        split_sample.safety_residual = Some(safety_residual);
+        split_sample.safety_residual_mask = Some(safety_residual_mask);
+        split_sample.delta_q_target = Some(delta_q_target);
+        split_sample.delta_q_mask = Some(delta_q_mask);
+
+        let (owned_obs, owned_batch, owned_targets) =
+            collate_samples_owned::<B>(&[owned_sample], true, &device)
+                .expect("owned collate")
+                .expect("owned batch present");
+        let (obs, batch) = collate_batch_samples::<B>(&[split_sample], true, &device)
+            .expect("batch collate")
+            .expect("batch present");
+        let targets = batch.to_hydra_targets();
+
+        assert_eq!(owned_obs.to_data(), obs.to_data());
+        assert_eq!(owned_batch.obs.to_data(), batch.obs.to_data());
+        assert_eq!(owned_batch.actions.to_data(), batch.actions.to_data());
+        assert_eq!(
+            owned_targets.policy_target.to_data(),
+            targets.policy_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.danger_target.to_data(),
+            targets.danger_target.to_data()
+        );
+        assert_eq!(
+            owned_targets.danger_mask.to_data(),
+            targets.danger_mask.to_data()
+        );
+        assert_eq!(
+            owned_targets.opp_next_target.to_data(),
+            targets.opp_next_target.to_data()
+        );
+        assert_eq!(
+            owned_targets
+                .safety_residual_target
+                .expect("owned safety residual")
+                .to_data(),
+            targets
+                .safety_residual_target
+                .expect("safety residual")
+                .to_data()
+        );
+        assert_eq!(
+            owned_targets
+                .delta_q_target
+                .expect("owned delta_q")
+                .to_data(),
+            targets.delta_q_target.expect("delta_q").to_data()
+        );
+        let owned_presence = owned_targets
+            .target_presence
+            .expect("owned target presence");
+        let split_presence = targets.target_presence.expect("target presence");
+        assert_eq!(owned_presence.batch_size, split_presence.batch_size);
+        assert_eq!(owned_presence.counts, split_presence.counts);
+        assert_eq!(
+            owned_presence.delta_q_actions_present,
+            split_presence.delta_q_actions_present
         );
     }
 }

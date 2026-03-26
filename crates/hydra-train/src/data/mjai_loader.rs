@@ -3,7 +3,7 @@
 use crate::data::replay_targets::{
     build_safety_residual_targets, build_stage_a_belief_targets, exact_waits,
 };
-use crate::data::sample::{MjaiSample, score_to_placement, scores_to_grp_index};
+use crate::data::sample::{MjaiSample, score_to_placements, scores_to_grp_index};
 use crate::training::losses::oracle_target_from_scores;
 use crate::training::replay_delta_q::DeltaQSidecarIndex;
 use crate::training::replay_exit::{
@@ -231,11 +231,109 @@ pub(crate) struct PreparedReplayDecision {
     pub obs_encoded: [f32; OBS_SIZE],
 }
 
+#[derive(Clone, Copy)]
+struct OpponentEventTarget {
+    tenpai: f32,
+    next_discard: u8,
+    waits: [f32; 34],
+}
+
+struct EventOpponentTargetCache {
+    opp_next_abs: [u8; 4],
+    targets: [Option<OpponentEventTarget>; 4],
+}
+
+#[derive(Clone, Copy)]
+struct ActorRelativeOpponentTargets {
+    wait_sets: [[f32; 34]; 3],
+    tenpai: [f32; 3],
+    opp_next: [u8; 3],
+    danger: [f32; 102],
+    danger_mask: [f32; 102],
+}
+
+impl EventOpponentTargetCache {
+    fn new(next_discards: &[[Option<u8>; 4]], event_index: usize) -> Self {
+        let mut opp_next_abs = [MISSING_TILE_TARGET; 4];
+        for player in 0..4usize {
+            opp_next_abs[player] =
+                next_discards[event_index][player].unwrap_or(MISSING_TILE_TARGET);
+        }
+        Self {
+            opp_next_abs,
+            targets: [None; 4],
+        }
+    }
+
+    fn target_for(&mut self, state: &GameState, player: usize) -> OpponentEventTarget {
+        if let Some(target) = self.targets[player] {
+            return target;
+        }
+
+        let (waits, is_tenpai) = exact_waits(state, player);
+        let target = OpponentEventTarget {
+            tenpai: if is_tenpai { 1.0 } else { 0.0 },
+            next_discard: self.opp_next_abs[player],
+            waits,
+        };
+        self.targets[player] = Some(target);
+        target
+    }
+}
+
+fn actor_relative_opponent_targets(
+    actor: usize,
+    event_targets: &mut EventOpponentTargetCache,
+    state: &GameState,
+) -> ActorRelativeOpponentTargets {
+    let mut tenpai = [0.0; 3];
+    let mut opp_next = [MISSING_TILE_TARGET; 3];
+    let mut danger = [0.0; 102];
+    let mut danger_mask = [0.0; 102];
+    let mut wait_sets = [[0.0f32; 34]; 3];
+
+    for rel in 0..3usize {
+        let opp = abs_opp(actor, rel);
+        let target = event_targets.target_for(state, opp);
+        wait_sets[rel] = target.waits;
+        tenpai[rel] = target.tenpai;
+        opp_next[rel] = target.next_discard;
+        let start = rel * 34;
+        danger[start..start + 34].copy_from_slice(&wait_sets[rel]);
+        if tenpai[rel] > 0.0 {
+            danger_mask[start..start + 34].fill(1.0);
+        }
+    }
+
+    ActorRelativeOpponentTargets {
+        wait_sets,
+        tenpai,
+        opp_next,
+        danger,
+        danger_mask,
+    }
+}
+
 fn replay_phase_for_event(event: &MjaiEvent, state: &GameState, actor: usize) -> ActionPhase {
-    if matches!(event, MjaiEvent::Dahai { .. }) && state.players[actor].riichi_declared {
+    if matches!(event, MjaiEvent::Dahai { .. })
+        && (state.players[actor].riichi_stage || state.players[actor].riichi_declared)
+    {
         ActionPhase::RiichiSelect
     } else {
         ActionPhase::Normal
+    }
+}
+
+fn replay_engine_action_for_event(
+    event: &MjaiEvent,
+    state: &GameState,
+    actor: usize,
+    env_action: EngineAction,
+) -> EngineAction {
+    if matches!(event, MjaiEvent::Dahai { .. }) && state.players[actor].riichi_stage {
+        EngineAction::new(ActionType::Riichi, env_action.tile, &[], Some(actor as u8))
+    } else {
+        env_action
     }
 }
 
@@ -355,6 +453,7 @@ pub(crate) fn prepare_replay_decisions(
         return Ok(decisions);
     };
 
+    let env_action = replay_engine_action_for_event(event, state, actor, env_action);
     let obs = observation_for_replay_event(state, actor, &env_action)?;
     if let Some(decision) = finalize_prepared_replay_decision(
         actor,
@@ -441,6 +540,7 @@ fn load_game_from_events_internal(
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
     let final_scores = final_scores(&events);
+    let placements = score_to_placements(final_scores);
     let oracle_target = oracle_target_from_scores(final_scores);
     let next_discards = next_discards_after(&events)?;
     let grp_label = scores_to_grp_index(final_scores).map_err(invalid_data)?;
@@ -448,40 +548,36 @@ fn load_game_from_events_internal(
     let mut safety = array::from_fn(|_| SafetyInfo::default());
     let mut encoder = ObservationEncoder::new();
     let mut samples = Vec::with_capacity(events.len());
+    let needs_exit_lookup = exit_sidecar.is_some() && exit_provenance.complete().is_some();
+    let needs_delta_q_lookup = delta_q_sidecar.is_some() && delta_q_provenance.complete().is_some();
+    let needs_replay_key = source_hash.is_some() && (needs_exit_lookup || needs_delta_q_lookup);
 
     for (idx, event) in events.iter().enumerate() {
-        for decision in prepare_replay_decisions(event, &mut state, &safety, &mut encoder)? {
+        let decisions = prepare_replay_decisions(event, &mut state, &safety, &mut encoder)?;
+        let mut event_targets = EventOpponentTargetCache::new(&next_discards, idx);
+        for decision in decisions {
             let actor = decision.actor;
             let legal_mask = bool_mask_to_f32(decision.legal_mask);
-            let mut tenpai = [0.0; 3];
-            let mut opp_next = [MISSING_TILE_TARGET; 3];
-            let mut danger = [0.0; 102];
-            let mut danger_mask = [0.0; 102];
-            let mut wait_sets = [[0.0f32; 34]; 3];
-            for rel in 0..3usize {
-                let opp = abs_opp(actor, rel);
-                let (waits, is_tenpai) = exact_waits(&state, opp);
-                wait_sets[rel] = waits;
-                tenpai[rel] = if is_tenpai { 1.0 } else { 0.0 };
-                opp_next[rel] = next_discards[idx][opp].unwrap_or(MISSING_TILE_TARGET);
-                let start = rel * 34;
-                danger[start..start + 34].copy_from_slice(&wait_sets[rel]);
-                if is_tenpai {
-                    danger_mask[start..start + 34].fill(1.0);
-                }
-            }
-            let (safety_residual, safety_residual_mask) =
-                build_safety_residual_targets(&legal_mask, &safety[actor], &wait_sets);
+            let actor_targets = actor_relative_opponent_targets(actor, &mut event_targets, &state);
+            let (safety_residual, safety_residual_mask) = build_safety_residual_targets(
+                &legal_mask,
+                &safety[actor],
+                &actor_targets.wait_sets,
+            );
             let (belief_fields, mixture_weights, belief_fields_present, mixture_weights_present) =
                 build_stage_a_belief_targets(&state, actor, &decision.obs);
-            let replay_key = source_hash.map(|source_hash| ReplayDecisionKey {
-                source_hash,
+            let replay_key = needs_replay_key.then(|| ReplayDecisionKey {
+                source_hash: source_hash.expect("needs_replay_key implies source hash"),
                 event_index: idx as u32,
                 actor: actor as u8,
                 obs_hash: crate::training::live_exit::obs_hash(&decision.obs_encoded),
             });
             let joined_exit = lookup_joined_label(
-                exit_sidecar,
+                if needs_exit_lookup {
+                    exit_sidecar
+                } else {
+                    None
+                },
                 replay_key,
                 decision.action_id,
                 &legal_mask,
@@ -491,7 +587,11 @@ fn load_game_from_events_internal(
                 },
             );
             let joined_delta_q = lookup_joined_label(
-                delta_q_sidecar,
+                if needs_delta_q_lookup {
+                    delta_q_sidecar
+                } else {
+                    None
+                },
                 replay_key,
                 decision.action_id,
                 &legal_mask,
@@ -504,14 +604,14 @@ fn load_game_from_events_internal(
                 obs: decision.obs_encoded,
                 action: decision.action_id,
                 legal_mask,
-                placement: score_to_placement(final_scores, actor as u8),
+                placement: placements[actor],
                 score_delta: final_scores[actor] - state.players[actor].score,
                 grp_label,
                 oracle_target: Some(oracle_target),
-                tenpai,
-                opp_next,
-                danger,
-                danger_mask,
+                tenpai: actor_targets.tenpai,
+                opp_next: actor_targets.opp_next,
+                danger: actor_targets.danger,
+                danger_mask: actor_targets.danger_mask,
                 safety_residual: Some(safety_residual),
                 safety_residual_mask: Some(safety_residual_mask),
                 exit_target: joined_exit.map(|(target, _)| target),
@@ -588,7 +688,9 @@ pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Resu
                     .ok_or_else(|| invalid_data("failing sampled event missing actor"))?
                     as u8;
                 let env_action = mjai_event_to_action(event)
-                    .map_err(|conv| invalid_data(format!("replay action conversion failed: {conv}")))?
+                    .map_err(|conv| {
+                        invalid_data(format!("replay action conversion failed: {conv}"))
+                    })?
                     .ok_or_else(|| invalid_data("failing sampled event missing env action"))?;
                 state.get_legal_actions_into(actor, &mut legal_buf);
                 return Ok(Some(format!(

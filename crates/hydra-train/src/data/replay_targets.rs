@@ -1,4 +1,4 @@
-use crate::teacher::belief::{build_stage_a_teacher, StageABeliefConfig};
+use crate::teacher::belief::{StageABeliefConfig, build_stage_a_teacher};
 use hydra_core::action::{AKA_5M, AKA_5P, AKA_5S, DISCARD_END, HYDRA_ACTION_SPACE};
 use hydra_core::bridge::{
     extract_discards, extract_dora, extract_hand, extract_melds, extract_public_remaining_counts,

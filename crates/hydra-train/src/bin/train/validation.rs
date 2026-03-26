@@ -1,12 +1,18 @@
 use burn::module::AutodiffModule;
 use burn::prelude::*;
+use burn::tensor::backend::AutodiffBackend;
 use indicatif::ProgressBar;
+use std::time::Instant;
 
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_pass};
-use hydra_train::data::sample::{MjaiSample, collate_batch_samples};
+use hydra_train::data::sample::{MjaiSample, collate_samples_owned};
 use hydra_train::model::{HydraModel, HydraOutput};
+use hydra_train::preflight::{
+    PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
+    PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
+};
 use hydra_train::training::bc::{
-    BcExitConfig, bc_total_with_exit, gated_bc_context, policy_agreement,
+    BcExitConfig, bc_total_with_exit_from_breakdown, gated_bc_context,
 };
 use hydra_train::training::delta_q_promotion::{
     DeltaQPolicyTransferReport, DeltaQPolicyTransferResult, DeltaQPolicyTransferThresholds,
@@ -18,17 +24,17 @@ use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
-use super::progress::{BatchStats, ScalarAverages, batch_stats_from_breakdown};
+use super::progress::{BatchStats, ScalarAverages, batch_stats_from_outputs};
 use super::resume::BestValidation;
-use super::{TrainBackend, ValidBackend};
+type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
-pub(super) struct ValidationContext<'a> {
+pub(super) struct ValidationContext<'a, B: Backend> {
     pub(super) config: &'a TrainConfig,
     pub(super) loader_config: &'a StreamingLoaderConfig,
     pub(super) manifest: &'a DataManifest,
     pub(super) cached_samples: Option<&'a [MjaiSample]>,
-    pub(super) device: &'a <ValidBackend as Backend>::Device,
-    pub(super) loss_fn: &'a HydraLoss<ValidBackend>,
+    pub(super) device: &'a B::Device,
+    pub(super) loss_fn: &'a HydraLoss<B>,
     pub(super) exit_cfg: &'a BcExitConfig,
 }
 
@@ -97,6 +103,7 @@ pub(super) struct ValidationSummary {
     pub(super) policy_loss: f64,
     pub(super) agreement: f64,
     pub(super) samples: usize,
+    pub(super) profiling: Option<ProfilingEnvelope>,
     pub(super) delta_q_promotion: Option<DeltaQPromotionReport>,
     pub(super) delta_q_promotion_result: Option<DeltaQPromotionResult>,
     pub(super) delta_q_promotion_snapshot: Option<DeltaQPromotionSnapshot>,
@@ -112,21 +119,15 @@ pub(super) fn validation_batch_stats<B: Backend>(
     targets: &HydraTargets<B>,
     breakdown: &hydra_train::training::losses::LossBreakdown<B>,
     total_loss: &Tensor<B, 1>,
-    exit_cfg: &BcExitConfig,
 ) -> BatchStats {
-    let agreement = policy_agreement(
+    batch_stats_from_outputs(
+        sample_count,
         output.policy_logits.clone(),
         targets.legal_mask.clone(),
         batch.actions.clone(),
-    );
-    let mut stats = batch_stats_from_breakdown(sample_count, agreement, &breakdown);
-    if batch.exit_target.is_some() && batch.exit_mask.is_some() && exit_cfg.exit_weight > 0.0 {
-        stats.total_loss = total_loss
-            .clone()
-            .into_scalar()
-            .elem::<f64>();
-    }
-    stats
+        total_loss.clone(),
+        breakdown,
+    )
 }
 
 pub(super) fn is_better_validation(
@@ -143,20 +144,26 @@ pub(super) fn is_better_validation(
     }
 }
 
-pub(super) fn run_validation(
-    model: &HydraModel<TrainBackend>,
-    context: ValidationContext<'_>,
+pub(super) fn run_validation<TB>(
+    model: &HydraModel<TB>,
+    context: ValidationContext<'_, ValidBackendOf<TB>>,
     runtime: ValidationRuntime<'_>,
-) -> Result<ValidationSummary, String> {
+) -> Result<ValidationSummary, String>
+where
+    TB: AutodiffBackend,
+{
     run_validation_with_policy_baseline(model, model, context, runtime)
 }
 
-pub(super) fn run_validation_with_policy_baseline(
-    model: &HydraModel<TrainBackend>,
-    baseline_model: &HydraModel<TrainBackend>,
-    context: ValidationContext<'_>,
+pub(super) fn run_validation_with_policy_baseline<TB>(
+    model: &HydraModel<TB>,
+    baseline_model: &HydraModel<TB>,
+    context: ValidationContext<'_, ValidBackendOf<TB>>,
     runtime: ValidationRuntime<'_>,
-) -> Result<ValidationSummary, String> {
+) -> Result<ValidationSummary, String>
+where
+    TB: AutodiffBackend,
+{
     let ValidationContext {
         config,
         loader_config,
@@ -180,6 +187,14 @@ pub(super) fn run_validation_with_policy_baseline(
     let mut delta_q_promotion = DeltaQPromotionReport::new();
     let mut delta_q_policy_transfer = DeltaQPolicyTransferReport::new();
     let mut saw_delta_q_targets = false;
+    let mut validation_profiling = ProfilingEnvelope::nested(
+        PROFILING_STAGE_VALIDATION,
+        0.0,
+        vec![
+            ProfilingEnvelope::leaf(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, 0.0),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD, 0.0),
+        ],
+    );
 
     let run_chunk = |capped_chunk: &[MjaiSample],
                      stats: &mut ScalarAverages,
@@ -187,20 +202,23 @@ pub(super) fn run_validation_with_policy_baseline(
                      head_controller: &mut Option<&mut HeadActivationController>,
                      delta_q_promotion: &mut DeltaQPromotionReport,
                      delta_q_policy_transfer: &mut DeltaQPolicyTransferReport,
-                     saw_delta_q_targets: &mut bool|
+                     saw_delta_q_targets: &mut bool,
+                     validation_profiling: &mut ProfilingEnvelope|
      -> Result<(), String> {
-        let Some((obs, batch)) =
-            collate_batch_samples::<ValidBackend>(capped_chunk, false, device)
+        let Some((obs, batch, targets)) =
+            collate_samples_owned::<ValidBackendOf<TB>>(capped_chunk, false, device)
                 .map_err(|err| format!("validation collation failed: {err}"))?
         else {
             return Ok(());
         };
-        let targets = batch.to_hydra_targets();
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
-        let output = model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+        let candidate_started = Instant::now();
+        let output =
+            model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
         let breakdown = active_loss_fn.total_loss(&output, &targets);
-        let total = bc_total_with_exit(&output, &batch, &targets, &active_loss_fn, exit_cfg);
+        let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, exit_cfg);
+        let candidate_elapsed_seconds = candidate_started.elapsed().as_secs_f64();
         let batch_stats = validation_batch_stats(
             capped_chunk.len(),
             &output,
@@ -208,20 +226,41 @@ pub(super) fn run_validation_with_policy_baseline(
             &targets,
             &breakdown,
             &total,
-            exit_cfg,
         );
+        let mut baseline_elapsed_seconds = 0.0;
         if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
-            let baseline_output = baseline_valid.forward(obs);
+            let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
+                output.policy_logits.clone()
+            } else {
+                let baseline_started = Instant::now();
+                let (baseline_policy_logits, _) = baseline_valid.forward_policy_value(obs);
+                baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
+                baseline_policy_logits
+            };
             delta_q_promotion.merge(&collect_promotion_metrics_from_outputs(
                 &output, &targets, 0.75,
             ));
             delta_q_policy_transfer.merge(&collect_policy_transfer_metrics_from_policy_outputs(
                 output.policy_logits.clone(),
-                baseline_output.policy_logits.clone(),
+                baseline_policy_logits,
                 &targets,
             ));
             *saw_delta_q_targets = true;
         }
+        validation_profiling.merge_assign(&ProfilingEnvelope::nested(
+            PROFILING_STAGE_VALIDATION,
+            candidate_elapsed_seconds + baseline_elapsed_seconds,
+            vec![
+                ProfilingEnvelope::leaf(
+                    PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS,
+                    candidate_elapsed_seconds,
+                ),
+                ProfilingEnvelope::leaf(
+                    PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
+                    baseline_elapsed_seconds,
+                ),
+            ],
+        ));
         stats.record_batch(batch_stats);
         *total_samples += capped_chunk.len();
         Ok(())
@@ -251,6 +290,7 @@ pub(super) fn run_validation_with_policy_baseline(
                 &mut delta_q_promotion,
                 &mut delta_q_policy_transfer,
                 &mut saw_delta_q_targets,
+                &mut validation_profiling,
             )?;
         }
     } else {
@@ -279,6 +319,7 @@ pub(super) fn run_validation_with_policy_baseline(
                     &mut delta_q_promotion,
                     &mut delta_q_policy_transfer,
                     &mut saw_delta_q_targets,
+                    &mut validation_profiling,
                 )?;
             }
             if let Some(limit) = validation_sample_limit
@@ -295,6 +336,7 @@ pub(super) fn run_validation_with_policy_baseline(
             policy_loss: 0.0,
             agreement: 0.0,
             samples: 0,
+            profiling: Some(validation_profiling),
             delta_q_promotion: None,
             delta_q_promotion_result: None,
             delta_q_promotion_snapshot: None,
@@ -339,6 +381,7 @@ pub(super) fn run_validation_with_policy_baseline(
             policy_loss: stats.loss_policy,
             agreement: stats.policy_agreement,
             samples: total_samples,
+            profiling: Some(validation_profiling),
             delta_q_promotion,
             delta_q_promotion_result,
             delta_q_promotion_snapshot,
@@ -383,14 +426,20 @@ mod tests {
 
     use burn::backend::libtorch::LibTorchDevice;
     use burn::tensor::Tensor;
+    use hydra_core::action::HYDRA_ACTION_SPACE;
+    use hydra_core::encoder::OBS_SIZE;
     use hydra_train::data::sample::MjaiBatch;
+    use hydra_train::data::sample::MjaiSample;
     use hydra_train::model::HydraModelConfig;
     use hydra_train::preflight::PreflightConfig;
-    use hydra_train::training::bc::BcExitConfig;
+    use hydra_train::training::bc::{BcExitConfig, bc_total_with_exit};
     use hydra_train::training::losses::HydraLossConfig;
 
+    use super::super::TrainBackend;
     use crate::config::{BcHyperparamConfig, TrainConfig};
     use crate::resume::BestValidation;
+
+    type TestValidBackend = ValidBackendOf<TrainBackend>;
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -424,6 +473,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -443,6 +493,7 @@ mod tests {
             policy_loss,
             agreement,
             samples: 64,
+            profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,
             delta_q_promotion_snapshot: None,
@@ -452,7 +503,7 @@ mod tests {
         }
     }
 
-    fn empty_batch(device: &LibTorchDevice, batch: usize) -> MjaiBatch<ValidBackend> {
+    fn empty_batch(device: &LibTorchDevice, batch: usize) -> MjaiBatch<TestValidBackend> {
         MjaiBatch {
             obs: Tensor::zeros([batch, hydra_train::config::INPUT_CHANNELS, 34], device),
             actions: Tensor::zeros([batch], device),
@@ -477,7 +528,46 @@ mod tests {
             opp_next_target: Tensor::zeros([batch, 3, 34], device),
             score_pdf_target: Tensor::zeros([batch, 64], device),
             score_cdf_target: Tensor::zeros([batch, 64], device),
+            target_presence: None,
         }
+    }
+
+    fn delta_q_sample() -> MjaiSample {
+        let mut sample = MjaiSample {
+            obs: [0.0; OBS_SIZE],
+            action: 0,
+            legal_mask: [1.0; HYDRA_ACTION_SPACE],
+            placement: 0,
+            score_delta: 0,
+            grp_label: 0,
+            oracle_target: None,
+            tenpai: [0.0; 3],
+            opp_next: [255; 3],
+            danger: [0.0; 102],
+            danger_mask: [0.0; 102],
+            safety_residual: None,
+            safety_residual_mask: None,
+            exit_target: None,
+            exit_mask: None,
+            delta_q_target: None,
+            delta_q_mask: None,
+            belief_fields: None,
+            mixture_weights: None,
+            belief_fields_present: false,
+            mixture_weights_present: false,
+        };
+        sample.delta_q_target = Some([0.0; HYDRA_ACTION_SPACE]);
+        sample.delta_q_mask = Some([1.0; HYDRA_ACTION_SPACE]);
+        sample
+    }
+
+    fn tensor_rows_f32<const D: usize>(tensor: Tensor<TestValidBackend, D>) -> Vec<f32> {
+        tensor
+            .into_data()
+            .convert::<f32>()
+            .as_slice::<f32>()
+            .expect("tensor data should be readable as f32")
+            .to_vec()
     }
 
     #[test]
@@ -578,6 +668,7 @@ mod tests {
         assert_eq!(summary.policy_loss, 0.8);
         assert_eq!(summary.agreement, 0.6);
         assert_eq!(summary.samples, 64);
+        assert!(summary.profiling.is_none());
         assert!(summary.delta_q_promotion.is_none());
         assert!(summary.delta_q_promotion_result.is_none());
         assert!(summary.delta_q_promotion_snapshot.is_none());
@@ -661,27 +752,17 @@ mod tests {
     #[test]
     fn validation_batch_stats_projects_breakdown_and_exit_adjusted_total() {
         let device = LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<ValidBackend>(&device);
+        let model = HydraModelConfig::actor().init::<TestValidBackend>(&device);
         let batch = empty_batch(&device, 2);
         let targets = batch.to_hydra_targets();
         let output = model.forward(batch.obs.clone());
-        let loss_fn = HydraLoss::<ValidBackend>::new(HydraLossConfig::new());
+        let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
         let exit_cfg = BcExitConfig::default();
 
         let breakdown = loss_fn.total_loss(&output, &targets);
         let total = bc_total_with_exit(&output, &batch, &targets, &loss_fn, &exit_cfg);
-        let stats = validation_batch_stats(
-            2,
-            &output,
-            &batch,
-            &targets,
-            &breakdown,
-            &total,
-            &exit_cfg,
-        );
-        let expected_total = bc_total_with_exit(&output, &batch, &targets, &loss_fn, &exit_cfg)
-            .into_scalar()
-            .elem::<f64>();
+        let stats = validation_batch_stats(2, &output, &batch, &targets, &breakdown, &total);
+        let expected_total: f64 = total.clone().into_scalar().elem();
 
         assert_eq!(stats.sample_count, 2);
         assert!(stats.policy_agreement.is_finite());
@@ -703,7 +784,7 @@ mod tests {
         let manifest = empty_manifest();
         let device = LibTorchDevice::Cpu;
         let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
-        let loss_fn = HydraLoss::<ValidBackend>::new(HydraLossConfig::new());
+        let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
 
         let summary = run_validation_with_policy_baseline(
             &model,
@@ -728,6 +809,10 @@ mod tests {
         assert_eq!(summary.policy_loss, 0.0);
         assert_eq!(summary.agreement, 0.0);
         assert_eq!(summary.samples, 0);
+        assert_eq!(
+            summary.profiling.as_ref().map(|p| p.stage.as_str()),
+            Some("validation")
+        );
         assert!(summary.delta_q_promotion.is_none());
         assert!(summary.delta_q_promotion_result.is_none());
         assert!(summary.delta_q_promotion_snapshot.is_none());
@@ -743,7 +828,7 @@ mod tests {
         let manifest = empty_manifest();
         let device = LibTorchDevice::Cpu;
         let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
-        let loss_fn = HydraLoss::<ValidBackend>::new(HydraLossConfig::new());
+        let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
 
         let wrapped = run_validation(
             &model,
@@ -786,7 +871,137 @@ mod tests {
         assert_eq!(wrapped.policy_loss, direct.policy_loss);
         assert_eq!(wrapped.agreement, direct.agreement);
         assert_eq!(wrapped.samples, direct.samples);
+        assert_eq!(wrapped.profiling, direct.profiling);
         assert!(wrapped.delta_q_promotion.is_none());
         assert!(wrapped.delta_q_policy_transfer.is_none());
+    }
+
+    #[test]
+    fn run_validation_same_model_short_circuits_baseline_policy_forward() {
+        let device = LibTorchDevice::Cpu;
+        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let valid = model.valid();
+        let config = dummy_config();
+        let loader_config = StreamingLoaderConfig::default();
+        let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
+        let cached_samples = vec![delta_q_sample()];
+
+        let summary = run_validation_with_policy_baseline(
+            &model,
+            &model,
+            ValidationContext {
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &empty_manifest(),
+                cached_samples: Some(&cached_samples),
+                device: &device,
+                loss_fn: &loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+            },
+            ValidationRuntime {
+                head_controller: None,
+                progress: None,
+            },
+        )
+        .expect("same-model validation should succeed");
+
+        let profiling = summary.profiling.expect("profiling should exist");
+        let baseline_stage = profiling
+            .children
+            .iter()
+            .find(|child| child.stage == PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD)
+            .expect("baseline child stage should exist");
+        assert_eq!(baseline_stage.elapsed_seconds, 0.0);
+
+        let obs = Tensor::zeros([1, hydra_train::config::INPUT_CHANNELS, 34], &device);
+        let (policy_only_logits, _) = valid.forward_policy_value(obs.clone());
+        let full_logits = valid.forward(obs).policy_logits;
+        let policy_only_rows = tensor_rows_f32(policy_only_logits);
+        let full_rows = tensor_rows_f32(full_logits);
+        assert_eq!(policy_only_rows, full_rows);
+    }
+
+    #[test]
+    fn run_validation_distinct_baseline_uses_policy_only_forward_without_drift() {
+        let device = LibTorchDevice::Cpu;
+        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let baseline = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let baseline_valid = baseline.valid();
+        let config = dummy_config();
+        let loader_config = StreamingLoaderConfig::default();
+        let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
+        let cached_samples = vec![delta_q_sample()];
+
+        let summary = run_validation_with_policy_baseline(
+            &model,
+            &baseline,
+            ValidationContext {
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &empty_manifest(),
+                cached_samples: Some(&cached_samples),
+                device: &device,
+                loss_fn: &loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+            },
+            ValidationRuntime {
+                head_controller: None,
+                progress: None,
+            },
+        )
+        .expect("distinct-baseline validation should succeed");
+
+        assert!(summary.delta_q_promotion.is_some());
+        assert!(summary.delta_q_policy_transfer.is_some());
+
+        let obs = Tensor::zeros([1, hydra_train::config::INPUT_CHANNELS, 34], &device);
+        let (policy_only_logits, _) = baseline_valid.forward_policy_value(obs.clone());
+        let full_logits = baseline_valid.forward(obs).policy_logits;
+        let policy_only_rows = tensor_rows_f32(policy_only_logits);
+        let full_rows = tensor_rows_f32(full_logits);
+        assert_eq!(policy_only_rows, full_rows);
+    }
+
+    #[test]
+    fn validation_zero_summary_exposes_coarse_child_stages() {
+        let config = dummy_config();
+        let loader_config = StreamingLoaderConfig::default();
+        let manifest = empty_manifest();
+        let device = LibTorchDevice::Cpu;
+        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
+
+        let summary = run_validation_with_policy_baseline(
+            &model,
+            &model,
+            ValidationContext {
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &manifest,
+                cached_samples: None,
+                device: &device,
+                loss_fn: &loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+            },
+            ValidationRuntime {
+                head_controller: None,
+                progress: None,
+            },
+        )
+        .expect("empty manifest validation should succeed");
+
+        let profiling = summary
+            .profiling
+            .expect("validation profiling should be attached");
+        assert_eq!(profiling.stage, PROFILING_STAGE_VALIDATION);
+        assert_eq!(profiling.children.len(), 2);
+        assert_eq!(
+            profiling.children[0].stage,
+            PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS
+        );
+        assert_eq!(
+            profiling.children[1].stage,
+            PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD
+        );
     }
 }
