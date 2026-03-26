@@ -7,7 +7,9 @@ use burn::tensor::backend::AutodiffBackend;
 use crate::model::HydraModel;
 use crate::training::ach::{AchConfig, ach_policy_loss};
 use crate::training::drda;
-use crate::training::head_gates::{HeadActivationController, extract_target_presence};
+use crate::training::head_gates::{
+    AdvancedHead, HeadActivationController, borrow_or_extract_target_presence,
+};
 use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub const MAX_RL_BATCH_SIZE: usize = 512;
@@ -31,9 +33,21 @@ impl DeltaQBatchStats {
                 actions_present: 0,
                 examples_absent: targets.policy_target.dims()[0],
             }),
+            (Some(_), Some(_)) if targets.target_presence.is_some() => {
+                let presence = targets
+                    .target_presence
+                    .as_ref()
+                    .expect("checked target presence");
+                let examples_present = presence.count(AdvancedHead::DeltaQ);
+                Ok(Self {
+                    examples_present,
+                    actions_present: presence.delta_q_actions_present,
+                    examples_absent: presence.batch_size.saturating_sub(examples_present),
+                })
+            }
             (Some(_), Some(mask)) => {
                 let [batch, cols] = mask.dims();
-                let mask_data = mask.to_data();
+                let mask_data = mask.to_data().convert::<f32>();
                 let data = mask_data
                     .as_slice::<f32>()
                     .map_err(|_| "delta_q mask unreadable")?;
@@ -72,7 +86,7 @@ pub fn apply_head_gating_to_batch<B: Backend>(
     targets: &HydraTargets<B>,
 ) -> Result<(crate::training::losses::HydraLossConfig, DeltaQBatchStats), &'static str> {
     validate_optional_target_pairs(targets)?;
-    let presence = extract_target_presence(targets);
+    let presence = borrow_or_extract_target_presence(targets);
     controller.record_batch(&presence);
     let delta_q_stats = DeltaQBatchStats::from_targets(targets)?;
     let effective_loss = controller.approved_loss_config(base_loss);
@@ -271,9 +285,10 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
 
     // Microbatch accumulation path.
     let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
-    let mut total_loss = 0.0;
     let mut num_chunks = 0usize;
     let mut m = model;
+    let device = batch.obs.device();
+    let mut total_loss_tensor = Tensor::<B, 1>::zeros([1], &device);
 
     let mut start = 0;
     while start < total_samples {
@@ -309,11 +324,10 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
             chunk_total = chunk_total + exit_loss;
         }
 
-        let loss_val: f64 = chunk_total.clone().into_scalar().elem();
+        total_loss_tensor = total_loss_tensor + chunk_total.clone().detach();
         let grads = chunk_total.backward();
         let grads = GradientsParams::from_grads(grads, &m);
         accumulator.accumulate(&m, grads);
-        total_loss += loss_val;
         num_chunks += 1;
         start = end;
     }
@@ -321,7 +335,12 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     let grads = accumulator.grads();
     m = optimizer.step(cfg.lr, m, grads);
     let avg_loss = if num_chunks > 0 {
-        total_loss / num_chunks as f64
+        total_loss_tensor
+            .into_data()
+            .convert::<f64>()
+            .as_slice::<f64>()
+            .expect("rl aggregated loss should be readable as f64")[0]
+            / num_chunks as f64
     } else {
         0.0
     };
@@ -369,7 +388,12 @@ fn rl_microbatch_forward<B: AutodiffBackend>(
         );
         total = total + exit_loss;
     }
-    let loss_val = total.clone().into_scalar().elem::<f64>();
+    let loss_val = total
+        .clone()
+        .into_data()
+        .convert::<f64>()
+        .as_slice::<f64>()
+        .expect("rl microbatch total loss should be readable as f64")[0];
     let grads = total.backward();
     let grads = GradientsParams::from_grads(grads, &model);
     let model = optimizer.step(cfg.lr, model, grads);
@@ -683,6 +707,98 @@ mod tests {
     }
 
     #[test]
+    fn delta_q_batch_stats_prefers_cached_target_presence() {
+        let device = Default::default();
+        let mut targets = make_dummy_targets::<AB>(&device, 3);
+        targets.delta_q_target = Some(Tensor::<AB, 2>::zeros([3, 46], &device));
+        targets.delta_q_mask = Some(Tensor::<AB, 2>::zeros([3, 46], &device));
+        targets.target_presence = Some(crate::training::head_gates::TargetPresence {
+            counts: [0; crate::training::head_gates::NUM_ADVANCED_HEADS],
+            delta_q_actions_present: 5,
+            batch_size: 3,
+        });
+        targets
+            .target_presence
+            .as_mut()
+            .expect("cached target presence")
+            .counts[AdvancedHead::DeltaQ.index()] = 2;
+
+        let stats = DeltaQBatchStats::from_targets(&targets).expect("delta_q stats");
+        assert_eq!(stats.examples_present, 2);
+        assert_eq!(stats.actions_present, 5);
+        assert_eq!(stats.examples_absent, 1);
+    }
+
+    #[test]
+    fn delta_q_batch_stats_uses_cached_presence_from_selfplay_batches() {
+        let device = Default::default();
+        let mut trajectory = hydra_core::arena::Trajectory::new(1, 42);
+        trajectory.final_scores = [32000, 24000, 22000, 22000];
+        let mut pi_old_a = [0.0f32; 46];
+        let mut pi_old_b = [0.0f32; 46];
+        let mut legal_mask_a = [false; 46];
+        let mut legal_mask_b = [false; 46];
+        pi_old_a[5] = 1.0;
+        pi_old_b[9] = 1.0;
+        legal_mask_a[5] = true;
+        legal_mask_a[6] = true;
+        legal_mask_b[9] = true;
+        legal_mask_b[10] = true;
+        trajectory.steps.push(hydra_core::arena::TrajectoryStep {
+            obs: [5.0; crate::config::INPUT_CHANNELS * 34],
+            action: 5,
+            pi_old: pi_old_a,
+            legal_mask: legal_mask_a,
+            exit_label: Some(
+                hydra_core::arena::TrajectoryExitLabel::from_slices(&pi_old_a, &pi_old_a)
+                    .expect("valid exit label"),
+            ),
+            delta_q_label: Some(
+                hydra_core::arena::TrajectoryDeltaQLabel::from_slices(&pi_old_a, &pi_old_a)
+                    .expect("valid delta q label"),
+            ),
+            reward: 0.2,
+            done: false,
+            player_id: 0,
+            game_id: 0,
+            turn: 0,
+            temperature: 1.0,
+        });
+        trajectory.steps.push(hydra_core::arena::TrajectoryStep {
+            obs: [9.0; crate::config::INPUT_CHANNELS * 34],
+            action: 9,
+            pi_old: pi_old_b,
+            legal_mask: legal_mask_b,
+            exit_label: Some(
+                hydra_core::arena::TrajectoryExitLabel::from_slices(&pi_old_b, &pi_old_b)
+                    .expect("valid exit label"),
+            ),
+            delta_q_label: Some(
+                hydra_core::arena::TrajectoryDeltaQLabel::from_slices(&pi_old_b, &pi_old_b)
+                    .expect("valid delta q label"),
+            ),
+            reward: -0.1,
+            done: true,
+            player_id: 1,
+            game_id: 0,
+            turn: 1,
+            temperature: 1.0,
+        });
+
+        let batch = crate::selfplay_batch::trajectories_to_rl_batch::<AB>(
+            &[trajectory],
+            &[vec![0.3, -0.2]],
+            &crate::selfplay_batch::default_gae_config(),
+            &device,
+        );
+
+        let stats = DeltaQBatchStats::from_targets(&batch.targets).expect("delta_q stats");
+        assert_eq!(stats.examples_present, 2);
+        assert_eq!(stats.actions_present, 2);
+        assert_eq!(stats.examples_absent, 0);
+    }
+
+    #[test]
     fn rl_step_with_controller_keeps_delta_q_off_by_default() {
         let device = Default::default();
         let model = HydraModelConfig::new(2)
@@ -756,7 +872,7 @@ mod tests {
         config.min_sparse_spp = 1.0;
         config.warmup_steps = 1;
         let mut controller = HeadActivationController::new(config);
-        let presence = extract_target_presence(&batch.targets);
+        let presence = borrow_or_extract_target_presence(&batch.targets);
         controller.record_batch(&presence);
         controller.try_activate(AdvancedHead::DeltaQ);
 
@@ -810,6 +926,92 @@ mod tests {
         assert!(
             loss.is_finite(),
             "microbatched RL loss should be finite: {loss}"
+        );
+    }
+
+    #[test]
+    fn test_rl_step_microbatched_matches_single_chunk_average() {
+        let device = Default::default();
+        let model = HydraModelConfig::new(2)
+            .with_hidden_channels(32)
+            .with_se_bottleneck(8)
+            .with_num_groups(4)
+            .init::<AB>(&device);
+        let expected_model = model.clone();
+        let obs = Tensor::<AB, 3>::zeros([4, crate::config::INPUT_CHANNELS, 34], &device);
+        let batch = RlBatch {
+            obs: obs.clone(),
+            actions: Tensor::<AB, 1, Int>::from_ints(&[0i32, 1, 2, 3][..], &device),
+            pi_old: Tensor::<AB, 1>::from_floats([0.5, 0.3, 0.4, 0.6], &device),
+            advantages: Tensor::<AB, 1>::from_floats([1.0, -0.5, 0.3, -0.8], &device),
+            base_logits: Tensor::<AB, 2>::zeros([4, 46], &device),
+            targets: make_dummy_targets::<AB>(&device, 4),
+            exit_target: None,
+            exit_mask: None,
+        };
+        let cfg = RlConfig {
+            tau_drda: 4.0,
+            ach_cfg: AchConfig::new(),
+            lr: 1e-4,
+            exit_weight: 0.5,
+            aux_weight: 0.1,
+            microbatch_size: Some(2),
+        };
+        let loss_fn = HydraLoss::<AB>::new(HydraLossConfig::new());
+        let adv = batch.advantages.clone();
+        let adv_mean = adv.clone().mean();
+        let adv_var = (adv.clone() - adv_mean.clone()).powf_scalar(2.0).mean();
+        let adv_std = (adv_var + 1e-8).sqrt();
+        let advantages_normed = (adv - adv_mean) / adv_std;
+        let mut expected_total = 0.0f64;
+        let mut expected_chunks = 0usize;
+        let mut start = 0usize;
+        while start < batch.batch_size() {
+            let end =
+                (start + cfg.microbatch_size.expect("microbatch size")).min(batch.batch_size());
+            let mb_batch = batch.slice(start, end);
+            #[allow(clippy::single_range_in_vec_init)]
+            let mb_adv = advantages_normed.clone().slice([start..end]);
+            let output = expected_model.forward_active(mb_batch.obs.clone(), &loss_fn.config);
+            let combined = drda::combined_logits(
+                mb_batch.base_logits.clone(),
+                output.policy_logits.clone(),
+                cfg.tau_drda,
+            );
+            let ach_loss = ach_policy_loss(
+                combined,
+                mb_batch.targets.legal_mask.clone(),
+                mb_batch.actions.clone(),
+                mb_batch.pi_old.clone(),
+                mb_adv,
+                &cfg.ach_cfg,
+            );
+            let aux = loss_fn.total_loss(&output, &mb_batch.targets);
+            let mut chunk_total = ach_loss + aux.total * cfg.aux_weight;
+            if let (Some(exit_target), Some(exit_mask)) =
+                (&mb_batch.exit_target, &mb_batch.exit_mask)
+            {
+                let exit_loss = crate::training::exit::exit_loss(
+                    output.policy_logits,
+                    exit_target.clone(),
+                    exit_mask.clone(),
+                    cfg.effective_exit_weight(3, 1.0),
+                );
+                chunk_total = chunk_total + exit_loss;
+            }
+            expected_total += chunk_total.into_scalar().elem::<f64>();
+            expected_chunks += 1;
+            start = end;
+        }
+        let expected_average = expected_total / expected_chunks as f64;
+
+        let mut micro_optimizer = AdamConfig::new().init();
+        let (_, micro_loss) = rl_step(model, &batch, &cfg, &loss_fn, &mut micro_optimizer);
+
+        assert!(micro_loss.is_finite());
+        assert!(
+            (micro_loss - expected_average).abs() < 1e-6,
+            "expected microbatched loss {micro_loss} to equal arithmetic chunk average {expected_average}"
         );
     }
 

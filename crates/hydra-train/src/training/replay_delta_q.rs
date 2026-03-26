@@ -18,7 +18,7 @@ use crate::training::delta_q_validation::DeltaQValidationReport;
 use crate::training::exit::ExitConfig;
 use crate::training::live_exit::{
     RootDecisionContext, SelfPlayExitAdapter, budget_from_legal_count, obs_hash,
-    try_search_labels_from_context,
+    try_search_labels_from_context_with_batched_child_values,
 };
 use crate::training::replay_exit::{
     ReplayDecisionKey, copy_label_arrays, legal_mask_digest_from_f32, read_jsonl_records,
@@ -162,6 +162,8 @@ pub fn generate_replay_delta_q_records<B: Backend>(
     let mut safety = std::array::from_fn(|_| SafetyInfo::default());
     let mut encoder = hydra_core::encoder::ObservationEncoder::new();
     let mut adapter = SelfPlayExitAdapter::new();
+    let mut flat_buf = Vec::new();
+    let mut values_buf = Vec::new();
     let mut records = Vec::new();
     let mut report = DeltaQValidationReport::new();
 
@@ -171,7 +173,7 @@ pub fn generate_replay_delta_q_records<B: Backend>(
             let ctx = RootDecisionContext {
                 obs_encoded: decision.obs_encoded,
                 legal_mask: decision.legal_mask,
-                policy_logits: model.policy_value_cpu(&decision.obs_encoded, device).0,
+                policy_logits: model.policy_cpu(&decision.obs_encoded, device),
                 player_id: actor as u8,
             };
             let key = ReplayDecisionKey {
@@ -183,13 +185,16 @@ pub fn generate_replay_delta_q_records<B: Backend>(
 
             report.total_states += 1;
 
-            let labels = try_search_labels_from_context(
+            let labels = try_search_labels_from_context_with_batched_child_values(
                 &state,
                 &decision.obs,
                 &ctx,
                 &safety[actor],
                 exit_cfg,
-                &mut |obs_encoded| model.policy_value_cpu(obs_encoded, device),
+                &mut |child_obs| {
+                    model.fill_batch_value_cpu(child_obs, device, &mut flat_buf, &mut values_buf);
+                    values_buf.clone()
+                },
                 &mut adapter,
             );
 

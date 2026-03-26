@@ -252,6 +252,7 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
         opp_next_target: targets.opp_next_target.clone(),
         score_pdf_target: targets.score_pdf_target.clone(),
         score_cdf_target: targets.score_cdf_target.clone(),
+        target_presence: targets.target_presence.clone(),
     };
     match state.phase {
         TrainingPhase::BenchmarkGates => Ok((
@@ -405,6 +406,7 @@ mod tests {
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
+            target_presence: None,
         }
     }
 
@@ -651,7 +653,8 @@ mod tests {
         gate_cfg.min_sparse_spp = 1.0;
         gate_cfg.warmup_steps = 1;
         let mut controller = HeadActivationController::new(gate_cfg);
-        let presence = crate::training::head_gates::extract_target_presence(&batch.targets);
+        let presence =
+            crate::training::head_gates::borrow_or_extract_target_presence(&batch.targets);
         controller.record_batch(&presence);
         controller.try_activate(AdvancedHead::DeltaQ);
 

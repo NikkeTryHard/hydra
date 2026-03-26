@@ -2,7 +2,11 @@ use std::time::Instant;
 
 use colored::Colorize;
 
-use hydra_train::selfplay::generate_self_play_rl_batch;
+use hydra_train::preflight::{
+    PROFILING_STAGE_LOGGING, PROFILING_STAGE_RL_STEP, PROFILING_STAGE_SELF_PLAY,
+    PROFILING_STAGE_TRAIN, ProfilingEnvelope,
+};
+use hydra_train::selfplay::{CooperativeSelfPlayRequest, generate_self_play_rl_batch_reuse};
 use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{AdvancedHead, HeadState};
@@ -11,9 +15,12 @@ use hydra_train::training::orchestrator::{
     rl_phase_train_step_with_controller,
 };
 
-use super::artifacts::{RlArtifactPaths, append_rl_step_log, save_latest_rl_checkpoint_and_state};
+use super::artifacts::{
+    RlArtifactPaths, append_rl_step_log_to_writer, save_latest_rl_checkpoint_and_state,
+};
 use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime};
 use super::config::RlTrainConfig;
+use super::nvtx;
 use super::presentation::{format_status_line, timestamped};
 use super::progress::RlStepLogEntry;
 use super::resume::{RlRuntimeResumeContract, build_rl_resume_state};
@@ -93,6 +100,7 @@ struct RlStepEntryInputs<'a> {
     total_games: u64,
     total_samples: u64,
     delta_q_state: HeadState,
+    profiling: Option<ProfilingEnvelope>,
 }
 
 fn make_rl_step_entry(inputs: RlStepEntryInputs<'_>) -> RlStepLogEntry {
@@ -107,6 +115,7 @@ fn make_rl_step_entry(inputs: RlStepEntryInputs<'_>) -> RlStepLogEntry {
         total_games: inputs.total_games,
         total_samples: inputs.total_samples,
         delta_q_state: format!("{:?}", inputs.delta_q_state),
+        profiling: inputs.profiling,
     }
 }
 
@@ -161,6 +170,7 @@ struct RlStepFinalizeContext<'a> {
     total_steps: usize,
     batch_size: usize,
     report: PhaseTrainReport,
+    profiling: Option<ProfilingEnvelope>,
 }
 
 fn finalize_rl_step_side_effects(
@@ -168,6 +178,7 @@ fn finalize_rl_step_side_effects(
     rebase_tracker: &mut RebaseTracker,
     context: RlStepFinalizeContext<'_>,
 ) -> Result<bool, String> {
+    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
     runtime.global_step += 1;
     advance_rl_pipeline_state(
         &mut runtime.pipeline_state,
@@ -179,19 +190,7 @@ fn finalize_rl_step_side_effects(
 
     let delta_q_state = runtime.head_controller.head_state(AdvancedHead::DeltaQ);
     let loss_value = context.report.loss.unwrap_or(0.0);
-    let step_entry = make_rl_step_entry(RlStepEntryInputs {
-        global_step: runtime.global_step,
-        phase: &runtime.pipeline_state.phase,
-        loss: loss_value,
-        effective_lr: context.report.effective_lr,
-        exit_weight: context.report.exit_weight.unwrap_or(0.0),
-        games_per_batch: context.rl_config.games_per_batch,
-        samples_in_batch: context.batch_size,
-        total_games: runtime.pipeline_state.total_games,
-        total_samples: runtime.pipeline_state.total_samples,
-        delta_q_state,
-    });
-    append_rl_step_log(&context.artifacts.step_log_path, &step_entry)?;
+    let logging_started = Instant::now();
 
     if let Some(tb) = runtime.tb.as_mut() {
         let step = runtime.global_step as i64;
@@ -252,6 +251,33 @@ fn finalize_rl_step_side_effects(
         )?;
     }
 
+    let logging_seconds = logging_started.elapsed().as_secs_f64();
+    let profiling = context.profiling.as_ref().map(|profiling| {
+        let mut profiling = profiling.clone();
+        profiling.merge_assign(&ProfilingEnvelope::from_children(
+            profiling.stage.clone(),
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+        profiling
+    });
+    let step_entry = make_rl_step_entry(RlStepEntryInputs {
+        global_step: runtime.global_step,
+        phase: &runtime.pipeline_state.phase,
+        loss: loss_value,
+        effective_lr: context.report.effective_lr,
+        exit_weight: context.report.exit_weight.unwrap_or(0.0),
+        games_per_batch: context.rl_config.games_per_batch,
+        samples_in_batch: context.batch_size,
+        total_games: runtime.pipeline_state.total_games,
+        total_samples: runtime.pipeline_state.total_samples,
+        delta_q_state,
+        profiling,
+    });
+    append_rl_step_log_to_writer(&mut runtime.step_log, &step_entry)?;
+
     Ok(should_stop_rl_session(
         runtime.global_step,
         context.session_start_global_step,
@@ -290,41 +316,62 @@ pub(super) fn run_rl_training_loop(
     let distill_cfg = DistillConfig::fast_distill();
 
     while runtime.global_step < total_steps {
+        let _rl_step_scope = nvtx::scope(PROFILING_STAGE_RL_STEP);
+        let step_started = Instant::now();
         let elapsed_secs = runtime.run_start.elapsed().as_secs();
-        let plan = maintenance_plan(
-            &runtime.pipeline_state,
-            &rebase_tracker,
-            &distill_state,
-            &distill_cfg,
-            elapsed_secs,
-            0.05,
-        );
-        let live_exit_cfg = live_exit_config_from_plan(&plan);
-        let base_seed = base_seed_for_step(config.seed, runtime.global_step);
-        let game_seeds = game_seeds_for_batch(base_seed, rl_config.games_per_batch);
-        let batch = generate_self_play_rl_batch(
-            &game_seeds,
-            rl_config.temperature,
-            base_seed,
-            &runtime.model,
-            &train_device,
-            &gae_config,
-            live_exit_cfg,
-        );
+        let batch = {
+            let _self_play_scope = nvtx::scope(PROFILING_STAGE_SELF_PLAY);
+            let plan = maintenance_plan(
+                &runtime.pipeline_state,
+                &rebase_tracker,
+                &distill_state,
+                &distill_cfg,
+                elapsed_secs,
+                0.05,
+            );
+            let live_exit_cfg = live_exit_config_from_plan(&plan);
+            let base_seed = base_seed_for_step(config.seed, runtime.global_step);
+            let game_seeds = game_seeds_for_batch(base_seed, rl_config.games_per_batch);
+            generate_self_play_rl_batch_reuse(
+                &mut runtime.self_play_coordinator,
+                CooperativeSelfPlayRequest {
+                    game_seeds: &game_seeds,
+                    temperature: rl_config.temperature,
+                    rng_seed: base_seed,
+                    live_exit_cfg,
+                },
+                &runtime.model,
+                &train_device,
+                &gae_config,
+            )
+        };
+        let self_play_seconds = step_started.elapsed().as_secs_f64();
 
         runtime.head_controller.try_activate(AdvancedHead::DeltaQ);
-        let (model, report) = rl_phase_train_step_with_controller(
-            &runtime.pipeline_state,
-            runtime.model,
-            &batch,
-            &rl_step_cfg,
-            &loss_fn,
-            &mut runtime.optimizer,
-            Some(&mut runtime.head_controller),
-        )
-        .map_err(|err| format!("rl phase train step failed: {err}"))?;
+        let train_started = Instant::now();
+        let (model, report) = {
+            let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
+            rl_phase_train_step_with_controller(
+                &runtime.pipeline_state,
+                runtime.model,
+                &batch,
+                &rl_step_cfg,
+                &loss_fn,
+                &mut runtime.optimizer,
+                Some(&mut runtime.head_controller),
+            )
+            .map_err(|err| format!("rl phase train step failed: {err}"))?
+        };
+        let train_seconds = train_started.elapsed().as_secs_f64();
         runtime.model = model;
         runtime.head_controller.tick_warmup();
+        let profiling = ProfilingEnvelope::from_children(
+            PROFILING_STAGE_RL_STEP,
+            vec![
+                ProfilingEnvelope::leaf(PROFILING_STAGE_SELF_PLAY, self_play_seconds),
+                ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, train_seconds),
+            ],
+        );
 
         if finalize_rl_step_side_effects(
             &mut runtime,
@@ -338,6 +385,7 @@ pub(super) fn run_rl_training_loop(
                 total_steps,
                 batch_size: batch.batch_size(),
                 report,
+                profiling: Some(profiling),
             },
         )? {
             break;
@@ -381,6 +429,7 @@ mod tests {
     use serde_json::Value;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tboard::SummaryReader;
 
@@ -402,6 +451,13 @@ mod tests {
         let raw = fs::read_to_string(path).expect("read jsonl file");
         let line = raw.lines().next().expect("jsonl entry line");
         serde_json::from_str(line).expect("parse jsonl entry")
+    }
+
+    fn modified_time(path: &Path) -> SystemTime {
+        fs::metadata(path)
+            .expect("read file metadata")
+            .modified()
+            .expect("read file modified time")
     }
 
     fn tensorboard_tags_from_dir(path: &Path) -> Vec<String> {
@@ -477,6 +533,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: Some(64),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -737,6 +794,7 @@ mod tests {
             total_games: 128,
             total_samples: 1024,
             delta_q_state: HeadState::Warmup,
+            profiling: Some(ProfilingEnvelope::leaf(PROFILING_STAGE_RL_STEP, 0.75)),
         });
 
         assert_eq!(entry.global_step, 12);
@@ -749,6 +807,10 @@ mod tests {
         assert_eq!(entry.total_games, 128);
         assert_eq!(entry.total_samples, 1024);
         assert_eq!(entry.delta_q_state, "Warmup");
+        assert_eq!(
+            entry.profiling.as_ref().map(|p| p.stage.as_str()),
+            Some("rl_step")
+        );
 
         let message = format_rl_progress_message(12, 0.25, HeadState::Warmup);
         assert!(message.contains("RL step"));
@@ -770,6 +832,7 @@ mod tests {
             total_games: 12,
             total_samples: 120,
             delta_q_state: HeadState::Active,
+            profiling: None,
         });
 
         assert_eq!(entry.phase, "DrdaAchSelfPlay");
@@ -794,6 +857,7 @@ mod tests {
             total_games: 2,
             total_samples: 8,
             delta_q_state: HeadState::Off,
+            profiling: None,
         });
 
         assert_eq!(entry.phase, "BcWarmStart");
@@ -867,13 +931,119 @@ mod tests {
             .expect("zero-step RL run should still finalize cleanly");
 
         assert!(latest_state_path.exists());
-        assert!(!latest_step_log_path.exists());
+        assert!(latest_step_log_path.exists());
+        assert!(
+            fs::read_to_string(&latest_step_log_path)
+                .expect("read empty RL step log")
+                .is_empty()
+        );
 
         let state_yaml =
             fs::read_to_string(&latest_state_path).expect("latest RL state should exist");
         assert!(state_yaml.contains("schema_version: 1"));
         assert!(state_yaml.contains(&format!("global_step: {expected_global_step}")));
 
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn run_rl_training_loop_does_not_rewrite_latest_checkpoint_after_boundary_save() {
+        let output_dir = unique_temp_dir("final-save-dedupe");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let mut config = dummy_rl_config(output_dir.clone());
+        config.log_every_n_steps = 1;
+        config.checkpoint_every_n_steps = 1;
+        config.max_train_steps = Some(1);
+        fs::create_dir_all(config.data_dir.clone()).expect("create RL data dir");
+        let rl_cfg = config.rl.clone().expect("rl config");
+
+        let (bootstrap, mut runtime) =
+            initialize_rl_training_bootstrap(&output_dir, config, rl_cfg).expect("rl bootstrap");
+        let latest_state_path = bootstrap.artifacts.latest_state_path.clone();
+        let latest_model_base = bootstrap.artifacts.latest_model_base.clone();
+        let latest_optimizer_base = bootstrap.artifacts.latest_optimizer_base.clone();
+
+        let latest_model_path = latest_model_base.with_extension("mpk");
+        let latest_meta_path = latest_model_base.with_extension("meta.json");
+        let latest_optimizer_path = latest_optimizer_base.with_extension("bin");
+        let mut rebase_tracker = RebaseTracker::default_phase2();
+
+        runtime.head_controller.try_activate(AdvancedHead::DeltaQ);
+        runtime.head_controller.tick_warmup();
+
+        finalize_rl_step_side_effects(
+            &mut runtime,
+            &mut rebase_tracker,
+            RlStepFinalizeContext {
+                artifacts: &bootstrap.artifacts,
+                config: &bootstrap.config,
+                rl_config: &bootstrap.rl_config,
+                current_runtime: bootstrap.current_runtime,
+                session_start_global_step: bootstrap.session_start_global_step,
+                total_steps: bootstrap.total_steps,
+                batch_size: 6,
+                report: synthetic_phase_report(Some(0.75), Some(0.25)),
+                profiling: Some(ProfilingEnvelope::leaf(PROFILING_STAGE_RL_STEP, 1.5)),
+            },
+        )
+        .expect("step side effects should succeed");
+
+        let model_before = modified_time(&latest_model_path);
+        let meta_before = modified_time(&latest_meta_path);
+        let optimizer_before = modified_time(&latest_optimizer_path);
+        let state_before = modified_time(&latest_state_path);
+        thread::sleep(std::time::Duration::from_millis(1100));
+
+        run_rl_training_loop(bootstrap, runtime).expect("single-step RL run should succeed");
+
+        let state = read_rl_resume_state(&latest_state_path).expect("read latest RL state");
+        assert_eq!(state.global_step, 1);
+        assert!(latest_model_path.exists());
+        assert!(latest_meta_path.exists());
+        assert!(latest_optimizer_path.exists());
+        assert_eq!(modified_time(&latest_model_path), model_before);
+        assert!(modified_time(&latest_meta_path) > meta_before);
+        assert_eq!(modified_time(&latest_optimizer_path), optimizer_before);
+        assert!(modified_time(&latest_state_path) > state_before);
+
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn finalize_rl_step_side_effects_records_logging_scope_order() {
+        let output_dir = unique_temp_dir("nvtx_rl_logging_scope");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let mut config = helper_test_rl_config(output_dir.clone(), false);
+        config.log_every_n_steps = 99;
+        config.checkpoint_every_n_steps = 99;
+        config.max_train_steps = Some(2);
+        fs::create_dir_all(config.data_dir.clone()).expect("create RL data dir");
+        let rl_cfg = config.rl.clone().expect("rl config");
+
+        let (bootstrap, mut runtime) =
+            initialize_rl_training_bootstrap(&output_dir, config, rl_cfg).expect("rl bootstrap");
+        let mut rebase_tracker = RebaseTracker::default_phase2();
+
+        let (_, events) = crate::nvtx::with_test_recorder(|| {
+            finalize_rl_step_side_effects(
+                &mut runtime,
+                &mut rebase_tracker,
+                RlStepFinalizeContext {
+                    artifacts: &bootstrap.artifacts,
+                    config: &bootstrap.config,
+                    rl_config: &bootstrap.rl_config,
+                    current_runtime: bootstrap.current_runtime,
+                    session_start_global_step: bootstrap.session_start_global_step,
+                    total_steps: bootstrap.total_steps,
+                    batch_size: 6,
+                    report: synthetic_phase_report(Some(0.75), Some(0.25)),
+                    profiling: Some(ProfilingEnvelope::leaf(PROFILING_STAGE_RL_STEP, 1.5)),
+                },
+            )
+            .expect("finalize RL step side effects should succeed");
+        });
+
+        assert_eq!(events, vec!["push:logging", "pop:logging"]);
         cleanup_dir(&output_dir);
     }
 
@@ -911,6 +1081,7 @@ mod tests {
                 total_steps: bootstrap.total_steps,
                 batch_size: 6,
                 report: synthetic_phase_report(Some(0.75), Some(0.25)),
+                profiling: Some(ProfilingEnvelope::leaf(PROFILING_STAGE_RL_STEP, 1.5)),
             },
         )
         .expect("step side effects should succeed");
@@ -933,6 +1104,7 @@ mod tests {
         assert_eq!(entry["samples_in_batch"].as_u64(), Some(6));
         assert_eq!(entry["total_samples"].as_u64(), Some(6));
         assert!(entry["delta_q_state"].as_str().is_some());
+        assert_eq!(entry["profiling"]["stage"].as_str(), Some("rl_step"));
 
         let state = read_rl_resume_state(&latest_state_path).expect("read latest RL state");
         assert_eq!(state.global_step, 1);
@@ -944,6 +1116,40 @@ mod tests {
         assert!(latest_model_base.with_extension("meta.json").exists());
         assert!(latest_optimizer_base.with_extension("bin").exists());
 
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn run_rl_training_loop_records_rl_step_scope_order() {
+        let output_dir = unique_temp_dir("nvtx_rl_step_scope");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let mut config = dummy_rl_config(output_dir.clone());
+        config.log_every_n_steps = 99;
+        config.checkpoint_every_n_steps = 99;
+        config.max_train_steps = Some(1);
+        fs::create_dir_all(config.data_dir.clone()).expect("create RL data dir");
+        let rl_cfg = config.rl.clone().expect("rl config");
+
+        let (bootstrap, runtime) =
+            initialize_rl_training_bootstrap(&output_dir, config, rl_cfg).expect("rl bootstrap");
+
+        let (_, events) = crate::nvtx::with_test_recorder(|| {
+            run_rl_training_loop(bootstrap, runtime).expect("single-step RL run should succeed");
+        });
+
+        assert_eq!(
+            events,
+            vec![
+                "push:rl_step",
+                "push:self_play",
+                "pop:self_play",
+                "push:train",
+                "pop:train",
+                "push:logging",
+                "pop:logging",
+                "pop:rl_step",
+            ]
+        );
         cleanup_dir(&output_dir);
     }
 
@@ -981,6 +1187,7 @@ mod tests {
                 total_steps: bootstrap.total_steps,
                 batch_size: 7,
                 report: synthetic_phase_report(None, None),
+                profiling: None,
             },
         )
         .expect("tensorboard step side effects should succeed");

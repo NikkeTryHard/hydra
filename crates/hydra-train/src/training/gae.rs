@@ -90,6 +90,16 @@ pub fn compute_per_player_gae(
     advantages
 }
 
+pub fn compute_single_player_gae(
+    rewards: &[f32],
+    values: &[f32],
+    dones: &[bool],
+    gamma: f32,
+    lambda: f32,
+) -> Vec<f32> {
+    compute_gae(rewards, values, dones, gamma, lambda).0
+}
+
 pub fn max_advantage(advantages: &[f32]) -> f32 {
     advantages.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
 }
