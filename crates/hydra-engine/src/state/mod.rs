@@ -378,6 +378,9 @@ impl GameState {
             observer_hand: self.players[pid].hand_slice(),
             melds: std::array::from_fn(|i| self.players[i].melds_slice()),
             discards: std::array::from_fn(|i| self.players[i].discards_slice()),
+            tsumogiri_flags: std::array::from_fn(|i| {
+                &self.players[i].discard_from_hand[..self.players[i].discard_len as usize]
+            }),
             dora_indicators: self.wall.dora_indicator_slice(),
             scores: std::array::from_fn(|i| self.players[i].score),
             riichi_declared: std::array::from_fn(|i| self.players[i].riichi_declared),

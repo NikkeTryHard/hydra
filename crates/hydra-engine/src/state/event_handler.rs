@@ -18,12 +18,38 @@ fn remove_replay_hand_tile_by_mjai(player: &mut super::player::PlayerState, tile
         player.hand_slice().iter().position(|&t| t == tile)
     } else {
         let tile_type = tile / 4;
-        player.hand_slice().iter().position(|&t| t / 4 == tile_type)
+        player
+            .hand_slice()
+            .iter()
+            .position(|&t| t / 4 == tile_type && t != tile_type * 4)
+            .or_else(|| player.hand_slice().iter().position(|&t| t / 4 == tile_type))
     };
 
     if let Some(idx) = idx {
         player.remove_hand(idx);
     }
+}
+
+fn alloc_replay_hand_tile_by_mjai(player: &super::player::PlayerState, mjai: &str) -> u8 {
+    let tile = parse_mjai_tile(mjai);
+    if mjai_tile_has_explicit_copy(mjai) {
+        return tile;
+    }
+
+    let tile_type = tile / 4;
+    let copy_order: &[u8] = if matches!(tile_type, 4 | 13 | 22) {
+        &[1, 2, 3, 0]
+    } else {
+        &[0, 1, 2, 3]
+    };
+    for &copy in copy_order {
+        let candidate = tile_type * 4 + copy;
+        if !player.hand_slice().contains(&candidate) {
+            return candidate;
+        }
+    }
+
+    tile
 }
 
 fn alloc_start_kyoku_tile(tile_counts: &mut [u8; 34], tile_str: &str) -> u8 {
@@ -124,7 +150,7 @@ impl GameStateEventHandler for GameState {
                 self.is_done = false;
             }
             MjaiEvent::Tsumo { actor, pai } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = alloc_replay_hand_tile_by_mjai(&self.players[actor], &pai);
                 self.current_player = actor as u8;
                 self.drawn_tile = Some(tile);
                 sorted_insert_arr(
@@ -135,6 +161,7 @@ impl GameStateEventHandler for GameState {
                 if self.wall.tile_count > 0 {
                     self.wall.draw_back();
                 }
+                self.players[actor].clear_forbidden();
                 self.phase = Phase::WaitAct;
                 self.set_single_active_player(actor as u8);
                 self.needs_tsumo = false;
@@ -171,6 +198,8 @@ impl GameStateEventHandler for GameState {
                 self.phase = if self.active_player_count > 0 {
                     Phase::WaitResponse
                 } else {
+                    self.current_player = (actor_u8 + 1) % 4;
+                    self.set_single_active_player(self.current_player);
                     Phase::WaitAct
                 };
                 self.needs_tsumo = true;
@@ -1234,6 +1263,79 @@ mod tests {
     }
 
     #[test]
+    fn replay_tsumo_prefers_a_hand_unique_non_red_copy_for_plain_tiles() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+        state.apply_mjai_event(start_kyoku_with_tehais([
+            vec![
+                "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p",
+            ],
+            vec![
+                "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S", "W", "N",
+            ],
+            vec![
+                "P", "F", "C", "1m", "1m", "2m", "2m", "3m", "3m", "4m", "4m", "5m", "5m",
+            ],
+            vec![
+                "6p", "6p", "7p", "7p", "8p", "8p", "9p", "9p", "1s", "1s", "2s", "2s", "3s",
+            ],
+        ]));
+
+        let existing_4p = parse_mjai_tile("4p");
+        assert!(state.players[0].hand_slice().contains(&existing_4p));
+
+        state.apply_mjai_event(MjaiEvent::Tsumo {
+            actor: 0,
+            pai: "4p".to_string(),
+        });
+
+        assert_ne!(state.drawn_tile, Some(existing_4p));
+        assert_eq!(state.drawn_tile.map(|t| t / 4), Some(existing_4p / 4));
+        let four_p_copies = state.players[0]
+            .hand_slice()
+            .iter()
+            .filter(|&&tile| tile / 4 == existing_4p / 4)
+            .count();
+        assert_eq!(four_p_copies, 2);
+    }
+
+    #[test]
+    fn replay_tsumo_clears_forbidden_discards_like_live_draw_path() {
+        let mut rule = GameRule::default_tenhou();
+        rule.kuikae_forbidden = true;
+        let mut state = GameState::new(0, true, Some(7), 0, rule);
+        state.apply_mjai_event(start_kyoku_with_tehais([
+            vec![
+                "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p",
+            ],
+            vec![
+                "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p", "5p",
+            ],
+            vec![
+                "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S", "W", "N",
+            ],
+            vec![
+                "1m", "1m", "1p", "1p", "1s", "1s", "E", "E", "S", "S", "W", "W", "N",
+            ],
+        ]));
+
+        state.apply_mjai_event(MjaiEvent::Chi {
+            actor: 1,
+            target: 0,
+            pai: "1m".to_string(),
+            consumed: vec!["2m".to_string(), "3m".to_string()],
+        });
+        assert!(!state.players[1].forbidden_slice().is_empty());
+
+        state.apply_mjai_event(MjaiEvent::Tsumo {
+            actor: 1,
+            pai: "6p".to_string(),
+        });
+
+        assert!(state.players[1].forbidden_slice().is_empty());
+    }
+
+    #[test]
     fn replay_dahai_clears_riichi_stage_after_declared_discard() {
         let rule = GameRule::default_tenhou();
         let mut state = GameState::new(0, true, Some(7), 0, rule);
@@ -1248,6 +1350,41 @@ mod tests {
 
         assert!(state.players[2].riichi_declared);
         assert!(!state.players[2].riichi_stage);
+    }
+
+    #[test]
+    fn replay_dahai_without_claims_matches_live_wait_act_turn_transition() {
+        let rule = GameRule::default_tenhou();
+        let mut replay = GameState::new(0, true, Some(7), 0, rule);
+        replay.apply_mjai_event(start_kyoku_with_tehais([
+            vec![
+                "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p",
+            ],
+            vec![
+                "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S", "W", "N",
+            ],
+            vec![
+                "P", "F", "C", "1m", "1m", "2m", "2m", "3m", "3m", "4m", "4m", "5m", "5m",
+            ],
+            vec![
+                "6p", "6p", "7p", "7p", "8p", "8p", "9p", "9p", "1s", "1s", "2s", "2s", "3s",
+            ],
+        ]));
+        replay.apply_mjai_event(MjaiEvent::Tsumo {
+            actor: 0,
+            pai: "5p".to_string(),
+        });
+        replay.apply_mjai_event(MjaiEvent::Dahai {
+            actor: 0,
+            pai: "4p".to_string(),
+            tsumogiri: false,
+        });
+
+        assert_eq!(replay.phase, Phase::WaitAct);
+        assert_eq!(replay.current_player, 1);
+        assert_eq!(replay.active_player_slice(), &[1]);
+        assert!(replay.drawn_tile.is_none());
+        assert!(replay.needs_tsumo);
     }
 
     #[test]
