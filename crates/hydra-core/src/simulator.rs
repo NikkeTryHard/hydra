@@ -4,10 +4,6 @@
 //! in parallel using a dedicated rayon ThreadPool.
 
 use rayon::prelude::*;
-use riichienv_core::action::{Action, Phase};
-use riichienv_core::rule::GameRule;
-use riichienv_core::state::GameState;
-
 /// Configuration for a batch simulation run.
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -51,71 +47,21 @@ pub struct GameResult {
 /// Used for benchmarking throughput -- real training uses NN policy.
 #[cfg(test)]
 fn simulate_single_game(seed: Option<u64>, game_mode: u8) -> GameResult {
-    let mut legal_buf = Vec::with_capacity(46);
-    simulate_single_game_with_buf(seed, game_mode, &mut legal_buf)
+    let mut runner = crate::game_loop::GameRunner::new(None, game_mode);
+    simulate_single_game_with_runner(&mut runner, seed)
 }
 
-/// Simulate a single game, reusing the provided legal-action buffer.
-fn simulate_single_game_with_buf(
+fn simulate_single_game_with_runner(
+    runner: &mut crate::game_loop::GameRunner,
     seed: Option<u64>,
-    game_mode: u8,
-    legal_buf: &mut Vec<Action>,
 ) -> GameResult {
-    let rule = GameRule::default_tenhou();
-    let mut state = GameState::new(game_mode, true, seed, 0, rule);
-    let mut total_actions: u32 = 0;
-    let mut rounds: u32 = 1; // Game starts in round 1.
-
-    // Safety limit to prevent infinite loops from engine bugs.
-    const MAX_STEPS: u32 = 10_000;
-
-    let mut actions: [Option<Action>; 4];
-
-    while !state.is_done && total_actions < MAX_STEPS {
-        // When a round ends, step() auto-initializes the next round.
-        if state.needs_initialize_next_round {
-            state.step_unchecked(&[None; 4]);
-            rounds += 1;
-            continue;
-        }
-
-        actions = [None; 4];
-
-        match state.phase {
-            Phase::WaitAct => {
-                state.get_legal_actions_into(state.current_player, legal_buf);
-                if legal_buf.is_empty() {
-                    break;
-                }
-                actions[state.current_player as usize] = Some(legal_buf[0]);
-            }
-            Phase::WaitResponse => {
-                let pids = state.active_player_slice();
-                for &pid in pids {
-                    state.get_legal_actions_into(pid, legal_buf);
-                    if legal_buf.is_empty() {
-                        continue;
-                    }
-                    actions[pid as usize] = Some(legal_buf[0]);
-                }
-            }
-        }
-
-        state.step_unchecked(&actions);
-        total_actions += 1;
-    }
-
-    let scores = [
-        state.players[0].score,
-        state.players[1].score,
-        state.players[2].score,
-        state.players[3].score,
-    ];
-
+    let mut selector = crate::game_loop::FirstActionSelector;
+    runner.reset_for_new_game(seed);
+    runner.run_to_completion(&mut selector);
     GameResult {
-        scores,
-        rounds_played: rounds,
-        total_actions,
+        scores: runner.scores(),
+        rounds_played: runner.rounds_played(),
+        total_actions: runner.total_actions(),
         seed,
     }
 }
@@ -148,10 +94,10 @@ impl BatchSimulator {
             (0..num_games)
                 .into_par_iter()
                 .map_init(
-                    || Vec::with_capacity(46),
-                    |legal_buf, i| {
+                    || crate::game_loop::GameRunner::new(None, game_mode),
+                    |runner, i| {
                         let seed = base_seed.map(|s| s.wrapping_add(i as u64));
-                        simulate_single_game_with_buf(seed, game_mode, legal_buf)
+                        simulate_single_game_with_runner(runner, seed)
                     },
                 )
                 .collect()
@@ -169,10 +115,10 @@ pub fn run_batch_simple(config: &BatchConfig) -> Vec<GameResult> {
     (0..num_games)
         .into_par_iter()
         .map_init(
-            || Vec::with_capacity(46),
-            |legal_buf, i| {
+            || crate::game_loop::GameRunner::new(None, game_mode),
+            |runner, i| {
                 let seed = base_seed.map(|s| s.wrapping_add(i as u64));
-                simulate_single_game_with_buf(seed, game_mode, legal_buf)
+                simulate_single_game_with_runner(runner, seed)
             },
         )
         .collect()
