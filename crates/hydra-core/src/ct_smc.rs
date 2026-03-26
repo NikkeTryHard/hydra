@@ -248,12 +248,14 @@ impl CtSmc {
         rng: &mut R,
     ) {
         let dp = forward_dp(row_sums, col_sums, log_omega);
-        self.particles = (0..self.config.num_particles)
-            .map(|_| Particle {
+        self.particles.clear();
+        self.particles.reserve(self.config.num_particles);
+        for _ in 0..self.config.num_particles {
+            self.particles.push(Particle {
                 allocation: backward_sample(&dp, row_sums, col_sums, log_omega, rng),
                 log_weight: 0.0,
-            })
-            .collect();
+            });
+        }
         self.dp_cache = Some(dp);
     }
 
@@ -265,12 +267,14 @@ impl CtSmc {
         rng: &mut R,
     ) -> bool {
         if let Some(ref dp) = self.dp_cache {
-            self.particles = (0..self.config.num_particles)
-                .map(|_| Particle {
+            self.particles.clear();
+            self.particles.reserve(self.config.num_particles);
+            for _ in 0..self.config.num_particles {
+                self.particles.push(Particle {
                     allocation: backward_sample(dp, row_sums, col_sums, log_omega, rng),
                     log_weight: 0.0,
-                })
-                .collect();
+                });
+            }
             true
         } else {
             false
