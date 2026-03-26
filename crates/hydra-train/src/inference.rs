@@ -1,7 +1,6 @@
 //! Inference server: fast path (network + SaF) and slow path (pondered AFBS).
 
 use burn::prelude::*;
-use burn::tensor::activation;
 use hydra_core::action::{AGARI, HYDRA_ACTION_SPACE};
 use hydra_core::afbs::{PonderCache, PonderResult, TrustLevel};
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
@@ -402,7 +401,12 @@ pub fn illegal_action_rate<B: Backend>(logits: Tensor<B, 2>, legal_mask: Tensor<
     let predicted = masked.argmax(1);
     let same = predicted.equal(raw_predicted).int().sum();
     let batch = legal_mask.dims()[0] as f32;
-    1.0 - same.into_scalar().elem::<f32>() / batch
+    1.0 - same
+        .into_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("illegal action rate scalar should be readable as f32")[0]
+        / batch
 }
 
 /// Runs masked softmax inference, returns (best_action, policy_probs).
@@ -410,16 +414,13 @@ pub fn infer_action<B: Backend>(
     policy_logits: Tensor<B, 2>,
     legal_mask: &[bool; HYDRA_ACTION_SPACE],
 ) -> (u8, [f32; HYDRA_ACTION_SPACE]) {
-    let device = policy_logits.device();
-    let mask_tensor = legal_mask_to_tensor(legal_mask, &device);
-    let neg_inf = (mask_tensor.ones_like() - mask_tensor) * (-1e9f32);
-    let masked = policy_logits + neg_inf;
-    let probs = activation::softmax(masked, 1);
-    let probs_data = probs.to_data();
-    let mut policy = [0.0f32; HYDRA_ACTION_SPACE];
-    if let Ok(probs_slice) = probs_data.as_slice::<f32>() {
-        policy.copy_from_slice(&probs_slice[..HYDRA_ACTION_SPACE]);
-    }
+    let logits_data = policy_logits.to_data().convert::<f32>();
+    let logits = logits_data
+        .as_slice::<f32>()
+        .expect("policy logits extraction failed");
+    let mut logits_arr = [0.0f32; HYDRA_ACTION_SPACE];
+    logits_arr.copy_from_slice(&logits[..HYDRA_ACTION_SPACE]);
+    let policy = normalize_policy_cpu(&logits_arr, legal_mask);
 
     let mut best_action = 0u8;
     let mut best_prob = f32::NEG_INFINITY;
