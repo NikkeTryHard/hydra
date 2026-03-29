@@ -5319,4 +5319,82 @@ mod tests {
 
         let _ = fs::remove_dir_all(&output_dir);
     }
+
+    #[test]
+    fn run_rl_preflight_returns_cached_runtime_on_identical_fingerprint() {
+        use crate::artifacts::{RlArtifactPaths, RlPreflightPaths, write_preflight_cache};
+        use crate::preflight_fingerprint::preflight_cache_key;
+        use hydra_train::preflight::{
+            EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry,
+            SelectedRuntimeConfig,
+        };
+
+        let output_dir = unique_test_path("rl-preflight-cache-hit-out");
+        let mut config = dummy_config();
+        config.rl = Some(dummy_rl_train_config());
+        config.output_dir = output_dir.clone();
+        config.device = "cpu".to_string();
+
+        let artifacts = RlArtifactPaths::new(&output_dir, 0);
+        artifacts
+            .create_root_dir()
+            .expect("create RL artifact root for cache hit test");
+
+        let model_config = HydraModelConfig::learner();
+        let key = preflight_cache_key(
+            &config,
+            &model_config,
+            &config.device,
+            crate::config::default_num_threads_for_system(),
+        );
+
+        let cached_runtime = EffectiveRuntimeConfig {
+            selected: SelectedRuntimeConfig {
+                train_microbatch_size: 77,
+                validation_microbatch_size: 33,
+                accum_steps: 3,
+            },
+            loader: LoaderRuntimeConfig {
+                num_threads: Some(4),
+                buffer_games: 256,
+                buffer_samples: 1024,
+                archive_queue_bound: 16,
+            },
+        };
+        let paths = RlPreflightPaths::new(&artifacts);
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: key,
+                runtime: cached_runtime,
+                benchmark: None,
+            },
+        )
+        .expect("write matching RL cache entry");
+
+        let config_path =
+            write_temp_file("rl-preflight-cache-hit-config", "yaml", "batch_size: 256\n");
+        let device = burn::backend::libtorch::LibTorchDevice::Cpu;
+        let result = run_rl_preflight(&config_path, &config, &device)
+            .expect("RL cache hit should return Ok without probing");
+
+        assert_eq!(
+            result.selected_games_per_batch, 256,
+            "games_per_batch should come from cached loader.buffer_games"
+        );
+        assert_eq!(
+            result.selected_microbatch_size, 77,
+            "microbatch_size should come from cached selected.train_microbatch_size"
+        );
+        assert!(
+            result.rl_games_probe_results.is_empty(),
+            "cache hit should skip RL games probing"
+        );
+        assert!(
+            result.rl_microbatch_probe_results.is_empty(),
+            "cache hit should skip RL microbatch probing"
+        );
+
+        let _ = fs::remove_dir_all(&output_dir);
+    }
 }
