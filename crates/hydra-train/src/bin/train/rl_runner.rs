@@ -1371,4 +1371,53 @@ mod tests {
             reached_session_step_budget(global_step, session_start, Some(4))
         );
     }
+
+    #[test]
+    fn run_profiled_rl_step_produces_correct_profiling_envelope_with_nvtx() {
+        use hydra_train::preflight::{PROFILING_STAGE_RL_STEP, PROFILING_STAGE_SELF_PLAY};
+
+        let (result, events) = crate::nvtx::with_test_recorder(|| {
+            super::run_profiled_rl_step(
+                || Ok(42u64),
+                |batch_val| {
+                    assert_eq!(batch_val, 42);
+                    Ok((
+                        8usize,
+                        "train_output",
+                        PhaseTrainReport {
+                            phase: TrainingPhase::DrdaAchSelfPlay,
+                            skipped: false,
+                            loss: Some(0.5),
+                            effective_lr: 1e-4,
+                            oracle_keep_prob: None,
+                            kept_oracle_fraction: None,
+                            exit_weight: Some(0.1),
+                        },
+                    ))
+                },
+            )
+        });
+
+        let (batch_size, output, report, profiling) =
+            result.expect("profiled rl step should succeed");
+        assert_eq!(batch_size, 8);
+        assert_eq!(output, "train_output");
+        assert_eq!(report.phase, TrainingPhase::DrdaAchSelfPlay);
+        assert!(report.loss.is_some());
+
+        assert_eq!(profiling.stage, PROFILING_STAGE_RL_STEP);
+        assert!(profiling.elapsed_seconds > 0.0);
+        assert_eq!(profiling.children.len(), 2);
+        assert_eq!(profiling.children[0].stage, PROFILING_STAGE_SELF_PLAY);
+        assert_eq!(profiling.children[1].stage, PROFILING_STAGE_TRAIN);
+        assert!(profiling.children[0].elapsed_seconds >= 0.0);
+        assert!(profiling.children[1].elapsed_seconds >= 0.0);
+
+        assert!(events.contains(&"push:rl_step".to_string()));
+        assert!(events.contains(&"pop:rl_step".to_string()));
+        assert!(events.contains(&"push:self_play".to_string()));
+        assert!(events.contains(&"pop:self_play".to_string()));
+        assert!(events.contains(&"push:train".to_string()));
+        assert!(events.contains(&"pop:train".to_string()));
+    }
 }
