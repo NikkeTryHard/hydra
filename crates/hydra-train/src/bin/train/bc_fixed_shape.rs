@@ -8,6 +8,10 @@ use hydra_train::data::sample::{
     MjaiSample,
 };
 use hydra_train::model::HydraModel;
+use hydra_train::preflight::{
+    PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
+    PROFILING_STAGE_LOSS,
+};
 use hydra_train::training::bc::{
     bc_total_with_exit_from_breakdown, gated_bc_context, maybe_add_exit_loss, BcExitConfig,
 };
@@ -119,23 +123,32 @@ where
     let mut microbatch_count = 0usize;
 
     for chunk in fixed_shape_prefix.chunks_exact(microbatch_size) {
-        let Some((obs, batch, targets)) =
+        let collated = {
+            let _collation_scope = super::nvtx::scope(PROFILING_STAGE_COLLATION);
             collate_samples_bc_owned::<B>(chunk, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
-        else {
+        };
+        let Some((obs, batch, targets)) = collated else {
             continue;
         };
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
-        let output = model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads);
-        let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
-        let total = maybe_add_exit_loss(
-            breakdown.total.clone(),
-            output.policy_logits.clone(),
-            batch.exit_target.as_ref(),
-            batch.exit_mask.as_ref(),
-            bc_exit_cfg,
-        );
+        let output = {
+            let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
+            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+        };
+        let (breakdown, total) = {
+            let _loss_scope = super::nvtx::scope(PROFILING_STAGE_LOSS);
+            let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
+            let total = maybe_add_exit_loss(
+                breakdown.total.clone(),
+                output.policy_logits.clone(),
+                batch.exit_target.as_ref(),
+                batch.exit_mask.as_ref(),
+                bc_exit_cfg,
+            );
+            (breakdown, total)
+        };
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
         let weighted_total = total.clone() * chunk_weight;
         let chunk_metric_sums = batch_metric_sums_from_outputs(
@@ -149,23 +162,35 @@ where
         merge_metric_sums(&mut metric_sums, chunk_metric_sums);
         total_samples += chunk.len();
         microbatch_count += 1;
-        let grads = weighted_total.backward();
-        let grads = GradientsParams::from_grads(grads, model);
-        accumulator.accumulate(model, grads);
+        {
+            let _backward_scope = super::nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let grads = weighted_total.backward();
+            let grads = GradientsParams::from_grads(grads, model);
+            accumulator.accumulate(model, grads);
+        }
     }
 
     if !tail_remainder.is_empty() {
-        let Some((obs, batch, targets)) =
+        let collated = {
+            let _collation_scope = super::nvtx::scope(PROFILING_STAGE_COLLATION);
             collate_samples_owned::<B>(tail_remainder, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
-        else {
+        };
+        let Some((obs, batch, targets)) = collated else {
             return Ok(None);
         };
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
-        let output = model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
-        let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
-        let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
+        let output = {
+            let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
+            model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+        };
+        let (breakdown, total) = {
+            let _loss_scope = super::nvtx::scope(PROFILING_STAGE_LOSS);
+            let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
+            let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
+            (breakdown, total)
+        };
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
         let weighted_total = total.clone() * chunk_weight;
         let chunk_metric_sums = batch_metric_sums_from_outputs(
@@ -179,9 +204,12 @@ where
         merge_metric_sums(&mut metric_sums, chunk_metric_sums);
         total_samples += tail_remainder.len();
         microbatch_count += 1;
-        let grads = weighted_total.backward();
-        let grads = GradientsParams::from_grads(grads, model);
-        accumulator.accumulate(model, grads);
+        {
+            let _backward_scope = super::nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let grads = weighted_total.backward();
+            let grads = GradientsParams::from_grads(grads, model);
+            accumulator.accumulate(model, grads);
+        }
     }
 
     let Some(metric_sums) = metric_sums else {
