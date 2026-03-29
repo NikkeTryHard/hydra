@@ -311,7 +311,7 @@ fn scan_data_sources_with_fraction(
     progress: Option<&ProgressBar>,
 ) -> io::Result<DataManifest> {
     let sources = if data_dir.is_file() {
-        if is_tar_zst_file(data_dir) {
+        if is_tar_zst_file(data_dir) || is_tar_file(data_dir) {
             vec![DataSource::Archive(data_dir.to_path_buf())]
         } else if is_mjai_file(data_dir) {
             vec![DataSource::LooseFile(data_dir.to_path_buf())]
@@ -319,7 +319,7 @@ fn scan_data_sources_with_fraction(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "expected directory, MJAI file, or .tar.zst archive, got {}",
+                    "expected directory, MJAI file, or .tar/.tar.zst archive, got {}",
                     data_dir.display()
                 ),
             ));
@@ -369,7 +369,7 @@ fn scan_directory_sources(dir: &Path) -> io::Result<Vec<DataSource>> {
         }
         if is_mjai_file(&path) {
             sources.push(DataSource::LooseFile(path));
-        } else if is_tar_zst_file(&path) {
+        } else if is_tar_zst_file(&path) || is_tar_file(&path) {
             sources.push(DataSource::Archive(path));
         }
     }
@@ -419,13 +419,18 @@ fn spawn_archive_stream(
                     ))
                 })?;
             let file = fs::File::open(&path_for_thread)?;
-            let zstd = zstd::Decoder::new(file).map_err(|err| {
-                io::Error::other(format!(
-                    "failed to open zstd archive {}: {err}",
-                    path_for_thread.display()
-                ))
-            })?;
-            let mut archive = tar::Archive::new(zstd);
+            let reader: Box<dyn Read + Send> = if is_tar_zst_file(&path_for_thread) {
+                let zstd = zstd::Decoder::new(file).map_err(|err| {
+                    io::Error::other(format!(
+                        "failed to open zstd archive {}: {err}",
+                        path_for_thread.display()
+                    ))
+                })?;
+                Box::new(zstd)
+            } else {
+                Box::new(file)
+            };
+            let mut archive = tar::Archive::new(reader);
             let (job_tx, job_rx) = mpsc::sync_channel::<ArchiveEntryJob>(archive_queue_bound);
             let (parsed_tx, parsed_rx) =
                 mpsc::sync_channel::<ParsedArchiveGame>(archive_queue_bound);
