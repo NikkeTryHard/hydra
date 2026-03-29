@@ -304,6 +304,17 @@ pub struct WorkloadFingerprint {
     pub model_signature: String,
     pub code_signature: String,
     pub advanced_loss_signature: String,
+    /// Serialized PreflightConfig capturing all probe/search knobs that affect
+    /// which runtime gets selected. Any knob change invalidates the cache.
+    #[serde(default)]
+    pub preflight_config_signature: String,
+    /// Explicit train microbatch override from TrainConfig, if set. Constrains
+    /// the probe search space so a change should invalidate the cache.
+    #[serde(default)]
+    pub explicit_train_microbatch: Option<usize>,
+    /// Explicit validation microbatch override from TrainConfig, if set.
+    #[serde(default)]
+    pub explicit_validation_microbatch: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
