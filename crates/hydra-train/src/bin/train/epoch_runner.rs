@@ -1843,6 +1843,61 @@ mod tests {
     }
 
     #[test]
+    fn train_logical_batch_sub_stage_timing_has_nonzero_values() {
+        let device = LibTorchDevice::Cpu;
+        let mut model_slot = Some(tiny_dummy_model(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let train_loss_fn = dummy_train_loss();
+        let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
+
+        let (_drained, sub_timing) = train_logical_batch(
+            &logical_batch,
+            TrainLogicalBatchConfig {
+                microbatch_size: 1,
+                augment: false,
+                train_device: &device,
+                loss_fn: &train_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                lr: 1.0e-4,
+            },
+            &mut head_controller,
+            &mut model_slot,
+            &mut optimizer,
+        )
+        .expect("train logical batch for sub-timing check");
+
+        assert!(
+            sub_timing.collation_seconds > 0.0,
+            "collation should have measurable time"
+        );
+        assert!(
+            sub_timing.forward_seconds > 0.0,
+            "forward should have measurable time"
+        );
+        assert!(
+            sub_timing.loss_seconds > 0.0,
+            "loss should have measurable time"
+        );
+        assert!(
+            sub_timing.backward_seconds > 0.0,
+            "backward should have measurable time"
+        );
+        assert!(
+            sub_timing.optimizer_step_seconds > 0.0,
+            "optimizer_step should have measurable time"
+        );
+
+        let children = sub_timing.to_profiling_children();
+        assert_eq!(children.len(), 5);
+        assert!(
+            children.iter().all(|c| c.elapsed_seconds > 0.0),
+            "all profiling children should have positive elapsed_seconds"
+        );
+    }
+
+    #[test]
     fn emit_interval_step_summary_records_logging_scope_order() {
         let artifacts = test_artifacts("nvtx_interval_logging_scope");
         let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)

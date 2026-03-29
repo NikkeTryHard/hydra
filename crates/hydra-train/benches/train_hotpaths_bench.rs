@@ -270,11 +270,65 @@ fn bench_model_cpu_bridge(c: &mut Criterion) {
     group.finish();
 }
 
+fn tiny_model_config() -> HydraModelConfig {
+    HydraModelConfig::new(1)
+        .with_input_channels(hydra_core::encoder::NUM_CHANNELS)
+        .with_hidden_channels(32)
+        .with_num_groups(4)
+        .with_se_bottleneck(8)
+}
+
+fn bench_model_cpu_bridge_tiny(c: &mut Criterion) {
+    let device = LibTorchDevice::Cpu;
+    let model = tiny_model_config().init::<TrainBackend>(&device);
+    let obs = [0.0f32; OBS_SIZE];
+    let batch_obs = vec![[0.0f32; OBS_SIZE]; 8];
+    let mut flat_buf = Vec::new();
+    let mut outputs_buf = Vec::new();
+    let mut values_buf = Vec::new();
+
+    let mut group = c.benchmark_group("model_cpu_bridge_tiny");
+    group.sample_size(50);
+    group.measurement_time(Duration::from_secs(4));
+    group.bench_function("policy_value_cpu", |b| {
+        b.iter(|| {
+            let out = model.policy_value_cpu(&obs, &device);
+            black_box(out)
+        });
+    });
+    group.bench_function("policy_cpu", |b| {
+        b.iter(|| {
+            let out = model.policy_cpu(&obs, &device);
+            black_box(out)
+        });
+    });
+    group.bench_function("batch_policy_value_cpu_reuse", |b| {
+        b.iter(|| {
+            let out = model.batch_policy_value_cpu_reuse(
+                &batch_obs,
+                &device,
+                &mut flat_buf,
+                &mut outputs_buf,
+            );
+            black_box(out.len())
+        });
+    });
+    group.bench_function("batch_value_cpu_reuse", |b| {
+        b.iter(|| {
+            let out =
+                model.batch_value_cpu_reuse(&batch_obs, &device, &mut flat_buf, &mut values_buf);
+            black_box(out.len())
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_loader,
     bench_validation_batch_stats,
     bench_rl_batch_collation,
-    bench_model_cpu_bridge
+    bench_model_cpu_bridge,
+    bench_model_cpu_bridge_tiny
 );
 criterion_main!(benches);
