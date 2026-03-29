@@ -21,11 +21,16 @@ use hydra_train::training::losses::{HydraLoss, LossBreakdown};
 use crate::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums, BatchStats};
 use crate::validation::validation_batch_stats;
 
+use std::time::Instant;
+
+use crate::epoch_runner::TrainSubStageTiming;
+
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 pub(super) struct FixedShapeTrainStepOutput {
     pub(super) grads: GradientsParams,
     pub(super) batch_stats: BatchStats,
+    pub(super) sub_stage_timing: TrainSubStageTiming,
 }
 
 pub(super) struct FixedShapeBenchmarkStepOutput {
@@ -121,22 +126,28 @@ where
     let mut metric_sums: Option<Tensor<B, 1>> = None;
     let mut total_samples = 0usize;
     let mut microbatch_count = 0usize;
+    let mut sub_timing = TrainSubStageTiming::default();
 
     for chunk in fixed_shape_prefix.chunks_exact(microbatch_size) {
+        let t = Instant::now();
         let collated = {
             let _collation_scope = super::nvtx::scope(PROFILING_STAGE_COLLATION);
             collate_samples_bc_owned::<B>(chunk, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
+        sub_timing.collation_seconds += t.elapsed().as_secs_f64();
         let Some((obs, batch, targets)) = collated else {
             continue;
         };
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let t = Instant::now();
         let output = {
             let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
             model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
         };
+        sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
         let (breakdown, total) = {
             let _loss_scope = super::nvtx::scope(PROFILING_STAGE_LOSS);
             let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
@@ -149,6 +160,7 @@ where
             );
             (breakdown, total)
         };
+        sub_timing.loss_seconds += t.elapsed().as_secs_f64();
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
         let weighted_total = total.clone() * chunk_weight;
         let chunk_metric_sums = batch_metric_sums_from_outputs(
@@ -163,34 +175,42 @@ where
         total_samples += chunk.len();
         microbatch_count += 1;
         {
+            let t = Instant::now();
             let _backward_scope = super::nvtx::scope(PROFILING_STAGE_BACKWARD);
             let grads = weighted_total.backward();
             let grads = GradientsParams::from_grads(grads, model);
             accumulator.accumulate(model, grads);
+            sub_timing.backward_seconds += t.elapsed().as_secs_f64();
         }
     }
 
     if !tail_remainder.is_empty() {
+        let t = Instant::now();
         let collated = {
             let _collation_scope = super::nvtx::scope(PROFILING_STAGE_COLLATION);
             collate_samples_owned::<B>(tail_remainder, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
+        sub_timing.collation_seconds += t.elapsed().as_secs_f64();
         let Some((obs, batch, targets)) = collated else {
             return Ok(None);
         };
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let t = Instant::now();
         let output = {
             let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
             model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
         };
+        sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
         let (breakdown, total) = {
             let _loss_scope = super::nvtx::scope(PROFILING_STAGE_LOSS);
             let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
             let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
             (breakdown, total)
         };
+        sub_timing.loss_seconds += t.elapsed().as_secs_f64();
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
         let weighted_total = total.clone() * chunk_weight;
         let chunk_metric_sums = batch_metric_sums_from_outputs(
@@ -205,10 +225,12 @@ where
         total_samples += tail_remainder.len();
         microbatch_count += 1;
         {
+            let t = Instant::now();
             let _backward_scope = super::nvtx::scope(PROFILING_STAGE_BACKWARD);
             let grads = weighted_total.backward();
             let grads = GradientsParams::from_grads(grads, model);
             accumulator.accumulate(model, grads);
+            sub_timing.backward_seconds += t.elapsed().as_secs_f64();
         }
     }
 
@@ -219,6 +241,7 @@ where
     Ok(Some(FixedShapeTrainStepOutput {
         grads: accumulator.grads(),
         batch_stats: accumulate_metric_sums(total_samples, microbatch_count, metric_sums),
+        sub_stage_timing: sub_timing,
     }))
 }
 
