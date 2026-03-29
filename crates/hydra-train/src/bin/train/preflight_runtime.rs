@@ -46,9 +46,8 @@ use super::loss_policy::{build_bc_exit_config, build_loss_config};
 use super::nvtx;
 use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::{
-    format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
-    format_probe_status_line, format_timed_phase_message, make_bar, make_spinner,
-    preflight_phase_label,
+    format_preflight_selection_line, format_preflight_summary_line, format_probe_status_line,
+    format_timed_phase_message, make_bar, make_spinner, preflight_phase_label,
 };
 use super::probe_ladder::{candidate_average, dynamic_probe_ladder, probe_only_candidate_ladder};
 use super::probe_process::{
@@ -278,9 +277,7 @@ impl StageTwoBenchmarkValidationCache {
 }
 
 fn emit_probe_progress(line: &str) -> Result<(), String> {
-    if let Some(formatted) = format_probe_progress_line(line) {
-        println!("{formatted}");
-    }
+    println!("{}", line.trim());
     std::io::stdout()
         .flush()
         .map_err(|err| format!("failed flushing probe progress output: {err}"))

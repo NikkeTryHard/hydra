@@ -1,7 +1,9 @@
 #[cfg(not(test))]
+use colored::Colorize;
+#[cfg(not(test))]
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::process::Command;
@@ -10,21 +12,29 @@ use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 #[cfg(not(test))]
 use std::time::Instant;
 
+#[cfg(not(test))]
+use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 
 use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
 use super::artifacts::{BcArtifactPaths, RlArtifactPaths};
-use super::presentation::format_probe_progress_line;
 #[cfg(not(test))]
-use super::presentation::with_utc_timestamp;
+use super::presentation::{
+    format_probe_spinner_finish_message, format_probe_spinner_message, make_spinner,
+};
+#[cfg(test)]
+use super::presentation::format_probe_progress_line;
+#[cfg(test)]
+use super::presentation::format_probe_spinner_message;
 use super::probe_request::{ProbeBatchRequest, ProbeRequest};
 use super::probe_summary::probe_kind_name;
 
@@ -84,6 +94,7 @@ fn should_suppress_probe_output_line(line: &str) -> bool {
         || lowered.contains("skipping ")
 }
 
+#[cfg(test)]
 fn normalized_probe_output_line(line: &str) -> Option<String> {
     if let Some(formatted) = format_probe_progress_line(line) {
         return Some(formatted);
@@ -97,7 +108,31 @@ fn normalized_probe_output_line(line: &str) -> Option<String> {
     Some(line.trim().to_string())
 }
 
+#[cfg(test)]
 fn spawn_output_forwarder<R>(reader: R, stderr: bool) -> thread::JoinHandle<Result<Vec<u8>, String>>
+where
+    R: Read + Send + 'static,
+{
+    spawn_output_forwarder_inner(reader, stderr, None)
+}
+
+#[cfg(not(test))]
+fn spawn_output_forwarder_with_spinner<R>(
+    reader: R,
+    stderr: bool,
+    spinner_message: Arc<Mutex<String>>,
+) -> thread::JoinHandle<Result<Vec<u8>, String>>
+where
+    R: Read + Send + 'static,
+{
+    spawn_output_forwarder_inner(reader, stderr, Some(spinner_message))
+}
+
+fn spawn_output_forwarder_inner<R>(
+    reader: R,
+    _stderr: bool,
+    spinner_message: Option<Arc<Mutex<String>>>,
+) -> thread::JoinHandle<Result<Vec<u8>, String>>
 where
     R: Read + Send + 'static,
 {
@@ -115,51 +150,93 @@ where
             }
             collected.extend_from_slice(&line);
             let text = String::from_utf8_lossy(&line);
-            if let Some(formatted) = normalized_probe_output_line(&text) {
-                if stderr {
-                    writeln!(std::io::stderr(), "{formatted}").map_err(|err| {
-                        format!("failed forwarding preflight probe stderr: {err}")
-                    })?;
-                    std::io::stderr()
-                        .flush()
-                        .map_err(|err| format!("failed flushing preflight probe stderr: {err}"))?;
-                } else {
-                    writeln!(std::io::stdout(), "{formatted}").map_err(|err| {
-                        format!("failed forwarding preflight probe stdout: {err}")
-                    })?;
-                    std::io::stdout()
-                        .flush()
-                        .map_err(|err| format!("failed flushing preflight probe stdout: {err}"))?;
-                }
+            if text.trim_start().starts_with("probe_progress ")
+                && let Some(message) = format_probe_spinner_message(&text)
+                && let Some(spinner_message) = spinner_message.as_ref()
+            {
+                set_probe_spinner_message(spinner_message, message)?;
             }
         }
         Ok(collected)
     })
 }
 
+fn set_probe_spinner_message(
+    spinner_message: &Arc<Mutex<String>>,
+    message: String,
+) -> Result<(), String> {
+    *spinner_message
+        .lock()
+        .map_err(|_| "preflight probe spinner state lock poisoned".to_string())? = message;
+    Ok(())
+}
+
 #[cfg(not(test))]
-fn spawn_probe_heartbeat(
-    interrupted: Arc<AtomicBool>,
+fn sync_probe_spinner_message(
+    spinner: &ProgressBar,
+    spinner_message: &Arc<Mutex<String>>,
+) -> Result<(), String> {
+    let message = spinner_message
+        .lock()
+        .map_err(|_| "preflight probe spinner state lock poisoned".to_string())?
+        .clone();
+    spinner.set_message(message);
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn finish_probe_spinner(spinner: &ProgressBar, message: String) {
+    spinner.set_style(
+        ProgressStyle::with_template("{msg}").expect("static probe finish template is valid"),
+    );
+    spinner.finish_with_message(message);
+}
+
+#[cfg(not(test))]
+fn spawn_probe_spinner(
     kind: ProbeKind,
     candidate_microbatch: usize,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let started = Instant::now();
-        while !interrupted.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_secs(5));
-            if interrupted.load(Ordering::SeqCst) {
-                break;
-            }
-            let line = with_utc_timestamp(format!(
-                "[preflight:{}] candidate_mb={} phase=heartbeat elapsed={:.1}s still_running",
-                probe_kind_name(kind),
-                candidate_microbatch,
-                started.elapsed().as_secs_f64(),
-            ));
-            let _ = writeln!(std::io::stdout(), "{line}");
-            let _ = std::io::stdout().flush();
+) -> Result<(Arc<Mutex<String>>, ProgressBar), String> {
+    let spinner_message = Arc::new(Mutex::new(format!(
+        "[preflight:{}] mb={} loading data...",
+        probe_kind_name(kind),
+        candidate_microbatch,
+    )));
+    let spinner = make_spinner("{spinner:.cyan} {msg} {elapsed_precise}")?;
+    spinner.enable_steady_tick(Duration::from_millis(100));
+    sync_probe_spinner_message(&spinner, &spinner_message)?;
+    Ok((spinner_message, spinner))
+}
+
+#[cfg(not(test))]
+fn wait_for_probe_child_with_spinner(
+    child: &mut Child,
+    interrupted: &AtomicBool,
+    spinner: &ProgressBar,
+    spinner_message: &Arc<Mutex<String>>,
+) -> Result<Option<ExitStatus>, String> {
+    loop {
+        sync_probe_spinner_message(spinner, spinner_message)?;
+        if interrupted.load(Ordering::SeqCst) {
+            child.kill().ok();
+            child.wait().ok();
+            return Ok(None);
         }
-    })
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                sync_probe_spinner_message(spinner, spinner_message)?;
+                return Ok(Some(status));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(err) => {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(format!(
+                    "failed while waiting for preflight probe child: {err}"
+                ));
+            }
+        }
+    }
 }
 
 fn summarize_probe_failure_output(output: &str) -> String {
@@ -323,6 +400,7 @@ pub(super) fn rl_probe_required_free_bytes(config: &super::config::TrainConfig) 
     )
 }
 
+#[cfg(test)]
 fn wait_for_probe_child(
     child: &mut Child,
     interrupted: &AtomicBool,
@@ -537,6 +615,8 @@ pub(super) fn execute_probe_request(
         fs::remove_file(result_path).ok();
         let interrupted = interrupt_flag()?;
         interrupted.store(false, Ordering::SeqCst);
+        let probe_started = Instant::now();
+        let (spinner_message, spinner) = spawn_probe_spinner(request.kind, request.candidate_microbatch)?;
         let child_exe = probe_child_executable()?;
         let mut child = Command::new(&child_exe)
             .arg(config_path)
@@ -565,30 +645,40 @@ pub(super) fn execute_probe_request(
         let stdout_handle = child
             .stdout
             .take()
-            .map(|stdout| spawn_output_forwarder(stdout, false));
+            .map(|stdout| spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone()));
         let stderr_handle = child
             .stderr
             .take()
-            .map(|stderr| spawn_output_forwarder(stderr, true));
-        let heartbeat_handle = spawn_probe_heartbeat(
-            interrupted.clone(),
-            request.kind,
-            request.candidate_microbatch,
-        );
-        if wait_for_probe_child(&mut child, interrupted.as_ref())?.is_none() {
+            .map(|stderr| spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone()));
+        if wait_for_probe_child_with_spinner(
+            &mut child,
+            interrupted.as_ref(),
+            &spinner,
+            &spinner_message,
+        )?
+        .is_none()
+        {
             fs::remove_file(result_path).ok();
             interrupted.store(true, Ordering::SeqCst);
-            let _ = heartbeat_handle.join();
             if let Some(handle) = stdout_handle {
                 let _ = join_output_forwarder(handle, "stdout");
             }
             if let Some(handle) = stderr_handle {
                 let _ = join_output_forwarder(handle, "stderr");
             }
+            finish_probe_spinner(
+                &spinner,
+                format!(
+                    "{} [{}] mb={} interrupted ({:.1}s)",
+                    "✘".red(),
+                    probe_kind_name(request.kind),
+                    request.candidate_microbatch,
+                    probe_started.elapsed().as_secs_f64(),
+                ),
+            );
             return Err("preflight interrupted; probe child terminated".to_string());
         }
         interrupted.store(true, Ordering::SeqCst);
-        let _ = heartbeat_handle.join();
         let stdout = match stdout_handle {
             Some(handle) => join_output_forwarder(handle, "stdout")?,
             None => Vec::new(),
@@ -603,23 +693,28 @@ pub(super) fn execute_probe_request(
             .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
         let output = child_output(status, stdout, stderr);
 
-        if result_path.exists() {
+        let result = if result_path.exists() {
             let result = read_probe_result(result_path)?;
             fs::remove_file(result_path).ok();
-            return Ok(result);
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stdout = stdout.trim();
-        let stderr = stderr.trim();
-        Ok(build_probe_failure_result(
-            request,
-            stdout,
-            stderr,
-            output.status.code(),
-            classify_probe_detail,
-        ))
+            result
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stdout = stdout.trim();
+            let stderr = stderr.trim();
+            build_probe_failure_result(
+                request,
+                stdout,
+                stderr,
+                output.status.code(),
+                classify_probe_detail,
+            )
+        };
+        finish_probe_spinner(
+            &spinner,
+            format_probe_spinner_finish_message(&result, probe_started.elapsed().as_secs_f64()),
+        );
+        Ok(result)
     }
 }
 
@@ -680,10 +775,14 @@ pub(super) fn execute_probe_request_batch(
         let manifest_cache_path =
             super::artifacts::PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0))
                 .manifest_cache_path;
+        let kind = batch.request.kind;
+        let candidate_microbatch = batch.request.candidate_microbatch;
 
         fs::remove_file(results_path).ok();
         let interrupted = interrupt_flag()?;
         interrupted.store(false, Ordering::SeqCst);
+        let probe_started = Instant::now();
+        let (spinner_message, spinner) = spawn_probe_spinner(kind, candidate_microbatch)?;
         let child_exe = probe_child_executable()?;
         let mut child = Command::new(&child_exe)
             .arg(config_path)
@@ -714,30 +813,40 @@ pub(super) fn execute_probe_request_batch(
         let stdout_handle = child
             .stdout
             .take()
-            .map(|stdout| spawn_output_forwarder(stdout, false));
+            .map(|stdout| spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone()));
         let stderr_handle = child
             .stderr
             .take()
-            .map(|stderr| spawn_output_forwarder(stderr, true));
-        let heartbeat_handle = spawn_probe_heartbeat(
-            interrupted.clone(),
-            batch.request.kind,
-            batch.request.candidate_microbatch,
-        );
-        if wait_for_probe_child(&mut child, interrupted.as_ref())?.is_none() {
+            .map(|stderr| spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone()));
+        if wait_for_probe_child_with_spinner(
+            &mut child,
+            interrupted.as_ref(),
+            &spinner,
+            &spinner_message,
+        )?
+        .is_none()
+        {
             fs::remove_file(results_path).ok();
             interrupted.store(true, Ordering::SeqCst);
-            let _ = heartbeat_handle.join();
             if let Some(handle) = stdout_handle {
                 let _ = join_output_forwarder(handle, "stdout");
             }
             if let Some(handle) = stderr_handle {
                 let _ = join_output_forwarder(handle, "stderr");
             }
+            finish_probe_spinner(
+                &spinner,
+                format!(
+                    "{} [{}] mb={} interrupted ({:.1}s)",
+                    "✘".red(),
+                    probe_kind_name(kind),
+                    candidate_microbatch,
+                    probe_started.elapsed().as_secs_f64(),
+                ),
+            );
             return Err("preflight interrupted; probe child terminated".to_string());
         }
         interrupted.store(true, Ordering::SeqCst);
-        let _ = heartbeat_handle.join();
         let stdout = match stdout_handle {
             Some(handle) => join_output_forwarder(handle, "stdout")?,
             None => Vec::new(),
@@ -750,14 +859,27 @@ pub(super) fn execute_probe_request_batch(
             .try_wait()
             .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
             .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
-        recover_probe_batch_results(
+        let results = recover_probe_batch_results(
             batch,
             results_path,
             status,
             &stdout,
             &stderr,
             classify_probe_detail,
-        )
+        )?;
+        let finish_result = results.last().cloned().unwrap_or_else(|| ProbeResult {
+            kind,
+            candidate_microbatch,
+            status: ProbeStatus::BackendError,
+            measured_samples_per_second: None,
+            elapsed_seconds: None,
+            detail: "probe batch completed without recorded results".to_string(),
+        });
+        finish_probe_spinner(
+            &spinner,
+            format_probe_spinner_finish_message(&finish_result, probe_started.elapsed().as_secs_f64()),
+        );
+        Ok(results)
     }
 }
 
