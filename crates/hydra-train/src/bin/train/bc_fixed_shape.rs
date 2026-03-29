@@ -3,6 +3,7 @@ use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::prelude::Tensor;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
+use hydra_train::amp::maybe_autocast;
 use hydra_train::data::sample::{
     collate_batch_samples, collate_samples, collate_samples_bc_owned, collate_samples_owned,
     MjaiSample,
@@ -51,6 +52,7 @@ where
     pub(super) bc_exit_cfg: &'a BcExitConfig,
     pub(super) head_controller: &'a mut HeadActivationController,
     pub(super) model: &'a HydraModel<B>,
+    pub(super) use_amp: bool,
 }
 
 pub(super) struct FixedShapeProbeConfig<'a, B>
@@ -64,6 +66,7 @@ where
     pub(super) train_device: &'a LibTorchDevice,
     pub(super) loss_fn: &'a HydraLoss<B>,
     pub(super) model: &'a HydraModel<B>,
+    pub(super) use_amp: bool,
 }
 
 fn accumulate_metric_sums<B: AutodiffBackend<Device = LibTorchDevice>>(
@@ -111,6 +114,7 @@ where
         bc_exit_cfg,
         head_controller,
         model,
+        use_amp,
     } = config;
     if logical_batch.is_empty() {
         return Ok(None);
@@ -144,7 +148,9 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
-            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+            maybe_autocast(use_amp, || {
+                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+            })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
@@ -200,7 +206,9 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
-            model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+            maybe_autocast(use_amp, || {
+                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+            })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
@@ -259,6 +267,7 @@ where
         train_device,
         loss_fn,
         model,
+        use_amp,
     } = config;
     if logical_batch.is_empty() {
         return Ok(None);
@@ -278,7 +287,7 @@ where
         else {
             continue;
         };
-        let output = model.forward(obs);
+        let output = maybe_autocast(use_amp, || model.forward(obs));
         let breakdown = loss_fn.total_loss(&output, &targets);
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
         let grads = (breakdown.total * chunk_weight).backward();
@@ -292,7 +301,7 @@ where
         else {
             return Ok(Some(accumulator.grads()));
         };
-        let output = model.forward(obs);
+        let output = maybe_autocast(use_amp, || model.forward(obs));
         let breakdown = loss_fn.total_loss(&output, &targets);
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
         let grads = (breakdown.total * chunk_weight).backward();
@@ -319,6 +328,7 @@ where
         bc_exit_cfg,
         head_controller,
         model,
+        use_amp,
     } = config;
     if logical_batch.is_empty() {
         return Ok(None);
@@ -344,7 +354,9 @@ where
         };
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
-        let output = model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads);
+        let output = maybe_autocast(use_amp, || {
+            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+        });
         let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
             breakdown.total.clone(),
@@ -387,7 +399,9 @@ where
         let targets = batch.to_hydra_targets();
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
-        let output = model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+        let output = maybe_autocast(use_amp, || {
+            model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+        });
         let breakdown = active_loss_fn.total_loss(&output, &targets);
         let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
         step_batches.push(validation_batch_stats(
@@ -705,6 +719,7 @@ mod tests {
             bc_exit_cfg: &BcExitConfig::default(),
             head_controller: &mut head_controller_single,
             model: &base_model,
+            use_amp: false,
         })
         .expect("single fixed-shape path should succeed")
         .expect("single fixed-shape path should return stats");
@@ -718,6 +733,7 @@ mod tests {
             bc_exit_cfg: &BcExitConfig::default(),
             head_controller: &mut head_controller_split,
             model: &base_model,
+            use_amp: false,
         })
         .expect("split fixed-shape path should succeed")
         .expect("split fixed-shape path should return stats");
@@ -783,6 +799,7 @@ mod tests {
             bc_exit_cfg: &BcExitConfig::default(),
             head_controller: &mut head_controller_mixed,
             model: &model,
+            use_amp: false,
         })
         .expect("non-divisible logical batch should not error")
         .expect("mixed fixed-shape train path should return stats");
@@ -824,6 +841,7 @@ mod tests {
             train_device: &device,
             loss_fn: &train_loss_fn,
             model: &model,
+            use_amp: false,
         })
         .expect("non-divisible probe batch should not error")
         .expect("mixed fixed-shape probe path should return gradients");
@@ -874,6 +892,7 @@ mod tests {
             bc_exit_cfg: &BcExitConfig::default(),
             head_controller: &mut head_controller_mixed,
             model: &model,
+            use_amp: false,
         })
         .expect("non-divisible benchmark batch should not error")
         .expect("mixed fixed-shape benchmark path should return step batches");
@@ -923,6 +942,7 @@ mod tests {
             bc_exit_cfg: &exit_cfg,
             head_controller: &mut head_controller_mixed,
             model: &model,
+            use_amp: false,
         })
         .expect("non-divisible logical batch with exit loss should not error")
         .expect("mixed fixed-shape train path should return stats");
@@ -1003,6 +1023,7 @@ mod tests {
             bc_exit_cfg: &BcExitConfig::default(),
             head_controller: &mut head_controller,
             model: &model,
+            use_amp: false,
         })
         .expect("empty batch should return Ok");
 
@@ -1026,6 +1047,7 @@ mod tests {
             bc_exit_cfg: &BcExitConfig::default(),
             head_controller: &mut head_controller,
             model: &model,
+            use_amp: false,
         });
 
         assert!(result.is_err());
@@ -1054,6 +1076,7 @@ mod tests {
             bc_exit_cfg: &BcExitConfig::default(),
             head_controller: &mut head_controller,
             model: &model,
+            use_amp: false,
         })
         .expect("microbatch > batch should succeed via tail remainder");
 
@@ -1080,6 +1103,7 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 head_controller: &mut head_controller,
                 model: &model,
+                use_amp: false,
             })
         });
         result.expect("non-divisible batch should succeed");

@@ -79,7 +79,7 @@ use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, materialize_validation_samples,
     run_validation, validation_batch_stats,
 };
-use super::{Bf16TrainBackend, TrainBackend};
+use super::TrainBackend;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -1124,6 +1124,7 @@ where
                 bc_exit_cfg: &exit_cfg,
                 head_controller: &mut head_controller,
                 model: &model,
+                use_amp: false,
             })? {
                 let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
                 model = optimizer.step(lr, model, fixed_shape.grads);
@@ -1387,7 +1388,7 @@ fn run_stage_two_finalist_benchmark(
                 run_stage_two_benchmark_for_backend::<TrainBackend>(benchmark_run)?
             }
             crate::config::PrecisionMode::Bf16Autocast => {
-                run_stage_two_benchmark_for_backend::<Bf16TrainBackend>(benchmark_run)?
+                run_stage_two_benchmark_for_backend::<TrainBackend>(benchmark_run)?
             }
         };
         println!(
@@ -1877,6 +1878,7 @@ where
                 train_device,
                 loss_fn: &loss_fn,
                 model: &model,
+                use_amp: false,
             })? {
                 grads
             } else {
@@ -2231,7 +2233,7 @@ fn run_probe_only_with_model_config_result(
                 )?
             }
             crate::config::PrecisionMode::Bf16Autocast => {
-                probe_train_candidate_for_backend::<Bf16TrainBackend>(
+                probe_train_candidate_for_backend::<TrainBackend>(
                     config,
                     model_config,
                     request,
@@ -2253,7 +2255,7 @@ fn run_probe_only_with_model_config_result(
                 )?
             }
             crate::config::PrecisionMode::Bf16Autocast => {
-                probe_validation_candidate_for_backend::<Bf16TrainBackend>(
+                probe_validation_candidate_for_backend::<TrainBackend>(
                     config,
                     model_config,
                     request,
@@ -3478,7 +3480,7 @@ mod tests {
     #[test]
     fn benchmark_train_window_bf16_fails_fast_without_train_data() {
         let config = dummy_config();
-        let err = benchmark_train_window_for_backend::<Bf16TrainBackend>(
+        let err = benchmark_train_window_for_backend::<TrainBackend>(
             &config,
             &tiny_test_probe_model_config(),
             &empty_manifest(),

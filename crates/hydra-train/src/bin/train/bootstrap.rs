@@ -48,7 +48,7 @@ use super::resume::{
     validate_rl_resume_runtime_compatibility,
 };
 use super::schedule::schedule_total_steps;
-use super::{Bf16TrainBackend, TrainBackend};
+use super::TrainBackend;
 
 type JsonlAppender = super::artifacts::JsonlAppender;
 
@@ -170,6 +170,7 @@ where
     pub(super) session_start_global_step: usize,
     pub(super) total_steps: usize,
     pub(super) microbatch_size: usize,
+    pub(super) use_amp: bool,
     pub(super) banner_stats: BannerStats,
     pub(super) loss_fn: HydraLoss<B>,
     pub(super) valid_loss_fn: HydraLoss<ValidBackendOf<B>>,
@@ -393,6 +394,7 @@ where
     let bc_exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
     let total_steps = schedule_total_steps(&config, session_start_global_step);
     let microbatch_size = train_microbatch_size(&config);
+    let use_amp = config.use_amp();
     let best_validation = resume.best_validation();
     let global_step = session_start_global_step;
     let run_start = Instant::now();
@@ -434,6 +436,7 @@ where
             session_start_global_step,
             total_steps,
             microbatch_size,
+            use_amp,
             banner_stats,
             loss_fn,
             valid_loss_fn,
@@ -483,19 +486,6 @@ pub(super) fn initialize_training_bootstrap(
     String,
 > {
     initialize_training_bootstrap_for_backend::<TrainBackend>(config_path, config)
-}
-
-pub(super) fn initialize_training_bootstrap_bf16(
-    config_path: &Path,
-    config: TrainConfig,
-) -> Result<
-    (
-        TrainingBootstrap<Bf16TrainBackend>,
-        TrainingRuntime<Bf16TrainBackend>,
-    ),
-    String,
-> {
-    initialize_training_bootstrap_for_backend::<Bf16TrainBackend>(config_path, config)
 }
 
 pub(super) fn initialize_rl_training_bootstrap(

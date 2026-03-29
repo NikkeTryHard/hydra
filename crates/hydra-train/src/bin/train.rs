@@ -57,7 +57,6 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use burn::backend::{Autodiff, LibTorch};
-use burn::tensor::bf16;
 use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
@@ -82,7 +81,6 @@ use self::resume::{
 use hydra_train::preflight::PreflightConfig;
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
-type Bf16TrainBackend = Autodiff<LibTorch<bf16>>;
 
 fn run() -> Result<(), String> {
     color_control::set_override(true);

@@ -1,5 +1,6 @@
 //! Behavioral cloning training loop (Phase 0).
 
+use crate::amp::maybe_autocast;
 use crate::config::OracleGuidingConfig;
 use crate::data::sample::{collate_sample_refs_with_batch, MjaiBatch, MjaiSample};
 use crate::model::{HydraModel, HydraModelConfig};
@@ -244,10 +245,11 @@ pub fn bc_train_step<B: AutodiffBackend>(
     targets: &HydraTargets<B>,
     loss_fn: &HydraLoss<B>,
     exit_cfg: &BcExitConfig,
+    use_amp: bool,
     lr: f64,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    let output = model.forward(obs);
+    let output = maybe_autocast(use_amp, || model.forward(obs));
     let breakdown = loss_fn.total_loss(&output, targets);
     let total =
         bc_total_with_optional_exit_from_breakdown(&output, Some(batch), &breakdown, exit_cfg);
@@ -694,6 +696,7 @@ mod tests {
             &targets,
             &loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut optimizer,
         );
@@ -727,6 +730,7 @@ mod tests {
                 &targets,
                 &loss_fn,
                 &BcExitConfig::default(),
+                false,
                 1e-3,
                 &mut optimizer,
             );
@@ -924,6 +928,7 @@ mod tests {
             &baseline_targets,
             &baseline_loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut opt1,
         );
@@ -970,6 +975,7 @@ mod tests {
             &advanced_targets,
             &advanced_loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut opt2,
         );
@@ -1024,6 +1030,7 @@ mod tests {
             &targets,
             &loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut optimizer,
         );

@@ -25,7 +25,7 @@ use super::presentation::{
     format_preflight_summary_line, format_runtime_tuning_message, format_timed_phase_message,
     make_bar,
 };
-use super::{Bf16TrainBackend, TrainBackend};
+use super::TrainBackend;
 
 pub(super) type RuntimeTuple = (usize, usize, usize);
 
@@ -270,7 +270,7 @@ pub(super) fn measure_train_runtime_throughput(
             config, loader_config, manifest, train_device
         ),
         crate::config::PrecisionMode::Bf16Autocast => {
-            measure_train_runtime_throughput_for_backend::<Bf16TrainBackend>(
+            measure_train_runtime_throughput_for_backend::<TrainBackend>(
                 config,
                 loader_config,
                 manifest,
@@ -294,7 +294,7 @@ pub(super) fn measure_rl_runtime_throughput(
             )
         }
         crate::config::PrecisionMode::Bf16Autocast => {
-            measure_rl_runtime_throughput_for_backend::<super::Bf16TrainBackend>(
+            measure_rl_runtime_throughput_for_backend::<super::TrainBackend>(
                 config,
                 rl,
                 train_device,
