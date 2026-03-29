@@ -404,6 +404,7 @@ pub const PROFILING_STAGE_FORWARD: &str = "forward";
 pub const PROFILING_STAGE_LOSS: &str = "loss";
 pub const PROFILING_STAGE_BACKWARD: &str = "backward";
 pub const PROFILING_STAGE_OPTIMIZER_STEP: &str = "optimizer_step";
+pub const PROFILING_STAGE_DATA_LOAD: &str = "data_load";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProfilingEnvelope {
