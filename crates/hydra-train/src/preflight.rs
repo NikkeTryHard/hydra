@@ -763,4 +763,68 @@ mod tests {
             BenchmarkMode::CadenceAwareProjection
         );
     }
+
+    #[test]
+    fn from_children_sums_child_elapsed_seconds() {
+        let envelope = ProfilingEnvelope::from_children(
+            "parent",
+            vec![
+                ProfilingEnvelope::leaf("train", 1.5),
+                ProfilingEnvelope::leaf("validation", 0.5),
+                ProfilingEnvelope::leaf("checkpoint", 0.25),
+            ],
+        );
+
+        assert_eq!(envelope.stage, "parent");
+        assert!((envelope.elapsed_seconds - 2.25).abs() < 1e-10);
+        assert_eq!(envelope.children.len(), 3);
+    }
+
+    #[test]
+    fn merge_assign_non_matching_stages_pushes_as_new_child() {
+        let mut base =
+            ProfilingEnvelope::from_children("epoch", vec![ProfilingEnvelope::leaf("train", 1.0)]);
+        let other = ProfilingEnvelope::from_children(
+            "step",
+            vec![ProfilingEnvelope::leaf("validation", 0.5)],
+        );
+
+        base.merge_assign(&other);
+
+        assert_eq!(base.children.len(), 2);
+        assert_eq!(base.children[0].stage, "train");
+        assert_eq!(base.children[1].stage, "step");
+        assert!((base.elapsed_seconds - 1.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn merge_assign_matching_stages_aggregates_children() {
+        let mut base = ProfilingEnvelope::from_children(
+            "epoch",
+            vec![
+                ProfilingEnvelope::leaf("train", 1.0),
+                ProfilingEnvelope::leaf("validation", 0.5),
+            ],
+        );
+        let other = ProfilingEnvelope::from_children(
+            "epoch",
+            vec![
+                ProfilingEnvelope::leaf("train", 2.0),
+                ProfilingEnvelope::leaf("checkpoint", 0.3),
+            ],
+        );
+
+        base.merge_assign(&other);
+
+        assert_eq!(base.children.len(), 3);
+        let train = base.children.iter().find(|c| c.stage == "train").unwrap();
+        assert!((train.elapsed_seconds - 3.0).abs() < 1e-10);
+        let checkpoint = base
+            .children
+            .iter()
+            .find(|c| c.stage == "checkpoint")
+            .unwrap();
+        assert!((checkpoint.elapsed_seconds - 0.3).abs() < 1e-10);
+        assert!((base.elapsed_seconds - 3.8).abs() < 1e-10);
+    }
 }
