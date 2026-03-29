@@ -2658,6 +2658,79 @@ mod tests {
     }
 
     #[test]
+    fn finalize_epoch_outputs_preserves_train_sub_stage_children_in_json() {
+        let config = dummy_config();
+        let artifacts = test_artifacts("finalize_epoch_outputs_sub_stages");
+        let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
+        let mut tb: Option<EventWriter<Vec<u8>>> = None;
+        let mut training_log =
+            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+                .expect("open training log appender");
+        let mut train_stats = ScalarAverages::default();
+        train_stats.record_batch(batch_stats(4, 3.5, 0.55));
+        let train_stats = train_stats.finalize();
+
+        let sub_timing = TrainSubStageTiming {
+            collation_seconds: 0.01,
+            forward_seconds: 0.5,
+            loss_seconds: 0.02,
+            backward_seconds: 0.3,
+            optimizer_step_seconds: 0.05,
+        };
+        let profiling = bc_epoch_profiling(0.88, &sub_timing, None, 0.1, 0.0);
+
+        finalize_epoch_outputs(
+            &mut tb,
+            &mut training_log,
+            EpochFinalizeContext {
+                config: &config,
+                train_cfg: &train_cfg,
+                epoch: 0,
+                global_step: 5,
+                train_stats,
+                val_summary: None,
+                best_validation: None,
+                final_lr: 1.0e-4,
+                profiling: Some(profiling),
+            },
+        )
+        .expect("finalize epoch outputs with sub-stage profiling");
+
+        let entry = read_jsonl_entry(&artifacts.training_log_path);
+        let profiling = &entry["profiling"];
+        assert_eq!(profiling["stage"].as_str(), Some("bc_epoch"));
+
+        let children = profiling["children"]
+            .as_array()
+            .expect("profiling should have children array");
+        let train_child = children
+            .iter()
+            .find(|c| c["stage"].as_str() == Some("train"))
+            .expect("should have a 'train' child");
+        let train_sub_children = train_child["children"]
+            .as_array()
+            .expect("train child should have sub-stage children");
+
+        let expected_sub_stages = ["collation", "forward", "loss", "backward", "optimizer_step"];
+        for stage_name in &expected_sub_stages {
+            let found = train_sub_children
+                .iter()
+                .find(|c| c["stage"].as_str() == Some(stage_name));
+            assert!(
+                found.is_some(),
+                "train sub-stage '{}' should be present in JSON",
+                stage_name
+            );
+            let elapsed = found.unwrap()["elapsed_seconds"].as_f64();
+            assert!(
+                elapsed.is_some() && elapsed.unwrap() > 0.0,
+                "train sub-stage '{}' should have positive elapsed_seconds",
+                stage_name
+            );
+        }
+    }
+
+    #[test]
     fn finalize_epoch_outputs_writes_skipped_validation_epoch_log() {
         let config = dummy_config();
         let artifacts = test_artifacts("finalize_epoch_outputs_skipped_validation");
