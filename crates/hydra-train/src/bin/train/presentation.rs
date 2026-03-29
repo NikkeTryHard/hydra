@@ -1,9 +1,10 @@
 use colored::Colorize;
+use std::borrow::Cow;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::{
@@ -11,8 +12,8 @@ use hydra_train::preflight::{
 };
 
 use super::artifacts::BcArtifactPaths;
-use super::config::TrainConfig;
 use super::config::display_num_threads;
+use super::config::TrainConfig;
 use super::probe_summary::probe_summary_iter;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
@@ -170,6 +171,15 @@ fn print_banner_field(label: &str, value: impl std::fmt::Display) {
     println!("  {} {}", format!("{label}:").white(), value);
 }
 
+fn probe_kind_label(kind: ProbeKind) -> &'static str {
+    match kind {
+        ProbeKind::Train => "train",
+        ProbeKind::Validation => "validation",
+        ProbeKind::RlGames => "rl_games",
+        ProbeKind::RlMicrobatch => "rl_microbatch",
+    }
+}
+
 fn probe_status_label(status: &ProbeStatus) -> &'static str {
     match status {
         ProbeStatus::Success => "success",
@@ -216,8 +226,117 @@ fn parse_probe_progress_fields(line: &str) -> Option<std::collections::BTreeMap<
     Some(fields)
 }
 
+fn sanitize_probe_progress_line(line: &str) -> Cow<'_, str> {
+    if line.contains(" samples/s") {
+        Cow::Owned(line.replace(" samples/s", ""))
+    } else {
+        Cow::Borrowed(line)
+    }
+}
+
+pub(super) fn format_probe_spinner_message(line: &str) -> Option<String> {
+    let sanitized = sanitize_probe_progress_line(line);
+    let fields = parse_probe_progress_fields(&sanitized)?;
+    let kind = *fields.get("kind")?;
+    let candidate = *fields.get("candidate_mb")?;
+    let phase = *fields.get("phase")?;
+    let prefix = format!("[preflight:{kind}] mb={candidate}");
+
+    let message = match phase {
+        "scan_start" => "scanning dataset...".to_string(),
+        "scan_complete" => {
+            let sources = fields.get("sources").copied().unwrap_or("?");
+            let games = if fields.get("counts_exact").copied() == Some("true") {
+                fields.get("total_games").copied().unwrap_or("?")
+            } else {
+                "streaming"
+            };
+            format!("dataset: {sources} sources, {games} games")
+        }
+        "starting" => "building model...".to_string(),
+        "warmup" => format!("warmup step {}", fields.get("step").copied().unwrap_or("?")),
+        "measure_start" => format!(
+            "measuring (0/{})",
+            fields.get("total_steps").copied().unwrap_or("?")
+        ),
+        "measure" => format!(
+            "measure step {} @ {} samples/s",
+            fields.get("step").copied().unwrap_or("?"),
+            fields.get("throughput").copied().unwrap_or("0.00")
+        ),
+        "done" => format!(
+            "finalizing @ {} samples/s...",
+            fields.get("throughput").copied().unwrap_or("0.00")
+        ),
+        "rl_selfplay" => "selfplay...".to_string(),
+        _ => return None,
+    };
+
+    Some(format!("{prefix} {message}"))
+}
+
+#[cfg(not(test))]
+fn format_probe_spinner_rate(samples_per_second: f64) -> String {
+    if (samples_per_second.fract()).abs() < 0.005 {
+        format!("{samples_per_second:.0}")
+    } else {
+        format!("{samples_per_second:.2}")
+    }
+}
+
+#[cfg(not(test))]
+fn format_probe_spinner_elapsed(elapsed_seconds: f64) -> String {
+    if elapsed_seconds >= 10.0 {
+        format!("{elapsed_seconds:.0}s")
+    } else {
+        format!("{elapsed_seconds:.1}s")
+    }
+}
+
+#[cfg(not(test))]
+pub(super) fn format_probe_spinner_finish_message(
+    result: &ProbeResult,
+    fallback_elapsed_seconds: f64,
+) -> String {
+    let kind = probe_kind_label(result.kind);
+    let elapsed = format_probe_spinner_elapsed(
+        result
+            .elapsed_seconds
+            .unwrap_or(fallback_elapsed_seconds.max(0.0)),
+    );
+
+    match result.status {
+        ProbeStatus::Success => format!(
+            "{} [{}] mb={} success @ {} samples/s ({elapsed})",
+            "✔".green(),
+            kind,
+            result.candidate_microbatch,
+            format_probe_spinner_rate(result.measured_samples_per_second.unwrap_or(0.0))
+        ),
+        ProbeStatus::Oom => format!(
+            "{} [{}] mb={} oom ({elapsed})",
+            "✘".red(),
+            kind,
+            result.candidate_microbatch,
+        ),
+        ProbeStatus::BackendError => format!(
+            "{} [{}] mb={} backend error ({elapsed})",
+            "✘".red(),
+            kind,
+            result.candidate_microbatch,
+        ),
+        ProbeStatus::DataError => format!(
+            "{} [{}] mb={} data error ({elapsed})",
+            "✘".red(),
+            kind,
+            result.candidate_microbatch,
+        ),
+    }
+}
+
 pub(super) fn format_probe_progress_line(line: &str) -> Option<String> {
-    let fields = parse_probe_progress_fields(line)?;
+    let sanitized = sanitize_probe_progress_line(line);
+    let fields = parse_probe_progress_fields(&sanitized)?;
     let kind = *fields.get("kind")?;
     let candidate = *fields.get("candidate_mb")?;
     let phase = *fields.get("phase")?;
@@ -338,12 +457,7 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
         ProbeStatus::Success => with_utc_timestamp(
             format!(
                 "[{}] candidate_mb={} outcome=success throughput={:.2} samples/s elapsed={:.2}s",
-                match result.kind {
-                    ProbeKind::Train => "train",
-                    ProbeKind::Validation => "validation",
-                    ProbeKind::RlGames => "rl_games",
-                    ProbeKind::RlMicrobatch => "rl_microbatch",
-                },
+                probe_kind_label(result.kind),
                 result.candidate_microbatch,
                 result.measured_samples_per_second.unwrap_or(0.0),
                 result.elapsed_seconds.unwrap_or(0.0)
@@ -354,12 +468,7 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
         ProbeStatus::Oom => with_utc_timestamp(
             format!(
                 "[{}] candidate_mb={} outcome={} next=smaller_microbatch detail={}",
-                match result.kind {
-                    ProbeKind::Train => "train",
-                    ProbeKind::Validation => "validation",
-                    ProbeKind::RlGames => "rl_games",
-                    ProbeKind::RlMicrobatch => "rl_microbatch",
-                },
+                probe_kind_label(result.kind),
                 result.candidate_microbatch,
                 probe_failure_reason(result),
                 if result.detail.is_empty() {
@@ -374,12 +483,7 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
         _ => with_utc_timestamp(
             format!(
                 "[{}] candidate_mb={} outcome={} detail={}",
-                match result.kind {
-                    ProbeKind::Train => "train",
-                    ProbeKind::Validation => "validation",
-                    ProbeKind::RlGames => "rl_games",
-                    ProbeKind::RlMicrobatch => "rl_microbatch",
-                },
+                probe_kind_label(result.kind),
                 result.candidate_microbatch,
                 probe_failure_reason(result),
                 result.detail
@@ -887,10 +991,10 @@ mod tests {
         );
         assert!(done.contains("phase=done throughput=0.00 samples/s elapsed=1.25s"));
 
-        assert!(
-            format_probe_progress_line("probe_progress kind=train candidate_mb=64 phase=unknown")
-                .is_none()
-        );
+        assert!(format_probe_progress_line(
+            "probe_progress kind=train candidate_mb=64 phase=unknown"
+        )
+        .is_none());
         assert!(format_probe_progress_line("probe_progress kind=train phase=measure").is_none());
     }
 
