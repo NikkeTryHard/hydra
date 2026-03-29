@@ -1,10 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::preflight_runtime::classify_probe_detail;
-use hydra_train::data::pipeline::DataSource;
+use crate::test_loose_replay_fixtures::single_loose_train_manifest;
 use hydra_train::preflight::{PreflightConfig, ProbeStatus};
 
 fn dummy_config() -> TrainConfig {
@@ -43,46 +42,36 @@ fn dummy_config() -> TrainConfig {
     }
 }
 
-fn unique_test_path(label: &str, extension: &str) -> PathBuf {
-    let base = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("tmp");
-    fs::create_dir_all(&base).expect("runtime autotune test temp root should be creatable");
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after unix epoch")
-        .as_nanos();
-    base.join(format!(
-        "hydra-runtime-autotune-{label}-{unique}{extension}"
-    ))
+fn runtime_tuple_score_cache(
+    entries: &[(RuntimeTuple, RuntimeTupleStats)],
+) -> BTreeMap<RuntimeTuple, RuntimeTupleStats> {
+    entries.iter().copied().collect()
 }
 
-fn runtime_probe_replay_log() -> String {
-    [
-        r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
-        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
-        r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
-        r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
-        r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
-        r#"{"type":"ryukyoku"}"#,
-        r#"{"type":"end_kyoku"}"#,
-    ]
-    .join("\n")
+fn runtime_refine_cache_entries(
+    entries: &[(RuntimeTuple, RuntimeTupleStats)],
+) -> BTreeMap<(usize, usize, usize), RuntimeTupleStats> {
+    entries.iter().copied().collect()
 }
 
-fn single_loose_train_manifest(label: &str) -> (DataManifest, PathBuf) {
-    let path = unique_test_path(label, ".mjai.json");
-    fs::write(&path, runtime_probe_replay_log())
-        .expect("runtime autotune replay fixture should be writable");
-    let manifest = DataManifest {
-        sources: vec![DataSource::LooseFile(path.clone())],
-        total_games: 1,
-        train_count: 1,
-        val_count: 0,
-        counts_exact: true,
-    };
-    (manifest, path)
+fn ranked_runtime_tuples(ranked: &[RankedLoaderRuntime]) -> Vec<RuntimeTuple> {
+    ranked.iter().map(|entry| entry.tuple).collect()
+}
+
+fn runtime_seed(
+    train_microbatch_size: usize,
+    tuple: RuntimeTuple,
+    warmup_steps: usize,
+    measure_steps: usize,
+    stats: RuntimeTupleStats,
+) -> LoaderRuntimeScoreSeed {
+    LoaderRuntimeScoreSeed {
+        train_microbatch_size,
+        tuple,
+        warmup_steps,
+        measure_steps,
+        stats,
+    }
 }
 
 #[test]
@@ -558,6 +547,343 @@ fn runtime_tuple_scoring_cache_reuses_existing_samples() {
 }
 
 #[test]
+fn seed_runtime_score_cache_initializes_current_tuple_stats_for_exact_seed() {
+    let config = dummy_config();
+    let key = runtime_tuple_key(&config);
+    let seed = runtime_seed(
+        64,
+        key,
+        config.preflight.warmup_steps,
+        config.preflight.measure_steps,
+        RuntimeTupleStats {
+            count: 2,
+            sum: 24.0,
+        },
+    );
+    let mut cache = BTreeMap::new();
+
+    seed_runtime_score_cache(&config, &mut cache, Some(seed));
+
+    assert_eq!(
+        cache.get(&key),
+        Some(&RuntimeTupleStats {
+            count: 2,
+            sum: 24.0
+        })
+    );
+}
+
+#[test]
+fn seed_runtime_score_cache_ignores_mismatched_seed_cases() {
+    let config = dummy_config();
+    let key = runtime_tuple_key(&config);
+    let mismatch_cases = [
+        runtime_seed(
+            32,
+            key,
+            config.preflight.warmup_steps,
+            config.preflight.measure_steps,
+            RuntimeTupleStats { count: 1, sum: 5.0 },
+        ),
+        runtime_seed(
+            64,
+            (16, 256, 32),
+            config.preflight.warmup_steps,
+            config.preflight.measure_steps,
+            RuntimeTupleStats { count: 1, sum: 6.0 },
+        ),
+        runtime_seed(
+            64,
+            key,
+            config.preflight.warmup_steps + 1,
+            config.preflight.measure_steps,
+            RuntimeTupleStats { count: 1, sum: 7.0 },
+        ),
+        runtime_seed(
+            64,
+            key,
+            config.preflight.warmup_steps,
+            config.preflight.measure_steps + 1,
+            RuntimeTupleStats { count: 1, sum: 8.0 },
+        ),
+        runtime_seed(
+            64,
+            key,
+            config.preflight.warmup_steps,
+            config.preflight.measure_steps,
+            RuntimeTupleStats::default(),
+        ),
+    ];
+
+    for seed in mismatch_cases {
+        let mut cache = BTreeMap::new();
+        seed_runtime_score_cache(&config, &mut cache, Some(seed));
+        assert!(cache.is_empty());
+    }
+}
+
+#[test]
+fn seed_runtime_score_cache_keeps_existing_entry_for_current_tuple() {
+    let config = dummy_config();
+    let key = runtime_tuple_key(&config);
+    let mut cache = BTreeMap::from([(
+        key,
+        RuntimeTupleStats {
+            count: 3,
+            sum: 36.0,
+        },
+    )]);
+
+    seed_runtime_score_cache(
+        &config,
+        &mut cache,
+        Some(runtime_seed(
+            64,
+            key,
+            config.preflight.warmup_steps,
+            config.preflight.measure_steps,
+            RuntimeTupleStats { count: 1, sum: 9.0 },
+        )),
+    );
+
+    assert_eq!(
+        cache.get(&key),
+        Some(&RuntimeTupleStats {
+            count: 3,
+            sum: 36.0
+        })
+    );
+}
+
+#[test]
+fn ranked_loader_runtime_from_score_cache_uses_all_measured_entries_not_stale_coarse_shortlist() {
+    let base = dummy_config();
+    let tuned = base.clone();
+    let current_tuple = current_runtime_tuple(&tuned);
+    let stronger_measured_tuple = (32, 512, 64);
+    let score_cache = runtime_tuple_score_cache(&[
+        (
+            current_tuple,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 100.0,
+            },
+        ),
+        (
+            (16, 256, 32),
+            RuntimeTupleStats {
+                count: 1,
+                sum: 99.0,
+            },
+        ),
+        (
+            stronger_measured_tuple,
+            RuntimeTupleStats {
+                count: 2,
+                sum: 205.0,
+            },
+        ),
+    ]);
+
+    let ranked = ranked_loader_runtime_from_score_cache(&base, &tuned, &score_cache, 3);
+
+    assert_eq!(
+        ranked_runtime_tuples(&ranked),
+        vec![stronger_measured_tuple, current_tuple, (16, 256, 32)]
+    );
+    assert!((ranked[0].train_samples_per_second - 102.5).abs() < 1e-12);
+}
+
+#[test]
+fn ranked_loader_runtime_from_score_cache_prefers_stronger_final_mean_after_refine_samples() {
+    let base = dummy_config();
+    let tuned = base.clone();
+    let coarse_leader = current_runtime_tuple(&tuned);
+    let refined_winner = (16, 256, 32);
+    let score_cache = runtime_tuple_score_cache(&[
+        (
+            coarse_leader,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 110.0,
+            },
+        ),
+        (
+            refined_winner,
+            RuntimeTupleStats {
+                count: 3,
+                sum: 333.0,
+            },
+        ),
+    ]);
+
+    let ranked = ranked_loader_runtime_from_score_cache(&base, &tuned, &score_cache, 2);
+
+    assert_eq!(
+        ranked_runtime_tuples(&ranked),
+        vec![refined_winner, coarse_leader]
+    );
+    assert!((ranked[0].train_samples_per_second - 111.0).abs() < 1e-12);
+}
+
+#[test]
+fn seeded_current_tuple_preserves_ranked_shortlist_semantics() {
+    let base = dummy_config();
+    let tuned = base.clone();
+    let current_tuple = current_runtime_tuple(&tuned);
+    let stronger_tuple = (16, 256, 32);
+    let third_tuple = (32, 512, 64);
+    let mut seeded_cache = runtime_tuple_score_cache(&[
+        (
+            stronger_tuple,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 110.0,
+            },
+        ),
+        (
+            third_tuple,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 90.0,
+            },
+        ),
+    ]);
+    seed_runtime_score_cache(
+        &tuned,
+        &mut seeded_cache,
+        Some(runtime_seed(
+            64,
+            current_tuple,
+            tuned.preflight.warmup_steps,
+            tuned.preflight.measure_steps,
+            RuntimeTupleStats {
+                count: 2,
+                sum: 200.0,
+            },
+        )),
+    );
+    let seeded_ranked = ranked_loader_runtime_from_score_cache(&base, &tuned, &seeded_cache, 3);
+    let explicit_ranked = ranked_loader_runtime_from_score_cache(
+        &base,
+        &tuned,
+        &runtime_tuple_score_cache(&[
+            (
+                current_tuple,
+                RuntimeTupleStats {
+                    count: 2,
+                    sum: 200.0,
+                },
+            ),
+            (
+                stronger_tuple,
+                RuntimeTupleStats {
+                    count: 1,
+                    sum: 110.0,
+                },
+            ),
+            (
+                third_tuple,
+                RuntimeTupleStats {
+                    count: 1,
+                    sum: 90.0,
+                },
+            ),
+        ]),
+        3,
+    );
+
+    assert_eq!(seeded_ranked, explicit_ranked);
+    assert_eq!(
+        ranked_runtime_tuples(&seeded_ranked),
+        vec![stronger_tuple, current_tuple, third_tuple]
+    );
+}
+
+#[test]
+fn ranked_loader_runtime_from_score_cache_dedups_current_tuple_and_respects_limit() {
+    let base = dummy_config();
+    let mut tuned = base.clone();
+    apply_runtime_tuple(&mut tuned, (16, 256, 32));
+    let current_tuple = current_runtime_tuple(&tuned);
+    let score_cache = runtime_tuple_score_cache(&[
+        (
+            current_tuple,
+            RuntimeTupleStats {
+                count: 2,
+                sum: 250.0,
+            },
+        ),
+        (
+            (8, 128, 16),
+            RuntimeTupleStats {
+                count: 1,
+                sum: 120.0,
+            },
+        ),
+        (
+            (32, 512, 64),
+            RuntimeTupleStats {
+                count: 1,
+                sum: 119.0,
+            },
+        ),
+    ]);
+
+    let ranked = ranked_loader_runtime_from_score_cache(&base, &tuned, &score_cache, 2);
+
+    assert_eq!(ranked.len(), 2);
+    assert_eq!(
+        ranked_runtime_tuples(&ranked),
+        vec![current_tuple, (8, 128, 16)]
+    );
+    assert_eq!(
+        ranked
+            .iter()
+            .filter(|entry| entry.tuple == current_tuple)
+            .count(),
+        1
+    );
+    assert_eq!(ranked[0].loader, loader_runtime_config(&tuned));
+}
+
+#[test]
+fn ranked_loader_runtime_from_score_cache_uses_deterministic_tuple_order_for_equal_scores() {
+    let base = dummy_config();
+    let tuned = base.clone();
+    let score_cache = runtime_tuple_score_cache(&[
+        (
+            (32, 512, 64),
+            RuntimeTupleStats {
+                count: 2,
+                sum: 200.0,
+            },
+        ),
+        (
+            (8, 128, 16),
+            RuntimeTupleStats {
+                count: 1,
+                sum: 100.0,
+            },
+        ),
+        (
+            (16, 256, 32),
+            RuntimeTupleStats {
+                count: 3,
+                sum: 300.0,
+            },
+        ),
+    ]);
+
+    let ranked = ranked_loader_runtime_from_score_cache(&base, &tuned, &score_cache, 3);
+
+    assert_eq!(
+        ranked_runtime_tuples(&ranked),
+        vec![(8, 128, 16), (16, 256, 32), (32, 512, 64)]
+    );
+}
+
+#[test]
 fn push_runtime_tuple_sample_preserves_existing_cache_when_measurement_fails() {
     let config = dummy_config();
     let manifest = DataManifest {
@@ -622,6 +948,224 @@ fn runtime_refine_helpers_apply_minimum_budget_and_format_summary() {
 }
 
 #[test]
+fn runtime_refine_top_up_plan_computes_missing_sample_math_for_zero_partial_and_saturated_counts() {
+    assert_eq!(
+        runtime_refine_top_up_plan(RuntimeTupleStats::default(), 2),
+        RuntimeRefineTopUpPlan {
+            target_total_count: 3,
+            missing_samples: 3,
+        }
+    );
+    assert_eq!(
+        runtime_refine_top_up_plan(
+            RuntimeTupleStats {
+                count: 2,
+                sum: 40.0,
+            },
+            2,
+        ),
+        RuntimeRefineTopUpPlan {
+            target_total_count: 3,
+            missing_samples: 1,
+        }
+    );
+    assert_eq!(
+        runtime_refine_top_up_plan(
+            RuntimeTupleStats {
+                count: 3,
+                sum: 60.0,
+            },
+            2,
+        ),
+        RuntimeRefineTopUpPlan {
+            target_total_count: 3,
+            missing_samples: 0,
+        }
+    );
+    assert_eq!(
+        runtime_refine_top_up_plan(
+            RuntimeTupleStats {
+                count: 5,
+                sum: 100.0,
+            },
+            2,
+        ),
+        RuntimeRefineTopUpPlan {
+            target_total_count: 3,
+            missing_samples: 0,
+        }
+    );
+}
+
+#[test]
+fn seeded_current_tuple_with_count_already_meeting_target_skips_refine_top_up() {
+    let tuned = dummy_config();
+    let current_tuple = current_runtime_tuple(&tuned);
+    let other_tuple = (16, 256, 32);
+    let close_tuples = vec![current_tuple, other_tuple];
+    let mut score_cache = runtime_refine_cache_entries(&[
+        (
+            current_tuple,
+            RuntimeTupleStats {
+                count: 3,
+                sum: 300.0,
+            },
+        ),
+        (
+            other_tuple,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 95.0,
+            },
+        ),
+    ]);
+    let mut seen = Vec::new();
+    let mut best_score = 100.0;
+    let mut best_tuple = current_tuple;
+
+    refine_close_runtime_tuples(
+        &tuned,
+        &close_tuples,
+        2,
+        &mut score_cache,
+        &mut best_score,
+        &mut best_tuple,
+        |candidate, cache| {
+            let tuple = runtime_tuple_key(candidate);
+            seen.push(tuple);
+            let stats = cache.entry(tuple).or_default();
+            *stats = stats.push(120.0 + seen.len() as f64);
+            Ok(stats.mean())
+        },
+    )
+    .expect("refine top-up should succeed");
+
+    assert_eq!(seen, vec![other_tuple, other_tuple]);
+    assert_eq!(
+        score_cache.get(&current_tuple).map(|stats| stats.count),
+        Some(3)
+    );
+    assert_eq!(
+        score_cache.get(&other_tuple).map(|stats| stats.count),
+        Some(3)
+    );
+}
+
+#[test]
+fn seeded_current_tuple_with_partial_count_only_tops_up_missing_amount() {
+    let tuned = dummy_config();
+    let current_tuple = current_runtime_tuple(&tuned);
+    let other_tuple = (16, 256, 32);
+    let close_tuples = vec![current_tuple, other_tuple];
+    let mut score_cache = runtime_refine_cache_entries(&[
+        (
+            current_tuple,
+            RuntimeTupleStats {
+                count: 2,
+                sum: 200.0,
+            },
+        ),
+        (
+            other_tuple,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 95.0,
+            },
+        ),
+    ]);
+    let mut seen = Vec::new();
+    let mut best_score = 100.0;
+    let mut best_tuple = current_tuple;
+
+    refine_close_runtime_tuples(
+        &tuned,
+        &close_tuples,
+        2,
+        &mut score_cache,
+        &mut best_score,
+        &mut best_tuple,
+        |candidate, cache| {
+            let tuple = runtime_tuple_key(candidate);
+            seen.push(tuple);
+            let stats = cache.entry(tuple).or_default();
+            *stats = stats.push(120.0 + seen.len() as f64);
+            Ok(stats.mean())
+        },
+    )
+    .expect("refine top-up should succeed");
+
+    assert_eq!(seen, vec![current_tuple, other_tuple, other_tuple]);
+    assert_eq!(
+        score_cache.get(&current_tuple).map(|stats| stats.count),
+        Some(3)
+    );
+    assert_eq!(
+        score_cache.get(&other_tuple).map(|stats| stats.count),
+        Some(3)
+    );
+}
+
+#[test]
+fn ranked_shortlist_semantics_match_equivalent_explicit_cache_contents() {
+    let base = dummy_config();
+    let tuned = base.clone();
+    let current_tuple = current_runtime_tuple(&tuned);
+    let stronger_tuple = (16, 256, 32);
+    let third_tuple = (32, 512, 64);
+    let seeded_cache = runtime_tuple_score_cache(&[
+        (
+            current_tuple,
+            RuntimeTupleStats {
+                count: 3,
+                sum: 300.0,
+            },
+        ),
+        (
+            stronger_tuple,
+            RuntimeTupleStats {
+                count: 3,
+                sum: 333.0,
+            },
+        ),
+        (
+            third_tuple,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 90.0,
+            },
+        ),
+    ]);
+    let explicit_cache = runtime_tuple_score_cache(&[
+        (
+            current_tuple,
+            RuntimeTupleStats {
+                count: 3,
+                sum: 300.0,
+            },
+        ),
+        (
+            stronger_tuple,
+            RuntimeTupleStats {
+                count: 3,
+                sum: 333.0,
+            },
+        ),
+        (
+            third_tuple,
+            RuntimeTupleStats {
+                count: 1,
+                sum: 90.0,
+            },
+        ),
+    ]);
+
+    let seeded_ranked = ranked_loader_runtime_from_score_cache(&base, &tuned, &seeded_cache, 3);
+    let explicit_ranked = ranked_loader_runtime_from_score_cache(&base, &tuned, &explicit_cache, 3);
+
+    assert_eq!(seeded_ranked, explicit_ranked);
+}
+
+#[test]
 fn format_runtime_refine_summary_preserves_nonzero_budget_without_clamping() {
     let summary = format_runtime_refine_summary(&[(32, 512, 64)], 3);
 
@@ -649,26 +1193,25 @@ fn measure_train_runtime_throughput_fails_fast_without_train_data() {
 }
 
 #[test]
-fn measure_train_runtime_throughput_fails_fast_without_train_data_in_bf16_mode() {
-    let mut config = dummy_config();
-    config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
-    let manifest = DataManifest {
-        sources: vec![],
-        total_games: 0,
-        train_count: 0,
-        val_count: 0,
-        counts_exact: true,
-    };
-    let loader = runtime_probe_loader_config(&config);
+fn runtime_probe_success_paths_measure_and_cache_real_train_data_variants() {
+    let (manifest, path) = single_loose_train_manifest("success-paths");
 
-    let err = measure_train_runtime_throughput(&config, &loader, &manifest, &LibTorchDevice::Cpu)
-        .expect_err("empty manifests should fail before measuring BF16 throughput");
+    assert_runtime_probe_success_paths_measure_and_cache_real_train_data_case(
+        &manifest,
+        crate::config::PrecisionMode::Fp32,
+    );
+    assert_runtime_probe_success_paths_measure_and_cache_real_train_data_case(
+        &manifest,
+        crate::config::PrecisionMode::Bf16Autocast,
+    );
 
-    assert_eq!(err, "not enough train data to finish runtime probe");
+    fs::remove_file(path).ok();
 }
 
-#[test]
-fn runtime_probe_success_paths_measure_and_cache_real_train_data() {
+fn assert_runtime_probe_success_paths_measure_and_cache_real_train_data_case(
+    manifest: &DataManifest,
+    precision_mode: crate::config::PrecisionMode,
+) {
     let mut config = dummy_config();
     config.batch_size = 1;
     config.microbatch_size = Some(1);
@@ -679,55 +1222,20 @@ fn runtime_probe_success_paths_measure_and_cache_real_train_data() {
     config.archive_queue_bound = 1;
     config.preflight.warmup_steps = 1;
     config.preflight.measure_steps = 1;
+    config.precision_mode = precision_mode;
 
-    let (manifest, path) = single_loose_train_manifest("success-paths");
     let key = runtime_tuple_key(&config);
     let mut cache = BTreeMap::new();
-    let measured_score = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
+    let measured_score = score_runtime_tuple(&config, manifest, &LibTorchDevice::Cpu, &mut cache)
         .expect("uncached runtime tuple should run the real training probe and insert a score");
     assert!(measured_score.is_finite());
     assert!(measured_score >= 0.0);
     assert_eq!(cache.get(&key).map(|stats| stats.count), Some(1));
 
-    let cached_score = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
+    let cached_score = score_runtime_tuple(&config, manifest, &LibTorchDevice::Cpu, &mut cache)
         .expect("cached runtime tuple should reuse the inserted sample");
     assert_eq!(cached_score, measured_score);
     assert_eq!(cache.get(&key).map(|stats| stats.count), Some(1));
-
-    fs::remove_file(path).ok();
-}
-
-#[test]
-fn runtime_probe_success_paths_measure_and_cache_real_train_data_in_bf16_mode() {
-    let mut config = dummy_config();
-    config.batch_size = 1;
-    config.microbatch_size = Some(1);
-    config.augment = false;
-    config.train_fraction = 1.0;
-    config.buffer_games = 1;
-    config.buffer_samples = 1;
-    config.archive_queue_bound = 1;
-    config.preflight.warmup_steps = 1;
-    config.preflight.measure_steps = 1;
-    config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
-
-    let (manifest, path) = single_loose_train_manifest("success-paths-bf16");
-    let key = runtime_tuple_key(&config);
-    let mut cache = BTreeMap::new();
-    let measured_score = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect(
-            "uncached BF16 runtime tuple should run the real training probe and insert a score",
-        );
-    assert!(measured_score.is_finite());
-    assert!(measured_score >= 0.0);
-    assert_eq!(cache.get(&key).map(|stats| stats.count), Some(1));
-
-    let cached_score = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect("cached BF16 runtime tuple should reuse the inserted sample");
-    assert_eq!(cached_score, measured_score);
-    assert_eq!(cache.get(&key).map(|stats| stats.count), Some(1));
-
-    fs::remove_file(path).ok();
 }
 
 #[test]

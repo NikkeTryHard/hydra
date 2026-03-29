@@ -416,4 +416,20 @@ mod tests {
         assert_eq!(train_microbatch_size(&config), 64);
         assert_eq!(validation_microbatch_size(&config), 32);
     }
+
+    #[test]
+    fn validation_sample_limit_uses_validation_microbatch_size_when_only_batch_limit_is_set() {
+        let mut config = dummy_config();
+        config.max_validation_batches = Some(3);
+        config.max_validation_samples = None;
+        config.microbatch_size = Some(64);
+        config.validation_microbatch_size = None;
+
+        assert_eq!(validation_microbatch_size(&config), 64);
+        assert_eq!(validation_sample_limit(&config), Some(192));
+
+        config.validation_microbatch_size = Some(20);
+        assert_eq!(validation_microbatch_size(&config), 20);
+        assert_eq!(validation_sample_limit(&config), Some(60));
+    }
 }

@@ -140,10 +140,24 @@ pub(crate) struct ProbeCliRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProbeChildRequest {
+pub(crate) struct ProbeSingleChildRequest {
     pub(crate) request: ProbeCliRequest,
     pub(crate) result_path: PathBuf,
     pub(crate) manifest_cache_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProbeBatchChildRequest {
+    pub(crate) request: ProbeCliRequest,
+    pub(crate) attempts: usize,
+    pub(crate) results_path: PathBuf,
+    pub(crate) manifest_cache_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProbeChildRequest {
+    Single(ProbeSingleChildRequest),
+    Batch(ProbeBatchChildRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,7 +345,9 @@ where
     let mut candidate_microbatch = None;
     let mut warmup_steps = None;
     let mut measure_steps = None;
+    let mut probe_attempts = None;
     let mut probe_result_path = None;
+    let mut probe_results_path = None;
     let mut probe_manifest_cache_path = None;
     let mut preflight = false;
     let mut delta_q_promotion = false;
@@ -371,11 +387,20 @@ where
             "--probe-measure-steps" => {
                 measure_steps = Some(parse_usize_flag("--probe-measure-steps", args.next())?);
             }
+            "--probe-attempts" => {
+                probe_attempts = Some(parse_usize_flag("--probe-attempts", args.next())?);
+            }
             "--probe-result-path" => {
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --probe-result-path".to_string())?;
                 probe_result_path = Some(PathBuf::from(value));
+            }
+            "--probe-results-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --probe-results-path".to_string())?;
+                probe_results_path = Some(PathBuf::from(value));
             }
             "--probe-manifest-cache-path" => {
                 let value = args
@@ -391,6 +416,8 @@ where
     if preflight
         && (probe_kind.is_some()
             || probe_result_path.is_some()
+            || probe_results_path.is_some()
+            || probe_attempts.is_some()
             || delta_q_promotion
             || delta_q_baseline_checkpoint.is_some())
     {
@@ -399,7 +426,12 @@ where
             usage(&program)
         ));
     }
-    if delta_q_promotion && (probe_kind.is_some() || probe_result_path.is_some()) {
+    if delta_q_promotion
+        && (probe_kind.is_some()
+            || probe_result_path.is_some()
+            || probe_results_path.is_some()
+            || probe_attempts.is_some())
+    {
         return Err(format!(
             "{}\n--delta-q-promotion cannot be combined with probe-only flags",
             usage(&program)
@@ -411,8 +443,26 @@ where
             usage(&program)
         ));
     }
-    match (probe_kind, candidate_microbatch, probe_result_path) {
-        (None, None, None) => Ok(TrainCli {
+    if probe_result_path.is_some() && (probe_results_path.is_some() || probe_attempts.is_some()) {
+        return Err(format!(
+            "{}\ninternal probe child mode cannot combine --probe-result-path with --probe-attempts/--probe-results-path",
+            usage(&program)
+        ));
+    }
+    if probe_results_path.is_some() ^ probe_attempts.is_some() {
+        return Err(format!(
+            "{}\ninternal probe batch child mode requires both --probe-attempts and --probe-results-path",
+            usage(&program)
+        ));
+    }
+    match (
+        probe_kind,
+        candidate_microbatch,
+        probe_result_path,
+        probe_results_path,
+        probe_attempts,
+    ) {
+        (None, None, None, None, None) => Ok(TrainCli {
             config_path,
             preflight,
             delta_q_promotion,
@@ -420,7 +470,7 @@ where
             probe_only: None,
             probe_child: None,
         }),
-        (Some(kind), Some(candidate_microbatch), None) => Ok(TrainCli {
+        (Some(kind), Some(candidate_microbatch), None, None, None) => Ok(TrainCli {
             config_path,
             preflight: false,
             delta_q_promotion: false,
@@ -433,13 +483,13 @@ where
             }),
             probe_child: None,
         }),
-        (Some(kind), Some(candidate_microbatch), Some(result_path)) => Ok(TrainCli {
+        (Some(kind), Some(candidate_microbatch), Some(result_path), None, None) => Ok(TrainCli {
             config_path,
             preflight: false,
             delta_q_promotion: false,
             delta_q_baseline_checkpoint: None,
             probe_only: None,
-            probe_child: Some(ProbeChildRequest {
+            probe_child: Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
                 request: ProbeCliRequest {
                     kind,
                     candidate_microbatch,
@@ -448,8 +498,28 @@ where
                 },
                 result_path,
                 manifest_cache_path: probe_manifest_cache_path,
-            }),
+            })),
         }),
+        (Some(kind), Some(candidate_microbatch), None, Some(results_path), Some(attempts)) => {
+            Ok(TrainCli {
+                config_path,
+                preflight: false,
+                delta_q_promotion: false,
+                delta_q_baseline_checkpoint: None,
+                probe_only: None,
+                probe_child: Some(ProbeChildRequest::Batch(ProbeBatchChildRequest {
+                    request: ProbeCliRequest {
+                        kind,
+                        candidate_microbatch,
+                        warmup_steps,
+                        measure_steps,
+                    },
+                    attempts,
+                    results_path,
+                    manifest_cache_path: probe_manifest_cache_path,
+                })),
+            })
+        }
         _ => Err(format!(
             "{}\nprobe mode requires both --probe-kind and --probe-candidate-microbatch",
             usage(&program)

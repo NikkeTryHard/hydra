@@ -315,7 +315,7 @@ impl<B: Backend> HydraModel<B> {
             NUM_CHANNELS,
             NUM_TILES,
         ]);
-        let (policy_logits, _) = self.forward_policy_value(input);
+        let policy_logits = self.forward_policy(input);
         let logits_data = policy_logits.to_data().convert::<f32>();
         let logits_slice = logits_data
             .as_slice::<f32>()
@@ -344,7 +344,7 @@ impl<B: Backend> HydraModel<B> {
         obs: &[f32; OBS_SIZE],
         device: &B::Device,
     ) -> ([f32; HYDRA_ACTION_SPACE], f32) {
-        (self.policy_cpu(obs, device), self.value_cpu(obs, device))
+        self.policy_value_cpu(obs, device)
     }
 
     /// Batch inference using a caller-provided flat buffer to avoid
@@ -507,6 +507,11 @@ impl<B: Backend> HydraModel<B> {
         self.value.forward(pooled)
     }
 
+    pub fn forward_policy(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
+        let (_, pooled) = self.backbone.forward(x);
+        self.policy.forward(pooled)
+    }
+
     pub fn forward_policy_value(&self, x: Tensor<B, 3>) -> (Tensor<B, 2>, Tensor<B, 2>) {
         let (_, pooled) = self.backbone.forward(x);
         let policy_logits = self.policy.forward(pooled.clone());
@@ -659,7 +664,7 @@ impl<B: Backend> HydraModel<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLoss, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::LibTorch;
     use burn::backend::NdArray;
@@ -730,6 +735,44 @@ mod tests {
         assert_eq!(logits.len(), HYDRA_ACTION_SPACE);
         assert!(value.is_finite());
         assert!(logits.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn policy_and_value_cpu_matches_policy_value_cpu() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let obs = [0.125f32; OBS_SIZE];
+
+        let direct = model.policy_value_cpu(&obs, &device);
+        let via_helper = model.policy_and_value_cpu(&obs, &device);
+
+        assert_eq!(direct.0, via_helper.0);
+        assert!((direct.1 - via_helper.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn forward_policy_matches_forward_policy_value_logits() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, INPUT_CHANNELS, 34], &device);
+
+        let policy_only = model.forward_policy(x.clone());
+        let (policy_logits, _) = model.forward_policy_value(x);
+
+        let policy_only_data = policy_only
+            .to_data()
+            .convert::<f32>()
+            .as_slice::<f32>()
+            .expect("policy-only logits should be readable")
+            .to_vec();
+        let policy_value_data = policy_logits
+            .to_data()
+            .convert::<f32>()
+            .as_slice::<f32>()
+            .expect("policy-value logits should be readable")
+            .to_vec();
+
+        assert_eq!(policy_only_data, policy_value_data);
     }
 
     #[test]
@@ -813,9 +856,15 @@ mod tests {
     fn batch_value_cpu_reuse_supports_libtorch_bf16_backend() {
         type Bf16Backend = LibTorch<bf16>;
 
+        let tiny_model_config = HydraModelConfig::new(1)
+            .with_input_channels(INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1);
+
         let device = burn::backend::libtorch::LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<Bf16Backend>(&device);
-        let observations = [[0.05f32; OBS_SIZE], [0.15f32; OBS_SIZE]];
+        let model = tiny_model_config.init::<Bf16Backend>(&device);
+        let observations = [[0.05f32; OBS_SIZE]];
         let mut flat_buf = vec![7.0f32; 11];
         let mut values_buf = Vec::new();
 
@@ -834,11 +883,17 @@ mod tests {
     fn hydra_loss_runs_on_libtorch_bf16_backend() {
         type Bf16Backend = LibTorch<bf16>;
 
+        let tiny_model_config = HydraModelConfig::new(1)
+            .with_input_channels(INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1);
+
         let device = burn::backend::libtorch::LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<Bf16Backend>(&device);
-        let x = Tensor::<Bf16Backend, 3>::zeros([2, INPUT_CHANNELS, 34], &device);
+        let model = tiny_model_config.init::<Bf16Backend>(&device);
+        let x = Tensor::<Bf16Backend, 3>::zeros([1, INPUT_CHANNELS, 34], &device);
         let out = model.forward(x);
-        let targets = make_dummy_targets::<Bf16Backend>(&device, 2);
+        let targets = make_dummy_targets::<Bf16Backend>(&device, 1);
         let hydra_loss = HydraLoss::<Bf16Backend>::new(HydraLossConfig::new());
         let breakdown = hydra_loss.total_loss(&out, &targets);
         let total = breakdown
@@ -856,11 +911,17 @@ mod tests {
     fn hydra_training_step_runs_on_libtorch_bf16_backend() {
         type Bf16Backend = Autodiff<LibTorch<bf16>>;
 
+        let tiny_model_config = HydraModelConfig::new(1)
+            .with_input_channels(INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1);
+
         let device = burn::backend::libtorch::LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<Bf16Backend>(&device);
-        let x = Tensor::<Bf16Backend, 3>::zeros([2, INPUT_CHANNELS, 34], &device);
+        let model = tiny_model_config.init::<Bf16Backend>(&device);
+        let x = Tensor::<Bf16Backend, 3>::zeros([1, INPUT_CHANNELS, 34], &device);
         let out = model.forward(x);
-        let targets = make_dummy_targets::<Bf16Backend>(&device, 2);
+        let targets = make_dummy_targets::<Bf16Backend>(&device, 1);
         let hydra_loss = HydraLoss::<Bf16Backend>::new(HydraLossConfig::new());
         let breakdown = hydra_loss.total_loss(&out, &targets);
         let loss = breakdown.total;

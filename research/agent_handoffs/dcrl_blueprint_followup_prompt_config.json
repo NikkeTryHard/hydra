@@ -1,0 +1,251 @@
+{
+  "version": 1,
+  "repo_root": "../..",
+  "defaults": {
+    "title": "Hydra prompt — DCRL follow-up implementation blueprint",
+    "artifact_container_tag": "artifacts",
+    "artifact_ids": [
+      "followup-context"
+    ],
+    "shell_sections": []
+  },
+  "artifacts": [
+    {
+      "id": "followup-context",
+      "type": "literal",
+      "label": "Follow-up context and hard scope",
+      "explanation": "Pins the task to the already-narrowed question so the agent does not waste time re-arguing whether DCRL is worth major method attention.",
+      "source_label": "META",
+      "fence_language": "text",
+      "content_lines": [
+        "Prior answer is already available in the packet and should be treated as the narrowed starting point.",
+        "The previous verdict was: docs yes lightly, method no active reaction now, but a future ablation note could be justified if Hydra's actor-critic RL lane becomes active and unstable.",
+        "This follow-up is not asking whether DCRL is important. It is asking for the exact Hydra blueprint if we wanted the smallest rigorous implementation-ready plan for that lane.",
+        "We need the exact formula, the exact code surfaces, how it would coexist with the current baseline and staged lanes, what phase it belongs in, what docs should change, and what gates/fallback would control it."
+      ]
+    },
+    {
+      "id": "prior-answer",
+      "type": "file_full",
+      "path": "research/agent_handoffs/agent_answer.md",
+      "label": "Prior narrowed answer",
+      "explanation": "This is the already-completed worth-it answer. The new task must start from this conclusion rather than redoing the worth-it analysis.",
+      "source_label": "PREV",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "train-readme",
+      "type": "file_full",
+      "path": "crates/hydra-train/README.md",
+      "label": "Training crate ownership and shipped lane summary",
+      "explanation": "Fast orientation for what hydra-train owns and which training lanes are already baseline versus staged or promotion-gated.",
+      "source_label": "DOC",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "current-status",
+      "type": "file_full",
+      "path": "docs/CURRENT_STATUS.md",
+      "label": "Current shipped vs staged status",
+      "explanation": "Needed so the blueprint can say whether a DCRL-style lane belongs in baseline, implemented-but-not-default-on, staged, or reserve shelf.",
+      "source_label": "DOC",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "implementation-roadmap-step3",
+      "type": "file_range",
+      "path": "research/design/IMPLEMENTATION_ROADMAP.md",
+      "start_line": 166,
+      "end_line": 244,
+      "label": "Historical head layout and activation notes",
+      "explanation": "Useful compressed reference for the current head set, including oracle, delta_q, and advanced-head staging notes.",
+      "source_label": "ROADMAP",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "rl-loop",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/training/rl.rs",
+      "start_line": 141,
+      "end_line": 400,
+      "label": "RL update composition and auxiliary-loss mixing",
+      "explanation": "Primary code surface for where a DCRL-style mixed-advantage update could actually land in Hydra's RL loop.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "loss-config",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/training/losses.rs",
+      "start_line": 8,
+      "end_line": 193,
+      "label": "Target surfaces and loss weights",
+      "explanation": "Shows what targets and loss knobs already exist, including oracle critic and advanced-head weights defaulting to zero.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "model-surface",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/model.rs",
+      "start_line": 11,
+      "end_line": 220,
+      "label": "Model outputs and head structure",
+      "explanation": "Shows the exact output surface already available to the model, including value and oracle critic heads.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "training-phase-config",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/config.rs",
+      "start_line": 78,
+      "end_line": 159,
+      "label": "Training phase enum and budgets",
+      "explanation": "Critical for deciding where a DCRL-style lane belongs in Hydra's phase schedule.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "pipeline-state",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/config.rs",
+      "start_line": 262,
+      "end_line": 353,
+      "label": "Pipeline phase state and progress logic",
+      "explanation": "Lets the agent tie any proposed lane to the actual phase-advance machinery Hydra already uses.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "head-gates",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/training/head_gates.rs",
+      "start_line": 577,
+      "end_line": 860,
+      "label": "Advanced-head activation and gating controller",
+      "explanation": "High-value surface for deciding how a DCRL-related lane should be staged, warmed up, and gated instead of made baseline immediately.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "orchestrator",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/training/orchestrator.rs",
+      "start_line": 1,
+      "end_line": 260,
+      "label": "Phase-aware orchestration and gate evaluation",
+      "explanation": "Needed for blueprinting the exact promotion gates, benchmark gates, and validation gates a new lane would need to obey.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "train-modes",
+      "type": "file_range",
+      "path": "crates/hydra-train/src/bin/train/modes.rs",
+      "start_line": 267,
+      "end_line": 499,
+      "label": "Training mode and promotion-mode surfaces",
+      "explanation": "Shows how Hydra currently exposes RL training and a promotion-gated experimental lane (DeltaQ), which is a strong pattern candidate for any DCRL-style follow-up lane.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "opponent-modeling",
+      "type": "file_range",
+      "path": "research/design/OPPONENT_MODELING.md",
+      "start_line": 1,
+      "end_line": 140,
+      "label": "Opponent modeling rationale surface",
+      "explanation": "Useful context for whether any DCRL-style lane should attach to Hydra's actual differentiator stack rather than float as an abstract RL trick.",
+      "source_label": "DESIGN",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    }
+  ],
+  "variants": [
+    {
+      "name": "narrow-blueprint",
+      "title": "Hydra prompt — DCRL follow-up implementation blueprint",
+      "shell_source_path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_001_narrow_focused.md",
+      "output_file": "hydra_dcrl_blueprint_followup_prompt.md",
+      "artifact_ids": [
+        "prior-answer",
+        "train-readme",
+        "current-status",
+        "implementation-roadmap-step3",
+        "rl-loop",
+        "loss-config",
+        "model-surface",
+        "training-phase-config",
+        "pipeline-state",
+        "head-gates",
+        "orchestrator",
+        "train-modes",
+        "opponent-modeling"
+      ],
+      "shell_sections": [
+        {
+          "tag": "role",
+          "mode": "append",
+          "lines": [
+            "You are producing an implementation-ready Hydra blueprint for a narrow follow-up lane.",
+            "Assume the earlier worth-it triage is already done; your job is to turn that conclusion into the strongest exact plan."
+          ]
+        },
+        {
+          "tag": "task",
+          "mode": "append",
+          "lines": [
+            "Produce the exact blueprint for how a DCRL-style mixed-advantage critic lane would map onto Hydra if Hydra wanted the smallest rigorous follow-up beyond the prior docs-positioning verdict.",
+            "",
+            "We need a buildable answer that makes clear:",
+            "- the exact formula Hydra should test, including whether and how to define A_std, A_orc, beta, and any detach / stop-gradient boundaries",
+            "- whether the proposal should reuse existing value/oracle heads or add a new head, target, or loss surface",
+            "- the exact code files and functions to change, in what order, and why",
+            "- whether this belongs in baseline, implemented-but-not-default-on, implemented-but-staged, or reserve shelf",
+            "- the exact TrainingPhase where it should first appear, and how it should move through phase gating if it survives",
+            "- how HYDRA_FINAL.md and any other docs should be updated to describe the lane without overwriting Hydra's current identity",
+            "- what train mode, artifact, or promotion path should exist if this should mirror the DeltaQ-style promotion workflow",
+            "- what measurable acceptance criteria should control promotion or rejection",
+            "- what falsifies the lane and what the fallback should be if the lane fails",
+            "",
+            "Do not redo the broad worth-it debate. Start from the prior answer and produce the narrowest implementation-ready blueprint that fits current Hydra doctrine and code reality. Use the artifacts below to derive your conclusions."
+          ]
+        },
+        {
+          "tag": "rules",
+          "mode": "append",
+          "lines": [
+            "- separate 'docs positioning patch' from 'code/phase blueprint' so the answer does not blur them together",
+            "- if the best answer is 'ablation only, not mainline', still give the exact ablation blueprint rather than stopping at policy advice",
+            "- prefer reusing existing Hydra surfaces over inventing new heads or runtime complexity unless the artifacts force a new surface",
+            "- make every proposed file touchpoint concrete enough that a coding agent could open the files and start implementing in order",
+            "- when you recommend a phase or lane status, tie it to the existing TrainingPhase / PipelineState / head-gating machinery rather than vague project language"
+          ]
+        },
+        {
+          "tag": "style",
+          "mode": "append",
+          "lines": [
+            "- lead with a one-paragraph verdict on the exact smallest viable Hydra blueprint",
+            "- include formulas and pseudocode when they help make the update object unambiguous",
+            "- include a compact file-by-file change plan and a compact promotion-gate checklist"
+          ]
+        }
+      ]
+    }
+  ]
+}

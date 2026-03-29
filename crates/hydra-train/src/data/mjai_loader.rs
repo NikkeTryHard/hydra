@@ -324,19 +324,6 @@ fn replay_phase_for_event(event: &MjaiEvent, state: &GameState, actor: usize) ->
     }
 }
 
-fn replay_engine_action_for_event(
-    event: &MjaiEvent,
-    state: &GameState,
-    actor: usize,
-    env_action: EngineAction,
-) -> EngineAction {
-    if matches!(event, MjaiEvent::Dahai { .. }) && state.players[actor].riichi_stage {
-        EngineAction::new(ActionType::Riichi, env_action.tile, &[], Some(actor as u8))
-    } else {
-        env_action
-    }
-}
-
 fn finalize_prepared_replay_decision(
     actor: usize,
     env_action: EngineAction,
@@ -453,7 +440,6 @@ pub(crate) fn prepare_replay_decisions(
         return Ok(decisions);
     };
 
-    let env_action = replay_engine_action_for_event(event, state, actor, env_action);
     let obs = observation_for_replay_event(state, actor, &env_action)?;
     if let Some(decision) = finalize_prepared_replay_decision(
         actor,
@@ -1713,5 +1699,35 @@ mod tests {
         assert!(response_before.is_empty() || response_before.as_slice() == [1]);
         assert!(state.active_player_slice().is_empty());
         assert_eq!(state.phase, riichienv_core::action::Phase::WaitAct);
+    }
+
+    #[test]
+    fn prepare_replay_decision_keeps_riichi_dahai_as_discard_action() {
+        let events = read_mjai_events(Cursor::new(
+            [
+                r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p","5p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+                r#"{"type":"reach","actor":0}"#,
+                r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            ]
+            .join("\n"),
+        ))
+        .expect("parse events");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+
+        for event in events.iter().take(2) {
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        let decision = prepare_replay_decision(&events[2], &mut state, &safety, &mut encoder)
+            .expect("prepare replay decision should succeed")
+            .expect("riichi discard should still emit a replay decision");
+
+        assert_eq!(decision.actor, 0);
+        assert_ne!(decision.action_id, hydra_core::action::RIICHI);
+        assert!(decision.action_id <= hydra_core::action::DISCARD_END);
+        assert!(decision.legal_mask[decision.action_id as usize]);
     }
 }

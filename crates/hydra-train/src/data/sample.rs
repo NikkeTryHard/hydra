@@ -3,7 +3,7 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_type};
+use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
 use std::cell::RefCell;
 
 use crate::training::exit::collate_exit_targets;
@@ -182,10 +182,18 @@ pub struct MjaiBatch<B: Backend> {
     pub target_presence: Option<TargetPresence>,
 }
 
+pub struct MjaiBcBatch<B: Backend> {
+    pub actions: Tensor<B, 1, Int>,
+    pub exit_target: Option<Tensor<B, 2>>,
+    pub exit_mask: Option<Tensor<B, 2>>,
+}
+
 pub(crate) type CollatedHydraBatch<B> = Result<Option<(Tensor<B, 3>, HydraTargets<B>)>, String>;
 pub(crate) type CollatedSampleBatch<B> = Result<Option<(Tensor<B, 3>, MjaiBatch<B>)>, String>;
 pub(crate) type CollatedOwnedBatch<B> =
     Result<Option<(Tensor<B, 3>, MjaiBatch<B>, HydraTargets<B>)>, String>;
+pub type CollatedOwnedBcBatch<B> =
+    Result<Option<(Tensor<B, 3>, MjaiBcBatch<B>, HydraTargets<B>)>, String>;
 type OptionalActionTargets = Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>;
 
 struct CollateBuffers {
@@ -689,34 +697,75 @@ impl CollateBuffers {
     }
 }
 
-fn into_hydra_targets_inner<B: Backend>(batch: MjaiBatch<B>) -> HydraTargets<B> {
-    let batch_size = batch.actions.dims()[0];
-    let policy_target = policy_target_from_actions(batch.actions.clone(), batch_size);
+fn into_bc_batch_and_hydra_targets_inner<B: Backend>(
+    batch: MjaiBatch<B>,
+) -> (Tensor<B, 3>, MjaiBcBatch<B>, HydraTargets<B>) {
+    let MjaiBatch {
+        obs,
+        actions,
+        legal_mask,
+        value_target,
+        grp_target,
+        oracle_target,
+        oracle_target_mask,
+        tenpai_target,
+        danger_target,
+        danger_mask,
+        safety_residual_target,
+        safety_residual_mask,
+        exit_target,
+        exit_mask,
+        delta_q_target,
+        delta_q_mask,
+        belief_fields_target,
+        mixture_weight_target,
+        belief_fields_mask,
+        mixture_weight_mask,
+        opp_next_target,
+        score_pdf_target,
+        score_cdf_target,
+        target_presence,
+    } = batch;
+    let batch_size = actions.dims()[0];
+    let policy_target = policy_target_from_actions(actions.clone(), batch_size);
 
-    HydraTargets {
-        policy_target,
-        legal_mask: batch.legal_mask,
-        value_target: batch.value_target,
-        grp_target: batch.grp_target,
-        tenpai_target: batch.tenpai_target,
-        danger_target: batch.danger_target,
-        danger_mask: batch.danger_mask,
-        safety_residual_target: batch.safety_residual_target,
-        opp_next_target: batch.opp_next_target,
-        score_pdf_target: batch.score_pdf_target,
-        score_cdf_target: batch.score_cdf_target,
-        oracle_target: batch.oracle_target,
-        belief_fields_target: batch.belief_fields_target,
-        mixture_weight_target: batch.mixture_weight_target,
-        opponent_hand_type_target: None,
-        delta_q_target: batch.delta_q_target,
-        delta_q_mask: batch.delta_q_mask,
-        safety_residual_mask: batch.safety_residual_mask,
-        belief_fields_mask: batch.belief_fields_mask,
-        mixture_weight_mask: batch.mixture_weight_mask,
-        oracle_guidance_mask: Some(batch.oracle_target_mask),
-        target_presence: batch.target_presence,
-    }
+    (
+        obs,
+        MjaiBcBatch {
+            actions,
+            exit_target,
+            exit_mask,
+        },
+        HydraTargets {
+            policy_target,
+            legal_mask,
+            value_target,
+            grp_target,
+            tenpai_target,
+            danger_target,
+            danger_mask,
+            safety_residual_target,
+            opp_next_target,
+            score_pdf_target,
+            score_cdf_target,
+            oracle_target,
+            belief_fields_target,
+            mixture_weight_target,
+            opponent_hand_type_target: None,
+            delta_q_target,
+            delta_q_mask,
+            safety_residual_mask,
+            belief_fields_mask,
+            mixture_weight_mask,
+            oracle_guidance_mask: Some(oracle_target_mask),
+            target_presence,
+        },
+    )
+}
+
+fn into_hydra_targets_inner<B: Backend>(batch: MjaiBatch<B>) -> HydraTargets<B> {
+    let (_, _, targets) = into_bc_batch_and_hydra_targets_inner(batch);
+    targets
 }
 
 fn cloned_hydra_targets<B: Backend>(batch: &MjaiBatch<B>) -> HydraTargets<B> {
@@ -858,6 +907,17 @@ pub fn collate_samples_owned<B: Backend>(
     let obs = batch.obs.clone();
     let targets = cloned_hydra_targets(&batch);
     Ok(Some((obs, batch, targets)))
+}
+
+pub fn collate_samples_bc_owned<B: Backend>(
+    samples: &[MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> CollatedOwnedBcBatch<B> {
+    let Some(batch) = build_batch_from_samples::<B>(samples, augment, device)? else {
+        return Ok(None);
+    };
+    Ok(Some(into_bc_batch_and_hydra_targets_inner(batch)))
 }
 
 pub fn collate_batch_samples<B: Backend>(
@@ -1784,6 +1844,86 @@ mod tests {
         assert_eq!(
             owned_presence.delta_q_actions_present,
             split_presence.delta_q_actions_present
+        );
+    }
+
+    #[test]
+    fn collate_samples_bc_owned_matches_split_batch_targets_and_exit_surface() {
+        let device = Default::default();
+        let mut sample = dummy_sample(2, 100);
+        sample.oracle_target = Some([0.1, -0.1, 0.2, -0.2]);
+        let mut exit_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_target[2] = 0.75;
+        exit_target[45] = -0.25;
+        exit_mask[2] = 1.0;
+        exit_mask[45] = 1.0;
+        sample.exit_target = Some(exit_target);
+        sample.exit_mask = Some(exit_mask);
+        let samples = vec![sample];
+
+        let (obs, bc_batch, targets) = collate_samples_bc_owned::<B>(&samples, false, &device)
+            .expect("bc owned collate")
+            .expect("bc owned batch present");
+        let (split_obs, split_batch) = collate_batch_samples::<B>(&samples, false, &device)
+            .expect("split batch collate")
+            .expect("split batch present");
+        let split_targets = split_batch.to_hydra_targets();
+
+        assert_eq!(obs.to_data(), split_obs.to_data());
+        assert_eq!(bc_batch.actions.to_data(), split_batch.actions.to_data());
+        assert_eq!(
+            bc_batch
+                .exit_target
+                .as_ref()
+                .expect("bc exit target")
+                .to_data(),
+            split_batch
+                .exit_target
+                .as_ref()
+                .expect("split exit target")
+                .to_data()
+        );
+        assert_eq!(
+            bc_batch.exit_mask.as_ref().expect("bc exit mask").to_data(),
+            split_batch
+                .exit_mask
+                .as_ref()
+                .expect("split exit mask")
+                .to_data()
+        );
+        assert_eq!(
+            targets.policy_target.to_data(),
+            split_targets.policy_target.to_data()
+        );
+        assert_eq!(
+            targets.legal_mask.to_data(),
+            split_targets.legal_mask.to_data()
+        );
+        assert_eq!(
+            targets.value_target.to_data(),
+            split_targets.value_target.to_data()
+        );
+        assert_eq!(
+            targets.grp_target.to_data(),
+            split_targets.grp_target.to_data()
+        );
+        assert_eq!(
+            targets.oracle_target.expect("bc oracle target").to_data(),
+            split_targets
+                .oracle_target
+                .expect("split oracle target")
+                .to_data()
+        );
+        assert_eq!(
+            targets
+                .oracle_guidance_mask
+                .expect("bc oracle mask")
+                .to_data(),
+            split_targets
+                .oracle_guidance_mask
+                .expect("split oracle mask")
+                .to_data()
         );
     }
 }

@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::time::Duration;
 
 use burn::backend::libtorch::LibTorchDevice;
@@ -11,7 +11,7 @@ use hydra_train::data::mjai_loader::load_game_from_reader;
 use hydra_train::data::sample::MjaiSample;
 use hydra_train::model::HydraModelConfig;
 use hydra_train::selfplay_batch::{
-    RlBatchScratch, default_gae_config, trajectories_to_rl_batch, trajectories_to_rl_batch_reuse,
+    default_gae_config, trajectories_to_rl_batch, trajectories_to_rl_batch_reuse, RlBatchScratch,
 };
 use hydra_train::training::bc::BcExitConfig;
 use hydra_train::training::losses::{HydraLoss, HydraLossConfig};
@@ -240,6 +240,12 @@ fn bench_model_cpu_bridge(c: &mut Criterion) {
     group.bench_function("value_cpu", |b| {
         b.iter(|| {
             let out = model.value_cpu(&obs, &device);
+            black_box(out)
+        });
+    });
+    group.bench_function("policy_and_value_cpu", |b| {
+        b.iter(|| {
+            let out = model.policy_and_value_cpu(&obs, &device);
             black_box(out)
         });
     });

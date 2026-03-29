@@ -24,7 +24,11 @@ use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
-use super::progress::{BatchStats, ScalarAverages, batch_stats_from_outputs};
+use super::nvtx;
+use super::progress::{
+    BatchStats, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
+    batch_stats_from_outputs,
+};
 use super::resume::BestValidation;
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -181,7 +185,8 @@ where
     let baseline_valid = baseline_model.valid();
     let validation_batch_size = validation_microbatch_size(config);
     let validation_sample_limit = validation_sample_limit(config);
-    let mut stats = ScalarAverages::default();
+    let mut metric_sums: Option<Tensor<ValidBackendOf<TB>, 1>> = None;
+    let mut microbatch_count = 0usize;
     let mut total_samples = 0usize;
     let mut head_controller = head_controller;
     let mut delta_q_promotion = DeltaQPromotionReport::new();
@@ -197,7 +202,8 @@ where
     );
 
     let run_chunk = |capped_chunk: &[MjaiSample],
-                     stats: &mut ScalarAverages,
+                     metric_sums: &mut Option<Tensor<ValidBackendOf<TB>, 1>>,
+                     microbatch_count: &mut usize,
                      total_samples: &mut usize,
                      head_controller: &mut Option<&mut HeadActivationController>,
                      delta_q_promotion: &mut DeltaQPromotionReport,
@@ -214,18 +220,22 @@ where
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
         let candidate_started = Instant::now();
-        let output =
-            model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
-        let breakdown = active_loss_fn.total_loss(&output, &targets);
-        let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, exit_cfg);
+        let (output, breakdown, total) = {
+            let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
+            let output =
+                model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+            let breakdown = active_loss_fn.total_loss(&output, &targets);
+            let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, exit_cfg);
+            (output, breakdown, total)
+        };
         let candidate_elapsed_seconds = candidate_started.elapsed().as_secs_f64();
-        let batch_stats = validation_batch_stats(
+        let chunk_metric_sums = batch_metric_sums_from_outputs(
             capped_chunk.len(),
-            &output,
-            &batch,
-            &targets,
+            output.policy_logits.clone(),
+            targets.legal_mask.clone(),
+            batch.actions.clone(),
+            total.clone(),
             &breakdown,
-            &total,
         );
         let mut baseline_elapsed_seconds = 0.0;
         if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
@@ -233,7 +243,10 @@ where
                 output.policy_logits.clone()
             } else {
                 let baseline_started = Instant::now();
-                let (baseline_policy_logits, _) = baseline_valid.forward_policy_value(obs);
+                let baseline_policy_logits = {
+                    let _baseline_scope = nvtx::scope(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD);
+                    baseline_valid.forward_policy(obs)
+                };
                 baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
                 baseline_policy_logits
             };
@@ -261,7 +274,11 @@ where
                 ),
             ],
         ));
-        stats.record_batch(batch_stats);
+        *metric_sums = Some(match metric_sums.take() {
+            Some(existing) => existing + chunk_metric_sums,
+            None => chunk_metric_sums,
+        });
+        *microbatch_count += 1;
         *total_samples += capped_chunk.len();
         Ok(())
     };
@@ -284,7 +301,8 @@ where
             }
             run_chunk(
                 capped_chunk,
-                &mut stats,
+                &mut metric_sums,
+                &mut microbatch_count,
                 &mut total_samples,
                 &mut head_controller,
                 &mut delta_q_promotion,
@@ -313,7 +331,8 @@ where
                 }
                 run_chunk(
                     capped_chunk,
-                    &mut stats,
+                    &mut metric_sums,
+                    &mut microbatch_count,
                     &mut total_samples,
                     &mut head_controller,
                     &mut delta_q_promotion,
@@ -345,7 +364,11 @@ where
             delta_q_policy_transfer_snapshot: None,
         })
     } else {
-        let stats = stats.finalize();
+        let stats = batch_stats_from_metric_sums(
+            total_samples,
+            microbatch_count,
+            metric_sums.expect("validation metric sums should exist when samples > 0"),
+        );
         let (
             delta_q_promotion,
             delta_q_promotion_result,
@@ -422,12 +445,14 @@ pub(super) fn materialize_validation_samples(
 mod tests {
     use super::*;
 
+    use std::fs;
     use std::path::PathBuf;
 
     use burn::backend::libtorch::LibTorchDevice;
     use burn::tensor::Tensor;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::encoder::OBS_SIZE;
+    use hydra_train::data::pipeline::DataSource;
     use hydra_train::data::sample::MjaiBatch;
     use hydra_train::data::sample::MjaiSample;
     use hydra_train::model::HydraModelConfig;
@@ -436,10 +461,25 @@ mod tests {
     use hydra_train::training::losses::HydraLossConfig;
 
     use super::super::TrainBackend;
+    use crate::test_loose_replay_fixtures::write_real_preflight_fixture;
     use crate::config::{BcHyperparamConfig, TrainConfig};
     use crate::resume::BestValidation;
 
     type TestValidBackend = ValidBackendOf<TrainBackend>;
+
+    struct FixtureRootGuard(PathBuf);
+
+    impl FixtureRootGuard {
+        fn new(path: PathBuf) -> Self {
+            Self(path)
+        }
+    }
+
+    impl Drop for FixtureRootGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -501,6 +541,14 @@ mod tests {
             delta_q_policy_transfer_result: None,
             delta_q_policy_transfer_snapshot: None,
         }
+    }
+
+    fn tiny_validation_model_config() -> HydraModelConfig {
+        HydraModelConfig::new(1)
+            .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1)
     }
 
     fn empty_batch(device: &LibTorchDevice, batch: usize) -> MjaiBatch<TestValidBackend> {
@@ -752,7 +800,7 @@ mod tests {
     #[test]
     fn validation_batch_stats_projects_breakdown_and_exit_adjusted_total() {
         let device = LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<TestValidBackend>(&device);
+        let model = tiny_validation_model_config().init::<TestValidBackend>(&device);
         let batch = empty_batch(&device, 2);
         let targets = batch.to_hydra_targets();
         let output = model.forward(batch.obs.clone());
@@ -783,7 +831,7 @@ mod tests {
         let loader_config = StreamingLoaderConfig::default();
         let manifest = empty_manifest();
         let device = LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let model = tiny_validation_model_config().init::<TrainBackend>(&device);
         let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
 
         let summary = run_validation_with_policy_baseline(
@@ -827,7 +875,7 @@ mod tests {
         let loader_config = StreamingLoaderConfig::default();
         let manifest = empty_manifest();
         let device = LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let model = tiny_validation_model_config().init::<TrainBackend>(&device);
         let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
 
         let wrapped = run_validation(
@@ -877,9 +925,125 @@ mod tests {
     }
 
     #[test]
+    fn run_validation_cached_samples_match_streamed_summary_on_real_loose_replay_buffers() {
+        let root = FixtureRootGuard::new(write_real_preflight_fixture("validation-cache-equivalence"));
+        let manifest = DataManifest {
+            sources: vec![
+                DataSource::LooseFile(root.0.join("train-game.mjai.json")),
+                DataSource::LooseFile(root.0.join("validation-game.mjai.json")),
+            ],
+            total_games: 2,
+            train_count: 0,
+            val_count: 2,
+            counts_exact: true,
+        };
+        let loader_config = StreamingLoaderConfig {
+            buffer_games: 1,
+            buffer_samples: 1,
+            train_fraction: 0.0,
+            seed: 0,
+            archive_queue_bound: 1,
+            max_skip_logs_per_source: 1,
+            ..StreamingLoaderConfig::default()
+        };
+        let streamed_buffers = stream_val_pass(&manifest, &loader_config, None)
+            .collect::<std::io::Result<Vec<_>>>()
+            .expect("real loose-replay validation fixture should stream successfully");
+        let max_buffer_len = streamed_buffers
+            .iter()
+            .map(Vec::len)
+            .max()
+            .expect("real loose-replay fixture should yield at least one validation buffer");
+        let total_streamed_samples: usize = streamed_buffers.iter().map(Vec::len).sum();
+        assert!(
+            streamed_buffers.len() >= 2,
+            "small loader buffers should force multiple streamed validation buffers"
+        );
+        assert!(
+            total_streamed_samples > max_buffer_len,
+            "validation microbatch should be able to cross a streamed buffer boundary"
+        );
+
+        let mut config = dummy_config();
+        config.validation_microbatch_size = Some(max_buffer_len + 1);
+        config.max_validation_samples = Some(total_streamed_samples);
+        config.train_fraction = 0.0;
+        config.buffer_games = loader_config.buffer_games;
+        config.buffer_samples = loader_config.buffer_samples;
+        config.archive_queue_bound = loader_config.archive_queue_bound;
+        config.device = "cpu".to_string();
+
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_validation_model_config().init::<TrainBackend>(&device);
+        let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
+        let cached_samples = materialize_validation_samples(&config, &loader_config, &manifest)
+            .expect("validation samples should materialize from the real loose-replay fixture")
+            .expect("validation cache should materialize when a sample limit is configured");
+
+        assert_eq!(cached_samples.len(), total_streamed_samples);
+
+        let streamed = run_validation(
+            &model,
+            ValidationContext {
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &manifest,
+                cached_samples: None,
+                device: &device,
+                loss_fn: &loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+            },
+            ValidationRuntime {
+                head_controller: None,
+                progress: None,
+            },
+        )
+        .expect("streamed validation should succeed on the real loose-replay fixture");
+
+        let cached = run_validation(
+            &model,
+            ValidationContext {
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &manifest,
+                cached_samples: Some(&cached_samples),
+                device: &device,
+                loss_fn: &loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+            },
+            ValidationRuntime {
+                head_controller: None,
+                progress: None,
+            },
+        )
+        .expect("cached validation should succeed on the real loose-replay fixture");
+
+        let tolerance = 1e-6;
+        assert_eq!(streamed.samples, cached.samples);
+        assert!(
+            (streamed.policy_loss - cached.policy_loss).abs() <= tolerance,
+            "expected policy_loss equivalence within {tolerance}, got streamed={} cached={}",
+            streamed.policy_loss,
+            cached.policy_loss
+        );
+        assert!(
+            (streamed.agreement - cached.agreement).abs() <= tolerance,
+            "expected agreement equivalence within {tolerance}, got streamed={} cached={}",
+            streamed.agreement,
+            cached.agreement
+        );
+        assert!(
+            (streamed.total_loss - cached.total_loss).abs() <= tolerance,
+            "expected total_loss equivalence within {tolerance}, got streamed={} cached={}",
+            streamed.total_loss,
+            cached.total_loss
+        );
+    }
+
+    #[test]
     fn run_validation_same_model_short_circuits_baseline_policy_forward() {
         let device = LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let model = tiny_validation_model_config().init::<TrainBackend>(&device);
         let valid = model.valid();
         let config = dummy_config();
         let loader_config = StreamingLoaderConfig::default();
@@ -924,8 +1088,8 @@ mod tests {
     #[test]
     fn run_validation_distinct_baseline_uses_policy_only_forward_without_drift() {
         let device = LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
-        let baseline = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let model = tiny_validation_model_config().init::<TrainBackend>(&device);
+        let baseline = tiny_validation_model_config().init::<TrainBackend>(&device);
         let baseline_valid = baseline.valid();
         let config = dummy_config();
         let loader_config = StreamingLoaderConfig::default();
@@ -968,7 +1132,7 @@ mod tests {
         let loader_config = StreamingLoaderConfig::default();
         let manifest = empty_manifest();
         let device = LibTorchDevice::Cpu;
-        let model = HydraModelConfig::actor().init::<TrainBackend>(&device);
+        let model = tiny_validation_model_config().init::<TrainBackend>(&device);
         let loss_fn = HydraLoss::<TestValidBackend>::new(HydraLossConfig::new());
 
         let summary = run_validation_with_policy_baseline(

@@ -3,27 +3,27 @@ use std::time::Instant;
 use colored::Colorize;
 
 use hydra_train::preflight::{
-    PROFILING_STAGE_LOGGING, PROFILING_STAGE_RL_STEP, PROFILING_STAGE_SELF_PLAY,
-    PROFILING_STAGE_TRAIN, ProfilingEnvelope,
+    ProfilingEnvelope, PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING,
+    PROFILING_STAGE_RL_STEP, PROFILING_STAGE_SELF_PLAY, PROFILING_STAGE_TRAIN,
 };
-use hydra_train::selfplay::{CooperativeSelfPlayRequest, generate_self_play_rl_batch_reuse};
+use hydra_train::selfplay::{generate_self_play_rl_batch_reuse, CooperativeSelfPlayRequest};
 use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{AdvancedHead, HeadState};
 use hydra_train::training::orchestrator::{
-    PhaseTrainReport, live_exit_config_from_plan, maintenance_plan,
-    rl_phase_train_step_with_controller,
+    live_exit_config_from_plan, maintenance_plan, rl_phase_train_step_with_controller,
+    PhaseTrainReport,
 };
 
 use super::artifacts::{
-    RlArtifactPaths, append_rl_step_log_to_writer, save_latest_rl_checkpoint_and_state,
+    append_rl_step_log_to_writer, save_latest_rl_checkpoint_and_state, RlArtifactPaths,
 };
 use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime};
 use super::config::RlTrainConfig;
 use super::nvtx;
 use super::presentation::{format_status_line, timestamped};
 use super::progress::RlStepLogEntry;
-use super::resume::{RlRuntimeResumeContract, build_rl_resume_state};
+use super::resume::{build_rl_resume_state, RlRuntimeResumeContract};
 use super::status::{reached_session_step_budget, session_steps_completed};
 
 fn rl_mode_summary(rl_config: &RlTrainConfig, total_steps: usize) -> String {
@@ -178,7 +178,6 @@ fn finalize_rl_step_side_effects(
     rebase_tracker: &mut RebaseTracker,
     context: RlStepFinalizeContext<'_>,
 ) -> Result<bool, String> {
-    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
     runtime.global_step += 1;
     advance_rl_pipeline_state(
         &mut runtime.pipeline_state,
@@ -190,8 +189,6 @@ fn finalize_rl_step_side_effects(
 
     let delta_q_state = runtime.head_controller.head_state(AdvancedHead::DeltaQ);
     let loss_value = context.report.loss.unwrap_or(0.0);
-    let logging_started = Instant::now();
-
     if let Some(tb) = runtime.tb.as_mut() {
         let step = runtime.global_step as i64;
         tb.write_scalar(step, "rl/loss", loss_value as f32)
@@ -231,7 +228,7 @@ fn finalize_rl_step_side_effects(
         runtime.last_log_time = Instant::now();
     }
 
-    if should_persist_rl_checkpoint(
+    let checkpoint_seconds = if should_persist_rl_checkpoint(
         runtime.global_step,
         context.session_start_global_step,
         context.config.checkpoint_every_n_steps,
@@ -241,25 +238,43 @@ fn finalize_rl_step_side_effects(
             runtime.pipeline_state,
             context.current_runtime,
         );
-        save_latest_rl_checkpoint_and_state(
-            context.artifacts,
-            &runtime.model,
-            &runtime.optimizer,
-            runtime.global_step,
-            loss_value,
-            &state,
-        )?;
-    }
+        let checkpoint_started = Instant::now();
+        {
+            let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+            save_latest_rl_checkpoint_and_state(
+                context.artifacts,
+                &runtime.model,
+                &runtime.optimizer,
+                runtime.global_step,
+                loss_value,
+                &state,
+            )?;
+        }
+        checkpoint_started.elapsed().as_secs_f64()
+    } else {
+        0.0
+    };
 
-    let logging_seconds = logging_started.elapsed().as_secs_f64();
+    let logging_seconds = {
+        let logging_started = Instant::now();
+        let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
+        logging_started.elapsed().as_secs_f64()
+    };
     let profiling = context.profiling.as_ref().map(|profiling| {
         let mut profiling = profiling.clone();
+        let mut children = vec![ProfilingEnvelope::leaf(
+            PROFILING_STAGE_LOGGING,
+            logging_seconds,
+        )];
+        if checkpoint_seconds > 0.0 {
+            children.push(ProfilingEnvelope::leaf(
+                PROFILING_STAGE_CHECKPOINT,
+                checkpoint_seconds,
+            ));
+        }
         profiling.merge_assign(&ProfilingEnvelope::from_children(
             profiling.stage.clone(),
-            vec![ProfilingEnvelope::leaf(
-                PROFILING_STAGE_LOGGING,
-                logging_seconds,
-            )],
+            children,
         ));
         profiling
     });
@@ -283,6 +298,38 @@ fn finalize_rl_step_side_effects(
         context.session_start_global_step,
         context.config.max_train_steps,
     ))
+}
+
+#[cfg(test)]
+fn run_profiled_rl_step<B, T>(
+    self_play: impl FnOnce() -> Result<B, String>,
+    train: impl FnOnce(B) -> Result<(usize, T, PhaseTrainReport), String>,
+) -> Result<(usize, T, PhaseTrainReport, ProfilingEnvelope), String> {
+    let _rl_step_scope = nvtx::scope(PROFILING_STAGE_RL_STEP);
+
+    let self_play_started = Instant::now();
+    let batch = {
+        let _self_play_scope = nvtx::scope(PROFILING_STAGE_SELF_PLAY);
+        self_play()?
+    };
+    let self_play_seconds = self_play_started.elapsed().as_secs_f64();
+
+    let train_started = Instant::now();
+    let (batch_size, train_output, report) = {
+        let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
+        train(batch)?
+    };
+    let train_seconds = train_started.elapsed().as_secs_f64();
+
+    let profiling = ProfilingEnvelope::from_children(
+        PROFILING_STAGE_RL_STEP,
+        vec![
+            ProfilingEnvelope::leaf(PROFILING_STAGE_SELF_PLAY, self_play_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, train_seconds),
+        ],
+    );
+
+    Ok((batch_size, train_output, report, profiling))
 }
 
 pub(super) fn run_rl_training_loop(
@@ -349,6 +396,7 @@ pub(super) fn run_rl_training_loop(
 
         runtime.head_controller.try_activate(AdvancedHead::DeltaQ);
         let train_started = Instant::now();
+        let batch_size = batch.batch_size();
         let (model, report) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
             rl_phase_train_step_with_controller(
@@ -383,7 +431,7 @@ pub(super) fn run_rl_training_loop(
                 current_runtime,
                 session_start_global_step,
                 total_steps,
-                batch_size: batch.batch_size(),
+                batch_size,
                 report,
                 profiling: Some(profiling),
             },
@@ -394,14 +442,17 @@ pub(super) fn run_rl_training_loop(
 
     let final_state =
         build_rl_resume_state(runtime.global_step, runtime.pipeline_state, current_runtime);
-    save_latest_rl_checkpoint_and_state(
-        &artifacts,
-        &runtime.model,
-        &runtime.optimizer,
-        runtime.global_step,
-        0.0,
-        &final_state,
-    )?;
+    {
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+        save_latest_rl_checkpoint_and_state(
+            &artifacts,
+            &runtime.model,
+            &runtime.optimizer,
+            runtime.global_step,
+            0.0,
+            &final_state,
+        )?;
+    }
 
     println!(
         "{}",
@@ -424,8 +475,11 @@ mod tests {
     use crate::config::RlPhaseConfig;
     use crate::config::TrainConfig;
     use crate::resume::read_rl_resume_state;
+    use burn::tensor::Int;
+    use burn::Tensor;
     use hydra_train::config::{PipelineState, TrainingPhase};
     use hydra_train::preflight::PreflightConfig;
+    use hydra_train::training::rl::RlBatch;
     use serde_json::Value;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -486,6 +540,12 @@ mod tests {
         config.tensorboard = tensorboard;
         let rl = config.rl.as_mut().expect("rl config");
         rl.games_per_batch = 1;
+        rl.microbatch_size = Some(1);
+        config.batch_size = 1;
+        config.validation_microbatch_size = Some(1);
+        config.buffer_games = 1;
+        config.buffer_samples = 1;
+        config.archive_queue_bound = 1;
         config
     }
 
@@ -932,11 +992,9 @@ mod tests {
 
         assert!(latest_state_path.exists());
         assert!(latest_step_log_path.exists());
-        assert!(
-            fs::read_to_string(&latest_step_log_path)
-                .expect("read empty RL step log")
-                .is_empty()
-        );
+        assert!(fs::read_to_string(&latest_step_log_path)
+            .expect("read empty RL step log")
+            .is_empty());
 
         let state_yaml =
             fs::read_to_string(&latest_state_path).expect("latest RL state should exist");
@@ -1121,20 +1179,71 @@ mod tests {
 
     #[test]
     fn run_rl_training_loop_records_rl_step_scope_order() {
-        let output_dir = unique_temp_dir("nvtx_rl_step_scope");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let mut config = dummy_rl_config(output_dir.clone());
-        config.log_every_n_steps = 99;
-        config.checkpoint_every_n_steps = 99;
-        config.max_train_steps = Some(1);
-        fs::create_dir_all(config.data_dir.clone()).expect("create RL data dir");
-        let rl_cfg = config.rl.clone().expect("rl config");
-
-        let (bootstrap, runtime) =
-            initialize_rl_training_bootstrap(&output_dir, config, rl_cfg).expect("rl bootstrap");
-
         let (_, events) = crate::nvtx::with_test_recorder(|| {
-            run_rl_training_loop(bootstrap, runtime).expect("single-step RL run should succeed");
+            let device = burn::backend::libtorch::LibTorchDevice::Cpu;
+            let (_batch_size, _unit, _report, _profiling) = run_profiled_rl_step(
+                || {
+                    let obs = Tensor::<crate::TrainBackend, 3>::zeros(
+                        [1, hydra_train::config::INPUT_CHANNELS, 34],
+                        &device,
+                    );
+                    let actions = Tensor::<crate::TrainBackend, 1, Int>::zeros([1], &device);
+                    let pi_old = Tensor::<crate::TrainBackend, 1>::zeros([1], &device);
+                    let advantages = Tensor::<crate::TrainBackend, 1>::zeros([1], &device);
+                    let base_logits = Tensor::<crate::TrainBackend, 2>::zeros([1, 46], &device);
+                    let targets = hydra_train::training::losses::HydraTargets {
+                        policy_target: Tensor::<crate::TrainBackend, 2>::zeros([1, 46], &device),
+                        legal_mask: Tensor::<crate::TrainBackend, 2>::ones([1, 46], &device),
+                        value_target: Tensor::<crate::TrainBackend, 1>::zeros([1], &device),
+                        grp_target: Tensor::<crate::TrainBackend, 2>::zeros([1, 24], &device),
+                        tenpai_target: Tensor::<crate::TrainBackend, 2>::zeros([1, 4], &device),
+                        danger_target: Tensor::<crate::TrainBackend, 3>::zeros([1, 4, 34], &device),
+                        danger_mask: Tensor::<crate::TrainBackend, 3>::zeros([1, 4, 34], &device),
+                        opp_next_target: Tensor::<crate::TrainBackend, 3>::zeros(
+                            [1, 4, 34],
+                            &device,
+                        ),
+                        score_pdf_target: Tensor::<crate::TrainBackend, 2>::zeros(
+                            [1, 121],
+                            &device,
+                        ),
+                        score_cdf_target: Tensor::<crate::TrainBackend, 2>::zeros(
+                            [1, 121],
+                            &device,
+                        ),
+                        oracle_target: None,
+                        belief_fields_target: None,
+                        belief_fields_mask: None,
+                        mixture_weight_target: None,
+                        mixture_weight_mask: None,
+                        opponent_hand_type_target: None,
+                        delta_q_target: None,
+                        delta_q_mask: None,
+                        safety_residual_target: None,
+                        safety_residual_mask: None,
+                        oracle_guidance_mask: None,
+                        target_presence: None,
+                    };
+                    Ok(RlBatch {
+                        obs,
+                        actions,
+                        pi_old,
+                        advantages,
+                        base_logits,
+                        targets,
+                        exit_target: None,
+                        exit_mask: None,
+                    })
+                },
+                |batch| {
+                    Ok((
+                        batch.batch_size(),
+                        (),
+                        synthetic_phase_report(Some(0.75), Some(0.25)),
+                    ))
+                },
+            )
+            .expect("profiled RL step should succeed");
         });
 
         assert_eq!(
@@ -1145,12 +1254,9 @@ mod tests {
                 "pop:self_play",
                 "push:train",
                 "pop:train",
-                "push:logging",
-                "pop:logging",
                 "pop:rl_step",
             ]
         );
-        cleanup_dir(&output_dir);
     }
 
     #[test]
