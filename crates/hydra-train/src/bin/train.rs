@@ -8,6 +8,10 @@ mod bootstrap;
 mod config;
 #[path = "train/config_runtime.rs"]
 mod config_runtime;
+#[cfg(feature = "cuda-graph")]
+#[allow(dead_code)]
+#[path = "train/cuda_graph.rs"]
+mod cuda_graph;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]

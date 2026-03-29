@@ -25,13 +25,29 @@ fn main() {
 
     println!("cargo:rerun-if-changed=csrc/hydra_gpu.cpp");
 
-    cc::Build::new()
+    let has_cuda = include_dir.join("ATen/cuda/CUDAGraph.h").exists()
+        && std::env::var("CUDA_HOME").is_ok()
+        || std::env::var("CUDA_PATH").is_ok()
+        || std::path::Path::new("/usr/local/cuda/include/cuda_runtime_api.h").exists();
+
+    let mut build = cc::Build::new();
+    build
         .cpp(true)
         .pic(true)
         .warnings(false)
         .include(&include_dir)
         .include(&torch_csrc_include)
         .flag("-std=c++17")
-        .file("csrc/hydra_gpu.cpp")
-        .compile("hydra_gpu");
+        .file("csrc/hydra_gpu.cpp");
+
+    if has_cuda {
+        if let Ok(cuda_home) = std::env::var("CUDA_HOME").or_else(|_| std::env::var("CUDA_PATH")) {
+            build.include(format!("{cuda_home}/include"));
+        } else if std::path::Path::new("/usr/local/cuda/include").exists() {
+            build.include("/usr/local/cuda/include");
+        }
+        build.define("USE_CUDA", None);
+    }
+
+    build.compile("hydra_gpu");
 }
