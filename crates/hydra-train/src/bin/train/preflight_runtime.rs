@@ -2515,10 +2515,13 @@ pub(super) fn run_preflight(
             format_preflight_summary_line(
                 "Preflight cache hit:",
                 format!(
-                    "reusing cached runtime train_mb={} val_mb={} accum_steps={} (identical fingerprint)",
+                    "reusing cached runtime train_mb={} val_mb={} accum_steps={} loader(threads={} buf_games={} buf_samples={}) (identical fingerprint)",
                     cached.runtime.selected.train_microbatch_size,
                     cached.runtime.selected.validation_microbatch_size,
                     cached.runtime.selected.accum_steps,
+                    cached.runtime.loader.num_threads.map(|t| t.to_string()).unwrap_or_else(|| "auto".to_string()),
+                    cached.runtime.loader.buffer_games,
+                    cached.runtime.loader.buffer_samples,
                 ),
             )
         );
