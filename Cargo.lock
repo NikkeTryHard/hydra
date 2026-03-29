@@ -3171,6 +3171,7 @@ name = "hydra-train"
 version = "0.1.0"
 dependencies = [
  "burn",
+ "cc",
  "colored",
  "criterion",
  "ctrlc",

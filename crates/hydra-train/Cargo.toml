@@ -51,6 +51,9 @@ rand = "0.9"
 rand_chacha = "0.9"
 criterion = { version = "0.5", features = ["html_reports"] }
 
+[build-dependencies]
+cc = "1"
+
 [[bench]]
 name = "train_hotpaths_bench"
 harness = false
