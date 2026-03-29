@@ -309,6 +309,7 @@ where
         head_controller,
         model: epoch_model(model_slot)?,
     })? {
+        let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
         let model = model_slot
             .take()
             .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
@@ -1715,6 +1716,68 @@ mod tests {
             .iter()
             .all(|stats| stats.policy_agreement.is_finite()));
         assert!(model_slot.is_some());
+    }
+
+    #[test]
+    fn train_logical_batch_records_microbatch_sub_stage_scope_order() {
+        let device = LibTorchDevice::Cpu;
+        let mut model_slot = Some(tiny_dummy_model(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let train_loss_fn = dummy_train_loss();
+        let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
+
+        let (_, events) = crate::nvtx::with_test_recorder(|| {
+            train_logical_batch(
+                &logical_batch,
+                TrainLogicalBatchConfig {
+                    microbatch_size: 1,
+                    augment: false,
+                    train_device: &device,
+                    loss_fn: &train_loss_fn,
+                    bc_exit_cfg: &BcExitConfig::default(),
+                    lr: 1.0e-4,
+                },
+                &mut head_controller,
+                &mut model_slot,
+                &mut optimizer,
+            )
+            .expect("train logical batch with NVTX recording");
+        });
+
+        assert!(
+            events.contains(&"push:collation".to_string()),
+            "should record collation sub-stage"
+        );
+        assert!(
+            events.contains(&"push:forward".to_string()),
+            "should record forward sub-stage"
+        );
+        assert!(
+            events.contains(&"push:loss".to_string()),
+            "should record loss sub-stage"
+        );
+        assert!(
+            events.contains(&"push:backward".to_string()),
+            "should record backward sub-stage"
+        );
+        assert!(
+            events.contains(&"push:optimizer_step".to_string()),
+            "should record optimizer_step sub-stage"
+        );
+
+        for push_event in events.iter().filter(|e| e.starts_with("push:")) {
+            let stage = push_event.strip_prefix("push:").unwrap();
+            let pop = format!("pop:{stage}");
+            assert!(
+                events.contains(&pop),
+                "every push should have a matching pop: {push_event}"
+            );
+            let push_idx = events.iter().position(|e| e == push_event).unwrap();
+            let pop_idx = events.iter().position(|e| e == &pop).unwrap();
+            assert!(pop_idx > push_idx, "pop should come after push for {stage}");
+        }
     }
 
     #[test]
