@@ -9,6 +9,7 @@ use colored::Colorize;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
+use hydra_train::amp::maybe_autocast;
 use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
 use hydra_train::data::sample::{collate_samples_owned, MjaiSample};
 use hydra_train::model::HydraModel;
@@ -72,6 +73,7 @@ where
     pub(super) session_start_global_step: usize,
     pub(super) steps_to_skip: usize,
     pub(super) microbatch_size: usize,
+    pub(super) use_amp: bool,
     pub(super) total_steps: usize,
     pub(super) current_runtime: RuntimeResumeContract,
     pub(super) run_start: &'a Instant,
@@ -110,6 +112,7 @@ where
     loss_fn: &'a HydraLoss<B>,
     bc_exit_cfg: &'a BcExitConfig,
     lr: f64,
+    use_amp: bool,
 }
 
 struct ValidationStepContext<'a, B = TrainBackend>
@@ -322,6 +325,7 @@ where
 {
     let TrainLogicalBatchConfig {
         microbatch_size,
+        use_amp,
         augment,
         train_device,
         loss_fn,
@@ -347,6 +351,7 @@ where
         bc_exit_cfg,
         head_controller,
         model: epoch_model(model_slot)?,
+        use_amp,
     })? {
         let optimizer_started = Instant::now();
         let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
@@ -379,7 +384,9 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-            model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+            maybe_autocast(use_amp, || {
+                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+            })
         };
         sub_timing_fallback.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
@@ -1048,6 +1055,7 @@ where
         session_start_global_step,
         steps_to_skip,
         microbatch_size,
+        use_amp,
         total_steps,
         current_runtime,
         run_start,
@@ -1157,6 +1165,7 @@ where
                     &logical_batch,
                     TrainLogicalBatchConfig {
                         microbatch_size,
+                        use_amp,
                         augment: config.augment,
                         train_device,
                         loss_fn,
@@ -1314,6 +1323,7 @@ where
                 &logical_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
+                    use_amp,
                     augment: config.augment,
                     train_device,
                     loss_fn,
@@ -1658,6 +1668,7 @@ mod tests {
             &logical_batch,
             TrainLogicalBatchConfig {
                 microbatch_size: 1,
+                use_amp: false,
                 augment: false,
                 train_device: &device,
                 loss_fn: &train_loss_fn,
@@ -1688,6 +1699,7 @@ mod tests {
             &logical_batch,
             TrainLogicalBatchConfig {
                 microbatch_size: 1,
+                use_amp: false,
                 augment: false,
                 train_device: &device,
                 loss_fn: &train_loss_fn,
@@ -1722,6 +1734,7 @@ mod tests {
             &logical_batch,
             TrainLogicalBatchConfig {
                 microbatch_size: 1,
+                use_amp: false,
                 augment: false,
                 train_device: &device,
                 loss_fn: &train_loss_fn,
@@ -1758,6 +1771,7 @@ mod tests {
             &logical_batch,
             TrainLogicalBatchConfig {
                 microbatch_size: logical_batch.len(),
+                use_amp: false,
                 augment: false,
                 train_device: &device,
                 loss_fn: &train_loss_fn,
@@ -1795,6 +1809,7 @@ mod tests {
                 &logical_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size: 1,
+                    use_amp: false,
                     augment: false,
                     train_device: &device,
                     loss_fn: &train_loss_fn,
@@ -1856,6 +1871,7 @@ mod tests {
             &logical_batch,
             TrainLogicalBatchConfig {
                 microbatch_size: 1,
+                use_amp: false,
                 augment: false,
                 train_device: &device,
                 loss_fn: &train_loss_fn,
@@ -2815,6 +2831,7 @@ mod tests {
                 session_start_global_step: 0,
                 steps_to_skip: 3,
                 microbatch_size: 4,
+                use_amp: false,
                 total_steps: 100,
                 current_runtime: dummy_runtime_resume_contract(),
                 run_start: &run_start,
@@ -2918,6 +2935,7 @@ mod tests {
                 session_start_global_step: 12,
                 steps_to_skip: 0,
                 microbatch_size: 4,
+                use_amp: false,
                 total_steps: 100,
                 current_runtime: dummy_runtime_resume_contract(),
                 run_start: &run_start,
@@ -3003,6 +3021,7 @@ mod tests {
                 session_start_global_step: 0,
                 steps_to_skip: 3,
                 microbatch_size: 4,
+                use_amp: false,
                 total_steps: 100,
                 current_runtime: dummy_runtime_resume_contract(),
                 run_start: &run_start,
@@ -3154,6 +3173,7 @@ mod tests {
                     session_start_global_step: 0,
                     steps_to_skip: 0,
                     microbatch_size: 4,
+                    use_amp: false,
                     total_steps: 100,
                     current_runtime: dummy_runtime_resume_contract(),
                     run_start: &run_start,

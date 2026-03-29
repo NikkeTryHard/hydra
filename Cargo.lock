@@ -3191,6 +3191,7 @@ dependencies = [
  "tboard",
  "tch",
  "time",
+ "torch-sys",
  "zstd 0.13.3",
 ]
 

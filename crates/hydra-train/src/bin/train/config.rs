@@ -82,6 +82,12 @@ pub(crate) enum PrecisionMode {
     Bf16Autocast,
 }
 
+impl TrainConfig {
+    pub(crate) fn use_amp(&self) -> bool {
+        matches!(self.precision_mode, PrecisionMode::Bf16Autocast)
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RlPhaseConfig {

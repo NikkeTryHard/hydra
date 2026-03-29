@@ -16,10 +16,7 @@ use super::artifacts::{
     write_delta_q_promotion_artifact, BcArtifactPaths, PersistedDeltaQPromotionArtifact,
 };
 use super::bootstrap::{initialize_rl_training_bootstrap, RlTrainingBootstrap, RlTrainingRuntime};
-use super::bootstrap::{
-    initialize_training_bootstrap, initialize_training_bootstrap_bf16, TrainingBootstrap,
-    TrainingRuntime,
-};
+use super::bootstrap::{initialize_training_bootstrap, TrainingBootstrap, TrainingRuntime};
 use super::config::{configure_threads, device_label, validate_config, TrainConfig};
 use super::epoch_runner::{run_epoch, EpochRunnerContext, EpochRuntimeMut};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
@@ -36,7 +33,7 @@ use super::validation::materialize_validation_samples;
 use super::validation::{
     run_validation_with_policy_baseline, ValidationContext, ValidationRuntime,
 };
-use super::{Bf16TrainBackend, TrainBackend};
+use super::TrainBackend;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -62,6 +59,7 @@ where
         session_start_global_step,
         total_steps,
         microbatch_size,
+        use_amp,
         banner_stats,
         loss_fn,
         valid_loss_fn,
@@ -110,6 +108,7 @@ where
                 session_start_global_step,
                 steps_to_skip: resume.steps_to_skip_for_epoch(epoch),
                 microbatch_size,
+                use_amp,
                 total_steps,
                 current_runtime,
                 run_start: &run_start,
@@ -309,16 +308,8 @@ pub(super) fn handle_training_mode(
         let _runtime: RlTrainingRuntime = runtime;
         return run_rl_training_loop(bootstrap, _runtime);
     }
-    match config.precision_mode {
-        crate::config::PrecisionMode::Fp32 => {
-            let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
-            run_bc_training_mode_for_backend::<TrainBackend>(bootstrap, runtime)
-        }
-        crate::config::PrecisionMode::Bf16Autocast => {
-            let (bootstrap, runtime) = initialize_training_bootstrap_bf16(config_path, config)?;
-            run_bc_training_mode_for_backend::<Bf16TrainBackend>(bootstrap, runtime)
-        }
-    }
+    let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
+    run_bc_training_mode_for_backend::<TrainBackend>(bootstrap, runtime)
 }
 
 pub(super) fn handle_delta_q_promotion_mode(

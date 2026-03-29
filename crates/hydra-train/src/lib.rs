@@ -5,6 +5,7 @@
 
 #![deny(clippy::dbg_macro, clippy::manual_assert)]
 
+pub mod amp;
 pub mod backbone;
 pub mod config;
 pub mod data;

@@ -3,7 +3,10 @@ use std::path::PathBuf;
 fn main() {
     let libtorch_lib = match std::env::var("DEP_TCH_LIBTORCH_LIB") {
         Ok(v) => PathBuf::from(v),
-        Err(_) => return,
+        Err(_) => {
+            eprintln!("cargo:warning=DEP_TCH_LIBTORCH_LIB not set, skipping hydra_gpu build");
+            return;
+        }
     };
 
     let libtorch_root = libtorch_lib
@@ -13,6 +16,10 @@ fn main() {
     let torch_csrc_include = libtorch_root.join("include/torch/csrc/api/include");
 
     if !include_dir.exists() {
+        eprintln!(
+            "cargo:warning=libtorch include dir not found at {}",
+            include_dir.display()
+        );
         return;
     }
 
