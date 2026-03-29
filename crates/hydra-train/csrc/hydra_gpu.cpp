@@ -32,11 +32,16 @@ extern "C" {
 #if HYDRA_HAS_TORCH
 
 void hydra_set_allow_tf32_cublas(int b) {
-  HYDRA_PROTECT(at::globalContext().setAllowTF32CuBLAS(b);)
+  HYDRA_PROTECT(
+    at::globalContext().setFloat32Precision("cuda", "matmul", b ? "tf32" : "none");
+  )
 }
 
 void hydra_set_allow_tf32_cudnn(int b) {
-  HYDRA_PROTECT(at::globalContext().setAllowTF32CuDNN(b);)
+  HYDRA_PROTECT(
+    at::globalContext().setFloat32Precision("cuda", "conv", b ? "tf32" : "none");
+    at::globalContext().setFloat32Precision("cuda", "rnn", b ? "tf32" : "none");
+  )
 }
 
 #else
