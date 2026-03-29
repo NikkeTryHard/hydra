@@ -53,16 +53,23 @@ Date: 2026-03-29
 - `agari calc_4p`: ~705 us
 - `agari calc_3p`: ~290 us
 
-### hydra-train
-- `loader/load_game_from_reader`: ~10.7-11.1 ms
-- `validation/collate_only`: ~33-36 us
-- `validation/forward_loss_only`: ~1.33-1.40 s
-- `validation/collate_forward_loss`: ~0.55-1.10 s
-- `selfplay_batch/trajectories_to_rl_batch`: ~30-31 us
-- `selfplay_batch/trajectories_to_rl_batch_reuse`: ~30.6 us
-- `model_cpu_bridge/policy_value_cpu`: ~0.58-0.73 s
-- `model_cpu_bridge/policy_cpu`: ~0.93-0.99 s
-- `model_cpu_bridge/value_cpu`: ~0.95-1.00 s
+### hydra-train (updated 2026-03-29, post-branch)
+- `loader/load_game_from_reader`: ~10.65 ms
+- `validation/collate_only`: ~35.4 us
+- `validation/forward_loss_only`: ~99.7 ms (high variance, CPU-bound)
+- `validation/collate_forward_loss`: ~32.3 ms
+- `selfplay_batch/trajectories_to_rl_batch`: ~29.6 us
+- `selfplay_batch/trajectories_to_rl_batch_reuse`: ~32.4 us
+- `model_cpu_bridge/policy_value_cpu`: ~710 ms
+- `model_cpu_bridge/policy_cpu`: ~631 ms
+- `model_cpu_bridge/value_cpu`: ~626 ms
+- `model_cpu_bridge/policy_and_value_cpu`: ~738 ms
+- `model_cpu_bridge/batch_policy_value_cpu_reuse`: ~1.43 s (8-batch)
+- `model_cpu_bridge/batch_value_cpu_reuse`: ~3.06 s (8-batch)
+- `model_cpu_bridge_tiny/policy_value_cpu`: ~37.0 ms (1-block/32-ch)
+- `model_cpu_bridge_tiny/policy_cpu`: ~57.7 ms
+- `model_cpu_bridge_tiny/batch_policy_value_cpu_reuse`: ~175.9 ms (8-batch)
+- `model_cpu_bridge_tiny/batch_value_cpu_reuse`: ~181.6 ms (8-batch)
 
 ## Reverted / rejected ideas
 
