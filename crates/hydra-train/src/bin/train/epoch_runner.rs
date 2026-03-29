@@ -1515,11 +1515,6 @@ mod tests {
         artifacts
     }
 
-    #[allow(dead_code)]
-    fn dummy_model(device: &LibTorchDevice) -> HydraModel<TrainBackend> {
-        HydraModelConfig::learner().init::<TrainBackend>(device)
-    }
-
     fn tiny_dummy_model(device: &LibTorchDevice) -> HydraModel<TrainBackend> {
         HydraModelConfig::new(1)
             .with_input_channels(hydra_train::config::INPUT_CHANNELS)

@@ -479,7 +479,7 @@ where
     append_jsonl_entry(writer, entry, "RL step log", "RL step log entry")
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn append_training_log(path: &Path, entry: &EpochLogEntry) -> Result<(), String> {
     let mut file = open_training_log_appender(path)?;
     append_jsonl_entry(
@@ -500,7 +500,7 @@ pub(crate) fn append_step_log(path: &Path, entry: &StepLogEntry) -> Result<(), S
     )
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn append_rl_step_log(path: &Path, entry: &RlStepLogEntry) -> Result<(), String> {
     let mut file = open_rl_step_log_appender(path)?;
     append_jsonl_entry(

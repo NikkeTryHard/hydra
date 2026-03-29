@@ -661,7 +661,7 @@ fn ranked_loader_runtime_from_score_cache(
     ranked
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(super) fn autotune_loader_runtime(
     config: &TrainConfig,
     manifest: &DataManifest,
@@ -676,6 +676,7 @@ pub(super) fn autotune_loader_runtime(
     )
 }
 
+#[cfg(test)]
 pub(super) fn autotune_ranked_loader_runtime(
     config: &TrainConfig,
     manifest: &DataManifest,
