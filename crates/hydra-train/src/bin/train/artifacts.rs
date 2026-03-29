@@ -726,6 +726,9 @@ mod tests {
                     model_signature: "model-sig".to_string(),
                     code_signature: "code-sig".to_string(),
                     advanced_loss_signature: "loss-sig".to_string(),
+                    preflight_config_signature: "preflight-sig".to_string(),
+                    explicit_train_microbatch: Some(32),
+                    explicit_validation_microbatch: Some(64),
                 },
             },
             runtime: EffectiveRuntimeConfig {

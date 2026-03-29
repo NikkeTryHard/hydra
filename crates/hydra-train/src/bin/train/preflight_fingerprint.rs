@@ -27,6 +27,11 @@ pub(super) fn advanced_loss_signature(config: Option<&AdvancedLossConfig>) -> St
     }
 }
 
+pub(super) fn preflight_config_signature(config: &TrainConfig) -> String {
+    serde_json::to_string(&config.preflight)
+        .unwrap_or_else(|_| "preflight_config:unserializable".to_string())
+}
+
 pub(super) fn workload_fingerprint(
     config: &TrainConfig,
     model_config: &HydraModelConfig,
@@ -49,11 +54,14 @@ pub(super) fn workload_fingerprint(
             model_config.score_bins,
         ),
         code_signature: format!(
-            "hydra-train:{}:{}:preflight-v3",
+            "hydra-train:{}:{}:preflight-v4",
             env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_NAME")
         ),
         advanced_loss_signature: advanced_loss_signature(config.advanced_loss.as_ref()),
+        preflight_config_signature: preflight_config_signature(config),
+        explicit_train_microbatch: config.microbatch_size,
+        explicit_validation_microbatch: config.validation_microbatch_size,
     }
 }
 
@@ -168,16 +176,18 @@ mod tests {
         assert!(fingerprint.model_signature.contains("blocks:24"));
         assert!(fingerprint.model_signature.contains("action:46"));
         assert!(fingerprint.code_signature.contains("hydra-train:"));
+        assert!(fingerprint
+            .advanced_loss_signature
+            .contains("\"exit\":0.25"));
+        assert!(fingerprint
+            .advanced_loss_signature
+            .contains("\"safety_residual\":0.75"));
         assert!(
-            fingerprint
-                .advanced_loss_signature
-                .contains("\"exit\":0.25")
+            !fingerprint.preflight_config_signature.is_empty(),
+            "preflight config signature should be populated"
         );
-        assert!(
-            fingerprint
-                .advanced_loss_signature
-                .contains("\"safety_residual\":0.75")
-        );
+        assert_eq!(fingerprint.explicit_train_microbatch, Some(64));
+        assert_eq!(fingerprint.explicit_validation_microbatch, Some(32));
     }
 
     #[test]
@@ -211,6 +221,101 @@ mod tests {
         assert_eq!(fp32_key.workload.precision_mode, "fp32");
         assert_eq!(bf16_key.workload.precision_mode, "bf16_autocast");
         assert_ne!(fp32_key, bf16_key);
+    }
+
+    #[test]
+    fn preflight_config_knob_change_invalidates_cache_key() {
+        let baseline = dummy_config();
+        let mut changed = dummy_config();
+        changed.preflight.warmup_steps = baseline.preflight.warmup_steps + 1;
+        let model_config = HydraModelConfig::learner();
+
+        let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
+        let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
+
+        assert_ne!(
+            baseline_key.workload.preflight_config_signature,
+            changed_key.workload.preflight_config_signature,
+        );
+        assert_ne!(baseline_key, changed_key);
+    }
+
+    #[test]
+    fn preflight_config_candidate_microbatches_change_invalidates_cache_key() {
+        let baseline = dummy_config();
+        let mut changed = dummy_config();
+        changed.preflight.candidate_microbatches = vec![128, 64, 32];
+        let model_config = HydraModelConfig::learner();
+
+        let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
+        let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
+
+        assert_ne!(baseline_key, changed_key);
+    }
+
+    #[test]
+    fn explicit_train_microbatch_change_invalidates_cache_key() {
+        let mut no_override = dummy_config();
+        no_override.microbatch_size = None;
+        let mut with_override = dummy_config();
+        with_override.microbatch_size = Some(128);
+        let model_config = HydraModelConfig::learner();
+
+        let no_key = preflight_cache_key(&no_override, &model_config, "cuda:0", 32);
+        let with_key = preflight_cache_key(&with_override, &model_config, "cuda:0", 32);
+
+        assert_eq!(no_key.workload.explicit_train_microbatch, None);
+        assert_eq!(with_key.workload.explicit_train_microbatch, Some(128));
+        assert_ne!(no_key, with_key);
+    }
+
+    #[test]
+    fn explicit_validation_microbatch_change_invalidates_cache_key() {
+        let mut no_override = dummy_config();
+        no_override.validation_microbatch_size = None;
+        let mut with_override = dummy_config();
+        with_override.validation_microbatch_size = Some(256);
+        let model_config = HydraModelConfig::learner();
+
+        let no_key = preflight_cache_key(&no_override, &model_config, "cuda:0", 32);
+        let with_key = preflight_cache_key(&with_override, &model_config, "cuda:0", 32);
+
+        assert_eq!(no_key.workload.explicit_validation_microbatch, None);
+        assert_eq!(with_key.workload.explicit_validation_microbatch, Some(256));
+        assert_ne!(no_key, with_key);
+    }
+
+    #[test]
+    fn non_selection_fields_do_not_change_cache_key() {
+        let baseline = dummy_config();
+        let mut changed = dummy_config();
+        changed.num_threads = Some(99);
+        changed.buffer_samples = 9999;
+        changed.buffer_games = 9999;
+        changed.seed = 42;
+        changed.data_dir = PathBuf::from("/different/data");
+        changed.output_dir = PathBuf::from("/different/output");
+        changed.tensorboard = !baseline.tensorboard;
+        changed.log_every_n_steps = baseline.log_every_n_steps + 100;
+        changed.checkpoint_every_n_steps = baseline.checkpoint_every_n_steps + 100;
+        let model_config = HydraModelConfig::learner();
+
+        let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
+        let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
+
+        assert_eq!(baseline_key, changed_key);
+    }
+
+    #[test]
+    fn code_signature_uses_v4_version() {
+        let config = dummy_config();
+        let model_config = HydraModelConfig::learner();
+        let fingerprint = workload_fingerprint(&config, &model_config);
+        assert!(
+            fingerprint.code_signature.contains("preflight-v4"),
+            "code_signature should contain preflight-v4, got: {}",
+            fingerprint.code_signature
+        );
     }
 
     #[test]
