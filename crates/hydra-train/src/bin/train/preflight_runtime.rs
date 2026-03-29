@@ -2105,25 +2105,6 @@ fn run_probe_child_batch_request_with_model_config(
     Ok(artifact)
 }
 
-#[allow(dead_code)]
-pub(super) fn run_probe_child_batch_mode(
-    config: &TrainConfig,
-    child: Option<ProbeChildRequest>,
-) -> Result<bool, String> {
-    let Some((batch, results_path, manifest_cache_path)) = probe_batch_child_request_from_cli(child)
-    ? else {
-        return Ok(false);
-    };
-    run_probe_child_batch_request_with_model_config(
-        config,
-        batch,
-        &results_path,
-        manifest_cache_path.as_deref(),
-        &HydraModelConfig::learner(),
-    )?;
-    Ok(true)
-}
-
 fn run_rl_probe_only_result(
     config: &TrainConfig,
     request: ProbeRequest,
@@ -2318,17 +2299,6 @@ pub(super) fn run_probe_only(
         request,
         result_path,
     )
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(super) fn run_probe_only_with_test_model_config(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-    request: ProbeRequest,
-    result_path: &Path,
-) -> Result<(), String> {
-    run_probe_only_with_model_config(config, model_config, None, request, result_path)
 }
 
 #[cfg(test)]
