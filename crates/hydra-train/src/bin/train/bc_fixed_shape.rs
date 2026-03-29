@@ -922,4 +922,165 @@ mod tests {
         assert_eq!(mixed.batch_stats.batch_count, 2);
         assert_batch_stats_close(mixed.batch_stats, generic);
     }
+
+    #[test]
+    fn split_divisible_prefix_exact_divisible() {
+        let samples: Vec<MjaiSample> = (0..4).map(dummy_train_sample).collect();
+        let (prefix, tail) = split_divisible_prefix(&samples, 2);
+        assert_eq!(prefix.len(), 4);
+        assert_eq!(tail.len(), 0);
+    }
+
+    #[test]
+    fn split_divisible_prefix_non_divisible() {
+        let samples: Vec<MjaiSample> = (0..5).map(dummy_train_sample).collect();
+        let (prefix, tail) = split_divisible_prefix(&samples, 2);
+        assert_eq!(prefix.len(), 4);
+        assert_eq!(tail.len(), 1);
+    }
+
+    #[test]
+    fn split_divisible_prefix_microbatch_larger_than_batch() {
+        let samples: Vec<MjaiSample> = (0..3).map(dummy_train_sample).collect();
+        let (prefix, tail) = split_divisible_prefix(&samples, 10);
+        assert_eq!(prefix.len(), 0);
+        assert_eq!(tail.len(), 3);
+    }
+
+    #[test]
+    fn split_divisible_prefix_single_sample() {
+        let samples = vec![dummy_train_sample(0)];
+        let (prefix, tail) = split_divisible_prefix(&samples, 1);
+        assert_eq!(prefix.len(), 1);
+        assert_eq!(tail.len(), 0);
+    }
+
+    #[test]
+    fn split_divisible_prefix_empty() {
+        let samples: Vec<MjaiSample> = vec![];
+        let (prefix, tail) = split_divisible_prefix(&samples, 2);
+        assert_eq!(prefix.len(), 0);
+        assert_eq!(tail.len(), 0);
+    }
+
+    #[test]
+    fn fixed_shape_train_returns_none_for_empty_batch() {
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let train_loss_fn = dummy_train_loss();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        let result = run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
+            logical_batch: &[],
+            augment: false,
+            microbatch_size: 1,
+            train_device: &device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            head_controller: &mut head_controller,
+            model: &model,
+        })
+        .expect("empty batch should return Ok");
+
+        assert!(result.is_none(), "empty batch should return None");
+    }
+
+    #[test]
+    fn fixed_shape_train_rejects_zero_microbatch_size() {
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let train_loss_fn = dummy_train_loss();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        let result = run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
+            logical_batch: &[dummy_train_sample(0)],
+            augment: false,
+            microbatch_size: 0,
+            train_device: &device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            head_controller: &mut head_controller,
+            model: &model,
+        });
+
+        assert!(result.is_err());
+        let err_msg = result.err().expect("should be Err");
+        assert!(
+            err_msg.contains("microbatch_size > 0"),
+            "error message should mention microbatch_size: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn fixed_shape_train_handles_microbatch_larger_than_batch() {
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let train_loss_fn = dummy_train_loss();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
+
+        let result = run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
+            logical_batch: &logical_batch,
+            augment: false,
+            microbatch_size: 10,
+            train_device: &device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            head_controller: &mut head_controller,
+            model: &model,
+        })
+        .expect("microbatch > batch should succeed via tail remainder");
+
+        let output = result.expect("should produce output from tail path");
+        assert_eq!(output.batch_stats.sample_count, 2);
+    }
+
+    #[test]
+    fn fixed_shape_nvtx_scopes_fire_for_both_prefix_and_tail_remainder() {
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let train_loss_fn = dummy_train_loss();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let logical_batch: Vec<MjaiSample> = (0..3).map(dummy_train_sample).collect();
+
+        let (result, events) = crate::nvtx::with_test_recorder(|| {
+            run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
+                logical_batch: &logical_batch,
+                augment: false,
+                microbatch_size: 2,
+                train_device: &device,
+                loss_fn: &train_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                head_controller: &mut head_controller,
+                model: &model,
+            })
+        });
+        result.expect("non-divisible batch should succeed");
+
+        let collation_pushes = events.iter().filter(|e| *e == "push:collation").count();
+        assert_eq!(
+            collation_pushes, 2,
+            "should have 2 collation pushes: 1 for the fixed-shape prefix chunk + 1 for the tail remainder"
+        );
+
+        let forward_pushes = events.iter().filter(|e| *e == "push:forward").count();
+        assert_eq!(forward_pushes, 2);
+        let loss_pushes = events.iter().filter(|e| *e == "push:loss").count();
+        assert_eq!(loss_pushes, 2);
+        let backward_pushes = events.iter().filter(|e| *e == "push:backward").count();
+        assert_eq!(backward_pushes, 2);
+
+        for push_event in events.iter().filter(|e| e.starts_with("push:")) {
+            let stage = push_event.strip_prefix("push:").unwrap();
+            let pop = format!("pop:{stage}");
+            assert!(
+                events.contains(&pop),
+                "every push should have a matching pop: {push_event}"
+            );
+        }
+    }
 }

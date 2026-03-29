@@ -5146,6 +5146,102 @@ mod tests {
     }
 
     #[test]
+    fn run_preflight_cache_hit_preserves_benchmark_result() {
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
+        use crate::preflight_fingerprint::preflight_cache_key;
+        use hydra_train::preflight::{
+            BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig,
+            BenchmarkScore, EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry,
+            ProfilingEnvelope, SelectedRuntimeConfig,
+        };
+
+        let output_dir = unique_test_path("preflight-cache-hit-benchmark-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        artifacts
+            .create_root_dir()
+            .expect("create artifact root for benchmark cache hit test");
+
+        let config = dummy_config();
+        let model_config = HydraModelConfig::learner();
+        let key = preflight_cache_key(
+            &config,
+            &model_config,
+            "cpu",
+            crate::config::default_num_threads_for_system(),
+        );
+
+        let benchmark = BenchmarkResult {
+            runtime: BenchmarkRuntimeConfig {
+                train_microbatch_size: 8,
+                validation_microbatch_size: 4,
+                accum_steps: 2,
+                loader: LoaderRuntimeConfig {
+                    num_threads: Some(2),
+                    buffer_games: 32,
+                    buffer_samples: 128,
+                    archive_queue_bound: 4,
+                },
+            },
+            score: BenchmarkScore {
+                wall_clock_samples_per_second: 123.456,
+                train_only_samples_per_second: 200.0,
+                train_seconds: 1.0,
+                validation_seconds: 0.5,
+                checkpoint_seconds: 0.1,
+                logging_seconds: 0.05,
+                total_elapsed_seconds: 1.65,
+                train_steps: 10,
+                validation_samples: 50,
+            },
+            metadata: BenchmarkMetadata {
+                mode: BenchmarkMode::CadenceAwareProjection,
+                ..Default::default()
+            },
+            profiling: Some(ProfilingEnvelope::leaf("stage_2_benchmark", 1.5)),
+        };
+
+        let paths = PreflightPaths::new(&artifacts);
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: key,
+                runtime: EffectiveRuntimeConfig {
+                    selected: SelectedRuntimeConfig {
+                        train_microbatch_size: 8,
+                        validation_microbatch_size: 4,
+                        accum_steps: 2,
+                    },
+                    loader: LoaderRuntimeConfig {
+                        num_threads: Some(2),
+                        buffer_games: 32,
+                        buffer_samples: 128,
+                        archive_queue_bound: 4,
+                    },
+                },
+                benchmark: Some(benchmark),
+            },
+        )
+        .expect("write cache entry with benchmark");
+
+        let config_path =
+            write_temp_file("preflight-cache-hit-benchmark-config", "yaml", "batch_size: 256\n");
+        let result = run_preflight(&config_path, &config, &model_config, "cpu", &artifacts)
+            .expect("cache hit should return Ok");
+
+        let returned = result
+            .benchmark
+            .expect("benchmark should be preserved on cache hit");
+        assert_eq!(returned.score.wall_clock_samples_per_second, 123.456);
+        assert_eq!(
+            returned.metadata.mode,
+            BenchmarkMode::CadenceAwareProjection
+        );
+        assert!(returned.profiling.is_some());
+
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
     fn run_preflight_misses_cache_on_different_fingerprint() {
         use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use hydra_train::preflight::{
