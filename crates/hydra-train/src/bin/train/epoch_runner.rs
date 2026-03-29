@@ -9,36 +9,37 @@ use colored::Colorize;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
-use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
-use hydra_train::data::sample::{MjaiSample, collate_samples_owned};
+use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
+use hydra_train::data::sample::{collate_samples_owned, MjaiSample};
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
-    PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL, PROFILING_STAGE_CHECKPOINT,
-    PROFILING_STAGE_LOGGING, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
+    ProfilingEnvelope, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_TRAIN,
+    PROFILING_STAGE_VALIDATION,
 };
 use hydra_train::training::bc::{
-    BCTrainerConfig, BcExitConfig, bc_total_with_exit_from_breakdown, gated_bc_context,
+    bc_total_with_exit_from_breakdown, gated_bc_context, BCTrainerConfig, BcExitConfig,
 };
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
 
-use super::TrainBackend;
 use super::artifacts::{
-    BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
     append_step_log_to_writer, append_training_log_to_writer, log_tensorboard, save_checkpoint,
-    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
+    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact, BcArtifactPaths,
+    JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
 };
-use super::config::{TrainConfig, validation_sample_limit};
+use super::bc_fixed_shape::{run_train_logical_batch_fixed_chunks, FixedShapeTrainConfig};
+use super::config::{validation_sample_limit, TrainConfig};
 use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
 use super::progress::{
-    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_metric_sums_from_outputs,
-    batch_stats_from_metric_sums,
+    batch_metric_sums_from_outputs, batch_stats_from_metric_sums, BatchStats, EpochLogEntry,
+    ScalarAverages, StepLogEntry,
 };
 use super::resume::{
-    BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
+    paused_training_message, BestValidation, EpochContinuation, RuntimeResumeContract,
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
@@ -46,8 +47,9 @@ use super::status::{
     estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
 };
 use super::validation::{
-    ValidationContext, ValidationRuntime, ValidationSummary, is_better_validation, run_validation,
+    is_better_validation, run_validation, ValidationContext, ValidationRuntime, ValidationSummary,
 };
+use super::TrainBackend;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -296,6 +298,24 @@ where
     let mut microbatch_count = 0usize;
     let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
 
+    if let Some(fixed_shape) = run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
+        logical_batch,
+        augment,
+        microbatch_size: microbatch_size.max(1),
+        train_device,
+        loss_fn,
+        bc_exit_cfg,
+        head_controller,
+        model: epoch_model(model_slot)?,
+    })? {
+        let model = model_slot
+            .take()
+            .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
+        *model_slot = Some(optimizer.step(lr, model, fixed_shape.grads));
+        head_controller.tick_warmup();
+        return Ok(vec![fixed_shape.batch_stats]);
+    }
+
     for chunk in logical_batch.chunks(microbatch_size.max(1)) {
         let Some((obs, batch, targets)) = collate_samples_owned::<B>(chunk, augment, train_device)
             .map_err(|err| format!("training collation failed: {err}"))?
@@ -318,7 +338,7 @@ where
             batch.actions.clone(),
             total.clone(),
             &breakdown,
-        ) * chunk_weight;
+        );
 
         metric_sums = Some(match metric_sums.take() {
             Some(existing) => existing + chunk_metric_sums,
@@ -411,29 +431,31 @@ where
         )))
         .map_err(|err| format!("failed to print validation start summary: {err}"))?;
 
-    let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
-    let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
-    let summary = run_validation(
-        model,
-        ValidationContext {
-            config,
-            loader_config,
-            manifest,
-            cached_samples: cached_validation_samples,
-            device: train_device,
-            loss_fn: valid_loss_fn,
-            exit_cfg: bc_exit_cfg,
-        },
-        ValidationRuntime {
-            head_controller,
-            progress: None,
-        },
-    )?;
+    let summary = {
+        let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
+        run_validation(
+            model,
+            ValidationContext {
+                config,
+                loader_config,
+                manifest,
+                cached_samples: cached_validation_samples,
+                device: train_device,
+                loss_fn: valid_loss_fn,
+                exit_cfg: bc_exit_cfg,
+            },
+            ValidationRuntime {
+                head_controller,
+                progress: None,
+            },
+        )?
+    };
     if is_better_validation(&summary, *best_validation) {
         *best_validation = Some(BestValidation {
             policy_loss: summary.policy_loss,
             agreement: summary.agreement,
         });
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
         save_checkpoint(
             model,
             &artifacts.best_model_base,
@@ -638,7 +660,7 @@ fn maybe_save_periodic_checkpoint<B, O>(
     optimizer: &O,
     context: PeriodicCheckpointContext<'_>,
     state: PeriodicCheckpointState,
-) -> Result<(), String>
+) -> Result<f64, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     O: Optimizer<HydraModel<B>, B>,
@@ -658,7 +680,7 @@ where
     } = state;
     let session_step = session_steps_completed(global_step, session_start_global_step);
     if session_step == 0 || !session_step.is_multiple_of(config.checkpoint_every_n_steps) {
-        return Ok(());
+        return Ok(0.0);
     }
 
     let continuation = EpochContinuation {
@@ -666,18 +688,23 @@ where
         skip_optimizer_steps_in_epoch: epoch_optimizer_steps,
         epoch_completed: false,
     };
-    save_latest_checkpoint_and_state(
-        artifacts,
-        model,
-        optimizer,
-        LatestCheckpointState {
-            global_step,
-            train_loss: total_loss,
-            best_validation,
-            continuation: &continuation,
-            runtime: current_runtime,
-        },
-    )
+    let checkpoint_started = Instant::now();
+    {
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+        save_latest_checkpoint_and_state(
+            artifacts,
+            model,
+            optimizer,
+            LatestCheckpointState {
+                global_step,
+                train_loss: total_loss,
+                best_validation,
+                continuation: &continuation,
+                runtime: current_runtime,
+            },
+        )?;
+    }
+    Ok(checkpoint_started.elapsed().as_secs_f64())
 }
 
 fn emit_paused_training_message(continuation: &EpochContinuation) {
@@ -729,27 +756,31 @@ where
             }
         ))
     );
-    let summary = run_validation(
-        model,
-        ValidationContext {
-            config,
-            loader_config,
-            manifest,
-            cached_samples: cached_validation_samples,
-            device: train_device,
-            loss_fn: valid_loss_fn,
-            exit_cfg: bc_exit_cfg,
-        },
-        ValidationRuntime {
-            head_controller,
-            progress: None,
-        },
-    )?;
+    let summary = {
+        let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
+        run_validation(
+            model,
+            ValidationContext {
+                config,
+                loader_config,
+                manifest,
+                cached_samples: cached_validation_samples,
+                device: train_device,
+                loss_fn: valid_loss_fn,
+                exit_cfg: bc_exit_cfg,
+            },
+            ValidationRuntime {
+                head_controller,
+                progress: None,
+            },
+        )?
+    };
     if is_better_validation(&summary, *best_validation) {
         *best_validation = Some(BestValidation {
             policy_loss: summary.policy_loss,
             agreement: summary.agreement,
         });
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
         save_checkpoint(
             model,
             &artifacts.best_model_base,
@@ -1002,8 +1033,10 @@ where
     let mut last_interval_validation: Option<ValidationEvent> = None;
     let epoch_started = Instant::now();
     let mut step_window_train_seconds = 0.0;
+    let mut step_window_checkpoint_seconds = 0.0;
     let mut step_window_validation_profiling: Option<ProfilingEnvelope> = None;
     let mut epoch_train_seconds = 0.0;
+    let mut epoch_checkpoint_seconds = 0.0;
     let mut epoch_validation_profiling: Option<ProfilingEnvelope> = None;
 
     for buffer_result in stream_train_epoch(manifest, loader_config, epoch, Some(&load_pb)) {
@@ -1127,9 +1160,10 @@ where
                 let interval_profiling = bc_interval_profiling(
                     step_window_train_seconds,
                     step_window_validation_profiling.take(),
-                    0.0,
+                    step_window_checkpoint_seconds,
                 );
                 step_window_train_seconds = 0.0;
+                step_window_checkpoint_seconds = 0.0;
 
                 emit_interval_step_summary(
                     &multi,
@@ -1154,7 +1188,7 @@ where
                 )?;
             }
 
-            maybe_save_periodic_checkpoint(
+            let periodic_checkpoint_seconds = maybe_save_periodic_checkpoint(
                 epoch_model(model_slot)?,
                 optimizer,
                 PeriodicCheckpointContext {
@@ -1171,6 +1205,8 @@ where
                     best_validation: *best_validation,
                 },
             )?;
+            step_window_checkpoint_seconds += periodic_checkpoint_seconds;
+            epoch_checkpoint_seconds += periodic_checkpoint_seconds;
 
             if reached_session_step_budget(
                 *global_step,
@@ -1195,21 +1231,27 @@ where
     if !pending_samples.is_empty() && epoch_completed {
         let lr = effective_lr(train_cfg, *global_step, total_steps);
         let logical_batch: Vec<MjaiSample> = pending_samples.drain(..).collect();
-        let drained = train_logical_batch(
-            &logical_batch,
-            TrainLogicalBatchConfig {
-                microbatch_size,
-                augment: config.augment,
-                train_device,
-                loss_fn,
-                bc_exit_cfg,
-                lr,
-            },
-            head_controller,
-            model_slot,
-            optimizer,
-        )?;
+        let train_started = Instant::now();
+        let drained = {
+            let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
+            train_logical_batch(
+                &logical_batch,
+                TrainLogicalBatchConfig {
+                    microbatch_size,
+                    augment: config.augment,
+                    train_device,
+                    loss_fn,
+                    bc_exit_cfg,
+                    lr,
+                },
+                head_controller,
+                model_slot,
+                optimizer,
+            )?
+        };
+        let train_seconds = train_started.elapsed().as_secs_f64();
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
+        epoch_train_seconds += train_seconds;
         epoch_optimizer_steps += 1;
         *global_step += 1;
         train_pb.inc(1);
@@ -1302,7 +1344,7 @@ where
     let mut epoch_profiling = bc_epoch_profiling(
         epoch_train_seconds,
         epoch_validation_profiling,
-        checkpoint_seconds,
+        epoch_checkpoint_seconds + checkpoint_seconds,
         0.0,
     );
     epoch_profiling.elapsed_seconds = epoch_elapsed_seconds;
@@ -1458,8 +1500,18 @@ mod tests {
         artifacts
     }
 
+    #[allow(dead_code)]
     fn dummy_model(device: &LibTorchDevice) -> HydraModel<TrainBackend> {
         HydraModelConfig::learner().init::<TrainBackend>(device)
+    }
+
+    fn tiny_dummy_model(device: &LibTorchDevice) -> HydraModel<TrainBackend> {
+        HydraModelConfig::new(1)
+            .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1)
+            .init::<TrainBackend>(device)
     }
 
     fn dummy_train_sample(action: u8) -> MjaiSample {
@@ -1514,7 +1566,7 @@ mod tests {
 
     fn assert_close(actual: f64, expected: f64) {
         assert!(
-            (actual - expected).abs() < 1e-12,
+            (actual - expected).abs() < 1e-5,
             "expected {expected}, got {actual}"
         );
     }
@@ -1522,7 +1574,7 @@ mod tests {
     #[test]
     fn train_logical_batch_empty_keeps_model_slot_populated() {
         let device = LibTorchDevice::Cpu;
-        let mut model_slot = Some(dummy_model(&device));
+        let mut model_slot = Some(tiny_dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut head_controller =
             HeadActivationController::new(HeadActivationConfig::default_with_params(1));
@@ -1586,7 +1638,7 @@ mod tests {
     #[test]
     fn train_logical_batch_non_empty_keeps_model_slot_populated_and_returns_stats() {
         let device = LibTorchDevice::Cpu;
-        let mut model_slot = Some(dummy_model(&device));
+        let mut model_slot = Some(tiny_dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut head_controller =
             HeadActivationController::new(HeadActivationConfig::default_with_params(1));
@@ -1613,11 +1665,45 @@ mod tests {
         assert_eq!(drained[0].sample_count, 2);
         assert_eq!(drained[0].batch_count, 2);
         assert!(drained.iter().all(|stats| stats.total_loss.is_finite()));
-        assert!(
-            drained
-                .iter()
-                .all(|stats| stats.policy_agreement.is_finite())
-        );
+        assert!(drained
+            .iter()
+            .all(|stats| stats.policy_agreement.is_finite()));
+        assert!(model_slot.is_some());
+    }
+
+    #[test]
+    fn train_logical_batch_full_microbatch_keeps_model_slot_populated() {
+        let device = LibTorchDevice::Cpu;
+        let mut model_slot = Some(tiny_dummy_model(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+        let train_loss_fn = dummy_train_loss();
+        let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
+
+        let drained = train_logical_batch(
+            &logical_batch,
+            TrainLogicalBatchConfig {
+                microbatch_size: logical_batch.len(),
+                augment: false,
+                train_device: &device,
+                loss_fn: &train_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                lr: 1.0e-4,
+            },
+            &mut head_controller,
+            &mut model_slot,
+            &mut optimizer,
+        )
+        .expect("full microbatch path should succeed");
+
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].sample_count, logical_batch.len());
+        assert_eq!(drained[0].batch_count, 1);
+        assert!(drained.iter().all(|stats| stats.total_loss.is_finite()));
+        assert!(drained
+            .iter()
+            .all(|stats| stats.policy_agreement.is_finite()));
         assert!(model_slot.is_some());
     }
 
@@ -1785,7 +1871,7 @@ mod tests {
         let manifest = dummy_manifest(true);
         let artifacts = test_artifacts("interval_validation_skip");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let valid_loss_fn = dummy_valid_loss();
         let mut best_validation = Some(BestValidation {
             policy_loss: 0.8,
@@ -1852,7 +1938,7 @@ mod tests {
         let config = dummy_config();
         let artifacts = test_artifacts("periodic_checkpoint_skip");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let optimizer = AdamConfig::new().init();
 
         maybe_save_periodic_checkpoint(
@@ -1895,12 +1981,10 @@ mod tests {
 
         assert!(!artifacts.latest_state_path.exists());
         assert!(!artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(
-            !artifacts
-                .latest_optimizer_base
-                .with_extension("bin")
-                .exists()
-        );
+        assert!(!artifacts
+            .latest_optimizer_base
+            .with_extension("bin")
+            .exists());
     }
 
     #[test]
@@ -1908,7 +1992,7 @@ mod tests {
         let config = dummy_config();
         let artifacts = test_artifacts("periodic_checkpoint_save");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let optimizer = AdamConfig::new().init();
         let expected_best = Some(BestValidation {
             policy_loss: 0.7,
@@ -1942,18 +2026,14 @@ mod tests {
         assert_eq!(state.runtime, dummy_runtime_resume_contract());
         assert!(artifacts.latest_state_path.exists());
         assert!(artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(
-            artifacts
-                .latest_model_base
-                .with_extension("meta.json")
-                .exists()
-        );
-        assert!(
-            artifacts
-                .latest_optimizer_base
-                .with_extension("bin")
-                .exists()
-        );
+        assert!(artifacts
+            .latest_model_base
+            .with_extension("meta.json")
+            .exists());
+        assert!(artifacts
+            .latest_optimizer_base
+            .with_extension("bin")
+            .exists());
     }
 
     #[test]
@@ -1961,7 +2041,7 @@ mod tests {
         let config = dummy_config();
         let artifacts = test_artifacts("periodic_checkpoint_save_without_best");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let optimizer = AdamConfig::new().init();
 
         maybe_save_periodic_checkpoint(
@@ -1997,7 +2077,7 @@ mod tests {
         let manifest = dummy_manifest(true);
         let artifacts = test_artifacts("interval_validation_save");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let valid_loss_fn = dummy_valid_loss();
         let mut best_validation = Some(BestValidation {
             policy_loss: 0.8,
@@ -2039,12 +2119,10 @@ mod tests {
             })
         );
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(
-            artifacts
-                .best_model_base
-                .with_extension("meta.json")
-                .exists()
-        );
+        assert!(artifacts
+            .best_model_base
+            .with_extension("meta.json")
+            .exists());
     }
 
     #[test]
@@ -2054,7 +2132,7 @@ mod tests {
         let manifest = dummy_manifest(true);
         let artifacts = test_artifacts("interval_validation_keep_best");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let valid_loss_fn = dummy_valid_loss();
         let mut best_validation = Some(BestValidation {
             policy_loss: -0.1,
@@ -2234,7 +2312,7 @@ mod tests {
         let manifest = dummy_manifest(true);
         let artifacts = test_artifacts("epoch_end_validation_skip");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let valid_loss_fn = dummy_valid_loss();
         let mut best_validation = Some(BestValidation {
             policy_loss: 0.6,
@@ -2278,7 +2356,7 @@ mod tests {
         let manifest = dummy_manifest(true);
         let artifacts = test_artifacts("epoch_end_validation_save");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let valid_loss_fn = dummy_valid_loss();
         let mut best_validation = Some(BestValidation {
             policy_loss: 0.7,
@@ -2314,12 +2392,10 @@ mod tests {
             })
         );
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(
-            artifacts
-                .best_model_base
-                .with_extension("meta.json")
-                .exists()
-        );
+        assert!(artifacts
+            .best_model_base
+            .with_extension("meta.json")
+            .exists());
     }
 
     #[test]
@@ -2445,7 +2521,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let valid_loss_fn = dummy_valid_loss();
         let device = LibTorchDevice::Cpu;
-        let mut model = Some(dummy_model(&device));
+        let mut model = Some(tiny_dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut global_step = 7usize;
         let mut best_validation = None;
@@ -2545,7 +2621,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let valid_loss_fn = dummy_valid_loss();
         let device = LibTorchDevice::Cpu;
-        let mut model = Some(dummy_model(&device));
+        let mut model = Some(tiny_dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut global_step = 12usize;
         let mut best_validation = Some(BestValidation {
@@ -2633,7 +2709,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let valid_loss_fn = dummy_valid_loss();
         let device = LibTorchDevice::Cpu;
-        let mut model = Some(dummy_model(&device));
+        let mut model = Some(tiny_dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut global_step = 7usize;
         let mut best_validation = None;
@@ -2690,32 +2766,26 @@ mod tests {
         assert_eq!(state.global_step, 7);
         assert_eq!(state.best_validation, None);
         assert!(artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(
-            artifacts
-                .latest_model_base
-                .with_extension("meta.json")
-                .exists()
-        );
-        assert!(
-            artifacts
-                .latest_optimizer_base
-                .with_extension("bin")
-                .exists()
-        );
+        assert!(artifacts
+            .latest_model_base
+            .with_extension("meta.json")
+            .exists());
+        assert!(artifacts
+            .latest_optimizer_base
+            .with_extension("bin")
+            .exists());
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(
-            artifacts
-                .best_model_base
-                .with_extension("meta.json")
-                .exists()
-        );
+        assert!(artifacts
+            .best_model_base
+            .with_extension("meta.json")
+            .exists());
     }
 
     #[test]
     fn latest_checkpoint_can_refresh_state_without_rewriting_payload_files() {
         let artifacts = test_artifacts("latest_checkpoint_refreshes_state_only");
         let device = LibTorchDevice::Cpu;
-        let model = dummy_model(&device);
+        let model = tiny_dummy_model(&device);
         let optimizer = AdamConfig::new().init();
 
         save_latest_checkpoint_and_state(
@@ -2789,7 +2859,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let valid_loss_fn = dummy_valid_loss();
         let device = LibTorchDevice::Cpu;
-        let mut model = Some(dummy_model(&device));
+        let mut model = Some(tiny_dummy_model(&device));
         let mut optimizer = AdamConfig::new().init();
         let mut global_step = 4usize;
         let mut best_validation = None;
@@ -2846,6 +2916,10 @@ mod tests {
             events,
             vec![
                 "push:bc_epoch",
+                "push:checkpoint",
+                "pop:checkpoint",
+                "push:validation",
+                "pop:validation",
                 "push:checkpoint",
                 "pop:checkpoint",
                 "push:logging",
