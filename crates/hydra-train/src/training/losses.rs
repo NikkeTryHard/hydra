@@ -625,55 +625,82 @@ impl<B: Backend> HydraLoss<B> {
         let l_cdf =
             score_cdf_bce(outputs.score_cdf.clone(), targets.score_cdf_target.clone()).mean();
         let zero = outputs.value.clone().sum() * 0.0;
-        let l_oracle = match &targets.oracle_target {
-            Some(target) => masked_mean(
-                oracle_critic_loss_per_sample(outputs.oracle_critic.clone(), target.clone()),
-                oracle_mask.clone(),
-            ),
-            None => zero.clone(),
-        };
-        let l_belief = match (&targets.belief_fields_target, &targets.belief_fields_mask) {
-            (Some(target), Some(mask)) => masked_mean(
-                belief_fields_bce_per_sample(outputs.belief_fields.clone(), target.clone()),
-                combine_sample_masks(Some(mask.clone()), oracle_mask.clone()),
-            ),
-            _ => zero.clone(),
-        };
-        let l_mix = match (&targets.mixture_weight_target, &targets.mixture_weight_mask) {
-            (Some(target), Some(mask)) => masked_mean(
-                mixture_weight_ce_per_sample(outputs.mixture_weight_logits.clone(), target.clone()),
-                combine_sample_masks(Some(mask.clone()), oracle_mask.clone()),
-            ),
-            _ => zero.clone(),
-        };
-        let l_hand_type = match &targets.opponent_hand_type_target {
-            Some(target) => masked_mean(
-                opponent_hand_type_ce_per_sample(
-                    outputs.opponent_hand_type.clone(),
-                    target.clone(),
-                ),
-                oracle_mask.clone(),
-            ),
-            None => zero.clone(),
-        };
-        let l_delta_q = match (&targets.delta_q_target, &targets.delta_q_mask) {
-            (Some(target), Some(mask)) => {
-                masked_action_mse(outputs.delta_q.clone(), target.clone(), mask.clone())
-            }
-            _ => zero.clone(),
-        };
-        let l_safety_residual = match (
-            &targets.safety_residual_target,
-            &targets.safety_residual_mask,
-        ) {
-            (Some(target), Some(mask)) => masked_action_mse(
-                outputs.safety_residual.clone(),
-                target.clone(),
-                mask.clone(),
-            ),
-            _ => zero.clone(),
-        };
         let c = &self.config;
+        let l_oracle = if c.w_oracle_critic > 0.0 {
+            match &targets.oracle_target {
+                Some(target) => masked_mean(
+                    oracle_critic_loss_per_sample(outputs.oracle_critic.clone(), target.clone()),
+                    oracle_mask.clone(),
+                ),
+                None => zero.clone(),
+            }
+        } else {
+            zero.clone()
+        };
+        let l_belief = if c.w_belief_fields > 0.0 {
+            match (&targets.belief_fields_target, &targets.belief_fields_mask) {
+                (Some(target), Some(mask)) => masked_mean(
+                    belief_fields_bce_per_sample(outputs.belief_fields.clone(), target.clone()),
+                    combine_sample_masks(Some(mask.clone()), oracle_mask.clone()),
+                ),
+                _ => zero.clone(),
+            }
+        } else {
+            zero.clone()
+        };
+        let l_mix = if c.w_mixture_weight > 0.0 {
+            match (&targets.mixture_weight_target, &targets.mixture_weight_mask) {
+                (Some(target), Some(mask)) => masked_mean(
+                    mixture_weight_ce_per_sample(
+                        outputs.mixture_weight_logits.clone(),
+                        target.clone(),
+                    ),
+                    combine_sample_masks(Some(mask.clone()), oracle_mask.clone()),
+                ),
+                _ => zero.clone(),
+            }
+        } else {
+            zero.clone()
+        };
+        let l_hand_type = if c.w_opponent_hand_type > 0.0 {
+            match &targets.opponent_hand_type_target {
+                Some(target) => masked_mean(
+                    opponent_hand_type_ce_per_sample(
+                        outputs.opponent_hand_type.clone(),
+                        target.clone(),
+                    ),
+                    oracle_mask.clone(),
+                ),
+                None => zero.clone(),
+            }
+        } else {
+            zero.clone()
+        };
+        let l_delta_q = if c.w_delta_q > 0.0 {
+            match (&targets.delta_q_target, &targets.delta_q_mask) {
+                (Some(target), Some(mask)) => {
+                    masked_action_mse(outputs.delta_q.clone(), target.clone(), mask.clone())
+                }
+                _ => zero.clone(),
+            }
+        } else {
+            zero.clone()
+        };
+        let l_safety_residual = if c.w_safety_residual > 0.0 {
+            match (
+                &targets.safety_residual_target,
+                &targets.safety_residual_mask,
+            ) {
+                (Some(target), Some(mask)) => masked_action_mse(
+                    outputs.safety_residual.clone(),
+                    target.clone(),
+                    mask.clone(),
+                ),
+                _ => zero.clone(),
+            }
+        } else {
+            zero.clone()
+        };
         let total = l_pi.clone() * c.w_pi
             + l_v.clone() * c.w_v
             + l_grp.clone() * c.w_grp
@@ -1328,25 +1355,19 @@ pub mod tests {
 
     #[test]
     fn test_validate_rejects_negative_primary_weights() {
-        assert!(
-            HydraLossConfig::new()
-                .with_w_tenpai(-0.1)
-                .validate()
-                .is_err()
-        );
-        assert!(
-            HydraLossConfig::new()
-                .with_w_danger(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_tenpai(-0.1)
+            .validate()
+            .is_err());
+        assert!(HydraLossConfig::new()
+            .with_w_danger(-0.1)
+            .validate()
+            .is_err());
         assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
-        assert!(
-            HydraLossConfig::new()
-                .with_w_score(-0.1)
-                .validate()
-                .is_err()
-        );
+        assert!(HydraLossConfig::new()
+            .with_w_score(-0.1)
+            .validate()
+            .is_err());
     }
 
     #[test]

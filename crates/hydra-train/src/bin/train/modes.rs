@@ -5,7 +5,7 @@ use burn::backend::libtorch::LibTorchDevice;
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
-use hydra_train::eval::{PairedArenaEvalConfig, run_paired_delta_q_arena_confirmation};
+use hydra_train::eval::{run_paired_delta_q_arena_confirmation, PairedArenaEvalConfig};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 use hydra_train::training::delta_q_promotion::{
@@ -13,15 +13,15 @@ use hydra_train::training::delta_q_promotion::{
 };
 
 use super::artifacts::{
-    BcArtifactPaths, PersistedDeltaQPromotionArtifact, write_delta_q_promotion_artifact,
+    write_delta_q_promotion_artifact, BcArtifactPaths, PersistedDeltaQPromotionArtifact,
 };
-use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
+use super::bootstrap::{initialize_rl_training_bootstrap, RlTrainingBootstrap, RlTrainingRuntime};
 use super::bootstrap::{
-    TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap,
-    initialize_training_bootstrap_bf16,
+    initialize_training_bootstrap, initialize_training_bootstrap_bf16, TrainingBootstrap,
+    TrainingRuntime,
 };
-use super::config::{TrainConfig, configure_threads, device_label, validate_config};
-use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
+use super::config::{configure_threads, device_label, validate_config, TrainConfig};
+use super::epoch_runner::{run_epoch, EpochRunnerContext, EpochRuntimeMut};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use super::presentation::{
     explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
@@ -34,7 +34,7 @@ use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
 use super::validation::materialize_validation_samples;
 use super::validation::{
-    ValidationContext, ValidationRuntime, run_validation_with_policy_baseline,
+    run_validation_with_policy_baseline, ValidationContext, ValidationRuntime,
 };
 use super::{Bf16TrainBackend, TrainBackend};
 
@@ -154,14 +154,6 @@ pub(super) fn handle_preflight_mode(
     config: &TrainConfig,
 ) -> Result<(), String> {
     validate_config(config)?;
-    if config.rl.is_some()
-        && matches!(
-            config.precision_mode,
-            crate::config::PrecisionMode::Bf16Autocast
-        )
-    {
-        return Err("precision_mode=bf16_autocast is not supported for preflight yet".to_string());
-    }
     configure_threads(config.num_threads)?;
     if config.rl.is_some() {
         let train_device = super::config::train_device(&config.device)?;
@@ -242,14 +234,6 @@ pub(super) fn handle_probe_mode(
     request: ProbeRequest,
 ) -> Result<(), String> {
     validate_config(config)?;
-    if matches!(request.kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch)
-        && matches!(
-            config.precision_mode,
-            crate::config::PrecisionMode::Bf16Autocast
-        )
-    {
-        return Err("precision_mode=bf16_autocast is not supported for probe mode yet".to_string());
-    }
     configure_threads(config.num_threads)?;
     let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
     artifacts.create_root_dir()?;
@@ -849,10 +833,10 @@ mod tests {
         .expect("arena confirmation request should exist");
         assert!(request.same_seeds);
         assert_eq!(request.min_games, 10_000);
-        assert!(
-            default_arena_confirmation_request(DeltaQPromotionRecommendation::RejectAtOfflineGate,)
-                .is_none()
-        );
+        assert!(default_arena_confirmation_request(
+            DeltaQPromotionRecommendation::RejectAtOfflineGate,
+        )
+        .is_none());
     }
 
     #[test]
@@ -942,21 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn handle_preflight_mode_rl_branch_still_rejects_bf16() {
-        let mut config = dummy_config();
-        config.rl = Some(RlTrainConfig::default());
-        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
-
-        let err = handle_preflight_mode(Path::new("config.yaml"), &config)
-            .expect_err("RL preflight should keep rejecting BF16");
-
-        assert_eq!(
-            err,
-            "precision_mode=bf16_autocast is not supported for preflight yet"
-        );
-    }
-
-    #[test]
     fn handle_probe_mode_returns_validation_errors_before_probe_runtime() {
         let mut config = dummy_config();
         config.batch_size = 0;
@@ -1022,22 +991,51 @@ mod tests {
     }
 
     #[test]
-    fn handle_probe_mode_rl_branch_still_rejects_bf16() {
+    fn handle_probe_mode_rl_branch_allows_bf16_past_top_level_gate() {
         let mut config = dummy_config();
         config.rl = Some(RlTrainConfig::default());
         config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        config.device = "definitely-not-a-device".to_string();
+        config.data_dir = unique_test_path("missing-rl-bf16-probe-data");
+        config.output_dir = unique_test_path("missing-rl-bf16-probe-out");
 
         let err = handle_probe_mode(
             Path::new("config.yaml"),
             &config,
             dummy_probe_request(ProbeKind::RlMicrobatch),
         )
-        .expect_err("RL probe mode should keep rejecting BF16");
+        .expect_err("RL probe mode should fall through the top-level gate");
 
-        assert_eq!(
-            err,
-            "precision_mode=bf16_autocast is not supported for probe mode yet"
-        );
+        assert!(err.starts_with("failed to scan preflight data from "));
+        assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn handle_preflight_mode_rl_branch_allows_bf16_past_top_level_gate() {
+        let data_dir = unique_test_path("bf16-rl-preflight-no-stable-data");
+        std::fs::create_dir_all(&data_dir).expect("create empty BF16 RL preflight data dir");
+        let output_dir = unique_test_path("bf16-rl-preflight-no-stable-out");
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir.clone();
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.preflight.required_successes = 1;
+        config.rl = Some(RlTrainConfig::default());
+        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        let config_path =
+            unique_test_path("bf16-rl-preflight-no-stable-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid BF16 RL preflight config");
+        std::fs::write(&config_path, config_yaml).expect("write valid BF16 RL preflight config");
+
+        let err = handle_preflight_mode(&config_path, &config)
+            .expect_err("BF16 RL preflight should fall through the top-level gate");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(output_dir);
+        let _ = std::fs::remove_file(config_path);
     }
 
     #[test]
@@ -1537,10 +1535,8 @@ mod tests {
         let probe_message =
             format_probe_only_status_message(dummy_probe_request(ProbeKind::Validation));
         assert!(probe_message.contains("Probe-only:"));
-        assert!(
-            probe_message
-                .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8")
-        );
+        assert!(probe_message
+            .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8"));
 
         let rl_message = format_rl_preflight_selection_message(32, 8);
         assert!(rl_message.contains("Preflight:"));

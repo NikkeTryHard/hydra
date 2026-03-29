@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
-use hydra_train::data::pipeline::{DataSource, scan_data_sources};
+use hydra_train::data::pipeline::{scan_data_sources, DataSource};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 
 const MJAI_AUDIT_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -210,8 +210,7 @@ fn is_archive_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(name)
-            if name.ends_with(".tar")
-                || name.ends_with(".tar.zst")
+            if name.ends_with(".tar.zst")
                 || name.contains(".tar-") && name.ends_with(".zst")
     )
 }
@@ -641,7 +640,11 @@ fn run() -> Result<(), String> {
 }
 
 fn exit_code_for_run_result(result: &Result<(), String>) -> i32 {
-    if result.is_ok() { 0 } else { 1 }
+    if result.is_ok() {
+        0
+    } else {
+        1
+    }
 }
 
 fn main() {
@@ -1114,12 +1117,10 @@ mod tests {
         let lines = failure_report_lines(&sort_error_buckets(error_buckets), &failure_examples);
         assert!(lines.iter().any(|line| line == "Top failure buckets:"));
         assert!(lines.iter().any(|line| line == "Failure examples:"));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("dataset.tar.zst/bad1.json")
-                    || line.contains("dataset.tar.zst/bad2.json"))
-        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("dataset.tar.zst/bad1.json")
+                || line.contains("dataset.tar.zst/bad2.json")));
 
         cleanup_dir(&dir);
     }

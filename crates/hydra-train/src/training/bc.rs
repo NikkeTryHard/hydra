@@ -1,11 +1,11 @@
 //! Behavioral cloning training loop (Phase 0).
 
 use crate::config::OracleGuidingConfig;
-use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_with_batch};
+use crate::data::sample::{collate_sample_refs_with_batch, MjaiBatch, MjaiSample};
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::exit::exit_loss;
 use crate::training::head_gates::{
-    AdvancedHead, HeadActivationController, borrow_or_extract_target_presence,
+    borrow_or_extract_target_presence, AdvancedHead, HeadActivationController,
 };
 use crate::training::losses::{HydraLoss, HydraTargets};
 use burn::grad_clipping::GradientClippingConfig;
@@ -121,16 +121,34 @@ pub fn bc_total_with_exit_from_breakdown<B: Backend>(
     exit_cfg: &BcExitConfig,
 ) -> Tensor<B, 1> {
     let mut total = breakdown.total.clone();
-    if let (Some(exit_target), Some(exit_mask)) = (&batch.exit_target, &batch.exit_mask) {
-        total = total
+    total = maybe_add_exit_loss(
+        total,
+        output.policy_logits.clone(),
+        batch.exit_target.as_ref(),
+        batch.exit_mask.as_ref(),
+        exit_cfg,
+    );
+    total
+}
+
+pub fn maybe_add_exit_loss<B: Backend>(
+    total: Tensor<B, 1>,
+    policy_logits: Tensor<B, 2>,
+    exit_target: Option<&Tensor<B, 2>>,
+    exit_mask: Option<&Tensor<B, 2>>,
+    exit_cfg: &BcExitConfig,
+) -> Tensor<B, 1> {
+    if let (Some(exit_target), Some(exit_mask)) = (exit_target, exit_mask) {
+        total
             + exit_loss(
-                output.policy_logits.clone(),
+                policy_logits,
                 exit_target.clone(),
                 exit_mask.clone(),
                 exit_cfg.exit_weight,
-            );
+            )
+    } else {
+        total
     }
-    total
 }
 
 pub fn bc_total_with_optional_exit_from_breakdown<B: Backend>(
@@ -140,16 +158,14 @@ pub fn bc_total_with_optional_exit_from_breakdown<B: Backend>(
     exit_cfg: &BcExitConfig,
 ) -> Tensor<B, 1> {
     let mut total = breakdown.total.clone();
-    if let Some(batch) = batch
-        && let (Some(exit_target), Some(exit_mask)) = (&batch.exit_target, &batch.exit_mask)
-    {
-        total = total
-            + exit_loss(
-                output.policy_logits.clone(),
-                exit_target.clone(),
-                exit_mask.clone(),
-                exit_cfg.exit_weight,
-            );
+    if let Some(batch) = batch {
+        total = maybe_add_exit_loss(
+            total,
+            output.policy_logits.clone(),
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            exit_cfg,
+        );
     }
     total
 }
@@ -255,7 +271,11 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob { 1.0 } else { 0.0 }
+            if sample < keep_prob {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -584,7 +604,7 @@ impl CheckpointMeta {
 mod tests {
     use super::*;
     use crate::data::sample::MjaiBatch;
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
