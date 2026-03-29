@@ -52,6 +52,9 @@ rand = "0.9"
 rand_chacha = "0.9"
 criterion = { version = "0.5", features = ["html_reports"] }
 
+[features]
+cuda-graph = []
+
 [build-dependencies]
 cc = "1"
 
