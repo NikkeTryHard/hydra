@@ -399,6 +399,11 @@ pub const PROFILING_STAGE_LOGGING: &str = "logging";
 pub const PROFILING_STAGE_SELF_PLAY: &str = "self_play";
 pub const PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS: &str = "candidate_forward_and_loss";
 pub const PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD: &str = "delta_q_baseline_forward";
+pub const PROFILING_STAGE_COLLATION: &str = "collation";
+pub const PROFILING_STAGE_FORWARD: &str = "forward";
+pub const PROFILING_STAGE_LOSS: &str = "loss";
+pub const PROFILING_STAGE_BACKWARD: &str = "backward";
+pub const PROFILING_STAGE_OPTIMIZER_STEP: &str = "optimizer_step";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProfilingEnvelope {
