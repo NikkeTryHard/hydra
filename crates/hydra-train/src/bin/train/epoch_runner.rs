@@ -230,13 +230,18 @@ fn merge_optional_profiling(
 
 fn bc_interval_profiling(
     train_seconds: f64,
+    sub_timing: &TrainSubStageTiming,
     validation: Option<ProfilingEnvelope>,
     logging_seconds: f64,
 ) -> ProfilingEnvelope {
     ProfilingEnvelope::from_children(
         PROFILING_STAGE_BC_INTERVAL,
         vec![
-            ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, train_seconds),
+            ProfilingEnvelope::nested(
+                PROFILING_STAGE_TRAIN,
+                train_seconds,
+                sub_timing.to_profiling_children(),
+            ),
             validation.unwrap_or_else(|| ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 0.0)),
             ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, logging_seconds),
         ],
@@ -245,6 +250,7 @@ fn bc_interval_profiling(
 
 fn bc_epoch_profiling(
     train_seconds: f64,
+    sub_timing: &TrainSubStageTiming,
     validation: Option<ProfilingEnvelope>,
     checkpoint_seconds: f64,
     logging_seconds: f64,
@@ -252,7 +258,11 @@ fn bc_epoch_profiling(
     ProfilingEnvelope::from_children(
         PROFILING_STAGE_BC_EPOCH,
         vec![
-            ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, train_seconds),
+            ProfilingEnvelope::nested(
+                PROFILING_STAGE_TRAIN,
+                train_seconds,
+                sub_timing.to_profiling_children(),
+            ),
             validation.unwrap_or_else(|| ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 0.0)),
             ProfilingEnvelope::leaf(PROFILING_STAGE_CHECKPOINT, checkpoint_seconds),
             ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, logging_seconds),
@@ -269,13 +279,42 @@ where
         .ok_or_else(|| "epoch runner model slot should stay populated".to_string())
 }
 
+#[derive(Default)]
+pub(super) struct TrainSubStageTiming {
+    pub(super) collation_seconds: f64,
+    pub(super) forward_seconds: f64,
+    pub(super) loss_seconds: f64,
+    pub(super) backward_seconds: f64,
+    pub(super) optimizer_step_seconds: f64,
+}
+
+impl TrainSubStageTiming {
+    fn accumulate(&mut self, other: &TrainSubStageTiming) {
+        self.collation_seconds += other.collation_seconds;
+        self.forward_seconds += other.forward_seconds;
+        self.loss_seconds += other.loss_seconds;
+        self.backward_seconds += other.backward_seconds;
+        self.optimizer_step_seconds += other.optimizer_step_seconds;
+    }
+
+    fn to_profiling_children(&self) -> Vec<ProfilingEnvelope> {
+        vec![
+            ProfilingEnvelope::leaf(PROFILING_STAGE_COLLATION, self.collation_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_FORWARD, self.forward_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_LOSS, self.loss_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_BACKWARD, self.backward_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_OPTIMIZER_STEP, self.optimizer_step_seconds),
+        ]
+    }
+}
+
 fn train_logical_batch<B, O>(
     logical_batch: &[MjaiSample],
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
     model_slot: &mut Option<HydraModel<B>>,
     optimizer: &mut O,
-) -> Result<Vec<BatchStats>, String>
+) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
@@ -290,7 +329,7 @@ where
         lr,
     } = config;
     if logical_batch.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), TrainSubStageTiming::default()));
     }
 
     let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
@@ -309,37 +348,48 @@ where
         head_controller,
         model: epoch_model(model_slot)?,
     })? {
+        let optimizer_started = Instant::now();
         let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
         let model = model_slot
             .take()
             .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
         *model_slot = Some(optimizer.step(lr, model, fixed_shape.grads));
         head_controller.tick_warmup();
-        return Ok(vec![fixed_shape.batch_stats]);
+        let mut sub_timing = fixed_shape.sub_stage_timing;
+        sub_timing.optimizer_step_seconds += optimizer_started.elapsed().as_secs_f64();
+        return Ok((vec![fixed_shape.batch_stats], sub_timing));
     }
 
+    let mut sub_timing_fallback = TrainSubStageTiming::default();
+
     for chunk in logical_batch.chunks(microbatch_size.max(1)) {
+        let t = Instant::now();
         let collated = {
             let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
             collate_samples_owned::<B>(chunk, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
+        sub_timing_fallback.collation_seconds += t.elapsed().as_secs_f64();
         let Some((obs, batch, targets)) = collated else {
             continue;
         };
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let model = epoch_model(model_slot)?;
+        let t = Instant::now();
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
             model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
         };
+        sub_timing_fallback.forward_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
         let (breakdown, total) = {
             let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
             let breakdown = active_loss_fn.total_loss(&output, &targets);
             let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
             (breakdown, total)
         };
+        sub_timing_fallback.loss_seconds += t.elapsed().as_secs_f64();
 
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
         let weighted_chunk_total = total.clone() * chunk_weight;
@@ -360,10 +410,12 @@ where
         microbatch_count += 1;
 
         {
+            let t = Instant::now();
             let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
             let grads = weighted_chunk_total.backward();
             let grads = GradientsParams::from_grads(grads, model);
             accumulator.accumulate(model, grads);
+            sub_timing_fallback.backward_seconds += t.elapsed().as_secs_f64();
         }
     }
 
@@ -378,6 +430,7 @@ where
         .unwrap_or_default();
 
     if !batch_stats.is_empty() {
+        let t = Instant::now();
         let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
         let grads = accumulator.grads();
         let model = model_slot
@@ -385,9 +438,10 @@ where
             .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
         *model_slot = Some(optimizer.step(lr, model, grads));
         head_controller.tick_warmup();
+        sub_timing_fallback.optimizer_step_seconds += t.elapsed().as_secs_f64();
     }
 
-    Ok(batch_stats)
+    Ok((batch_stats, sub_timing_fallback))
 }
 
 fn record_drained_batch_stats(
@@ -1054,6 +1108,8 @@ where
     let mut epoch_train_seconds = 0.0;
     let mut epoch_checkpoint_seconds = 0.0;
     let mut epoch_validation_profiling: Option<ProfilingEnvelope> = None;
+    let mut step_window_sub_timing = TrainSubStageTiming::default();
+    let mut epoch_sub_timing = TrainSubStageTiming::default();
 
     for buffer_result in stream_train_epoch(manifest, loader_config, epoch, Some(&load_pb)) {
         let buffer = buffer_result.map_err(|err| format!("training stream failed: {err}"))?;
@@ -1095,7 +1151,7 @@ where
             let logical_batch: Vec<MjaiSample> =
                 pending_samples.drain(..config.batch_size).collect();
             let train_started = Instant::now();
-            let drained = {
+            let (drained, batch_sub_timing) = {
                 let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
                 train_logical_batch(
                     &logical_batch,
@@ -1117,6 +1173,8 @@ where
             record_drained_batch_stats(drained, &mut stats, &mut step_window);
             step_window_train_seconds += train_seconds;
             epoch_train_seconds += train_seconds;
+            step_window_sub_timing.accumulate(&batch_sub_timing);
+            epoch_sub_timing.accumulate(&batch_sub_timing);
             epoch_optimizer_steps += 1;
             *global_step += 1;
             train_pb.inc(1);
@@ -1175,11 +1233,13 @@ where
                 *last_log_time = Instant::now();
                 let interval_profiling = bc_interval_profiling(
                     step_window_train_seconds,
+                    &step_window_sub_timing,
                     step_window_validation_profiling.take(),
                     step_window_checkpoint_seconds,
                 );
                 step_window_train_seconds = 0.0;
                 step_window_checkpoint_seconds = 0.0;
+                step_window_sub_timing = TrainSubStageTiming::default();
 
                 emit_interval_step_summary(
                     &multi,
@@ -1248,7 +1308,7 @@ where
         let lr = effective_lr(train_cfg, *global_step, total_steps);
         let logical_batch: Vec<MjaiSample> = pending_samples.drain(..).collect();
         let train_started = Instant::now();
-        let drained = {
+        let (drained, batch_sub_timing) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
             train_logical_batch(
                 &logical_batch,
@@ -1268,6 +1328,7 @@ where
         let train_seconds = train_started.elapsed().as_secs_f64();
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
         epoch_train_seconds += train_seconds;
+        epoch_sub_timing.accumulate(&batch_sub_timing);
         epoch_optimizer_steps += 1;
         *global_step += 1;
         train_pb.inc(1);
@@ -1359,6 +1420,7 @@ where
     }
     let mut epoch_profiling = bc_epoch_profiling(
         epoch_train_seconds,
+        &epoch_sub_timing,
         epoch_validation_profiling,
         epoch_checkpoint_seconds + checkpoint_seconds,
         0.0,
@@ -1592,10 +1654,10 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let logical_batch: Vec<MjaiSample> = Vec::new();
 
-        let drained = train_logical_batch(
+        let (drained, _sub_timing) = train_logical_batch(
             &logical_batch,
             TrainLogicalBatchConfig {
-                microbatch_size: 4,
+                microbatch_size: 1,
                 augment: false,
                 train_device: &device,
                 loss_fn: &train_loss_fn,
@@ -1606,7 +1668,7 @@ mod tests {
             &mut model_slot,
             &mut optimizer,
         )
-        .expect("train logical batch with empty samples");
+        .expect("empty logical batch should succeed");
 
         assert!(drained.is_empty());
         assert!(model_slot.is_some());
@@ -1656,7 +1718,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
 
-        let drained = train_logical_batch(
+        let (drained, _sub_timing) = train_logical_batch(
             &logical_batch,
             TrainLogicalBatchConfig {
                 microbatch_size: 1,
@@ -1692,7 +1754,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
 
-        let drained = train_logical_batch(
+        let (drained, _sub_timing) = train_logical_batch(
             &logical_batch,
             TrainLogicalBatchConfig {
                 microbatch_size: logical_batch.len(),
