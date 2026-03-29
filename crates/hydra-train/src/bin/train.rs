@@ -10,6 +10,8 @@ mod config;
 mod config_runtime;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
+#[path = "train/gpu_config.rs"]
+mod gpu_config;
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
 #[path = "train/modes.rs"]
@@ -84,6 +86,7 @@ type Bf16TrainBackend = Autodiff<LibTorch<bf16>>;
 
 fn run() -> Result<(), String> {
     color_control::set_override(true);
+    gpu_config::apply_gpu_performance_flags();
     let cli = parse_args(env::args())?;
     let config = read_config(&cli.config_path)?;
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
