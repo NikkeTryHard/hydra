@@ -1208,44 +1208,75 @@ mod tests {
     }
 
     #[test]
-    fn execute_probe_request_returns_direct_success_result_for_loose_replay_and_bf16_paths() {
-        for (label, precision_mode) in [
-            ("fp32", crate::config::PrecisionMode::Fp32),
-            ("bf16", crate::config::PrecisionMode::Bf16Autocast),
-        ] {
-            let (root, replay_path, result_path) = write_real_probe_fixture(label);
-            let output_dir = root.join(format!("out-{label}"));
-            let config_path = write_probe_config(
-                &format!("execute_probe_request_{label}"),
-                precision_mode,
-                &replay_path,
-                &output_dir,
-            );
+    fn execute_probe_request_returns_direct_success_for_fp32_loose_replay() {
+        let (root, replay_path, result_path) = write_real_probe_fixture("fp32");
+        let output_dir = root.join("out-fp32");
+        let config_path = write_probe_config(
+            "execute_probe_request_fp32",
+            crate::config::PrecisionMode::Fp32,
+            &replay_path,
+            &output_dir,
+        );
 
-            let result = execute_probe_request(
-                &config_path,
-                ProbeRequest {
-                    kind: ProbeKind::Train,
-                    candidate_microbatch: 1,
-                    warmup_steps: 1,
-                    measure_steps: 1,
-                },
-                &result_path,
-                |_| panic!("classify_probe_detail should not run on success"),
-            )
-            .expect("real loose replay probe should succeed");
+        let result = execute_probe_request(
+            &config_path,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 1,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+            |_| panic!("classify_probe_detail should not run on success"),
+        )
+        .expect("real loose replay probe should succeed in fp32");
 
-            assert_eq!(result.kind, ProbeKind::Train);
-            assert_eq!(result.status, ProbeStatus::Success);
-            assert_eq!(result.candidate_microbatch, 1);
-            assert!(result.measured_samples_per_second.is_some());
-            assert!(result.elapsed_seconds.is_some());
-            assert_eq!(result.detail, "stable train probe on real dataset");
-            assert!(!result_path.exists());
+        assert_eq!(result.kind, ProbeKind::Train);
+        assert_eq!(result.status, ProbeStatus::Success);
+        assert_eq!(result.candidate_microbatch, 1);
+        assert!(result.measured_samples_per_second.is_some());
+        assert!(result.elapsed_seconds.is_some());
+        assert_eq!(result.detail, "stable train probe on real dataset");
+        assert!(!result_path.exists());
 
-            fs::remove_file(&config_path).expect("config fixture should be removable");
-            let _ = fs::remove_dir_all(root);
-        }
+        fs::remove_file(&config_path).expect("config fixture should be removable");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_probe_request_returns_direct_success_for_bf16_loose_replay() {
+        let (root, replay_path, result_path) = write_real_probe_fixture("bf16");
+        let output_dir = root.join("out-bf16");
+        let config_path = write_probe_config(
+            "execute_probe_request_bf16",
+            crate::config::PrecisionMode::Bf16Autocast,
+            &replay_path,
+            &output_dir,
+        );
+
+        let result = execute_probe_request(
+            &config_path,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 1,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &result_path,
+            |_| panic!("classify_probe_detail should not run on success"),
+        )
+        .expect("real loose replay probe should succeed in bf16");
+
+        assert_eq!(result.kind, ProbeKind::Train);
+        assert_eq!(result.status, ProbeStatus::Success);
+        assert_eq!(result.candidate_microbatch, 1);
+        assert!(result.measured_samples_per_second.is_some());
+        assert!(result.elapsed_seconds.is_some());
+        assert_eq!(result.detail, "stable train probe on real dataset");
+        assert!(!result_path.exists());
+
+        fs::remove_file(&config_path).expect("config fixture should be removable");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
