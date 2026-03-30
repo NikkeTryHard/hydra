@@ -1,7 +1,7 @@
 use colored::Colorize;
 use std::path::PathBuf;
 
-use burn::backend::libtorch::LibTorchDevice;
+use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
@@ -44,6 +44,7 @@ fn run_bc_training_mode_for_backend<B>(
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
 {
     let TrainingBootstrap {
         config,
@@ -132,18 +133,20 @@ where
         }
     }
 
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} {}",
-            "Finished BC training. Best validation policy CE:"
-                .bold()
-                .cyan(),
-            format_best_validation_summary(best_validation.as_ref())
-                .bold()
-                .green()
-        ))
-    );
+    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_none() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {}",
+                "Finished BC training. Best validation policy CE:"
+                    .bold()
+                    .cyan(),
+                format_best_validation_summary(best_validation.as_ref())
+                    .bold()
+                    .green()
+            ))
+        );
+    }
 
     Ok(())
 }
@@ -690,6 +693,7 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

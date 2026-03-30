@@ -3,7 +3,7 @@ use std::io::Write;
 use std::sync::mpsc;
 use std::time::Instant;
 
-use burn::backend::libtorch::LibTorchDevice;
+use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
@@ -788,14 +788,20 @@ where
 }
 
 fn emit_paused_training_message(continuation: &EpochContinuation) {
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} {}",
-            "Paused BC training".bold().cyan(),
-            paused_training_message(continuation).yellow(),
-        ))
-    );
+    if !benchmark_quiet() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {}",
+                "Paused BC training".bold().cyan(),
+                paused_training_message(continuation).yellow(),
+            ))
+        );
+    }
+}
+
+fn benchmark_quiet() -> bool {
+    std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some()
 }
 
 fn run_epoch_end_validation<B>(
@@ -825,17 +831,19 @@ where
         return Ok(None);
     }
 
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} {}",
-            "validation @ epoch end".bold().magenta(),
-            match validation_sample_limit(config) {
-                Some(limit) => format!("target_samples={limit}").yellow(),
-                None => "target_samples=all".yellow(),
-            }
-        ))
-    );
+    if !benchmark_quiet() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {}",
+                "validation @ epoch end".bold().magenta(),
+                match validation_sample_limit(config) {
+                    Some(limit) => format!("target_samples={limit}").yellow(),
+                    None => "target_samples=all".yellow(),
+                }
+            ))
+        );
+    }
     let summary = {
         let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
         run_validation(
@@ -869,30 +877,32 @@ where
             Some(&summary),
         )?;
     }
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} {} {} {} {}{}",
-            "validation @ epoch end".bold().magenta(),
-            format!("val_samples={}", summary.samples).yellow(),
-            format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
-            format!("val_total={:.4}", summary.total_loss).yellow(),
-            format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
-            summary
-                .delta_q_promotion_snapshot
-                .as_ref()
-                .map(|report| format!(
-                    " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
-                    report.mean_decision_lift,
-                    report.candidate_mean_regret,
-                    report.baseline_mean_regret,
-                    report.regret_beats_baseline_rate * 100.0,
-                    report.passed
-                ))
-                .unwrap_or_default()
-                .yellow(),
-        ))
-    );
+    if !benchmark_quiet() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {} {} {} {}{}",
+                "validation @ epoch end".bold().magenta(),
+                format!("val_samples={}", summary.samples).yellow(),
+                format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
+                format!("val_total={:.4}", summary.total_loss).yellow(),
+                format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
+                summary
+                    .delta_q_promotion_snapshot
+                    .as_ref()
+                    .map(|report| format!(
+                        " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
+                        report.mean_decision_lift,
+                        report.candidate_mean_regret,
+                        report.baseline_mean_regret,
+                        report.regret_beats_baseline_rate * 100.0,
+                        report.passed
+                    ))
+                    .unwrap_or_default()
+                    .yellow(),
+            ))
+        );
+    }
     if let (Some(report), Some(result)) = (
         summary.delta_q_promotion.as_ref(),
         summary.delta_q_promotion_result.as_ref(),
@@ -950,39 +960,41 @@ where
     }
 
     let lr_message = lr_status_message(global_step, train_cfg.warmup_steps, final_lr);
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} {} {} {} {} {}",
-            phase_label("epoch", epoch, config.num_epochs).bold().cyan(),
-            format!("train_loss={:.4}", train_stats.total_loss).green(),
-            format!("train_agree={:.2}%", train_stats.policy_agreement * 100.0).green(),
-            if let Some(val_summary) = val_summary.as_ref() {
-                format!(
-                    "val_ce={:.4} val_agree={:.2}% val_samples={}",
-                    val_summary.policy_loss,
-                    val_summary.agreement * 100.0,
-                    val_summary.samples
-                )
-            } else {
-                "val=skipped".to_string()
-            }
-            .bold()
-            .yellow(),
-            if let Some(best_validation) = best_validation {
-                format!(
-                    "best_ce={:.4} best_agree={:.2}%",
-                    best_validation.policy_loss,
-                    best_validation.agreement * 100.0
-                )
-            } else {
-                "best=n/a".to_string()
-            }
-            .bold()
-            .magenta(),
-            lr_message.white(),
-        ))
-    );
+    if !benchmark_quiet() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {} {} {} {} {}",
+                phase_label("epoch", epoch, config.num_epochs).bold().cyan(),
+                format!("train_loss={:.4}", train_stats.total_loss).green(),
+                format!("train_agree={:.2}%", train_stats.policy_agreement * 100.0).green(),
+                if let Some(val_summary) = val_summary.as_ref() {
+                    format!(
+                        "val_ce={:.4} val_agree={:.2}% val_samples={}",
+                        val_summary.policy_loss,
+                        val_summary.agreement * 100.0,
+                        val_summary.samples
+                    )
+                } else {
+                    "val=skipped".to_string()
+                }
+                .bold()
+                .yellow(),
+                if let Some(best_validation) = best_validation {
+                    format!(
+                        "best_ce={:.4} best_agree={:.2}%",
+                        best_validation.policy_loss,
+                        best_validation.agreement * 100.0
+                    )
+                } else {
+                    "best=n/a".to_string()
+                }
+                .bold()
+                .magenta(),
+                lr_message.white(),
+            ))
+        );
+    }
 
     let logging_seconds = logging_started.elapsed().as_secs_f64();
     if let Some(existing) = profiling.as_mut() {
@@ -1040,6 +1052,7 @@ pub(super) fn run_epoch<B, O, W>(
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
     O: Optimizer<HydraModel<B>, B>,
     W: Write,
 {
@@ -1482,6 +1495,7 @@ fn run_epoch_from_shards<B, O, W>(
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
     O: Optimizer<HydraModel<B>, B>,
     W: Write,
 {
@@ -1568,6 +1582,10 @@ where
             Some((
                 super::pinned_transfer::PinnedStagingArea::new(config.batch_size),
                 super::pinned_transfer::AsyncH2DContext::new(device_index),
+                super::pinned_transfer::PreallocatedDeviceTensors::new(
+                    config.batch_size,
+                    train_device,
+                ),
             ))
         }
         _ => None,
@@ -1869,11 +1887,13 @@ fn train_logical_batch_from_host_batch<B, O>(
     #[cfg(feature = "cuda-graph")] staging: Option<&mut (
         super::pinned_transfer::PinnedStagingArea,
         super::pinned_transfer::AsyncH2DContext,
+        super::pinned_transfer::PreallocatedDeviceTensors,
     )>,
 ) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
     O: Optimizer<HydraModel<B>, B>,
 {
     let TrainLogicalBatchConfig {
@@ -1893,12 +1913,13 @@ where
         let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
         #[cfg(feature = "cuda-graph")]
         {
-            if let Some((pinned_staging, h2d_ctx)) = staging {
-                super::pinned_transfer::materialize_staged::<B>(
+            if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
+                super::pinned_transfer::materialize_staged_reuse::<B>(
                     &host_batch,
                     pinned_staging,
                     h2d_ctx,
                     train_device,
+                    gpu_tensors,
                 )
             } else {
                 host_batch.materialize::<B>(train_device)
