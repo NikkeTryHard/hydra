@@ -242,13 +242,25 @@ pub fn read_mjai_events<R: BufRead>(reader: R) -> RiichiResult<Vec<MjaiEvent>> {
         if trimmed.is_empty() {
             continue;
         }
-        let event = serde_json::from_str(trimmed).map_err(|err| RiichiError::Parse {
+        let event = parse_mjai_line(trimmed).map_err(|msg| RiichiError::Parse {
             input: format!("line {}", line_no + 1),
-            message: err.to_string(),
+            message: msg,
         })?;
         events.push(event);
     }
     Ok(events)
+}
+
+#[cfg(feature = "fast-json-ingest")]
+#[inline]
+fn parse_mjai_line(line: &str) -> Result<MjaiEvent, String> {
+    sonic_rs::from_str(line).map_err(|err| err.to_string())
+}
+
+#[cfg(not(feature = "fast-json-ingest"))]
+#[inline]
+fn parse_mjai_line(line: &str) -> Result<MjaiEvent, String> {
+    serde_json::from_str(line).map_err(|err| err.to_string())
 }
 
 /// Loads line-delimited MJAI events from a file path, transparently handling gzip.
