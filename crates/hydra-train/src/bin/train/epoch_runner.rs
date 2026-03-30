@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::Write;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
@@ -10,7 +11,7 @@ use indicatif::MultiProgress;
 use tboard::EventWriter;
 
 use hydra_train::amp::maybe_autocast;
-use hydra_train::data::bc_shards::{load_bc_shard_reader, BcShardSplit};
+use hydra_train::data::bc_shards::{load_bc_shard_reader, BcShardHostBatch, BcShardSplit};
 use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
 use hydra_train::data::sample::{collate_samples_owned, MjaiBcBatch, MjaiSample};
 use hydra_train::model::HydraModel;
@@ -1467,6 +1468,13 @@ where
     })
 }
 
+/// Prefetch queue depth for the CPU producer thread.
+///
+/// Depth 2 keeps at most two host batches resident in memory while the GPU
+/// processes the current one.  This is enough to hide the CPU collation
+/// latency without ballooning host memory.
+const SHARD_PREFETCH_DEPTH: usize = 2;
+
 fn run_epoch_from_shards<B, O, W>(
     context: EpochRunnerContext<'_, B>,
     runtime: EpochRuntimeMut<'_, O, W, B>,
@@ -1551,18 +1559,41 @@ where
     let mut step_window_sub_timing = TrainSubStageTiming::default();
     let mut epoch_sub_timing = TrainSubStageTiming::default();
     let mut seen_samples = samples_to_skip;
-    let mut index = samples_to_skip;
 
-    while index < total_rows {
+    // -- producer/consumer pipeline for CPU host-batch prefetch --
+    let batch_size = config.batch_size;
+    let augment = config.augment;
+    let producer_start_index = samples_to_skip;
+    let (tx, rx) =
+        mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(SHARD_PREFETCH_DEPTH);
+
+    let producer_handle = std::thread::Builder::new()
+        .name("bc-shard-prefetch".into())
+        .spawn(move || {
+            let mut idx = producer_start_index;
+            while idx < total_rows {
+                let take = batch_size.min(total_rows - idx);
+                let indices: Vec<usize> = (idx..idx + take).collect();
+                let result = reader.collate_host_batch(&indices, augment);
+                let msg = result.map(|hb| (hb, take));
+                // If the consumer dropped, stop producing.
+                if tx.send(msg).is_err() {
+                    break;
+                }
+                idx += take;
+            }
+            // tx drops here, closing the channel.
+        })
+        .map_err(|err| format!("failed to spawn bc-shard-prefetch thread: {err}"))?;
+
+    for recv_result in rx {
+        let (host_batch, take) = recv_result?;
         let lr = effective_lr(train_cfg, *global_step, total_steps);
-        let take = config.batch_size.min(total_rows - index);
-        let indices: Vec<usize> = (index..index + take).collect();
         let train_started = Instant::now();
         let (drained, batch_sub_timing) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-            train_logical_batch_from_shards(
-                &reader,
-                &indices,
+            train_logical_batch_from_host_batch(
+                host_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
                     use_amp,
@@ -1586,7 +1617,6 @@ where
         epoch_sub_timing.accumulate(&batch_sub_timing);
         epoch_optimizer_steps += 1;
         *global_step += 1;
-        index += take;
         seen_samples += take;
         train_pb.inc(1);
 
@@ -1703,6 +1733,11 @@ where
         }
     }
 
+    // Join the producer thread; if it panicked, propagate as an error.
+    producer_handle
+        .join()
+        .map_err(|_| "bc-shard-prefetch thread panicked".to_string())?;
+
     let train_total_loss = stats.finalize().total_loss;
     let continuation = build_epoch_continuation(epoch, epoch_completed, epoch_optimizer_steps);
     {
@@ -1801,9 +1836,13 @@ where
     })
 }
 
-fn train_logical_batch_from_shards<B, O>(
-    reader: &hydra_train::data::bc_shards::BcShardReader,
-    indices: &[usize],
+/// Runs the forward/backward/optimizer step from a pre-built host batch.
+///
+/// The host batch was already collated on the CPU producer thread.
+/// This function materializes it onto the device, then runs the same
+/// microbatch accumulation + optimizer step as the original shard path.
+fn train_logical_batch_from_host_batch<B, O>(
+    host_batch: BcShardHostBatch,
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
     model_slot: &mut Option<HydraModel<B>>,
@@ -1817,36 +1856,36 @@ where
     let TrainLogicalBatchConfig {
         microbatch_size,
         use_amp,
-        augment,
+        augment: _,
         train_device,
         loss_fn,
         bc_exit_cfg,
         lr,
     } = config;
-    if indices.is_empty() {
-        return Ok((Vec::new(), TrainSubStageTiming::default()));
-    }
 
     let mut sub_timing = TrainSubStageTiming::default();
 
     let t = Instant::now();
-    let host_batch = {
+    let shard_batch = {
         let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
-        reader.collate_host_batch(indices, augment)?
+        host_batch.materialize::<B>(train_device)
     };
-    let shard_batch = host_batch.materialize::<B>(train_device);
     sub_timing.collation_seconds += t.elapsed().as_secs_f64();
-
-    let logical_batch_len = indices.len().max(1) as f32;
-    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
-    let mut total_samples = 0usize;
-    let mut microbatch_count = 0usize;
-    let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
 
     let obs = shard_batch.obs;
     let batch = shard_batch.batch;
     let targets = shard_batch.targets;
     let batch_size = batch.actions.dims()[0];
+
+    if batch_size == 0 {
+        return Ok((Vec::new(), sub_timing));
+    }
+
+    let logical_batch_len = batch_size.max(1) as f32;
+    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
+    let mut total_samples = 0usize;
+    let mut microbatch_count = 0usize;
+    let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
 
     for start in (0..batch_size).step_by(microbatch_size.max(1)) {
         let end = (start + microbatch_size.max(1)).min(batch_size);
