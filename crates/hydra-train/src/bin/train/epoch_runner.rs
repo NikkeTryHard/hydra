@@ -1570,19 +1570,19 @@ where
     let producer_handle = std::thread::Builder::new()
         .name("bc-shard-prefetch".into())
         .spawn(move || {
+            let mut scratch = reader.new_scratch(batch_size);
             let mut idx = producer_start_index;
             while idx < total_rows {
                 let take = batch_size.min(total_rows - idx);
                 let indices: Vec<usize> = (idx..idx + take).collect();
-                let result = reader.collate_host_batch(&indices, augment);
-                let msg = result.map(|hb| (hb, take));
-                // If the consumer dropped, stop producing.
-                if tx.send(msg).is_err() {
+                let result = reader
+                    .collate_host_batch_into(&indices, augment, &mut scratch)
+                    .map(|()| (scratch.take_batch(), take));
+                if tx.send(result).is_err() {
                     break;
                 }
                 idx += take;
             }
-            // tx drops here, closing the channel.
         })
         .map_err(|err| format!("failed to spawn bc-shard-prefetch thread: {err}"))?;
 
@@ -1841,12 +1841,20 @@ where
 /// The host batch was already collated on the CPU producer thread.
 /// This function materializes it onto the device, then runs the same
 /// microbatch accumulation + optimizer step as the original shard path.
+///
+/// When `staging` is `Some`, the host batch is staged into pinned memory
+/// and the H2D transfer is issued on a dedicated copy stream with
+/// event-based synchronization.
 fn train_logical_batch_from_host_batch<B, O>(
     host_batch: BcShardHostBatch,
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
     model_slot: &mut Option<HydraModel<B>>,
     optimizer: &mut O,
+    #[cfg(feature = "cuda-graph")] staging: Option<&mut (
+        super::pinned_transfer::PinnedStagingArea,
+        super::pinned_transfer::AsyncH2DContext,
+    )>,
 ) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
@@ -1868,7 +1876,23 @@ where
     let t = Instant::now();
     let shard_batch = {
         let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
-        host_batch.materialize::<B>(train_device)
+        #[cfg(feature = "cuda-graph")]
+        {
+            if let Some((pinned_staging, h2d_ctx)) = staging {
+                super::pinned_transfer::materialize_staged::<B>(
+                    &host_batch,
+                    pinned_staging,
+                    h2d_ctx,
+                    train_device,
+                )
+            } else {
+                host_batch.materialize::<B>(train_device)
+            }
+        }
+        #[cfg(not(feature = "cuda-graph"))]
+        {
+            host_batch.materialize::<B>(train_device)
+        }
     };
     sub_timing.collation_seconds += t.elapsed().as_secs_f64();
 

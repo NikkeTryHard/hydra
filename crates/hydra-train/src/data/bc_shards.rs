@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use burn::prelude::*;
 use burn::tensor::backend::Backend;
-use half::f16;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use memmap2::Mmap;
@@ -22,12 +21,13 @@ use crate::data::mjai_loader::{
 };
 use crate::data::pipeline::{DataSource, is_train_game, scan_data_sources};
 use crate::data::sample::{MjaiBcBatch, score_delta_to_bin, score_delta_to_value};
-use crate::training::head_gates::TargetPresence;
+use crate::training::head_gates::{AdvancedHead, TargetPresence};
 use crate::training::losses::HydraTargets;
 use crate::training::replay_delta_q::DeltaQSidecarIndex;
 use crate::training::replay_exit::ExitSidecarIndex;
 
 const OPPONENT_COUNT: usize = 3;
+const PLAYER_COUNT: usize = 4;
 const TILE_COUNT: usize = 34;
 const SPATIAL_TARGET_SIZE: usize = OPPONENT_COUNT * TILE_COUNT;
 const GRP_CLASS_COUNT: usize = 24;
@@ -42,27 +42,31 @@ pub const FLAG_SAFETY_RESIDUAL: u32 = 1 << 0;
 pub const FLAG_EXIT: u32 = 1 << 1;
 pub const FLAG_DELTA_Q: u32 = 1 << 2;
 
-pub const OBS_F16_BYTES: usize = OBS_SIZE * 2;
+pub const OBS_F32_BYTES: usize = OBS_SIZE * 4;
 pub const LEGAL_MASK_BYTES: usize = HYDRA_ACTION_SPACE;
+pub const ORACLE_FLOAT32_BYTES: usize = PLAYER_COUNT * 4;
+pub const ORACLE_MASK_BYTES: usize = 1;
 pub const TENPAI_BYTES: usize = OPPONENT_COUNT;
 pub const OPP_NEXT_BYTES: usize = OPPONENT_COUNT;
 pub const DANGER_BYTES: usize = SPATIAL_TARGET_SIZE;
 pub const DANGER_MASK_BYTES: usize = SPATIAL_TARGET_SIZE;
-pub const OPTIONAL_ACTION_FLOAT16_BYTES: usize = HYDRA_ACTION_SPACE * 2;
+pub const OPTIONAL_ACTION_FLOAT32_BYTES: usize = HYDRA_ACTION_SPACE * 4;
 pub const OPTIONAL_ACTION_MASK_BYTES: usize = HYDRA_ACTION_SPACE;
 
-pub const BC_BASE_RECORD_SIZE: u32 = (OBS_F16_BYTES
+pub const BC_BASE_RECORD_SIZE: u32 = (OBS_F32_BYTES
     + 1
     + LEGAL_MASK_BYTES
     + 4
     + 1
+    + ORACLE_FLOAT32_BYTES
+    + ORACLE_MASK_BYTES
     + TENPAI_BYTES
     + OPP_NEXT_BYTES
     + DANGER_BYTES
     + DANGER_MASK_BYTES) as u32;
 
 pub const BC_RECORD_SIZE_WITH_ALL_OPTIONALS: u32 = BC_BASE_RECORD_SIZE
-    + (OPTIONAL_ACTION_FLOAT16_BYTES as u32 + OPTIONAL_ACTION_MASK_BYTES as u32) * 3;
+    + (OPTIONAL_ACTION_FLOAT32_BYTES as u32 + OPTIONAL_ACTION_MASK_BYTES as u32) * 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -228,6 +232,8 @@ pub struct BcShardHostBatch {
     pub legal_mask_flat: Vec<f32>,
     pub value_target: Vec<f32>,
     pub grp_target: Vec<f32>,
+    pub oracle_target_flat: Vec<f32>,
+    pub oracle_target_mask: Vec<f32>,
     pub tenpai_flat: Vec<f32>,
     pub danger_flat: Vec<f32>,
     pub danger_mask_flat: Vec<f32>,
@@ -240,11 +246,163 @@ pub struct BcShardHostBatch {
     pub exit_mask_flat: Option<Vec<f32>>,
     pub delta_q_target_flat: Option<Vec<f32>>,
     pub delta_q_mask_flat: Option<Vec<f32>>,
+    pub target_presence: TargetPresence,
 }
 
 // SAFETY: all fields are plain vecs of Copy types -- trivially Send + Sync.
 unsafe impl Send for BcShardHostBatch {}
 unsafe impl Sync for BcShardHostBatch {}
+
+/// Reusable scratch buffers for the BC shard producer path.
+///
+/// Mirrors every field in [`BcShardHostBatch`] but is designed to be
+/// reset and refilled across batches without reallocating.  The producer
+/// thread creates one of these, calls
+/// [`BcShardReader::collate_host_batch_into`] each iteration, then
+/// [`take_batch`](BcShardHostScratch::take_batch) to extract an owned
+/// `BcShardHostBatch` with zero-cost `mem::take` swaps (the scratch
+/// retains heap capacity for the next iteration).
+pub struct BcShardHostScratch {
+    pub batch_size: usize,
+    pub obs_flat: Vec<f32>,
+    pub actions: Vec<i64>,
+    pub legal_mask_flat: Vec<f32>,
+    pub value_target: Vec<f32>,
+    pub grp_target: Vec<f32>,
+    pub oracle_target_flat: Vec<f32>,
+    pub oracle_target_mask: Vec<f32>,
+    pub tenpai_flat: Vec<f32>,
+    pub danger_flat: Vec<f32>,
+    pub danger_mask_flat: Vec<f32>,
+    pub opp_next_flat: Vec<f32>,
+    pub score_pdf_flat: Vec<f32>,
+    pub score_cdf_flat: Vec<f32>,
+    pub safety_target_flat: Option<Vec<f32>>,
+    pub safety_mask_flat: Option<Vec<f32>>,
+    pub exit_target_flat: Option<Vec<f32>>,
+    pub exit_mask_flat: Option<Vec<f32>>,
+    pub delta_q_target_flat: Option<Vec<f32>>,
+    pub delta_q_mask_flat: Option<Vec<f32>>,
+    pub target_presence: TargetPresence,
+}
+
+// SAFETY: same plain-vec-of-Copy argument as BcShardHostBatch.
+unsafe impl Send for BcShardHostScratch {}
+
+impl BcShardHostScratch {
+    /// Pre-allocate scratch buffers for a given batch size and feature flags.
+    pub fn new(batch_size: usize, need_safety: bool, need_exit: bool, need_delta_q: bool) -> Self {
+        let action_space = HYDRA_ACTION_SPACE;
+        Self {
+            batch_size,
+            obs_flat: vec![0.0f32; batch_size * OBS_SIZE],
+            actions: vec![0i64; batch_size],
+            legal_mask_flat: vec![0.0f32; batch_size * action_space],
+            value_target: vec![0.0f32; batch_size],
+            grp_target: vec![0.0f32; batch_size * GRP_CLASS_COUNT],
+            oracle_target_flat: vec![0.0f32; batch_size * PLAYER_COUNT],
+            oracle_target_mask: vec![0.0f32; batch_size],
+            tenpai_flat: vec![0.0f32; batch_size * OPPONENT_COUNT],
+            danger_flat: vec![0.0f32; batch_size * SPATIAL_TARGET_SIZE],
+            danger_mask_flat: vec![0.0f32; batch_size * SPATIAL_TARGET_SIZE],
+            opp_next_flat: vec![0.0f32; batch_size * SPATIAL_TARGET_SIZE],
+            score_pdf_flat: vec![0.0f32; batch_size * SCORE_BINS],
+            score_cdf_flat: vec![0.0f32; batch_size * SCORE_BINS],
+            safety_target_flat: need_safety.then(|| vec![0.0f32; batch_size * action_space]),
+            safety_mask_flat: need_safety.then(|| vec![0.0f32; batch_size * action_space]),
+            exit_target_flat: need_exit.then(|| vec![0.0f32; batch_size * action_space]),
+            exit_mask_flat: need_exit.then(|| vec![0.0f32; batch_size * action_space]),
+            delta_q_target_flat: need_delta_q.then(|| vec![0.0f32; batch_size * action_space]),
+            delta_q_mask_flat: need_delta_q.then(|| vec![0.0f32; batch_size * action_space]),
+            target_presence: TargetPresence::with_batch_size(batch_size),
+        }
+    }
+
+    /// Zero-fill all buffers and resize to `batch_size` without
+    /// deallocating when existing capacity is sufficient.
+    pub fn reset(&mut self, batch_size: usize) {
+        self.batch_size = batch_size;
+        resize_zeroed(&mut self.obs_flat, batch_size * OBS_SIZE);
+        resize_zeroed_i64(&mut self.actions, batch_size);
+        resize_zeroed(&mut self.legal_mask_flat, batch_size * HYDRA_ACTION_SPACE);
+        resize_zeroed(&mut self.value_target, batch_size);
+        resize_zeroed(&mut self.grp_target, batch_size * GRP_CLASS_COUNT);
+        resize_zeroed(&mut self.oracle_target_flat, batch_size * PLAYER_COUNT);
+        resize_zeroed(&mut self.oracle_target_mask, batch_size);
+        resize_zeroed(&mut self.tenpai_flat, batch_size * OPPONENT_COUNT);
+        resize_zeroed(&mut self.danger_flat, batch_size * SPATIAL_TARGET_SIZE);
+        resize_zeroed(&mut self.danger_mask_flat, batch_size * SPATIAL_TARGET_SIZE);
+        resize_zeroed(&mut self.opp_next_flat, batch_size * SPATIAL_TARGET_SIZE);
+        resize_zeroed(&mut self.score_pdf_flat, batch_size * SCORE_BINS);
+        resize_zeroed(&mut self.score_cdf_flat, batch_size * SCORE_BINS);
+        if let Some(buf) = self.safety_target_flat.as_mut() {
+            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.safety_mask_flat.as_mut() {
+            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.exit_target_flat.as_mut() {
+            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.exit_mask_flat.as_mut() {
+            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.delta_q_target_flat.as_mut() {
+            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.delta_q_mask_flat.as_mut() {
+            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        self.target_presence = TargetPresence::with_batch_size(batch_size);
+    }
+
+    /// Swap the filled buffers out of this scratch into an owned
+    /// [`BcShardHostBatch`].  The scratch retains the heap allocations
+    /// (now length-zero) so the next [`reset`](Self::reset) call
+    /// can refill them without allocating.
+    pub fn take_batch(&mut self) -> BcShardHostBatch {
+        BcShardHostBatch {
+            batch_size: self.batch_size,
+            obs_flat: std::mem::take(&mut self.obs_flat),
+            actions: std::mem::take(&mut self.actions),
+            legal_mask_flat: std::mem::take(&mut self.legal_mask_flat),
+            value_target: std::mem::take(&mut self.value_target),
+            grp_target: std::mem::take(&mut self.grp_target),
+            oracle_target_flat: std::mem::take(&mut self.oracle_target_flat),
+            oracle_target_mask: std::mem::take(&mut self.oracle_target_mask),
+            tenpai_flat: std::mem::take(&mut self.tenpai_flat),
+            danger_flat: std::mem::take(&mut self.danger_flat),
+            danger_mask_flat: std::mem::take(&mut self.danger_mask_flat),
+            opp_next_flat: std::mem::take(&mut self.opp_next_flat),
+            score_pdf_flat: std::mem::take(&mut self.score_pdf_flat),
+            score_cdf_flat: std::mem::take(&mut self.score_cdf_flat),
+            safety_target_flat: self.safety_target_flat.as_mut().map(std::mem::take),
+            safety_mask_flat: self.safety_mask_flat.as_mut().map(std::mem::take),
+            exit_target_flat: self.exit_target_flat.as_mut().map(std::mem::take),
+            exit_mask_flat: self.exit_mask_flat.as_mut().map(std::mem::take),
+            delta_q_target_flat: self.delta_q_target_flat.as_mut().map(std::mem::take),
+            delta_q_mask_flat: self.delta_q_mask_flat.as_mut().map(std::mem::take),
+            target_presence: std::mem::replace(
+                &mut self.target_presence,
+                TargetPresence::default(),
+            ),
+        }
+    }
+}
+
+/// Resize a vec to `len` and zero-fill.  Reuses existing heap when
+/// capacity is sufficient -- the entire point of the scratch pattern.
+#[inline]
+fn resize_zeroed(buf: &mut Vec<f32>, len: usize) {
+    buf.clear();
+    buf.resize(len, 0.0);
+}
+
+#[inline]
+fn resize_zeroed_i64(buf: &mut Vec<i64>, len: usize) {
+    buf.clear();
+    buf.resize(len, 0);
+}
 
 impl BcShardHostBatch {
     /// Materialize device tensors from CPU-side flat buffers.
@@ -261,6 +419,9 @@ impl BcShardHostBatch {
         let value_target = Tensor::<B, 1>::from_floats(self.value_target.as_slice(), device);
         let grp_target = Tensor::<B, 1>::from_floats(self.grp_target.as_slice(), device)
             .reshape([batch, GRP_CLASS_COUNT]);
+        let oracle_target = Tensor::<B, 1>::from_floats(self.oracle_target_flat.as_slice(), device)
+            .reshape([batch, PLAYER_COUNT]);
+        let oracle_target_mask = Tensor::<B, 1>::from_floats(self.oracle_target_mask.as_slice(), device);
         let tenpai_target = Tensor::<B, 1>::from_floats(self.tenpai_flat.as_slice(), device)
             .reshape([batch, OPPONENT_COUNT]);
         let danger_target = Tensor::<B, 1>::from_floats(self.danger_flat.as_slice(), device)
@@ -298,7 +459,7 @@ impl BcShardHostBatch {
             opp_next_target,
             score_pdf_target,
             score_cdf_target,
-            oracle_target: None,
+            oracle_target: Some(oracle_target),
             belief_fields_target: None,
             belief_fields_mask: None,
             mixture_weight_target: None,
@@ -320,8 +481,8 @@ impl BcShardHostBatch {
                 Tensor::<B, 1>::from_floats(buf.as_slice(), device)
                     .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            oracle_guidance_mask: None,
-            target_presence: Some(TargetPresence::default()),
+            oracle_guidance_mask: Some(oracle_target_mask),
+            target_presence: Some(self.target_presence),
         };
 
         BcShardBatch {
@@ -643,6 +804,20 @@ impl BcShardReader {
         self.shards.iter().map(|shard| shard.sample_count as usize).sum()
     }
 
+    pub fn feature_flags(&self) -> u32 {
+        self.shards.first().map_or(0, |s| s.feature_flags)
+    }
+
+    pub fn new_scratch(&self, batch_size: usize) -> BcShardHostScratch {
+        let flags = self.feature_flags();
+        BcShardHostScratch::new(
+            batch_size,
+            flags & FLAG_SAFETY_RESIDUAL != 0,
+            flags & FLAG_EXIT != 0,
+            flags & FLAG_DELTA_Q != 0,
+        )
+    }
+
     /// Full collation: parse shards, augment, then materialize on device.
     ///
     /// Equivalent to `collate_host_batch` followed by `BcShardHostBatch::materialize`.
@@ -675,6 +850,8 @@ impl BcShardReader {
         let mut legal_mask_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
         let mut value_target = vec![0.0f32; batch];
         let mut grp_target = vec![0.0f32; batch * GRP_CLASS_COUNT];
+        let mut oracle_target_flat = vec![0.0f32; batch * PLAYER_COUNT];
+        let mut oracle_target_mask = vec![0.0f32; batch];
         let mut tenpai_flat = vec![0.0f32; batch * OPPONENT_COUNT];
         let mut danger_flat = vec![0.0f32; batch * SPATIAL_TARGET_SIZE];
         let mut danger_mask_flat = vec![0.0f32; batch * SPATIAL_TARGET_SIZE];
@@ -685,6 +862,8 @@ impl BcShardReader {
         let need_safety = self.shards.first().is_some_and(|s| s.feature_flags & FLAG_SAFETY_RESIDUAL != 0);
         let need_exit = self.shards.first().is_some_and(|s| s.feature_flags & FLAG_EXIT != 0);
         let need_delta_q = self.shards.first().is_some_and(|s| s.feature_flags & FLAG_DELTA_Q != 0);
+
+        let mut target_presence = TargetPresence::with_batch_size(batch);
 
         let mut safety_target_flat = need_safety.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
         let mut safety_mask_flat = need_safety.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
@@ -727,6 +906,12 @@ impl BcShardReader {
             value_target[row] = score_delta_to_value(sample.score_delta);
             if (sample.grp_label as usize) < GRP_CLASS_COUNT {
                 grp_target[row * GRP_CLASS_COUNT + sample.grp_label as usize] = 1.0;
+            }
+            if let Some(oracle) = sample.oracle_target {
+                oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT]
+                    .copy_from_slice(&oracle);
+                oracle_target_mask[row] = 1.0;
+                target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
             }
             tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
                 .copy_from_slice(&sample.tenpai);
@@ -778,6 +963,9 @@ impl BcShardReader {
                 } else {
                     mask
                 };
+                if mask.iter().any(|&value| value > 0.0) {
+                    target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
+                }
                 safety_mask_flat.as_mut().expect("safety enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
                     .copy_from_slice(&mask);
             }
@@ -814,6 +1002,11 @@ impl BcShardReader {
                 } else {
                     mask
                 };
+                let action_count = mask.iter().filter(|&&value| value > 0.0).count();
+                if action_count > 0 {
+                    target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
+                    target_presence.delta_q_actions_present += action_count;
+                }
                 delta_q_mask_flat.as_mut().expect("delta_q enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
                     .copy_from_slice(&mask);
             }
@@ -826,6 +1019,8 @@ impl BcShardReader {
             legal_mask_flat,
             value_target,
             grp_target,
+            oracle_target_flat,
+            oracle_target_mask,
             tenpai_flat,
             danger_flat,
             danger_mask_flat,
@@ -838,7 +1033,169 @@ impl BcShardReader {
             exit_mask_flat,
             delta_q_target_flat,
             delta_q_mask_flat,
+            target_presence,
         })
+    }
+
+    /// Collate into a pre-allocated scratch buffer, avoiding per-batch
+    /// heap allocations when the scratch already has sufficient capacity.
+    ///
+    /// Caller must call [`BcShardHostScratch::reset`] before this if
+    /// the scratch was previously used.
+    pub fn collate_host_batch_into(
+        &self,
+        indices: &[usize],
+        augment: bool,
+        scratch: &mut BcShardHostScratch,
+    ) -> Result<(), String> {
+        if indices.is_empty() {
+            return Err("bc shard batch indices must be non-empty".to_string());
+        }
+
+        let batch = indices.len();
+        scratch.reset(batch);
+
+        for (row, &sample_index) in indices.iter().enumerate() {
+            let (shard, offset) = self.locate(sample_index)?;
+            let sample = parse_compact_sample(shard, offset)?;
+            let perm = if augment {
+                &hydra_core::tile::ALL_PERMUTATIONS[(sample_index + row) % hydra_core::tile::ALL_PERMUTATIONS.len()]
+            } else {
+                &hydra_core::tile::ALL_PERMUTATIONS[0]
+            };
+
+            let obs = if augment {
+                augment_obs_suit(&sample.obs, perm)
+            } else {
+                sample.obs
+            };
+            scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE].copy_from_slice(&obs);
+
+            let action = if augment {
+                augment_action_suit(sample.action, perm)
+            } else {
+                sample.action
+            };
+            scratch.actions[row] = action as i64;
+
+            let legal_mask = if augment {
+                augment_mask_suit(&sample.legal_mask, perm)
+            } else {
+                sample.legal_mask
+            };
+            scratch.legal_mask_flat[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&legal_mask);
+
+            scratch.value_target[row] = score_delta_to_value(sample.score_delta);
+            if (sample.grp_label as usize) < GRP_CLASS_COUNT {
+                scratch.grp_target[row * GRP_CLASS_COUNT + sample.grp_label as usize] = 1.0;
+            }
+            if let Some(oracle) = sample.oracle_target {
+                scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT]
+                    .copy_from_slice(&oracle);
+                scratch.oracle_target_mask[row] = 1.0;
+                scratch.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
+            }
+            scratch.tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
+                .copy_from_slice(&sample.tenpai);
+
+            let opp_next = if augment {
+                permute_opp_next_targets(sample.opp_next, perm)
+            } else {
+                sample.opp_next
+            };
+            for (opp, tile) in opp_next.iter().copied().enumerate() {
+                if tile < TILE_COUNT as u8 {
+                    let idx = row * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + tile as usize;
+                    scratch.opp_next_flat[idx] = 1.0;
+                }
+            }
+
+            let danger = if augment {
+                permute_spatial_targets_3x34(sample.danger, perm)
+            } else {
+                sample.danger
+            };
+            scratch.danger_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+                .copy_from_slice(&danger);
+
+            let danger_mask = if augment {
+                permute_spatial_targets_3x34(sample.danger_mask, perm)
+            } else {
+                sample.danger_mask
+            };
+            scratch.danger_mask_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+                .copy_from_slice(&danger_mask);
+
+            let score_bin = score_delta_to_bin(sample.score_delta);
+            scratch.score_pdf_flat[row * SCORE_BINS + score_bin] = 1.0;
+            scratch.score_cdf_flat[row * SCORE_BINS + score_bin..(row + 1) * SCORE_BINS].fill(1.0);
+
+            if let Some(values) = sample.safety_residual {
+                let values = if augment {
+                    augment_action_vector_suit(&values, perm)
+                } else {
+                    values
+                };
+                scratch.safety_target_flat.as_mut().expect("safety enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                    .copy_from_slice(&values);
+            }
+            if let Some(mask) = sample.safety_residual_mask {
+                let mask = if augment {
+                    augment_action_vector_suit(&mask, perm)
+                } else {
+                    mask
+                };
+                if mask.iter().any(|&value| value > 0.0) {
+                    scratch.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
+                }
+                scratch.safety_mask_flat.as_mut().expect("safety enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                    .copy_from_slice(&mask);
+            }
+            if let Some(values) = sample.exit_target {
+                let values = if augment {
+                    augment_action_vector_suit(&values, perm)
+                } else {
+                    values
+                };
+                scratch.exit_target_flat.as_mut().expect("exit enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                    .copy_from_slice(&values);
+            }
+            if let Some(mask) = sample.exit_mask {
+                let mask = if augment {
+                    augment_action_vector_suit(&mask, perm)
+                } else {
+                    mask
+                };
+                scratch.exit_mask_flat.as_mut().expect("exit enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                    .copy_from_slice(&mask);
+            }
+            if let Some(values) = sample.delta_q_target {
+                let values = if augment {
+                    augment_action_vector_suit(&values, perm)
+                } else {
+                    values
+                };
+                scratch.delta_q_target_flat.as_mut().expect("delta_q enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                    .copy_from_slice(&values);
+            }
+            if let Some(mask) = sample.delta_q_mask {
+                let mask = if augment {
+                    augment_action_vector_suit(&mask, perm)
+                } else {
+                    mask
+                };
+                let action_count = mask.iter().filter(|&&value| value > 0.0).count();
+                if action_count > 0 {
+                    scratch.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
+                    scratch.target_presence.delta_q_actions_present += action_count;
+                }
+                scratch.delta_q_mask_flat.as_mut().expect("delta_q enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                    .copy_from_slice(&mask);
+            }
+        }
+
+        Ok(())
     }
 
     fn locate(&self, sample_index: usize) -> Result<(&ShardMap, usize), String> {
@@ -860,6 +1217,7 @@ struct CompactSample {
     legal_mask: [f32; HYDRA_ACTION_SPACE],
     score_delta: i32,
     grp_label: u8,
+    oracle_target: Option<[f32; PLAYER_COUNT]>,
     tenpai: [f32; OPPONENT_COUNT],
     opp_next: [u8; OPPONENT_COUNT],
     danger: [f32; SPATIAL_TARGET_SIZE],
@@ -887,13 +1245,13 @@ fn feature_flags_from_config(config: &BuildBcShardsConfig) -> u32 {
 fn record_size_for_flags(flags: u32) -> u32 {
     let mut size = BC_BASE_RECORD_SIZE;
     if flags & FLAG_SAFETY_RESIDUAL != 0 {
-        size += (OPTIONAL_ACTION_FLOAT16_BYTES + OPTIONAL_ACTION_MASK_BYTES) as u32;
+        size += (OPTIONAL_ACTION_FLOAT32_BYTES + OPTIONAL_ACTION_MASK_BYTES) as u32;
     }
     if flags & FLAG_EXIT != 0 {
-        size += (OPTIONAL_ACTION_FLOAT16_BYTES + OPTIONAL_ACTION_MASK_BYTES) as u32;
+        size += (OPTIONAL_ACTION_FLOAT32_BYTES + OPTIONAL_ACTION_MASK_BYTES) as u32;
     }
     if flags & FLAG_DELTA_Q != 0 {
-        size += (OPTIONAL_ACTION_FLOAT16_BYTES + OPTIONAL_ACTION_MASK_BYTES) as u32;
+        size += (OPTIONAL_ACTION_FLOAT32_BYTES + OPTIONAL_ACTION_MASK_BYTES) as u32;
     }
     size
 }
@@ -1133,26 +1491,28 @@ fn write_shard_header<W: Write>(
 }
 
 fn write_sample_record<W: Write>(writer: &mut W, sample: &crate::data::sample::MjaiSample, flags: u32) -> io::Result<()> {
-    write_obs_f16(writer, &sample.obs)?;
+    write_obs_f32(writer, &sample.obs)?;
     write_u8(writer, sample.action)?;
     write_mask_u8(writer, &sample.legal_mask)?;
     write_i32_le(writer, sample.score_delta)?;
     write_u8(writer, sample.grp_label)?;
+    write_optional_oracle_f32(writer, sample.oracle_target.as_ref())?;
+    write_u8(writer, u8::from(sample.oracle_target.is_some()))?;
     write_binary_triplet(writer, &sample.tenpai)?;
     writer.write_all(&sample.opp_next)?;
     write_binary_mask_u8(writer, &sample.danger)?;
     write_binary_mask_u8(writer, &sample.danger_mask)?;
 
     if flags & FLAG_SAFETY_RESIDUAL != 0 {
-        write_optional_action_f16(writer, sample.safety_residual.as_ref())?;
+        write_optional_action_f32(writer, sample.safety_residual.as_ref())?;
         write_optional_action_mask_u8(writer, sample.safety_residual_mask.as_ref())?;
     }
     if flags & FLAG_EXIT != 0 {
-        write_optional_action_f16(writer, sample.exit_target.as_ref())?;
+        write_optional_action_f32(writer, sample.exit_target.as_ref())?;
         write_optional_action_mask_u8(writer, sample.exit_mask.as_ref())?;
     }
     if flags & FLAG_DELTA_Q != 0 {
-        write_optional_action_f16(writer, sample.delta_q_target.as_ref())?;
+        write_optional_action_f32(writer, sample.delta_q_target.as_ref())?;
         write_optional_action_mask_u8(writer, sample.delta_q_mask.as_ref())?;
     }
     Ok(())
@@ -1195,8 +1555,8 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
 
     let mut obs = [0.0f32; OBS_SIZE];
     for value in &mut obs {
-        *value = read_f16_as_f32(&bytes[cursor..cursor + 2]);
-        cursor += 2;
+        *value = read_f32_le(&bytes[cursor..cursor + 4]);
+        cursor += 4;
     }
 
     let action = bytes[cursor];
@@ -1212,6 +1572,11 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
     cursor += 4;
     let grp_label = bytes[cursor];
     cursor += 1;
+    let oracle_target_values = read_oracle_f32(&bytes[cursor..cursor + ORACLE_FLOAT32_BYTES]);
+    cursor += ORACLE_FLOAT32_BYTES;
+    let oracle_present = bytes[cursor] > 0;
+    cursor += ORACLE_MASK_BYTES;
+    let oracle_target = oracle_present.then_some(oracle_target_values);
 
     let mut tenpai = [0.0f32; OPPONENT_COUNT];
     for value in &mut tenpai {
@@ -1236,8 +1601,8 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
     }
 
     let safety_residual = if shard.feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
-        let value = read_optional_action_f16(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT16_BYTES]);
-        cursor += OPTIONAL_ACTION_FLOAT16_BYTES;
+        let value = read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
         value
     } else {
         None
@@ -1251,8 +1616,8 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
     };
 
     let exit_target = if shard.feature_flags & FLAG_EXIT != 0 {
-        let value = read_optional_action_f16(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT16_BYTES]);
-        cursor += OPTIONAL_ACTION_FLOAT16_BYTES;
+        let value = read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
         value
     } else {
         None
@@ -1266,8 +1631,8 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
     };
 
     let delta_q_target = if shard.feature_flags & FLAG_DELTA_Q != 0 {
-        let value = read_optional_action_f16(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT16_BYTES]);
-        cursor += OPTIONAL_ACTION_FLOAT16_BYTES;
+        let value = read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
         value
     } else {
         None
@@ -1286,6 +1651,7 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
         legal_mask,
         score_delta,
         grp_label,
+        oracle_target,
         tenpai,
         opp_next,
         danger,
@@ -1299,9 +1665,9 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
     })
 }
 
-fn write_obs_f16<W: Write>(writer: &mut W, values: &[f32; OBS_SIZE]) -> io::Result<()> {
+fn write_obs_f32<W: Write>(writer: &mut W, values: &[f32; OBS_SIZE]) -> io::Result<()> {
     for &value in values {
-        writer.write_all(&f16::from_f32(value).to_le_bytes())?;
+        writer.write_all(&value.to_le_bytes())?;
     }
     Ok(())
 }
@@ -1320,6 +1686,17 @@ fn write_binary_triplet<W: Write>(writer: &mut W, values: &[f32; OPPONENT_COUNT]
     Ok(())
 }
 
+fn write_optional_oracle_f32<W: Write>(writer: &mut W, values: Option<&[f32; PLAYER_COUNT]>) -> io::Result<()> {
+    if let Some(values) = values {
+        for &value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+    } else {
+        write_zero_bytes(writer, ORACLE_FLOAT32_BYTES)?;
+    }
+    Ok(())
+}
+
 fn write_binary_mask_u8<W: Write>(writer: &mut W, values: &[f32; SPATIAL_TARGET_SIZE]) -> io::Result<()> {
     for &value in values {
         writer.write_all(&[u8::from(value > 0.0)])?;
@@ -1327,13 +1704,13 @@ fn write_binary_mask_u8<W: Write>(writer: &mut W, values: &[f32; SPATIAL_TARGET_
     Ok(())
 }
 
-fn write_optional_action_f16<W: Write>(writer: &mut W, values: Option<&[f32; HYDRA_ACTION_SPACE]>) -> io::Result<()> {
+fn write_optional_action_f32<W: Write>(writer: &mut W, values: Option<&[f32; HYDRA_ACTION_SPACE]>) -> io::Result<()> {
     if let Some(values) = values {
         for &value in values {
-            writer.write_all(&f16::from_f32(value).to_le_bytes())?;
+            writer.write_all(&value.to_le_bytes())?;
         }
     } else {
-        write_zero_bytes(writer, OPTIONAL_ACTION_FLOAT16_BYTES)?;
+        write_zero_bytes(writer, OPTIONAL_ACTION_FLOAT32_BYTES)?;
     }
     Ok(())
 }
@@ -1384,16 +1761,16 @@ fn read_i32_le(bytes: &[u8]) -> i32 {
     i32::from_le_bytes(bytes[0..4].try_into().expect("i32 slice"))
 }
 
-fn read_f16_as_f32(bytes: &[u8]) -> f32 {
-    f16::from_le_bytes(bytes[0..2].try_into().expect("f16 slice")).to_f32()
+fn read_f32_le(bytes: &[u8]) -> f32 {
+    f32::from_le_bytes(bytes[0..4].try_into().expect("f32 slice"))
 }
 
-fn read_optional_action_f16(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE]> {
+fn read_optional_action_f32(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE]> {
     let mut out = [0.0f32; HYDRA_ACTION_SPACE];
     let mut any = false;
     for (index, value) in out.iter_mut().enumerate() {
-        let start = index * 2;
-        let decoded = read_f16_as_f32(&bytes[start..start + 2]);
+        let start = index * 4;
+        let decoded = read_f32_le(&bytes[start..start + 4]);
         if decoded != 0.0 {
             any = true;
         }
@@ -1412,6 +1789,15 @@ fn read_optional_action_mask_u8(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE
         }
     }
     any.then_some(out)
+}
+
+fn read_oracle_f32(bytes: &[u8]) -> [f32; PLAYER_COUNT] {
+    let mut out = [0.0f32; PLAYER_COUNT];
+    for (index, value) in out.iter_mut().enumerate() {
+        let start = index * 4;
+        *value = read_f32_le(&bytes[start..start + 4]);
+    }
+    out
 }
 
 fn policy_target_from_actions<B: Backend>(
@@ -1459,6 +1845,11 @@ fn permute_spatial_targets_3x34(values: [f32; 102], perm: &[u8; 3]) -> [f32; 102
 mod tests {
     use super::*;
     use hydra_core::action::HYDRA_ACTION_SPACE;
+    use std::fs;
+
+    use burn::backend::NdArray;
+
+    use crate::data::sample::collate_samples_bc_owned;
 
     fn dummy_sample() -> crate::data::sample::MjaiSample {
         let mut legal_mask = [0.0; HYDRA_ACTION_SPACE];
@@ -1496,6 +1887,19 @@ mod tests {
         }
     }
 
+    fn tiny_real_mjai_replay() -> String {
+        [
+            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
+    }
+
     #[test]
     fn compact_header_size_constant_matches_written_bytes() {
         let mut bytes = Vec::new();
@@ -1511,5 +1915,92 @@ mod tests {
         let mut bytes = Vec::new();
         write_sample_record(&mut bytes, &sample, flags).expect("sample write should succeed");
         assert_eq!(bytes.len(), record_size_for_flags(flags) as usize);
+    }
+
+    #[test]
+    fn shard_collation_matches_raw_collation_on_real_replay_fixture() {
+        type B = NdArray<f32>;
+
+        let root = std::env::temp_dir().join(format!(
+            "bc-shard-compare-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("temp dir should be creatable");
+        let replay_path = root.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("fixture should write");
+
+        let raw_game = load_game_from_path(&replay_path).expect("raw game should load");
+        let raw_samples = raw_game.samples;
+        assert!(!raw_samples.is_empty(), "fixture should produce samples");
+
+        let shard_dir = root.join("shards");
+        let build = build_bc_shards(&BuildBcShardsConfig {
+            input: replay_path.clone(),
+            output_dir: shard_dir.clone(),
+            manifest_name: "manifest.json".into(),
+            train_fraction: 1.0,
+            shard_samples: 10_000,
+            split_mode: BcShardSplitMode::Train,
+            exit_sidecar: None,
+            exit_sidecar_path: None,
+            exit_provenance: SidecarProvenance::default(),
+            delta_q_sidecar: None,
+            delta_q_sidecar_path: None,
+            delta_q_provenance: SidecarProvenance::default(),
+        })
+        .expect("shards should build");
+        let reader = load_bc_shard_reader(&build.manifest_path, BcShardSplit::Train)
+            .expect("reader should load");
+        let device = Default::default();
+        let raw = collate_samples_bc_owned::<B>(&raw_samples, false, &device)
+            .expect("raw collate should succeed")
+            .expect("raw batch should exist");
+        let indices: Vec<usize> = (0..raw_samples.len()).collect();
+        let shard = reader
+            .collate_batch::<B>(&indices, false, &device)
+            .expect("shard collate should succeed");
+
+        let (raw_obs, raw_batch, raw_targets) = raw;
+
+        fn assert_tensor_close<const D: usize>(
+            lhs: Tensor<NdArray<f32>, D>,
+            rhs: Tensor<NdArray<f32>, D>,
+            name: &str,
+        ) {
+            let lhs_data = lhs.into_data();
+            let rhs_data = rhs.into_data();
+            let lhs_slice = lhs_data.as_slice::<f32>().expect("lhs f32");
+            let rhs_slice = rhs_data.as_slice::<f32>().expect("rhs f32");
+            assert_eq!(lhs_slice.len(), rhs_slice.len(), "{name} len");
+            for (idx, (a, b)) in lhs_slice.iter().zip(rhs_slice.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "{name}[{idx}] mismatch: {a} vs {b}"
+                );
+            }
+        }
+
+        assert_tensor_close(raw_obs, shard.obs, "obs");
+        assert_tensor_close(raw_batch.actions.clone().float(), shard.batch.actions.clone().float(), "actions");
+        assert_tensor_close(raw_targets.legal_mask.clone(), shard.targets.legal_mask.clone(), "legal_mask");
+        assert_tensor_close(raw_targets.value_target.clone(), shard.targets.value_target.clone(), "value_target");
+        assert_tensor_close(raw_targets.grp_target.clone(), shard.targets.grp_target.clone(), "grp_target");
+        assert_tensor_close(raw_targets.tenpai_target.clone(), shard.targets.tenpai_target.clone(), "tenpai");
+        assert_tensor_close(raw_targets.danger_target.clone(), shard.targets.danger_target.clone(), "danger");
+        assert_tensor_close(raw_targets.danger_mask.clone(), shard.targets.danger_mask.clone(), "danger_mask");
+        assert_tensor_close(raw_targets.opp_next_target.clone(), shard.targets.opp_next_target.clone(), "opp_next");
+        assert_tensor_close(raw_targets.score_pdf_target.clone(), shard.targets.score_pdf_target.clone(), "score_pdf");
+        assert_tensor_close(raw_targets.score_cdf_target.clone(), shard.targets.score_cdf_target.clone(), "score_cdf");
+
+        let raw_presence = raw_targets.target_presence.expect("raw target presence");
+        let shard_presence = shard.targets.target_presence.expect("shard target presence");
+        assert_eq!(raw_presence.batch_size, shard_presence.batch_size);
+        assert_eq!(raw_presence.delta_q_actions_present, shard_presence.delta_q_actions_present);
+        assert_eq!(raw_presence.counts, shard_presence.counts);
+
+        let _ = fs::remove_dir_all(root);
     }
 }
