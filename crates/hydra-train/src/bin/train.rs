@@ -11,6 +11,9 @@ mod config_runtime;
 #[cfg(feature = "cuda-graph")]
 #[path = "train/cuda_graph.rs"]
 mod cuda_graph;
+#[cfg(feature = "cuda-graph")]
+#[path = "train/pinned_transfer.rs"]
+mod pinned_transfer;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]
@@ -697,6 +700,7 @@ unexpected_field: true
             validation_microbatch_size: Some(16),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1129,6 +1133,7 @@ preflight:
             validation_microbatch_size: None,
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1180,6 +1185,7 @@ preflight:
             validation_microbatch_size: Some(0),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1232,6 +1238,7 @@ preflight:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1376,6 +1383,7 @@ advanced_loss:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1421,6 +1429,7 @@ advanced_loss:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1463,6 +1472,7 @@ advanced_loss:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

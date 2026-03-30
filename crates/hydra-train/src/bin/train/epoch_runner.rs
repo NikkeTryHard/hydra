@@ -1560,6 +1560,19 @@ where
     let mut epoch_sub_timing = TrainSubStageTiming::default();
     let mut seen_samples = samples_to_skip;
 
+    // -- async H2D staging for pinned memory + dedicated copy stream --
+    #[cfg(feature = "cuda-graph")]
+    let mut staging_context = match train_device {
+        LibTorchDevice::Cuda(idx) => {
+            let device_index = *idx as i64;
+            Some((
+                super::pinned_transfer::PinnedStagingArea::new(config.batch_size),
+                super::pinned_transfer::AsyncH2DContext::new(device_index),
+            ))
+        }
+        _ => None,
+    };
+
     // -- producer/consumer pipeline for CPU host-batch prefetch --
     let batch_size = config.batch_size;
     let augment = config.augment;
@@ -1606,6 +1619,8 @@ where
                 head_controller,
                 model_slot,
                 optimizer,
+                #[cfg(feature = "cuda-graph")]
+                staging_context.as_mut(),
             )?
         };
         let train_seconds = train_started.elapsed().as_secs_f64();
