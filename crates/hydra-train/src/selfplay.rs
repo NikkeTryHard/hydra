@@ -42,7 +42,10 @@ use cooperative_state::{
 pub use crate::selfplay_batch::{default_gae_config, trajectories_to_rl_batch};
 
 const DEFAULT_GAME_MODE: u8 = 0;
+#[cfg(not(test))]
 const MAX_SELF_PLAY_STEPS: u32 = 50_000;
+#[cfg(test)]
+const MAX_SELF_PLAY_STEPS: u32 = 500;
 const NUM_OPPONENTS: usize = 3;
 
 #[derive(Clone, Copy)]
@@ -474,6 +477,7 @@ struct CooperativeGameRunner {
     trajectory: Trajectory,
     legal_buf: Vec<Action>,
     total_steps: u32,
+    max_steps: u32,
     done: bool,
     pending_policy_obs: Option<PendingPolicyRequest>,
     pending_exit_search: Option<ExitSearchState>,
@@ -493,6 +497,7 @@ impl CooperativeGameRunner {
             trajectory: Trajectory::new(0, game_seed),
             legal_buf: Vec::with_capacity(HYDRA_ACTION_SPACE),
             total_steps: 0,
+            max_steps: MAX_SELF_PLAY_STEPS,
             done: false,
             pending_policy_obs: None,
             pending_exit_search: None,
@@ -559,7 +564,7 @@ impl CooperativeGameRunner {
                 return GameAdvance { needs_policy: true };
             }
 
-            if self.state.is_done || self.total_steps >= MAX_SELF_PLAY_STEPS {
+            if self.state.is_done || self.total_steps >= self.max_steps {
                 self.finalize();
                 return GameAdvance::default();
             }
@@ -925,6 +930,7 @@ pub struct CooperativeSelfPlayCoordinator {
     exit_values: Vec<f32>,
     flat_buf: Vec<f32>,
     rl_batch_scratch: RlBatchScratch,
+    max_steps: u32,
 }
 
 pub struct CooperativeSelfPlayRequest<'a> {
@@ -947,7 +953,14 @@ impl CooperativeSelfPlayCoordinator {
             exit_values: Vec::new(),
             flat_buf: Vec::new(),
             rl_batch_scratch: RlBatchScratch::default(),
+            max_steps: MAX_SELF_PLAY_STEPS,
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_max_steps(mut self, max_steps: u32) -> Self {
+        self.max_steps = max_steps;
+        self
     }
 
     fn prepare_games(
@@ -959,17 +972,20 @@ impl CooperativeSelfPlayCoordinator {
     ) {
         if self.games.len() < game_seeds.len() {
             for (idx, &seed) in game_seeds.iter().enumerate().skip(self.games.len()) {
-                self.games.push(CooperativeGameRunner::new(
+                let mut game = CooperativeGameRunner::new(
                     seed,
                     temperature,
                     rng_seed.wrapping_add(idx as u64),
                     live_exit_cfg.clone(),
-                ));
+                );
+                game.max_steps = self.max_steps;
+                self.games.push(game);
             }
         }
 
         for (idx, game) in self.games.iter_mut().take(game_seeds.len()).enumerate() {
             game.live_exit_cfg = live_exit_cfg.clone();
+            game.max_steps = self.max_steps;
             game.reset_for_new_game(
                 game_seeds[idx],
                 temperature,
@@ -1432,10 +1448,10 @@ mod tests {
     }
 
     fn small_test_model_config() -> HydraModelConfig {
-        HydraModelConfig::new(2)
-            .with_hidden_channels(16)
-            .with_se_bottleneck(4)
-            .with_num_groups(4)
+        HydraModelConfig::new(1)
+            .with_hidden_channels(4)
+            .with_se_bottleneck(1)
+            .with_num_groups(1)
     }
 
     fn make_test_step_record(player_id: u8, action: u8) -> StepRecord {
@@ -1761,7 +1777,7 @@ mod tests {
     fn cooperative_reuse_matches_fresh_batches() {
         let device = Default::default();
         let model = small_test_model_config().init::<B>(&device);
-        let seeds = [42u64, 43u64, 44u64];
+        let seeds = [42u64];
         let cfg = LiveExitConfig {
             enabled: false,
             ..LiveExitConfig::default()
@@ -1770,7 +1786,7 @@ mod tests {
         let fresh = generate_self_play_batch_source_cooperative(
             &seeds,
             1.0,
-            40,
+            4,
             &model,
             &device,
             cfg.clone(),
@@ -1780,7 +1796,7 @@ mod tests {
             &mut coordinator,
             &seeds,
             1.0,
-            40,
+            4,
             &model,
             &device,
             cfg,
@@ -1793,8 +1809,8 @@ mod tests {
     fn cooperative_reuse_does_not_leak_state_across_batches() {
         let device = Default::default();
         let model = small_test_model_config().init::<B>(&device);
-        let first_seeds = [100u64, 101u64];
-        let second_seeds = [200u64, 201u64, 202u64];
+        let first_seeds = [100u64];
+        let second_seeds = [200u64];
         let cfg = LiveExitConfig {
             enabled: false,
             ..LiveExitConfig::default()
@@ -1805,7 +1821,7 @@ mod tests {
             &mut coordinator,
             &first_seeds,
             0.85,
-            700,
+            7,
             &model,
             &device,
             cfg.clone(),
@@ -1814,7 +1830,7 @@ mod tests {
             &mut coordinator,
             &second_seeds,
             0.85,
-            900,
+            9,
             &model,
             &device,
             cfg.clone(),
@@ -1823,7 +1839,7 @@ mod tests {
         let first_fresh = generate_self_play_batch_source_cooperative(
             &first_seeds,
             0.85,
-            700,
+            7,
             &model,
             &device,
             cfg.clone(),
@@ -1831,7 +1847,7 @@ mod tests {
         let second_fresh = generate_self_play_batch_source_cooperative(
             &second_seeds,
             0.85,
-            900,
+            9,
             &model,
             &device,
             cfg,

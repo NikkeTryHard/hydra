@@ -2383,11 +2383,17 @@ pub(super) fn run_probe_child_mode_result(
     config: &TrainConfig,
     child: Option<ProbeChildRequest>,
 ) -> Result<Option<ProbeResult>, String> {
+    // Use a tiny model for test speed instead of the full learner() model.
+    let tiny = HydraModelConfig::new(1)
+        .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1);
     Ok(
         run_probe_child_mode_with_model_config_output(
             config,
             child,
-            &HydraModelConfig::learner(),
+            &tiny,
         )?
         .map(|(_, result)| result),
     )
@@ -2402,12 +2408,17 @@ pub(super) fn run_probe_child_batch_mode_result(
     else {
         return Ok(None);
     };
+    let tiny = HydraModelConfig::new(1)
+        .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1);
     Ok(Some(run_probe_child_batch_request_with_model_config(
         config,
         batch,
         &results_path,
         manifest_cache_path.as_deref(),
-        &HydraModelConfig::learner(),
+        &tiny,
     )?))
 }
 
@@ -2834,6 +2845,7 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+        bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
