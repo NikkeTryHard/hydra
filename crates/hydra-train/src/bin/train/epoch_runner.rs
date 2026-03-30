@@ -10,8 +10,9 @@ use indicatif::MultiProgress;
 use tboard::EventWriter;
 
 use hydra_train::amp::maybe_autocast;
+use hydra_train::data::bc_shards::{load_bc_shard_reader, BcShardSplit};
 use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
-use hydra_train::data::sample::{collate_samples_owned, MjaiSample};
+use hydra_train::data::sample::{collate_samples_owned, MjaiBcBatch, MjaiSample};
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
     ProfilingEnvelope, PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH,
@@ -20,7 +21,8 @@ use hydra_train::preflight::{
     PROFILING_STAGE_OPTIMIZER_STEP, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
 };
 use hydra_train::training::bc::{
-    bc_total_with_exit_from_breakdown, gated_bc_context, BCTrainerConfig, BcExitConfig,
+    bc_total_with_exit_from_breakdown, gated_bc_context, maybe_add_exit_loss, BCTrainerConfig,
+    BcExitConfig,
 };
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
@@ -1040,6 +1042,9 @@ where
     O: Optimizer<HydraModel<B>, B>,
     W: Write,
 {
+    if context.config.bc_shards_manifest_path.is_some() {
+        return run_epoch_from_shards(context, runtime);
+    }
     let _epoch_scope = nvtx::scope(PROFILING_STAGE_BC_EPOCH);
     let EpochRunnerContext {
         epoch,
@@ -1462,6 +1467,474 @@ where
     })
 }
 
+fn run_epoch_from_shards<B, O, W>(
+    context: EpochRunnerContext<'_, B>,
+    runtime: EpochRuntimeMut<'_, O, W, B>,
+) -> Result<EpochRunOutcome, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
+    W: Write,
+{
+    let _epoch_scope = nvtx::scope(PROFILING_STAGE_BC_EPOCH);
+    let EpochRunnerContext {
+        epoch,
+        config,
+        manifest,
+        loader_config,
+        artifacts,
+        train_cfg,
+        loss_fn,
+        valid_loss_fn,
+        bc_exit_cfg,
+        train_device,
+        session_start_global_step,
+        steps_to_skip,
+        microbatch_size,
+        use_amp,
+        total_steps,
+        current_runtime,
+        run_start,
+        head_controller,
+        cached_validation_samples,
+    } = context;
+    let EpochRuntimeMut {
+        model: model_slot,
+        optimizer,
+        global_step,
+        best_validation,
+        tb,
+        training_log,
+        step_log,
+        last_log_step,
+        last_log_time,
+    } = runtime;
+
+    let shard_manifest_path = config
+        .bc_shards_manifest_path
+        .as_ref()
+        .ok_or_else(|| "bc_shards_manifest_path missing for shard epoch path".to_string())?;
+    let reader = load_bc_shard_reader(shard_manifest_path, BcShardSplit::Train)?;
+    let total_rows = reader.sample_count();
+    let samples_to_skip = steps_to_skip
+        .saturating_mul(config.batch_size)
+        .min(total_rows);
+
+    let multi = MultiProgress::new();
+    let train_label = phase_label("train", epoch, config.num_epochs);
+    let estimated_steps =
+        ((total_rows.saturating_sub(samples_to_skip)) / config.batch_size.max(1)).max(1);
+    let train_pb = if let Some(max_train_steps) = config.max_train_steps {
+        multi.add(make_bar(
+            max_train_steps as u64,
+            &format!("[{train_label}] [{{bar:30.green/black}}] {{pos}}/{{len}} steps {{msg}}"),
+        )?)
+    } else {
+        multi.add(make_bar(
+            estimated_steps as u64,
+            &format!("[{train_label}] [{{bar:30.green/black}}] {{pos}}/{{len}} steps {{msg}}"),
+        )?)
+    };
+
+    let mut stats = ScalarAverages::default();
+    let mut step_window = ScalarAverages::default();
+    let mut epoch_completed = true;
+    let mut epoch_optimizer_steps = steps_to_skip;
+    let mut last_interval_validation: Option<ValidationEvent> = None;
+    let mut step_window_train_seconds = 0.0;
+    let mut step_window_checkpoint_seconds = 0.0;
+    let mut step_window_validation_profiling: Option<ProfilingEnvelope> = None;
+    let mut epoch_train_seconds = 0.0;
+    let mut epoch_checkpoint_seconds = 0.0;
+    let mut epoch_validation_profiling: Option<ProfilingEnvelope> = None;
+    let mut step_window_sub_timing = TrainSubStageTiming::default();
+    let mut epoch_sub_timing = TrainSubStageTiming::default();
+    let mut seen_samples = samples_to_skip;
+    let mut index = samples_to_skip;
+
+    while index < total_rows {
+        let lr = effective_lr(train_cfg, *global_step, total_steps);
+        let take = config.batch_size.min(total_rows - index);
+        let indices: Vec<usize> = (index..index + take).collect();
+        let train_started = Instant::now();
+        let (drained, batch_sub_timing) = {
+            let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
+            train_logical_batch_from_shards(
+                &reader,
+                &indices,
+                TrainLogicalBatchConfig {
+                    microbatch_size,
+                    use_amp,
+                    augment: config.augment,
+                    train_device,
+                    loss_fn,
+                    bc_exit_cfg,
+                    lr,
+                },
+                head_controller,
+                model_slot,
+                optimizer,
+            )?
+        };
+        let train_seconds = train_started.elapsed().as_secs_f64();
+
+        record_drained_batch_stats(drained, &mut stats, &mut step_window);
+        step_window_train_seconds += train_seconds;
+        epoch_train_seconds += train_seconds;
+        step_window_sub_timing.accumulate(&batch_sub_timing);
+        epoch_sub_timing.accumulate(&batch_sub_timing);
+        epoch_optimizer_steps += 1;
+        *global_step += 1;
+        index += take;
+        seen_samples += take;
+        train_pb.inc(1);
+
+        let running_stats = stats.finalize();
+        let lr_message = lr_status_message(*global_step, train_cfg.warmup_steps, lr);
+        train_pb.set_message(format_progress_message(
+            running_stats.total_loss,
+            running_stats.policy_agreement,
+            &lr_message,
+            steps_per_second(
+                session_steps_completed(*global_step, session_start_global_step),
+                run_start.elapsed(),
+            ),
+        ));
+
+        let session_step = session_steps_completed(*global_step, session_start_global_step);
+        let val_summary = maybe_run_interval_validation(
+            ValidationStepContext {
+                multi: &multi,
+                config,
+                loader_config,
+                manifest,
+                train_device,
+                valid_loss_fn,
+                bc_exit_cfg,
+                artifacts,
+                session_start_global_step,
+                cached_validation_samples,
+            },
+            epoch_model(model_slot)?,
+            Some(head_controller),
+            best_validation,
+            *global_step,
+            step_window.finalize().total_loss,
+        )?;
+        if let Some(summary) = val_summary.clone() {
+            merge_optional_profiling(
+                &mut step_window_validation_profiling,
+                summary.profiling.as_ref(),
+            );
+            merge_optional_profiling(&mut epoch_validation_profiling, summary.profiling.as_ref());
+            last_interval_validation = Some(ValidationEvent {
+                global_step: *global_step,
+                summary,
+            });
+        }
+
+        if session_step > 0 && session_step.is_multiple_of(config.log_every_n_steps) {
+            let window_stats = std::mem::take(&mut step_window).finalize();
+            let window_steps = (*global_step).saturating_sub(*last_log_step);
+            let step_rate = steps_per_second(window_steps, last_log_time.elapsed());
+            *last_log_step = *global_step;
+            *last_log_time = Instant::now();
+            let interval_profiling = bc_interval_profiling(
+                step_window_train_seconds,
+                &step_window_sub_timing,
+                step_window_validation_profiling.take(),
+                step_window_checkpoint_seconds,
+            );
+            step_window_train_seconds = 0.0;
+            step_window_checkpoint_seconds = 0.0;
+            step_window_sub_timing = TrainSubStageTiming::default();
+
+            emit_interval_step_summary(
+                &multi,
+                tb,
+                step_log,
+                IntervalStepSummaryContext {
+                    manifest,
+                    config,
+                    session_start_global_step,
+                    global_step: *global_step,
+                    epoch,
+                    lr,
+                    best_validation: *best_validation,
+                    val_summary,
+                    seen_samples,
+                    assumed_games_seen: 0,
+                    epoch_optimizer_steps,
+                    window_stats,
+                    step_rate,
+                    profiling: Some(interval_profiling),
+                },
+            )?;
+        }
+
+        let periodic_checkpoint_seconds = maybe_save_periodic_checkpoint(
+            epoch_model(model_slot)?,
+            optimizer,
+            PeriodicCheckpointContext {
+                config,
+                artifacts,
+                epoch,
+                session_start_global_step,
+                current_runtime,
+            },
+            PeriodicCheckpointState {
+                global_step: *global_step,
+                epoch_optimizer_steps,
+                total_loss: stats.finalize().total_loss,
+                best_validation: *best_validation,
+            },
+        )?;
+        step_window_checkpoint_seconds += periodic_checkpoint_seconds;
+        epoch_checkpoint_seconds += periodic_checkpoint_seconds;
+
+        if reached_session_step_budget(
+            *global_step,
+            session_start_global_step,
+            config.max_train_steps,
+        ) {
+            epoch_completed = false;
+            break;
+        }
+    }
+
+    let train_total_loss = stats.finalize().total_loss;
+    let continuation = build_epoch_continuation(epoch, epoch_completed, epoch_optimizer_steps);
+    {
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+        save_latest_checkpoint_and_state(
+            artifacts,
+            epoch_model(model_slot)?,
+            optimizer,
+            LatestCheckpointState {
+                global_step: *global_step,
+                train_loss: train_total_loss,
+                best_validation: *best_validation,
+                continuation: &continuation,
+                runtime: current_runtime,
+            },
+        )?;
+    }
+    if !continuation.epoch_completed {
+        emit_paused_training_message(&continuation);
+        return Ok(EpochRunOutcome {
+            stop_after_epoch: true,
+        });
+    }
+
+    let reused_interval_validation =
+        last_interval_validation
+            .as_ref()
+            .is_some_and(|last_validation| {
+                last_validation.global_step == *global_step
+                    && should_run_epoch_end_validation(
+                        epoch,
+                        config.num_epochs,
+                        config.validation_every_n_epochs,
+                    )
+            });
+    let final_validation = if reused_interval_validation {
+        last_interval_validation
+            .as_ref()
+            .map(|last_validation| last_validation.summary.clone())
+    } else {
+        run_epoch_end_validation(
+            epoch,
+            epoch_model(model_slot)?,
+            EpochEndValidationContext {
+                config,
+                loader_config,
+                manifest,
+                train_device,
+                valid_loss_fn,
+                bc_exit_cfg,
+                artifacts,
+                cached_validation_samples,
+            },
+            Some(head_controller),
+            best_validation,
+            train_total_loss,
+        )?
+    };
+    if !reused_interval_validation {
+        merge_optional_profiling(
+            &mut epoch_validation_profiling,
+            final_validation
+                .as_ref()
+                .and_then(|summary| summary.profiling.as_ref()),
+        );
+    }
+
+    let logging_started = Instant::now();
+    let final_lr = effective_lr(train_cfg, *global_step, total_steps);
+    let final_stats = std::mem::take(&mut stats).finalize();
+    let epoch_profiling = bc_epoch_profiling(
+        epoch_train_seconds,
+        &epoch_sub_timing,
+        epoch_validation_profiling,
+        epoch_checkpoint_seconds,
+        logging_started.elapsed().as_secs_f64(),
+    );
+    finalize_epoch_outputs(
+        tb,
+        training_log,
+        EpochFinalizeContext {
+            config,
+            train_cfg,
+            epoch,
+            global_step: *global_step,
+            train_stats: final_stats,
+            val_summary: final_validation,
+            best_validation: *best_validation,
+            final_lr,
+            profiling: Some(epoch_profiling),
+        },
+    )?;
+
+    Ok(EpochRunOutcome {
+        stop_after_epoch: !epoch_completed,
+    })
+}
+
+fn train_logical_batch_from_shards<B, O>(
+    reader: &hydra_train::data::bc_shards::BcShardReader,
+    indices: &[usize],
+    config: TrainLogicalBatchConfig<'_, B>,
+    head_controller: &mut HeadActivationController,
+    model_slot: &mut Option<HydraModel<B>>,
+    optimizer: &mut O,
+) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let TrainLogicalBatchConfig {
+        microbatch_size,
+        use_amp,
+        augment,
+        train_device,
+        loss_fn,
+        bc_exit_cfg,
+        lr,
+    } = config;
+    if indices.is_empty() {
+        return Ok((Vec::new(), TrainSubStageTiming::default()));
+    }
+
+    let mut sub_timing = TrainSubStageTiming::default();
+
+    let t = Instant::now();
+    let host_batch = {
+        let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
+        reader.collate_host_batch(indices, augment)?
+    };
+    let shard_batch = host_batch.materialize::<B>(train_device);
+    sub_timing.collation_seconds += t.elapsed().as_secs_f64();
+
+    let logical_batch_len = indices.len().max(1) as f32;
+    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
+    let mut total_samples = 0usize;
+    let mut microbatch_count = 0usize;
+    let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
+
+    let obs = shard_batch.obs;
+    let batch = shard_batch.batch;
+    let targets = shard_batch.targets;
+    let batch_size = batch.actions.dims()[0];
+
+    for start in (0..batch_size).step_by(microbatch_size.max(1)) {
+        let end = (start + microbatch_size.max(1)).min(batch_size);
+        let chunk_len = end - start;
+        #[allow(clippy::single_range_in_vec_init)]
+        let r = [start..end];
+        let obs_chunk = obs.clone().slice(r.clone());
+        let batch_chunk = MjaiBcBatch {
+            actions: batch.actions.clone().slice(r.clone()),
+            exit_target: batch
+                .exit_target
+                .as_ref()
+                .map(|t| t.clone().slice(r.clone())),
+            exit_mask: batch.exit_mask.as_ref().map(|t| t.clone().slice(r.clone())),
+        };
+        let targets_chunk = targets.slice_batch(start, end);
+        let (active_loss_fn, warmup_heads) =
+            gated_bc_context(Some(head_controller), loss_fn, &targets_chunk);
+        let model = epoch_model(model_slot)?;
+        let t = Instant::now();
+        let output = {
+            let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+            maybe_autocast(use_amp, || {
+                model.forward_with_warmup(obs_chunk, &active_loss_fn.config, &warmup_heads)
+            })
+        };
+        sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let (breakdown, total) = {
+            let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+            let breakdown = active_loss_fn.total_loss(&output, &targets_chunk);
+            let total = maybe_add_exit_loss(
+                breakdown.total.clone(),
+                output.policy_logits.clone(),
+                batch_chunk.exit_target.as_ref(),
+                batch_chunk.exit_mask.as_ref(),
+                bc_exit_cfg,
+            );
+            (breakdown, total)
+        };
+        sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+        let chunk_weight = chunk_len as f32 / logical_batch_len;
+        let weighted_total = total.clone() * chunk_weight;
+        let chunk_metric_sums = batch_metric_sums_from_outputs(
+            chunk_len,
+            output.policy_logits.clone(),
+            targets_chunk.legal_mask.clone(),
+            batch_chunk.actions.clone(),
+            total,
+            &breakdown,
+        );
+        metric_sums = Some(match metric_sums.take() {
+            Some(existing) => existing + chunk_metric_sums,
+            None => chunk_metric_sums,
+        });
+        total_samples += chunk_len;
+        microbatch_count += 1;
+        let t = Instant::now();
+        {
+            let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let grads = weighted_total.backward();
+            let grads = GradientsParams::from_grads(grads, model);
+            accumulator.accumulate(model, grads);
+        }
+        sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+    }
+
+    let optimizer_started = Instant::now();
+    let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
+    let model = model_slot
+        .take()
+        .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
+    *model_slot = Some(optimizer.step(lr, model, accumulator.grads()));
+    head_controller.tick_warmup();
+    sub_timing.optimizer_step_seconds += optimizer_started.elapsed().as_secs_f64();
+
+    let stats = metric_sums
+        .map(|metric_sums| {
+            vec![batch_stats_from_metric_sums(
+                total_samples,
+                microbatch_count,
+                metric_sums,
+            )]
+        })
+        .unwrap_or_default();
+    Ok((stats, sub_timing))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1510,6 +1983,7 @@ mod tests {
             validation_microbatch_size: Some(4),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
