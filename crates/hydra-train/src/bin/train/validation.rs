@@ -2,9 +2,10 @@ use burn::module::AutodiffModule;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use indicatif::ProgressBar;
+use std::sync::mpsc;
 use std::time::Instant;
 
-use hydra_train::data::bc_shards::{BcShardReader, BcShardSplit, load_bc_shard_reader};
+use hydra_train::data::bc_shards::{BcShardHostBatch, BcShardReader, BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_pass};
 use hydra_train::data::sample::{MjaiSample, collate_samples_owned};
 use hydra_train::model::{HydraModel, HydraOutput};
@@ -453,6 +454,13 @@ pub(super) fn materialize_validation_samples(
     Ok(Some(samples))
 }
 
+/// Prefetch queue depth for the validation CPU producer thread.
+///
+/// Depth 2 keeps at most two host batches resident while the GPU
+/// processes the current one -- enough to hide CPU collation latency
+/// without ballooning host memory.
+const VALIDATION_SHARD_PREFETCH_DEPTH: usize = 2;
+
 pub(super) fn run_validation_from_shards<TB>(
     model: &HydraModel<TB>,
     baseline_model: &HydraModel<TB>,
@@ -498,89 +506,111 @@ where
 
     let total_rows = reader.sample_count();
     let limit_rows = validation_sample_limit.unwrap_or(total_rows).min(total_rows);
-    let mut start = 0usize;
-    while start < limit_rows {
-        let end = (start + validation_batch_size).min(limit_rows);
-        let indices: Vec<usize> = (start..end).collect();
-        let shard_batch = reader.collate_host_batch(&indices, false)?
-            .materialize::<ValidBackendOf<TB>>(device);
-        let obs = shard_batch.obs;
-        let batch = shard_batch.batch;
-        let targets = shard_batch.targets;
-        let (active_loss_fn, warmup_heads) =
-            gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
-        let candidate_started = Instant::now();
-        let (output, breakdown, total) = {
-            let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
-            let output =
-                model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
-            let breakdown = active_loss_fn.total_loss(&output, &targets);
-            let total = maybe_add_exit_loss(
-                breakdown.total.clone(),
-                output.policy_logits.clone(),
-                batch.exit_target.as_ref(),
-                batch.exit_mask.as_ref(),
-                exit_cfg,
-            );
-            (output, breakdown, total)
-        };
-        let candidate_elapsed_seconds = candidate_started.elapsed().as_secs_f64();
-        let chunk_metric_sums = batch_metric_sums_from_outputs(
-            end - start,
-            output.policy_logits.clone(),
-            targets.legal_mask.clone(),
-            batch.actions.clone(),
-            total.clone(),
-            &breakdown,
-        );
-        let mut baseline_elapsed_seconds = 0.0;
-        if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
-            let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
-                output.policy_logits.clone()
-            } else {
-                let baseline_started = Instant::now();
-                let baseline_policy_logits = {
-                    let _baseline_scope = nvtx::scope(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD);
-                    baseline_valid.forward_policy(obs)
-                };
-                baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
-                baseline_policy_logits
-            };
-            delta_q_promotion.merge(&collect_promotion_metrics_from_outputs(
-                &output, &targets, 0.75,
-            ));
-            delta_q_policy_transfer.merge(&collect_policy_transfer_metrics_from_policy_outputs(
-                output.policy_logits.clone(),
-                baseline_policy_logits,
-                &targets,
-            ));
-            saw_delta_q_targets = true;
-        }
-        validation_profiling.merge_assign(&ProfilingEnvelope::nested(
-            PROFILING_STAGE_VALIDATION,
-            candidate_elapsed_seconds + baseline_elapsed_seconds,
-            vec![
-                ProfilingEnvelope::leaf(
-                    PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS,
-                    candidate_elapsed_seconds,
-                ),
-                ProfilingEnvelope::leaf(
-                    PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
-                    baseline_elapsed_seconds,
-                ),
-            ],
-        ));
-        metric_sums = Some(match metric_sums.take() {
-            Some(existing) => existing + chunk_metric_sums,
-            None => chunk_metric_sums,
+
+    // -- producer/consumer pipeline: CPU collation on a scoped background thread --
+    let batch_size = validation_batch_size;
+    let (tx, rx) =
+        mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(VALIDATION_SHARD_PREFETCH_DEPTH);
+
+    let consumer_result: Result<(), String> = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut scratch = reader.new_scratch(batch_size);
+            let mut idx = 0usize;
+            while idx < limit_rows {
+                let take = batch_size.min(limit_rows - idx);
+                let result = reader
+                    .collate_host_batch_range_into(idx, take, false, &mut scratch)
+                    .map(|()| (scratch.take_batch(), take));
+                if tx.send(result).is_err() {
+                    break;
+                }
+                idx += take;
+            }
+            drop(tx);
         });
-        microbatch_count += 1;
-        total_samples += end - start;
-        if let Some(progress) = progress {
-            progress.inc((end - start) as u64);
+
+        for recv_result in rx {
+            let (host_batch, take) = recv_result?;
+            let shard_batch = host_batch.materialize::<ValidBackendOf<TB>>(device);
+            let obs = shard_batch.obs;
+            let batch = shard_batch.batch;
+            let targets = shard_batch.targets;
+            let (active_loss_fn, warmup_heads) =
+                gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
+            let candidate_started = Instant::now();
+            let (output, breakdown, total) = {
+                let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
+                let output =
+                    model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+                let breakdown = active_loss_fn.total_loss(&output, &targets);
+                let total = maybe_add_exit_loss(
+                    breakdown.total.clone(),
+                    output.policy_logits.clone(),
+                    batch.exit_target.as_ref(),
+                    batch.exit_mask.as_ref(),
+                    exit_cfg,
+                );
+                (output, breakdown, total)
+            };
+            let candidate_elapsed_seconds = candidate_started.elapsed().as_secs_f64();
+            let chunk_metric_sums = batch_metric_sums_from_outputs(
+                take,
+                output.policy_logits.clone(),
+                targets.legal_mask.clone(),
+                batch.actions.clone(),
+                total.clone(),
+                &breakdown,
+            );
+            let mut baseline_elapsed_seconds = 0.0;
+            if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
+                let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
+                    output.policy_logits.clone()
+                } else {
+                    let baseline_started = Instant::now();
+                    let baseline_policy_logits = {
+                        let _baseline_scope = nvtx::scope(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD);
+                        baseline_valid.forward_policy(obs)
+                    };
+                    baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
+                    baseline_policy_logits
+                };
+                delta_q_promotion.merge(&collect_promotion_metrics_from_outputs(
+                    &output, &targets, 0.75,
+                ));
+                delta_q_policy_transfer.merge(&collect_policy_transfer_metrics_from_policy_outputs(
+                    output.policy_logits.clone(),
+                    baseline_policy_logits,
+                    &targets,
+                ));
+                saw_delta_q_targets = true;
+            }
+            validation_profiling.merge_assign(&ProfilingEnvelope::nested(
+                PROFILING_STAGE_VALIDATION,
+                candidate_elapsed_seconds + baseline_elapsed_seconds,
+                vec![
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS,
+                        candidate_elapsed_seconds,
+                    ),
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
+                        baseline_elapsed_seconds,
+                    ),
+                ],
+            ));
+            metric_sums = Some(match metric_sums.take() {
+                Some(existing) => existing + chunk_metric_sums,
+                None => chunk_metric_sums,
+            });
+            microbatch_count += 1;
+            total_samples += take;
+            if let Some(progress) = progress {
+                progress.inc(take as u64);
+            }
         }
-        start = end;
-    }
+        Ok(())
+    });
+    consumer_result?;
 
     if total_samples == 0 {
         Ok(ValidationSummary {
@@ -614,23 +644,20 @@ where
                 &delta_q_promotion,
                 &DeltaQPromotionThresholds::default(),
             );
+            let snapshot = DeltaQPromotionSnapshot::from_report(&delta_q_promotion, &result);
+            let policy_transfer_snapshot =
+                DeltaQPolicyTransferSnapshot::from_report(&delta_q_policy_transfer);
             let policy_transfer_result = evaluate_policy_transfer_report(
                 &delta_q_policy_transfer,
                 &DeltaQPolicyTransferThresholds::default(),
             );
             (
-                Some(delta_q_promotion.clone()),
+                Some(delta_q_promotion),
                 Some(result),
-                Some(DeltaQPromotionSnapshot::from_report(
-                    &delta_q_promotion,
-                    &evaluate_promotion_report(
-                        &delta_q_promotion,
-                        &DeltaQPromotionThresholds::default(),
-                    ),
-                )),
-                Some(delta_q_policy_transfer.clone()),
+                Some(snapshot),
+                Some(delta_q_policy_transfer),
                 Some(policy_transfer_result),
-                Some(DeltaQPolicyTransferSnapshot::from_report(&delta_q_policy_transfer)),
+                Some(policy_transfer_snapshot),
             )
         } else {
             (None, None, None, None, None, None)
