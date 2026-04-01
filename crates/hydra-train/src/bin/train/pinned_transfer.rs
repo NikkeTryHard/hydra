@@ -89,29 +89,28 @@ impl PinnedStagingArea {
     pub(crate) fn new(batch_size: usize) -> Self {
         let f32_bytes = std::mem::size_of::<f32>();
         let i64_bytes = std::mem::size_of::<i64>();
-        let u8_bytes = std::mem::size_of::<u8>();
         let action_elems = batch_size * HYDRA_ACTION_SPACE;
 
         Self {
             batch_size,
             obs: PinnedBuffer::new(batch_size * OBS_SIZE * f32_bytes),
-            legal_mask: PinnedBuffer::new(action_elems * u8_bytes),
+            legal_mask: PinnedBuffer::new(action_elems * f32_bytes),
             value_target: PinnedBuffer::new(batch_size * f32_bytes),
             grp_labels: PinnedBuffer::new(batch_size * i64_bytes),
             oracle_target: PinnedBuffer::new(batch_size * PLAYER_COUNT * f32_bytes),
             oracle_target_mask: PinnedBuffer::new(batch_size * f32_bytes),
-            tenpai: PinnedBuffer::new(batch_size * OPPONENT_COUNT * u8_bytes),
-            danger: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * u8_bytes),
-            danger_mask: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * u8_bytes),
+            tenpai: PinnedBuffer::new(batch_size * OPPONENT_COUNT * f32_bytes),
+            danger: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * f32_bytes),
+            danger_mask: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * f32_bytes),
             opp_next: PinnedBuffer::new(batch_size * OPPONENT_COUNT * i64_bytes),
             score_bins: PinnedBuffer::new(batch_size * i64_bytes),
             actions: PinnedBuffer::new(batch_size * i64_bytes),
             safety_target: PinnedBuffer::new(action_elems * f32_bytes),
-            safety_mask: PinnedBuffer::new(action_elems * u8_bytes),
+            safety_mask: PinnedBuffer::new(action_elems * f32_bytes),
             exit_target: PinnedBuffer::new(action_elems * f32_bytes),
-            exit_mask: PinnedBuffer::new(action_elems * u8_bytes),
+            exit_mask: PinnedBuffer::new(action_elems * f32_bytes),
             delta_q_target: PinnedBuffer::new(action_elems * f32_bytes),
-            delta_q_mask: PinnedBuffer::new(action_elems * u8_bytes),
+            delta_q_mask: PinnedBuffer::new(action_elems * f32_bytes),
         }
     }
 
@@ -129,14 +128,14 @@ impl PinnedStagingArea {
             self.batch_size,
         );
         copy_f32_to_pinned(&host.obs_flat, &mut self.obs);
-        copy_u8_to_pinned(&host.legal_mask_bytes, &mut self.legal_mask);
+        copy_f32_to_pinned(&host.legal_mask_flat, &mut self.legal_mask);
         copy_f32_to_pinned(&host.value_target, &mut self.value_target);
         copy_i64_to_pinned(&host.grp_labels, &mut self.grp_labels);
         copy_f32_to_pinned(&host.oracle_target_flat, &mut self.oracle_target);
         copy_f32_to_pinned(&host.oracle_target_mask, &mut self.oracle_target_mask);
-        copy_u8_to_pinned(&host.tenpai_bytes, &mut self.tenpai);
-        copy_u8_to_pinned(&host.danger_bytes, &mut self.danger);
-        copy_u8_to_pinned(&host.danger_mask_bytes, &mut self.danger_mask);
+        copy_f32_to_pinned(&host.tenpai_flat, &mut self.tenpai);
+        copy_f32_to_pinned(&host.danger_flat, &mut self.danger);
+        copy_f32_to_pinned(&host.danger_mask_flat, &mut self.danger_mask);
         copy_i64_to_pinned(&host.opp_next_tiles, &mut self.opp_next);
         copy_i64_to_pinned(&host.score_bins, &mut self.score_bins);
         copy_i64_to_pinned(&host.actions, &mut self.actions);
@@ -144,20 +143,20 @@ impl PinnedStagingArea {
         if let Some(buf) = host.safety_target_flat.as_ref() {
             copy_f32_to_pinned(buf, &mut self.safety_target);
         }
-        if let Some(buf) = host.safety_mask_bytes.as_ref() {
-            copy_u8_to_pinned(buf, &mut self.safety_mask);
+        if let Some(buf) = host.safety_mask_flat.as_ref() {
+            copy_f32_to_pinned(buf, &mut self.safety_mask);
         }
         if let Some(buf) = host.exit_target_flat.as_ref() {
             copy_f32_to_pinned(buf, &mut self.exit_target);
         }
-        if let Some(buf) = host.exit_mask_bytes.as_ref() {
-            copy_u8_to_pinned(buf, &mut self.exit_mask);
+        if let Some(buf) = host.exit_mask_flat.as_ref() {
+            copy_f32_to_pinned(buf, &mut self.exit_mask);
         }
         if let Some(buf) = host.delta_q_target_flat.as_ref() {
             copy_f32_to_pinned(buf, &mut self.delta_q_target);
         }
-        if let Some(buf) = host.delta_q_mask_bytes.as_ref() {
-            copy_u8_to_pinned(buf, &mut self.delta_q_mask);
+        if let Some(buf) = host.delta_q_mask_flat.as_ref() {
+            copy_f32_to_pinned(buf, &mut self.delta_q_mask);
         }
     }
 }
@@ -395,7 +394,7 @@ where
             &mut gpu.actions,
         ));
 
-        let legal_mask = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+        let legal_mask = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.legal_mask,
             batch * HYDRA_ACTION_SPACE,
             &mut gpu.legal_mask,
@@ -425,21 +424,21 @@ where
             &mut gpu.oracle_target_mask,
         );
 
-        let tenpai_target = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+        let tenpai_target = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.tenpai,
             batch * OPPONENT_COUNT,
             &mut gpu.tenpai,
         ))
         .reshape([batch, OPPONENT_COUNT]);
 
-        let danger_target = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+        let danger_target = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.danger,
             batch * SPATIAL_TARGET_SIZE,
             &mut gpu.danger,
         ))
         .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
 
-        let danger_mask = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+        let danger_mask = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.danger_mask,
             batch * SPATIAL_TARGET_SIZE,
             &mut gpu.danger_mask,
@@ -472,8 +471,8 @@ where
             )
             .reshape([batch, HYDRA_ACTION_SPACE])
         });
-        let exit_mask_tensor = host.exit_mask_bytes.as_ref().map(|_| {
-            burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+        let exit_mask_tensor = host.exit_mask_flat.as_ref().map(|_| {
+            burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
                 &staging.exit_mask,
                 batch * HYDRA_ACTION_SPACE,
                 &mut gpu.exit_mask,
@@ -512,8 +511,8 @@ where
                 )
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            delta_q_mask: host.delta_q_mask_bytes.as_ref().map(|_| {
-                burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+            delta_q_mask: host.delta_q_mask_flat.as_ref().map(|_| {
+                burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
                     &staging.delta_q_mask,
                     batch * HYDRA_ACTION_SPACE,
                     &mut gpu.delta_q_mask,
@@ -528,8 +527,8 @@ where
                 )
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            safety_residual_mask: host.safety_mask_bytes.as_ref().map(|_| {
-                burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+            safety_residual_mask: host.safety_mask_flat.as_ref().map(|_| {
+                burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
                     &staging.safety_mask,
                     batch * HYDRA_ACTION_SPACE,
                     &mut gpu.safety_mask,
@@ -583,7 +582,7 @@ where
             &mut gpu.actions,
         ));
 
-        let legal_mask = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+        let legal_mask = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.legal_mask,
             batch * HYDRA_ACTION_SPACE,
             &mut gpu.legal_mask,
@@ -613,21 +612,21 @@ where
             &mut gpu.oracle_target_mask,
         );
 
-        let tenpai_target = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+        let tenpai_target = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.tenpai,
             batch * OPPONENT_COUNT,
             &mut gpu.tenpai,
         ))
         .reshape([batch, OPPONENT_COUNT]);
 
-        let danger_target = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+        let danger_target = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.danger,
             batch * SPATIAL_TARGET_SIZE,
             &mut gpu.danger,
         ))
         .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
 
-        let danger_mask = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+        let danger_mask = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
             &staging.danger_mask,
             batch * SPATIAL_TARGET_SIZE,
             &mut gpu.danger_mask,
@@ -662,8 +661,8 @@ where
             )
             .reshape([batch, HYDRA_ACTION_SPACE])
         });
-        let exit_mask_tensor = host.exit_mask_bytes.as_ref().map(|_| {
-            burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+        let exit_mask_tensor = host.exit_mask_flat.as_ref().map(|_| {
+            burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
                 &staging.exit_mask,
                 batch * HYDRA_ACTION_SPACE,
                 &mut gpu.exit_mask,
@@ -703,8 +702,8 @@ where
                 )
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            delta_q_mask: host.delta_q_mask_bytes.as_ref().map(|_| {
-                burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+            delta_q_mask: host.delta_q_mask_flat.as_ref().map(|_| {
+                burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
                     &staging.delta_q_mask,
                     batch * HYDRA_ACTION_SPACE,
                     &mut gpu.delta_q_mask,
@@ -719,8 +718,8 @@ where
                 )
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            safety_residual_mask: host.safety_mask_bytes.as_ref().map(|_| {
-                burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+            safety_residual_mask: host.safety_mask_flat.as_ref().map(|_| {
+                burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
                     &staging.safety_mask,
                     batch * HYDRA_ACTION_SPACE,
                     &mut gpu.safety_mask,
@@ -794,26 +793,6 @@ unsafe fn copy_pinned_i64_to_gpu(
     dst_slice
 }
 
-unsafe fn copy_pinned_u8_to_gpu(
-    pinned: &PinnedBuffer,
-    count: usize,
-    gpu_dst: &mut tch::Tensor,
-) -> tch::Tensor {
-    let dims = [count as i64];
-    let cpu_view = unsafe {
-        tch::Tensor::from_blob(
-            pinned.as_ptr(),
-            &dims,
-            &[],
-            tch::Kind::Uint8,
-            tch::Device::Cpu,
-        )
-    };
-    let mut dst_slice = gpu_dst.narrow(0, 0, count as i64);
-    dst_slice.copy_(&cpu_view);
-    dst_slice.to_kind(tch::Kind::Float)
-}
-
 fn burn_tensor_from_tch_f32<B, const D: usize>(t: tch::Tensor) -> Tensor<B, D>
 where
     B: AutodiffBackend<
@@ -878,19 +857,6 @@ fn copy_i64_to_pinned(src: &[i64], dst: &mut PinnedBuffer) {
     );
     unsafe {
         ptr::copy_nonoverlapping(src.as_ptr().cast::<u8>(), dst.as_mut_ptr(), byte_count);
-    }
-}
-
-fn copy_u8_to_pinned(src: &[u8], dst: &mut PinnedBuffer) {
-    let byte_count = src.len();
-    assert!(
-        byte_count <= dst.len(),
-        "u8 copy overflow: {} bytes into {} byte pinned buffer",
-        byte_count,
-        dst.len(),
-    );
-    unsafe {
-        ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), byte_count);
     }
 }
 

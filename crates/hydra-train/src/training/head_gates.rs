@@ -177,7 +177,7 @@ pub enum HeadState {
 // ---------------------------------------------------------------------------
 
 /// Per-head count of samples with valid targets in a single batch.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TargetPresence {
     /// Per-head count of samples carrying a valid target in this batch.
     pub counts: [usize; NUM_ADVANCED_HEADS],

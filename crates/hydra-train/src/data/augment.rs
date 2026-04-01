@@ -179,11 +179,26 @@ pub fn augment_action_vector_suit(
     out
 }
 
-pub fn augment_action_vector_u8_suit(
-    values: &[u8; HYDRA_ACTION_SPACE],
+/// Permute f32 action values directly from `src` into `dst`, skipping
+/// the stack intermediate + copy_from_slice pattern.
+#[inline]
+pub fn augment_action_vector_suit_into(
+    values: &[f32; HYDRA_ACTION_SPACE],
+    action_perm: &[usize; 37],
+    dst: &mut [f32],
+) {
+    debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
+    for i in 0..37usize {
+        dst[action_perm[i]] = values[i];
+    }
+    dst[37..HYDRA_ACTION_SPACE].copy_from_slice(&values[37..HYDRA_ACTION_SPACE]);
+}
+
+pub fn augment_action_vector_f32_mask_suit(
+    values: &[f32; HYDRA_ACTION_SPACE],
     perm: &[u8; 3],
-) -> [u8; HYDRA_ACTION_SPACE] {
-    let mut out = [0u8; HYDRA_ACTION_SPACE];
+) -> [f32; HYDRA_ACTION_SPACE] {
+    let mut out = [0.0f32; HYDRA_ACTION_SPACE];
     let action_perm = &permutation_tables().action_37[permutation_index(perm)];
     for i in 0..37u8 {
         let new_i = action_perm[i as usize];
@@ -193,11 +208,32 @@ pub fn augment_action_vector_u8_suit(
     out
 }
 
+/// Permute f32 mask values directly from `src` into `dst`.
+#[inline]
+pub fn augment_action_vector_f32_mask_suit_into(
+    values: &[f32; HYDRA_ACTION_SPACE],
+    action_perm: &[usize; 37],
+    dst: &mut [f32],
+) {
+    debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
+    for i in 0..37usize {
+        dst[action_perm[i]] = values[i];
+    }
+    dst[37..HYDRA_ACTION_SPACE].copy_from_slice(&values[37..HYDRA_ACTION_SPACE]);
+}
+
 pub fn augment_mask_u8_suit(
     mask: &[u8; HYDRA_ACTION_SPACE],
     perm: &[u8; 3],
 ) -> [u8; HYDRA_ACTION_SPACE] {
-    augment_action_vector_u8_suit(mask, perm)
+    let mut out = [0u8; HYDRA_ACTION_SPACE];
+    let action_perm = &permutation_tables().action_37[permutation_index(perm)];
+    for i in 0..37u8 {
+        let new_i = action_perm[i as usize];
+        out[new_i] = mask[i as usize];
+    }
+    out[37..HYDRA_ACTION_SPACE].copy_from_slice(&mask[37..HYDRA_ACTION_SPACE]);
+    out
 }
 
 pub fn augment_belief_fields_suit(values: &[f32; 16 * 34], perm: &[u8; 3]) -> [f32; 16 * 34] {

@@ -1989,7 +1989,7 @@ where
         let host_batch = scratch.take_batch();
         let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
         let _ = train_logical_batch_from_host_batch(
-            host_batch,
+            &host_batch,
             TrainLogicalBatchConfig {
                 microbatch_size,
                 augment: config.augment,

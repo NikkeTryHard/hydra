@@ -1610,6 +1610,10 @@ where
     let producer_start_index = samples_to_skip;
     let (tx, rx) =
         mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(SHARD_PREFETCH_DEPTH);
+    // Recycle channel: consumer returns consumed batches so the producer
+    // can swap their heap capacity back into the scratch, eliminating
+    // 18+ per-batch allocations (including ~1.6MB for obs_flat).
+    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(SHARD_PREFETCH_DEPTH + 1);
 
     let producer_handle = std::thread::Builder::new()
         .name("bc-shard-prefetch".into())
@@ -1620,7 +1624,14 @@ where
                 let take = batch_size.min(total_rows - idx);
                 let result = reader
                     .collate_host_batch_range_into(idx, take, augment, &mut scratch)
-                    .map(|()| (scratch.take_batch(), take));
+                    .map(|()| {
+                        let batch = if let Ok(mut recycled) = recycle_rx.try_recv() {
+                            scratch.swap_batch(&mut recycled)
+                        } else {
+                            scratch.take_batch()
+                        };
+                        (batch, take)
+                    });
                 if tx.send(result).is_err() {
                     break;
                 }
@@ -1636,7 +1647,7 @@ where
         let (drained, batch_sub_timing) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
             train_logical_batch_from_host_batch(
-                host_batch,
+                &host_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
                     use_amp,
@@ -1654,6 +1665,7 @@ where
             )?
         };
         let train_seconds = train_started.elapsed().as_secs_f64();
+        let _ = recycle_tx.try_send(host_batch);
 
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
         step_window_train_seconds += train_seconds;
@@ -1893,7 +1905,7 @@ where
 /// and the H2D transfer is issued on a dedicated copy stream with
 /// event-based synchronization.
 pub(super) fn train_logical_batch_from_host_batch<B, O>(
-    host_batch: BcShardHostBatch,
+    host_batch: &BcShardHostBatch,
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
     model_slot: &mut Option<HydraModel<B>>,

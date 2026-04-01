@@ -532,16 +532,24 @@ where
     let batch_size = validation_batch_size;
     let (tx, rx) =
         mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(VALIDATION_SHARD_PREFETCH_DEPTH);
+    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(VALIDATION_SHARD_PREFETCH_DEPTH + 1);
 
     let consumer_result: Result<(), String> = std::thread::scope(|scope| {
-        scope.spawn(|| {
+        scope.spawn(move || {
             let mut scratch = reader.new_scratch(batch_size);
             let mut idx = 0usize;
             while idx < limit_rows {
                 let take = batch_size.min(limit_rows - idx);
                 let result = reader
                     .collate_host_batch_range_into(idx, take, false, &mut scratch)
-                    .map(|()| (scratch.take_batch(), take));
+                    .map(|()| {
+                        let batch = if let Ok(mut recycled) = recycle_rx.try_recv() {
+                            scratch.swap_batch(&mut recycled)
+                        } else {
+                            scratch.take_batch()
+                        };
+                        (batch, take)
+                    });
                 if tx.send(result).is_err() {
                     break;
                 }
@@ -642,6 +650,7 @@ where
             });
             microbatch_count += 1;
             total_samples += take;
+            let _ = recycle_tx.try_send(host_batch);
             if let Some(progress) = progress {
                 progress.inc(take as u64);
             }
