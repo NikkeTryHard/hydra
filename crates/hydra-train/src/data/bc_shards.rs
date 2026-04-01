@@ -15,9 +15,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::data::augment::{
-    augment_action_vector_suit_into,
     augment_obs_suit_from_le_bytes, permutation_tables,
 };
+#[cfg(not(target_endian = "little"))]
+use crate::data::augment::augment_action_vector_suit_into;
 use crate::data::mjai_loader::{
     MjaiGame, SidecarProvenance, invalid_data, load_game_from_path, load_game_from_path_with_sidecar,
     load_game_from_stream, load_game_from_stream_with_sidecar,
@@ -619,6 +620,141 @@ impl BcShardHostBatch {
             targets,
         }
     }
+
+    /// Zero-copy variant of [`materialize`](Self::materialize) that
+    /// consumes the batch, transferring Vec heap allocations directly
+    /// into Burn's `TensorData` via pointer hand-off (no memcpy).
+    ///
+    /// Eliminates ~2-3 MB of per-batch allocation+copy on the
+    /// non-pinned materialization path.
+    pub fn materialize_owned<B: Backend>(self, device: &B::Device) -> BcShardBatch<B> {
+        let b = self.batch_size;
+
+        let obs = Tensor::<B, 3>::from_data(
+            TensorData::new(self.obs_flat, [b, NUM_CHANNELS, TILE_COUNT]),
+            device,
+        );
+        let actions_tensor = Tensor::<B, 1, Int>::from_data(
+            TensorData::new(self.actions, [b]),
+            device,
+        );
+        let legal_mask = Tensor::<B, 2>::from_data(
+            TensorData::new(self.legal_mask_flat, [b, HYDRA_ACTION_SPACE]),
+            device,
+        );
+        let value_target = Tensor::<B, 1>::from_data(
+            TensorData::new(self.value_target, [b]),
+            device,
+        );
+        let grp_target = Tensor::<B, 2>::from_data(
+            TensorData::new(self.grp_target_flat, [b, GRP_CLASS_COUNT]),
+            device,
+        );
+        let oracle_target = Tensor::<B, 2>::from_data(
+            TensorData::new(self.oracle_target_flat, [b, PLAYER_COUNT]),
+            device,
+        );
+        let oracle_target_mask = Tensor::<B, 1>::from_data(
+            TensorData::new(self.oracle_target_mask, [b]),
+            device,
+        );
+        let tenpai_target = Tensor::<B, 2>::from_data(
+            TensorData::new(self.tenpai_flat, [b, OPPONENT_COUNT]),
+            device,
+        );
+        let danger_target = Tensor::<B, 3>::from_data(
+            TensorData::new(self.danger_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
+            device,
+        );
+        let danger_mask = Tensor::<B, 3>::from_data(
+            TensorData::new(self.danger_mask_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
+            device,
+        );
+        let opp_next_target = Tensor::<B, 3>::from_data(
+            TensorData::new(self.opp_next_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
+            device,
+        );
+        let score_pdf_target = Tensor::<B, 2>::from_data(
+            TensorData::new(self.score_pdf_flat, [b, SCORE_BINS]),
+            device,
+        );
+        let score_cdf_target = Tensor::<B, 2>::from_data(
+            TensorData::new(self.score_cdf_flat, [b, SCORE_BINS]),
+            device,
+        );
+
+        let exit_target_tensor = self.exit_target_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(
+                TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
+                device,
+            )
+        });
+        let exit_mask_tensor = self.exit_mask_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(
+                TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
+                device,
+            )
+        });
+
+        let policy_target = policy_target_from_actions::<B>(actions_tensor.clone(), b);
+
+        let batch_struct = MjaiBcBatch {
+            actions: actions_tensor,
+            exit_target: exit_target_tensor,
+            exit_mask: exit_mask_tensor,
+        };
+
+        let targets = HydraTargets {
+            policy_target,
+            legal_mask,
+            value_target,
+            grp_target,
+            tenpai_target,
+            danger_target,
+            danger_mask,
+            opp_next_target,
+            score_pdf_target,
+            score_cdf_target,
+            oracle_target: Some(oracle_target),
+            belief_fields_target: None,
+            belief_fields_mask: None,
+            mixture_weight_target: None,
+            mixture_weight_mask: None,
+            opponent_hand_type_target: None,
+            delta_q_target: self.delta_q_target_flat.map(|buf| {
+                Tensor::<B, 2>::from_data(
+                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
+                    device,
+                )
+            }),
+            delta_q_mask: self.delta_q_mask_flat.map(|buf| {
+                Tensor::<B, 2>::from_data(
+                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
+                    device,
+                )
+            }),
+            safety_residual_target: self.safety_target_flat.map(|buf| {
+                Tensor::<B, 2>::from_data(
+                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
+                    device,
+                )
+            }),
+            safety_residual_mask: self.safety_mask_flat.map(|buf| {
+                Tensor::<B, 2>::from_data(
+                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
+                    device,
+                )
+            }),
+            oracle_guidance_mask: Some(oracle_target_mask),
+            target_presence: Some(self.target_presence),
+        };
+
+        BcShardBatch {
+            obs,
+            batch: batch_struct,
+            targets,
+        }
+    }
 }
 
 pub struct BcShardReader {
@@ -981,7 +1117,7 @@ impl BcShardReader {
         device: &B::Device,
     ) -> Result<BcShardBatch<B>, String> {
         self.collate_host_batch(indices, augment)
-            .map(|host| host.materialize(device))
+            .map(|host| host.materialize_owned(device))
     }
 
     pub fn collate_batch_range<B: Backend>(
@@ -992,7 +1128,7 @@ impl BcShardReader {
         device: &B::Device,
     ) -> Result<BcShardBatch<B>, String> {
         self.collate_host_batch_range(start, len, augment)
-            .map(|host| host.materialize(device))
+            .map(|host| host.materialize_owned(device))
     }
 
     /// CPU-only batch collation: shard I/O, parsing, and augmentation.
@@ -1053,11 +1189,14 @@ impl BcShardReader {
         let batch = indices.len();
         scratch.reset(batch);
 
-        for (row, &sample_index) in indices.iter().enumerate() {
-            let (shard, offset) = self.locate(sample_index)?;
-            if augment {
+        if augment {
+            for (row, &sample_index) in indices.iter().enumerate() {
+                let (shard, offset) = self.locate(sample_index)?;
                 write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)?;
-            } else {
+            }
+        } else {
+            for (row, &sample_index) in indices.iter().enumerate() {
+                let (shard, offset) = self.locate(sample_index)?;
                 write_unaugmented_row_into_scratch(shard, offset, row, scratch)?;
             }
         }
@@ -1087,54 +1226,67 @@ impl BcShardReader {
 
         scratch.reset(len);
         let (mut shard_index, mut offset) = self.locate_index(start)?;
-        for row in 0..len {
-            let sample_index = start + row;
-            let shard = &self.shards[shard_index];
 
-            // Prefetch the next record's mmap bytes into L2 while we
-            // process the current record (~26KB).  The kernel's
-            // MADV_SEQUENTIAL readahead keeps pages in RAM, but this
-            // warms the CPU cache hierarchy one record ahead.
-            #[cfg(target_arch = "x86_64")]
-            {
-                let next_offset = if offset + 1 < shard.sample_count as usize {
-                    offset + 1
-                } else {
-                    0
-                };
-                let next_shard = if next_offset == 0 && shard_index + 1 < self.shards.len() {
-                    &self.shards[shard_index + 1]
-                } else {
-                    shard
-                };
-                if row + 1 < len {
-                    let next_start = BC_SHARD_HEADER_SIZE as usize
-                        + next_offset * next_shard.record_size;
-                    let ptr = next_shard.mmap.as_ptr().wrapping_add(next_start);
-                    unsafe {
-                        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T1};
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.cast());
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(64).cast());
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(128).cast());
-                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(192).cast());
+        // Hoist the augment branch outside the loop so the branch
+        // predictor never sees the per-row condition, and LLVM can
+        // specialize each loop body independently (different inlining
+        // thresholds, different register pressure).
+        macro_rules! collate_range_loop {
+            ($write_row:expr) => {
+                for row in 0..len {
+                    let sample_index = start + row;
+                    let shard = &self.shards[shard_index];
+
+                    // Prefetch next record into L2 while processing current.
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let next_offset = if offset + 1 < shard.sample_count as usize {
+                            offset + 1
+                        } else {
+                            0
+                        };
+                        let next_shard = if next_offset == 0 && shard_index + 1 < self.shards.len() {
+                            &self.shards[shard_index + 1]
+                        } else {
+                            shard
+                        };
+                        if row + 1 < len {
+                            let next_start = BC_SHARD_HEADER_SIZE as usize
+                                + next_offset * next_shard.record_size;
+                            let ptr = next_shard.mmap.as_ptr().wrapping_add(next_start);
+                            unsafe {
+                                use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T1};
+                                _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.cast());
+                                _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(64).cast());
+                                _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(128).cast());
+                                _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(192).cast());
+                            }
+                        }
+                    }
+
+                    #[allow(clippy::redundant_closure_call)]
+                    ($write_row)(shard, offset, row, sample_index, scratch)?;
+
+                    offset += 1;
+                    if offset == shard.sample_count as usize && row + 1 < len {
+                        shard_index += 1;
+                        if shard_index >= self.shards.len() {
+                            return Err("BC shard range collation ran past shard list".to_string());
+                        }
+                        offset = 0;
                     }
                 }
-            }
+            };
+        }
 
-            if augment {
-                write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)?;
-            } else {
-                write_unaugmented_row_into_scratch(shard, offset, row, scratch)?;
-            }
-
-            offset += 1;
-            if offset == shard.sample_count as usize && row + 1 < len {
-                shard_index += 1;
-                if shard_index >= self.shards.len() {
-                    return Err("BC shard range collation ran past shard list".to_string());
-                }
-                offset = 0;
-            }
+        if augment {
+            collate_range_loop!(|shard: &ShardMap, offset: usize, row: usize, sample_index: usize, scratch: &mut BcShardHostScratch| {
+                write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)
+            });
+        } else {
+            collate_range_loop!(|shard: &ShardMap, offset: usize, row: usize, _sample_index: usize, scratch: &mut BcShardHostScratch| {
+                write_unaugmented_row_into_scratch(shard, offset, row, scratch)
+            });
         }
 
         Ok(())
@@ -1676,20 +1828,19 @@ fn write_augmented_row_into_scratch(
     cursor += SPATIAL_TARGET_SIZE;
 
     if shard.feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
-        let values = read_optional_action_f32(unsafe {
-            bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES)
-        });
+        let dst = unsafe {
+            scratch
+                .safety_target_flat
+                .as_mut()
+                .expect("safety enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        augment_action_f32_from_bytes_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES) },
+            action_perm,
+            dst,
+        );
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
-        if let Some(values) = values {
-            let dst = unsafe {
-                scratch
-                    .safety_target_flat
-                    .as_mut()
-                    .expect("safety enabled")
-                    .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
-            };
-            augment_action_vector_suit_into(&values, action_perm, dst);
-        }
         let dst = unsafe {
             scratch
                 .safety_mask_flat
@@ -1708,20 +1859,19 @@ fn write_augmented_row_into_scratch(
     }
 
     if shard.feature_flags & FLAG_EXIT != 0 {
-        let values = read_optional_action_f32(unsafe {
-            bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES)
-        });
+        let dst = unsafe {
+            scratch
+                .exit_target_flat
+                .as_mut()
+                .expect("exit enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        augment_action_f32_from_bytes_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES) },
+            action_perm,
+            dst,
+        );
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
-        if let Some(values) = values {
-            let dst = unsafe {
-                scratch
-                    .exit_target_flat
-                    .as_mut()
-                    .expect("exit enabled")
-                    .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
-            };
-            augment_action_vector_suit_into(&values, action_perm, dst);
-        }
         let dst = unsafe {
             scratch
                 .exit_mask_flat
@@ -1738,20 +1888,19 @@ fn write_augmented_row_into_scratch(
     }
 
     if shard.feature_flags & FLAG_DELTA_Q != 0 {
-        let values = read_optional_action_f32(unsafe {
-            bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES)
-        });
+        let dst = unsafe {
+            scratch
+                .delta_q_target_flat
+                .as_mut()
+                .expect("delta_q enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        augment_action_f32_from_bytes_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES) },
+            action_perm,
+            dst,
+        );
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
-        if let Some(values) = values {
-            let dst = unsafe {
-                scratch
-                    .delta_q_target_flat
-                    .as_mut()
-                    .expect("delta_q enabled")
-                    .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
-            };
-            augment_action_vector_suit_into(&values, action_perm, dst);
-        }
         let dst = unsafe {
             scratch
                 .delta_q_mask_flat
@@ -2198,6 +2347,7 @@ fn read_f32_le(bytes: &[u8]) -> f32 {
     f32::from_le_bytes(bytes[0..4].try_into().expect("f32 slice"))
 }
 
+#[cfg_attr(target_endian = "little", allow(dead_code))]
 fn read_f32_array<const N: usize>(bytes: &[u8]) -> [f32; N] {
     debug_assert_eq!(bytes.len(), N * std::mem::size_of::<f32>());
     #[cfg(target_endian = "little")]
@@ -2222,12 +2372,41 @@ fn read_f32_array<const N: usize>(bytes: &[u8]) -> [f32; N] {
     }
 }
 
-fn read_optional_action_f32(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE]> {
-    debug_assert!(bytes.len() >= HYDRA_ACTION_SPACE * 4);
-    if !any_nonzero_u8(unsafe { bytes.get_unchecked(..HYDRA_ACTION_SPACE * 4) }) {
-        return None;
+#[inline]
+fn augment_action_f32_from_bytes_into(
+    bytes: &[u8],
+    action_perm: &[usize; 37],
+    dst: &mut [f32],
+) -> bool {
+    debug_assert!(bytes.len() >= OPTIONAL_ACTION_FLOAT32_BYTES);
+    debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
+    let src = unsafe { bytes.get_unchecked(..OPTIONAL_ACTION_FLOAT32_BYTES) };
+    if !any_nonzero_u8(src) {
+        return false;
     }
-    Some(read_f32_array::<HYDRA_ACTION_SPACE>(bytes))
+    #[cfg(target_endian = "little")]
+    {
+        let src_f32 = src.as_ptr() as *const f32;
+        for i in 0..37usize {
+            unsafe {
+                let perm_idx = *action_perm.get_unchecked(i);
+                *dst.get_unchecked_mut(perm_idx) = *src_f32.add(i);
+            }
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(
+                src_f32.add(37),
+                dst.get_unchecked_mut(37..HYDRA_ACTION_SPACE).as_mut_ptr(),
+                HYDRA_ACTION_SPACE - 37,
+            );
+        }
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        let values = read_f32_array::<HYDRA_ACTION_SPACE>(src);
+        augment_action_vector_suit_into(&values, action_perm, dst);
+    }
+    true
 }
 
 #[inline]
