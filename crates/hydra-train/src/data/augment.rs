@@ -91,26 +91,11 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
     const HONOR_START: usize = 27;
     const HONOR_COUNT: usize = NUM_TILES - HONOR_START;
 
-    for ch in 0..NUM_CHANNELS {
+    // Split into three branchless segments to eliminate the per-channel
+    // aka-range check and allow the compiler to vectorize each segment.
+    let permute_normal_channel = |ch: usize, dst: &mut [f32], src_bytes: &[u8]| {
         let src_off = ch * NUM_TILES * 4;
         let dst_ch = ch * NUM_TILES;
-
-        if (AKA_CHANNEL_START..AKA_CHANNEL_START + AKA_CHANNELS).contains(&ch) {
-            let suit = ch - AKA_CHANNEL_START;
-            let new_ch = AKA_CHANNEL_START + perm[suit] as usize;
-            let d = &mut dst[new_ch * NUM_TILES..(new_ch + 1) * NUM_TILES];
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    src_bytes[src_off..src_off + NUM_TILES * 4].as_ptr(),
-                    d.as_mut_ptr().cast::<u8>(),
-                    NUM_TILES * 4,
-                );
-            }
-            continue;
-        }
-
-        // Block-copy each suit (9 tiles) to its permuted destination,
-        // then copy honors (7 tiles) in place.  4 memcpy ops vs 34 scatter writes.
         for src_suit in 0..3usize {
             let dst_suit = perm[src_suit] as usize;
             let s_byte = src_off + src_suit * SUIT_TILES * 4;
@@ -132,6 +117,28 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
                 HONOR_COUNT * 4,
             );
         }
+    };
+
+    for ch in 0..AKA_CHANNEL_START {
+        permute_normal_channel(ch, dst, src_bytes);
+    }
+
+    for ch in AKA_CHANNEL_START..AKA_CHANNEL_START + AKA_CHANNELS {
+        let src_off = ch * NUM_TILES * 4;
+        let suit = ch - AKA_CHANNEL_START;
+        let new_ch = AKA_CHANNEL_START + perm[suit] as usize;
+        let d = &mut dst[new_ch * NUM_TILES..(new_ch + 1) * NUM_TILES];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src_bytes[src_off..src_off + NUM_TILES * 4].as_ptr(),
+                d.as_mut_ptr().cast::<u8>(),
+                NUM_TILES * 4,
+            );
+        }
+    }
+
+    for ch in AKA_CHANNEL_START + AKA_CHANNELS..NUM_CHANNELS {
+        permute_normal_channel(ch, dst, src_bytes);
     }
 }
 
