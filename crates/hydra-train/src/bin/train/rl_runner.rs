@@ -571,6 +571,7 @@ mod tests {
             validation_microbatch_size: Some(64),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+        bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: false,
             resume_checkpoint: None,

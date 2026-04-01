@@ -1,6 +1,8 @@
 use std::fs;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
+use std::ptr;
 use std::sync::Arc;
 
 use burn::prelude::*;
@@ -13,7 +15,9 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::data::augment::{
-    augment_action_suit, augment_action_vector_suit, augment_mask_suit, augment_obs_suit,
+    augment_action_suit, augment_action_vector_suit, augment_action_vector_u8_suit,
+    augment_mask_u8_suit, augment_obs_suit, augment_obs_suit_from_le_bytes,
+    permutation_index, permutation_tables,
 };
 use crate::data::mjai_loader::{
     MjaiGame, SidecarProvenance, invalid_data, load_game_from_path, load_game_from_path_with_sidecar,
@@ -229,23 +233,22 @@ pub struct BcShardHostBatch {
     pub batch_size: usize,
     pub obs_flat: Vec<f32>,
     pub actions: Vec<i64>,
-    pub legal_mask_flat: Vec<f32>,
+    pub legal_mask_bytes: Vec<u8>,
     pub value_target: Vec<f32>,
-    pub grp_target: Vec<f32>,
+    pub grp_labels: Vec<i64>,
     pub oracle_target_flat: Vec<f32>,
     pub oracle_target_mask: Vec<f32>,
-    pub tenpai_flat: Vec<f32>,
-    pub danger_flat: Vec<f32>,
-    pub danger_mask_flat: Vec<f32>,
-    pub opp_next_flat: Vec<f32>,
-    pub score_pdf_flat: Vec<f32>,
-    pub score_cdf_flat: Vec<f32>,
+    pub tenpai_bytes: Vec<u8>,
+    pub danger_bytes: Vec<u8>,
+    pub danger_mask_bytes: Vec<u8>,
+    pub opp_next_tiles: Vec<i64>,
+    pub score_bins: Vec<i64>,
     pub safety_target_flat: Option<Vec<f32>>,
-    pub safety_mask_flat: Option<Vec<f32>>,
+    pub safety_mask_bytes: Option<Vec<u8>>,
     pub exit_target_flat: Option<Vec<f32>>,
-    pub exit_mask_flat: Option<Vec<f32>>,
+    pub exit_mask_bytes: Option<Vec<u8>>,
     pub delta_q_target_flat: Option<Vec<f32>>,
-    pub delta_q_mask_flat: Option<Vec<f32>>,
+    pub delta_q_mask_bytes: Option<Vec<u8>>,
     pub target_presence: TargetPresence,
 }
 
@@ -266,23 +269,22 @@ pub struct BcShardHostScratch {
     pub batch_size: usize,
     pub obs_flat: Vec<f32>,
     pub actions: Vec<i64>,
-    pub legal_mask_flat: Vec<f32>,
+    pub legal_mask_bytes: Vec<u8>,
     pub value_target: Vec<f32>,
-    pub grp_target: Vec<f32>,
+    pub grp_labels: Vec<i64>,
     pub oracle_target_flat: Vec<f32>,
     pub oracle_target_mask: Vec<f32>,
-    pub tenpai_flat: Vec<f32>,
-    pub danger_flat: Vec<f32>,
-    pub danger_mask_flat: Vec<f32>,
-    pub opp_next_flat: Vec<f32>,
-    pub score_pdf_flat: Vec<f32>,
-    pub score_cdf_flat: Vec<f32>,
+    pub tenpai_bytes: Vec<u8>,
+    pub danger_bytes: Vec<u8>,
+    pub danger_mask_bytes: Vec<u8>,
+    pub opp_next_tiles: Vec<i64>,
+    pub score_bins: Vec<i64>,
     pub safety_target_flat: Option<Vec<f32>>,
-    pub safety_mask_flat: Option<Vec<f32>>,
+    pub safety_mask_bytes: Option<Vec<u8>>,
     pub exit_target_flat: Option<Vec<f32>>,
-    pub exit_mask_flat: Option<Vec<f32>>,
+    pub exit_mask_bytes: Option<Vec<u8>>,
     pub delta_q_target_flat: Option<Vec<f32>>,
-    pub delta_q_mask_flat: Option<Vec<f32>>,
+    pub delta_q_mask_bytes: Option<Vec<u8>>,
     pub target_presence: TargetPresence,
 }
 
@@ -297,23 +299,22 @@ impl BcShardHostScratch {
             batch_size,
             obs_flat: vec![0.0f32; batch_size * OBS_SIZE],
             actions: vec![0i64; batch_size],
-            legal_mask_flat: vec![0.0f32; batch_size * action_space],
+            legal_mask_bytes: vec![0u8; batch_size * action_space],
             value_target: vec![0.0f32; batch_size],
-            grp_target: vec![0.0f32; batch_size * GRP_CLASS_COUNT],
+            grp_labels: vec![0i64; batch_size],
             oracle_target_flat: vec![0.0f32; batch_size * PLAYER_COUNT],
             oracle_target_mask: vec![0.0f32; batch_size],
-            tenpai_flat: vec![0.0f32; batch_size * OPPONENT_COUNT],
-            danger_flat: vec![0.0f32; batch_size * SPATIAL_TARGET_SIZE],
-            danger_mask_flat: vec![0.0f32; batch_size * SPATIAL_TARGET_SIZE],
-            opp_next_flat: vec![0.0f32; batch_size * SPATIAL_TARGET_SIZE],
-            score_pdf_flat: vec![0.0f32; batch_size * SCORE_BINS],
-            score_cdf_flat: vec![0.0f32; batch_size * SCORE_BINS],
+            tenpai_bytes: vec![0u8; batch_size * OPPONENT_COUNT],
+            danger_bytes: vec![0u8; batch_size * SPATIAL_TARGET_SIZE],
+            danger_mask_bytes: vec![0u8; batch_size * SPATIAL_TARGET_SIZE],
+            opp_next_tiles: vec![255i64; batch_size * OPPONENT_COUNT],
+            score_bins: vec![0i64; batch_size],
             safety_target_flat: need_safety.then(|| vec![0.0f32; batch_size * action_space]),
-            safety_mask_flat: need_safety.then(|| vec![0.0f32; batch_size * action_space]),
+            safety_mask_bytes: need_safety.then(|| vec![0u8; batch_size * action_space]),
             exit_target_flat: need_exit.then(|| vec![0.0f32; batch_size * action_space]),
-            exit_mask_flat: need_exit.then(|| vec![0.0f32; batch_size * action_space]),
+            exit_mask_bytes: need_exit.then(|| vec![0u8; batch_size * action_space]),
             delta_q_target_flat: need_delta_q.then(|| vec![0.0f32; batch_size * action_space]),
-            delta_q_mask_flat: need_delta_q.then(|| vec![0.0f32; batch_size * action_space]),
+            delta_q_mask_bytes: need_delta_q.then(|| vec![0u8; batch_size * action_space]),
             target_presence: TargetPresence::with_batch_size(batch_size),
         }
     }
@@ -324,34 +325,33 @@ impl BcShardHostScratch {
         self.batch_size = batch_size;
         resize_zeroed(&mut self.obs_flat, batch_size * OBS_SIZE);
         resize_zeroed_i64(&mut self.actions, batch_size);
-        resize_zeroed(&mut self.legal_mask_flat, batch_size * HYDRA_ACTION_SPACE);
+        resize_zeroed_u8(&mut self.legal_mask_bytes, batch_size * HYDRA_ACTION_SPACE);
         resize_zeroed(&mut self.value_target, batch_size);
-        resize_zeroed(&mut self.grp_target, batch_size * GRP_CLASS_COUNT);
+        resize_zeroed_i64(&mut self.grp_labels, batch_size);
         resize_zeroed(&mut self.oracle_target_flat, batch_size * PLAYER_COUNT);
         resize_zeroed(&mut self.oracle_target_mask, batch_size);
-        resize_zeroed(&mut self.tenpai_flat, batch_size * OPPONENT_COUNT);
-        resize_zeroed(&mut self.danger_flat, batch_size * SPATIAL_TARGET_SIZE);
-        resize_zeroed(&mut self.danger_mask_flat, batch_size * SPATIAL_TARGET_SIZE);
-        resize_zeroed(&mut self.opp_next_flat, batch_size * SPATIAL_TARGET_SIZE);
-        resize_zeroed(&mut self.score_pdf_flat, batch_size * SCORE_BINS);
-        resize_zeroed(&mut self.score_cdf_flat, batch_size * SCORE_BINS);
+        resize_zeroed_u8(&mut self.tenpai_bytes, batch_size * OPPONENT_COUNT);
+        resize_zeroed_u8(&mut self.danger_bytes, batch_size * SPATIAL_TARGET_SIZE);
+        resize_zeroed_u8(&mut self.danger_mask_bytes, batch_size * SPATIAL_TARGET_SIZE);
+        resize_fill_i64(&mut self.opp_next_tiles, batch_size * OPPONENT_COUNT, 255);
+        resize_zeroed_i64(&mut self.score_bins, batch_size);
         if let Some(buf) = self.safety_target_flat.as_mut() {
             resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
         }
-        if let Some(buf) = self.safety_mask_flat.as_mut() {
-            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        if let Some(buf) = self.safety_mask_bytes.as_mut() {
+            resize_zeroed_u8(buf, batch_size * HYDRA_ACTION_SPACE);
         }
         if let Some(buf) = self.exit_target_flat.as_mut() {
             resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
         }
-        if let Some(buf) = self.exit_mask_flat.as_mut() {
-            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        if let Some(buf) = self.exit_mask_bytes.as_mut() {
+            resize_zeroed_u8(buf, batch_size * HYDRA_ACTION_SPACE);
         }
         if let Some(buf) = self.delta_q_target_flat.as_mut() {
             resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
         }
-        if let Some(buf) = self.delta_q_mask_flat.as_mut() {
-            resize_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        if let Some(buf) = self.delta_q_mask_bytes.as_mut() {
+            resize_zeroed_u8(buf, batch_size * HYDRA_ACTION_SPACE);
         }
         self.target_presence = TargetPresence::with_batch_size(batch_size);
     }
@@ -365,23 +365,22 @@ impl BcShardHostScratch {
             batch_size: self.batch_size,
             obs_flat: std::mem::take(&mut self.obs_flat),
             actions: std::mem::take(&mut self.actions),
-            legal_mask_flat: std::mem::take(&mut self.legal_mask_flat),
+            legal_mask_bytes: std::mem::take(&mut self.legal_mask_bytes),
             value_target: std::mem::take(&mut self.value_target),
-            grp_target: std::mem::take(&mut self.grp_target),
+            grp_labels: std::mem::take(&mut self.grp_labels),
             oracle_target_flat: std::mem::take(&mut self.oracle_target_flat),
             oracle_target_mask: std::mem::take(&mut self.oracle_target_mask),
-            tenpai_flat: std::mem::take(&mut self.tenpai_flat),
-            danger_flat: std::mem::take(&mut self.danger_flat),
-            danger_mask_flat: std::mem::take(&mut self.danger_mask_flat),
-            opp_next_flat: std::mem::take(&mut self.opp_next_flat),
-            score_pdf_flat: std::mem::take(&mut self.score_pdf_flat),
-            score_cdf_flat: std::mem::take(&mut self.score_cdf_flat),
+            tenpai_bytes: std::mem::take(&mut self.tenpai_bytes),
+            danger_bytes: std::mem::take(&mut self.danger_bytes),
+            danger_mask_bytes: std::mem::take(&mut self.danger_mask_bytes),
+            opp_next_tiles: std::mem::take(&mut self.opp_next_tiles),
+            score_bins: std::mem::take(&mut self.score_bins),
             safety_target_flat: self.safety_target_flat.as_mut().map(std::mem::take),
-            safety_mask_flat: self.safety_mask_flat.as_mut().map(std::mem::take),
+            safety_mask_bytes: self.safety_mask_bytes.as_mut().map(std::mem::take),
             exit_target_flat: self.exit_target_flat.as_mut().map(std::mem::take),
-            exit_mask_flat: self.exit_mask_flat.as_mut().map(std::mem::take),
+            exit_mask_bytes: self.exit_mask_bytes.as_mut().map(std::mem::take),
             delta_q_target_flat: self.delta_q_target_flat.as_mut().map(std::mem::take),
-            delta_q_mask_flat: self.delta_q_mask_flat.as_mut().map(std::mem::take),
+            delta_q_mask_bytes: self.delta_q_mask_bytes.as_mut().map(std::mem::take),
             target_presence: std::mem::replace(
                 &mut self.target_presence,
                 TargetPresence::default(),
@@ -404,42 +403,109 @@ fn resize_zeroed_i64(buf: &mut Vec<i64>, len: usize) {
     buf.resize(len, 0);
 }
 
+#[inline]
+fn resize_zeroed_u8(buf: &mut Vec<u8>, len: usize) {
+    buf.clear();
+    buf.resize(len, 0);
+}
+
+#[inline]
+fn resize_fill_i64(buf: &mut Vec<i64>, len: usize, value: i64) {
+    buf.clear();
+    buf.resize(len, value);
+}
+
+#[inline]
+fn binary_bytes_to_f32_vec(values: &[u8]) -> Vec<f32> {
+    values.iter().map(|&value| f32::from(value > 0)).collect()
+}
+
+fn dense_opp_next_flat(tiles: &[i64], batch: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * SPATIAL_TARGET_SIZE];
+    for row in 0..batch {
+        for opp in 0..OPPONENT_COUNT {
+            let tile = tiles[row * OPPONENT_COUNT + opp];
+            if (0..TILE_COUNT as i64).contains(&tile) {
+                out[row * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + tile as usize] = 1.0;
+            }
+        }
+    }
+    out
+}
+
+fn dense_one_hot_flat(indices: &[i64], batch: usize, classes: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * classes];
+    for (row, &index) in indices.iter().enumerate() {
+        out[row * classes + (index.max(0) as usize).min(classes - 1)] = 1.0;
+    }
+    out
+}
+
+fn dense_score_pdf_flat(score_bins: &[i64], batch: usize) -> Vec<f32> {
+    dense_one_hot_flat(score_bins, batch, SCORE_BINS)
+}
+
+fn permute_spatial_target_bytes_3x34(
+    values: [u8; SPATIAL_TARGET_SIZE],
+    perm: &[u8; 3],
+) -> [u8; SPATIAL_TARGET_SIZE] {
+    let mut out = [0u8; SPATIAL_TARGET_SIZE];
+    let tile_perm = &permutation_tables().tile_34[permutation_index(perm)];
+    for opp in 0..OPPONENT_COUNT {
+        let start = opp * TILE_COUNT;
+        for tile in 0..TILE_COUNT {
+            let new_tile = tile_perm[tile];
+            out[start + new_tile] = values[start + tile];
+        }
+    }
+    out
+}
+
 impl BcShardHostBatch {
     /// Materialize device tensors from CPU-side flat buffers.
     ///
     /// This is the only step that touches the `Backend` / device.
     pub fn materialize<B: Backend>(self, device: &B::Device) -> BcShardBatch<B> {
         let batch = self.batch_size;
+        let legal_mask_flat = binary_bytes_to_f32_vec(self.legal_mask_bytes.as_slice());
+        let grp_target_flat = dense_one_hot_flat(self.grp_labels.as_slice(), batch, GRP_CLASS_COUNT);
+        let tenpai_flat = binary_bytes_to_f32_vec(self.tenpai_bytes.as_slice());
+        let danger_flat = binary_bytes_to_f32_vec(self.danger_bytes.as_slice());
+        let danger_mask_flat = binary_bytes_to_f32_vec(self.danger_mask_bytes.as_slice());
+        let opp_next_flat = dense_opp_next_flat(self.opp_next_tiles.as_slice(), batch);
+        let score_pdf_flat = dense_score_pdf_flat(self.score_bins.as_slice(), batch);
+        let score_cdf_flat = score_cdf_from_bins_cpu(self.score_bins.as_slice(), batch);
 
         let obs = Tensor::<B, 1>::from_floats(self.obs_flat.as_slice(), device)
             .reshape([batch, NUM_CHANNELS, TILE_COUNT]);
         let actions_tensor = Tensor::<B, 1, Int>::from_ints(self.actions.as_slice(), device);
-        let legal_mask = Tensor::<B, 1>::from_floats(self.legal_mask_flat.as_slice(), device)
+        let legal_mask = Tensor::<B, 1>::from_floats(legal_mask_flat.as_slice(), device)
             .reshape([batch, HYDRA_ACTION_SPACE]);
         let value_target = Tensor::<B, 1>::from_floats(self.value_target.as_slice(), device);
-        let grp_target = Tensor::<B, 1>::from_floats(self.grp_target.as_slice(), device)
+        let grp_target = Tensor::<B, 1>::from_floats(grp_target_flat.as_slice(), device)
             .reshape([batch, GRP_CLASS_COUNT]);
         let oracle_target = Tensor::<B, 1>::from_floats(self.oracle_target_flat.as_slice(), device)
             .reshape([batch, PLAYER_COUNT]);
         let oracle_target_mask = Tensor::<B, 1>::from_floats(self.oracle_target_mask.as_slice(), device);
-        let tenpai_target = Tensor::<B, 1>::from_floats(self.tenpai_flat.as_slice(), device)
+        let tenpai_target = Tensor::<B, 1>::from_floats(tenpai_flat.as_slice(), device)
             .reshape([batch, OPPONENT_COUNT]);
-        let danger_target = Tensor::<B, 1>::from_floats(self.danger_flat.as_slice(), device)
+        let danger_target = Tensor::<B, 1>::from_floats(danger_flat.as_slice(), device)
             .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
-        let danger_mask = Tensor::<B, 1>::from_floats(self.danger_mask_flat.as_slice(), device)
+        let danger_mask = Tensor::<B, 1>::from_floats(danger_mask_flat.as_slice(), device)
             .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
-        let opp_next_target = Tensor::<B, 1>::from_floats(self.opp_next_flat.as_slice(), device)
+        let opp_next_target = Tensor::<B, 1>::from_floats(opp_next_flat.as_slice(), device)
             .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
-        let score_pdf_target = Tensor::<B, 1>::from_floats(self.score_pdf_flat.as_slice(), device)
+        let score_pdf_target = Tensor::<B, 1>::from_floats(score_pdf_flat.as_slice(), device)
             .reshape([batch, SCORE_BINS]);
-        let score_cdf_target = Tensor::<B, 1>::from_floats(self.score_cdf_flat.as_slice(), device)
+        let score_cdf_target = Tensor::<B, 1>::from_floats(score_cdf_flat.as_slice(), device)
             .reshape([batch, SCORE_BINS]);
 
         let exit_target_tensor = self.exit_target_flat.as_ref().map(|buf| {
             Tensor::<B, 1>::from_floats(buf.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
         });
-        let exit_mask_tensor = self.exit_mask_flat.as_ref().map(|buf| {
-            Tensor::<B, 1>::from_floats(buf.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
+        let exit_mask_tensor = self.exit_mask_bytes.as_ref().map(|buf| {
+            let flat = binary_bytes_to_f32_vec(buf.as_slice());
+            Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
         });
 
         let batch_struct = MjaiBcBatch {
@@ -469,17 +535,17 @@ impl BcShardHostBatch {
                 Tensor::<B, 1>::from_floats(buf.as_slice(), device)
                     .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            delta_q_mask: self.delta_q_mask_flat.as_ref().map(|buf| {
-                Tensor::<B, 1>::from_floats(buf.as_slice(), device)
-                    .reshape([batch, HYDRA_ACTION_SPACE])
+            delta_q_mask: self.delta_q_mask_bytes.as_ref().map(|buf| {
+                let flat = binary_bytes_to_f32_vec(buf.as_slice());
+                Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
             }),
             safety_residual_target: self.safety_target_flat.as_ref().map(|buf| {
                 Tensor::<B, 1>::from_floats(buf.as_slice(), device)
                     .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            safety_residual_mask: self.safety_mask_flat.as_ref().map(|buf| {
-                Tensor::<B, 1>::from_floats(buf.as_slice(), device)
-                    .reshape([batch, HYDRA_ACTION_SPACE])
+            safety_residual_mask: self.safety_mask_bytes.as_ref().map(|buf| {
+                let flat = binary_bytes_to_f32_vec(buf.as_slice());
+                Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
             }),
             oracle_guidance_mask: Some(oracle_target_mask),
             target_presence: Some(self.target_presence),
@@ -491,6 +557,15 @@ impl BcShardHostBatch {
             targets,
         }
     }
+}
+
+fn score_cdf_from_bins_cpu(score_bins: &[i64], batch: usize) -> Vec<f32> {
+    let mut cdf = vec![0.0f32; batch * SCORE_BINS];
+    for (row, &bin) in score_bins.iter().enumerate() {
+        let start = row * SCORE_BINS + (bin.max(0) as usize).min(SCORE_BINS - 1);
+        cdf[start..(row + 1) * SCORE_BINS].fill(1.0);
+    }
+    cdf
 }
 
 pub struct BcShardReader {
@@ -772,6 +847,27 @@ pub fn load_bc_shard_reader(
         .map_err(|err| format!("failed to read BC shard manifest {}: {err}", manifest_path.display()))?;
     let manifest: BcShardManifest = serde_json::from_str(&raw)
         .map_err(|err| format!("failed to parse BC shard manifest {}: {err}", manifest_path.display()))?;
+    // Reject shards built with a different encoder geometry. Without this
+    // check a stale manifest silently passes header verification (which only
+    // compares header-vs-manifest) and the reader panics deep inside
+    // parse_compact_sample when OBS_F32_BYTES exceeds the on-disk record.
+    if manifest.obs_size != OBS_SIZE {
+        return Err(format!(
+            "BC shard manifest obs_size {} does not match current OBS_SIZE {} \
+             (num_channels: manifest={}, binary={}). \
+             Shards must be rebuilt with the current encoder.",
+            manifest.obs_size, OBS_SIZE,
+            manifest.num_channels, NUM_CHANNELS,
+        ));
+    }
+    if manifest.base_record_size != BC_BASE_RECORD_SIZE {
+        return Err(format!(
+            "BC shard manifest base_record_size {} does not match current \
+             BC_BASE_RECORD_SIZE {}. Shards must be rebuilt with the current encoder.",
+            manifest.base_record_size, BC_BASE_RECORD_SIZE,
+        ));
+    }
+
     let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let split_manifest = manifest
         .splits
@@ -831,6 +927,17 @@ impl BcShardReader {
             .map(|host| host.materialize(device))
     }
 
+    pub fn collate_batch_range<B: Backend>(
+        &self,
+        start: usize,
+        len: usize,
+        augment: bool,
+        device: &B::Device,
+    ) -> Result<BcShardBatch<B>, String> {
+        self.collate_host_batch_range(start, len, augment)
+            .map(|host| host.materialize(device))
+    }
+
     /// CPU-only batch collation: shard I/O, parsing, and augmentation.
     ///
     /// Returns a backend-agnostic host batch suitable for crossing a thread
@@ -843,198 +950,32 @@ impl BcShardReader {
         if indices.is_empty() {
             return Err("bc shard batch indices must be non-empty".to_string());
         }
+        let mut scratch = self.new_scratch(indices.len());
+        self.collate_host_batch_into(indices, augment, &mut scratch)?;
+        Ok(scratch.take_batch())
+    }
 
-        let batch = indices.len();
-        let mut obs_flat = vec![0.0f32; batch * OBS_SIZE];
-        let mut actions = vec![0i64; batch];
-        let mut legal_mask_flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];
-        let mut value_target = vec![0.0f32; batch];
-        let mut grp_target = vec![0.0f32; batch * GRP_CLASS_COUNT];
-        let mut oracle_target_flat = vec![0.0f32; batch * PLAYER_COUNT];
-        let mut oracle_target_mask = vec![0.0f32; batch];
-        let mut tenpai_flat = vec![0.0f32; batch * OPPONENT_COUNT];
-        let mut danger_flat = vec![0.0f32; batch * SPATIAL_TARGET_SIZE];
-        let mut danger_mask_flat = vec![0.0f32; batch * SPATIAL_TARGET_SIZE];
-        let mut opp_next_flat = vec![0.0f32; batch * SPATIAL_TARGET_SIZE];
-        let mut score_pdf_flat = vec![0.0f32; batch * SCORE_BINS];
-        let mut score_cdf_flat = vec![0.0f32; batch * SCORE_BINS];
-
-        let need_safety = self.shards.first().is_some_and(|s| s.feature_flags & FLAG_SAFETY_RESIDUAL != 0);
-        let need_exit = self.shards.first().is_some_and(|s| s.feature_flags & FLAG_EXIT != 0);
-        let need_delta_q = self.shards.first().is_some_and(|s| s.feature_flags & FLAG_DELTA_Q != 0);
-
-        let mut target_presence = TargetPresence::with_batch_size(batch);
-
-        let mut safety_target_flat = need_safety.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
-        let mut safety_mask_flat = need_safety.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
-        let mut exit_target_flat = need_exit.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
-        let mut exit_mask_flat = need_exit.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
-        let mut delta_q_target_flat = need_delta_q.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
-        let mut delta_q_mask_flat = need_delta_q.then(|| vec![0.0f32; batch * HYDRA_ACTION_SPACE]);
-
-        for (row, &sample_index) in indices.iter().enumerate() {
-            let (shard, offset) = self.locate(sample_index)?;
-            let sample = parse_compact_sample(shard, offset)?;
-            let perm = if augment {
-                &hydra_core::tile::ALL_PERMUTATIONS[(sample_index + row) % hydra_core::tile::ALL_PERMUTATIONS.len()]
-            } else {
-                &hydra_core::tile::ALL_PERMUTATIONS[0]
-            };
-
-            let obs = if augment {
-                augment_obs_suit(&sample.obs, perm)
-            } else {
-                sample.obs
-            };
-            obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE].copy_from_slice(&obs);
-
-            let action = if augment {
-                augment_action_suit(sample.action, perm)
-            } else {
-                sample.action
-            };
-            actions[row] = action as i64;
-
-            let legal_mask = if augment {
-                augment_mask_suit(&sample.legal_mask, perm)
-            } else {
-                sample.legal_mask
-            };
-            legal_mask_flat[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&legal_mask);
-
-            value_target[row] = score_delta_to_value(sample.score_delta);
-            if (sample.grp_label as usize) < GRP_CLASS_COUNT {
-                grp_target[row * GRP_CLASS_COUNT + sample.grp_label as usize] = 1.0;
-            }
-            if let Some(oracle) = sample.oracle_target {
-                oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT]
-                    .copy_from_slice(&oracle);
-                oracle_target_mask[row] = 1.0;
-                target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
-            }
-            tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
-                .copy_from_slice(&sample.tenpai);
-
-            let opp_next = if augment {
-                permute_opp_next_targets(sample.opp_next, perm)
-            } else {
-                sample.opp_next
-            };
-            for (opp, tile) in opp_next.iter().copied().enumerate() {
-                if tile < TILE_COUNT as u8 {
-                    let idx = row * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + tile as usize;
-                    opp_next_flat[idx] = 1.0;
-                }
-            }
-
-            let danger = if augment {
-                permute_spatial_targets_3x34(sample.danger, perm)
-            } else {
-                sample.danger
-            };
-            danger_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
-                .copy_from_slice(&danger);
-
-            let danger_mask = if augment {
-                permute_spatial_targets_3x34(sample.danger_mask, perm)
-            } else {
-                sample.danger_mask
-            };
-            danger_mask_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
-                .copy_from_slice(&danger_mask);
-
-            let score_bin = score_delta_to_bin(sample.score_delta);
-            score_pdf_flat[row * SCORE_BINS + score_bin] = 1.0;
-            score_cdf_flat[row * SCORE_BINS + score_bin..(row + 1) * SCORE_BINS].fill(1.0);
-
-            if let Some(values) = sample.safety_residual {
-                let values = if augment {
-                    augment_action_vector_suit(&values, perm)
-                } else {
-                    values
-                };
-                safety_target_flat.as_mut().expect("safety enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&values);
-            }
-            if let Some(mask) = sample.safety_residual_mask {
-                let mask = if augment {
-                    augment_action_vector_suit(&mask, perm)
-                } else {
-                    mask
-                };
-                if mask.iter().any(|&value| value > 0.0) {
-                    target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
-                }
-                safety_mask_flat.as_mut().expect("safety enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&mask);
-            }
-            if let Some(values) = sample.exit_target {
-                let values = if augment {
-                    augment_action_vector_suit(&values, perm)
-                } else {
-                    values
-                };
-                exit_target_flat.as_mut().expect("exit enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&values);
-            }
-            if let Some(mask) = sample.exit_mask {
-                let mask = if augment {
-                    augment_action_vector_suit(&mask, perm)
-                } else {
-                    mask
-                };
-                exit_mask_flat.as_mut().expect("exit enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&mask);
-            }
-            if let Some(values) = sample.delta_q_target {
-                let values = if augment {
-                    augment_action_vector_suit(&values, perm)
-                } else {
-                    values
-                };
-                delta_q_target_flat.as_mut().expect("delta_q enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&values);
-            }
-            if let Some(mask) = sample.delta_q_mask {
-                let mask = if augment {
-                    augment_action_vector_suit(&mask, perm)
-                } else {
-                    mask
-                };
-                let action_count = mask.iter().filter(|&&value| value > 0.0).count();
-                if action_count > 0 {
-                    target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
-                    target_presence.delta_q_actions_present += action_count;
-                }
-                delta_q_mask_flat.as_mut().expect("delta_q enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&mask);
-            }
+    pub fn collate_host_batch_range(
+        &self,
+        start: usize,
+        len: usize,
+        augment: bool,
+    ) -> Result<BcShardHostBatch, String> {
+        if len == 0 {
+            return Err("bc shard batch indices must be non-empty".to_string());
         }
-
-        Ok(BcShardHostBatch {
-            batch_size: batch,
-            obs_flat,
-            actions,
-            legal_mask_flat,
-            value_target,
-            grp_target,
-            oracle_target_flat,
-            oracle_target_mask,
-            tenpai_flat,
-            danger_flat,
-            danger_mask_flat,
-            opp_next_flat,
-            score_pdf_flat,
-            score_cdf_flat,
-            safety_target_flat,
-            safety_mask_flat,
-            exit_target_flat,
-            exit_mask_flat,
-            delta_q_target_flat,
-            delta_q_mask_flat,
-            target_presence,
-        })
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| "bc shard batch range overflow".to_string())?;
+        if end > self.sample_count() {
+            return Err(format!(
+                "bc shard batch range {start}..{end} exceeds sample count {}",
+                self.sample_count()
+            ));
+        }
+        let mut scratch = self.new_scratch(len);
+        self.collate_host_batch_range_into(start, len, augment, &mut scratch)?;
+        Ok(scratch.take_batch())
     }
 
     /// Collate into a pre-allocated scratch buffer, avoiding per-batch
@@ -1057,141 +998,54 @@ impl BcShardReader {
 
         for (row, &sample_index) in indices.iter().enumerate() {
             let (shard, offset) = self.locate(sample_index)?;
-            let sample = parse_compact_sample(shard, offset)?;
-            let perm = if augment {
-                &hydra_core::tile::ALL_PERMUTATIONS[(sample_index + row) % hydra_core::tile::ALL_PERMUTATIONS.len()]
+            if augment {
+                write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)?;
             } else {
-                &hydra_core::tile::ALL_PERMUTATIONS[0]
-            };
-
-            let obs = if augment {
-                augment_obs_suit(&sample.obs, perm)
-            } else {
-                sample.obs
-            };
-            scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE].copy_from_slice(&obs);
-
-            let action = if augment {
-                augment_action_suit(sample.action, perm)
-            } else {
-                sample.action
-            };
-            scratch.actions[row] = action as i64;
-
-            let legal_mask = if augment {
-                augment_mask_suit(&sample.legal_mask, perm)
-            } else {
-                sample.legal_mask
-            };
-            scratch.legal_mask_flat[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&legal_mask);
-
-            scratch.value_target[row] = score_delta_to_value(sample.score_delta);
-            if (sample.grp_label as usize) < GRP_CLASS_COUNT {
-                scratch.grp_target[row * GRP_CLASS_COUNT + sample.grp_label as usize] = 1.0;
+                write_unaugmented_row_into_scratch(shard, offset, row, scratch)?;
             }
-            if let Some(oracle) = sample.oracle_target {
-                scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT]
-                    .copy_from_slice(&oracle);
-                scratch.oracle_target_mask[row] = 1.0;
-                scratch.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
-            }
-            scratch.tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
-                .copy_from_slice(&sample.tenpai);
+        }
 
-            let opp_next = if augment {
-                permute_opp_next_targets(sample.opp_next, perm)
+        Ok(())
+    }
+
+    pub fn collate_host_batch_range_into(
+        &self,
+        start: usize,
+        len: usize,
+        augment: bool,
+        scratch: &mut BcShardHostScratch,
+    ) -> Result<(), String> {
+        if len == 0 {
+            return Err("bc shard batch indices must be non-empty".to_string());
+        }
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| "bc shard batch range overflow".to_string())?;
+        if end > self.sample_count() {
+            return Err(format!(
+                "bc shard batch range {start}..{end} exceeds sample count {}",
+                self.sample_count()
+            ));
+        }
+
+        scratch.reset(len);
+        let (mut shard_index, mut offset) = self.locate_index(start)?;
+        for row in 0..len {
+            let sample_index = start + row;
+            let shard = &self.shards[shard_index];
+            if augment {
+                write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)?;
             } else {
-                sample.opp_next
-            };
-            for (opp, tile) in opp_next.iter().copied().enumerate() {
-                if tile < TILE_COUNT as u8 {
-                    let idx = row * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + tile as usize;
-                    scratch.opp_next_flat[idx] = 1.0;
+                write_unaugmented_row_into_scratch(shard, offset, row, scratch)?;
+            }
+
+            offset += 1;
+            if offset == shard.sample_count as usize && row + 1 < len {
+                shard_index += 1;
+                if shard_index >= self.shards.len() {
+                    return Err("BC shard range collation ran past shard list".to_string());
                 }
-            }
-
-            let danger = if augment {
-                permute_spatial_targets_3x34(sample.danger, perm)
-            } else {
-                sample.danger
-            };
-            scratch.danger_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
-                .copy_from_slice(&danger);
-
-            let danger_mask = if augment {
-                permute_spatial_targets_3x34(sample.danger_mask, perm)
-            } else {
-                sample.danger_mask
-            };
-            scratch.danger_mask_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
-                .copy_from_slice(&danger_mask);
-
-            let score_bin = score_delta_to_bin(sample.score_delta);
-            scratch.score_pdf_flat[row * SCORE_BINS + score_bin] = 1.0;
-            scratch.score_cdf_flat[row * SCORE_BINS + score_bin..(row + 1) * SCORE_BINS].fill(1.0);
-
-            if let Some(values) = sample.safety_residual {
-                let values = if augment {
-                    augment_action_vector_suit(&values, perm)
-                } else {
-                    values
-                };
-                scratch.safety_target_flat.as_mut().expect("safety enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&values);
-            }
-            if let Some(mask) = sample.safety_residual_mask {
-                let mask = if augment {
-                    augment_action_vector_suit(&mask, perm)
-                } else {
-                    mask
-                };
-                if mask.iter().any(|&value| value > 0.0) {
-                    scratch.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
-                }
-                scratch.safety_mask_flat.as_mut().expect("safety enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&mask);
-            }
-            if let Some(values) = sample.exit_target {
-                let values = if augment {
-                    augment_action_vector_suit(&values, perm)
-                } else {
-                    values
-                };
-                scratch.exit_target_flat.as_mut().expect("exit enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&values);
-            }
-            if let Some(mask) = sample.exit_mask {
-                let mask = if augment {
-                    augment_action_vector_suit(&mask, perm)
-                } else {
-                    mask
-                };
-                scratch.exit_mask_flat.as_mut().expect("exit enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&mask);
-            }
-            if let Some(values) = sample.delta_q_target {
-                let values = if augment {
-                    augment_action_vector_suit(&values, perm)
-                } else {
-                    values
-                };
-                scratch.delta_q_target_flat.as_mut().expect("delta_q enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&values);
-            }
-            if let Some(mask) = sample.delta_q_mask {
-                let mask = if augment {
-                    augment_action_vector_suit(&mask, perm)
-                } else {
-                    mask
-                };
-                let action_count = mask.iter().filter(|&&value| value > 0.0).count();
-                if action_count > 0 {
-                    scratch.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
-                    scratch.target_presence.delta_q_actions_present += action_count;
-                }
-                scratch.delta_q_mask_flat.as_mut().expect("delta_q enabled")[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
-                    .copy_from_slice(&mask);
+                offset = 0;
             }
         }
 
@@ -1199,35 +1053,510 @@ impl BcShardReader {
     }
 
     fn locate(&self, sample_index: usize) -> Result<(&ShardMap, usize), String> {
+        let (shard_index, offset) = self.locate_index(sample_index)?;
+        Ok((&self.shards[shard_index], offset))
+    }
+
+    fn locate_index(&self, sample_index: usize) -> Result<(usize, usize), String> {
         let sample_index = sample_index as u64;
-        self.shards
-            .iter()
-            .find_map(|shard| {
-                let end = shard.start_sample + shard.sample_count;
-                (sample_index >= shard.start_sample && sample_index < end)
-                    .then_some((shard, (sample_index - shard.start_sample) as usize))
-            })
-            .ok_or_else(|| format!("BC shard sample index {sample_index} out of bounds"))
+        let shard_index = self
+            .shards
+            .partition_point(|shard| shard.start_sample <= sample_index)
+            .checked_sub(1)
+            .ok_or_else(|| format!("BC shard sample index {sample_index} out of bounds"))?;
+        let shard = &self.shards[shard_index];
+        let shard_end = shard.start_sample + shard.sample_count;
+        if sample_index >= shard_end {
+            return Err(format!("BC shard sample index {sample_index} out of bounds"));
+        }
+        Ok((shard_index, (sample_index - shard.start_sample) as usize))
     }
 }
 
 struct CompactSample {
     obs: [f32; OBS_SIZE],
     action: u8,
-    legal_mask: [f32; HYDRA_ACTION_SPACE],
+    legal_mask: [u8; HYDRA_ACTION_SPACE],
     score_delta: i32,
     grp_label: u8,
     oracle_target: Option<[f32; PLAYER_COUNT]>,
-    tenpai: [f32; OPPONENT_COUNT],
+    tenpai: [u8; OPPONENT_COUNT],
     opp_next: [u8; OPPONENT_COUNT],
-    danger: [f32; SPATIAL_TARGET_SIZE],
-    danger_mask: [f32; SPATIAL_TARGET_SIZE],
+    danger: [u8; SPATIAL_TARGET_SIZE],
+    danger_mask: [u8; SPATIAL_TARGET_SIZE],
     safety_residual: Option<[f32; HYDRA_ACTION_SPACE]>,
-    safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    safety_residual_mask: Option<[u8; HYDRA_ACTION_SPACE]>,
     exit_target: Option<[f32; HYDRA_ACTION_SPACE]>,
-    exit_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    exit_mask: Option<[u8; HYDRA_ACTION_SPACE]>,
     delta_q_target: Option<[f32; HYDRA_ACTION_SPACE]>,
-    delta_q_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    delta_q_mask: Option<[u8; HYDRA_ACTION_SPACE]>,
+}
+
+fn write_sample_into_scratch(
+    row: usize,
+    sample_index: usize,
+    augment: bool,
+    sample: CompactSample,
+    scratch: &mut BcShardHostScratch,
+) {
+    let perm = if augment {
+        &hydra_core::tile::ALL_PERMUTATIONS
+            [(sample_index + row) % hydra_core::tile::ALL_PERMUTATIONS.len()]
+    } else {
+        &hydra_core::tile::ALL_PERMUTATIONS[0]
+    };
+
+    let obs = if augment {
+        augment_obs_suit(&sample.obs, perm)
+    } else {
+        sample.obs
+    };
+    scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE].copy_from_slice(&obs);
+
+    let action = if augment {
+        augment_action_suit(sample.action, perm)
+    } else {
+        sample.action
+    };
+    scratch.actions[row] = action as i64;
+
+    let legal_mask = if augment {
+        augment_mask_u8_suit(&sample.legal_mask, perm)
+    } else {
+        sample.legal_mask
+    };
+    scratch.legal_mask_bytes[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+        .copy_from_slice(&legal_mask);
+
+    scratch.value_target[row] = score_delta_to_value(sample.score_delta);
+    scratch.grp_labels[row] = sample.grp_label as i64;
+    if let Some(oracle) = sample.oracle_target {
+        scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT]
+            .copy_from_slice(&oracle);
+        scratch.oracle_target_mask[row] = 1.0;
+        scratch.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
+    }
+    scratch.tenpai_bytes[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
+        .copy_from_slice(&sample.tenpai);
+
+    let opp_next = if augment {
+        permute_opp_next_targets(sample.opp_next, perm)
+    } else {
+        sample.opp_next
+    };
+    for (opp, tile) in opp_next.iter().copied().enumerate() {
+        scratch.opp_next_tiles[row * OPPONENT_COUNT + opp] = tile as i64;
+    }
+
+    let danger = if augment {
+        permute_spatial_target_bytes_3x34(sample.danger, perm)
+    } else {
+        sample.danger
+    };
+    scratch.danger_bytes[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&danger);
+
+    let danger_mask = if augment {
+        permute_spatial_target_bytes_3x34(sample.danger_mask, perm)
+    } else {
+        sample.danger_mask
+    };
+    scratch.danger_mask_bytes[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&danger_mask);
+
+    scratch.score_bins[row] = score_delta_to_bin(sample.score_delta) as i64;
+
+    if let Some(values) = sample.safety_residual {
+        let values = if augment {
+            augment_action_vector_suit(&values, perm)
+        } else {
+            values
+        };
+        scratch.safety_target_flat.as_mut().expect("safety enabled")
+            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+            .copy_from_slice(&values);
+    }
+    if let Some(mask) = sample.safety_residual_mask {
+        let mask = if augment {
+            augment_action_vector_u8_suit(&mask, perm)
+        } else {
+            mask
+        };
+        if mask.iter().any(|&value| value > 0) {
+            scratch.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
+        }
+        scratch.safety_mask_bytes.as_mut().expect("safety enabled")
+            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+            .copy_from_slice(&mask);
+    }
+    if let Some(values) = sample.exit_target {
+        let values = if augment {
+            augment_action_vector_suit(&values, perm)
+        } else {
+            values
+        };
+        scratch.exit_target_flat.as_mut().expect("exit enabled")
+            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+            .copy_from_slice(&values);
+    }
+    if let Some(mask) = sample.exit_mask {
+        let mask = if augment {
+            augment_action_vector_u8_suit(&mask, perm)
+        } else {
+            mask
+        };
+        scratch.exit_mask_bytes.as_mut().expect("exit enabled")
+            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+            .copy_from_slice(&mask);
+    }
+    if let Some(values) = sample.delta_q_target {
+        let values = if augment {
+            augment_action_vector_suit(&values, perm)
+        } else {
+            values
+        };
+        scratch.delta_q_target_flat.as_mut().expect("delta_q enabled")
+            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+            .copy_from_slice(&values);
+    }
+    if let Some(mask) = sample.delta_q_mask {
+        let mask = if augment {
+            augment_action_vector_u8_suit(&mask, perm)
+        } else {
+            mask
+        };
+        let action_count = mask.iter().filter(|&&value| value > 0).count();
+        if action_count > 0 {
+            scratch.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
+            scratch.target_presence.delta_q_actions_present += action_count;
+        }
+        scratch.delta_q_mask_bytes.as_mut().expect("delta_q enabled")
+            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+            .copy_from_slice(&mask);
+    }
+}
+
+fn write_unaugmented_row_into_scratch(
+    shard: &ShardMap,
+    row_index: usize,
+    row: usize,
+    scratch: &mut BcShardHostScratch,
+) -> Result<(), String> {
+    let start = BC_SHARD_HEADER_SIZE as usize + row_index * shard.record_size;
+    let end = start + shard.record_size;
+    if end > shard.mmap.len() {
+        return Err("BC shard row extends past file end".to_string());
+    }
+    let bytes = &shard.mmap[start..end];
+    let mut cursor = 0usize;
+
+    let obs_dst = &mut scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE];
+    #[cfg(target_endian = "little")]
+    unsafe {
+        ptr::copy_nonoverlapping(
+            bytes[cursor..cursor + OBS_F32_BYTES].as_ptr(),
+            obs_dst.as_mut_ptr().cast::<u8>(),
+            OBS_F32_BYTES,
+        );
+    }
+    #[cfg(not(target_endian = "little"))]
+    for (value, chunk) in obs_dst
+        .iter_mut()
+        .zip(bytes[cursor..cursor + OBS_F32_BYTES].chunks_exact(4))
+    {
+        *value = f32::from_le_bytes(chunk.try_into().expect("f32 chunk"));
+    }
+    cursor += OBS_F32_BYTES;
+
+    scratch.actions[row] = bytes[cursor] as i64;
+    cursor += 1;
+
+    scratch.legal_mask_bytes[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+        .copy_from_slice(&bytes[cursor..cursor + HYDRA_ACTION_SPACE]);
+    cursor += HYDRA_ACTION_SPACE;
+
+    let score_delta = read_i32_le(&bytes[cursor..cursor + 4]);
+    cursor += 4;
+    scratch.value_target[row] = score_delta_to_value(score_delta);
+    scratch.score_bins[row] = score_delta_to_bin(score_delta) as i64;
+
+    scratch.grp_labels[row] = bytes[cursor] as i64;
+    cursor += 1;
+
+    scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT]
+        .copy_from_slice(&read_oracle_f32(&bytes[cursor..cursor + ORACLE_FLOAT32_BYTES]));
+    cursor += ORACLE_FLOAT32_BYTES;
+    let oracle_present = bytes[cursor] > 0;
+    cursor += ORACLE_MASK_BYTES;
+    if oracle_present {
+        scratch.oracle_target_mask[row] = 1.0;
+        scratch.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
+    } else {
+        scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT].fill(0.0);
+    }
+
+    scratch.tenpai_bytes[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
+        .copy_from_slice(&bytes[cursor..cursor + OPPONENT_COUNT]);
+    cursor += OPPONENT_COUNT;
+
+    for (opp, &tile) in bytes[cursor..cursor + OPPONENT_COUNT].iter().enumerate() {
+        scratch.opp_next_tiles[row * OPPONENT_COUNT + opp] = tile as i64;
+    }
+    cursor += OPPONENT_COUNT;
+
+    scratch.danger_bytes[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&bytes[cursor..cursor + SPATIAL_TARGET_SIZE]);
+    cursor += SPATIAL_TARGET_SIZE;
+
+    scratch.danger_mask_bytes[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&bytes[cursor..cursor + SPATIAL_TARGET_SIZE]);
+    cursor += SPATIAL_TARGET_SIZE;
+
+    if shard.feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
+        let values = read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
+        if let Some(values) = values {
+            scratch.safety_target_flat.as_mut().expect("safety enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+        }
+        let mask = read_optional_action_mask_u8(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES]);
+        cursor += OPTIONAL_ACTION_MASK_BYTES;
+        if let Some(mask) = mask {
+            if mask.iter().any(|&value| value > 0) {
+                scratch.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
+            }
+            scratch.safety_mask_bytes.as_mut().expect("safety enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&mask);
+        }
+    }
+
+    if shard.feature_flags & FLAG_EXIT != 0 {
+        let values = read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
+        if let Some(values) = values {
+            scratch.exit_target_flat.as_mut().expect("exit enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+        }
+        let mask = read_optional_action_mask_u8(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES]);
+        cursor += OPTIONAL_ACTION_MASK_BYTES;
+        if let Some(mask) = mask {
+            scratch.exit_mask_bytes.as_mut().expect("exit enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&mask);
+        }
+    }
+
+    if shard.feature_flags & FLAG_DELTA_Q != 0 {
+        let values = read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
+        if let Some(values) = values {
+            scratch.delta_q_target_flat.as_mut().expect("delta_q enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&values);
+        }
+        let mask = read_optional_action_mask_u8(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES]);
+        if let Some(mask) = mask {
+            let action_count = mask.iter().filter(|&&value| value > 0).count();
+            if action_count > 0 {
+                scratch.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
+                scratch.target_presence.delta_q_actions_present += action_count;
+            }
+            scratch.delta_q_mask_bytes.as_mut().expect("delta_q enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&mask);
+        }
+    }
+
+    Ok(())
+}
+
+fn write_augmented_row_into_scratch(
+    shard: &ShardMap,
+    row_index: usize,
+    row: usize,
+    sample_index: usize,
+    scratch: &mut BcShardHostScratch,
+) -> Result<(), String> {
+    let start = BC_SHARD_HEADER_SIZE as usize + row_index * shard.record_size;
+    let end = start + shard.record_size;
+    if end > shard.mmap.len() {
+        return Err("BC shard row extends past file end".to_string());
+    }
+    let bytes = &shard.mmap[start..end];
+    let mut cursor = 0usize;
+
+    let perm = &hydra_core::tile::ALL_PERMUTATIONS
+        [(sample_index + row) % hydra_core::tile::ALL_PERMUTATIONS.len()];
+    let perm_idx = permutation_index(perm);
+    let tables = permutation_tables();
+    let tile_perm = &tables.tile_34[perm_idx];
+    let action_perm = &tables.action_37[perm_idx];
+
+    let obs_dst = &mut scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE];
+    augment_obs_suit_from_le_bytes(&bytes[cursor..cursor + OBS_F32_BYTES], perm, obs_dst);
+    cursor += OBS_F32_BYTES;
+
+    scratch.actions[row] = augment_action_suit(bytes[cursor], perm) as i64;
+    cursor += 1;
+
+    let mask_src = &bytes[cursor..cursor + HYDRA_ACTION_SPACE];
+    let mask_dst =
+        &mut scratch.legal_mask_bytes[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
+    mask_dst.fill(0);
+    for i in 0..37usize {
+        mask_dst[action_perm[i]] = mask_src[i];
+    }
+    mask_dst[37..HYDRA_ACTION_SPACE].copy_from_slice(&mask_src[37..HYDRA_ACTION_SPACE]);
+    cursor += HYDRA_ACTION_SPACE;
+
+    let score_delta = read_i32_le(&bytes[cursor..cursor + 4]);
+    cursor += 4;
+    scratch.value_target[row] = score_delta_to_value(score_delta);
+    scratch.score_bins[row] = score_delta_to_bin(score_delta) as i64;
+
+    scratch.grp_labels[row] = bytes[cursor] as i64;
+    cursor += 1;
+
+    scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT]
+        .copy_from_slice(&read_oracle_f32(&bytes[cursor..cursor + ORACLE_FLOAT32_BYTES]));
+    cursor += ORACLE_FLOAT32_BYTES;
+    let oracle_present = bytes[cursor] > 0;
+    cursor += ORACLE_MASK_BYTES;
+    if oracle_present {
+        scratch.oracle_target_mask[row] = 1.0;
+        scratch.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
+    } else {
+        scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT].fill(0.0);
+    }
+
+    scratch.tenpai_bytes[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
+        .copy_from_slice(&bytes[cursor..cursor + OPPONENT_COUNT]);
+    cursor += OPPONENT_COUNT;
+
+    for (opp, &tile) in bytes[cursor..cursor + OPPONENT_COUNT].iter().enumerate() {
+        let permuted = if tile < 34 {
+            tile_perm[tile as usize] as u8
+        } else {
+            tile
+        };
+        scratch.opp_next_tiles[row * OPPONENT_COUNT + opp] = permuted as i64;
+    }
+    cursor += OPPONENT_COUNT;
+
+    let danger_dst =
+        &mut scratch.danger_bytes[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE];
+    for opp in 0..OPPONENT_COUNT {
+        let src_start = cursor + opp * TILE_COUNT;
+        let dst_start = opp * TILE_COUNT;
+        for tile in 0..TILE_COUNT {
+            danger_dst[dst_start + tile_perm[tile]] = bytes[src_start + tile];
+        }
+    }
+    cursor += SPATIAL_TARGET_SIZE;
+
+    let dmask_dst = &mut scratch.danger_mask_bytes
+        [row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE];
+    for opp in 0..OPPONENT_COUNT {
+        let src_start = cursor + opp * TILE_COUNT;
+        let dst_start = opp * TILE_COUNT;
+        for tile in 0..TILE_COUNT {
+            dmask_dst[dst_start + tile_perm[tile]] = bytes[src_start + tile];
+        }
+    }
+    cursor += SPATIAL_TARGET_SIZE;
+
+    if shard.feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
+        let values =
+            read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
+        if let Some(values) = values {
+            let augmented = augment_action_vector_suit(&values, perm);
+            scratch
+                .safety_target_flat
+                .as_mut()
+                .expect("safety enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&augmented);
+        }
+        let mask =
+            read_optional_action_mask_u8(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES]);
+        cursor += OPTIONAL_ACTION_MASK_BYTES;
+        if let Some(mask) = mask {
+            let augmented = augment_action_vector_u8_suit(&mask, perm);
+            if augmented.iter().any(|&value| value > 0) {
+                scratch.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
+            }
+            scratch
+                .safety_mask_bytes
+                .as_mut()
+                .expect("safety enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&augmented);
+        }
+    }
+
+    if shard.feature_flags & FLAG_EXIT != 0 {
+        let values =
+            read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
+        if let Some(values) = values {
+            let augmented = augment_action_vector_suit(&values, perm);
+            scratch
+                .exit_target_flat
+                .as_mut()
+                .expect("exit enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&augmented);
+        }
+        let mask =
+            read_optional_action_mask_u8(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES]);
+        cursor += OPTIONAL_ACTION_MASK_BYTES;
+        if let Some(mask) = mask {
+            let augmented = augment_action_vector_u8_suit(&mask, perm);
+            scratch
+                .exit_mask_bytes
+                .as_mut()
+                .expect("exit enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&augmented);
+        }
+    }
+
+    if shard.feature_flags & FLAG_DELTA_Q != 0 {
+        let values =
+            read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
+        if let Some(values) = values {
+            let augmented = augment_action_vector_suit(&values, perm);
+            scratch
+                .delta_q_target_flat
+                .as_mut()
+                .expect("delta_q enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&augmented);
+        }
+        let mask =
+            read_optional_action_mask_u8(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES]);
+        if let Some(mask) = mask {
+            let augmented = augment_action_vector_u8_suit(&mask, perm);
+            let action_count = augmented.iter().filter(|&&value| value > 0).count();
+            if action_count > 0 {
+                scratch.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
+                scratch.target_presence.delta_q_actions_present += action_count;
+            }
+            scratch
+                .delta_q_mask_bytes
+                .as_mut()
+                .expect("delta_q enabled")
+                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&augmented);
+        }
+    }
+
+    Ok(())
 }
 
 fn feature_flags_from_config(config: &BuildBcShardsConfig) -> u32 {
@@ -1541,6 +1870,14 @@ fn verify_shard_header(mmap: &Mmap, split: BcShardSplit, feature_flags: u32, rec
     if header_flags != feature_flags {
         return Err("BC shard feature flags mismatch".to_string());
     }
+    let expected_record_size = record_size_for_flags(feature_flags);
+    if record_size != expected_record_size {
+        return Err(format!(
+            "BC shard record_size {record_size} incompatible with current binary \
+             (expected {expected_record_size} for flags {feature_flags:#x}). \
+             Rebuild shards with the current encoder.",
+        ));
+    }
     Ok(())
 }
 
@@ -1553,20 +1890,15 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
     let bytes = &shard.mmap[start..end];
     let mut cursor = 0usize;
 
-    let mut obs = [0.0f32; OBS_SIZE];
-    for value in &mut obs {
-        *value = read_f32_le(&bytes[cursor..cursor + 4]);
-        cursor += 4;
-    }
+    let obs = read_f32_array::<OBS_SIZE>(&bytes[cursor..cursor + OBS_F32_BYTES]);
+    cursor += OBS_F32_BYTES;
 
     let action = bytes[cursor];
     cursor += 1;
 
-    let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
-    for value in &mut legal_mask {
-        *value = if bytes[cursor] > 0 { 1.0 } else { 0.0 };
-        cursor += 1;
-    }
+    let mut legal_mask = [0u8; HYDRA_ACTION_SPACE];
+    legal_mask.copy_from_slice(&bytes[cursor..cursor + HYDRA_ACTION_SPACE]);
+    cursor += HYDRA_ACTION_SPACE;
 
     let score_delta = read_i32_le(&bytes[cursor..cursor + 4]);
     cursor += 4;
@@ -1578,27 +1910,21 @@ fn parse_compact_sample(shard: &ShardMap, row_index: usize) -> Result<CompactSam
     cursor += ORACLE_MASK_BYTES;
     let oracle_target = oracle_present.then_some(oracle_target_values);
 
-    let mut tenpai = [0.0f32; OPPONENT_COUNT];
-    for value in &mut tenpai {
-        *value = if bytes[cursor] > 0 { 1.0 } else { 0.0 };
-        cursor += 1;
-    }
+    let mut tenpai = [0u8; OPPONENT_COUNT];
+    tenpai.copy_from_slice(&bytes[cursor..cursor + OPPONENT_COUNT]);
+    cursor += OPPONENT_COUNT;
 
     let mut opp_next = [255u8; OPPONENT_COUNT];
     opp_next.copy_from_slice(&bytes[cursor..cursor + OPPONENT_COUNT]);
     cursor += OPPONENT_COUNT;
 
-    let mut danger = [0.0f32; SPATIAL_TARGET_SIZE];
-    for value in &mut danger {
-        *value = if bytes[cursor] > 0 { 1.0 } else { 0.0 };
-        cursor += 1;
-    }
+    let mut danger = [0u8; SPATIAL_TARGET_SIZE];
+    danger.copy_from_slice(&bytes[cursor..cursor + SPATIAL_TARGET_SIZE]);
+    cursor += SPATIAL_TARGET_SIZE;
 
-    let mut danger_mask = [0.0f32; SPATIAL_TARGET_SIZE];
-    for value in &mut danger_mask {
-        *value = if bytes[cursor] > 0 { 1.0 } else { 0.0 };
-        cursor += 1;
-    }
+    let mut danger_mask = [0u8; SPATIAL_TARGET_SIZE];
+    danger_mask.copy_from_slice(&bytes[cursor..cursor + SPATIAL_TARGET_SIZE]);
+    cursor += SPATIAL_TARGET_SIZE;
 
     let safety_residual = if shard.feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
         let value = read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
@@ -1761,30 +2087,46 @@ fn read_i32_le(bytes: &[u8]) -> i32 {
     i32::from_le_bytes(bytes[0..4].try_into().expect("i32 slice"))
 }
 
+#[cfg(not(target_endian = "little"))]
 fn read_f32_le(bytes: &[u8]) -> f32 {
     f32::from_le_bytes(bytes[0..4].try_into().expect("f32 slice"))
 }
 
-fn read_optional_action_f32(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE]> {
-    let mut out = [0.0f32; HYDRA_ACTION_SPACE];
-    let mut any = false;
-    for (index, value) in out.iter_mut().enumerate() {
-        let start = index * 4;
-        let decoded = read_f32_le(&bytes[start..start + 4]);
-        if decoded != 0.0 {
-            any = true;
+fn read_f32_array<const N: usize>(bytes: &[u8]) -> [f32; N] {
+    debug_assert_eq!(bytes.len(), N * std::mem::size_of::<f32>());
+    #[cfg(target_endian = "little")]
+    {
+        let mut out = MaybeUninit::<[f32; N]>::uninit();
+        unsafe {
+            ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                out.as_mut_ptr().cast::<u8>(),
+                N * std::mem::size_of::<f32>(),
+            );
+            out.assume_init()
         }
-        *value = decoded;
     }
-    any.then_some(out)
+    #[cfg(not(target_endian = "little"))]
+    {
+        let mut out = [0.0f32; N];
+        for (value, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+            *value = f32::from_le_bytes(chunk.try_into().expect("f32 chunk"));
+        }
+        out
+    }
 }
 
-fn read_optional_action_mask_u8(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE]> {
-    let mut out = [0.0f32; HYDRA_ACTION_SPACE];
+fn read_optional_action_f32(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE]> {
+    let out = read_f32_array::<HYDRA_ACTION_SPACE>(bytes);
+    out.iter().any(|&value| value != 0.0).then_some(out)
+}
+
+fn read_optional_action_mask_u8(bytes: &[u8]) -> Option<[u8; HYDRA_ACTION_SPACE]> {
+    let mut out = [0u8; HYDRA_ACTION_SPACE];
     let mut any = false;
     for (index, value) in out.iter_mut().enumerate() {
         if bytes[index] > 0 {
-            *value = 1.0;
+            *value = 1;
             any = true;
         }
     }
@@ -1792,50 +2134,25 @@ fn read_optional_action_mask_u8(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE
 }
 
 fn read_oracle_f32(bytes: &[u8]) -> [f32; PLAYER_COUNT] {
-    let mut out = [0.0f32; PLAYER_COUNT];
-    for (index, value) in out.iter_mut().enumerate() {
-        let start = index * 4;
-        *value = read_f32_le(&bytes[start..start + 4]);
-    }
-    out
+    read_f32_array::<PLAYER_COUNT>(bytes)
 }
 
 fn policy_target_from_actions<B: Backend>(
     actions: Tensor<B, 1, Int>,
     batch_size: usize,
 ) -> Tensor<B, 2> {
-    let mut one_hot = vec![0.0f32; batch_size * HYDRA_ACTION_SPACE];
-    let action_data = actions.clone().into_data().convert::<i64>();
-    let action_values = action_data
-        .as_slice::<i64>()
-        .expect("action tensor should be readable as i64");
-    for (row, &action) in action_values.iter().enumerate() {
-        let action = action as usize;
-        if action < HYDRA_ACTION_SPACE {
-            one_hot[row * HYDRA_ACTION_SPACE + action] = 1.0;
-        }
-    }
-    Tensor::<B, 1>::from_floats(one_hot.as_slice(), &actions.device())
+    actions
+        .one_hot::<2>(HYDRA_ACTION_SPACE)
         .reshape([batch_size, HYDRA_ACTION_SPACE])
+        .float()
 }
 
 fn permute_opp_next_targets(opp_next: [u8; 3], perm: &[u8; 3]) -> [u8; 3] {
     let mut out = opp_next;
+    let tile_perm = &permutation_tables().tile_34[permutation_index(perm)];
     for tile in &mut out {
         if *tile < 34 {
-            *tile = hydra_core::tile::permute_tile_type(*tile, perm);
-        }
-    }
-    out
-}
-
-fn permute_spatial_targets_3x34(values: [f32; 102], perm: &[u8; 3]) -> [f32; 102] {
-    let mut out = [0.0f32; 102];
-    for opp in 0..3usize {
-        let start = opp * 34;
-        for tile in 0..34usize {
-            let new_tile = hydra_core::tile::permute_tile_type(tile as u8, perm) as usize;
-            out[start + new_tile] = values[start + tile];
+            *tile = tile_perm[*tile as usize] as u8;
         }
     }
     out

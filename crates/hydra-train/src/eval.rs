@@ -568,10 +568,10 @@ mod tests {
     #[test]
     fn paired_delta_q_arena_confirmation_is_zero_delta_for_identical_models() {
         let device = Default::default();
-        let model = HydraModelConfig::new(2)
-            .with_hidden_channels(32)
-            .with_se_bottleneck(8)
-            .with_num_groups(4)
+        let model = HydraModelConfig::new(1)
+            .with_hidden_channels(8)
+            .with_se_bottleneck(2)
+            .with_num_groups(2)
             .init::<B>(&device);
         let cfg = PairedArenaEvalConfig::new()
             .with_min_games(2)

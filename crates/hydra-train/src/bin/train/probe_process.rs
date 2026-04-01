@@ -60,6 +60,28 @@ fn probe_child_executable() -> Result<PathBuf, String> {
 }
 
 #[cfg(not(test))]
+fn propagate_probe_runtime_env(cmd: &mut Command) {
+    const PASSTHROUGH_VARS: &[&str] = &[
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "LIBTORCH",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "CUDA_VISIBLE_DEVICES",
+        "NVIDIA_VISIBLE_DEVICES",
+        "NVIDIA_DRIVER_CAPABILITIES",
+        "PATH",
+    ];
+
+    for key in PASSTHROUGH_VARS {
+        if let Ok(value) = env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+}
+
+#[cfg(not(test))]
 fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
     static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
     static HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
@@ -618,7 +640,8 @@ pub(super) fn execute_probe_request(
         let probe_started = Instant::now();
         let (spinner_message, spinner) = spawn_probe_spinner(request.kind, request.candidate_microbatch)?;
         let child_exe = probe_child_executable()?;
-        let mut child = Command::new(&child_exe)
+        let mut child_cmd = Command::new(&child_exe);
+        child_cmd
             .arg(config_path)
             .arg("--probe-kind")
             .arg(probe_kind_name(request.kind))
@@ -634,7 +657,9 @@ pub(super) fn execute_probe_request(
             .arg(&manifest_cache_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        propagate_probe_runtime_env(&mut child_cmd);
+        let mut child = child_cmd
             .spawn()
             .map_err(|err| {
                 format!(
@@ -784,7 +809,8 @@ pub(super) fn execute_probe_request_batch(
         let probe_started = Instant::now();
         let (spinner_message, spinner) = spawn_probe_spinner(kind, candidate_microbatch)?;
         let child_exe = probe_child_executable()?;
-        let mut child = Command::new(&child_exe)
+        let mut child_cmd = Command::new(&child_exe);
+        child_cmd
             .arg(config_path)
             .arg("--probe-kind")
             .arg(probe_kind_name(batch.request.kind))
@@ -802,7 +828,9 @@ pub(super) fn execute_probe_request_batch(
             .arg(&manifest_cache_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        propagate_probe_runtime_env(&mut child_cmd);
+        let mut child = child_cmd
             .spawn()
             .map_err(|err| {
                 format!(
@@ -913,6 +941,7 @@ mod tests {
             validation_microbatch_size: None,
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+        bc_shards_manifest_path: None,
             train_fraction: default_train_fraction(),
             augment: default_augment(),
             resume_checkpoint: None,

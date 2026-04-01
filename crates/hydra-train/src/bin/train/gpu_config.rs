@@ -1,10 +1,30 @@
+use std::sync::Once;
+
 unsafe extern "C" {
     fn hydra_set_allow_tf32_cublas(b: std::ffi::c_int);
     fn hydra_set_allow_tf32_cudnn(b: std::ffi::c_int);
 }
 
+static LIBTORCH_CPU_POOL_CONFIG: Once = Once::new();
+
+fn device_requests_cuda(device: &str) -> bool {
+    device
+        .split(':')
+        .next()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("cuda"))
+}
+
 /// Global libtorch performance flags.  Must be called before any tensor ops.
-pub(crate) fn apply_gpu_performance_flags() {
+pub(crate) fn apply_gpu_performance_flags(device: &str) {
+    if !device_requests_cuda(device) {
+        return;
+    }
+
+    LIBTORCH_CPU_POOL_CONFIG.call_once(|| {
+        tch::set_num_interop_threads(1);
+        tch::set_num_threads(1);
+    });
+
     if tch::Cuda::is_available() {
         // Auto-tunes conv algorithms per input shape on first call, caches
         // the fastest.  Safe with fixed tensor shapes (Hydra's case).
@@ -26,6 +46,15 @@ mod tests {
 
     #[test]
     fn apply_gpu_performance_flags_is_safe_on_cpu() {
-        apply_gpu_performance_flags();
+        apply_gpu_performance_flags("cpu");
+    }
+
+    #[test]
+    fn device_requests_cuda_only_for_cuda_prefix() {
+        assert!(device_requests_cuda("cuda"));
+        assert!(device_requests_cuda("cuda:0"));
+        assert!(device_requests_cuda("CUDA:1"));
+        assert!(!device_requests_cuda("cpu"));
+        assert!(!device_requests_cuda("metal:0"));
     }
 }

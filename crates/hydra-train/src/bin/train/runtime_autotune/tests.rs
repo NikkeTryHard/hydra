@@ -16,6 +16,7 @@ fn dummy_config() -> TrainConfig {
         validation_microbatch_size: Some(32),
         exit_sidecar_path: Some(PathBuf::from("/tmp/exit.sidecar")),
         delta_q_sidecar_path: Some(PathBuf::from("/tmp/delta-q.sidecar")),
+        bc_shards_manifest_path: None,
         train_fraction: 0.9,
         augment: true,
         resume_checkpoint: None,

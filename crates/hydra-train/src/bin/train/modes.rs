@@ -15,6 +15,7 @@ use hydra_train::training::delta_q_promotion::{
 use super::artifacts::{
     write_delta_q_promotion_artifact, BcArtifactPaths, PersistedDeltaQPromotionArtifact,
 };
+use super::bootstrap::TrainingReaders;
 use super::bootstrap::{initialize_rl_training_bootstrap, RlTrainingBootstrap, RlTrainingRuntime};
 use super::bootstrap::{initialize_training_bootstrap, TrainingBootstrap, TrainingRuntime};
 use super::config::{configure_threads, device_label, validate_config, TrainConfig};
@@ -40,6 +41,7 @@ type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 fn run_bc_training_mode_for_backend<B>(
     bootstrap: TrainingBootstrap<B>,
     runtime: TrainingRuntime<B>,
+    readers: TrainingReaders,
 ) -> Result<(), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
@@ -79,6 +81,9 @@ where
         mut step_log,
         mut head_controller,
     } = runtime;
+    let TrainingReaders {
+        validation_shard_reader,
+    } = readers;
 
     print_banner(
         &model_config,
@@ -89,8 +94,11 @@ where
         &train_cfg,
     );
     resume.print_banner_with_effective_runtime(Some(current_runtime));
-    let cached_validation_samples =
-        materialize_validation_samples(&config, &loader_config, &manifest)?;
+    let cached_validation_samples = if config.bc_shards_manifest_path.is_some() {
+        None
+    } else {
+        materialize_validation_samples(&config, &loader_config, &manifest)?
+    };
     let mut model = Some(model);
 
     for epoch in resume.start_epoch..config.num_epochs {
@@ -115,6 +123,7 @@ where
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: cached_validation_samples.as_deref(),
+                validation_shard_reader: validation_shard_reader.as_ref(),
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -311,8 +320,8 @@ pub(super) fn handle_training_mode(
         let _runtime: RlTrainingRuntime = runtime;
         return run_rl_training_loop(bootstrap, _runtime);
     }
-    let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
-    run_bc_training_mode_for_backend::<TrainBackend>(bootstrap, runtime)
+    let (bootstrap, runtime, readers) = initialize_training_bootstrap(config_path, config)?;
+    run_bc_training_mode_for_backend::<TrainBackend>(bootstrap, runtime, readers)
 }
 
 pub(super) fn handle_delta_q_promotion_mode(
@@ -328,7 +337,7 @@ pub(super) fn handle_delta_q_promotion_mode(
             "precision_mode=bf16_autocast is not supported for delta_q promotion yet".to_string(),
         );
     }
-    let (bootstrap, runtime) = initialize_training_bootstrap(config_path, config)?;
+    let (bootstrap, runtime, _readers) = initialize_training_bootstrap(config_path, config)?;
     let TrainingBootstrap {
         config,
         artifacts,
@@ -385,6 +394,7 @@ pub(super) fn handle_delta_q_promotion_mode(
             loader_config: &loader_config,
             manifest: &manifest,
             cached_samples: None,
+            shard_reader: None,
             device: &train_device,
             loss_fn: &valid_loss_fn,
             exit_cfg: &bc_exit_cfg,

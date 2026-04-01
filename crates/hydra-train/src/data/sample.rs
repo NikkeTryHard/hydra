@@ -3,7 +3,7 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_core::tile::{permute_tile_type, ALL_PERMUTATIONS};
+use hydra_core::tile::ALL_PERMUTATIONS;
 use std::cell::RefCell;
 
 use crate::training::exit::collate_exit_targets;
@@ -12,13 +12,14 @@ use crate::training::losses::HydraTargets;
 
 use crate::data::augment::{
     augment_action_suit, augment_action_vector_suit, augment_belief_fields_suit, augment_mask_suit,
-    augment_obs_suit,
+    augment_obs_suit, permutation_index, permutation_tables,
 };
 
 fn permute_tile_vector_34(values: &[f32; 34], perm: &[u8; 3]) -> [f32; 34] {
     let mut out = [0.0f32; 34];
+    let tile_perm = &permutation_tables().tile_34[permutation_index(perm)];
     for (tile, &value) in values.iter().enumerate() {
-        let new_tile = permute_tile_type(tile as u8, perm) as usize;
+        let new_tile = tile_perm[tile];
         out[new_tile] = value;
     }
     out
@@ -26,9 +27,10 @@ fn permute_tile_vector_34(values: &[f32; 34], perm: &[u8; 3]) -> [f32; 34] {
 
 fn permute_opp_next_targets(opp_next: [u8; 3], perm: &[u8; 3]) -> [u8; 3] {
     let mut out = opp_next;
+    let tile_perm = &permutation_tables().tile_34[permutation_index(perm)];
     for tile in &mut out {
         if *tile < 34 {
-            *tile = permute_tile_type(*tile, perm);
+            *tile = tile_perm[*tile as usize] as u8;
         }
     }
     out
@@ -977,6 +979,7 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
 mod tests {
     use super::*;
     use burn::backend::NdArray;
+    use hydra_core::tile::permute_tile_type;
 
     type B = NdArray<f32>;
 

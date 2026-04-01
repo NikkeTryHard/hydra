@@ -107,8 +107,8 @@ fn loader_runtime_score_seed_matches(
 ) -> bool {
     seed.train_microbatch_size == current_train_runtime_microbatch(config)
         && seed.tuple == current_runtime_tuple(config)
-        && seed.warmup_steps == config.preflight.warmup_steps.max(1)
-        && seed.measure_steps == config.preflight.measure_steps.max(1)
+        && seed.warmup_steps == runtime_autotune_warmup_steps(config)
+        && seed.measure_steps == runtime_autotune_measure_steps(config)
         && seed.stats.count > 0
 }
 
@@ -148,6 +148,14 @@ fn should_start_measurement(completed_steps: usize, warmup_steps: usize) -> bool
 
 fn should_count_measured_samples(completed_steps: usize, warmup_steps: usize) -> bool {
     completed_steps > warmup_steps
+}
+
+fn runtime_autotune_warmup_steps(config: &TrainConfig) -> usize {
+    config.preflight.warmup_steps.max(1)
+}
+
+fn runtime_autotune_measure_steps(config: &TrainConfig) -> usize {
+    config.preflight.measure_steps.max(1)
 }
 
 #[cfg(test)]
@@ -243,8 +251,8 @@ where
         config,
         model_config: &runtime_probe_model_config(),
         candidate_microbatch: current_train_runtime_microbatch(config),
-        warmup_steps: config.preflight.warmup_steps.max(1),
-        measure_steps: config.preflight.measure_steps.max(1),
+        warmup_steps: runtime_autotune_warmup_steps(config),
+        measure_steps: runtime_autotune_measure_steps(config),
         loader_config,
         manifest,
         train_device,

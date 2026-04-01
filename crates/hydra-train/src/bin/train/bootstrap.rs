@@ -13,6 +13,7 @@ use colored::Colorize;
 use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
+use hydra_train::data::bc_shards::{BcShardReader, BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::pipeline::{
     DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
 };
@@ -194,6 +195,10 @@ where
     pub(super) head_controller: HeadActivationController,
 }
 
+pub(super) struct TrainingReaders {
+    pub(super) validation_shard_reader: Option<BcShardReader>,
+}
+
 pub(super) struct RlTrainingBootstrap {
     pub(super) config: TrainConfig,
     pub(super) rl_config: RlTrainConfig,
@@ -228,7 +233,7 @@ fn initialize_training_bootstrap_for_backend_with_model_config<B>(
     _config_path: &Path,
     mut config: TrainConfig,
     model_config: HydraModelConfig,
-) -> Result<(TrainingBootstrap<B>, TrainingRuntime<B>), String>
+) -> Result<(TrainingBootstrap<B>, TrainingRuntime<B>, TrainingReaders), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     B::InnerBackend: Backend<Device = LibTorchDevice>,
@@ -421,6 +426,14 @@ where
         counts_exact: manifest.counts_exact,
     };
 
+    let readers = TrainingReaders {
+        validation_shard_reader: config
+            .bc_shards_manifest_path
+            .as_ref()
+            .map(|manifest_path| load_bc_shard_reader(manifest_path, BcShardSplit::Validation))
+            .transpose()?,
+    };
+
     Ok((
         TrainingBootstrap {
             config,
@@ -457,13 +470,14 @@ where
                 HeadActivationConfig::default_with_params(learner_params),
             ),
         },
+        readers,
     ))
 }
 
 fn initialize_training_bootstrap_for_backend<B>(
     config_path: &Path,
     config: TrainConfig,
-) -> Result<(TrainingBootstrap<B>, TrainingRuntime<B>), String>
+) -> Result<(TrainingBootstrap<B>, TrainingRuntime<B>, TrainingReaders), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     B::InnerBackend: Backend<Device = LibTorchDevice>,
@@ -482,6 +496,7 @@ pub(super) fn initialize_training_bootstrap(
     (
         TrainingBootstrap<TrainBackend>,
         TrainingRuntime<TrainBackend>,
+        TrainingReaders,
     ),
     String,
 > {
@@ -743,7 +758,11 @@ mod tests {
     fn initialize_training_bootstrap_with_tiny_model(
         output_dir: &Path,
         config: TrainConfig,
-    ) -> Result<(TrainingBootstrap<TrainBackend>, TrainingRuntime<TrainBackend>), String> {
+    ) -> Result<(
+        TrainingBootstrap<TrainBackend>,
+        TrainingRuntime<TrainBackend>,
+        TrainingReaders,
+    ), String> {
         initialize_training_bootstrap_for_backend_with_model_config::<TrainBackend>(
             output_dir,
             config,
@@ -761,6 +780,7 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+        bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,
@@ -1052,7 +1072,7 @@ mod tests {
         .expect("write cache");
 
         let expected_accum_steps = config.batch_size.div_ceil(32).max(1);
-        let (bootstrap, _runtime) =
+        let (bootstrap, _runtime, _readers) =
             initialize_training_bootstrap(&output_dir, config).expect("bc bootstrap");
 
         assert_ne!(original_buffer_games, 999);
@@ -1158,8 +1178,9 @@ mod tests {
         )
         .expect("write stale cache");
 
-        let (bootstrap, runtime) = initialize_training_bootstrap_with_tiny_model(&output_dir, config)
-            .expect("stale epoch-boundary cache");
+        let (bootstrap, runtime, _readers) =
+            initialize_training_bootstrap_with_tiny_model(&output_dir, config)
+                .expect("stale epoch-boundary cache");
 
         assert_eq!(bootstrap.current_runtime.train_microbatch_size, 64);
         assert_eq!(bootstrap.current_runtime.validation_microbatch_size, 32);
@@ -1236,8 +1257,9 @@ mod tests {
         )
         .expect("write cache");
 
-        let (bootstrap, runtime) = initialize_training_bootstrap_with_tiny_model(&output_dir, config)
-            .expect("epoch-boundary override");
+        let (bootstrap, runtime, _readers) =
+            initialize_training_bootstrap_with_tiny_model(&output_dir, config)
+                .expect("epoch-boundary override");
 
         assert_eq!(bootstrap.resume.start_epoch, 2);
         assert_eq!(bootstrap.session_start_global_step, 17);
@@ -1311,7 +1333,7 @@ mod tests {
         )
         .expect("write stale manifest cache");
 
-        let (bootstrap, _) = initialize_training_bootstrap(&output_dir, config)
+        let (bootstrap, _, _readers) = initialize_training_bootstrap(&output_dir, config)
             .expect("bootstrap should rescan real data on stale manifest cache");
 
         assert_eq!(bootstrap.manifest.sources.len(), 1);
@@ -1352,7 +1374,7 @@ mod tests {
         )
         .expect("write stale train-fraction manifest cache");
 
-        let (bootstrap, _) = initialize_training_bootstrap(&output_dir, config)
+        let (bootstrap, _, _readers) = initialize_training_bootstrap(&output_dir, config)
             .expect("bootstrap should rescan real data on stale train_fraction manifest cache");
 
         assert_eq!(bootstrap.manifest.sources.len(), 1);
@@ -1617,8 +1639,9 @@ mod tests {
         );
         write_resume_state(&latest_state_path(&output_dir), &state).expect("write resume state");
 
-        let (bootstrap, runtime) = initialize_training_bootstrap_with_tiny_model(&output_dir, config)
-            .expect("epoch-boundary resume");
+        let (bootstrap, runtime, _readers) =
+            initialize_training_bootstrap_with_tiny_model(&output_dir, config)
+                .expect("epoch-boundary resume");
 
         assert_eq!(bootstrap.resume.start_epoch, 2);
         assert_eq!(bootstrap.session_start_global_step, 17);

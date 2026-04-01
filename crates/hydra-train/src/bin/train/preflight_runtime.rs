@@ -14,6 +14,7 @@ use hydra_train::data::pipeline::{
     DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
     stream_val_pass,
 };
+use hydra_train::data::bc_shards::{BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::sample::{MjaiSample, collate_batch_samples, collate_samples};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
@@ -42,6 +43,7 @@ use super::config::{
     ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
     train_device, trainer_config_from_train_config, validation_sample_limit,
 };
+use super::epoch_runner::{TrainLogicalBatchConfig, train_logical_batch_from_host_batch};
 use super::loss_policy::{build_bc_exit_config, build_loss_config};
 use super::nvtx;
 use super::preflight_fingerprint::preflight_cache_key;
@@ -76,9 +78,11 @@ use super::runtime_autotune::{
 use super::schedule::effective_lr;
 use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, materialize_validation_samples,
-    run_validation, validation_batch_stats,
+    run_validation, run_validation_from_shards, validation_batch_stats,
 };
 use super::TrainBackend;
+#[cfg(feature = "cuda-graph")]
+use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -1229,6 +1233,7 @@ where
             loader_config: &loader,
             manifest,
             cached_samples,
+            shard_reader: None,
             device: train_device,
             loss_fn: &valid_loss_fn,
             exit_cfg: &exit_cfg,
@@ -1930,6 +1935,114 @@ where
     Err(insufficient_data(microbatch_size))
 }
 
+fn probe_train_candidate_from_shards_for_backend<B>(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    request: ProbeRequest,
+    train_device: &LibTorchDevice,
+    reader: &hydra_train::data::bc_shards::BcShardReader,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = burn::backend::libtorch::TchTensor, IntTensorPrimitive = burn::backend::libtorch::TchTensor>,
+{
+    let train_cfg = trainer_config_from_train_config(config);
+    let mut model = Some(model_config.init::<B>(train_device));
+    let mut optimizer: BenchmarkOptimizerOf<B> = train_cfg.optimizer_config().init();
+    let loss_fn = HydraLoss::<B>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
+    let mut head_controller = HeadActivationController::new(
+        HeadActivationConfig::default_with_params(model_config.estimated_params()),
+    );
+    let microbatch_size = request.candidate_microbatch.min(config.batch_size).max(1);
+    let target_steps = request.warmup_steps + request.measure_steps;
+    let mut completed_steps = 0usize;
+    let mut measure_start = None;
+    let mut scratch = reader.new_scratch(config.batch_size);
+    #[cfg(feature = "cuda-graph")]
+    let mut staging_context = match train_device {
+        LibTorchDevice::Cuda(idx) => {
+            let device_index = *idx as i64;
+            Some((
+                PinnedStagingArea::new(config.batch_size),
+                AsyncH2DContext::new(device_index),
+                PreallocatedDeviceTensors::new(config.batch_size, train_device),
+            ))
+        }
+        _ => None,
+    };
+
+    emit_probe_progress(&format!(
+        "probe_progress kind=train candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
+        microbatch_size, request.warmup_steps, request.measure_steps
+    ))?;
+
+    let total_rows = reader.sample_count();
+    let mut idx = 0usize;
+    while idx < total_rows {
+        let take = config.batch_size.min(total_rows - idx);
+        if take < config.batch_size {
+            break;
+        }
+        reader.collate_host_batch_range_into(idx, take, config.augment, &mut scratch)?;
+        let host_batch = scratch.take_batch();
+        let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
+        let _ = train_logical_batch_from_host_batch(
+            host_batch,
+            TrainLogicalBatchConfig {
+                microbatch_size,
+                augment: config.augment,
+                train_device,
+                loss_fn: &loss_fn,
+                bc_exit_cfg: &exit_cfg,
+                lr,
+                use_amp: false,
+            },
+            &mut head_controller,
+            &mut model,
+            &mut optimizer,
+            #[cfg(feature = "cuda-graph")]
+            staging_context.as_mut(),
+        )?;
+        emit_probe_step_progress(
+            ProbeKind::Train,
+            microbatch_size,
+            completed_steps,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: microbatch_size,
+                warmup_steps: request.warmup_steps,
+                measure_steps: request.measure_steps,
+            },
+            measure_start,
+            config.batch_size,
+        )?;
+        completed_steps += 1;
+        if completed_steps == request.warmup_steps {
+            measure_start = Some(Instant::now());
+            emit_probe_progress(&format!(
+                "probe_progress kind=train candidate_mb={} phase=measure_start total_steps={}",
+                microbatch_size,
+                request.measure_steps.max(1)
+            ))?;
+        }
+        if completed_steps >= target_steps {
+            let elapsed = measure_start.map(|start| start.elapsed()).unwrap_or_default();
+            return Ok(measure_samples_per_second(
+                request.measure_steps.max(1) * config.batch_size,
+                elapsed,
+            ));
+        }
+        idx += take;
+    }
+
+    Err(format!(
+        "not enough train shard data to finish preflight probe at microbatch {}",
+        microbatch_size
+    ))
+}
+
 fn probe_validation_candidate_for_backend<B>(
     config: &TrainConfig,
     model_config: &HydraModelConfig,
@@ -2013,6 +2126,68 @@ where
     ))
 }
 
+fn probe_validation_candidate_from_shards_for_backend<B>(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    _request: ProbeRequest,
+    train_device: &LibTorchDevice,
+    reader: &hydra_train::data::bc_shards::BcShardReader,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
+    let model = model_config.init::<B>(train_device);
+    let baseline_model = model.clone();
+    let loss_fn = HydraLoss::<ValidBackendOf<B>>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let started_at = Instant::now();
+    let _ = run_validation_from_shards(
+        &model,
+        &baseline_model,
+        ValidationContext {
+            config,
+            loader_config: &StreamingLoaderConfig {
+                buffer_games: config.buffer_games,
+                buffer_samples: config.buffer_samples,
+                train_fraction: config.train_fraction,
+                seed: config.seed,
+                archive_queue_bound: config.archive_queue_bound,
+                max_skip_logs_per_source: config.max_skip_logs_per_source,
+                aggregate_skip_logs: true,
+                exit_sidecar: None,
+                exit_sidecar_source_net_hash: None,
+                exit_sidecar_source_version: None,
+                delta_q_sidecar: None,
+                delta_q_sidecar_source_net_hash: None,
+                delta_q_sidecar_source_version: None,
+            },
+            manifest: &DataManifest {
+                sources: Vec::new(),
+                total_games: 0,
+                train_count: 0,
+                val_count: 0,
+                counts_exact: true,
+            },
+            cached_samples: None,
+            shard_reader: Some(reader),
+            device: train_device,
+            loss_fn: &loss_fn,
+            exit_cfg: &build_bc_exit_config(config.advanced_loss.as_ref()),
+        },
+        ValidationRuntime {
+            head_controller: None,
+            progress: None,
+        },
+        &reader,
+    )?;
+    Ok(measure_samples_per_second(
+        validation_sample_limit(config)
+            .unwrap_or(reader.sample_count())
+            .min(reader.sample_count()),
+        started_at.elapsed(),
+    ))
+}
+
 fn run_rl_probe_only(
     config: &TrainConfig,
     request: ProbeRequest,
@@ -2056,11 +2231,69 @@ fn run_probe_attempt_result(
     }
 }
 
+fn run_probe_attempt_with_shard_readers_result(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    train_reader: Option<&hydra_train::data::bc_shards::BcShardReader>,
+    validation_reader: Option<&hydra_train::data::bc_shards::BcShardReader>,
+    request: ProbeRequest,
+) -> Result<ProbeResult, String> {
+    let train_device = train_device(&config.device)?;
+    let started_at = Instant::now();
+    let measured_samples_per_second = match request.kind {
+        ProbeKind::Train => match config.precision_mode {
+            crate::config::PrecisionMode::Fp32 | crate::config::PrecisionMode::Bf16Autocast => {
+                probe_train_candidate_from_shards_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &train_device,
+                    train_reader.ok_or_else(|| {
+                        "train shard reader missing for shard train probe".to_string()
+                    })?,
+                )?
+            }
+        },
+        ProbeKind::Validation => match config.precision_mode {
+            crate::config::PrecisionMode::Fp32 | crate::config::PrecisionMode::Bf16Autocast => {
+                let reader = validation_reader.ok_or_else(|| {
+                    "validation shard reader missing for shard validation probe".to_string()
+                })?;
+                probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &train_device,
+                    reader,
+                )?
+            }
+        },
+        ProbeKind::RlGames | ProbeKind::RlMicrobatch => {
+            return run_rl_probe_only_result(config, request);
+        }
+    };
+    let elapsed_seconds = started_at.elapsed().as_secs_f64();
+    Ok(build_probe_success_result(
+        request,
+        measured_samples_per_second,
+        elapsed_seconds,
+        format!(
+            "stable {} probe on shard dataset",
+            probe_kind_name(request.kind)
+        ),
+    ))
+}
+
 fn load_probe_batch_manifest(
     config: &TrainConfig,
     kind: ProbeKind,
     manifest_cache_path: Option<&Path>,
 ) -> Result<Option<DataManifest>, String> {
+    if config.bc_shards_manifest_path.is_some()
+        && matches!(kind, ProbeKind::Train | ProbeKind::Validation)
+    {
+        return Ok(None);
+    }
     if matches!(kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
         return Ok(None);
     }
@@ -2087,10 +2320,43 @@ fn run_probe_child_batch_request_with_model_config(
     configure_probe_threads(config)?;
     std::fs::remove_file(results_path).ok();
     let manifest = load_probe_batch_manifest(config, batch.request.kind, manifest_cache_path)?;
+    let (train_reader, validation_reader) = if config.bc_shards_manifest_path.is_some()
+        && matches!(batch.request.kind, ProbeKind::Train | ProbeKind::Validation)
+    {
+        let shard_manifest_path = config
+            .bc_shards_manifest_path
+            .as_ref()
+            .ok_or_else(|| "bc_shards_manifest_path missing for shard probe batch".to_string())?;
+        let train_reader = if matches!(batch.request.kind, ProbeKind::Train) {
+            Some(load_bc_shard_reader(shard_manifest_path, BcShardSplit::Train)?)
+        } else {
+            None
+        };
+        let validation_reader = if matches!(batch.request.kind, ProbeKind::Validation) {
+            Some(load_bc_shard_reader(shard_manifest_path, BcShardSplit::Validation)?)
+        } else {
+            None
+        };
+        (train_reader, validation_reader)
+    } else {
+        (None, None)
+    };
     let mut artifact = ProbeBatchArtifact::pending();
 
     for _attempt in 0..batch.attempts {
-        let result = run_probe_attempt_result(config, model_config, manifest.as_ref(), batch.request)?;
+        let result = if config.bc_shards_manifest_path.is_some()
+            && matches!(batch.request.kind, ProbeKind::Train | ProbeKind::Validation)
+        {
+            run_probe_attempt_with_shard_readers_result(
+                config,
+                model_config,
+                train_reader.as_ref(),
+                validation_reader.as_ref(),
+                batch.request,
+            )?
+        } else {
+            run_probe_attempt_result(config, model_config, manifest.as_ref(), batch.request)?
+        };
         let passed = result.status == ProbeStatus::Success;
         artifact.push_result(result);
         write_probe_batch_artifact(results_path, &artifact)?;
@@ -2220,46 +2486,98 @@ fn run_probe_only_with_model_config_result(
     let measured_samples_per_second = match request.kind {
         ProbeKind::Train => match config.precision_mode {
             crate::config::PrecisionMode::Fp32 => {
-                probe_train_candidate_for_backend::<TrainBackend>(
-                    config,
-                    model_config,
-                    request,
-                    &loader_config,
-                    &manifest,
-                    &train_device,
-                )?
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_train_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| "bc_shards_manifest_path missing for shard train probe".to_string())?,
+                            BcShardSplit::Train,
+                        )?,
+                    )?
+                } else {
+                    probe_train_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
             }
             crate::config::PrecisionMode::Bf16Autocast => {
-                probe_train_candidate_for_backend::<TrainBackend>(
-                    config,
-                    model_config,
-                    request,
-                    &loader_config,
-                    &manifest,
-                    &train_device,
-                )?
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_train_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| "bc_shards_manifest_path missing for shard train probe".to_string())?,
+                            BcShardSplit::Train,
+                        )?,
+                    )?
+                } else {
+                    probe_train_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
             }
         },
         ProbeKind::Validation => match config.precision_mode {
             crate::config::PrecisionMode::Fp32 => {
-                probe_validation_candidate_for_backend::<TrainBackend>(
-                    config,
-                    model_config,
-                    request,
-                    &loader_config,
-                    &manifest,
-                    &train_device,
-                )?
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| "bc_shards_manifest_path missing for shard validation probe".to_string())?,
+                            BcShardSplit::Validation,
+                        )?,
+                    )?
+                } else {
+                    probe_validation_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
             }
             crate::config::PrecisionMode::Bf16Autocast => {
-                probe_validation_candidate_for_backend::<TrainBackend>(
-                    config,
-                    model_config,
-                    request,
-                    &loader_config,
-                    &manifest,
-                    &train_device,
-                )?
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| "bc_shards_manifest_path missing for shard validation probe".to_string())?,
+                            BcShardSplit::Validation,
+                        )?,
+                    )?
+                } else {
+                    probe_validation_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
             }
         },
         ProbeKind::RlGames | ProbeKind::RlMicrobatch => {
@@ -2594,13 +2912,25 @@ pub(super) fn run_preflight(
     phase_pb.inc(1);
     phase_pb.set_message(preflight_phase_label("loader runtime tuning"));
     let train_device = train_device(&config.device)?;
-    let ranked_loaders = autotune_ranked_loader_runtime_with_seed(
-        &tuned_config,
-        &manifest,
-        &train_device,
-        config.preflight.real_benchmark_loader_candidates.max(1),
-        train_runtime_seed,
-    )?;
+    let ranked_loaders = if config.bc_shards_manifest_path.is_some() {
+        vec![super::runtime_autotune::RankedLoaderRuntime {
+            loader: super::config::loader_runtime_config(&tuned_config),
+            tuple: (
+                tuned_config.archive_queue_bound,
+                tuned_config.buffer_samples,
+                tuned_config.buffer_games,
+            ),
+            train_samples_per_second: 0.0,
+        }]
+    } else {
+        autotune_ranked_loader_runtime_with_seed(
+            &tuned_config,
+            &manifest,
+            &train_device,
+            config.preflight.real_benchmark_loader_candidates.max(1),
+            train_runtime_seed,
+        )?
+    };
     let loader = ranked_loaders
         .first()
         .map(|ranked| ranked.loader)
@@ -2608,7 +2938,7 @@ pub(super) fn run_preflight(
     let mut runtime = EffectiveRuntimeConfig { selected, loader };
     phase_pb.inc(1);
     phase_pb.set_message(preflight_phase_label("stage-2 finalist benchmark"));
-    let benchmark = if config.preflight.real_benchmark_enabled {
+    let benchmark = if config.preflight.real_benchmark_enabled && config.bc_shards_manifest_path.is_none() {
         let train_candidates = diverse_probe_candidates(
             &train_probe_results,
             selected.train_microbatch_size,

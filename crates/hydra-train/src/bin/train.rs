@@ -90,9 +90,9 @@ type TrainBackend = Autodiff<LibTorch<f32>>;
 
 fn run() -> Result<(), String> {
     color_control::set_override(true);
-    gpu_config::apply_gpu_performance_flags();
     let cli = parse_args(env::args())?;
     let config = read_config(&cli.config_path)?;
+    gpu_config::apply_gpu_performance_flags(&config.device);
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
         return Ok(());
     }

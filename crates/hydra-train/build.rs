@@ -27,6 +27,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA_GRAPH");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rustc-link-arg=-Wl,-rpath={}", libtorch_lib.display());
 
     let cuda_graph_enabled = std::env::var_os("CARGO_FEATURE_CUDA_GRAPH").is_some();
 

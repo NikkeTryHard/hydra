@@ -62,15 +62,14 @@ pub(crate) struct PinnedStagingArea {
     obs: PinnedBuffer,
     legal_mask: PinnedBuffer,
     value_target: PinnedBuffer,
-    grp_target: PinnedBuffer,
+    grp_labels: PinnedBuffer,
     oracle_target: PinnedBuffer,
     oracle_target_mask: PinnedBuffer,
     tenpai: PinnedBuffer,
     danger: PinnedBuffer,
     danger_mask: PinnedBuffer,
     opp_next: PinnedBuffer,
-    score_pdf: PinnedBuffer,
-    score_cdf: PinnedBuffer,
+    score_bins: PinnedBuffer,
 
     // i64 buffer
     actions: PinnedBuffer,
@@ -90,29 +89,29 @@ impl PinnedStagingArea {
     pub(crate) fn new(batch_size: usize) -> Self {
         let f32_bytes = std::mem::size_of::<f32>();
         let i64_bytes = std::mem::size_of::<i64>();
+        let u8_bytes = std::mem::size_of::<u8>();
         let action_elems = batch_size * HYDRA_ACTION_SPACE;
 
         Self {
             batch_size,
             obs: PinnedBuffer::new(batch_size * OBS_SIZE * f32_bytes),
-            legal_mask: PinnedBuffer::new(action_elems * f32_bytes),
+            legal_mask: PinnedBuffer::new(action_elems * u8_bytes),
             value_target: PinnedBuffer::new(batch_size * f32_bytes),
-            grp_target: PinnedBuffer::new(batch_size * GRP_CLASS_COUNT * f32_bytes),
+            grp_labels: PinnedBuffer::new(batch_size * i64_bytes),
             oracle_target: PinnedBuffer::new(batch_size * PLAYER_COUNT * f32_bytes),
             oracle_target_mask: PinnedBuffer::new(batch_size * f32_bytes),
-            tenpai: PinnedBuffer::new(batch_size * OPPONENT_COUNT * f32_bytes),
-            danger: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * f32_bytes),
-            danger_mask: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * f32_bytes),
-            opp_next: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * f32_bytes),
-            score_pdf: PinnedBuffer::new(batch_size * SCORE_BINS * f32_bytes),
-            score_cdf: PinnedBuffer::new(batch_size * SCORE_BINS * f32_bytes),
+            tenpai: PinnedBuffer::new(batch_size * OPPONENT_COUNT * u8_bytes),
+            danger: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * u8_bytes),
+            danger_mask: PinnedBuffer::new(batch_size * SPATIAL_TARGET_SIZE * u8_bytes),
+            opp_next: PinnedBuffer::new(batch_size * OPPONENT_COUNT * i64_bytes),
+            score_bins: PinnedBuffer::new(batch_size * i64_bytes),
             actions: PinnedBuffer::new(batch_size * i64_bytes),
             safety_target: PinnedBuffer::new(action_elems * f32_bytes),
-            safety_mask: PinnedBuffer::new(action_elems * f32_bytes),
+            safety_mask: PinnedBuffer::new(action_elems * u8_bytes),
             exit_target: PinnedBuffer::new(action_elems * f32_bytes),
-            exit_mask: PinnedBuffer::new(action_elems * f32_bytes),
+            exit_mask: PinnedBuffer::new(action_elems * u8_bytes),
             delta_q_target: PinnedBuffer::new(action_elems * f32_bytes),
-            delta_q_mask: PinnedBuffer::new(action_elems * f32_bytes),
+            delta_q_mask: PinnedBuffer::new(action_elems * u8_bytes),
         }
     }
 
@@ -130,55 +129,36 @@ impl PinnedStagingArea {
             self.batch_size,
         );
         copy_f32_to_pinned(&host.obs_flat, &mut self.obs);
-        copy_f32_to_pinned(&host.legal_mask_flat, &mut self.legal_mask);
+        copy_u8_to_pinned(&host.legal_mask_bytes, &mut self.legal_mask);
         copy_f32_to_pinned(&host.value_target, &mut self.value_target);
-        copy_f32_to_pinned(&host.grp_target, &mut self.grp_target);
+        copy_i64_to_pinned(&host.grp_labels, &mut self.grp_labels);
         copy_f32_to_pinned(&host.oracle_target_flat, &mut self.oracle_target);
         copy_f32_to_pinned(&host.oracle_target_mask, &mut self.oracle_target_mask);
-        copy_f32_to_pinned(&host.tenpai_flat, &mut self.tenpai);
-        copy_f32_to_pinned(&host.danger_flat, &mut self.danger);
-        copy_f32_to_pinned(&host.danger_mask_flat, &mut self.danger_mask);
-        copy_f32_to_pinned(&host.opp_next_flat, &mut self.opp_next);
-        copy_f32_to_pinned(&host.score_pdf_flat, &mut self.score_pdf);
-        copy_f32_to_pinned(&host.score_cdf_flat, &mut self.score_cdf);
+        copy_u8_to_pinned(&host.tenpai_bytes, &mut self.tenpai);
+        copy_u8_to_pinned(&host.danger_bytes, &mut self.danger);
+        copy_u8_to_pinned(&host.danger_mask_bytes, &mut self.danger_mask);
+        copy_i64_to_pinned(&host.opp_next_tiles, &mut self.opp_next);
+        copy_i64_to_pinned(&host.score_bins, &mut self.score_bins);
         copy_i64_to_pinned(&host.actions, &mut self.actions);
 
         if let Some(buf) = host.safety_target_flat.as_ref() {
             copy_f32_to_pinned(buf, &mut self.safety_target);
         }
-        if let Some(buf) = host.safety_mask_flat.as_ref() {
-            copy_f32_to_pinned(buf, &mut self.safety_mask);
+        if let Some(buf) = host.safety_mask_bytes.as_ref() {
+            copy_u8_to_pinned(buf, &mut self.safety_mask);
         }
         if let Some(buf) = host.exit_target_flat.as_ref() {
             copy_f32_to_pinned(buf, &mut self.exit_target);
         }
-        if let Some(buf) = host.exit_mask_flat.as_ref() {
-            copy_f32_to_pinned(buf, &mut self.exit_mask);
+        if let Some(buf) = host.exit_mask_bytes.as_ref() {
+            copy_u8_to_pinned(buf, &mut self.exit_mask);
         }
         if let Some(buf) = host.delta_q_target_flat.as_ref() {
             copy_f32_to_pinned(buf, &mut self.delta_q_target);
         }
-        if let Some(buf) = host.delta_q_mask_flat.as_ref() {
-            copy_f32_to_pinned(buf, &mut self.delta_q_mask);
+        if let Some(buf) = host.delta_q_mask_bytes.as_ref() {
+            copy_u8_to_pinned(buf, &mut self.delta_q_mask);
         }
-    }
-
-    /// Return a `&[f32]` slice covering exactly `count` elements from a
-    /// pinned f32 buffer.
-    ///
-    /// # Safety
-    ///
-    /// The pinned buffer must have been written to with at least `count`
-    /// elements via [`stage`](Self::stage) before this call.
-    unsafe fn pinned_f32_slice(buf: &PinnedBuffer, count: usize) -> &[f32] {
-        unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<f32>(), count) }
-    }
-
-    /// # Safety
-    ///
-    /// Same precondition as [`pinned_f32_slice`].
-    unsafe fn pinned_i64_slice(buf: &PinnedBuffer, count: usize) -> &[i64] {
-        unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<i64>(), count) }
     }
 }
 
@@ -208,53 +188,6 @@ impl AsyncH2DContext {
 // Top-level async materialize entry point
 // ---------------------------------------------------------------------------
 
-/// Stage a host batch into pinned memory, issue H2D copies on the
-/// dedicated copy stream, record a completion event, and make the
-/// compute stream wait before returning the device batch.
-///
-/// The compute stream (whatever is current when this function is called)
-/// will not proceed past the returned tensors until the copy stream has
-/// finished writing them.  This is the single synchronization point that
-/// guarantees correctness without blocking the CPU.
-pub(crate) fn materialize_staged<B>(
-    host: &BcShardHostBatch,
-    staging: &mut PinnedStagingArea,
-    h2d: &AsyncH2DContext,
-    device: &LibTorchDevice,
-) -> BcShardBatch<B>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-{
-    let batch = host.batch_size;
-
-    // 1. CPU memcpy: pageable Vec -> pinned staging (fast, cache-friendly)
-    staging.stage(host);
-
-    // 2. Remember the current (compute) stream so we can restore it.
-    let device_index = cuda_device_index(device);
-    let compute_stream = CudaStream::current(device_index);
-
-    // 3. Switch current stream to the dedicated copy stream.
-    //    All subsequent Tensor::from_floats / from_ints calls will issue
-    //    cudaMemcpyAsync on this stream.
-    h2d.copy_stream.set_current();
-
-    // 4. Create device tensors from pinned slices (async DMA on copy stream).
-    let shard_batch = unsafe { materialize_from_pinned::<B>(staging, host, batch, device) };
-
-    // 5. Record an event on the copy stream marking the end of all copies.
-    h2d.event.record(&h2d.copy_stream);
-
-    // 6. Restore compute stream as the current CUDA stream.
-    compute_stream.set_current();
-
-    // 7. Make compute stream wait on the copy-complete event.
-    //    This is a GPU-side dependency -- the CPU does not block.
-    compute_stream.wait_event(&h2d.event);
-
-    shard_batch
-}
-
 // ---------------------------------------------------------------------------
 // Preallocated device tensors -- eliminates per-batch cudaMalloc
 // ---------------------------------------------------------------------------
@@ -280,15 +213,14 @@ pub(crate) struct PreallocatedDeviceTensors {
     obs: tch::Tensor,
     legal_mask: tch::Tensor,
     value_target: tch::Tensor,
-    grp_target: tch::Tensor,
     oracle_target: tch::Tensor,
     oracle_target_mask: tch::Tensor,
     tenpai: tch::Tensor,
     danger: tch::Tensor,
     danger_mask: tch::Tensor,
-    opp_next: tch::Tensor,
-    score_pdf: tch::Tensor,
-    score_cdf: tch::Tensor,
+    grp_labels_i64: tch::Tensor,
+    opp_next_i64: tch::Tensor,
+    score_bins_i64: tch::Tensor,
 
     // i64 buffer
     actions: tch::Tensor,
@@ -315,15 +247,14 @@ impl PreallocatedDeviceTensors {
             obs: tch::Tensor::zeros([b * OBS_SIZE as i64], opts_f32),
             legal_mask: tch::Tensor::zeros([b * action_space], opts_f32),
             value_target: tch::Tensor::zeros([b], opts_f32),
-            grp_target: tch::Tensor::zeros([b * GRP_CLASS_COUNT as i64], opts_f32),
             oracle_target: tch::Tensor::zeros([b * PLAYER_COUNT as i64], opts_f32),
             oracle_target_mask: tch::Tensor::zeros([b], opts_f32),
             tenpai: tch::Tensor::zeros([b * OPPONENT_COUNT as i64], opts_f32),
             danger: tch::Tensor::zeros([b * SPATIAL_TARGET_SIZE as i64], opts_f32),
             danger_mask: tch::Tensor::zeros([b * SPATIAL_TARGET_SIZE as i64], opts_f32),
-            opp_next: tch::Tensor::zeros([b * SPATIAL_TARGET_SIZE as i64], opts_f32),
-            score_pdf: tch::Tensor::zeros([b * SCORE_BINS as i64], opts_f32),
-            score_cdf: tch::Tensor::zeros([b * SCORE_BINS as i64], opts_f32),
+            grp_labels_i64: tch::Tensor::zeros([b], opts_i64),
+            opp_next_i64: tch::Tensor::zeros([b * OPPONENT_COUNT as i64], opts_i64),
+            score_bins_i64: tch::Tensor::zeros([b], opts_i64),
             actions: tch::Tensor::zeros([b], opts_i64),
             safety_target: tch::Tensor::zeros([b * action_space], opts_f32),
             safety_mask: tch::Tensor::zeros([b * action_space], opts_f32),
@@ -383,6 +314,41 @@ where
     shard_batch
 }
 
+pub(crate) fn materialize_staged_reuse_inner<B>(
+    host: &BcShardHostBatch,
+    staging: &mut PinnedStagingArea,
+    h2d: &AsyncH2DContext,
+    device: &LibTorchDevice,
+    gpu_tensors: &mut PreallocatedDeviceTensors,
+) -> BcShardBatch<B>
+where
+    B: Backend<
+        Device = LibTorchDevice,
+        FloatTensorPrimitive = TchTensor,
+        IntTensorPrimitive = TchTensor,
+    >,
+{
+    let batch = host.batch_size;
+
+    staging.stage(host);
+
+    let device_index = cuda_device_index(device);
+    let compute_stream = CudaStream::current(device_index);
+
+    h2d.copy_stream.set_current();
+
+    let shard_batch =
+        unsafe { materialize_reuse_from_pinned_inner::<B>(staging, host, batch, gpu_tensors) };
+
+    h2d.event.record(&h2d.copy_stream);
+
+    compute_stream.set_current();
+
+    compute_stream.wait_event(&h2d.event);
+
+    shard_batch
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -392,169 +358,6 @@ fn cuda_device_index(device: &LibTorchDevice) -> i64 {
     match device {
         LibTorchDevice::Cuda(idx) => *idx as i64,
         _ => 0,
-    }
-}
-
-/// Materialize device tensors from pinned staging buffers.
-///
-/// # Safety
-///
-/// [`PinnedStagingArea::stage`] must have been called with a host batch
-/// whose `batch_size <= staging.batch_size` before this function.
-unsafe fn materialize_from_pinned<B>(
-    staging: &PinnedStagingArea,
-    host: &BcShardHostBatch,
-    batch: usize,
-    device: &LibTorchDevice,
-) -> BcShardBatch<B>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-{
-    unsafe {
-        let obs_slice = PinnedStagingArea::pinned_f32_slice(&staging.obs, batch * OBS_SIZE);
-        let obs = Tensor::<B, 1>::from_floats(obs_slice, device).reshape([
-            batch,
-            NUM_CHANNELS,
-            TILE_COUNT,
-        ]);
-
-        let actions_slice = PinnedStagingArea::pinned_i64_slice(&staging.actions, batch);
-        let actions_tensor = Tensor::<B, 1, Int>::from_ints(actions_slice, device);
-
-        let legal_mask_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.legal_mask, batch * HYDRA_ACTION_SPACE);
-        let legal_mask = Tensor::<B, 1>::from_floats(legal_mask_slice, device)
-            .reshape([batch, HYDRA_ACTION_SPACE]);
-
-        let value_slice = PinnedStagingArea::pinned_f32_slice(&staging.value_target, batch);
-        let value_target = Tensor::<B, 1>::from_floats(value_slice, device);
-
-        let grp_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.grp_target, batch * GRP_CLASS_COUNT);
-        let grp_target =
-            Tensor::<B, 1>::from_floats(grp_slice, device).reshape([batch, GRP_CLASS_COUNT]);
-
-        let oracle_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.oracle_target, batch * PLAYER_COUNT);
-        let oracle_target =
-            Tensor::<B, 1>::from_floats(oracle_slice, device).reshape([batch, PLAYER_COUNT]);
-
-        let oracle_mask_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.oracle_target_mask, batch);
-        let oracle_target_mask = Tensor::<B, 1>::from_floats(oracle_mask_slice, device);
-
-        let tenpai_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.tenpai, batch * OPPONENT_COUNT);
-        let tenpai_target =
-            Tensor::<B, 1>::from_floats(tenpai_slice, device).reshape([batch, OPPONENT_COUNT]);
-
-        let danger_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.danger, batch * SPATIAL_TARGET_SIZE);
-        let danger_target = Tensor::<B, 1>::from_floats(danger_slice, device).reshape([
-            batch,
-            OPPONENT_COUNT,
-            TILE_COUNT,
-        ]);
-
-        let danger_mask_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.danger_mask, batch * SPATIAL_TARGET_SIZE);
-        let danger_mask = Tensor::<B, 1>::from_floats(danger_mask_slice, device).reshape([
-            batch,
-            OPPONENT_COUNT,
-            TILE_COUNT,
-        ]);
-
-        let opp_next_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.opp_next, batch * SPATIAL_TARGET_SIZE);
-        let opp_next_target = Tensor::<B, 1>::from_floats(opp_next_slice, device).reshape([
-            batch,
-            OPPONENT_COUNT,
-            TILE_COUNT,
-        ]);
-
-        let score_pdf_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.score_pdf, batch * SCORE_BINS);
-        let score_pdf_target =
-            Tensor::<B, 1>::from_floats(score_pdf_slice, device).reshape([batch, SCORE_BINS]);
-
-        let score_cdf_slice =
-            PinnedStagingArea::pinned_f32_slice(&staging.score_cdf, batch * SCORE_BINS);
-        let score_cdf_target =
-            Tensor::<B, 1>::from_floats(score_cdf_slice, device).reshape([batch, SCORE_BINS]);
-
-        let exit_target_tensor = host.exit_target_flat.as_ref().map(|_| {
-            let s = PinnedStagingArea::pinned_f32_slice(
-                &staging.exit_target,
-                batch * HYDRA_ACTION_SPACE,
-            );
-            Tensor::<B, 1>::from_floats(s, device).reshape([batch, HYDRA_ACTION_SPACE])
-        });
-        let exit_mask_tensor = host.exit_mask_flat.as_ref().map(|_| {
-            let s =
-                PinnedStagingArea::pinned_f32_slice(&staging.exit_mask, batch * HYDRA_ACTION_SPACE);
-            Tensor::<B, 1>::from_floats(s, device).reshape([batch, HYDRA_ACTION_SPACE])
-        });
-
-        let batch_struct = MjaiBcBatch {
-            actions: actions_tensor.clone(),
-            exit_target: exit_target_tensor.clone(),
-            exit_mask: exit_mask_tensor.clone(),
-        };
-
-        let targets = HydraTargets {
-            policy_target: policy_target_from_actions::<B>(actions_tensor.clone(), batch),
-            legal_mask,
-            value_target,
-            grp_target,
-            tenpai_target,
-            danger_target,
-            danger_mask,
-            opp_next_target,
-            score_pdf_target,
-            score_cdf_target,
-            oracle_target: Some(oracle_target),
-            belief_fields_target: None,
-            belief_fields_mask: None,
-            mixture_weight_target: None,
-            mixture_weight_mask: None,
-            opponent_hand_type_target: None,
-            delta_q_target: host.delta_q_target_flat.as_ref().map(|_| {
-                let s = PinnedStagingArea::pinned_f32_slice(
-                    &staging.delta_q_target,
-                    batch * HYDRA_ACTION_SPACE,
-                );
-                Tensor::<B, 1>::from_floats(s, device).reshape([batch, HYDRA_ACTION_SPACE])
-            }),
-            delta_q_mask: host.delta_q_mask_flat.as_ref().map(|_| {
-                let s = PinnedStagingArea::pinned_f32_slice(
-                    &staging.delta_q_mask,
-                    batch * HYDRA_ACTION_SPACE,
-                );
-                Tensor::<B, 1>::from_floats(s, device).reshape([batch, HYDRA_ACTION_SPACE])
-            }),
-            safety_residual_target: host.safety_target_flat.as_ref().map(|_| {
-                let s = PinnedStagingArea::pinned_f32_slice(
-                    &staging.safety_target,
-                    batch * HYDRA_ACTION_SPACE,
-                );
-                Tensor::<B, 1>::from_floats(s, device).reshape([batch, HYDRA_ACTION_SPACE])
-            }),
-            safety_residual_mask: host.safety_mask_flat.as_ref().map(|_| {
-                let s = PinnedStagingArea::pinned_f32_slice(
-                    &staging.safety_mask,
-                    batch * HYDRA_ACTION_SPACE,
-                );
-                Tensor::<B, 1>::from_floats(s, device).reshape([batch, HYDRA_ACTION_SPACE])
-            }),
-            oracle_guidance_mask: Some(oracle_target_mask),
-            target_presence: Some(host.target_presence.clone()),
-        };
-
-        BcShardBatch {
-            obs,
-            batch: batch_struct,
-            targets,
-        }
     }
 }
 
@@ -577,7 +380,7 @@ where
 {
     unsafe {
         let f = |pinned: &PinnedBuffer, count: usize, dst: &mut tch::Tensor| -> Tensor<B, 1> {
-            burn_tensor_from_tch_f32::<B>(copy_pinned_f32_to_gpu(pinned, count, dst))
+            burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(pinned, count, dst))
         };
 
         let obs = f(&staging.obs, batch * OBS_SIZE, &mut gpu.obs).reshape([
@@ -592,21 +395,22 @@ where
             &mut gpu.actions,
         ));
 
-        let legal_mask = f(
+        let legal_mask = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
             &staging.legal_mask,
             batch * HYDRA_ACTION_SPACE,
             &mut gpu.legal_mask,
-        )
+        ))
         .reshape([batch, HYDRA_ACTION_SPACE]);
 
         let value_target = f(&staging.value_target, batch, &mut gpu.value_target);
 
-        let grp_target = f(
-            &staging.grp_target,
-            batch * GRP_CLASS_COUNT,
-            &mut gpu.grp_target,
-        )
-        .reshape([batch, GRP_CLASS_COUNT]);
+        let grp_labels =
+            copy_pinned_i64_to_gpu(&staging.grp_labels, batch, &mut gpu.grp_labels_i64);
+        let grp_target = burn_tensor_from_tch_f32::<B, 2>(
+            grp_labels
+                .one_hot(GRP_CLASS_COUNT as i64)
+                .to_kind(tch::Kind::Float),
+        );
 
         let oracle_target = f(
             &staging.oracle_target,
@@ -621,35 +425,44 @@ where
             &mut gpu.oracle_target_mask,
         );
 
-        let tenpai_target = f(&staging.tenpai, batch * OPPONENT_COUNT, &mut gpu.tenpai)
-            .reshape([batch, OPPONENT_COUNT]);
+        let tenpai_target = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
+            &staging.tenpai,
+            batch * OPPONENT_COUNT,
+            &mut gpu.tenpai,
+        ))
+        .reshape([batch, OPPONENT_COUNT]);
 
-        let danger_target = f(
+        let danger_target = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
             &staging.danger,
             batch * SPATIAL_TARGET_SIZE,
             &mut gpu.danger,
-        )
+        ))
         .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
 
-        let danger_mask = f(
+        let danger_mask = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
             &staging.danger_mask,
             batch * SPATIAL_TARGET_SIZE,
             &mut gpu.danger_mask,
-        )
+        ))
         .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
 
-        let opp_next_target = f(
-            &staging.opp_next,
-            batch * SPATIAL_TARGET_SIZE,
-            &mut gpu.opp_next,
-        )
-        .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
+        let opp_next_target =
+            burn_tensor_from_tch_f32::<B, 2>(opp_next_tch_from_tiles(copy_pinned_i64_to_gpu(
+                &staging.opp_next,
+                batch * OPPONENT_COUNT,
+                &mut gpu.opp_next_i64,
+            )))
+            .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
 
-        let score_pdf_target = f(&staging.score_pdf, batch * SCORE_BINS, &mut gpu.score_pdf)
-            .reshape([batch, SCORE_BINS]);
-
-        let score_cdf_target = f(&staging.score_cdf, batch * SCORE_BINS, &mut gpu.score_cdf)
-            .reshape([batch, SCORE_BINS]);
+        let score_bins =
+            copy_pinned_i64_to_gpu(&staging.score_bins, batch, &mut gpu.score_bins_i64);
+        let score_pdf_target = burn_tensor_from_tch_f32::<B, 2>(
+            score_bins
+                .one_hot(SCORE_BINS as i64)
+                .to_kind(tch::Kind::Float),
+        );
+        let score_cdf_target =
+            burn_tensor_from_tch_f32::<B, 2>(score_cdf_tch_from_bins(score_bins.shallow_clone()));
 
         let exit_target_tensor = host.exit_target_flat.as_ref().map(|_| {
             f(
@@ -659,12 +472,12 @@ where
             )
             .reshape([batch, HYDRA_ACTION_SPACE])
         });
-        let exit_mask_tensor = host.exit_mask_flat.as_ref().map(|_| {
-            f(
+        let exit_mask_tensor = host.exit_mask_bytes.as_ref().map(|_| {
+            burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
                 &staging.exit_mask,
                 batch * HYDRA_ACTION_SPACE,
                 &mut gpu.exit_mask,
-            )
+            ))
             .reshape([batch, HYDRA_ACTION_SPACE])
         });
 
@@ -699,12 +512,12 @@ where
                 )
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            delta_q_mask: host.delta_q_mask_flat.as_ref().map(|_| {
-                f(
+            delta_q_mask: host.delta_q_mask_bytes.as_ref().map(|_| {
+                burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
                     &staging.delta_q_mask,
                     batch * HYDRA_ACTION_SPACE,
                     &mut gpu.delta_q_mask,
-                )
+                ))
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
             safety_residual_target: host.safety_target_flat.as_ref().map(|_| {
@@ -715,12 +528,203 @@ where
                 )
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
-            safety_residual_mask: host.safety_mask_flat.as_ref().map(|_| {
-                f(
+            safety_residual_mask: host.safety_mask_bytes.as_ref().map(|_| {
+                burn_tensor_from_tch_f32::<B, 1>(copy_pinned_u8_to_gpu(
                     &staging.safety_mask,
                     batch * HYDRA_ACTION_SPACE,
                     &mut gpu.safety_mask,
+                ))
+                .reshape([batch, HYDRA_ACTION_SPACE])
+            }),
+            oracle_guidance_mask: Some(oracle_target_mask),
+            target_presence: Some(host.target_presence.clone()),
+        };
+
+        BcShardBatch {
+            obs,
+            batch: batch_struct,
+            targets,
+        }
+    }
+}
+
+/// # Safety
+///
+/// [`PinnedStagingArea::stage`] must have been called with a host batch
+/// whose `batch_size <= staging.batch_size` before this function.
+/// All tensors from a previous call must have been dropped.
+pub(crate) unsafe fn materialize_reuse_from_pinned_inner<B>(
+    staging: &PinnedStagingArea,
+    host: &BcShardHostBatch,
+    batch: usize,
+    gpu: &mut PreallocatedDeviceTensors,
+) -> BcShardBatch<B>
+where
+    B: Backend<
+        Device = LibTorchDevice,
+        FloatTensorPrimitive = TchTensor,
+        IntTensorPrimitive = TchTensor,
+    >,
+{
+    unsafe {
+        let f = |pinned: &PinnedBuffer, count: usize, dst: &mut tch::Tensor| -> Tensor<B, 1> {
+            burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(pinned, count, dst))
+        };
+
+        let obs = f(&staging.obs, batch * OBS_SIZE, &mut gpu.obs).reshape([
+            batch,
+            NUM_CHANNELS,
+            TILE_COUNT,
+        ]);
+
+        let actions_tensor = burn_int_tensor_from_tch_inner::<B>(copy_pinned_i64_to_gpu(
+            &staging.actions,
+            batch,
+            &mut gpu.actions,
+        ));
+
+        let legal_mask = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+            &staging.legal_mask,
+            batch * HYDRA_ACTION_SPACE,
+            &mut gpu.legal_mask,
+        ))
+        .reshape([batch, HYDRA_ACTION_SPACE]);
+
+        let value_target = f(&staging.value_target, batch, &mut gpu.value_target);
+
+        let grp_labels =
+            copy_pinned_i64_to_gpu(&staging.grp_labels, batch, &mut gpu.grp_labels_i64);
+        let grp_target = burn_tensor_from_tch_f32_inner::<B, 2>(
+            grp_labels
+                .one_hot(GRP_CLASS_COUNT as i64)
+                .to_kind(tch::Kind::Float),
+        );
+
+        let oracle_target = f(
+            &staging.oracle_target,
+            batch * PLAYER_COUNT,
+            &mut gpu.oracle_target,
+        )
+        .reshape([batch, PLAYER_COUNT]);
+
+        let oracle_target_mask = f(
+            &staging.oracle_target_mask,
+            batch,
+            &mut gpu.oracle_target_mask,
+        );
+
+        let tenpai_target = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+            &staging.tenpai,
+            batch * OPPONENT_COUNT,
+            &mut gpu.tenpai,
+        ))
+        .reshape([batch, OPPONENT_COUNT]);
+
+        let danger_target = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+            &staging.danger,
+            batch * SPATIAL_TARGET_SIZE,
+            &mut gpu.danger,
+        ))
+        .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
+
+        let danger_mask = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+            &staging.danger_mask,
+            batch * SPATIAL_TARGET_SIZE,
+            &mut gpu.danger_mask,
+        ))
+        .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
+
+        let opp_next_target = burn_tensor_from_tch_f32_inner::<B, 2>(opp_next_tch_from_tiles(
+            copy_pinned_i64_to_gpu(
+                &staging.opp_next,
+                batch * OPPONENT_COUNT,
+                &mut gpu.opp_next_i64,
+            ),
+        ))
+        .reshape([batch, OPPONENT_COUNT, TILE_COUNT]);
+
+        let score_bins =
+            copy_pinned_i64_to_gpu(&staging.score_bins, batch, &mut gpu.score_bins_i64);
+        let score_pdf_target = burn_tensor_from_tch_f32_inner::<B, 2>(
+            score_bins
+                .one_hot(SCORE_BINS as i64)
+                .to_kind(tch::Kind::Float),
+        );
+        let score_cdf_target = burn_tensor_from_tch_f32_inner::<B, 2>(score_cdf_tch_from_bins(
+            score_bins.shallow_clone(),
+        ));
+
+        let exit_target_tensor = host.exit_target_flat.as_ref().map(|_| {
+            f(
+                &staging.exit_target,
+                batch * HYDRA_ACTION_SPACE,
+                &mut gpu.exit_target,
+            )
+            .reshape([batch, HYDRA_ACTION_SPACE])
+        });
+        let exit_mask_tensor = host.exit_mask_bytes.as_ref().map(|_| {
+            burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+                &staging.exit_mask,
+                batch * HYDRA_ACTION_SPACE,
+                &mut gpu.exit_mask,
+            ))
+            .reshape([batch, HYDRA_ACTION_SPACE])
+        });
+
+        let batch_struct = MjaiBcBatch {
+            actions: actions_tensor.clone(),
+            legal_mask: legal_mask.clone(),
+            exit_target: exit_target_tensor.clone(),
+            exit_mask: exit_mask_tensor.clone(),
+        };
+
+        let targets = HydraTargets {
+            policy_target: policy_target_from_actions::<B>(actions_tensor.clone(), batch),
+            legal_mask,
+            value_target,
+            grp_target,
+            tenpai_target,
+            danger_target,
+            danger_mask,
+            opp_next_target,
+            score_pdf_target,
+            score_cdf_target,
+            oracle_target: Some(oracle_target),
+            belief_fields_target: None,
+            belief_fields_mask: None,
+            mixture_weight_target: None,
+            mixture_weight_mask: None,
+            opponent_hand_type_target: None,
+            delta_q_target: host.delta_q_target_flat.as_ref().map(|_| {
+                f(
+                    &staging.delta_q_target,
+                    batch * HYDRA_ACTION_SPACE,
+                    &mut gpu.delta_q_target,
                 )
+                .reshape([batch, HYDRA_ACTION_SPACE])
+            }),
+            delta_q_mask: host.delta_q_mask_bytes.as_ref().map(|_| {
+                burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+                    &staging.delta_q_mask,
+                    batch * HYDRA_ACTION_SPACE,
+                    &mut gpu.delta_q_mask,
+                ))
+                .reshape([batch, HYDRA_ACTION_SPACE])
+            }),
+            safety_residual_target: host.safety_target_flat.as_ref().map(|_| {
+                f(
+                    &staging.safety_target,
+                    batch * HYDRA_ACTION_SPACE,
+                    &mut gpu.safety_target,
+                )
+                .reshape([batch, HYDRA_ACTION_SPACE])
+            }),
+            safety_residual_mask: host.safety_mask_bytes.as_ref().map(|_| {
+                burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_u8_to_gpu(
+                    &staging.safety_mask,
+                    batch * HYDRA_ACTION_SPACE,
+                    &mut gpu.safety_mask,
+                ))
                 .reshape([batch, HYDRA_ACTION_SPACE])
             }),
             oracle_guidance_mask: Some(oracle_target_mask),
@@ -790,7 +794,27 @@ unsafe fn copy_pinned_i64_to_gpu(
     dst_slice
 }
 
-fn burn_tensor_from_tch_f32<B>(t: tch::Tensor) -> Tensor<B, 1>
+unsafe fn copy_pinned_u8_to_gpu(
+    pinned: &PinnedBuffer,
+    count: usize,
+    gpu_dst: &mut tch::Tensor,
+) -> tch::Tensor {
+    let dims = [count as i64];
+    let cpu_view = unsafe {
+        tch::Tensor::from_blob(
+            pinned.as_ptr(),
+            &dims,
+            &[],
+            tch::Kind::Uint8,
+            tch::Device::Cpu,
+        )
+    };
+    let mut dst_slice = gpu_dst.narrow(0, 0, count as i64);
+    dst_slice.copy_(&cpu_view);
+    dst_slice.to_kind(tch::Kind::Float)
+}
+
+fn burn_tensor_from_tch_f32<B, const D: usize>(t: tch::Tensor) -> Tensor<B, D>
 where
     B: AutodiffBackend<
         Device = LibTorchDevice,
@@ -803,6 +827,14 @@ where
     )))
 }
 
+fn burn_tensor_from_tch_f32_inner<B, const D: usize>(t: tch::Tensor) -> Tensor<B, D>
+where
+    B: Backend<Device = LibTorchDevice, FloatTensorPrimitive = TchTensor>,
+{
+    let tch_tensor = TchTensor::new(t);
+    Tensor::from_primitive(burn::tensor::TensorPrimitive::Float(tch_tensor))
+}
+
 fn burn_int_tensor_from_tch<B>(t: tch::Tensor) -> Tensor<B, 1, Int>
 where
     B: AutodiffBackend<
@@ -812,6 +844,14 @@ where
 {
     let tch_tensor = TchTensor::new(t);
     Tensor::from_primitive(B::int_from_inner(tch_tensor))
+}
+
+fn burn_int_tensor_from_tch_inner<B>(t: tch::Tensor) -> Tensor<B, 1, Int>
+where
+    B: Backend<Device = LibTorchDevice, IntTensorPrimitive = TchTensor>,
+{
+    let tch_tensor = TchTensor::new(t);
+    Tensor::from_primitive(tch_tensor)
 }
 
 fn copy_f32_to_pinned(src: &[f32], dst: &mut PinnedBuffer) {
@@ -839,6 +879,37 @@ fn copy_i64_to_pinned(src: &[i64], dst: &mut PinnedBuffer) {
     unsafe {
         ptr::copy_nonoverlapping(src.as_ptr().cast::<u8>(), dst.as_mut_ptr(), byte_count);
     }
+}
+
+fn copy_u8_to_pinned(src: &[u8], dst: &mut PinnedBuffer) {
+    let byte_count = src.len();
+    assert!(
+        byte_count <= dst.len(),
+        "u8 copy overflow: {} bytes into {} byte pinned buffer",
+        byte_count,
+        dst.len(),
+    );
+    unsafe {
+        ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), byte_count);
+    }
+}
+
+fn opp_next_tch_from_tiles(tiles: tch::Tensor) -> tch::Tensor {
+    let valid = tiles.ge(0).logical_and(&tiles.lt(TILE_COUNT as i64));
+    let clamped = tiles.clamp(0, (TILE_COUNT - 1) as i64);
+    clamped.one_hot(TILE_COUNT as i64).to_kind(tch::Kind::Float)
+        * valid.unsqueeze(1).to_kind(tch::Kind::Float)
+}
+
+fn score_cdf_tch_from_bins(score_bins: tch::Tensor) -> tch::Tensor {
+    let count = score_bins.size()[0];
+    let device = score_bins.device();
+    let range = tch::Tensor::arange(SCORE_BINS as i64, (tch::Kind::Int64, device))
+        .unsqueeze(0)
+        .expand([count, SCORE_BINS as i64], true);
+    range
+        .ge_tensor(&score_bins.unsqueeze(1))
+        .to_kind(tch::Kind::Float)
 }
 
 fn policy_target_from_actions<B: Backend>(

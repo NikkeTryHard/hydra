@@ -27,6 +27,8 @@ pub(crate) struct TrainConfig {
     pub(crate) exit_sidecar_path: Option<PathBuf>,
     #[serde(default)]
     pub(crate) delta_q_sidecar_path: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) bc_shards_manifest_path: Option<PathBuf>,
     #[serde(default = "default_train_fraction")]
     pub(crate) train_fraction: f32,
     #[serde(default = "default_augment")]

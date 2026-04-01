@@ -25,6 +25,8 @@ use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
 use super::nvtx;
+#[cfg(feature = "cuda-graph")]
+use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
 use super::progress::{
     BatchStats, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
     batch_stats_from_outputs,
@@ -37,6 +39,7 @@ pub(super) struct ValidationContext<'a, B: Backend> {
     pub(super) loader_config: &'a StreamingLoaderConfig,
     pub(super) manifest: &'a DataManifest,
     pub(super) cached_samples: Option<&'a [MjaiSample]>,
+    pub(super) shard_reader: Option<&'a BcShardReader>,
     pub(super) device: &'a B::Device,
     pub(super) loss_fn: &'a HydraLoss<B>,
     pub(super) exit_cfg: &'a BcExitConfig,
@@ -168,6 +171,9 @@ pub(super) fn run_validation_with_policy_baseline<TB>(
 where
     TB: AutodiffBackend,
 {
+    if let Some(reader) = context.shard_reader {
+        return run_validation_from_shards(model, baseline_model, context, runtime, reader);
+    }
     if let Some(manifest_path) = context.config.bc_shards_manifest_path.as_ref() {
         let reader = load_bc_shard_reader(manifest_path, BcShardSplit::Validation)?;
         return run_validation_from_shards(model, baseline_model, context, runtime, &reader);
@@ -177,6 +183,7 @@ where
         loader_config,
         manifest,
         cached_samples,
+        shard_reader: _,
         device,
         loss_fn,
         exit_cfg,
@@ -476,6 +483,7 @@ where
         loader_config: _,
         manifest: _,
         cached_samples: _,
+        shard_reader: _,
         device,
         loss_fn,
         exit_cfg,
@@ -507,6 +515,19 @@ where
     let total_rows = reader.sample_count();
     let limit_rows = validation_sample_limit.unwrap_or(total_rows).min(total_rows);
 
+    #[cfg(feature = "cuda-graph")]
+    let mut staging_context = match device {
+        burn::backend::libtorch::LibTorchDevice::Cuda(idx) => {
+            let device_index = *idx as i64;
+            Some((
+                PinnedStagingArea::new(validation_batch_size),
+                AsyncH2DContext::new(device_index),
+                PreallocatedDeviceTensors::new(validation_batch_size, device),
+            ))
+        }
+        _ => None,
+    };
+
     // -- producer/consumer pipeline: CPU collation on a scoped background thread --
     let batch_size = validation_batch_size;
     let (tx, rx) =
@@ -531,6 +552,23 @@ where
 
         for recv_result in rx {
             let (host_batch, take) = recv_result?;
+            #[cfg(feature = "cuda-graph")]
+            let shard_batch = {
+                if let Some((ref mut pinned_staging, ref h2d_ctx, ref mut gpu_tensors)) =
+                    staging_context
+                {
+                    super::pinned_transfer::materialize_staged_reuse_inner::<ValidBackendOf<TB>>(
+                        &host_batch,
+                        pinned_staging,
+                        h2d_ctx,
+                        device,
+                        gpu_tensors,
+                    )
+                } else {
+                    host_batch.materialize::<ValidBackendOf<TB>>(device)
+                }
+            };
+            #[cfg(not(feature = "cuda-graph"))]
             let shard_batch = host_batch.materialize::<ValidBackendOf<TB>>(device);
             let obs = shard_batch.obs;
             let batch = shard_batch.batch;
@@ -1080,6 +1118,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &manifest,
                 cached_samples: None,
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -1123,6 +1162,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &manifest,
                 cached_samples: None,
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -1142,6 +1182,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &manifest,
                 cached_samples: None,
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -1227,6 +1268,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &manifest,
                 cached_samples: None,
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -1245,6 +1287,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &manifest,
                 cached_samples: Some(&cached_samples),
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -1296,6 +1339,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &empty_manifest(),
                 cached_samples: Some(&cached_samples),
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -1342,6 +1386,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &empty_manifest(),
                 cached_samples: Some(&cached_samples),
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),
@@ -1381,6 +1426,7 @@ mod tests {
                 loader_config: &loader_config,
                 manifest: &manifest,
                 cached_samples: None,
+                shard_reader: None,
                 device: &device,
                 loss_fn: &loss_fn,
                 exit_cfg: &BcExitConfig::default(),

@@ -483,6 +483,9 @@ pub(super) fn finalize_probe_search<F>(
 where
     F: Fn(ProbeKind, usize, usize) -> std::path::PathBuf + Copy,
 {
+    if config.bc_shards_manifest_path.is_some() {
+        return best_probe_summary(results).ok_or(missing_error);
+    }
     refine_probe_winner_locally(
         config_path,
         result_path_for,
@@ -685,6 +688,7 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
             augment: true,
             resume_checkpoint: None,

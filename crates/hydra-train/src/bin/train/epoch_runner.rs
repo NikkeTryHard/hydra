@@ -11,7 +11,9 @@ use indicatif::MultiProgress;
 use tboard::EventWriter;
 
 use hydra_train::amp::maybe_autocast;
-use hydra_train::data::bc_shards::{load_bc_shard_reader, BcShardHostBatch, BcShardSplit};
+use hydra_train::data::bc_shards::{
+    load_bc_shard_reader, BcShardHostBatch, BcShardReader, BcShardSplit,
+};
 use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
 use hydra_train::data::sample::{collate_samples_owned, MjaiBcBatch, MjaiSample};
 use hydra_train::model::HydraModel;
@@ -82,6 +84,7 @@ where
     pub(super) run_start: &'a Instant,
     pub(super) head_controller: &'a mut HeadActivationController,
     pub(super) cached_validation_samples: Option<&'a [MjaiSample]>,
+    pub(super) validation_shard_reader: Option<&'a BcShardReader>,
 }
 
 pub(super) struct EpochRuntimeMut<'a, O, W, B = TrainBackend>
@@ -105,17 +108,17 @@ pub(super) struct EpochRunOutcome {
     pub(super) stop_after_epoch: bool,
 }
 
-struct TrainLogicalBatchConfig<'a, B = TrainBackend>
+pub(super) struct TrainLogicalBatchConfig<'a, B = TrainBackend>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
 {
-    microbatch_size: usize,
-    augment: bool,
-    train_device: &'a LibTorchDevice,
-    loss_fn: &'a HydraLoss<B>,
-    bc_exit_cfg: &'a BcExitConfig,
-    lr: f64,
-    use_amp: bool,
+    pub(super) microbatch_size: usize,
+    pub(super) augment: bool,
+    pub(super) train_device: &'a LibTorchDevice,
+    pub(super) loss_fn: &'a HydraLoss<B>,
+    pub(super) bc_exit_cfg: &'a BcExitConfig,
+    pub(super) lr: f64,
+    pub(super) use_amp: bool,
 }
 
 struct ValidationStepContext<'a, B = TrainBackend>
@@ -133,6 +136,7 @@ where
     artifacts: &'a BcArtifactPaths,
     session_start_global_step: usize,
     cached_validation_samples: Option<&'a [MjaiSample]>,
+    validation_shard_reader: Option<&'a BcShardReader>,
 }
 
 struct IntervalStepSummaryContext<'a> {
@@ -180,6 +184,7 @@ where
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
     cached_validation_samples: Option<&'a [MjaiSample]>,
+    validation_shard_reader: Option<&'a BcShardReader>,
 }
 
 #[derive(Clone)]
@@ -488,6 +493,7 @@ where
         artifacts,
         session_start_global_step,
         cached_validation_samples,
+        validation_shard_reader,
     } = context;
     let session_step = session_steps_completed(global_step, session_start_global_step);
     if session_step == 0 || !session_step.is_multiple_of(config.validate_every_n_steps) {
@@ -520,6 +526,7 @@ where
                 loader_config,
                 manifest,
                 cached_samples: cached_validation_samples,
+                shard_reader: validation_shard_reader,
                 device: train_device,
                 loss_fn: valid_loss_fn,
                 exit_cfg: bc_exit_cfg,
@@ -825,6 +832,7 @@ where
         bc_exit_cfg,
         artifacts,
         cached_validation_samples,
+        validation_shard_reader,
     } = context;
     if !should_run_epoch_end_validation(epoch, config.num_epochs, config.validation_every_n_epochs)
     {
@@ -853,6 +861,7 @@ where
                 loader_config,
                 manifest,
                 cached_samples: cached_validation_samples,
+                shard_reader: validation_shard_reader,
                 device: train_device,
                 loss_fn: valid_loss_fn,
                 exit_cfg: bc_exit_cfg,
@@ -1080,6 +1089,7 @@ where
         run_start,
         head_controller,
         cached_validation_samples,
+        validation_shard_reader,
     } = context;
     let EpochRuntimeMut {
         model: model_slot,
@@ -1231,6 +1241,7 @@ where
                     artifacts,
                     session_start_global_step,
                     cached_validation_samples,
+                    validation_shard_reader,
                 },
                 epoch_model(model_slot)?,
                 Some(head_controller),
@@ -1432,6 +1443,7 @@ where
                 bc_exit_cfg,
                 artifacts,
                 cached_validation_samples,
+                validation_shard_reader,
             },
             Some(head_controller),
             best_validation,
@@ -1520,6 +1532,7 @@ where
         run_start,
         head_controller,
         cached_validation_samples,
+        validation_shard_reader,
     } = context;
     let EpochRuntimeMut {
         model: model_slot,
@@ -1605,9 +1618,8 @@ where
             let mut idx = producer_start_index;
             while idx < total_rows {
                 let take = batch_size.min(total_rows - idx);
-                let indices: Vec<usize> = (idx..idx + take).collect();
                 let result = reader
-                    .collate_host_batch_into(&indices, augment, &mut scratch)
+                    .collate_host_batch_range_into(idx, take, augment, &mut scratch)
                     .map(|()| (scratch.take_batch(), take));
                 if tx.send(result).is_err() {
                     break;
@@ -1678,6 +1690,7 @@ where
                 artifacts,
                 session_start_global_step,
                 cached_validation_samples,
+                validation_shard_reader,
             },
             epoch_model(model_slot)?,
             Some(head_controller),
@@ -1823,6 +1836,7 @@ where
                 bc_exit_cfg,
                 artifacts,
                 cached_validation_samples,
+                validation_shard_reader,
             },
             Some(head_controller),
             best_validation,
@@ -1878,7 +1892,7 @@ where
 /// When `staging` is `Some`, the host batch is staged into pinned memory
 /// and the H2D transfer is issued on a dedicated copy stream with
 /// event-based synchronization.
-fn train_logical_batch_from_host_batch<B, O>(
+pub(super) fn train_logical_batch_from_host_batch<B, O>(
     host_batch: BcShardHostBatch,
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
@@ -1946,71 +1960,118 @@ where
     let mut total_samples = 0usize;
     let mut microbatch_count = 0usize;
     let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
+    let effective_microbatch = microbatch_size.max(1);
 
-    for start in (0..batch_size).step_by(microbatch_size.max(1)) {
-        let end = (start + microbatch_size.max(1)).min(batch_size);
-        let chunk_len = end - start;
-        #[allow(clippy::single_range_in_vec_init)]
-        let r = [start..end];
-        let obs_chunk = obs.clone().slice(r.clone());
-        let batch_chunk = MjaiBcBatch {
-            actions: batch.actions.clone().slice(r.clone()),
-            exit_target: batch
-                .exit_target
-                .as_ref()
-                .map(|t| t.clone().slice(r.clone())),
-            exit_mask: batch.exit_mask.as_ref().map(|t| t.clone().slice(r.clone())),
-        };
-        let targets_chunk = targets.slice_batch(start, end);
+    if effective_microbatch >= batch_size {
         let (active_loss_fn, warmup_heads) =
-            gated_bc_context(Some(head_controller), loss_fn, &targets_chunk);
+            gated_bc_context(Some(head_controller), loss_fn, &targets);
         let model = epoch_model(model_slot)?;
         let t = Instant::now();
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs_chunk, &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
         let (breakdown, total) = {
             let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
-            let breakdown = active_loss_fn.total_loss(&output, &targets_chunk);
+            let breakdown = active_loss_fn.total_loss(&output, &targets);
             let total = maybe_add_exit_loss(
                 breakdown.total.clone(),
                 output.policy_logits.clone(),
-                batch_chunk.exit_target.as_ref(),
-                batch_chunk.exit_mask.as_ref(),
+                batch.exit_target.as_ref(),
+                batch.exit_mask.as_ref(),
                 bc_exit_cfg,
             );
             (breakdown, total)
         };
         sub_timing.loss_seconds += t.elapsed().as_secs_f64();
-        let chunk_weight = chunk_len as f32 / logical_batch_len;
-        let weighted_total = total.clone() * chunk_weight;
-        let chunk_metric_sums = batch_metric_sums_from_outputs(
-            chunk_len,
+        metric_sums = Some(batch_metric_sums_from_outputs(
+            batch_size,
             output.policy_logits.clone(),
-            targets_chunk.legal_mask.clone(),
-            batch_chunk.actions.clone(),
-            total,
+            targets.legal_mask.clone(),
+            batch.actions.clone(),
+            total.clone(),
             &breakdown,
-        );
-        metric_sums = Some(match metric_sums.take() {
-            Some(existing) => existing + chunk_metric_sums,
-            None => chunk_metric_sums,
-        });
-        total_samples += chunk_len;
-        microbatch_count += 1;
+        ));
+        total_samples = batch_size;
+        microbatch_count = 1;
         let t = Instant::now();
         {
             let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
-            let grads = weighted_total.backward();
+            let grads = total.backward();
             let grads = GradientsParams::from_grads(grads, model);
             accumulator.accumulate(model, grads);
         }
         sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+    } else {
+        for start in (0..batch_size).step_by(effective_microbatch) {
+            let end = (start + effective_microbatch).min(batch_size);
+            let chunk_len = end - start;
+            #[allow(clippy::single_range_in_vec_init)]
+            let r = [start..end];
+            let obs_chunk = obs.clone().slice(r.clone());
+            let batch_chunk = MjaiBcBatch {
+                actions: batch.actions.clone().slice(r.clone()),
+                exit_target: batch
+                    .exit_target
+                    .as_ref()
+                    .map(|t| t.clone().slice(r.clone())),
+                exit_mask: batch.exit_mask.as_ref().map(|t| t.clone().slice(r.clone())),
+            };
+            let targets_chunk = targets.slice_batch(start, end);
+            let (active_loss_fn, warmup_heads) =
+                gated_bc_context(Some(head_controller), loss_fn, &targets_chunk);
+            let model = epoch_model(model_slot)?;
+            let t = Instant::now();
+            let output = {
+                let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                maybe_autocast(use_amp, || {
+                    model.forward_with_warmup(obs_chunk, &active_loss_fn.config, &warmup_heads)
+                })
+            };
+            sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let (breakdown, total) = {
+                let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+                let breakdown = active_loss_fn.total_loss(&output, &targets_chunk);
+                let total = maybe_add_exit_loss(
+                    breakdown.total.clone(),
+                    output.policy_logits.clone(),
+                    batch_chunk.exit_target.as_ref(),
+                    batch_chunk.exit_mask.as_ref(),
+                    bc_exit_cfg,
+                );
+                (breakdown, total)
+            };
+            sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+            let chunk_weight = chunk_len as f32 / logical_batch_len;
+            let weighted_total = total.clone() * chunk_weight;
+            let chunk_metric_sums = batch_metric_sums_from_outputs(
+                chunk_len,
+                output.policy_logits.clone(),
+                targets_chunk.legal_mask.clone(),
+                batch_chunk.actions.clone(),
+                total,
+                &breakdown,
+            );
+            metric_sums = Some(match metric_sums.take() {
+                Some(existing) => existing + chunk_metric_sums,
+                None => chunk_metric_sums,
+            });
+            total_samples += chunk_len;
+            microbatch_count += 1;
+            let t = Instant::now();
+            {
+                let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+                let grads = weighted_total.backward();
+                let grads = GradientsParams::from_grads(grads, model);
+                accumulator.accumulate(model, grads);
+            }
+            sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+        }
     }
 
     let optimizer_started = Instant::now();
@@ -2670,6 +2731,7 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             &model,
             None,
@@ -2691,6 +2753,7 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             &model,
             None,
@@ -2876,6 +2939,7 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             &model,
             None,
@@ -2931,6 +2995,7 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             &model,
             None,
@@ -3110,6 +3175,7 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             None,
             &mut best_validation,
@@ -3154,6 +3220,7 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             None,
             &mut best_validation,
@@ -3410,6 +3477,7 @@ mod tests {
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -3514,6 +3582,7 @@ mod tests {
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -3600,6 +3669,7 @@ mod tests {
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: None,
+                validation_shard_reader: None,
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -3752,6 +3822,7 @@ mod tests {
                     run_start: &run_start,
                     head_controller: &mut head_controller,
                     cached_validation_samples: None,
+                    validation_shard_reader: None,
                 },
                 EpochRuntimeMut {
                     model: &mut model,
