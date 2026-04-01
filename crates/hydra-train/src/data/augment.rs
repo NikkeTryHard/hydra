@@ -48,21 +48,34 @@ pub fn augment_obs_suit(obs: &[f32; OBS_SIZE], perm: &[u8; 3]) -> [f32; OBS_SIZE
 /// Permute obs in-place into `dst`, avoiding a 26KB return-value copy.
 pub fn augment_obs_suit_into(obs: &[f32; OBS_SIZE], perm: &[u8; 3], dst: &mut [f32]) {
     debug_assert_eq!(dst.len(), OBS_SIZE);
-    dst.fill(0.0);
-    let tile_perm = &permutation_tables().tile_34[permutation_index(perm)];
+
+    const SUIT_TILES: usize = 9;
+    const HONOR_START: usize = 27;
+    const HONOR_COUNT: usize = NUM_TILES - HONOR_START;
+
     for ch in 0..NUM_CHANNELS {
+        let src_ch = ch * NUM_TILES;
+        let dst_ch = ch * NUM_TILES;
+
         if (AKA_CHANNEL_START..AKA_CHANNEL_START + AKA_CHANNELS).contains(&ch) {
             let suit = ch - AKA_CHANNEL_START;
             let new_ch = AKA_CHANNEL_START + perm[suit] as usize;
-            let src = &obs[ch * NUM_TILES..(ch + 1) * NUM_TILES];
             let d = &mut dst[new_ch * NUM_TILES..(new_ch + 1) * NUM_TILES];
-            d.copy_from_slice(src);
+            d.copy_from_slice(&obs[src_ch..src_ch + NUM_TILES]);
             continue;
         }
-        for tile in 0..NUM_TILES {
-            let new_tile = tile_perm[tile];
-            dst[ch * NUM_TILES + new_tile] = obs[ch * NUM_TILES + tile];
+
+        // Block-copy each suit (9 tiles) to its permuted destination,
+        // then copy honors (7 tiles) in place.  4 memcpy ops vs 34 scatter writes.
+        for src_suit in 0..3usize {
+            let dst_suit = perm[src_suit] as usize;
+            dst[dst_ch + dst_suit * SUIT_TILES..dst_ch + (dst_suit + 1) * SUIT_TILES]
+                .copy_from_slice(
+                    &obs[src_ch + src_suit * SUIT_TILES..src_ch + (src_suit + 1) * SUIT_TILES],
+                );
         }
+        dst[dst_ch + HONOR_START..dst_ch + HONOR_START + HONOR_COUNT]
+            .copy_from_slice(&obs[src_ch + HONOR_START..src_ch + HONOR_START + HONOR_COUNT]);
     }
 }
 
@@ -73,15 +86,19 @@ pub fn augment_obs_suit_into(obs: &[f32; OBS_SIZE], perm: &[u8; 3], dst: &mut [f
 pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mut [f32]) {
     debug_assert_eq!(src_bytes.len(), OBS_SIZE * 4);
     debug_assert_eq!(dst.len(), OBS_SIZE);
-    dst.fill(0.0);
-    let tile_perm = &permutation_tables().tile_34[permutation_index(perm)];
+
+    const SUIT_TILES: usize = 9;
+    const HONOR_START: usize = 27;
+    const HONOR_COUNT: usize = NUM_TILES - HONOR_START;
+
     for ch in 0..NUM_CHANNELS {
         let src_off = ch * NUM_TILES * 4;
+        let dst_ch = ch * NUM_TILES;
+
         if (AKA_CHANNEL_START..AKA_CHANNEL_START + AKA_CHANNELS).contains(&ch) {
             let suit = ch - AKA_CHANNEL_START;
             let new_ch = AKA_CHANNEL_START + perm[suit] as usize;
             let d = &mut dst[new_ch * NUM_TILES..(new_ch + 1) * NUM_TILES];
-            // Safe: src_bytes is little-endian f32, host is little-endian.
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     src_bytes[src_off..src_off + NUM_TILES * 4].as_ptr(),
@@ -91,13 +108,28 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
             }
             continue;
         }
-        for tile in 0..NUM_TILES {
-            let new_tile = tile_perm[tile];
-            let byte_off = src_off + tile * 4;
-            dst[ch * NUM_TILES + new_tile] = f32::from_le_bytes(
-                src_bytes[byte_off..byte_off + 4]
-                    .try_into()
-                    .expect("f32 chunk"),
+
+        // Block-copy each suit (9 tiles) to its permuted destination,
+        // then copy honors (7 tiles) in place.  4 memcpy ops vs 34 scatter writes.
+        for src_suit in 0..3usize {
+            let dst_suit = perm[src_suit] as usize;
+            let s_byte = src_off + src_suit * SUIT_TILES * 4;
+            let d_idx = dst_ch + dst_suit * SUIT_TILES;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src_bytes[s_byte..s_byte + SUIT_TILES * 4].as_ptr(),
+                    dst[d_idx..d_idx + SUIT_TILES].as_mut_ptr().cast::<u8>(),
+                    SUIT_TILES * 4,
+                );
+            }
+        }
+        let s_byte = src_off + HONOR_START * 4;
+        let d_idx = dst_ch + HONOR_START;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src_bytes[s_byte..s_byte + HONOR_COUNT * 4].as_ptr(),
+                dst[d_idx..d_idx + HONOR_COUNT].as_mut_ptr().cast::<u8>(),
+                HONOR_COUNT * 4,
             );
         }
     }
