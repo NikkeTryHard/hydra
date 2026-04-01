@@ -322,16 +322,18 @@ impl BcShardHostScratch {
     /// deallocating when existing capacity is sufficient.
     pub fn reset(&mut self, batch_size: usize) {
         self.batch_size = batch_size;
-        resize_zeroed(&mut self.obs_flat, batch_size * OBS_SIZE);
+        // obs_flat: every element is overwritten by write_*_row_into_scratch,
+        // so skip zeroing the largest buffer (~1.6MB at batch=64).
+        resize_uninit_f32(&mut self.obs_flat, batch_size * OBS_SIZE);
         resize_zeroed_i64(&mut self.actions, batch_size);
-        resize_zeroed_u8(&mut self.legal_mask_bytes, batch_size * HYDRA_ACTION_SPACE);
+        resize_uninit_u8(&mut self.legal_mask_bytes, batch_size * HYDRA_ACTION_SPACE);
         resize_zeroed(&mut self.value_target, batch_size);
         resize_zeroed_i64(&mut self.grp_labels, batch_size);
         resize_zeroed(&mut self.oracle_target_flat, batch_size * PLAYER_COUNT);
         resize_zeroed(&mut self.oracle_target_mask, batch_size);
-        resize_zeroed_u8(&mut self.tenpai_bytes, batch_size * OPPONENT_COUNT);
-        resize_zeroed_u8(&mut self.danger_bytes, batch_size * SPATIAL_TARGET_SIZE);
-        resize_zeroed_u8(&mut self.danger_mask_bytes, batch_size * SPATIAL_TARGET_SIZE);
+        resize_uninit_u8(&mut self.tenpai_bytes, batch_size * OPPONENT_COUNT);
+        resize_uninit_u8(&mut self.danger_bytes, batch_size * SPATIAL_TARGET_SIZE);
+        resize_uninit_u8(&mut self.danger_mask_bytes, batch_size * SPATIAL_TARGET_SIZE);
         resize_fill_i64(&mut self.opp_next_tiles, batch_size * OPPONENT_COUNT, 255);
         resize_zeroed_i64(&mut self.score_bins, batch_size);
         if let Some(buf) = self.safety_target_flat.as_mut() {
@@ -394,6 +396,30 @@ impl BcShardHostScratch {
 fn resize_zeroed(buf: &mut Vec<f32>, len: usize) {
     buf.clear();
     buf.resize(len, 0.0);
+}
+
+/// # Safety
+/// Caller guarantees every element in `0..len` will be written before read.
+#[inline]
+fn resize_uninit_f32(buf: &mut Vec<f32>, len: usize) {
+    buf.clear();
+    if buf.capacity() < len {
+        buf.reserve(len);
+    }
+    // SAFETY: capacity >= len after the branch above; caller writes all elements.
+    unsafe { buf.set_len(len) };
+}
+
+/// # Safety
+/// Caller guarantees every element in `0..len` will be written before read.
+#[inline]
+fn resize_uninit_u8(buf: &mut Vec<u8>, len: usize) {
+    buf.clear();
+    if buf.capacity() < len {
+        buf.reserve(len);
+    }
+    // SAFETY: capacity >= len after the branch above; caller writes all elements.
+    unsafe { buf.set_len(len) };
 }
 
 #[inline]
