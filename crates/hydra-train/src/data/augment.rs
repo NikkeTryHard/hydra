@@ -91,8 +91,10 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
     const HONOR_START: usize = 27;
     const HONOR_COUNT: usize = NUM_TILES - HONOR_START;
 
-    // Split into three branchless segments to eliminate the per-channel
-    // aka-range check and allow the compiler to vectorize each segment.
+    // SAFETY: All channel/suit indices are bounded by compile-time constants.
+    // ch < NUM_CHANNELS=192, src_suit < 3, dst_suit = perm[src_suit] < 3.
+    // Max src byte offset: (191 * 34 + 33) * 4 = 26108 < 26112 = OBS_SIZE * 4.
+    // Max dst index: 191 * 34 + 33 = 6527 < 6528 = OBS_SIZE.
     let permute_normal_channel = |ch: usize, dst: &mut [f32], src_bytes: &[u8]| {
         let src_off = ch * NUM_TILES * 4;
         let dst_ch = ch * NUM_TILES;
@@ -102,8 +104,12 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
             let d_idx = dst_ch + dst_suit * SUIT_TILES;
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    src_bytes[s_byte..s_byte + SUIT_TILES * 4].as_ptr(),
-                    dst[d_idx..d_idx + SUIT_TILES].as_mut_ptr().cast::<u8>(),
+                    src_bytes
+                        .get_unchecked(s_byte..s_byte + SUIT_TILES * 4)
+                        .as_ptr(),
+                    dst.get_unchecked_mut(d_idx..d_idx + SUIT_TILES)
+                        .as_mut_ptr()
+                        .cast::<u8>(),
                     SUIT_TILES * 4,
                 );
             }
@@ -112,8 +118,12 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
         let d_idx = dst_ch + HONOR_START;
         unsafe {
             std::ptr::copy_nonoverlapping(
-                src_bytes[s_byte..s_byte + HONOR_COUNT * 4].as_ptr(),
-                dst[d_idx..d_idx + HONOR_COUNT].as_mut_ptr().cast::<u8>(),
+                src_bytes
+                    .get_unchecked(s_byte..s_byte + HONOR_COUNT * 4)
+                    .as_ptr(),
+                dst.get_unchecked_mut(d_idx..d_idx + HONOR_COUNT)
+                    .as_mut_ptr()
+                    .cast::<u8>(),
                 HONOR_COUNT * 4,
             );
         }
@@ -127,11 +137,15 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
         let src_off = ch * NUM_TILES * 4;
         let suit = ch - AKA_CHANNEL_START;
         let new_ch = AKA_CHANNEL_START + perm[suit] as usize;
-        let d = &mut dst[new_ch * NUM_TILES..(new_ch + 1) * NUM_TILES];
+        let d_start = new_ch * NUM_TILES;
         unsafe {
             std::ptr::copy_nonoverlapping(
-                src_bytes[src_off..src_off + NUM_TILES * 4].as_ptr(),
-                d.as_mut_ptr().cast::<u8>(),
+                src_bytes
+                    .get_unchecked(src_off..src_off + NUM_TILES * 4)
+                    .as_ptr(),
+                dst.get_unchecked_mut(d_start..d_start + NUM_TILES)
+                    .as_mut_ptr()
+                    .cast::<u8>(),
                 NUM_TILES * 4,
             );
         }
@@ -196,7 +210,10 @@ pub fn augment_action_vector_suit_into(
 ) {
     debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
     for i in 0..37usize {
-        dst[action_perm[i]] = values[i];
+        unsafe {
+            let perm_idx = *action_perm.get_unchecked(i);
+            *dst.get_unchecked_mut(perm_idx) = *values.get_unchecked(i);
+        }
     }
     dst[37..HYDRA_ACTION_SPACE].copy_from_slice(&values[37..HYDRA_ACTION_SPACE]);
 }
@@ -224,7 +241,10 @@ pub fn augment_action_vector_f32_mask_suit_into(
 ) {
     debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
     for i in 0..37usize {
-        dst[action_perm[i]] = values[i];
+        unsafe {
+            let perm_idx = *action_perm.get_unchecked(i);
+            *dst.get_unchecked_mut(perm_idx) = *values.get_unchecked(i);
+        }
     }
     dst[37..HYDRA_ACTION_SPACE].copy_from_slice(&values[37..HYDRA_ACTION_SPACE]);
 }

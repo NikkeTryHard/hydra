@@ -131,6 +131,7 @@ const fn generate_perm_table() -> [[u8; 4]; 24] {
     table
 }
 
+#[inline]
 pub fn score_delta_to_bin(score_delta: i32) -> usize {
     const RANGE_INV: f32 = 1.0 / (SCORE_BIN_MAX - SCORE_BIN_MIN);
     let normalized = (score_delta as f32 - SCORE_BIN_MIN) * RANGE_INV;
@@ -138,6 +139,7 @@ pub fn score_delta_to_bin(score_delta: i32) -> usize {
     bin.min(SCORE_BINS - 1)
 }
 
+#[inline]
 pub fn score_delta_to_value(score_delta: i32) -> f32 {
     const INV_100K: f32 = 1.0 / 100_000.0;
     (score_delta as f32 * INV_100K).clamp(-1.0, 1.0)

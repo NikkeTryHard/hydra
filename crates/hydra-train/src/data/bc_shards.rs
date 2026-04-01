@@ -362,9 +362,9 @@ impl BcShardHostScratch {
         // obs_flat: every element is overwritten by write_*_row_into_scratch,
         // so skip zeroing the largest buffer (~1.6MB at batch=64).
         resize_uninit_f32(&mut self.obs_flat, batch_size * OBS_SIZE);
-        resize_zeroed_i64(&mut self.actions, batch_size);
+        resize_uninit_i64(&mut self.actions, batch_size);
         resize_uninit_f32(&mut self.legal_mask_flat, batch_size * HYDRA_ACTION_SPACE);
-        resize_zeroed(&mut self.value_target, batch_size);
+        resize_uninit_f32(&mut self.value_target, batch_size);
         resize_zeroed(&mut self.grp_target_flat, batch_size * GRP_CLASS_COUNT);
         resize_uninit_f32(&mut self.oracle_target_flat, batch_size * PLAYER_COUNT);
         resize_zeroed(&mut self.oracle_target_mask, batch_size);
@@ -521,10 +521,15 @@ fn resize_uninit_f32(buf: &mut Vec<f32>, len: usize) {
     unsafe { buf.set_len(len) };
 }
 
+/// # Safety
+/// Caller guarantees every element in `0..len` will be written before read.
 #[inline]
-fn resize_zeroed_i64(buf: &mut Vec<i64>, len: usize) {
+fn resize_uninit_i64(buf: &mut Vec<i64>, len: usize) {
     buf.clear();
-    buf.resize(len, 0);
+    if buf.capacity() < len {
+        buf.reserve(len);
+    }
+    unsafe { buf.set_len(len) };
 }
 
 impl BcShardHostBatch {
@@ -1264,15 +1269,17 @@ fn write_unaugmented_row_into_scratch(
     }
     cursor += HYDRA_ACTION_SPACE;
 
-    let score_delta = read_i32_le(unsafe { bytes.get_unchecked(cursor..cursor + 4) });
+    let score_delta = read_i32_le(unsafe {
+        &*(bytes.get_unchecked(cursor..cursor + 4).as_ptr() as *const [u8; 4])
+    });
     cursor += 4;
     unsafe { *scratch.value_target.get_unchecked_mut(row) = score_delta_to_value(score_delta) };
     let bin = score_delta_to_bin(score_delta);
-    pdf_row[bin] = 1.0;
-    cdf_row[bin..].fill(1.0);
+    unsafe { *pdf_row.get_unchecked_mut(bin) = 1.0 };
+    unsafe { cdf_row.get_unchecked_mut(bin..) }.fill(1.0);
 
     let grp = (unsafe { *bytes.get_unchecked(cursor) } as usize).min(GRP_CLASS_COUNT - 1);
-    grp_row[grp] = 1.0;
+    unsafe { *grp_row.get_unchecked_mut(grp) = 1.0 };
     cursor += 1;
 
     // Direct mmap-to-scratch copy on little-endian; avoids stack intermediate.
@@ -1316,7 +1323,7 @@ fn write_unaugmented_row_into_scratch(
         .enumerate()
     {
         if (tile as usize) < TILE_COUNT {
-            opp_next_row[opp * TILE_COUNT + tile as usize] = 1.0;
+            unsafe { *opp_next_row.get_unchecked_mut(opp * TILE_COUNT + tile as usize) = 1.0 };
         }
     }
     cursor += OPPONENT_COUNT;
@@ -1533,7 +1540,6 @@ fn write_augmented_row_into_scratch(
 
     let mask_src = unsafe { bytes.get_unchecked(cursor..cursor + HYDRA_ACTION_SPACE) };
     let mask_dst = mask_row;
-    mask_dst.fill(0.0);
     for i in 0..37usize {
         let permuted = unsafe { *action_perm.get_unchecked(i) };
         unsafe {
@@ -1541,23 +1547,25 @@ fn write_augmented_row_into_scratch(
                 f32::from_bits((*mask_src.get_unchecked(i) != 0) as u32 * F32_ONE_BITS);
         }
     }
-    for (dst, &src) in mask_dst[37..HYDRA_ACTION_SPACE]
+    for (dst, &src) in unsafe { mask_dst.get_unchecked_mut(37..HYDRA_ACTION_SPACE) }
         .iter_mut()
-        .zip(mask_src[37..HYDRA_ACTION_SPACE].iter())
+        .zip(unsafe { mask_src.get_unchecked(37..HYDRA_ACTION_SPACE) }.iter())
     {
         *dst = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     cursor += HYDRA_ACTION_SPACE;
 
-    let score_delta = read_i32_le(unsafe { bytes.get_unchecked(cursor..cursor + 4) });
+    let score_delta = read_i32_le(unsafe {
+        &*(bytes.get_unchecked(cursor..cursor + 4).as_ptr() as *const [u8; 4])
+    });
     cursor += 4;
     unsafe { *scratch.value_target.get_unchecked_mut(row) = score_delta_to_value(score_delta) };
     let bin = score_delta_to_bin(score_delta);
-    pdf_row[bin] = 1.0;
-    cdf_row[bin..].fill(1.0);
+    unsafe { *pdf_row.get_unchecked_mut(bin) = 1.0 };
+    unsafe { cdf_row.get_unchecked_mut(bin..) }.fill(1.0);
 
     let grp = (unsafe { *bytes.get_unchecked(cursor) } as usize).min(GRP_CLASS_COUNT - 1);
-    grp_row[grp] = 1.0;
+    unsafe { *grp_row.get_unchecked_mut(grp) = 1.0 };
     cursor += 1;
 
     #[cfg(target_endian = "little")]
@@ -1603,7 +1611,7 @@ fn write_augmented_row_into_scratch(
             tile as usize
         };
         if permuted < TILE_COUNT {
-            opp_next_row[opp * TILE_COUNT + permuted] = 1.0;
+            unsafe { *opp_next_row.get_unchecked_mut(opp * TILE_COUNT + permuted) = 1.0 };
         }
     }
     cursor += OPPONENT_COUNT;
@@ -2181,8 +2189,8 @@ fn read_u32_le(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes[0..4].try_into().expect("u32 slice"))
 }
 
-fn read_i32_le(bytes: &[u8]) -> i32 {
-    i32::from_le_bytes(bytes[0..4].try_into().expect("i32 slice"))
+fn read_i32_le(bytes: &[u8; 4]) -> i32 {
+    i32::from_le_bytes(*bytes)
 }
 
 #[cfg(not(target_endian = "little"))]
@@ -2216,7 +2224,7 @@ fn read_f32_array<const N: usize>(bytes: &[u8]) -> [f32; N] {
 
 fn read_optional_action_f32(bytes: &[u8]) -> Option<[f32; HYDRA_ACTION_SPACE]> {
     debug_assert!(bytes.len() >= HYDRA_ACTION_SPACE * 4);
-    if !any_nonzero_u8(&bytes[..HYDRA_ACTION_SPACE * 4]) {
+    if !any_nonzero_u8(unsafe { bytes.get_unchecked(..HYDRA_ACTION_SPACE * 4) }) {
         return None;
     }
     Some(read_f32_array::<HYDRA_ACTION_SPACE>(bytes))
@@ -2241,7 +2249,7 @@ fn any_nonzero_u8(bytes: &[u8]) -> bool {
 fn read_optional_action_f32_into(bytes: &[u8], dst: &mut [f32]) -> bool {
     debug_assert!(bytes.len() >= HYDRA_ACTION_SPACE * 4);
     debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
-    let region = &bytes[..HYDRA_ACTION_SPACE * 4];
+    let region = unsafe { bytes.get_unchecked(..HYDRA_ACTION_SPACE * 4) };
     if !any_nonzero_u8(region) {
         return false;
     }
@@ -2266,11 +2274,12 @@ fn read_optional_action_f32_into(bytes: &[u8], dst: &mut [f32]) -> bool {
 fn read_optional_action_mask_f32_into(bytes: &[u8], dst: &mut [f32]) -> bool {
     debug_assert!(bytes.len() >= HYDRA_ACTION_SPACE);
     debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
-    if !any_nonzero_u8(&bytes[..HYDRA_ACTION_SPACE]) {
+    let src = unsafe { bytes.get_unchecked(..HYDRA_ACTION_SPACE) };
+    if !any_nonzero_u8(src) {
         return false;
     }
-    for (d, &src) in dst.iter_mut().zip(bytes[..HYDRA_ACTION_SPACE].iter()) {
-        *d = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
+    for (d, &s) in dst.iter_mut().zip(src.iter()) {
+        *d = f32::from_bits((s != 0) as u32 * F32_ONE_BITS);
     }
     true
 }
@@ -2285,14 +2294,18 @@ fn expand_and_augment_mask_into(
 ) -> bool {
     debug_assert!(bytes.len() >= HYDRA_ACTION_SPACE);
     debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
-    if !any_nonzero_u8(&bytes[..HYDRA_ACTION_SPACE]) {
+    if !any_nonzero_u8(unsafe { bytes.get_unchecked(..HYDRA_ACTION_SPACE) }) {
         return false;
     }
     for i in 0..37usize {
-        dst[action_perm[i]] = f32::from_bits((bytes[i] != 0) as u32 * F32_ONE_BITS);
+        unsafe {
+            let perm_idx = *action_perm.get_unchecked(i);
+            *dst.get_unchecked_mut(perm_idx) =
+                f32::from_bits((*bytes.get_unchecked(i) != 0) as u32 * F32_ONE_BITS);
+        }
     }
-    dst[37..HYDRA_ACTION_SPACE].iter_mut()
-        .zip(bytes[37..HYDRA_ACTION_SPACE].iter())
+    unsafe { dst.get_unchecked_mut(37..HYDRA_ACTION_SPACE) }.iter_mut()
+        .zip(unsafe { bytes.get_unchecked(37..HYDRA_ACTION_SPACE) }.iter())
         .for_each(|(d, &src)| *d = f32::from_bits((src != 0) as u32 * F32_ONE_BITS));
     true
 }
