@@ -56,6 +56,12 @@ pub const DANGER_MASK_BYTES: usize = SPATIAL_TARGET_SIZE;
 pub const OPTIONAL_ACTION_FLOAT32_BYTES: usize = HYDRA_ACTION_SPACE * 4;
 pub const OPTIONAL_ACTION_MASK_BYTES: usize = HYDRA_ACTION_SPACE;
 
+/// IEEE 754 bit pattern for `1.0f32`. Used with `f32::from_bits(mask * F32_ONE_BITS)`
+/// to convert u8 nonzero checks to 0.0/1.0 without the `vcvtdq2ps` float conversion
+/// that `byte.min(1) as f32` requires. LLVM lowers this to `vpmovzxbd` + `vpcmpgtd`
+/// + `vpand` (3 instructions per 8 elements, vs 5 with the int-to-float path).
+const F32_ONE_BITS: u32 = 0x3F80_0000;
+
 pub const BC_BASE_RECORD_SIZE: u32 = (OBS_F32_BYTES
     + 1
     + LEGAL_MASK_BYTES
@@ -1079,6 +1085,37 @@ impl BcShardReader {
         for row in 0..len {
             let sample_index = start + row;
             let shard = &self.shards[shard_index];
+
+            // Prefetch the next record's mmap bytes into L2 while we
+            // process the current record (~26KB).  The kernel's
+            // MADV_SEQUENTIAL readahead keeps pages in RAM, but this
+            // warms the CPU cache hierarchy one record ahead.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let next_offset = if offset + 1 < shard.sample_count as usize {
+                    offset + 1
+                } else {
+                    0
+                };
+                let next_shard = if next_offset == 0 && shard_index + 1 < self.shards.len() {
+                    &self.shards[shard_index + 1]
+                } else {
+                    shard
+                };
+                if row + 1 < len {
+                    let next_start = BC_SHARD_HEADER_SIZE as usize
+                        + next_offset * next_shard.record_size;
+                    let ptr = next_shard.mmap.as_ptr().wrapping_add(next_start);
+                    unsafe {
+                        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T1};
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.cast());
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(64).cast());
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(128).cast());
+                        _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(192).cast());
+                    }
+                }
+            }
+
             if augment {
                 write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)?;
             } else {
@@ -1133,145 +1170,256 @@ fn write_unaugmented_row_into_scratch(
     let bytes = &shard.mmap[start..end];
     let mut cursor = 0usize;
 
-    let obs_dst = &mut scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE];
+    // Prefetch the auxiliary fields that follow the 26KB obs blob. They sit
+    // on a different page and would otherwise incur a TLB miss when reached.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let aux_ptr = bytes.as_ptr().add(OBS_F32_BYTES);
+        std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(aux_ptr.cast());
+    }
+
+    // SAFETY: `row` is bounded by the caller's enumeration over `indices[0..batch_size]`.
+    // The debug_assert below verifies this invariant in debug builds. All scratch buffers
+    // are allocated with capacity `batch_size * FIELD_SIZE` in BcShardHostScratch::new/reset.
+    // The `bytes` slice length equals `shard.record_size`, validated by the mmap bounds
+    // check above and the shard header verification at load time. Cursor advances through
+    // a fixed sequence of fields whose sizes sum exactly to `record_size`.
+    debug_assert_eq!(bytes.len(), shard.record_size, "record size mismatch");
+    debug_assert!(row < scratch.batch_size, "row {row} >= batch_size {}", scratch.batch_size);
+
+    let obs_row = unsafe { scratch.obs_flat.get_unchecked_mut(row * OBS_SIZE..(row + 1) * OBS_SIZE) };
+    let mask_row = unsafe {
+        scratch
+            .legal_mask_flat
+            .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+    };
+    let pdf_row = unsafe {
+        scratch
+            .score_pdf_flat
+            .get_unchecked_mut(row * SCORE_BINS..(row + 1) * SCORE_BINS)
+    };
+    let cdf_row = unsafe {
+        scratch
+            .score_cdf_flat
+            .get_unchecked_mut(row * SCORE_BINS..(row + 1) * SCORE_BINS)
+    };
+    let grp_row = unsafe {
+        scratch
+            .grp_target_flat
+            .get_unchecked_mut(row * GRP_CLASS_COUNT..(row + 1) * GRP_CLASS_COUNT)
+    };
+    let oracle_row = unsafe {
+        scratch
+            .oracle_target_flat
+            .get_unchecked_mut(row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT)
+    };
+    let tenpai_row = unsafe {
+        scratch
+            .tenpai_flat
+            .get_unchecked_mut(row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT)
+    };
+    let opp_next_row = unsafe {
+        scratch
+            .opp_next_flat
+            .get_unchecked_mut(row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE)
+    };
+    let danger_row = unsafe {
+        scratch
+            .danger_flat
+            .get_unchecked_mut(row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE)
+    };
+    let dmask_row = unsafe {
+        scratch
+            .danger_mask_flat
+            .get_unchecked_mut(row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE)
+    };
+
     #[cfg(target_endian = "little")]
     unsafe {
         ptr::copy_nonoverlapping(
-            bytes[cursor..cursor + OBS_F32_BYTES].as_ptr(),
-            obs_dst.as_mut_ptr().cast::<u8>(),
+            bytes.get_unchecked(cursor..cursor + OBS_F32_BYTES).as_ptr(),
+            obs_row.as_mut_ptr().cast::<u8>(),
             OBS_F32_BYTES,
         );
     }
     #[cfg(not(target_endian = "little"))]
-    for (value, chunk) in obs_dst
+    for (value, chunk) in obs_row
         .iter_mut()
-        .zip(bytes[cursor..cursor + OBS_F32_BYTES].chunks_exact(4))
+        .zip(unsafe { bytes.get_unchecked(cursor..cursor + OBS_F32_BYTES) }.chunks_exact(4))
     {
         *value = f32::from_le_bytes(chunk.try_into().expect("f32 chunk"));
     }
     cursor += OBS_F32_BYTES;
 
-    scratch.actions[row] = bytes[cursor] as i64;
+    unsafe { *scratch.actions.get_unchecked_mut(row) = *bytes.get_unchecked(cursor) as i64 };
     cursor += 1;
 
-    // Branchless u8 -> f32 boolean: min(1) clamps any nonzero to 1,
-    // then integer-to-float produces exactly 0.0 or 1.0 without a branch.
-    for (dst, &src) in scratch.legal_mask_flat
-        [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE]
+    // IEEE 754 bitmask trick: nonzero u8 -> 1.0f32, zero -> 0.0f32.
+    // Avoids vcvtdq2ps; LLVM lowers to vpmovzxbd + vpcmpgtd + vpand.
+    for (dst, &src) in mask_row
         .iter_mut()
-        .zip(bytes[cursor..cursor + HYDRA_ACTION_SPACE].iter())
+        .zip(unsafe { bytes.get_unchecked(cursor..cursor + HYDRA_ACTION_SPACE) }.iter())
     {
-        *dst = src.min(1) as f32;
+        *dst = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     cursor += HYDRA_ACTION_SPACE;
 
-    let score_delta = read_i32_le(&bytes[cursor..cursor + 4]);
+    let score_delta = read_i32_le(unsafe { bytes.get_unchecked(cursor..cursor + 4) });
     cursor += 4;
-    scratch.value_target[row] = score_delta_to_value(score_delta);
+    unsafe { *scratch.value_target.get_unchecked_mut(row) = score_delta_to_value(score_delta) };
     let bin = score_delta_to_bin(score_delta);
-    scratch.score_pdf_flat[row * SCORE_BINS + bin] = 1.0;
-    scratch.score_cdf_flat[row * SCORE_BINS + bin..(row + 1) * SCORE_BINS].fill(1.0);
+    pdf_row[bin] = 1.0;
+    cdf_row[bin..].fill(1.0);
 
-    let grp = (bytes[cursor] as usize).min(GRP_CLASS_COUNT - 1);
-    scratch.grp_target_flat[row * GRP_CLASS_COUNT + grp] = 1.0;
+    let grp = (unsafe { *bytes.get_unchecked(cursor) } as usize).min(GRP_CLASS_COUNT - 1);
+    grp_row[grp] = 1.0;
     cursor += 1;
 
     // Direct mmap-to-scratch copy on little-endian; avoids stack intermediate.
-    let oracle_dst = &mut scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT];
     #[cfg(target_endian = "little")]
     {
-        let src_bytes = &bytes[cursor..cursor + ORACLE_FLOAT32_BYTES];
+        let src_bytes = unsafe { bytes.get_unchecked(cursor..cursor + ORACLE_FLOAT32_BYTES) };
         // SAFETY: PLAYER_COUNT * 4 == ORACLE_FLOAT32_BYTES, and f32 has no
         // invalid bit patterns.  Alignment is guaranteed by slice layout.
         unsafe {
             ptr::copy_nonoverlapping(
                 src_bytes.as_ptr(),
-                oracle_dst.as_mut_ptr().cast::<u8>(),
+                oracle_row.as_mut_ptr().cast::<u8>(),
                 ORACLE_FLOAT32_BYTES,
             );
         }
     }
     #[cfg(not(target_endian = "little"))]
-    oracle_dst.copy_from_slice(&read_oracle_f32(&bytes[cursor..cursor + ORACLE_FLOAT32_BYTES]));
+    oracle_row.copy_from_slice(&read_oracle_f32(unsafe {
+        bytes.get_unchecked(cursor..cursor + ORACLE_FLOAT32_BYTES)
+    }));
     cursor += ORACLE_FLOAT32_BYTES;
-    let oracle_present = bytes[cursor] > 0;
+    let oracle_present = unsafe { *bytes.get_unchecked(cursor) > 0 };
     cursor += ORACLE_MASK_BYTES;
     if oracle_present {
-        scratch.oracle_target_mask[row] = 1.0;
+        unsafe { *scratch.oracle_target_mask.get_unchecked_mut(row) = 1.0 };
         scratch.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
     } else {
-        oracle_dst.fill(0.0);
+        oracle_row.fill(0.0);
     }
 
-    for (dst, &src) in scratch.tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
+    for (dst, &src) in tenpai_row
         .iter_mut()
-        .zip(bytes[cursor..cursor + OPPONENT_COUNT].iter())
+        .zip(unsafe { bytes.get_unchecked(cursor..cursor + OPPONENT_COUNT) }.iter())
     {
-        *dst = src.min(1) as f32;
+        *dst = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     cursor += OPPONENT_COUNT;
 
-    for (opp, &tile) in bytes[cursor..cursor + OPPONENT_COUNT].iter().enumerate() {
+    for (opp, &tile) in unsafe { bytes.get_unchecked(cursor..cursor + OPPONENT_COUNT) }
+        .iter()
+        .enumerate()
+    {
         if (tile as usize) < TILE_COUNT {
-            scratch.opp_next_flat[row * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + tile as usize] =
-                1.0;
+            opp_next_row[opp * TILE_COUNT + tile as usize] = 1.0;
         }
     }
     cursor += OPPONENT_COUNT;
 
-    for (dst, &src) in scratch.danger_flat
-        [row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+    for (dst, &src) in danger_row
         .iter_mut()
-        .zip(bytes[cursor..cursor + SPATIAL_TARGET_SIZE].iter())
+        .zip(unsafe { bytes.get_unchecked(cursor..cursor + SPATIAL_TARGET_SIZE) }.iter())
     {
-        *dst = src.min(1) as f32;
+        *dst = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     cursor += SPATIAL_TARGET_SIZE;
 
-    for (dst, &src) in scratch.danger_mask_flat
-        [row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE]
+    for (dst, &src) in dmask_row
         .iter_mut()
-        .zip(bytes[cursor..cursor + SPATIAL_TARGET_SIZE].iter())
+        .zip(unsafe { bytes.get_unchecked(cursor..cursor + SPATIAL_TARGET_SIZE) }.iter())
     {
-        *dst = src.min(1) as f32;
+        *dst = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     cursor += SPATIAL_TARGET_SIZE;
 
     if shard.feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
-        let dst = &mut scratch.safety_target_flat.as_mut().expect("safety enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        read_optional_action_f32_into(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES], dst);
+        let dst = unsafe {
+            scratch
+                .safety_target_flat
+                .as_mut()
+                .expect("safety enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        read_optional_action_f32_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES) },
+            dst,
+        );
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
 
-        let dst = &mut scratch.safety_mask_flat.as_mut().expect("safety enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        if read_optional_action_mask_f32_into(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES], dst) {
+        let dst = unsafe {
+            scratch
+                .safety_mask_flat
+                .as_mut()
+                .expect("safety enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        if read_optional_action_mask_f32_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_MASK_BYTES) },
+            dst,
+        ) {
             scratch.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
         }
         cursor += OPTIONAL_ACTION_MASK_BYTES;
     }
 
     if shard.feature_flags & FLAG_EXIT != 0 {
-        let dst = &mut scratch.exit_target_flat.as_mut().expect("exit enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        read_optional_action_f32_into(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES], dst);
+        let dst = unsafe {
+            scratch
+                .exit_target_flat
+                .as_mut()
+                .expect("exit enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        read_optional_action_f32_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES) },
+            dst,
+        );
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
 
-        let dst = &mut scratch.exit_mask_flat.as_mut().expect("exit enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        read_optional_action_mask_f32_into(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES], dst);
+        let dst = unsafe {
+            scratch
+                .exit_mask_flat
+                .as_mut()
+                .expect("exit enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        read_optional_action_mask_f32_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_MASK_BYTES) },
+            dst,
+        );
         cursor += OPTIONAL_ACTION_MASK_BYTES;
     }
 
     if shard.feature_flags & FLAG_DELTA_Q != 0 {
-        let dst = &mut scratch.delta_q_target_flat.as_mut().expect("delta_q enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        read_optional_action_f32_into(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES], dst);
+        let dst = unsafe {
+            scratch
+                .delta_q_target_flat
+                .as_mut()
+                .expect("delta_q enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        read_optional_action_f32_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES) },
+            dst,
+        );
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
 
-        let dst = &mut scratch.delta_q_mask_flat.as_mut().expect("delta_q enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        if read_optional_action_mask_f32_into(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES], dst) {
+        let dst = unsafe {
+            scratch
+                .delta_q_mask_flat
+                .as_mut()
+                .expect("delta_q enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        if read_optional_action_mask_f32_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_MASK_BYTES) },
+            dst,
+        ) {
             let action_count = dst.iter().filter(|&&value| value > 0.0).count();
             if action_count > 0 {
                 scratch.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
@@ -1298,96 +1446,169 @@ fn write_augmented_row_into_scratch(
     let bytes = &shard.mmap[start..end];
     let mut cursor = 0usize;
 
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let aux_ptr = bytes.as_ptr().add(OBS_F32_BYTES);
+        std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(aux_ptr.cast());
+    }
+
+    // SAFETY: `row` is bounded by the caller's enumeration over `indices[0..batch_size]`.
+    // The debug_assert below verifies this invariant in debug builds. All scratch buffers
+    // are allocated with capacity `batch_size * FIELD_SIZE` in BcShardHostScratch::new/reset.
+    // The `bytes` slice length equals `shard.record_size`, validated by the mmap bounds
+    // check above and the shard header verification at load time. Cursor advances through
+    // a fixed sequence of fields whose sizes sum exactly to `record_size`.
+    debug_assert_eq!(bytes.len(), shard.record_size, "record size mismatch");
+    debug_assert!(row < scratch.batch_size, "row {row} >= batch_size {}", scratch.batch_size);
+
+    let obs_row = unsafe { scratch.obs_flat.get_unchecked_mut(row * OBS_SIZE..(row + 1) * OBS_SIZE) };
+    let mask_row = unsafe {
+        scratch
+            .legal_mask_flat
+            .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+    };
+    let pdf_row = unsafe {
+        scratch
+            .score_pdf_flat
+            .get_unchecked_mut(row * SCORE_BINS..(row + 1) * SCORE_BINS)
+    };
+    let cdf_row = unsafe {
+        scratch
+            .score_cdf_flat
+            .get_unchecked_mut(row * SCORE_BINS..(row + 1) * SCORE_BINS)
+    };
+    let grp_row = unsafe {
+        scratch
+            .grp_target_flat
+            .get_unchecked_mut(row * GRP_CLASS_COUNT..(row + 1) * GRP_CLASS_COUNT)
+    };
+    let oracle_row = unsafe {
+        scratch
+            .oracle_target_flat
+            .get_unchecked_mut(row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT)
+    };
+    let tenpai_row = unsafe {
+        scratch
+            .tenpai_flat
+            .get_unchecked_mut(row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT)
+    };
+    let opp_next_row = unsafe {
+        scratch
+            .opp_next_flat
+            .get_unchecked_mut(row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE)
+    };
+    let danger_row = unsafe {
+        scratch
+            .danger_flat
+            .get_unchecked_mut(row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE)
+    };
+    let dmask_row = unsafe {
+        scratch
+            .danger_mask_flat
+            .get_unchecked_mut(row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE)
+    };
+
     let perm_idx = (sample_index + row) % hydra_core::tile::ALL_PERMUTATIONS.len();
     let perm = &hydra_core::tile::ALL_PERMUTATIONS[perm_idx];
     let tables = permutation_tables();
     let tile_perm = &tables.tile_34[perm_idx];
     let action_perm = &tables.action_37[perm_idx];
 
-    let obs_dst = &mut scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE];
-    augment_obs_suit_from_le_bytes(&bytes[cursor..cursor + OBS_F32_BYTES], perm, obs_dst);
+    augment_obs_suit_from_le_bytes(
+        unsafe { bytes.get_unchecked(cursor..cursor + OBS_F32_BYTES) },
+        perm,
+        obs_row,
+    );
     cursor += OBS_F32_BYTES;
 
-    let action = bytes[cursor];
-    scratch.actions[row] = if action <= 36 {
-        action_perm[action as usize] as i64
-    } else {
-        action as i64
+    let action = unsafe { *bytes.get_unchecked(cursor) };
+    unsafe {
+        *scratch.actions.get_unchecked_mut(row) = if action <= 36 {
+            *action_perm.get_unchecked(action as usize) as i64
+        } else {
+            action as i64
+        }
     };
     cursor += 1;
 
-    let mask_src = &bytes[cursor..cursor + HYDRA_ACTION_SPACE];
-    let mask_dst =
-        &mut scratch.legal_mask_flat[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
+    let mask_src = unsafe { bytes.get_unchecked(cursor..cursor + HYDRA_ACTION_SPACE) };
+    let mask_dst = mask_row;
     mask_dst.fill(0.0);
     for i in 0..37usize {
-        mask_dst[action_perm[i]] = mask_src[i].min(1) as f32;
+        let permuted = unsafe { *action_perm.get_unchecked(i) };
+        unsafe {
+            *mask_dst.get_unchecked_mut(permuted) =
+                f32::from_bits((*mask_src.get_unchecked(i) != 0) as u32 * F32_ONE_BITS);
+        }
     }
     for (dst, &src) in mask_dst[37..HYDRA_ACTION_SPACE]
         .iter_mut()
         .zip(mask_src[37..HYDRA_ACTION_SPACE].iter())
     {
-        *dst = src.min(1) as f32;
+        *dst = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     cursor += HYDRA_ACTION_SPACE;
 
-    let score_delta = read_i32_le(&bytes[cursor..cursor + 4]);
+    let score_delta = read_i32_le(unsafe { bytes.get_unchecked(cursor..cursor + 4) });
     cursor += 4;
-    scratch.value_target[row] = score_delta_to_value(score_delta);
+    unsafe { *scratch.value_target.get_unchecked_mut(row) = score_delta_to_value(score_delta) };
     let bin = score_delta_to_bin(score_delta);
-    scratch.score_pdf_flat[row * SCORE_BINS + bin] = 1.0;
-    scratch.score_cdf_flat[row * SCORE_BINS + bin..(row + 1) * SCORE_BINS].fill(1.0);
+    pdf_row[bin] = 1.0;
+    cdf_row[bin..].fill(1.0);
 
-    let grp = (bytes[cursor] as usize).min(GRP_CLASS_COUNT - 1);
-    scratch.grp_target_flat[row * GRP_CLASS_COUNT + grp] = 1.0;
+    let grp = (unsafe { *bytes.get_unchecked(cursor) } as usize).min(GRP_CLASS_COUNT - 1);
+    grp_row[grp] = 1.0;
     cursor += 1;
 
-    let oracle_dst = &mut scratch.oracle_target_flat[row * PLAYER_COUNT..(row + 1) * PLAYER_COUNT];
     #[cfg(target_endian = "little")]
     {
-        let src_bytes = &bytes[cursor..cursor + ORACLE_FLOAT32_BYTES];
+        let src_bytes = unsafe { bytes.get_unchecked(cursor..cursor + ORACLE_FLOAT32_BYTES) };
         unsafe {
             ptr::copy_nonoverlapping(
                 src_bytes.as_ptr(),
-                oracle_dst.as_mut_ptr().cast::<u8>(),
+                oracle_row.as_mut_ptr().cast::<u8>(),
                 ORACLE_FLOAT32_BYTES,
             );
         }
     }
     #[cfg(not(target_endian = "little"))]
-    oracle_dst.copy_from_slice(&read_oracle_f32(&bytes[cursor..cursor + ORACLE_FLOAT32_BYTES]));
+    oracle_row.copy_from_slice(&read_oracle_f32(unsafe {
+        bytes.get_unchecked(cursor..cursor + ORACLE_FLOAT32_BYTES)
+    }));
     cursor += ORACLE_FLOAT32_BYTES;
-    let oracle_present = bytes[cursor] > 0;
+    let oracle_present = unsafe { *bytes.get_unchecked(cursor) > 0 };
     cursor += ORACLE_MASK_BYTES;
     if oracle_present {
-        scratch.oracle_target_mask[row] = 1.0;
+        unsafe { *scratch.oracle_target_mask.get_unchecked_mut(row) = 1.0 };
         scratch.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
     } else {
-        oracle_dst.fill(0.0);
+        oracle_row.fill(0.0);
     }
 
-    for (dst, &src) in scratch.tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
+    for (dst, &src) in tenpai_row
         .iter_mut()
-        .zip(bytes[cursor..cursor + OPPONENT_COUNT].iter())
+        .zip(unsafe { bytes.get_unchecked(cursor..cursor + OPPONENT_COUNT) }.iter())
     {
-        *dst = src.min(1) as f32;
+        *dst = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     cursor += OPPONENT_COUNT;
 
-    for (opp, &tile) in bytes[cursor..cursor + OPPONENT_COUNT].iter().enumerate() {
+    for (opp, &tile) in unsafe { bytes.get_unchecked(cursor..cursor + OPPONENT_COUNT) }
+        .iter()
+        .enumerate()
+    {
         let permuted = if tile < 34 {
-            tile_perm[tile as usize]
+            unsafe { *tile_perm.get_unchecked(tile as usize) }
         } else {
             tile as usize
         };
         if permuted < TILE_COUNT {
-            scratch.opp_next_flat[row * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + permuted] = 1.0;
+            opp_next_row[opp * TILE_COUNT + permuted] = 1.0;
         }
     }
     cursor += OPPONENT_COUNT;
 
-    let danger_dst =
-        &mut scratch.danger_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE];
+    let danger_dst = danger_row;
     const SUIT_TILES: usize = 9;
     const HONOR_START: usize = 27;
     const HONOR_COUNT: usize = TILE_COUNT - HONOR_START;
@@ -1397,98 +1618,144 @@ fn write_augmented_row_into_scratch(
         for src_suit in 0..3usize {
             let dst_suit = perm[src_suit] as usize;
             for t in 0..SUIT_TILES {
-                danger_dst[dst_start + dst_suit * SUIT_TILES + t] =
-                    bytes[src_start + src_suit * SUIT_TILES + t].min(1) as f32;
+                unsafe {
+                    *danger_dst.get_unchecked_mut(dst_start + dst_suit * SUIT_TILES + t) =
+                        f32::from_bits(
+                            (*bytes.get_unchecked(src_start + src_suit * SUIT_TILES + t) != 0) as u32
+                                * F32_ONE_BITS,
+                        );
+                }
             }
         }
         for t in 0..HONOR_COUNT {
-            danger_dst[dst_start + HONOR_START + t] =
-                bytes[src_start + HONOR_START + t].min(1) as f32;
+            unsafe {
+                *danger_dst.get_unchecked_mut(dst_start + HONOR_START + t) =
+                    f32::from_bits(
+                        (*bytes.get_unchecked(src_start + HONOR_START + t) != 0) as u32
+                            * F32_ONE_BITS,
+                    );
+            }
         }
     }
     cursor += SPATIAL_TARGET_SIZE;
 
-    let dmask_dst = &mut scratch.danger_mask_flat
-        [row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE];
+    let dmask_dst = dmask_row;
     for opp in 0..OPPONENT_COUNT {
         let src_start = cursor + opp * TILE_COUNT;
         let dst_start = opp * TILE_COUNT;
         for src_suit in 0..3usize {
             let dst_suit = perm[src_suit] as usize;
             for t in 0..SUIT_TILES {
-                dmask_dst[dst_start + dst_suit * SUIT_TILES + t] =
-                    bytes[src_start + src_suit * SUIT_TILES + t].min(1) as f32;
+                unsafe {
+                    *dmask_dst.get_unchecked_mut(dst_start + dst_suit * SUIT_TILES + t) =
+                        f32::from_bits(
+                            (*bytes.get_unchecked(src_start + src_suit * SUIT_TILES + t) != 0) as u32
+                                * F32_ONE_BITS,
+                        );
+                }
             }
         }
         for t in 0..HONOR_COUNT {
-            dmask_dst[dst_start + HONOR_START + t] =
-                bytes[src_start + HONOR_START + t].min(1) as f32;
+            unsafe {
+                *dmask_dst.get_unchecked_mut(dst_start + HONOR_START + t) =
+                    f32::from_bits(
+                        (*bytes.get_unchecked(src_start + HONOR_START + t) != 0) as u32
+                            * F32_ONE_BITS,
+                    );
+            }
         }
     }
     cursor += SPATIAL_TARGET_SIZE;
 
     if shard.feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
-        let values =
-            read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        let values = read_optional_action_f32(unsafe {
+            bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES)
+        });
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
         if let Some(values) = values {
-            let dst = &mut scratch
-                .safety_target_flat
-                .as_mut()
-                .expect("safety enabled")
-                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
+            let dst = unsafe {
+                scratch
+                    .safety_target_flat
+                    .as_mut()
+                    .expect("safety enabled")
+                    .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+            };
             augment_action_vector_suit_into(&values, action_perm, dst);
         }
-        let dst = &mut scratch
-            .safety_mask_flat
-            .as_mut()
-            .expect("safety enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        if expand_and_augment_mask_into(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES], action_perm, dst) {
+        let dst = unsafe {
+            scratch
+                .safety_mask_flat
+                .as_mut()
+                .expect("safety enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        if expand_and_augment_mask_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_MASK_BYTES) },
+            action_perm,
+            dst,
+        ) {
             scratch.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
         }
         cursor += OPTIONAL_ACTION_MASK_BYTES;
     }
 
     if shard.feature_flags & FLAG_EXIT != 0 {
-        let values =
-            read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        let values = read_optional_action_f32(unsafe {
+            bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES)
+        });
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
         if let Some(values) = values {
-            let dst = &mut scratch
-                .exit_target_flat
-                .as_mut()
-                .expect("exit enabled")
-                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
+            let dst = unsafe {
+                scratch
+                    .exit_target_flat
+                    .as_mut()
+                    .expect("exit enabled")
+                    .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+            };
             augment_action_vector_suit_into(&values, action_perm, dst);
         }
-        let dst = &mut scratch
-            .exit_mask_flat
-            .as_mut()
-            .expect("exit enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        expand_and_augment_mask_into(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES], action_perm, dst);
+        let dst = unsafe {
+            scratch
+                .exit_mask_flat
+                .as_mut()
+                .expect("exit enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        expand_and_augment_mask_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_MASK_BYTES) },
+            action_perm,
+            dst,
+        );
         cursor += OPTIONAL_ACTION_MASK_BYTES;
     }
 
     if shard.feature_flags & FLAG_DELTA_Q != 0 {
-        let values =
-            read_optional_action_f32(&bytes[cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES]);
+        let values = read_optional_action_f32(unsafe {
+            bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_FLOAT32_BYTES)
+        });
         cursor += OPTIONAL_ACTION_FLOAT32_BYTES;
         if let Some(values) = values {
-            let dst = &mut scratch
-                .delta_q_target_flat
-                .as_mut()
-                .expect("delta_q enabled")
-                [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
+            let dst = unsafe {
+                scratch
+                    .delta_q_target_flat
+                    .as_mut()
+                    .expect("delta_q enabled")
+                    .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+            };
             augment_action_vector_suit_into(&values, action_perm, dst);
         }
-        let dst = &mut scratch
-            .delta_q_mask_flat
-            .as_mut()
-            .expect("delta_q enabled")
-            [row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-        if expand_and_augment_mask_into(&bytes[cursor..cursor + OPTIONAL_ACTION_MASK_BYTES], action_perm, dst) {
+        let dst = unsafe {
+            scratch
+                .delta_q_mask_flat
+                .as_mut()
+                .expect("delta_q enabled")
+                .get_unchecked_mut(row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE)
+        };
+        if expand_and_augment_mask_into(
+            unsafe { bytes.get_unchecked(cursor..cursor + OPTIONAL_ACTION_MASK_BYTES) },
+            action_perm,
+            dst,
+        ) {
             let action_count = dst.iter().filter(|&&value| value > 0.0).count();
             if action_count > 0 {
                 scratch.target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
@@ -2003,7 +2270,7 @@ fn read_optional_action_mask_f32_into(bytes: &[u8], dst: &mut [f32]) -> bool {
         return false;
     }
     for (d, &src) in dst.iter_mut().zip(bytes[..HYDRA_ACTION_SPACE].iter()) {
-        *d = src.min(1) as f32;
+        *d = f32::from_bits((src != 0) as u32 * F32_ONE_BITS);
     }
     true
 }
@@ -2022,11 +2289,11 @@ fn expand_and_augment_mask_into(
         return false;
     }
     for i in 0..37usize {
-        dst[action_perm[i]] = bytes[i].min(1) as f32;
+        dst[action_perm[i]] = f32::from_bits((bytes[i] != 0) as u32 * F32_ONE_BITS);
     }
     dst[37..HYDRA_ACTION_SPACE].iter_mut()
         .zip(bytes[37..HYDRA_ACTION_SPACE].iter())
-        .for_each(|(d, &src)| *d = src.min(1) as f32);
+        .for_each(|(d, &src)| *d = f32::from_bits((src != 0) as u32 * F32_ONE_BITS));
     true
 }
 
