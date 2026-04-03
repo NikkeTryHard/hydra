@@ -65,6 +65,14 @@ The crate currently exposes these workspace binaries:
 
 The main training entrypoint lives at [`src/bin/train.rs`](src/bin/train.rs).
 
+## Operator workflow docs
+
+For concrete runbook-style documentation rather than crate ownership summaries, read:
+
+- [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md) — training modes, YAML contract, BC/RL shape, and sidecar-enabled runs
+- [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, probe flows, runtime authority, and resume rules
+- [`docs/REPLAY_SIDECARS.md`](../../docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time joins
+
 ## Runtime and data contract
 
 The training crate consumes the same live runtime surface as the rest of Hydra:

@@ -101,6 +101,15 @@ If you are deciding what to build next, follow the Fresh-agent routing order abo
 
 Hydra is in active implementation. For the current shipped/staged repo snapshot, read [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). For runtime semantics and compatibility-sensitive invariants, read [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md).
 
+## Operator docs
+
+If you need to run or debug the training stack rather than read the architecture docs first, start here:
+
+- [`docs/TRAINING_WORKFLOWS.md`](docs/TRAINING_WORKFLOWS.md) — training entry modes, YAML contract, BC/RL shape, and sidecar-enabled training
+- [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, selected-runtime authority, probe flows, and runtime reuse rules
+- [`docs/REPLAY_SIDECARS.md`](docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time hydration contracts
+- [`docker/train/README.md`](docker/train/README.md) — container execution contract
+
 ## Testing and Coverage
 
 Hydra uses `cargo nextest run --release` as the default workspace test path and `cargo-llvm-cov` for workspace-wide coverage reporting. For local coverage generation details, read [`docs/COVERAGE.md`](docs/COVERAGE.md).

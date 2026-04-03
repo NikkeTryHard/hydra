@@ -67,6 +67,8 @@ batch_size: 32
 
 For an archive-backed run, mount the archive itself and point `data_dir` at that file path.
 
+For the full training-mode and config contract, read [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md). For preflight/runtime-selection behavior, read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md).
+
 ## Publish to GHCR
 
 Tag the image:
