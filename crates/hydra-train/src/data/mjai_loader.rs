@@ -139,7 +139,7 @@ pub struct MjaiDataset {
 pub(crate) use crate::data::replay_targets::bool_mask_to_f32;
 
 #[inline]
-fn normalized_train_fraction(train_fraction: f32) -> f32 {
+pub(crate) fn normalized_train_fraction(train_fraction: f32) -> f32 {
     if train_fraction.is_finite() {
         train_fraction.clamp(0.0, 1.0)
     } else {

@@ -15,7 +15,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::data::mjai_loader::{
     MjaiDataset, MjaiGame, ReplayTargetProfile, SidecarProvenance, load_game_from_path,
-    load_game_from_stream, load_game_from_stream_with_sidecar,
+    load_game_from_stream, load_game_from_stream_with_sidecar, normalized_train_fraction,
 };
 use crate::data::sample::{MjaiSample, collate_sample_refs};
 
@@ -279,14 +279,6 @@ fn fnv1a_hash(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
-}
-
-fn normalized_train_fraction(train_fraction: f32) -> f32 {
-    if train_fraction.is_finite() {
-        train_fraction.clamp(0.0, 1.0)
-    } else {
-        0.0
-    }
 }
 
 pub(crate) fn identity_for_loose_file(path: &Path) -> io::Result<String> {
