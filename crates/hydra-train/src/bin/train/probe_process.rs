@@ -402,6 +402,119 @@ fn child_output(status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>) -> std::pr
     }
 }
 
+#[cfg(not(test))]
+struct ProbeChildRunOutput {
+    output: std::process::Output,
+    elapsed_seconds: f64,
+    spinner: ProgressBar,
+}
+
+#[cfg(not(test))]
+fn run_probe_child_process(
+    config_path: &Path,
+    kind: ProbeKind,
+    candidate_microbatch: usize,
+    warmup_steps: usize,
+    measure_steps: usize,
+    result_flag: &str,
+    result_path: &Path,
+    attempts: Option<usize>,
+    manifest_cache_path: &Path,
+) -> Result<ProbeChildRunOutput, String> {
+    let interrupted = interrupt_flag()?;
+    interrupted.store(false, Ordering::SeqCst);
+    let probe_started = Instant::now();
+    let (spinner_message, spinner) = spawn_probe_spinner(kind, candidate_microbatch)?;
+    let child_exe = probe_child_executable()?;
+    let mut child_cmd = Command::new(&child_exe);
+    child_cmd
+        .arg(config_path)
+        .arg("--probe-kind")
+        .arg(probe_kind_name(kind))
+        .arg("--probe-candidate-microbatch")
+        .arg(candidate_microbatch.to_string())
+        .arg("--probe-warmup-steps")
+        .arg(warmup_steps.to_string())
+        .arg("--probe-measure-steps")
+        .arg(measure_steps.to_string());
+    if let Some(attempts) = attempts {
+        child_cmd.arg("--probe-attempts").arg(attempts.to_string());
+    }
+    child_cmd
+        .arg(result_flag)
+        .arg(result_path)
+        .arg("--probe-manifest-cache-path")
+        .arg(manifest_cache_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    propagate_probe_runtime_env(&mut child_cmd);
+    let mut child = child_cmd.spawn().map_err(|err| {
+        format!(
+            "failed to spawn preflight probe child {}: {err}",
+            child_exe.display()
+        )
+    })?;
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|stdout| spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone()));
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|stderr| spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone()));
+
+    let interrupted_run = wait_for_probe_child_with_spinner(
+        &mut child,
+        interrupted.as_ref(),
+        &spinner,
+        &spinner_message,
+    )?
+    .is_none();
+    if interrupted_run {
+        fs::remove_file(result_path).ok();
+        interrupted.store(true, Ordering::SeqCst);
+        if let Some(handle) = stdout_handle {
+            let _ = join_output_forwarder(handle, "stdout");
+        }
+        if let Some(handle) = stderr_handle {
+            let _ = join_output_forwarder(handle, "stderr");
+        }
+        finish_probe_spinner(
+            &spinner,
+            format!(
+                "{} [{}] mb={} interrupted ({:.1}s)",
+                "✘".red(),
+                probe_kind_name(kind),
+                candidate_microbatch,
+                probe_started.elapsed().as_secs_f64(),
+            ),
+        );
+        return Err("preflight interrupted; probe child terminated".to_string());
+    }
+
+    interrupted.store(true, Ordering::SeqCst);
+    let stdout = match stdout_handle {
+        Some(handle) => join_output_forwarder(handle, "stdout")?,
+        None => Vec::new(),
+    };
+    let stderr = match stderr_handle {
+        Some(handle) => join_output_forwarder(handle, "stderr")?,
+        None => Vec::new(),
+    };
+    let status = child
+        .try_wait()
+        .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
+        .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
+    let output = child_output(status, stdout, stderr);
+    let elapsed_seconds = probe_started.elapsed().as_secs_f64();
+    Ok(ProbeChildRunOutput {
+        output,
+        elapsed_seconds,
+        spinner,
+    })
+}
+
 pub(super) fn mem_available_bytes() -> Option<u64> {
     let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
     let line = meminfo
@@ -648,85 +761,18 @@ pub(super) fn execute_probe_request(
                 .manifest_cache_path;
 
         fs::remove_file(result_path).ok();
-        let interrupted = interrupt_flag()?;
-        interrupted.store(false, Ordering::SeqCst);
-        let probe_started = Instant::now();
-        let (spinner_message, spinner) =
-            spawn_probe_spinner(request.kind, request.candidate_microbatch)?;
-        let child_exe = probe_child_executable()?;
-        let mut child_cmd = Command::new(&child_exe);
-        child_cmd
-            .arg(config_path)
-            .arg("--probe-kind")
-            .arg(probe_kind_name(request.kind))
-            .arg("--probe-candidate-microbatch")
-            .arg(request.candidate_microbatch.to_string())
-            .arg("--probe-warmup-steps")
-            .arg(request.warmup_steps.to_string())
-            .arg("--probe-measure-steps")
-            .arg(request.measure_steps.to_string())
-            .arg("--probe-result-path")
-            .arg(result_path)
-            .arg("--probe-manifest-cache-path")
-            .arg(&manifest_cache_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        propagate_probe_runtime_env(&mut child_cmd);
-        let mut child = child_cmd.spawn().map_err(|err| {
-            format!(
-                "failed to spawn preflight probe child {}: {err}",
-                child_exe.display()
-            )
-        })?;
-        let stdout_handle = child.stdout.take().map(|stdout| {
-            spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone())
-        });
-        let stderr_handle = child.stderr.take().map(|stderr| {
-            spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone())
-        });
-        if wait_for_probe_child_with_spinner(
-            &mut child,
-            interrupted.as_ref(),
-            &spinner,
-            &spinner_message,
-        )?
-        .is_none()
-        {
-            fs::remove_file(result_path).ok();
-            interrupted.store(true, Ordering::SeqCst);
-            if let Some(handle) = stdout_handle {
-                let _ = join_output_forwarder(handle, "stdout");
-            }
-            if let Some(handle) = stderr_handle {
-                let _ = join_output_forwarder(handle, "stderr");
-            }
-            finish_probe_spinner(
-                &spinner,
-                format!(
-                    "{} [{}] mb={} interrupted ({:.1}s)",
-                    "✘".red(),
-                    probe_kind_name(request.kind),
-                    request.candidate_microbatch,
-                    probe_started.elapsed().as_secs_f64(),
-                ),
-            );
-            return Err("preflight interrupted; probe child terminated".to_string());
-        }
-        interrupted.store(true, Ordering::SeqCst);
-        let stdout = match stdout_handle {
-            Some(handle) => join_output_forwarder(handle, "stdout")?,
-            None => Vec::new(),
-        };
-        let stderr = match stderr_handle {
-            Some(handle) => join_output_forwarder(handle, "stderr")?,
-            None => Vec::new(),
-        };
-        let status = child
-            .try_wait()
-            .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
-            .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
-        let output = child_output(status, stdout, stderr);
+        let child_run = run_probe_child_process(
+            config_path,
+            request.kind,
+            request.candidate_microbatch,
+            request.warmup_steps,
+            request.measure_steps,
+            "--probe-result-path",
+            result_path,
+            None,
+            &manifest_cache_path,
+        )?;
+        let output = child_run.output;
 
         let result = if result_path.exists() {
             let result = read_probe_result(result_path)?;
@@ -746,8 +792,8 @@ pub(super) fn execute_probe_request(
             )
         };
         finish_probe_spinner(
-            &spinner,
-            format_probe_spinner_finish_message(&result, probe_started.elapsed().as_secs_f64()),
+            &child_run.spinner,
+            format_probe_spinner_finish_message(&result, child_run.elapsed_seconds),
         );
         Ok(result)
     }
@@ -814,91 +860,24 @@ pub(super) fn execute_probe_request_batch(
         let candidate_microbatch = batch.request.candidate_microbatch;
 
         fs::remove_file(results_path).ok();
-        let interrupted = interrupt_flag()?;
-        interrupted.store(false, Ordering::SeqCst);
-        let probe_started = Instant::now();
-        let (spinner_message, spinner) = spawn_probe_spinner(kind, candidate_microbatch)?;
-        let child_exe = probe_child_executable()?;
-        let mut child_cmd = Command::new(&child_exe);
-        child_cmd
-            .arg(config_path)
-            .arg("--probe-kind")
-            .arg(probe_kind_name(batch.request.kind))
-            .arg("--probe-candidate-microbatch")
-            .arg(batch.request.candidate_microbatch.to_string())
-            .arg("--probe-warmup-steps")
-            .arg(batch.request.warmup_steps.to_string())
-            .arg("--probe-measure-steps")
-            .arg(batch.request.measure_steps.to_string())
-            .arg("--probe-attempts")
-            .arg(batch.attempts.to_string())
-            .arg("--probe-results-path")
-            .arg(results_path)
-            .arg("--probe-manifest-cache-path")
-            .arg(&manifest_cache_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        propagate_probe_runtime_env(&mut child_cmd);
-        let mut child = child_cmd.spawn().map_err(|err| {
-            format!(
-                "failed to spawn preflight probe child {}: {err}",
-                child_exe.display()
-            )
-        })?;
-        let stdout_handle = child.stdout.take().map(|stdout| {
-            spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone())
-        });
-        let stderr_handle = child.stderr.take().map(|stderr| {
-            spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone())
-        });
-        if wait_for_probe_child_with_spinner(
-            &mut child,
-            interrupted.as_ref(),
-            &spinner,
-            &spinner_message,
-        )?
-        .is_none()
-        {
-            fs::remove_file(results_path).ok();
-            interrupted.store(true, Ordering::SeqCst);
-            if let Some(handle) = stdout_handle {
-                let _ = join_output_forwarder(handle, "stdout");
-            }
-            if let Some(handle) = stderr_handle {
-                let _ = join_output_forwarder(handle, "stderr");
-            }
-            finish_probe_spinner(
-                &spinner,
-                format!(
-                    "{} [{}] mb={} interrupted ({:.1}s)",
-                    "✘".red(),
-                    probe_kind_name(kind),
-                    candidate_microbatch,
-                    probe_started.elapsed().as_secs_f64(),
-                ),
-            );
-            return Err("preflight interrupted; probe child terminated".to_string());
-        }
-        interrupted.store(true, Ordering::SeqCst);
-        let stdout = match stdout_handle {
-            Some(handle) => join_output_forwarder(handle, "stdout")?,
-            None => Vec::new(),
-        };
-        let stderr = match stderr_handle {
-            Some(handle) => join_output_forwarder(handle, "stderr")?,
-            None => Vec::new(),
-        };
-        let status = child
-            .try_wait()
-            .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
-            .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
+        let child_run = run_probe_child_process(
+            config_path,
+            kind,
+            candidate_microbatch,
+            batch.request.warmup_steps,
+            batch.request.measure_steps,
+            "--probe-results-path",
+            results_path,
+            Some(batch.attempts),
+            &manifest_cache_path,
+        )?;
+        let output = child_run.output;
         let results = recover_probe_batch_results(
             batch,
             results_path,
-            status,
-            &stdout,
-            &stderr,
+            output.status,
+            &output.stdout,
+            &output.stderr,
             classify_probe_detail,
         )?;
         let finish_result = results.last().cloned().unwrap_or_else(|| ProbeResult {
@@ -910,10 +889,10 @@ pub(super) fn execute_probe_request_batch(
             detail: "probe batch completed without recorded results".to_string(),
         });
         finish_probe_spinner(
-            &spinner,
+            &child_run.spinner,
             format_probe_spinner_finish_message(
                 &finish_result,
-                probe_started.elapsed().as_secs_f64(),
+                child_run.elapsed_seconds,
             ),
         );
         Ok(results)

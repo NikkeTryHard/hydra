@@ -110,12 +110,12 @@ pub enum BcShardSplitMode {
 
 impl BcShardSplitMode {
     pub const fn includes(self, split: BcShardSplit) -> bool {
-        match (self, split) {
-            (Self::Both, _) => true,
-            (Self::Train, BcShardSplit::Train) => true,
-            (Self::Validation, BcShardSplit::Validation) => true,
-            _ => false,
-        }
+        matches!(
+            (self, split),
+            (Self::Both, _)
+                | (Self::Train, BcShardSplit::Train)
+                | (Self::Validation, BcShardSplit::Validation)
+        )
     }
 }
 
@@ -422,10 +422,7 @@ impl BcShardHostScratch {
             exit_mask_flat: self.exit_mask_flat.as_mut().map(std::mem::take),
             delta_q_target_flat: self.delta_q_target_flat.as_mut().map(std::mem::take),
             delta_q_mask_flat: self.delta_q_mask_flat.as_mut().map(std::mem::take),
-            target_presence: std::mem::replace(
-                &mut self.target_presence,
-                TargetPresence::default(),
-            ),
+            target_presence: std::mem::take(&mut self.target_presence),
         }
     }
 
@@ -494,8 +491,7 @@ impl BcShardHostScratch {
         ) {
             std::mem::swap(s, r);
         }
-        recycled.target_presence =
-            std::mem::replace(&mut self.target_presence, TargetPresence::default());
+        recycled.target_presence = std::mem::take(&mut self.target_presence);
         recycled.batch_size = self.batch_size;
 
         // `recycled` now holds the freshly-collated data; the scratch

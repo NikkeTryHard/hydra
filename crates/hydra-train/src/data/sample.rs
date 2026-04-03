@@ -696,7 +696,7 @@ impl CollateBuffers {
                 device,
             )
             .reshape([batch, SCORE_BINS]),
-            target_presence: Some(self.target_presence.clone()),
+            target_presence: Some(self.target_presence),
         }
     }
 }
@@ -798,7 +798,7 @@ fn cloned_hydra_targets<B: Backend>(batch: &MjaiBatch<B>) -> HydraTargets<B> {
         belief_fields_mask: batch.belief_fields_mask.clone(),
         mixture_weight_mask: batch.mixture_weight_mask.clone(),
         oracle_guidance_mask: Some(batch.oracle_target_mask.clone()),
-        target_presence: batch.target_presence.clone(),
+        target_presence: batch.target_presence,
     }
 }
 
@@ -1363,10 +1363,7 @@ mod tests {
         sample.safety_residual_mask = Some(safety_mask);
 
         let batch = collate_batch::<B>(&[sample], &device);
-        let presence = batch
-            .target_presence
-            .clone()
-            .expect("batch target presence");
+        let presence = batch.target_presence.expect("batch target presence");
         assert_eq!(presence.batch_size, 1);
         assert_eq!(presence.counts[AdvancedHead::OracleCritic.index()], 1);
         assert_eq!(presence.counts[AdvancedHead::BeliefFields.index()], 1);
@@ -1876,7 +1873,7 @@ mod tests {
         exit_mask[45] = 1.0;
         sample.exit_target = Some(exit_target);
         sample.exit_mask = Some(exit_mask);
-        let samples = vec![sample];
+        let samples = [sample];
 
         let (obs, bc_batch, targets) = collate_samples_bc_owned::<B>(&samples, false, &device)
             .expect("bc owned collate")
@@ -1956,7 +1953,7 @@ mod tests {
         exit_mask[45] = 1.0;
         sample.exit_target = Some(exit_target);
         sample.exit_mask = Some(exit_mask);
-        let samples = vec![sample];
+        let samples = [sample];
         let sample_refs: Vec<&MjaiSample> = samples.iter().collect();
 
         let (obs, bc_batch, targets) =

@@ -8,6 +8,9 @@ use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder,
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use tboard::EventWriter;
 
+use hydra_train::data::pipeline::{
+    DataManifest, SourceFilterConfig, scan_data_sources_with_progress,
+};
 use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
@@ -308,6 +311,41 @@ pub(crate) fn read_manifest_cache(path: &Path) -> Result<Option<ManifestCacheEnt
     let entry: ManifestCacheEntry = serde_json::from_str(&raw)
         .map_err(|err| format!("failed to parse manifest cache {}: {err}", path.display()))?;
     Ok(Some(entry))
+}
+
+pub(crate) fn manifest_cache_matches(
+    cached: &ManifestCacheEntry,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &SourceFilterConfig,
+) -> bool {
+    cached.data_dir == data_dir
+        && cached.train_fraction_bits == train_fraction.to_bits()
+        && cached.include_source_patterns == source_filters.include_source_patterns
+        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
+}
+
+pub(crate) fn scan_and_write_manifest_cache(
+    cache_path: &Path,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+    scan_error_context: &str,
+) -> Result<DataManifest, String> {
+    let manifest = scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
+        .map_err(|err| format!("failed to scan {scan_error_context} from {}: {err}", data_dir.display()))?;
+    write_manifest_cache(
+        cache_path,
+        &ManifestCacheEntry {
+            data_dir: data_dir.to_path_buf(),
+            train_fraction_bits: train_fraction.to_bits(),
+            include_source_patterns: source_filters.include_source_patterns.clone(),
+            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
+            manifest: manifest.clone(),
+        },
+    )?;
+    Ok(manifest)
 }
 
 pub(crate) fn save_latest_checkpoint_and_state<B, O>(
@@ -862,6 +900,89 @@ mod tests {
                 counts_exact: false,
             },
         }
+    }
+
+    #[test]
+    fn manifest_cache_matches_checks_data_dir_fraction_and_filters() {
+        let entry = sample_manifest_cache_entry();
+        let mut filters = SourceFilterConfig::default();
+
+        assert!(manifest_cache_matches(
+            &entry,
+            Path::new("/data"),
+            0.9,
+            &filters,
+        ));
+
+        assert!(!manifest_cache_matches(
+            &entry,
+            Path::new("/other"),
+            0.9,
+            &filters,
+        ));
+        assert!(!manifest_cache_matches(
+            &entry,
+            Path::new("/data"),
+            0.8,
+            &filters,
+        ));
+
+        filters.include_source_patterns.push("jade".to_string());
+        assert!(!manifest_cache_matches(
+            &entry,
+            Path::new("/data"),
+            0.9,
+            &filters,
+        ));
+
+        let mut exclude_filters = SourceFilterConfig::default();
+        exclude_filters
+            .exclude_source_patterns
+            .push("tenhou".to_string());
+        assert!(!manifest_cache_matches(
+            &entry,
+            Path::new("/data"),
+            0.9,
+            &exclude_filters,
+        ));
+    }
+
+    #[test]
+    fn scan_and_write_manifest_cache_persists_scanned_manifest() {
+        let output_dir = temp_dir_path("scan_and_write_manifest_cache");
+        let data_dir = output_dir.join("data");
+        fs::create_dir_all(&data_dir).expect("create temp data dir");
+        let replay_path = data_dir.join("game.mjai.json");
+        fs::write(
+            &replay_path,
+            "{\"type\":\"start_game\",\"seed\":0}\n{\"type\":\"end_game\"}\n",
+        )
+        .expect("write replay fixture");
+        let cache_path = output_dir.join("preflight_manifest.json");
+        let filters = SourceFilterConfig::default();
+
+        let manifest = scan_and_write_manifest_cache(
+            &cache_path,
+            &data_dir,
+            1.0,
+            &filters,
+            None,
+            "test data",
+        )
+        .expect("scan and write manifest cache");
+
+        assert_eq!(manifest.total_games, 1);
+        assert_eq!(manifest.train_count, 1);
+        assert_eq!(manifest.val_count, 0);
+
+        let restored = read_manifest_cache(&cache_path)
+            .expect("read written manifest cache")
+            .expect("manifest cache entry present");
+        assert_eq!(restored.data_dir, data_dir);
+        assert_eq!(restored.train_fraction_bits, 1.0f32.to_bits());
+        assert_eq!(restored.manifest, manifest);
+
+        cleanup_dir(&output_dir);
     }
 
     fn sample_epoch_log_entry() -> EpochLogEntry {

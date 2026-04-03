@@ -14,10 +14,9 @@ use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
 use hydra_train::data::bc_shards::{BcShardReader, BcShardSplit, load_bc_shard_reader};
-use hydra_train::data::pipeline::{
-    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress,
-};
+use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
 use hydra_train::model::{HydraModel, HydraModelConfig};
+#[cfg(test)]
 use hydra_train::preflight::ManifestCacheEntry;
 use hydra_train::selfplay::CooperativeSelfPlayCoordinator;
 use hydra_train::training::bc::{BCTrainerConfig, BcExitConfig};
@@ -33,8 +32,10 @@ use hydra_train::training::rl::RlConfig;
 use super::TrainBackend;
 use super::artifacts::{
     BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, read_manifest_cache, read_preflight_cache,
-    write_manifest_cache,
+    manifest_cache_matches, scan_and_write_manifest_cache,
 };
+#[cfg(test)]
+use super::artifacts::write_manifest_cache;
 use super::config::{
     RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
     train_microbatch_size, trainer_config_from_train_config, validate_config,
@@ -63,10 +64,7 @@ fn load_or_scan_manifest(
     progress: &indicatif::ProgressBar,
 ) -> Result<DataManifest, String> {
     if let Some(cached) = read_manifest_cache(cache_path)?
-        && cached.data_dir == data_dir
-        && cached.train_fraction_bits == train_fraction.to_bits()
-        && cached.include_source_patterns == source_filters.include_source_patterns
-        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
+        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
     {
         progress.finish_with_message(format!(
             "reused manifest: {} train / {} val games",
@@ -74,25 +72,14 @@ fn load_or_scan_manifest(
         ));
         return Ok(cached.manifest);
     }
-    let manifest =
-        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, Some(progress))
-            .map_err(|err| {
-            format!(
-                "failed to scan MJAI data from {}: {err}",
-                data_dir.display()
-            )
-        })?;
-    write_manifest_cache(
+    scan_and_write_manifest_cache(
         cache_path,
-        &ManifestCacheEntry {
-            data_dir: data_dir.to_path_buf(),
-            train_fraction_bits: train_fraction.to_bits(),
-            include_source_patterns: source_filters.include_source_patterns.clone(),
-            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
-            manifest: manifest.clone(),
-        },
-    )?;
-    Ok(manifest)
+        data_dir,
+        train_fraction,
+        source_filters,
+        Some(progress),
+        "MJAI data",
+    )
 }
 
 fn apply_cached_bc_runtime_if_matching(

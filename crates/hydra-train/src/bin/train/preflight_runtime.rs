@@ -12,18 +12,19 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_train::data::bc_shards::{BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::pipeline::{
-    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
-    stream_val_microbatches,
+    DataManifest, StreamingLoaderConfig, stream_train_epoch, stream_val_microbatches,
 };
 use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
     BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
-    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, ManifestCacheEntry,
-    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK,
-    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, PreflightCacheEntry, ProbeKind, ProbeResult,
-    ProbeStatus, ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
+    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PROFILING_STAGE_CHECKPOINT,
+    PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK, PROFILING_STAGE_TRAIN,
+    PROFILING_STAGE_VALIDATION, PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
+    ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
 };
+#[cfg(test)]
+use hydra_train::preflight::ManifestCacheEntry;
 use hydra_train::training::bc::gated_bc_context;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::losses::HydraLoss;
@@ -33,9 +34,12 @@ use super::TrainBackend;
 use super::artifacts::{
     BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightBenchmarkReport,
     PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_step_log, log_tensorboard,
-    read_manifest_cache, read_preflight_cache, save_latest_checkpoint_and_state,
-    write_manifest_cache, write_preflight_benchmark_report, write_preflight_cache,
+    manifest_cache_matches, read_manifest_cache, read_preflight_cache,
+    save_latest_checkpoint_and_state, scan_and_write_manifest_cache,
+    write_preflight_benchmark_report, write_preflight_cache,
 };
+#[cfg(test)]
+use super::artifacts::write_manifest_cache;
 use super::bc_fixed_shape::{
     FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
     probe_train_fixed_chunks,
@@ -89,18 +93,6 @@ type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 type BenchmarkOptimizerOf<B> = OptimizerAdaptor<Adam, HydraModel<B>, B>;
 type StageTwoCachedValidationSamples = Option<Arc<[Box<[MjaiSample]>]>>;
 
-fn cached_manifest_matches(
-    cached: &ManifestCacheEntry,
-    data_dir: &Path,
-    train_fraction: f32,
-    source_filters: &hydra_train::data::pipeline::SourceFilterConfig,
-) -> bool {
-    cached.data_dir == data_dir
-        && cached.train_fraction_bits == train_fraction.to_bits()
-        && cached.include_source_patterns == source_filters.include_source_patterns
-        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
-}
-
 fn load_or_scan_manifest(
     cache_path: &Path,
     data_dir: &Path,
@@ -109,29 +101,18 @@ fn load_or_scan_manifest(
     progress: Option<&indicatif::ProgressBar>,
 ) -> Result<DataManifest, String> {
     if let Some(cached) = read_manifest_cache(cache_path)?
-        && cached_manifest_matches(&cached, data_dir, train_fraction, source_filters)
+        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
     {
         return Ok(cached.manifest);
     }
-    let manifest =
-        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
-            .map_err(|err| {
-                format!(
-                    "failed to scan preflight data from {}: {err}",
-                    data_dir.display()
-                )
-            })?;
-    write_manifest_cache(
+    scan_and_write_manifest_cache(
         cache_path,
-        &ManifestCacheEntry {
-            data_dir: data_dir.to_path_buf(),
-            train_fraction_bits: train_fraction.to_bits(),
-            include_source_patterns: source_filters.include_source_patterns.clone(),
-            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
-            manifest: manifest.clone(),
-        },
-    )?;
-    Ok(manifest)
+        data_dir,
+        train_fraction,
+        source_filters,
+        progress,
+        "preflight data",
+    )
 }
 
 pub(super) struct PreflightRuntime {

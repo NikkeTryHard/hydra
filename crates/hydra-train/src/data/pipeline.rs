@@ -240,22 +240,21 @@ impl SkipLogState {
     }
 
     fn flush_summary(&self) {
-        if self.aggregate_only {
-            if let Ok(counts) = self.reason_counts.lock()
-                && !counts.is_empty()
-            {
-                let summary = counts
-                    .iter()
-                    .map(|(reason, count)| format!("{reason}={count}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                eprintln!(
-                    "{} [preflight:skip] source={} {}",
-                    Self::utc_prefix(),
-                    self.source,
-                    summary
-                );
-            }
+        if self.aggregate_only
+            && let Ok(counts) = self.reason_counts.lock()
+            && !counts.is_empty()
+        {
+            let summary = counts
+                .iter()
+                .map(|(reason, count)| format!("{reason}={count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!(
+                "{} [preflight:skip] source={} {}",
+                Self::utc_prefix(),
+                self.source,
+                summary
+            );
             return;
         }
         let suppressed = self.suppressed.load(Ordering::Relaxed);
@@ -707,12 +706,11 @@ fn spawn_loose_batch_stream(
                 .name("mjai-loose-lister".into())
                 .spawn(move || {
                     for path in paths {
-                        if let Ok(identity) = identity_for_loose_file(&path) {
-                            if should_include_identity(&identity, train_fraction, &split) {
-                                if path_tx.send(path).is_err() {
-                                    break;
-                                }
-                            }
+                        if let Ok(identity) = identity_for_loose_file(&path)
+                            && should_include_identity(&identity, train_fraction, &split)
+                            && path_tx.send(path).is_err()
+                        {
+                            break;
                         }
                     }
                 })

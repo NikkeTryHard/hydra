@@ -218,7 +218,7 @@ impl TargetPresence {
 /// counts the number of samples where the mask is nonzero. For targets
 /// without per-sample masks, counts `batch_size` when the target is present.
 pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetPresence {
-    if let Some(presence) = targets.target_presence.clone() {
+    if let Some(presence) = targets.target_presence {
         return presence;
     }
     let batch_size = targets.policy_target.dims()[0];
