@@ -72,6 +72,8 @@ For concrete runbook-style documentation rather than crate ownership summaries, 
 - [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md) — training modes, YAML contract, BC/RL shape, and sidecar-enabled runs
 - [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, probe flows, runtime authority, and resume rules
 - [`docs/REPLAY_SIDECARS.md`](../../docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time joins
+- [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](../../docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus audit, failure inventories, and replay-debug workflow
+- [`docs/DELTAQ_PROMOTION.md`](../../docs/DELTAQ_PROMOTION.md) — DeltaQ promotion mode, gates, and persisted artifact fields
 
 ## Runtime and data contract
 

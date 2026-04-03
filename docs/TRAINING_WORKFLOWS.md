@@ -206,5 +206,7 @@ The container README is intentionally short; it assumes this document owns the w
 
 - Need runtime-selection and cache authority details? Read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](PREFLIGHT_AND_RUNTIME_SELECTION.md).
 - Need replay sidecar generation and join semantics? Read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
+- Need replay corpus validation and failure triage before training? Read [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](MJAI_AUDIT_AND_FAILURE_TRIAGE.md).
+- Need the full DeltaQ promotion runbook and artifact interpretation? Read [`docs/DELTAQ_PROMOTION.md`](DELTAQ_PROMOTION.md).
 - Need current shipped/staged truth? Read [`docs/CURRENT_STATUS.md`](CURRENT_STATUS.md).
 - Need runtime and compatibility constraints? Read [`docs/COMPATIBILITY_SURFACE.md`](COMPATIBILITY_SURFACE.md).

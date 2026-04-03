@@ -108,6 +108,8 @@ If you need to run or debug the training stack rather than read the architecture
 - [`docs/TRAINING_WORKFLOWS.md`](docs/TRAINING_WORKFLOWS.md) — training entry modes, YAML contract, BC/RL shape, and sidecar-enabled training
 - [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, selected-runtime authority, probe flows, and runtime reuse rules
 - [`docs/REPLAY_SIDECARS.md`](docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time hydration contracts
+- [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus validation, failure inventories, and triage tooling
+- [`docs/DELTAQ_PROMOTION.md`](docs/DELTAQ_PROMOTION.md) — DeltaQ promotion gates, arena confirmation, and artifact interpretation
 - [`docker/train/README.md`](docker/train/README.md) — container execution contract
 
 ## Testing and Coverage
