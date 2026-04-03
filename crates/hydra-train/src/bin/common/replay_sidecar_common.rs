@@ -2,14 +2,14 @@ use std::fs;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use burn::backend::libtorch::LibTorchDevice;
 use burn::backend::LibTorch;
+use burn::backend::libtorch::LibTorchDevice;
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::exit::ExitConfig;
 use hydra_train::training::replay_exit::source_net_hash_from_checkpoint_identity;
-use riichienv_core::replay::{load_mjai_events_from_path, read_mjai_events, MjaiEvent};
+use riichienv_core::replay::{MjaiEvent, load_mjai_events_from_path, read_mjai_events};
 use serde::Serialize;
 
 pub(super) type Backend = LibTorch<f32>;

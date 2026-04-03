@@ -333,8 +333,14 @@ pub(crate) fn scan_and_write_manifest_cache(
     progress: Option<&indicatif::ProgressBar>,
     scan_error_context: &str,
 ) -> Result<DataManifest, String> {
-    let manifest = scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
-        .map_err(|err| format!("failed to scan {scan_error_context} from {}: {err}", data_dir.display()))?;
+    let manifest =
+        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
+            .map_err(|err| {
+                format!(
+                    "failed to scan {scan_error_context} from {}: {err}",
+                    data_dir.display()
+                )
+            })?;
     write_manifest_cache(
         cache_path,
         &ManifestCacheEntry {
@@ -961,15 +967,9 @@ mod tests {
         let cache_path = output_dir.join("preflight_manifest.json");
         let filters = SourceFilterConfig::default();
 
-        let manifest = scan_and_write_manifest_cache(
-            &cache_path,
-            &data_dir,
-            1.0,
-            &filters,
-            None,
-            "test data",
-        )
-        .expect("scan and write manifest cache");
+        let manifest =
+            scan_and_write_manifest_cache(&cache_path, &data_dir, 1.0, &filters, None, "test data")
+                .expect("scan and write manifest cache");
 
         assert_eq!(manifest.total_games, 1);
         assert_eq!(manifest.train_count, 1);
@@ -1349,8 +1349,7 @@ mod tests {
             benchmark,
         };
 
-        write_preflight_benchmark_report(&path, &report)
-            .expect("write preflight benchmark report");
+        write_preflight_benchmark_report(&path, &report).expect("write preflight benchmark report");
 
         let raw = fs::read_to_string(&path).expect("read preflight benchmark report");
         let restored: PreflightBenchmarkReport =

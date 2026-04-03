@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 use burn::backend::libtorch::LibTorchDevice;
@@ -8,27 +8,27 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::{Trajectory, TrajectoryStep};
 use hydra_core::encoder::OBS_SIZE;
 use hydra_train::data::bc_shards::{
-    build_bc_shards, load_bc_shard_reader, BcShardSplit, BcShardSplitMode, BuildBcShardsConfig,
+    BcShardSplit, BcShardSplitMode, BuildBcShardsConfig, build_bc_shards, load_bc_shard_reader,
 };
 use hydra_train::data::mjai_loader::{
-    load_game_from_reader, load_game_from_reader_with_sidecar, ReplayTargetProfile,
-    SidecarProvenance,
+    ReplayTargetProfile, SidecarProvenance, load_game_from_reader,
+    load_game_from_reader_with_sidecar,
 };
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, stream_val_microbatches, stream_val_pass, SourceFilterConfig,
-    StreamingLoaderConfig,
+    SourceFilterConfig, StreamingLoaderConfig, scan_data_sources_with_progress,
+    stream_val_microbatches, stream_val_pass,
 };
-use hydra_train::data::sample::{collate_samples_bc_owned, collate_samples_owned, MjaiSample};
+use hydra_train::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::selfplay::{
-    generate_self_play_batch_source, generate_self_play_batch_source_cooperative,
-    generate_self_play_batch_source_cooperative_reuse, CooperativeSelfPlayCoordinator,
+    CooperativeSelfPlayCoordinator, generate_self_play_batch_source,
+    generate_self_play_batch_source_cooperative, generate_self_play_batch_source_cooperative_reuse,
 };
 use hydra_train::selfplay_batch::{
-    default_gae_config, trajectories_to_rl_batch, trajectories_to_rl_batch_reuse, RlBatchScratch,
+    RlBatchScratch, default_gae_config, trajectories_to_rl_batch, trajectories_to_rl_batch_reuse,
 };
-use hydra_train::training::bc::bc_total_with_optional_exit_from_breakdown;
 use hydra_train::training::bc::BcExitConfig;
+use hydra_train::training::bc::bc_total_with_optional_exit_from_breakdown;
 use hydra_train::training::live_exit::LiveExitConfig;
 use hydra_train::training::losses::LossBreakdown;
 use hydra_train::training::losses::{HydraLoss, HydraLossConfig};

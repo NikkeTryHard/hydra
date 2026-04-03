@@ -890,10 +890,7 @@ pub(super) fn execute_probe_request_batch(
         });
         finish_probe_spinner(
             &child_run.spinner,
-            format_probe_spinner_finish_message(
-                &finish_result,
-                child_run.elapsed_seconds,
-            ),
+            format_probe_spinner_finish_message(&finish_result, child_run.elapsed_seconds),
         );
         Ok(results)
     }

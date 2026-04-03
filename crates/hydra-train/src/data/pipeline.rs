@@ -1039,8 +1039,10 @@ where
             self.pending_start = 0;
         }
         self.current.clear();
-        self.current
-            .extend(self.pending.drain(self.pending_start..self.pending_start + self.microbatch_size));
+        self.current.extend(
+            self.pending
+                .drain(self.pending_start..self.pending_start + self.microbatch_size),
+        );
         Some(std::mem::take(&mut self.current))
     }
 }
@@ -1062,7 +1064,8 @@ where
                     return None;
                 }
                 self.current.clear();
-                self.current.extend(self.pending.drain(self.pending_start..));
+                self.current
+                    .extend(self.pending.drain(self.pending_start..));
                 self.pending.clear();
                 self.pending_start = 0;
                 return Some(Ok(std::mem::take(&mut self.current)));
@@ -1087,10 +1090,7 @@ pub fn stream_val_microbatches(
     microbatch_size: usize,
     progress: Option<&ProgressBar>,
 ) -> impl Iterator<Item = io::Result<Vec<MjaiSample>>> {
-    StreamValMicrobatchIterator::new(
-        stream_val_pass(manifest, config, progress),
-        microbatch_size,
-    )
+    StreamValMicrobatchIterator::new(stream_val_pass(manifest, config, progress), microbatch_size)
 }
 
 fn is_mjai_file(path: &Path) -> bool {
@@ -1363,9 +1363,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tar::Builder;
 
-    use crate::data::mjai_loader::{
-        MjaiDataset, MjaiGame, prepare_replay_decision, update_safety,
-    };
+    use crate::data::mjai_loader::{MjaiDataset, MjaiGame, prepare_replay_decision, update_safety};
     use crate::training::replay_delta_q::{DeltaQSidecarIndex, ReplayDeltaQRecordV1};
     use crate::training::replay_exit::{
         ExitSidecarIndex, ReplayDecisionKey, ReplayExitRecordV1, legal_mask_digest_from_f32,

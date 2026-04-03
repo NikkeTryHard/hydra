@@ -30,12 +30,12 @@ use hydra_train::training::replay_exit::{
 use hydra_train::training::rl::RlConfig;
 
 use super::TrainBackend;
-use super::artifacts::{
-    BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, read_manifest_cache, read_preflight_cache,
-    manifest_cache_matches, scan_and_write_manifest_cache,
-};
 #[cfg(test)]
 use super::artifacts::write_manifest_cache;
+use super::artifacts::{
+    BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, manifest_cache_matches,
+    read_manifest_cache, read_preflight_cache, scan_and_write_manifest_cache,
+};
 use super::config::{
     RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
     train_microbatch_size, trainer_config_from_train_config, validate_config,

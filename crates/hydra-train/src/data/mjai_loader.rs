@@ -13,7 +13,9 @@ use flate2::read::GzDecoder;
 #[cfg(test)]
 use hydra_core::action::{AKA_5M, DISCARD_END};
 use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, riichienv_to_hydra};
-use hydra_core::bridge::{BridgeEncodeProfile, encode_observation, encode_observation_with_profile};
+use hydra_core::bridge::{
+    BridgeEncodeProfile, encode_observation, encode_observation_with_profile,
+};
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action as EngineAction, ActionType, Phase};
@@ -479,7 +481,12 @@ fn analyze_replay_legal_actions(
     legal: &[EngineAction],
     _phase: ActionPhase,
     chosen_action_id: u8,
-) -> ([bool; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE], bool, bool) {
+) -> (
+    [bool; HYDRA_ACTION_SPACE],
+    [f32; HYDRA_ACTION_SPACE],
+    bool,
+    bool,
+) {
     let mut legal_mask = [false; HYDRA_ACTION_SPACE];
     let mut legal_mask_f32 = [0.0; HYDRA_ACTION_SPACE];
     let mut chosen_is_legal = false;
@@ -578,7 +585,6 @@ fn observation_for_replay_event(
     REPLAY_OBSERVATION_NS.fetch_add(t_obs.elapsed().as_nanos() as u64, Ordering::Relaxed);
     Ok(obs)
 }
-
 
 fn prepare_implicit_pass_decisions(
     next_event: &MjaiEvent,
@@ -727,8 +733,8 @@ pub(crate) fn prepare_replay_decision(
         encoder,
         ReplayDecisionOptions::default(),
     )?
-        .into_iter()
-        .find(|decision| decision.action_id != hydra_core::action::PASS))
+    .into_iter()
+    .find(|decision| decision.action_id != hydra_core::action::PASS))
 }
 
 fn lookup_joined_label<T, F>(
@@ -814,7 +820,8 @@ fn load_game_from_events_internal(
                 ActorRelativeOpponentTargets::default()
             } else {
                 let t_opp = Instant::now();
-                let actor_targets = actor_relative_opponent_targets(actor, &mut event_targets, &state);
+                let actor_targets =
+                    actor_relative_opponent_targets(actor, &mut event_targets, &state);
                 stats.opponent_targets_ns += t_opp.elapsed().as_nanos();
                 stats.exact_waits_ns += event_targets.exact_waits_ns;
                 event_targets.exact_waits_ns = 0;
@@ -1725,8 +1732,7 @@ mod tests {
 
         let mask_offset = hydra_core::encoder::HAND_EV_MASK_CHANNEL * 34;
         assert_eq!(
-            sample.obs[mask_offset],
-            0.0,
+            sample.obs[mask_offset], 0.0,
             "default BC loader path should leave Hand-EV mask disabled"
         );
 

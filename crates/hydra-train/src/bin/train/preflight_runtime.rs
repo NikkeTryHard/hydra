@@ -16,6 +16,8 @@ use hydra_train::data::pipeline::{
 };
 use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train::model::{HydraModel, HydraModelConfig};
+#[cfg(test)]
+use hydra_train::preflight::ManifestCacheEntry;
 use hydra_train::preflight::{
     BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
     EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PROFILING_STAGE_CHECKPOINT,
@@ -23,14 +25,14 @@ use hydra_train::preflight::{
     PROFILING_STAGE_VALIDATION, PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
     ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
 };
-#[cfg(test)]
-use hydra_train::preflight::ManifestCacheEntry;
 use hydra_train::training::bc::gated_bc_context;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::losses::HydraLoss;
 use tboard::EventWriter;
 
 use super::TrainBackend;
+#[cfg(test)]
+use super::artifacts::write_manifest_cache;
 use super::artifacts::{
     BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightBenchmarkReport,
     PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_step_log, log_tensorboard,
@@ -38,8 +40,6 @@ use super::artifacts::{
     save_latest_checkpoint_and_state, scan_and_write_manifest_cache,
     write_preflight_benchmark_report, write_preflight_cache,
 };
-#[cfg(test)]
-use super::artifacts::write_manifest_cache;
 use super::bc_fixed_shape::{
     FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
     probe_train_fixed_chunks,
@@ -76,7 +76,7 @@ use super::probe_summary::{
     ProbeCandidateSummary, best_probe_summary, format_probe_selection_summary, probe_kind_name,
     summarize_probe_results,
 };
-use super::progress::{batch_stats_from_outputs, ScalarAverages, StepLogEntry};
+use super::progress::{ScalarAverages, StepLogEntry, batch_stats_from_outputs};
 use super::resume::{BestValidation, EpochContinuation, runtime_resume_contract};
 use super::runtime_autotune::{
     LoaderRuntimeScoreSeed, RankedLoaderRuntime, RuntimeTupleStats,
@@ -1157,11 +1157,8 @@ where
                     };
                     let (active_loss_fn, warmup_heads) =
                         gated_bc_context(Some(&mut head_controller), &loss_fn, &targets);
-                    let output = model.forward_with_warmup(
-                        obs,
-                        &active_loss_fn.config,
-                        &warmup_heads,
-                    );
+                    let output =
+                        model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads);
                     let breakdown = active_loss_fn.total_loss(&output, &targets);
                     let total = hydra_train::training::bc::maybe_add_exit_loss(
                         breakdown.total.clone(),
@@ -2157,8 +2154,8 @@ where
 
     for microbatch_result in stream_val_microbatches(manifest, loader_config, microbatch_size, None)
     {
-        let microbatch =
-            microbatch_result.map_err(|err| format!("preflight validation stream failed: {err}"))?;
+        let microbatch = microbatch_result
+            .map_err(|err| format!("preflight validation stream failed: {err}"))?;
         let Some((obs, batch, targets)) = hydra_train::data::sample::collate_samples_bc_owned::<
             ValidBackendOf<B>,
         >(microbatch.as_slice(), false, train_device)
@@ -5924,7 +5921,9 @@ mod tests {
         assert_eq!(result.runtime.selected.train_microbatch_size, 8);
         assert_eq!(result.runtime.selected.validation_microbatch_size, 4);
         assert!(
-            !PreflightBenchmarkPaths::new(&artifacts).report_path().exists(),
+            !PreflightBenchmarkPaths::new(&artifacts)
+                .report_path()
+                .exists(),
             "cache-hit preflight without stage-2 benchmark should not emit benchmark report"
         );
 
