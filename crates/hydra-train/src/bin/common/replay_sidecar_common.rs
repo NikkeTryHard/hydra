@@ -2,14 +2,14 @@ use std::fs;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use burn::backend::LibTorch;
 use burn::backend::libtorch::LibTorchDevice;
+use burn::backend::LibTorch;
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::training::exit::ExitConfig;
 use hydra_train::training::replay_exit::source_net_hash_from_checkpoint_identity;
-use riichienv_core::replay::{MjaiEvent, load_mjai_events_from_path, read_mjai_events};
+use riichienv_core::replay::{load_mjai_events_from_path, read_mjai_events, MjaiEvent};
 use serde::Serialize;
 
 pub(super) type Backend = LibTorch<f32>;
@@ -128,6 +128,60 @@ pub(super) fn write_jsonl<T: Serialize>(path: &Path, records: &[T]) -> Result<()
     Ok(())
 }
 
+pub(super) fn source_identity_from_input(input: &Path) -> Result<&str, String> {
+    input
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid replay filename {}", input.display()))
+}
+
+pub(super) fn success_message(
+    record_count: usize,
+    output: &Path,
+    report_path: &Path,
+    record_label: &str,
+) -> String {
+    format!(
+        "Wrote {record_count} {record_label} to {} (report: {})",
+        output.display(),
+        report_path.display()
+    )
+}
+
+pub(super) fn write_sidecar_with<Record, Report, Generate, WriteJsonl, WriteReport>(
+    input: &Path,
+    checkpoint: &Path,
+    output: &Path,
+    source_version: u32,
+    lane_name: &str,
+    record_label: &str,
+    generate: Generate,
+    write_jsonl_fn: WriteJsonl,
+    write_report_fn: WriteReport,
+) -> Result<String, String>
+where
+    Record: Serialize,
+    Report: Serialize,
+    Generate: FnOnce(&str, u64, u32) -> Result<(Vec<Record>, Report), String>,
+    WriteJsonl: FnOnce(&Path, &[Record]) -> Result<(), String>,
+    WriteReport: FnOnce(&Path, &Report) -> Result<PathBuf, String>,
+{
+    let source_identity = source_identity_from_input(input)?;
+    let source_net_hash = source_net_hash_from_checkpoint(checkpoint);
+    let (records, report) = generate(source_identity, source_net_hash, source_version)
+        .map_err(|err| format!("failed to generate {lane_name}: {err}"))?;
+
+    write_jsonl_fn(output, &records)?;
+    let report_path = write_report_fn(output, &report)?;
+
+    Ok(success_message(
+        records.len(),
+        output,
+        &report_path,
+        record_label,
+    ))
+}
+
 pub(super) fn load_model(
     checkpoint: &Path,
     device: &LibTorchDevice,
@@ -170,6 +224,8 @@ pub(super) fn write_report<T: Serialize>(output: &Path, report: &T) -> Result<Pa
 mod tests {
     use super::*;
     use serde::Serialize;
+    use std::cell::RefCell;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_path(name: &str, ext: &str) -> PathBuf {
@@ -188,6 +244,16 @@ mod tests {
     struct DummyRecord {
         id: u32,
         label: &'static str,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+    struct WrapperRecord {
+        id: u32,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+    struct WrapperReport {
+        labels_emitted: u32,
     }
 
     #[test]
@@ -330,6 +396,224 @@ mod tests {
         assert!(usage_text.contains("--input <replay.json|replay.json.gz>"));
         assert!(usage_text.contains("--checkpoint <model_base>"));
         assert!(usage_text.contains("[--max-kl <f32>]"));
+    }
+
+    #[test]
+    fn source_identity_from_input_uses_file_name() {
+        let input = Path::new("nested/game.json.gz");
+        let identity = source_identity_from_input(input).expect("utf-8 file name should work");
+        assert_eq!(identity, "game.json.gz");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_identity_from_input_rejects_non_utf8_file_name() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let input = PathBuf::from(OsString::from_vec(vec![0xff, b'.', b'j', b's', b'o', b'n']));
+        let err = source_identity_from_input(&input).expect_err("non-utf-8 should fail");
+        assert!(err.contains("invalid replay filename"));
+    }
+
+    #[test]
+    fn source_identity_from_input_rejects_paths_without_file_names() {
+        let err = source_identity_from_input(Path::new("."))
+            .expect_err("path without file name should fail");
+        assert!(err.contains("invalid replay filename ."));
+    }
+
+    #[test]
+    fn success_message_includes_record_count_output_and_report_path() {
+        let output = Path::new("out.jsonl");
+        let report = Path::new("out.report.json");
+        let message = success_message(7, output, report, "replay ExIt records");
+
+        assert!(message.contains("Wrote 7 replay ExIt records"));
+        assert!(message.contains("out.jsonl"));
+        assert!(message.contains("out.report.json"));
+    }
+
+    #[test]
+    fn write_sidecar_with_forwards_wrapper_inputs_and_formats_success_message() {
+        let input = Path::new("replays/game.json.gz");
+        let checkpoint = Path::new("checkpoints/model_base");
+        let output = Path::new("out.jsonl");
+        let expected_report_path = output.with_extension("report.json");
+        let seen_identity = RefCell::new(None::<String>);
+        let seen_hash = RefCell::new(None::<u64>);
+        let seen_version = RefCell::new(None::<u32>);
+        let seen_jsonl_write = RefCell::new(None::<(PathBuf, Vec<WrapperRecord>)>);
+        let seen_report_write = RefCell::new(None::<(PathBuf, WrapperReport)>);
+
+        let summary = write_sidecar_with(
+            input,
+            checkpoint,
+            output,
+            7,
+            "replay ExIt sidecar",
+            "replay ExIt records",
+            |source_identity, source_net_hash, source_version| {
+                *seen_identity.borrow_mut() = Some(source_identity.to_string());
+                *seen_hash.borrow_mut() = Some(source_net_hash);
+                *seen_version.borrow_mut() = Some(source_version);
+                Ok((
+                    vec![WrapperRecord { id: 1 }, WrapperRecord { id: 2 }],
+                    WrapperReport { labels_emitted: 2 },
+                ))
+            },
+            |path, records| {
+                *seen_jsonl_write.borrow_mut() = Some((path.to_path_buf(), records.to_vec()));
+                Ok(())
+            },
+            |path, report| {
+                *seen_report_write.borrow_mut() = Some((path.to_path_buf(), report.clone()));
+                Ok(expected_report_path.clone())
+            },
+        )
+        .expect("wrapper path should succeed");
+
+        assert_eq!(seen_identity.borrow().as_deref(), Some("game.json.gz"));
+        assert_eq!(
+            *seen_hash.borrow(),
+            Some(source_net_hash_from_checkpoint(checkpoint))
+        );
+        assert_eq!(*seen_version.borrow(), Some(7));
+        assert_eq!(
+            *seen_jsonl_write.borrow(),
+            Some((
+                output.to_path_buf(),
+                vec![WrapperRecord { id: 1 }, WrapperRecord { id: 2 }]
+            ))
+        );
+        assert_eq!(
+            *seen_report_write.borrow(),
+            Some((output.to_path_buf(), WrapperReport { labels_emitted: 2 }))
+        );
+        assert_eq!(
+            summary,
+            success_message(
+                2,
+                output,
+                expected_report_path.as_path(),
+                "replay ExIt records"
+            )
+        );
+    }
+
+    #[test]
+    fn write_sidecar_with_wraps_generator_errors() {
+        let err = write_sidecar_with::<WrapperRecord, WrapperReport, _, _, _>(
+            Path::new("game.json.gz"),
+            Path::new("model_base"),
+            Path::new("out.jsonl"),
+            1,
+            "replay delta_q sidecar",
+            "replay delta_q records",
+            |_source_identity, _source_net_hash, _source_version| {
+                Err("kaboom while generating".to_string())
+            },
+            |_path, _records| panic!("jsonl writer should not run after generator failure"),
+            |_path, _report| panic!("report writer should not run after generator failure"),
+        )
+        .expect_err("generator failure should bubble up");
+
+        assert_eq!(
+            err,
+            "failed to generate replay delta_q sidecar: kaboom while generating"
+        );
+    }
+
+    #[test]
+    fn write_sidecar_with_propagates_jsonl_write_errors_without_running_report_writer() {
+        let report_writer_called = RefCell::new(false);
+
+        let err = write_sidecar_with(
+            Path::new("game.json.gz"),
+            Path::new("model_base"),
+            Path::new("out.jsonl"),
+            1,
+            "replay ExIt sidecar",
+            "replay ExIt records",
+            |_source_identity, _source_net_hash, _source_version| {
+                Ok((
+                    vec![WrapperRecord { id: 1 }],
+                    WrapperReport { labels_emitted: 1 },
+                ))
+            },
+            |_path, _records| Err("disk full".to_string()),
+            |_path, _report| {
+                *report_writer_called.borrow_mut() = true;
+                Ok(PathBuf::from("out.report.json"))
+            },
+        )
+        .expect_err("jsonl writer failure should bubble up");
+
+        assert_eq!(err, "disk full");
+        assert!(!*report_writer_called.borrow());
+    }
+
+    #[test]
+    fn write_sidecar_with_propagates_report_write_errors() {
+        let err = write_sidecar_with(
+            Path::new("game.json.gz"),
+            Path::new("model_base"),
+            Path::new("out.jsonl"),
+            1,
+            "replay ExIt sidecar",
+            "replay ExIt records",
+            |_source_identity, _source_net_hash, _source_version| {
+                Ok((
+                    vec![WrapperRecord { id: 1 }],
+                    WrapperReport { labels_emitted: 1 },
+                ))
+            },
+            |_path, _records| Ok(()),
+            |_path, _report| Err("report write failed".to_string()),
+        )
+        .expect_err("report writer failure should bubble up");
+
+        assert_eq!(err, "report write failed");
+    }
+
+    #[test]
+    fn write_sidecar_with_formats_zero_record_success_message() {
+        let output = Path::new("out.jsonl");
+        let expected_report_path = PathBuf::from("out.report.json");
+
+        let summary = write_sidecar_with(
+            Path::new("game.json.gz"),
+            Path::new("model_base"),
+            output,
+            1,
+            "replay ExIt sidecar",
+            "replay ExIt records",
+            |_source_identity, _source_net_hash, _source_version| {
+                Ok((
+                    Vec::<WrapperRecord>::new(),
+                    WrapperReport { labels_emitted: 0 },
+                ))
+            },
+            |_path, records| {
+                assert!(records.is_empty());
+                Ok(())
+            },
+            |_path, report| {
+                assert_eq!(*report, WrapperReport { labels_emitted: 0 });
+                Ok(expected_report_path.clone())
+            },
+        )
+        .expect("empty sidecar should still succeed");
+
+        assert_eq!(
+            summary,
+            success_message(
+                0,
+                output,
+                expected_report_path.as_path(),
+                "replay ExIt records"
+            )
+        );
     }
 
     #[test]
