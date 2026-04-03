@@ -127,6 +127,7 @@ mod tests {
     use hydra_train::training::bc::policy_agreement_counts;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::Duration;
 
     use crate::artifacts::BcArtifactPaths;
@@ -607,14 +608,24 @@ num_epochs: 3
         path
     }
 
-    struct TrainDeviceEnvGuard;
+    fn train_device_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct TrainDeviceEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+    }
 
     impl TrainDeviceEnvGuard {
         fn reset() -> Self {
+            let lock = train_device_env_lock()
+                .lock()
+                .expect("train device env lock should not be poisoned");
             unsafe {
                 env::remove_var("HYDRA_TRAIN_DEVICE");
             }
-            Self
+            Self { _lock: lock }
         }
     }
 
