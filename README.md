@@ -109,6 +109,7 @@ If you need to run or debug the training stack rather than read the architecture
 - [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, selected-runtime authority, probe flows, and runtime reuse rules
 - [`docs/REPLAY_SIDECARS.md`](docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time hydration contracts
 - [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus validation, failure inventories, and triage tooling
+- [`docs/BC_SHARDS.md`](docs/BC_SHARDS.md) — BC shard production, manifest interpretation, and training consumption
 - [`docs/DELTAQ_PROMOTION.md`](docs/DELTAQ_PROMOTION.md) — DeltaQ promotion gates, arena confirmation, and artifact interpretation
 - [`docker/train/README.md`](docker/train/README.md) — container execution contract
 
