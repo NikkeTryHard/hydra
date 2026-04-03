@@ -2,7 +2,7 @@
 
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE};
-use hydra_core::tile::{permute_tile_extended, permute_tile_type, ALL_PERMUTATIONS};
+use hydra_core::tile::{ALL_PERMUTATIONS, permute_tile_extended, permute_tile_type};
 use std::sync::OnceLock;
 
 const AKA_CHANNEL_START: usize = 40;

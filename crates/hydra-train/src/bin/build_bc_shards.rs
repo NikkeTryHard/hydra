@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hydra_train::data::bc_shards::{
-    build_bc_shards, BcShardBuildOutput, BcShardSplitMode, BuildBcShardsConfig,
+    BcShardBuildOutput, BcShardSplitMode, BuildBcShardsConfig, build_bc_shards,
 };
 use hydra_train::data::mjai_loader::SidecarProvenance;
 use hydra_train::data::pipeline::scan_data_sources_with_progress;
@@ -215,8 +215,13 @@ fn run() -> Result<(), String> {
     let cli = parse_args(program, std::env::args())?;
 
     let pb = make_progress_bar(0);
-    let scan = scan_data_sources_with_progress(&cli.input, cli.train_fraction, Some(&pb))
-        .map_err(|err| format!("failed to scan replay sources: {err}"))?;
+    let scan = scan_data_sources_with_progress(
+        &cli.input,
+        cli.train_fraction,
+        &hydra_train::data::pipeline::SourceFilterConfig::default(),
+        Some(&pb),
+    )
+    .map_err(|err| format!("failed to scan replay sources: {err}"))?;
     pb.finish_and_clear();
 
     let exit_sidecar = load_exit_sidecar(cli.exit_sidecar.as_ref())?;

@@ -15,7 +15,7 @@ use hydra_train::data::bc_shards::{
     load_bc_shard_reader, BcShardHostBatch, BcShardReader, BcShardSplit,
 };
 use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
-use hydra_train::data::sample::{collate_samples_owned, MjaiBcBatch, MjaiSample};
+use hydra_train::data::sample::{collate_samples_bc_owned, MjaiBcBatch, MjaiSample};
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
     ProfilingEnvelope, PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH,
@@ -24,8 +24,7 @@ use hydra_train::preflight::{
     PROFILING_STAGE_OPTIMIZER_STEP, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
 };
 use hydra_train::training::bc::{
-    bc_total_with_exit_from_breakdown, gated_bc_context, maybe_add_exit_loss, BCTrainerConfig,
-    BcExitConfig,
+    gated_bc_context, maybe_add_exit_loss, BCTrainerConfig, BcExitConfig,
 };
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
@@ -83,7 +82,7 @@ where
     pub(super) current_runtime: RuntimeResumeContract,
     pub(super) run_start: &'a Instant,
     pub(super) head_controller: &'a mut HeadActivationController,
-    pub(super) cached_validation_samples: Option<&'a [MjaiSample]>,
+    pub(super) cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
     pub(super) validation_shard_reader: Option<&'a BcShardReader>,
 }
 
@@ -135,7 +134,7 @@ where
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
     session_start_global_step: usize,
-    cached_validation_samples: Option<&'a [MjaiSample]>,
+    cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
     validation_shard_reader: Option<&'a BcShardReader>,
 }
 
@@ -183,7 +182,7 @@ where
     valid_loss_fn: &'a HydraLoss<ValidBackendOf<B>>,
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
-    cached_validation_samples: Option<&'a [MjaiSample]>,
+    cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
     validation_shard_reader: Option<&'a BcShardReader>,
 }
 
@@ -379,7 +378,7 @@ where
         let t = Instant::now();
         let collated = {
             let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
-            collate_samples_owned::<B>(chunk, augment, train_device)
+            collate_samples_bc_owned::<B>(chunk, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
         sub_timing_fallback.collation_seconds += t.elapsed().as_secs_f64();
@@ -393,7 +392,7 @@ where
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing_fallback.forward_seconds += t.elapsed().as_secs_f64();
@@ -401,7 +400,13 @@ where
         let (breakdown, total) = {
             let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
             let breakdown = active_loss_fn.total_loss(&output, &targets);
-            let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
+            let total = maybe_add_exit_loss(
+                breakdown.total.clone(),
+                output.policy_logits.clone(),
+                batch.exit_target.as_ref(),
+                batch.exit_mask.as_ref(),
+                bc_exit_cfg,
+            );
             (breakdown, total)
         };
         sub_timing_fallback.loss_seconds += t.elapsed().as_secs_f64();
@@ -1644,10 +1649,10 @@ where
         let (host_batch, take) = recv_result?;
         let lr = effective_lr(train_cfg, *global_step, total_steps);
         let train_started = Instant::now();
-        let (drained, batch_sub_timing) = {
+        let (drained, batch_sub_timing, recycled_host_batch) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
             train_logical_batch_from_host_batch(
-                &host_batch,
+                host_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
                     use_amp,
@@ -1665,7 +1670,9 @@ where
             )?
         };
         let train_seconds = train_started.elapsed().as_secs_f64();
-        let _ = recycle_tx.try_send(host_batch);
+        if let Some(host_batch) = recycled_host_batch {
+            let _ = recycle_tx.try_send(host_batch);
+        }
 
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
         step_window_train_seconds += train_seconds;
@@ -1905,7 +1912,7 @@ where
 /// and the H2D transfer is issued on a dedicated copy stream with
 /// event-based synchronization.
 pub(super) fn train_logical_batch_from_host_batch<B, O>(
-    host_batch: &BcShardHostBatch,
+    host_batch: BcShardHostBatch,
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
     model_slot: &mut Option<HydraModel<B>>,
@@ -1915,7 +1922,14 @@ pub(super) fn train_logical_batch_from_host_batch<B, O>(
         super::pinned_transfer::AsyncH2DContext,
         super::pinned_transfer::PreallocatedDeviceTensors,
     )>,
-) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+) -> Result<
+    (
+        Vec<BatchStats>,
+        TrainSubStageTiming,
+        Option<BcShardHostBatch>,
+    ),
+    String,
+>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
@@ -1935,25 +1949,28 @@ where
     let mut sub_timing = TrainSubStageTiming::default();
 
     let t = Instant::now();
-    let shard_batch = {
+    let (shard_batch, recycled_host_batch) = {
         let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
         #[cfg(feature = "cuda-graph")]
         {
             if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
-                super::pinned_transfer::materialize_staged_reuse::<B>(
-                    &host_batch,
-                    pinned_staging,
-                    h2d_ctx,
-                    train_device,
-                    gpu_tensors,
+                (
+                    super::pinned_transfer::materialize_staged_reuse::<B>(
+                        &host_batch,
+                        pinned_staging,
+                        h2d_ctx,
+                        train_device,
+                        gpu_tensors,
+                    ),
+                    Some(host_batch),
                 )
             } else {
-                host_batch.materialize::<B>(train_device)
+                (host_batch.materialize_owned::<B>(train_device), None)
             }
         }
         #[cfg(not(feature = "cuda-graph"))]
         {
-            host_batch.materialize::<B>(train_device)
+            (host_batch.materialize_owned::<B>(train_device), None)
         }
     };
     sub_timing.collation_seconds += t.elapsed().as_secs_f64();
@@ -1964,7 +1981,7 @@ where
     let batch_size = batch.actions.dims()[0];
 
     if batch_size == 0 {
-        return Ok((Vec::new(), sub_timing));
+        return Ok((Vec::new(), sub_timing, recycled_host_batch));
     }
 
     let logical_batch_len = batch_size.max(1) as f32;
@@ -2104,7 +2121,7 @@ where
             )]
         })
         .unwrap_or_default();
-    Ok((stats, sub_timing))
+    Ok((stats, sub_timing, recycled_host_batch))
 }
 
 #[cfg(test)]
@@ -2157,6 +2174,7 @@ mod tests {
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,

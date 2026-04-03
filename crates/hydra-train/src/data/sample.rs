@@ -454,30 +454,13 @@ impl CollateBuffers {
 
     fn reset_for_batch(&mut self, batch: usize) {
         debug_assert!(self.capacity_batch() >= batch);
-        self.obs_flat[..batch * OBS_SIZE].fill(0.0);
-        self.actions[..batch].fill(0);
-        self.mask_flat[..batch * HYDRA_ACTION_SPACE].fill(0.0);
-        self.values[..batch].fill(0.0);
-        self.grp_flat[..batch * GRP_CLASS_COUNT].fill(0.0);
-        self.oracle_flat[..batch * PLAYER_COUNT].fill(0.0);
-        self.oracle_mask[..batch].fill(0.0);
-        self.tenpai_flat[..batch * OPPONENT_COUNT].fill(0.0);
-        self.danger_flat[..batch * SPATIAL_TARGET_SIZE].fill(0.0);
-        self.dmask_flat[..batch * SPATIAL_TARGET_SIZE].fill(0.0);
-        self.safety_residual_flat[..batch * HYDRA_ACTION_SPACE].fill(0.0);
-        self.safety_residual_mask_flat[..batch * HYDRA_ACTION_SPACE].fill(0.0);
         self.any_safety_residual = false;
         self.exit_samples[..batch].fill(None);
         self.delta_q_samples[..batch].fill(None);
-        self.belief_fields_flat[..batch * BELIEF_FIELD_SIZE].fill(0.0);
-        self.mixture_weights_flat[..batch * PLAYER_COUNT].fill(0.0);
         self.any_belief_fields = false;
         self.any_mixture_weights = false;
         self.belief_fields_mask[..batch].fill(0.0);
         self.mixture_weight_mask[..batch].fill(0.0);
-        self.opp_flat[..batch * SPATIAL_TARGET_SIZE].fill(0.0);
-        self.pdf_flat[..batch * SCORE_BINS].fill(0.0);
-        self.cdf_flat[..batch * SCORE_BINS].fill(0.0);
         self.target_presence = TargetPresence::with_batch_size(batch);
     }
 
@@ -506,18 +489,32 @@ impl CollateBuffers {
         let exit_mask = maybe_augment_action_vector(sample.exit_mask, perm);
         let delta_q_target = maybe_augment_action_vector(sample.delta_q_target, perm);
         let delta_q_mask = maybe_augment_action_vector(sample.delta_q_mask, perm);
+        let grp_row = &mut self.grp_flat[index * GRP_CLASS_COUNT..(index + 1) * GRP_CLASS_COUNT];
+        let oracle_row = &mut self.oracle_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT];
+        let safety_residual_row = &mut self.safety_residual_flat
+            [index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE];
+        let safety_residual_mask_row = &mut self.safety_residual_mask_flat
+            [index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE];
+        let belief_fields_row = &mut self.belief_fields_flat
+            [index * BELIEF_FIELD_SIZE..(index + 1) * BELIEF_FIELD_SIZE];
+        let mixture_weights_row =
+            &mut self.mixture_weights_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT];
+        let opp_row =
+            &mut self.opp_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE];
 
         self.obs_flat[index * OBS_SIZE..(index + 1) * OBS_SIZE].copy_from_slice(&obs);
         self.actions[index] = action as i64;
         self.mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
             .copy_from_slice(&legal_mask);
         self.values[index] = score_delta_to_value(sample.score_delta);
+        grp_row.fill(0.0);
         if (sample.grp_label as usize) < GRP_CLASS_COUNT {
-            self.grp_flat[index * GRP_CLASS_COUNT + sample.grp_label as usize] = 1.0;
+            grp_row[sample.grp_label as usize] = 1.0;
         }
+        oracle_row.fill(0.0);
+        self.oracle_mask[index] = 0.0;
         if let Some(oracle) = sample.oracle_target {
-            self.oracle_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT]
-                .copy_from_slice(&oracle);
+            oracle_row.copy_from_slice(&oracle);
             self.oracle_mask[index] = 1.0;
             self.target_presence.counts[AdvancedHead::OracleCritic.index()] += 1;
         }
@@ -527,15 +524,14 @@ impl CollateBuffers {
             .copy_from_slice(&danger);
         self.dmask_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE]
             .copy_from_slice(&danger_mask);
+        safety_residual_row.fill(0.0);
+        safety_residual_mask_row.fill(0.0);
         if let Some(values) = safety_residual {
-            self.safety_residual_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&values);
+            safety_residual_row.copy_from_slice(&values);
             self.any_safety_residual = true;
         }
         if let Some(values) = safety_residual_mask {
-            self.safety_residual_mask_flat
-                [index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
-                .copy_from_slice(&values);
+            safety_residual_mask_row.copy_from_slice(&values);
             self.any_safety_residual = true;
             if values.iter().any(|&value| value > 0.0) {
                 self.target_presence.counts[AdvancedHead::SafetyResidual.index()] += 1;
@@ -551,10 +547,11 @@ impl CollateBuffers {
                 self.target_presence.delta_q_actions_present += action_count;
             }
         }
+        belief_fields_row.fill(0.0);
         if let Some(values) = belief_fields {
-            self.belief_fields_flat[index * BELIEF_FIELD_SIZE..(index + 1) * BELIEF_FIELD_SIZE]
-                .copy_from_slice(&values);
+            belief_fields_row.copy_from_slice(&values);
         }
+        self.belief_fields_mask[index] = 0.0;
         update_optional_presence(
             "belief_fields",
             belief_fields.is_some(),
@@ -565,10 +562,11 @@ impl CollateBuffers {
         if self.belief_fields_mask[index] > 0.0 && self.oracle_mask[index] > 0.0 {
             self.target_presence.counts[AdvancedHead::BeliefFields.index()] += 1;
         }
+        mixture_weights_row.fill(0.0);
         if let Some(values) = sample.mixture_weights {
-            self.mixture_weights_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT]
-                .copy_from_slice(&values);
+            mixture_weights_row.copy_from_slice(&values);
         }
+        self.mixture_weight_mask[index] = 0.0;
         update_optional_presence(
             "mixture_weight",
             sample.mixture_weights.is_some(),
@@ -579,9 +577,10 @@ impl CollateBuffers {
         if self.mixture_weight_mask[index] > 0.0 && self.oracle_mask[index] > 0.0 {
             self.target_presence.counts[AdvancedHead::MixtureWeight.index()] += 1;
         }
+        opp_row.fill(0.0);
         for (opp, tile) in opp_next.iter().copied().enumerate() {
             if tile < TILE_COUNT as u8 {
-                self.opp_flat[index * SPATIAL_TARGET_SIZE + opp * TILE_COUNT + tile as usize] = 1.0;
+                opp_row[opp * TILE_COUNT + tile as usize] = 1.0;
             }
         }
         let pdf = score_delta_to_pdf(sample.score_delta);
@@ -876,6 +875,17 @@ pub fn collate_sample_refs_owned<B: Backend>(
     let obs = batch.obs.clone();
     let targets = cloned_hydra_targets(&batch);
     Ok(Some((obs, batch, targets)))
+}
+
+pub fn collate_sample_refs_bc_owned<B: Backend>(
+    samples: &[&MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> CollatedOwnedBcBatch<B> {
+    let Some(batch) = build_batch_from_sample_refs::<B>(samples, augment, device)? else {
+        return Ok(None);
+    };
+    Ok(Some(into_bc_batch_and_hydra_targets_inner(batch)))
 }
 
 pub fn collate_sample_refs_with_batch<B: Backend>(
@@ -1929,6 +1939,96 @@ mod tests {
             split_targets
                 .oracle_guidance_mask
                 .expect("split oracle mask")
+                .to_data()
+        );
+    }
+
+    #[test]
+    fn collate_sample_refs_bc_owned_matches_split_batch_targets_and_exit_surface() {
+        let device = Default::default();
+        let mut sample = dummy_sample(2, 100);
+        sample.oracle_target = Some([0.1, -0.1, 0.2, -0.2]);
+        let mut exit_target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+        exit_target[2] = 0.75;
+        exit_target[45] = -0.25;
+        exit_mask[2] = 1.0;
+        exit_mask[45] = 1.0;
+        sample.exit_target = Some(exit_target);
+        sample.exit_mask = Some(exit_mask);
+        let samples = vec![sample];
+        let sample_refs: Vec<&MjaiSample> = samples.iter().collect();
+
+        let (obs, bc_batch, targets) =
+            collate_sample_refs_bc_owned::<B>(&sample_refs, false, &device)
+                .expect("bc owned ref collate")
+                .expect("bc owned ref batch present");
+        let (split_obs, split_batch) =
+            collate_sample_refs_with_batch::<B>(&sample_refs, false, &device)
+                .expect("split ref batch collate")
+                .expect("split ref batch present");
+        let split_targets = split_batch.to_hydra_targets();
+
+        assert_eq!(obs.to_data(), split_obs.to_data());
+        assert_eq!(bc_batch.actions.to_data(), split_batch.actions.to_data());
+        assert_eq!(
+            bc_batch
+                .exit_target
+                .as_ref()
+                .expect("bc ref exit target")
+                .to_data(),
+            split_batch
+                .exit_target
+                .as_ref()
+                .expect("split ref exit target")
+                .to_data()
+        );
+        assert_eq!(
+            bc_batch
+                .exit_mask
+                .as_ref()
+                .expect("bc ref exit mask")
+                .to_data(),
+            split_batch
+                .exit_mask
+                .as_ref()
+                .expect("split ref exit mask")
+                .to_data()
+        );
+        assert_eq!(
+            targets.policy_target.to_data(),
+            split_targets.policy_target.to_data()
+        );
+        assert_eq!(
+            targets.legal_mask.to_data(),
+            split_targets.legal_mask.to_data()
+        );
+        assert_eq!(
+            targets.value_target.to_data(),
+            split_targets.value_target.to_data()
+        );
+        assert_eq!(
+            targets.grp_target.to_data(),
+            split_targets.grp_target.to_data()
+        );
+        assert_eq!(
+            targets
+                .oracle_target
+                .expect("bc ref oracle target")
+                .to_data(),
+            split_targets
+                .oracle_target
+                .expect("split ref oracle target")
+                .to_data()
+        );
+        assert_eq!(
+            targets
+                .oracle_guidance_mask
+                .expect("bc ref oracle mask")
+                .to_data(),
+            split_targets
+                .oracle_guidance_mask
+                .expect("split ref oracle mask")
                 .to_data()
         );
     }

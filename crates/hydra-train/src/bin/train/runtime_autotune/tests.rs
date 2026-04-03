@@ -18,6 +18,7 @@ fn dummy_config() -> TrainConfig {
         delta_q_sidecar_path: Some(PathBuf::from("/tmp/delta-q.sidecar")),
         bc_shards_manifest_path: None,
         train_fraction: 0.9,
+        source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
         seed: 7,

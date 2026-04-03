@@ -2,7 +2,23 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hydra_train::data::pipeline::{DataManifest, DataSource};
+use hydra_train::data::pipeline::{is_train_game, DataManifest, DataSource};
+
+fn loose_identity_for_test(path: &std::path::Path) -> String {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("generated loose fixture path should have filename");
+    if let Some(parent) = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+    {
+        format!("{parent}/{file_name}")
+    } else {
+        file_name.to_owned()
+    }
+}
 
 fn unique_test_root(label: &str) -> PathBuf {
     let base = std::env::var_os("HOME")
@@ -42,8 +58,23 @@ pub(super) fn write_real_probe_fixture(label: &str) -> (PathBuf, PathBuf, PathBu
 pub(super) fn write_real_preflight_fixture(label: &str) -> PathBuf {
     let root = unique_test_root(label);
     fs::create_dir_all(&root).expect("create real preflight fixture dir");
-    let train_replay_path = root.join("train-game.mjai.json");
-    let validation_replay_path = root.join("validation-game.mjai.json");
+
+    let pick_file_name = |prefix: &str, want_train: bool| {
+        (0usize..)
+            .map(|idx| format!("{prefix}-{idx}.mjai.json"))
+            .find(|name| {
+                let path = root.join(name);
+                let identity = loose_identity_for_test(&path);
+                is_train_game(&identity, 0.5) == want_train
+            })
+            .expect("should find deterministic loose-file split identity")
+    };
+
+    let train_file_name = pick_file_name("train-game", true);
+    let validation_file_name = pick_file_name("validation-game", false);
+
+    let train_replay_path = root.join(train_file_name);
+    let validation_replay_path = root.join(validation_file_name);
     fs::write(&train_replay_path, tiny_real_mjai_replay()).expect("write train preflight replay");
     fs::write(&validation_replay_path, tiny_real_mjai_replay())
         .expect("write validation preflight replay");

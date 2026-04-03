@@ -11,7 +11,8 @@ use tboard::EventWriter;
 use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
-    ManifestCacheEntry, PreflightCacheEntry, default_cache_name, default_manifest_cache_name,
+    BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
+    PreflightCacheKey, default_cache_name, default_manifest_cache_name,
 };
 use hydra_train::training::bc::CheckpointMeta;
 use hydra_train::training::delta_q_promotion::{
@@ -57,6 +58,13 @@ pub(crate) struct PreflightPaths {
 
 pub(crate) struct PreflightBenchmarkPaths {
     pub(crate) root: PathBuf,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct PreflightBenchmarkReport {
+    pub(crate) cache_key: PreflightCacheKey,
+    pub(crate) runtime: EffectiveRuntimeConfig,
+    pub(crate) benchmark: BenchmarkResult,
 }
 
 pub(crate) struct RlPreflightPaths {
@@ -111,6 +119,10 @@ impl PreflightBenchmarkPaths {
             )
         })?;
         Ok(path)
+    }
+
+    pub(crate) fn report_path(&self) -> PathBuf {
+        self.root.join("report.json")
     }
 }
 
@@ -217,6 +229,32 @@ pub(crate) fn write_preflight_cache(
     })?;
     fs::write(path, json)
         .map_err(|err| format!("failed to write preflight cache {}: {err}", path.display()))
+}
+
+pub(crate) fn write_preflight_benchmark_report(
+    path: &Path,
+    report: &PreflightBenchmarkReport,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create preflight benchmark report dir {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let json = serde_json::to_string_pretty(report).map_err(|err| {
+        format!(
+            "failed to serialize preflight benchmark report {}: {err}",
+            path.display()
+        )
+    })?;
+    fs::write(path, json).map_err(|err| {
+        format!(
+            "failed to write preflight benchmark report {}: {err}",
+            path.display()
+        )
+    })
 }
 
 pub(crate) fn read_preflight_cache(path: &Path) -> Result<Option<PreflightCacheEntry>, String> {
@@ -811,6 +849,8 @@ mod tests {
         ManifestCacheEntry {
             data_dir: PathBuf::from("/data"),
             train_fraction_bits: 0.9f32.to_bits(),
+            include_source_patterns: Vec::new(),
+            exclude_source_patterns: Vec::new(),
             manifest: DataManifest {
                 sources: vec![
                     DataSource::LooseFile(PathBuf::from("/data/a.mjai.json")),
@@ -1131,6 +1171,73 @@ mod tests {
             .expect("manifest cache entry present");
 
         assert_eq!(restored, entry);
+
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn preflight_benchmark_paths_report_path_is_stable() {
+        let artifacts = BcArtifactPaths::new(Path::new("/tmp/out"), 0);
+        let paths = PreflightBenchmarkPaths::new(&artifacts);
+        assert_eq!(
+            paths.report_path(),
+            Path::new("/tmp/out").join("bc/preflight_benchmark/report.json")
+        );
+    }
+
+    #[test]
+    fn preflight_benchmark_report_roundtrips_through_json() {
+        let output_dir = temp_dir_path("preflight_benchmark_report_roundtrip");
+        fs::create_dir_all(&output_dir).expect("create temp dir");
+        let path = output_dir.join("preflight_benchmark/report.json");
+        let benchmark = hydra_train::preflight::BenchmarkResult {
+            runtime: hydra_train::preflight::BenchmarkRuntimeConfig {
+                train_microbatch_size: 8,
+                validation_microbatch_size: 4,
+                accum_steps: 2,
+                loader: hydra_train::preflight::LoaderRuntimeConfig {
+                    num_threads: Some(2),
+                    buffer_games: 32,
+                    buffer_samples: 128,
+                    archive_queue_bound: 4,
+                },
+            },
+            score: hydra_train::preflight::BenchmarkScore {
+                wall_clock_samples_per_second: 123.456,
+                train_only_samples_per_second: 200.0,
+                train_seconds: 1.0,
+                validation_seconds: 0.5,
+                checkpoint_seconds: 0.1,
+                logging_seconds: 0.05,
+                total_elapsed_seconds: 1.65,
+                train_steps: 10,
+                validation_samples: 50,
+            },
+            metadata: hydra_train::preflight::BenchmarkMetadata {
+                mode: hydra_train::preflight::BenchmarkMode::CadenceAwareProjection,
+                ..Default::default()
+            },
+            profiling: Some(hydra_train::preflight::ProfilingEnvelope::leaf(
+                "stage_2_benchmark",
+                1.5,
+            )),
+        };
+        let report = PreflightBenchmarkReport {
+            cache_key: sample_preflight_cache_entry().cache_key,
+            runtime: sample_preflight_cache_entry().runtime,
+            benchmark,
+        };
+
+        write_preflight_benchmark_report(&path, &report)
+            .expect("write preflight benchmark report");
+
+        let raw = fs::read_to_string(&path).expect("read preflight benchmark report");
+        let restored: PreflightBenchmarkReport =
+            serde_json::from_str(&raw).expect("parse preflight benchmark report");
+
+        assert_eq!(restored.cache_key, report.cache_key);
+        assert_eq!(restored.runtime, report.runtime);
+        assert_eq!(restored.benchmark, report.benchmark);
 
         cleanup_dir(&output_dir);
     }

@@ -17,12 +17,35 @@ use crate::encoder::{
 };
 use crate::hand_ev::{HandEvFeatures, compute_hand_ev};
 use crate::safety::SafetyInfo;
+use crate::shanten_batch::{BatchShantenResult, batch_discard_shanten};
 use crate::sinkhorn::MixtureSib;
 use crate::tile::NUM_TILE_TYPES;
 
 const NUM_OPPONENTS: usize = 3;
 const NUM_MIXTURE_COMPONENTS: usize = 4;
 const NUM_BELIEF_ZONES: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BridgeEncodeProfile {
+    pub include_search_features: bool,
+    pub include_hand_ev: bool,
+}
+
+impl BridgeEncodeProfile {
+    pub const fn full() -> Self {
+        Self {
+            include_search_features: true,
+            include_hand_ev: true,
+        }
+    }
+
+    pub const fn bc_minimal() -> Self {
+        Self {
+            include_search_features: true,
+            include_hand_ev: false,
+        }
+    }
+}
 
 /// Optional runtime context used to populate Group C search/belief channels.
 ///
@@ -100,7 +123,27 @@ fn metadata_from_parts(
     let hand_total: u8 = hand_counts.iter().sum();
     let len_div3 = hand_total / 3;
     let shanten = calc_shanten_from_counts(hand_counts, len_div3);
+    metadata_from_parts_with_shanten(
+        observer,
+        riichi_declared,
+        scores,
+        kyoku_index,
+        honba,
+        kyotaku,
+        shanten,
+    )
+}
 
+#[inline]
+fn metadata_from_parts_with_shanten(
+    observer: usize,
+    riichi_declared: &[bool; 4],
+    scores: &[i32; 4],
+    kyoku_index: u8,
+    honba: u8,
+    kyotaku: u8,
+    shanten: i8,
+) -> GameMetadata {
     GameMetadata {
         riichi: std::array::from_fn(|i| riichi_declared[(observer + i) % 4]),
         scores: std::array::from_fn(|i| scores[(observer + i) % 4]),
@@ -109,6 +152,58 @@ fn metadata_from_parts(
         honba,
         kyotaku,
     }
+}
+
+#[inline]
+fn search_context_has_runtime_planes(context: &SearchContext<'_>) -> bool {
+    context.mixture.is_some()
+        || (context.afbs_tree.is_some() && context.afbs_root.is_some())
+        || context.opponent_risk.is_some()
+        || context.opponent_stress.is_some()
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn encode_extracted_observation_with_profile(
+    encoder: &mut ObservationEncoder,
+    hand: &[u8; NUM_TILE_TYPES],
+    drawn_tile: Option<u8>,
+    open_meld_counts: &[u8; NUM_TILE_TYPES],
+    discards: &[PlayerDiscards; 4],
+    melds: &[PlayerMelds; 4],
+    dora: &DoraInfo,
+    meta: &GameMetadata,
+    shanten_batch: &BatchShantenResult,
+    safety: &SafetyInfo,
+    search_context: &SearchContext<'_>,
+    profile: BridgeEncodeProfile,
+) -> [f32; OBS_SIZE] {
+    let hand_ev = if profile.include_hand_ev {
+        Some(compute_hand_ev_from_context(hand, discards, melds, dora, search_context))
+    } else {
+        None
+    };
+    let search_features = if profile.include_search_features
+        && search_context_has_runtime_planes(search_context)
+    {
+        Some(build_search_features(safety, search_context))
+    } else {
+        None
+    };
+    let slice = encoder.encode_with_context_and_shanten_batch(
+        hand,
+        drawn_tile,
+        open_meld_counts,
+        discards,
+        melds,
+        dora,
+        meta,
+        safety,
+        shanten_batch,
+        search_features.as_ref(),
+        hand_ev.as_ref(),
+    );
+    *slice
 }
 
 #[inline]
@@ -125,9 +220,10 @@ fn encode_extracted_observation(
     safety: &SafetyInfo,
     search_context: &SearchContext<'_>,
 ) -> [f32; OBS_SIZE] {
-    let hand_ev = compute_hand_ev_from_context(hand, discards, melds, dora, search_context);
-    let search_features = build_search_features(safety, search_context);
-    let slice = encoder.encode_with_context(
+    let hand_total: u8 = hand.iter().sum();
+    let shanten_batch = batch_discard_shanten(hand, hand_total / 3);
+    encode_extracted_observation_with_profile(
+        encoder,
         hand,
         drawn_tile,
         open_meld_counts,
@@ -135,11 +231,11 @@ fn encode_extracted_observation(
         melds,
         dora,
         meta,
+        &shanten_batch,
         safety,
-        Some(&search_features),
-        Some(&hand_ev),
-    );
-    *slice
+        search_context,
+        BridgeEncodeProfile::full(),
+    )
 }
 
 /// Extract hand tile counts from an Observation.
@@ -506,6 +602,46 @@ pub fn encode_observation(
     encode_observation_with_search_context(encoder, obs, safety, drawn_tile, &search_context)
 }
 
+#[inline]
+pub fn encode_observation_with_profile(
+    encoder: &mut ObservationEncoder,
+    obs: &Observation,
+    safety: &SafetyInfo,
+    drawn_tile: Option<u8>,
+    profile: BridgeEncodeProfile,
+) -> [f32; OBS_SIZE] {
+    let search_context = SearchContext::default();
+    let hand = extract_hand(obs);
+    let discards = extract_discards(obs);
+    let melds = extract_melds(obs);
+    let open_meld_counts = extract_observer_meld_counts(obs);
+    let dora = extract_dora(obs);
+    let shanten_batch = batch_discard_shanten(&hand, hand.iter().sum::<u8>() / 3);
+    let meta = metadata_from_parts_with_shanten(
+        obs.player_id as usize,
+        &obs.riichi_declared,
+        &obs.scores,
+        obs.kyoku_index,
+        obs.honba,
+        obs.riichi_sticks.min(255) as u8,
+        shanten_batch.base,
+    );
+    encode_extracted_observation_with_profile(
+        encoder,
+        &hand,
+        drawn_tile,
+        &open_meld_counts,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &shanten_batch,
+        safety,
+        &search_context,
+        profile,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // ObservationRef extractors (zero-copy path)
 // ---------------------------------------------------------------------------
@@ -641,22 +777,31 @@ pub fn compute_public_hand_ev_ref(
     compute_public_hand_ev(hand, discards, melds, dora)
 }
 
-/// Encode a zero-copy observation into the fixed-superset tensor with optional Group C runtime context.
 #[inline]
-pub fn encode_observation_ref_with_search_context(
+pub fn encode_observation_ref_with_search_context_and_profile(
     encoder: &mut ObservationEncoder,
     obs: &ObservationRef<'_>,
     safety: &SafetyInfo,
     search_context: &SearchContext<'_>,
+    profile: BridgeEncodeProfile,
 ) -> [f32; OBS_SIZE] {
     let hand = extract_hand_ref(obs);
     let discards = extract_discards_ref(obs);
     let melds = extract_melds_ref(obs);
     let open_meld_counts = extract_observer_meld_counts_ref(obs);
     let dora = extract_dora_ref(obs);
-    let meta = extract_metadata_ref(obs, &hand);
+    let shanten_batch = batch_discard_shanten(&hand, hand.iter().sum::<u8>() / 3);
+    let meta = metadata_from_parts_with_shanten(
+        obs.player_id as usize,
+        &obs.riichi_declared,
+        &obs.scores,
+        obs.kyoku_index,
+        obs.honba,
+        obs.riichi_sticks.min(255) as u8,
+        shanten_batch.base,
+    );
     let drawn_tile = obs.drawn_tile.map(|t| t / 4);
-    encode_extracted_observation(
+    encode_extracted_observation_with_profile(
         encoder,
         &hand,
         drawn_tile,
@@ -665,8 +810,26 @@ pub fn encode_observation_ref_with_search_context(
         &melds,
         &dora,
         &meta,
+        &shanten_batch,
         safety,
         search_context,
+        profile,
+    )
+}
+
+#[inline]
+pub fn encode_observation_ref_with_search_context(
+    encoder: &mut ObservationEncoder,
+    obs: &ObservationRef<'_>,
+    safety: &SafetyInfo,
+    search_context: &SearchContext<'_>,
+) -> [f32; OBS_SIZE] {
+    encode_observation_ref_with_search_context_and_profile(
+        encoder,
+        obs,
+        safety,
+        search_context,
+        BridgeEncodeProfile::full(),
     )
 }
 
@@ -683,6 +846,23 @@ pub fn encode_observation_ref(
 ) -> [f32; OBS_SIZE] {
     let search_context = SearchContext::default();
     encode_observation_ref_with_search_context(encoder, obs, safety, &search_context)
+}
+
+#[inline]
+pub fn encode_observation_ref_with_profile(
+    encoder: &mut ObservationEncoder,
+    obs: &ObservationRef<'_>,
+    safety: &SafetyInfo,
+    profile: BridgeEncodeProfile,
+) -> [f32; OBS_SIZE] {
+    let search_context = SearchContext::default();
+    encode_observation_ref_with_search_context_and_profile(
+        encoder,
+        obs,
+        safety,
+        &search_context,
+        profile,
+    )
 }
 
 #[cfg(test)]
@@ -1008,6 +1188,101 @@ mod tests {
     }
 
     #[test]
+    fn encode_observation_bc_minimal_skips_hand_ev_planes() {
+        let obs = fresh_obs();
+        let safety = SafetyInfo::new();
+        let mut encoder = ObservationEncoder::new();
+        let result = encode_observation_with_profile(
+            &mut encoder,
+            &obs,
+            &safety,
+            None,
+            BridgeEncodeProfile::bc_minimal(),
+        );
+
+        let mask_offset = crate::encoder::HAND_EV_MASK_CHANNEL * NUM_TILE_TYPES;
+        assert_eq!(
+            result[mask_offset], 0.0,
+            "BC-minimal encode should leave Hand-EV mask disabled"
+        );
+
+        let hand_ev_payload =
+            &result[crate::encoder::HAND_EV_CHANNEL_START * NUM_TILE_TYPES..mask_offset];
+        assert!(
+            hand_ev_payload.iter().all(|&v| v == 0.0),
+            "BC-minimal encode should zero Hand-EV payload"
+        );
+    }
+
+    #[test]
+    fn encode_observation_ref_bc_minimal_skips_hand_ev_planes() {
+        let rule = GameRule::default_tenhou();
+        let state = GameState::new(0, true, Some(42), 0, rule);
+        let obs = state.observe(0);
+        let safety = SafetyInfo::new();
+        let mut encoder = ObservationEncoder::new();
+        let result = encode_observation_ref_with_profile(
+            &mut encoder,
+            &obs,
+            &safety,
+            BridgeEncodeProfile::bc_minimal(),
+        );
+
+        let mask_offset = crate::encoder::HAND_EV_MASK_CHANNEL * NUM_TILE_TYPES;
+        assert_eq!(
+            result[mask_offset], 0.0,
+            "BC-minimal ref encode should leave Hand-EV mask disabled"
+        );
+
+        let hand_ev_payload =
+            &result[crate::encoder::HAND_EV_CHANNEL_START * NUM_TILE_TYPES..mask_offset];
+        assert!(
+            hand_ev_payload.iter().all(|&v| v == 0.0),
+            "BC-minimal ref encode should zero Hand-EV payload"
+        );
+    }
+
+    #[test]
+    fn reused_encoder_full_then_bc_minimal_clears_hand_ev_planes() {
+        let obs = fresh_obs();
+        let safety = SafetyInfo::new();
+        let mut encoder = ObservationEncoder::new();
+
+        let full = encode_observation_with_profile(
+            &mut encoder,
+            &obs,
+            &safety,
+            None,
+            BridgeEncodeProfile::full(),
+        );
+        let full_mask_offset = crate::encoder::HAND_EV_MASK_CHANNEL * NUM_TILE_TYPES;
+        assert_eq!(
+            full[full_mask_offset],
+            1.0,
+            "full encode should populate Hand-EV mask"
+        );
+
+        let minimal = encode_observation_with_profile(
+            &mut encoder,
+            &obs,
+            &safety,
+            None,
+            BridgeEncodeProfile::bc_minimal(),
+        );
+        assert_eq!(
+            minimal[full_mask_offset],
+            0.0,
+            "reused encoder should clear Hand-EV mask on BC-minimal encode"
+        );
+        let hand_ev_payload =
+            &minimal[crate::encoder::HAND_EV_CHANNEL_START * NUM_TILE_TYPES..full_mask_offset];
+        assert!(
+            hand_ev_payload.iter().all(|&v| v == 0.0),
+            "reused encoder should clear stale Hand-EV payload on BC-minimal encode"
+        );
+    }
+
+    #[test]
     fn encode_observation_with_search_context_populates_group_c_planes() {
         let obs = fresh_obs();
         let mut safety = SafetyInfo::new();
@@ -1113,6 +1388,24 @@ mod tests {
             nonzero > 0,
             "CT-SMC context should produce nonzero Hand-EV payload"
         );
+    }
+
+    #[test]
+    fn encode_observation_default_context_leaves_group_c_zero() {
+        let obs = fresh_obs();
+        let safety = SafetyInfo::new();
+        let mut encoder = ObservationEncoder::new();
+        let result = encode_observation_with_profile(
+            &mut encoder,
+            &obs,
+            &safety,
+            None,
+            BridgeEncodeProfile::bc_minimal(),
+        );
+
+        let search_start = crate::encoder::SEARCH_CHANNEL_START * NUM_TILE_TYPES;
+        let search_end = crate::encoder::HAND_EV_CHANNEL_START * NUM_TILE_TYPES;
+        assert!(result[search_start..search_end].iter().all(|&v| v == 0.0));
     }
 
     #[test]

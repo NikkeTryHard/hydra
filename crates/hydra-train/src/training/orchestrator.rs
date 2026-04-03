@@ -7,7 +7,7 @@ use crate::config::{OracleGuidingConfig, PipelineState, TrainingPhase};
 use crate::data::sample::MjaiBatch;
 use crate::model::HydraModel;
 use crate::training::bc::{
-    bc_train_step, oracle_guiding_train_step, phase_learning_rate, BcExitConfig,
+    BcExitConfig, bc_train_step, oracle_guiding_train_step, phase_learning_rate,
 };
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
@@ -15,7 +15,7 @@ use crate::training::exit::ExitConfig;
 use crate::training::head_gates::HeadActivationController;
 use crate::training::live_exit::LiveExitConfig;
 use crate::training::losses::{HydraLoss, HydraTargets};
-use crate::training::rl::{rl_step_with_phase_progress_and_controller, RlBatch, RlConfig};
+use crate::training::rl::{RlBatch, RlConfig, rl_step_with_phase_progress_and_controller};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchmarkGateMetrics {

@@ -10,11 +10,11 @@ use std::process::Command;
 use std::process::ExitStatus;
 #[cfg(not(test))]
 use std::process::Stdio;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-#[cfg(not(test))]
-use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 #[cfg(not(test))]
@@ -27,14 +27,14 @@ use serde::{Deserialize, Serialize};
 use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
 use super::artifacts::{BcArtifactPaths, RlArtifactPaths};
-#[cfg(not(test))]
-use super::presentation::{
-    format_probe_spinner_finish_message, format_probe_spinner_message, make_spinner,
-};
 #[cfg(test)]
 use super::presentation::format_probe_progress_line;
 #[cfg(test)]
 use super::presentation::format_probe_spinner_message;
+#[cfg(not(test))]
+use super::presentation::{
+    format_probe_spinner_finish_message, format_probe_spinner_message, make_spinner,
+};
 use super::probe_request::{ProbeBatchRequest, ProbeRequest};
 use super::probe_summary::probe_kind_name;
 
@@ -79,10 +79,23 @@ fn propagate_probe_runtime_env(cmd: &mut Command) {
             cmd.env(key, value);
         }
     }
+
+    cmd.env("OMP_NUM_THREADS", "1");
+    cmd.env("MKL_NUM_THREADS", "1");
+    if let Ok(v) = env::var("CUDA_BINARY_LOADER_THREAD_COUNT") {
+        cmd.env("CUDA_BINARY_LOADER_THREAD_COUNT", v);
+    } else {
+        cmd.env("CUDA_BINARY_LOADER_THREAD_COUNT", "2");
+    }
+    if let Ok(v) = env::var("CUDA_CACHE_MAXSIZE") {
+        cmd.env("CUDA_CACHE_MAXSIZE", v);
+    } else {
+        cmd.env("CUDA_CACHE_MAXSIZE", "4294967296");
+    }
 }
 
 #[cfg(not(test))]
-fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
+pub(super) fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
     static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
     static HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
     let flag = INTERRUPTED
@@ -638,7 +651,8 @@ pub(super) fn execute_probe_request(
         let interrupted = interrupt_flag()?;
         interrupted.store(false, Ordering::SeqCst);
         let probe_started = Instant::now();
-        let (spinner_message, spinner) = spawn_probe_spinner(request.kind, request.candidate_microbatch)?;
+        let (spinner_message, spinner) =
+            spawn_probe_spinner(request.kind, request.candidate_microbatch)?;
         let child_exe = probe_child_executable()?;
         let mut child_cmd = Command::new(&child_exe);
         child_cmd
@@ -659,22 +673,18 @@ pub(super) fn execute_probe_request(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         propagate_probe_runtime_env(&mut child_cmd);
-        let mut child = child_cmd
-            .spawn()
-            .map_err(|err| {
-                format!(
-                    "failed to spawn preflight probe child {}: {err}",
-                    child_exe.display()
-                )
-            })?;
-        let stdout_handle = child
-            .stdout
-            .take()
-            .map(|stdout| spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone()));
-        let stderr_handle = child
-            .stderr
-            .take()
-            .map(|stderr| spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone()));
+        let mut child = child_cmd.spawn().map_err(|err| {
+            format!(
+                "failed to spawn preflight probe child {}: {err}",
+                child_exe.display()
+            )
+        })?;
+        let stdout_handle = child.stdout.take().map(|stdout| {
+            spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone())
+        });
+        let stderr_handle = child.stderr.take().map(|stderr| {
+            spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone())
+        });
         if wait_for_probe_child_with_spinner(
             &mut child,
             interrupted.as_ref(),
@@ -830,22 +840,18 @@ pub(super) fn execute_probe_request_batch(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         propagate_probe_runtime_env(&mut child_cmd);
-        let mut child = child_cmd
-            .spawn()
-            .map_err(|err| {
-                format!(
-                    "failed to spawn preflight probe child {}: {err}",
-                    child_exe.display()
-                )
-            })?;
-        let stdout_handle = child
-            .stdout
-            .take()
-            .map(|stdout| spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone()));
-        let stderr_handle = child
-            .stderr
-            .take()
-            .map(|stderr| spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone()));
+        let mut child = child_cmd.spawn().map_err(|err| {
+            format!(
+                "failed to spawn preflight probe child {}: {err}",
+                child_exe.display()
+            )
+        })?;
+        let stdout_handle = child.stdout.take().map(|stdout| {
+            spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone())
+        });
+        let stderr_handle = child.stderr.take().map(|stderr| {
+            spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone())
+        });
         if wait_for_probe_child_with_spinner(
             &mut child,
             interrupted.as_ref(),
@@ -905,7 +911,10 @@ pub(super) fn execute_probe_request_batch(
         });
         finish_probe_spinner(
             &spinner,
-            format_probe_spinner_finish_message(&finish_result, probe_started.elapsed().as_secs_f64()),
+            format_probe_spinner_finish_message(
+                &finish_result,
+                probe_started.elapsed().as_secs_f64(),
+            ),
         );
         Ok(results)
     }
@@ -921,12 +930,12 @@ mod tests {
 
     use super::super::artifacts::{BcArtifactPaths, RlArtifactPaths};
     use super::super::config::{
-        default_archive_queue_bound, default_augment, default_batch_size, default_buffer_games,
-        default_buffer_samples, default_checkpoint_every_n_steps, default_device,
-        default_log_every_n_steps, default_max_skip_logs_per_source,
-        default_max_validation_samples, default_seed, default_tensorboard, default_train_fraction,
-        default_validate_every_n_steps, default_validation_every_n_epochs, BcHyperparamConfig,
-        TrainConfig,
+        BcHyperparamConfig, TrainConfig, default_archive_queue_bound, default_augment,
+        default_batch_size, default_buffer_games, default_buffer_samples,
+        default_checkpoint_every_n_steps, default_device, default_log_every_n_steps,
+        default_max_skip_logs_per_source, default_max_validation_samples, default_seed,
+        default_tensorboard, default_train_fraction, default_validate_every_n_steps,
+        default_validation_every_n_epochs,
     };
     use super::*;
     use crate::test_loose_replay_fixtures::write_real_probe_fixture;
@@ -941,8 +950,9 @@ mod tests {
             validation_microbatch_size: None,
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
-        bc_shards_manifest_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: default_train_fraction(),
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: default_augment(),
             resume_checkpoint: None,
             seed: default_seed(),
@@ -1473,12 +1483,16 @@ mod tests {
         assert_eq!(recovered[0].status, ProbeStatus::Success);
         assert_eq!(recovered[1].status, ProbeStatus::Success);
         assert_eq!(recovered[2].status, ProbeStatus::DataError);
-        assert!(recovered[2]
-            .detail
-            .contains("stderr says replay loader failed"));
-        assert!(recovered[..2]
-            .iter()
-            .all(|result| result.status == ProbeStatus::Success));
+        assert!(
+            recovered[2]
+                .detail
+                .contains("stderr says replay loader failed")
+        );
+        assert!(
+            recovered[..2]
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
         assert!(!results_path.exists());
     }
 

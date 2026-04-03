@@ -108,8 +108,9 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
-        bc_shards_manifest_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.875,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 7,
@@ -177,12 +178,16 @@ mod tests {
         assert!(fingerprint.model_signature.contains("blocks:24"));
         assert!(fingerprint.model_signature.contains("action:46"));
         assert!(fingerprint.code_signature.contains("hydra-train:"));
-        assert!(fingerprint
-            .advanced_loss_signature
-            .contains("\"exit\":0.25"));
-        assert!(fingerprint
-            .advanced_loss_signature
-            .contains("\"safety_residual\":0.75"));
+        assert!(
+            fingerprint
+                .advanced_loss_signature
+                .contains("\"exit\":0.25")
+        );
+        assert!(
+            fingerprint
+                .advanced_loss_signature
+                .contains("\"safety_residual\":0.75")
+        );
         assert!(
             !fingerprint.preflight_config_signature.is_empty(),
             "preflight config signature should be populated"

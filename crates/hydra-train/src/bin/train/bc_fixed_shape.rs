@@ -4,23 +4,17 @@ use burn::prelude::Tensor;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use hydra_train::amp::maybe_autocast;
-use hydra_train::data::sample::{
-    collate_batch_samples, collate_samples, collate_samples_bc_owned, collate_samples_owned,
-    MjaiSample,
-};
+use hydra_train::data::sample::{collate_samples, collate_samples_bc_owned, MjaiSample};
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
     PROFILING_STAGE_LOSS,
 };
-use hydra_train::training::bc::{
-    bc_total_with_exit_from_breakdown, gated_bc_context, maybe_add_exit_loss, BcExitConfig,
-};
+use hydra_train::training::bc::{gated_bc_context, maybe_add_exit_loss, BcExitConfig};
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, LossBreakdown};
 
 use crate::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums, BatchStats};
-use crate::validation::validation_batch_stats;
 
 use std::time::Instant;
 
@@ -194,7 +188,7 @@ where
         let t = Instant::now();
         let collated = {
             let _collation_scope = super::nvtx::scope(PROFILING_STAGE_COLLATION);
-            collate_samples_owned::<B>(tail_remainder, augment, train_device)
+            collate_samples_bc_owned::<B>(tail_remainder, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
         sub_timing.collation_seconds += t.elapsed().as_secs_f64();
@@ -207,7 +201,7 @@ where
         let output = {
             let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
@@ -215,7 +209,13 @@ where
         let (breakdown, total) = {
             let _loss_scope = super::nvtx::scope(PROFILING_STAGE_LOSS);
             let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
-            let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
+            let total = maybe_add_exit_loss(
+                breakdown.total.clone(),
+                output.policy_logits.clone(),
+                batch.exit_target.as_ref(),
+                batch.exit_mask.as_ref(),
+                bc_exit_cfg,
+            );
             (breakdown, total)
         };
         sub_timing.loss_seconds += t.elapsed().as_secs_f64();
@@ -388,30 +388,44 @@ where
     }
 
     if !tail_remainder.is_empty() {
-        let Some((obs, batch)) = collate_batch_samples::<B>(tail_remainder, augment, train_device)
-            .map_err(|err| format!("benchmark train collation failed: {err}"))?
+        let Some((obs, batch, targets)) =
+            collate_samples_bc_owned::<B>(tail_remainder, augment, train_device)
+                .map_err(|err| format!("benchmark train collation failed: {err}"))?
         else {
             return Ok(Some(FixedShapeBenchmarkStepOutput {
                 grads: accumulator.grads(),
                 batch_stats: step_batches,
             }));
         };
-        let targets = batch.to_hydra_targets();
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let output = maybe_autocast(use_amp, || {
-            model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
         });
         let breakdown = active_loss_fn.total_loss(&output, &targets);
-        let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
-        step_batches.push(validation_batch_stats(
-            tail_remainder.len(),
-            &output,
-            &batch,
-            &targets,
-            &breakdown,
-            &total,
-        ));
+        let total = maybe_add_exit_loss(
+            breakdown.total.clone(),
+            output.policy_logits.clone(),
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            bc_exit_cfg,
+        );
+        step_batches.push(BatchStats {
+            sample_count: tail_remainder.len(),
+            batch_count: 1,
+            ..accumulate_metric_sums(
+                tail_remainder.len(),
+                1,
+                batch_metric_sums_from_outputs(
+                    tail_remainder.len(),
+                    output.policy_logits.clone(),
+                    targets.legal_mask.clone(),
+                    batch.actions.clone(),
+                    total.clone(),
+                    &breakdown,
+                ),
+            )
+        });
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
         let grads = (total * chunk_weight).backward();
         let grads = GradientsParams::from_grads(grads, model);
@@ -427,6 +441,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validation::validation_batch_stats;
     use burn::backend::{Autodiff, LibTorch};
     use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams, Optimizer};
     use burn::prelude::Tensor;

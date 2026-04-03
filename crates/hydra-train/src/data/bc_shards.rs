@@ -14,16 +14,16 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::data::augment::{
-    augment_obs_suit_from_le_bytes, permutation_tables,
-};
 #[cfg(not(target_endian = "little"))]
 use crate::data::augment::augment_action_vector_suit_into;
+use crate::data::augment::{augment_obs_suit_from_le_bytes, permutation_tables};
 use crate::data::mjai_loader::{
-    MjaiGame, SidecarProvenance, invalid_data, load_game_from_path, load_game_from_path_with_sidecar,
-    load_game_from_stream, load_game_from_stream_with_sidecar,
+    MjaiGame, SidecarProvenance, invalid_data, load_game_from_path,
+    load_game_from_path_with_sidecar, load_game_from_stream, load_game_from_stream_with_sidecar,
 };
-use crate::data::pipeline::{DataSource, is_train_game, scan_data_sources};
+use crate::data::pipeline::{
+    DataSource, identity_for_loose_file, is_train_game, scan_data_sources,
+};
 use crate::data::sample::{MjaiBcBatch, score_delta_to_bin, score_delta_to_value};
 use crate::training::head_gates::{AdvancedHead, TargetPresence};
 use crate::training::losses::HydraTargets;
@@ -444,8 +444,14 @@ impl BcShardHostScratch {
         std::mem::swap(&mut self.legal_mask_flat, &mut recycled.legal_mask_flat);
         std::mem::swap(&mut self.value_target, &mut recycled.value_target);
         std::mem::swap(&mut self.grp_target_flat, &mut recycled.grp_target_flat);
-        std::mem::swap(&mut self.oracle_target_flat, &mut recycled.oracle_target_flat);
-        std::mem::swap(&mut self.oracle_target_mask, &mut recycled.oracle_target_mask);
+        std::mem::swap(
+            &mut self.oracle_target_flat,
+            &mut recycled.oracle_target_flat,
+        );
+        std::mem::swap(
+            &mut self.oracle_target_mask,
+            &mut recycled.oracle_target_mask,
+        );
         std::mem::swap(&mut self.tenpai_flat, &mut recycled.tenpai_flat);
         std::mem::swap(&mut self.danger_flat, &mut recycled.danger_flat);
         std::mem::swap(&mut self.danger_mask_flat, &mut recycled.danger_mask_flat);
@@ -488,10 +494,8 @@ impl BcShardHostScratch {
         ) {
             std::mem::swap(s, r);
         }
-        recycled.target_presence = std::mem::replace(
-            &mut self.target_presence,
-            TargetPresence::default(),
-        );
+        recycled.target_presence =
+            std::mem::replace(&mut self.target_presence, TargetPresence::default());
         recycled.batch_size = self.batch_size;
 
         // `recycled` now holds the freshly-collated data; the scratch
@@ -540,8 +544,11 @@ impl BcShardHostBatch {
     pub fn materialize<B: Backend>(&self, device: &B::Device) -> BcShardBatch<B> {
         let batch = self.batch_size;
 
-        let obs = Tensor::<B, 1>::from_floats(self.obs_flat.as_slice(), device)
-            .reshape([batch, NUM_CHANNELS, TILE_COUNT]);
+        let obs = Tensor::<B, 1>::from_floats(self.obs_flat.as_slice(), device).reshape([
+            batch,
+            NUM_CHANNELS,
+            TILE_COUNT,
+        ]);
         let actions_tensor = Tensor::<B, 1, Int>::from_ints(self.actions.as_slice(), device);
         let legal_mask = Tensor::<B, 1>::from_floats(self.legal_mask_flat.as_slice(), device)
             .reshape([batch, HYDRA_ACTION_SPACE]);
@@ -550,7 +557,8 @@ impl BcShardHostBatch {
             .reshape([batch, GRP_CLASS_COUNT]);
         let oracle_target = Tensor::<B, 1>::from_floats(self.oracle_target_flat.as_slice(), device)
             .reshape([batch, PLAYER_COUNT]);
-        let oracle_target_mask = Tensor::<B, 1>::from_floats(self.oracle_target_mask.as_slice(), device);
+        let oracle_target_mask =
+            Tensor::<B, 1>::from_floats(self.oracle_target_mask.as_slice(), device);
         let tenpai_target = Tensor::<B, 1>::from_floats(self.tenpai_flat.as_slice(), device)
             .reshape([batch, OPPONENT_COUNT]);
         let danger_target = Tensor::<B, 1>::from_floats(self.danger_flat.as_slice(), device)
@@ -601,14 +609,16 @@ impl BcShardHostBatch {
                     .reshape([batch, HYDRA_ACTION_SPACE])
             }),
             delta_q_mask: self.delta_q_mask_flat.as_ref().map(|buf| {
-                Tensor::<B, 1>::from_floats(buf.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
+                Tensor::<B, 1>::from_floats(buf.as_slice(), device)
+                    .reshape([batch, HYDRA_ACTION_SPACE])
             }),
             safety_residual_target: self.safety_target_flat.as_ref().map(|buf| {
                 Tensor::<B, 1>::from_floats(buf.as_slice(), device)
                     .reshape([batch, HYDRA_ACTION_SPACE])
             }),
             safety_residual_mask: self.safety_mask_flat.as_ref().map(|buf| {
-                Tensor::<B, 1>::from_floats(buf.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
+                Tensor::<B, 1>::from_floats(buf.as_slice(), device)
+                    .reshape([batch, HYDRA_ACTION_SPACE])
             }),
             oracle_guidance_mask: Some(oracle_target_mask),
             target_presence: Some(self.target_presence),
@@ -634,18 +644,14 @@ impl BcShardHostBatch {
             TensorData::new(self.obs_flat, [b, NUM_CHANNELS, TILE_COUNT]),
             device,
         );
-        let actions_tensor = Tensor::<B, 1, Int>::from_data(
-            TensorData::new(self.actions, [b]),
-            device,
-        );
+        let actions_tensor =
+            Tensor::<B, 1, Int>::from_data(TensorData::new(self.actions, [b]), device);
         let legal_mask = Tensor::<B, 2>::from_data(
             TensorData::new(self.legal_mask_flat, [b, HYDRA_ACTION_SPACE]),
             device,
         );
-        let value_target = Tensor::<B, 1>::from_data(
-            TensorData::new(self.value_target, [b]),
-            device,
-        );
+        let value_target =
+            Tensor::<B, 1>::from_data(TensorData::new(self.value_target, [b]), device);
         let grp_target = Tensor::<B, 2>::from_data(
             TensorData::new(self.grp_target_flat, [b, GRP_CLASS_COUNT]),
             device,
@@ -654,10 +660,8 @@ impl BcShardHostBatch {
             TensorData::new(self.oracle_target_flat, [b, PLAYER_COUNT]),
             device,
         );
-        let oracle_target_mask = Tensor::<B, 1>::from_data(
-            TensorData::new(self.oracle_target_mask, [b]),
-            device,
-        );
+        let oracle_target_mask =
+            Tensor::<B, 1>::from_data(TensorData::new(self.oracle_target_mask, [b]), device);
         let tenpai_target = Tensor::<B, 2>::from_data(
             TensorData::new(self.tenpai_flat, [b, OPPONENT_COUNT]),
             device,
@@ -684,16 +688,10 @@ impl BcShardHostBatch {
         );
 
         let exit_target_tensor = self.exit_target_flat.map(|buf| {
-            Tensor::<B, 2>::from_data(
-                TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
-                device,
-            )
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
         });
         let exit_mask_tensor = self.exit_mask_flat.map(|buf| {
-            Tensor::<B, 2>::from_data(
-                TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
-                device,
-            )
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
         });
 
         let policy_target = policy_target_from_actions::<B>(actions_tensor.clone(), b);
@@ -722,28 +720,16 @@ impl BcShardHostBatch {
             mixture_weight_mask: None,
             opponent_hand_type_target: None,
             delta_q_target: self.delta_q_target_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(
-                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
-                    device,
-                )
+                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
             }),
             delta_q_mask: self.delta_q_mask_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(
-                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
-                    device,
-                )
+                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
             }),
             safety_residual_target: self.safety_target_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(
-                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
-                    device,
-                )
+                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
             }),
             safety_residual_mask: self.safety_mask_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(
-                    TensorData::new(buf, [b, HYDRA_ACTION_SPACE]),
-                    device,
-                )
+                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
             }),
             oracle_guidance_mask: Some(oracle_target_mask),
             target_presence: Some(self.target_presence),
@@ -1032,10 +1018,18 @@ pub fn load_bc_shard_reader(
     manifest_path: &Path,
     split: BcShardSplit,
 ) -> Result<BcShardReader, String> {
-    let raw = fs::read_to_string(manifest_path)
-        .map_err(|err| format!("failed to read BC shard manifest {}: {err}", manifest_path.display()))?;
-    let manifest: BcShardManifest = serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse BC shard manifest {}: {err}", manifest_path.display()))?;
+    let raw = fs::read_to_string(manifest_path).map_err(|err| {
+        format!(
+            "failed to read BC shard manifest {}: {err}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: BcShardManifest = serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "failed to parse BC shard manifest {}: {err}",
+            manifest_path.display()
+        )
+    })?;
     // Reject shards built with a different encoder geometry. Without this
     // check a stale manifest silently passes header verification (which only
     // compares header-vs-manifest) and the reader panics deep inside
@@ -1045,8 +1039,7 @@ pub fn load_bc_shard_reader(
             "BC shard manifest obs_size {} does not match current OBS_SIZE {} \
              (num_channels: manifest={}, binary={}). \
              Shards must be rebuilt with the current encoder.",
-            manifest.obs_size, OBS_SIZE,
-            manifest.num_channels, NUM_CHANNELS,
+            manifest.obs_size, OBS_SIZE, manifest.num_channels, NUM_CHANNELS,
         ));
     }
     if manifest.base_record_size != BC_BASE_RECORD_SIZE {
@@ -1090,7 +1083,10 @@ pub fn load_bc_shard_reader(
 
 impl BcShardReader {
     pub fn sample_count(&self) -> usize {
-        self.shards.iter().map(|shard| shard.sample_count as usize).sum()
+        self.shards
+            .iter()
+            .map(|shard| shard.sample_count as usize)
+            .sum()
     }
 
     pub fn feature_flags(&self) -> u32 {
@@ -1245,7 +1241,8 @@ impl BcShardReader {
                         } else {
                             0
                         };
-                        let next_shard = if next_offset == 0 && shard_index + 1 < self.shards.len() {
+                        let next_shard = if next_offset == 0 && shard_index + 1 < self.shards.len()
+                        {
                             &self.shards[shard_index + 1]
                         } else {
                             shard
@@ -1255,7 +1252,7 @@ impl BcShardReader {
                                 + next_offset * next_shard.record_size;
                             let ptr = next_shard.mmap.as_ptr().wrapping_add(next_start);
                             unsafe {
-                                use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T1};
+                                use std::arch::x86_64::{_MM_HINT_T1, _mm_prefetch};
                                 _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.cast());
                                 _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(64).cast());
                                 _mm_prefetch::<{ _MM_HINT_T1 }>(ptr.add(128).cast());
@@ -1280,13 +1277,25 @@ impl BcShardReader {
         }
 
         if augment {
-            collate_range_loop!(|shard: &ShardMap, offset: usize, row: usize, sample_index: usize, scratch: &mut BcShardHostScratch| {
-                write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)
-            });
+            collate_range_loop!(
+                |shard: &ShardMap,
+                 offset: usize,
+                 row: usize,
+                 sample_index: usize,
+                 scratch: &mut BcShardHostScratch| {
+                    write_augmented_row_into_scratch(shard, offset, row, sample_index, scratch)
+                }
+            );
         } else {
-            collate_range_loop!(|shard: &ShardMap, offset: usize, row: usize, _sample_index: usize, scratch: &mut BcShardHostScratch| {
-                write_unaugmented_row_into_scratch(shard, offset, row, scratch)
-            });
+            collate_range_loop!(
+                |shard: &ShardMap,
+                 offset: usize,
+                 row: usize,
+                 _sample_index: usize,
+                 scratch: &mut BcShardHostScratch| {
+                    write_unaugmented_row_into_scratch(shard, offset, row, scratch)
+                }
+            );
         }
 
         Ok(())
@@ -1307,7 +1316,9 @@ impl BcShardReader {
         let shard = &self.shards[shard_index];
         let shard_end = shard.start_sample + shard.sample_count;
         if sample_index >= shard_end {
-            return Err(format!("BC shard sample index {sample_index} out of bounds"));
+            return Err(format!(
+                "BC shard sample index {sample_index} out of bounds"
+            ));
         }
         Ok((shard_index, (sample_index - shard.start_sample) as usize))
     }
@@ -1342,9 +1353,17 @@ fn write_unaugmented_row_into_scratch(
     // check above and the shard header verification at load time. Cursor advances through
     // a fixed sequence of fields whose sizes sum exactly to `record_size`.
     debug_assert_eq!(bytes.len(), shard.record_size, "record size mismatch");
-    debug_assert!(row < scratch.batch_size, "row {row} >= batch_size {}", scratch.batch_size);
+    debug_assert!(
+        row < scratch.batch_size,
+        "row {row} >= batch_size {}",
+        scratch.batch_size
+    );
 
-    let obs_row = unsafe { scratch.obs_flat.get_unchecked_mut(row * OBS_SIZE..(row + 1) * OBS_SIZE) };
+    let obs_row = unsafe {
+        scratch
+            .obs_flat
+            .get_unchecked_mut(row * OBS_SIZE..(row + 1) * OBS_SIZE)
+    };
     let mask_row = unsafe {
         scratch
             .legal_mask_flat
@@ -1618,9 +1637,17 @@ fn write_augmented_row_into_scratch(
     // check above and the shard header verification at load time. Cursor advances through
     // a fixed sequence of fields whose sizes sum exactly to `record_size`.
     debug_assert_eq!(bytes.len(), shard.record_size, "record size mismatch");
-    debug_assert!(row < scratch.batch_size, "row {row} >= batch_size {}", scratch.batch_size);
+    debug_assert!(
+        row < scratch.batch_size,
+        "row {row} >= batch_size {}",
+        scratch.batch_size
+    );
 
-    let obs_row = unsafe { scratch.obs_flat.get_unchecked_mut(row * OBS_SIZE..(row + 1) * OBS_SIZE) };
+    let obs_row = unsafe {
+        scratch
+            .obs_flat
+            .get_unchecked_mut(row * OBS_SIZE..(row + 1) * OBS_SIZE)
+    };
     let mask_row = unsafe {
         scratch
             .legal_mask_flat
@@ -1781,7 +1808,8 @@ fn write_augmented_row_into_scratch(
                 unsafe {
                     *danger_dst.get_unchecked_mut(dst_start + dst_suit * SUIT_TILES + t) =
                         f32::from_bits(
-                            (*bytes.get_unchecked(src_start + src_suit * SUIT_TILES + t) != 0) as u32
+                            (*bytes.get_unchecked(src_start + src_suit * SUIT_TILES + t) != 0)
+                                as u32
                                 * F32_ONE_BITS,
                         );
                 }
@@ -1789,11 +1817,9 @@ fn write_augmented_row_into_scratch(
         }
         for t in 0..HONOR_COUNT {
             unsafe {
-                *danger_dst.get_unchecked_mut(dst_start + HONOR_START + t) =
-                    f32::from_bits(
-                        (*bytes.get_unchecked(src_start + HONOR_START + t) != 0) as u32
-                            * F32_ONE_BITS,
-                    );
+                *danger_dst.get_unchecked_mut(dst_start + HONOR_START + t) = f32::from_bits(
+                    (*bytes.get_unchecked(src_start + HONOR_START + t) != 0) as u32 * F32_ONE_BITS,
+                );
             }
         }
     }
@@ -1809,7 +1835,8 @@ fn write_augmented_row_into_scratch(
                 unsafe {
                     *dmask_dst.get_unchecked_mut(dst_start + dst_suit * SUIT_TILES + t) =
                         f32::from_bits(
-                            (*bytes.get_unchecked(src_start + src_suit * SUIT_TILES + t) != 0) as u32
+                            (*bytes.get_unchecked(src_start + src_suit * SUIT_TILES + t) != 0)
+                                as u32
                                 * F32_ONE_BITS,
                         );
                 }
@@ -1817,11 +1844,9 @@ fn write_augmented_row_into_scratch(
         }
         for t in 0..HONOR_COUNT {
             unsafe {
-                *dmask_dst.get_unchecked_mut(dst_start + HONOR_START + t) =
-                    f32::from_bits(
-                        (*bytes.get_unchecked(src_start + HONOR_START + t) != 0) as u32
-                            * F32_ONE_BITS,
-                    );
+                *dmask_dst.get_unchecked_mut(dst_start + HONOR_START + t) = f32::from_bits(
+                    (*bytes.get_unchecked(src_start + HONOR_START + t) != 0) as u32 * F32_ONE_BITS,
+                );
             }
         }
     }
@@ -1950,8 +1975,12 @@ fn record_size_for_flags(flags: u32) -> u32 {
     size
 }
 
-fn sidecar_manifest(path: Option<&Path>, provenance: SidecarProvenance) -> Option<BcShardSidecarManifest> {
-    let (source_net_hash, source_version) = provenance.source_net_hash.zip(provenance.source_version)?;
+fn sidecar_manifest(
+    path: Option<&Path>,
+    provenance: SidecarProvenance,
+) -> Option<BcShardSidecarManifest> {
+    let (source_net_hash, source_version) =
+        provenance.source_net_hash.zip(provenance.source_version)?;
     Some(BcShardSidecarManifest {
         path: path?.display().to_string(),
         source_net_hash,
@@ -1976,6 +2005,14 @@ fn process_loose_file(
             path,
             config.exit_provenance,
             config.delta_q_provenance,
+            crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
+                false,
+                false,
+                false,
+                false,
+                config.exit_sidecar.is_some(),
+                config.delta_q_sidecar.is_some(),
+            ),
             config.exit_sidecar.as_deref(),
             config.delta_q_sidecar.as_deref(),
         )
@@ -2005,7 +2042,10 @@ fn process_archive(
     let file = fs::File::open(path)?;
     let reader: Box<dyn Read> = if is_tar_zst_file(path) {
         let zstd = zstd::Decoder::new(file).map_err(|err| {
-            io::Error::other(format!("failed to open zstd archive {}: {err}", path.display()))
+            io::Error::other(format!(
+                "failed to open zstd archive {}: {err}",
+                path.display()
+            ))
         })?;
         Box::new(zstd)
     } else {
@@ -2028,6 +2068,14 @@ fn process_archive(
                 &identity,
                 config.exit_provenance,
                 config.delta_q_provenance,
+                crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
+                    false,
+                    false,
+                    false,
+                    false,
+                    config.exit_sidecar.is_some(),
+                    config.delta_q_sidecar.is_some(),
+                ),
                 entry,
                 config.exit_sidecar.as_deref(),
                 config.delta_q_sidecar.as_deref(),
@@ -2097,13 +2145,6 @@ fn split_for_identity(identity: &str, config: &BuildBcShardsConfig) -> Option<Bc
         BcShardSplit::Validation
     };
     config.split_mode.includes(split).then_some(split)
-}
-
-fn identity_for_loose_file(path: &Path) -> io::Result<String> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| invalid_data(format!("invalid filename {}", path.display())))
 }
 
 fn identity_for_archive_entry(archive_path: &Path, entry_path: &Path) -> io::Result<String> {
@@ -2184,7 +2225,11 @@ fn write_shard_header<W: Write>(
     Ok(())
 }
 
-fn write_sample_record<W: Write>(writer: &mut W, sample: &crate::data::sample::MjaiSample, flags: u32) -> io::Result<()> {
+fn write_sample_record<W: Write>(
+    writer: &mut W,
+    sample: &crate::data::sample::MjaiSample,
+    flags: u32,
+) -> io::Result<()> {
     write_obs_f32(writer, &sample.obs)?;
     write_u8(writer, sample.action)?;
     write_mask_u8(writer, &sample.legal_mask)?;
@@ -2212,7 +2257,12 @@ fn write_sample_record<W: Write>(writer: &mut W, sample: &crate::data::sample::M
     Ok(())
 }
 
-fn verify_shard_header(mmap: &Mmap, split: BcShardSplit, feature_flags: u32, record_size: u32) -> Result<(), String> {
+fn verify_shard_header(
+    mmap: &Mmap,
+    split: BcShardSplit,
+    feature_flags: u32,
+    record_size: u32,
+) -> Result<(), String> {
     if mmap.len() < BC_SHARD_HEADER_SIZE as usize {
         return Err("BC shard file too small for header".to_string());
     }
@@ -2260,14 +2310,20 @@ fn write_mask_u8<W: Write>(writer: &mut W, values: &[f32; HYDRA_ACTION_SPACE]) -
     Ok(())
 }
 
-fn write_binary_triplet<W: Write>(writer: &mut W, values: &[f32; OPPONENT_COUNT]) -> io::Result<()> {
+fn write_binary_triplet<W: Write>(
+    writer: &mut W,
+    values: &[f32; OPPONENT_COUNT],
+) -> io::Result<()> {
     for &value in values {
         writer.write_all(&[u8::from(value > 0.0)])?;
     }
     Ok(())
 }
 
-fn write_optional_oracle_f32<W: Write>(writer: &mut W, values: Option<&[f32; PLAYER_COUNT]>) -> io::Result<()> {
+fn write_optional_oracle_f32<W: Write>(
+    writer: &mut W,
+    values: Option<&[f32; PLAYER_COUNT]>,
+) -> io::Result<()> {
     if let Some(values) = values {
         for &value in values {
             writer.write_all(&value.to_le_bytes())?;
@@ -2278,14 +2334,20 @@ fn write_optional_oracle_f32<W: Write>(writer: &mut W, values: Option<&[f32; PLA
     Ok(())
 }
 
-fn write_binary_mask_u8<W: Write>(writer: &mut W, values: &[f32; SPATIAL_TARGET_SIZE]) -> io::Result<()> {
+fn write_binary_mask_u8<W: Write>(
+    writer: &mut W,
+    values: &[f32; SPATIAL_TARGET_SIZE],
+) -> io::Result<()> {
     for &value in values {
         writer.write_all(&[u8::from(value > 0.0)])?;
     }
     Ok(())
 }
 
-fn write_optional_action_f32<W: Write>(writer: &mut W, values: Option<&[f32; HYDRA_ACTION_SPACE]>) -> io::Result<()> {
+fn write_optional_action_f32<W: Write>(
+    writer: &mut W,
+    values: Option<&[f32; HYDRA_ACTION_SPACE]>,
+) -> io::Result<()> {
     if let Some(values) = values {
         for &value in values {
             writer.write_all(&value.to_le_bytes())?;
@@ -2296,7 +2358,10 @@ fn write_optional_action_f32<W: Write>(writer: &mut W, values: Option<&[f32; HYD
     Ok(())
 }
 
-fn write_optional_action_mask_u8<W: Write>(writer: &mut W, values: Option<&[f32; HYDRA_ACTION_SPACE]>) -> io::Result<()> {
+fn write_optional_action_mask_u8<W: Write>(
+    writer: &mut W,
+    values: Option<&[f32; HYDRA_ACTION_SPACE]>,
+) -> io::Result<()> {
     if let Some(values) = values {
         for &value in values {
             writer.write_all(&[u8::from(value > 0.0)])?;
@@ -2466,11 +2531,7 @@ fn read_optional_action_mask_f32_into(bytes: &[u8], dst: &mut [f32]) -> bool {
 /// Expand u8 mask bytes to f32 with suit permutation, writing directly
 /// into `dst`.  Fuses the decode and scatter passes.
 #[inline]
-fn expand_and_augment_mask_into(
-    bytes: &[u8],
-    action_perm: &[usize; 37],
-    dst: &mut [f32],
-) -> bool {
+fn expand_and_augment_mask_into(bytes: &[u8], action_perm: &[usize; 37], dst: &mut [f32]) -> bool {
     debug_assert!(bytes.len() >= HYDRA_ACTION_SPACE);
     debug_assert_eq!(dst.len(), HYDRA_ACTION_SPACE);
     if !any_nonzero_u8(unsafe { bytes.get_unchecked(..HYDRA_ACTION_SPACE) }) {
@@ -2483,7 +2544,8 @@ fn expand_and_augment_mask_into(
                 f32::from_bits((*bytes.get_unchecked(i) != 0) as u32 * F32_ONE_BITS);
         }
     }
-    unsafe { dst.get_unchecked_mut(37..HYDRA_ACTION_SPACE) }.iter_mut()
+    unsafe { dst.get_unchecked_mut(37..HYDRA_ACTION_SPACE) }
+        .iter_mut()
         .zip(unsafe { bytes.get_unchecked(37..HYDRA_ACTION_SPACE) }.iter())
         .for_each(|(d, &src)| *d = f32::from_bits((src != 0) as u32 * F32_ONE_BITS));
     true
@@ -2566,8 +2628,16 @@ mod tests {
     #[test]
     fn compact_header_size_constant_matches_written_bytes() {
         let mut bytes = Vec::new();
-        write_shard_header(&mut bytes, BcShardSplit::Train, 2, 10, 100, FLAG_SAFETY_RESIDUAL, record_size_for_flags(FLAG_SAFETY_RESIDUAL))
-            .expect("header write should succeed");
+        write_shard_header(
+            &mut bytes,
+            BcShardSplit::Train,
+            2,
+            10,
+            100,
+            FLAG_SAFETY_RESIDUAL,
+            record_size_for_flags(FLAG_SAFETY_RESIDUAL),
+        )
+        .expect("header write should succeed");
         assert_eq!(bytes.len(), BC_SHARD_HEADER_SIZE as usize);
     }
 
@@ -2639,30 +2709,248 @@ mod tests {
             let rhs_slice = rhs_data.as_slice::<f32>().expect("rhs f32");
             assert_eq!(lhs_slice.len(), rhs_slice.len(), "{name} len");
             for (idx, (a, b)) in lhs_slice.iter().zip(rhs_slice.iter()).enumerate() {
-                assert!(
-                    (a - b).abs() < 1e-6,
-                    "{name}[{idx}] mismatch: {a} vs {b}"
-                );
+                assert!((a - b).abs() < 1e-6, "{name}[{idx}] mismatch: {a} vs {b}");
             }
         }
 
         assert_tensor_close(raw_obs, shard.obs, "obs");
-        assert_tensor_close(raw_batch.actions.clone().float(), shard.batch.actions.clone().float(), "actions");
-        assert_tensor_close(raw_targets.legal_mask.clone(), shard.targets.legal_mask.clone(), "legal_mask");
-        assert_tensor_close(raw_targets.value_target.clone(), shard.targets.value_target.clone(), "value_target");
-        assert_tensor_close(raw_targets.grp_target.clone(), shard.targets.grp_target.clone(), "grp_target");
-        assert_tensor_close(raw_targets.tenpai_target.clone(), shard.targets.tenpai_target.clone(), "tenpai");
-        assert_tensor_close(raw_targets.danger_target.clone(), shard.targets.danger_target.clone(), "danger");
-        assert_tensor_close(raw_targets.danger_mask.clone(), shard.targets.danger_mask.clone(), "danger_mask");
-        assert_tensor_close(raw_targets.opp_next_target.clone(), shard.targets.opp_next_target.clone(), "opp_next");
-        assert_tensor_close(raw_targets.score_pdf_target.clone(), shard.targets.score_pdf_target.clone(), "score_pdf");
-        assert_tensor_close(raw_targets.score_cdf_target.clone(), shard.targets.score_cdf_target.clone(), "score_cdf");
+        assert_tensor_close(
+            raw_batch.actions.clone().float(),
+            shard.batch.actions.clone().float(),
+            "actions",
+        );
+        assert_tensor_close(
+            raw_targets.legal_mask.clone(),
+            shard.targets.legal_mask.clone(),
+            "legal_mask",
+        );
+        assert_tensor_close(
+            raw_targets.value_target.clone(),
+            shard.targets.value_target.clone(),
+            "value_target",
+        );
+        assert_tensor_close(
+            raw_targets.grp_target.clone(),
+            shard.targets.grp_target.clone(),
+            "grp_target",
+        );
+        assert_tensor_close(
+            raw_targets.tenpai_target.clone(),
+            shard.targets.tenpai_target.clone(),
+            "tenpai",
+        );
+        assert_tensor_close(
+            raw_targets.danger_target.clone(),
+            shard.targets.danger_target.clone(),
+            "danger",
+        );
+        assert_tensor_close(
+            raw_targets.danger_mask.clone(),
+            shard.targets.danger_mask.clone(),
+            "danger_mask",
+        );
+        assert_tensor_close(
+            raw_targets.opp_next_target.clone(),
+            shard.targets.opp_next_target.clone(),
+            "opp_next",
+        );
+        assert_tensor_close(
+            raw_targets.score_pdf_target.clone(),
+            shard.targets.score_pdf_target.clone(),
+            "score_pdf",
+        );
+        assert_tensor_close(
+            raw_targets.score_cdf_target.clone(),
+            shard.targets.score_cdf_target.clone(),
+            "score_cdf",
+        );
 
         let raw_presence = raw_targets.target_presence.expect("raw target presence");
-        let shard_presence = shard.targets.target_presence.expect("shard target presence");
+        let shard_presence = shard
+            .targets
+            .target_presence
+            .expect("shard target presence");
         assert_eq!(raw_presence.batch_size, shard_presence.batch_size);
-        assert_eq!(raw_presence.delta_q_actions_present, shard_presence.delta_q_actions_present);
+        assert_eq!(
+            raw_presence.delta_q_actions_present,
+            shard_presence.delta_q_actions_present
+        );
         assert_eq!(raw_presence.counts, shard_presence.counts);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn shard_materialize_owned_matches_borrowed_materialize() {
+        type B = NdArray<f32>;
+
+        let root = std::env::temp_dir().join(format!(
+            "bc-shard-owned-materialize-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("temp dir should be creatable");
+        let replay_path = root.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("fixture should write");
+
+        let shard_dir = root.join("shards");
+        let build = build_bc_shards(&BuildBcShardsConfig {
+            input: replay_path,
+            output_dir: shard_dir,
+            manifest_name: "manifest.json".into(),
+            train_fraction: 1.0,
+            shard_samples: 10_000,
+            split_mode: BcShardSplitMode::Train,
+            exit_sidecar: None,
+            exit_sidecar_path: None,
+            exit_provenance: SidecarProvenance::default(),
+            delta_q_sidecar: None,
+            delta_q_sidecar_path: None,
+            delta_q_provenance: SidecarProvenance::default(),
+        })
+        .expect("shards should build");
+        let reader = load_bc_shard_reader(&build.manifest_path, BcShardSplit::Train)
+            .expect("reader should load");
+        let device = Default::default();
+
+        let sample_count = reader.sample_count();
+
+        let mut scratch_borrowed = reader.new_scratch(sample_count);
+        reader
+            .collate_host_batch_range_into(0, sample_count, false, &mut scratch_borrowed)
+            .expect("host collation should succeed");
+        let borrowed_host = scratch_borrowed.take_batch();
+
+        let mut scratch_owned = reader.new_scratch(sample_count);
+        reader
+            .collate_host_batch_range_into(0, sample_count, false, &mut scratch_owned)
+            .expect("host collation should succeed");
+        let owned_host = scratch_owned.take_batch();
+
+        let borrowed = borrowed_host.materialize::<B>(&device);
+        let owned = owned_host.materialize_owned::<B>(&device);
+
+        fn assert_tensor_close<const D: usize>(
+            lhs: Tensor<NdArray<f32>, D>,
+            rhs: Tensor<NdArray<f32>, D>,
+            name: &str,
+        ) {
+            let lhs_data = lhs.into_data();
+            let rhs_data = rhs.into_data();
+            let lhs_slice = lhs_data.as_slice::<f32>().expect("lhs f32");
+            let rhs_slice = rhs_data.as_slice::<f32>().expect("rhs f32");
+            assert_eq!(lhs_slice.len(), rhs_slice.len(), "{name} len");
+            for (idx, (a, b)) in lhs_slice.iter().zip(rhs_slice.iter()).enumerate() {
+                assert!((a - b).abs() < 1e-6, "{name}[{idx}] mismatch: {a} vs {b}");
+            }
+        }
+
+        assert_tensor_close(borrowed.obs, owned.obs, "obs");
+        assert_tensor_close(
+            borrowed.batch.actions.clone().float(),
+            owned.batch.actions.clone().float(),
+            "actions",
+        );
+        assert_tensor_close(
+            borrowed.targets.legal_mask.clone(),
+            owned.targets.legal_mask.clone(),
+            "legal_mask",
+        );
+        assert_tensor_close(
+            borrowed.targets.policy_target.clone(),
+            owned.targets.policy_target.clone(),
+            "policy_target",
+        );
+        assert_tensor_close(
+            borrowed.targets.value_target.clone(),
+            owned.targets.value_target.clone(),
+            "value_target",
+        );
+        assert_tensor_close(
+            borrowed.targets.grp_target.clone(),
+            owned.targets.grp_target.clone(),
+            "grp_target",
+        );
+        assert_tensor_close(
+            borrowed.targets.tenpai_target.clone(),
+            owned.targets.tenpai_target.clone(),
+            "tenpai",
+        );
+        assert_tensor_close(
+            borrowed.targets.danger_target.clone(),
+            owned.targets.danger_target.clone(),
+            "danger",
+        );
+        assert_tensor_close(
+            borrowed.targets.danger_mask.clone(),
+            owned.targets.danger_mask.clone(),
+            "danger_mask",
+        );
+        assert_tensor_close(
+            borrowed.targets.opp_next_target.clone(),
+            owned.targets.opp_next_target.clone(),
+            "opp_next",
+        );
+        assert_tensor_close(
+            borrowed.targets.score_pdf_target.clone(),
+            owned.targets.score_pdf_target.clone(),
+            "score_pdf",
+        );
+        assert_tensor_close(
+            borrowed.targets.score_cdf_target.clone(),
+            owned.targets.score_cdf_target.clone(),
+            "score_cdf",
+        );
+        match (borrowed.batch.exit_target.clone(), owned.batch.exit_target.clone()) {
+            (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "exit_target"),
+            (None, None) => {}
+            (lhs, rhs) => panic!("exit_target presence mismatch: {lhs:?} vs {rhs:?}"),
+        }
+        match (borrowed.batch.exit_mask.clone(), owned.batch.exit_mask.clone()) {
+            (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "exit_mask"),
+            (None, None) => {}
+            (lhs, rhs) => panic!("exit_mask presence mismatch: {lhs:?} vs {rhs:?}"),
+        }
+        match (
+            borrowed.targets.safety_residual_target.clone(),
+            owned.targets.safety_residual_target.clone(),
+        ) {
+            (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "safety_residual_target"),
+            (None, None) => {}
+            (lhs, rhs) => panic!("safety_residual_target presence mismatch: {lhs:?} vs {rhs:?}"),
+        }
+        match (
+            borrowed.targets.safety_residual_mask.clone(),
+            owned.targets.safety_residual_mask.clone(),
+        ) {
+            (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "safety_residual_mask"),
+            (None, None) => {}
+            (lhs, rhs) => panic!("safety_residual_mask presence mismatch: {lhs:?} vs {rhs:?}"),
+        }
+        match (
+            borrowed.targets.delta_q_target.clone(),
+            owned.targets.delta_q_target.clone(),
+        ) {
+            (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "delta_q_target"),
+            (None, None) => {}
+            (lhs, rhs) => panic!("delta_q_target presence mismatch: {lhs:?} vs {rhs:?}"),
+        }
+        match (borrowed.targets.delta_q_mask.clone(), owned.targets.delta_q_mask.clone()) {
+            (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "delta_q_mask"),
+            (None, None) => {}
+            (lhs, rhs) => panic!("delta_q_mask presence mismatch: {lhs:?} vs {rhs:?}"),
+        }
+
+        let borrowed_presence = borrowed.targets.target_presence.expect("borrowed target presence");
+        let owned_presence = owned.targets.target_presence.expect("owned target presence");
+        assert_eq!(borrowed_presence.batch_size, owned_presence.batch_size);
+        assert_eq!(borrowed_presence.counts, owned_presence.counts);
+        assert_eq!(
+            borrowed_presence.delta_q_actions_present,
+            owned_presence.delta_q_actions_present
+        );
 
         let _ = fs::remove_dir_all(root);
     }

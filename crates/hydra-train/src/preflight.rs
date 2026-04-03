@@ -405,6 +405,12 @@ pub const PROFILING_STAGE_LOSS: &str = "loss";
 pub const PROFILING_STAGE_BACKWARD: &str = "backward";
 pub const PROFILING_STAGE_OPTIMIZER_STEP: &str = "optimizer_step";
 pub const PROFILING_STAGE_DATA_LOAD: &str = "data_load";
+pub const PROFILING_STAGE_PREFLIGHT_MODEL_INIT: &str = "preflight_model_init";
+pub const PROFILING_STAGE_PREFLIGHT_OPTIMIZER_INIT: &str = "preflight_optimizer_init";
+pub const PROFILING_STAGE_PREFLIGHT_LOSS_INIT: &str = "preflight_loss_init";
+pub const PROFILING_STAGE_PREFLIGHT_DATA_STREAM_INIT: &str = "preflight_data_stream_init";
+pub const PROFILING_STAGE_PREFLIGHT_SHARD_LOAD: &str = "preflight_shard_load";
+pub const PROFILING_STAGE_PREFLIGHT_CUDA_STAGING: &str = "preflight_cuda_staging";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProfilingEnvelope {
@@ -566,6 +572,10 @@ pub fn default_manifest_cache_name() -> PathBuf {
 pub struct ManifestCacheEntry {
     pub data_dir: PathBuf,
     pub train_fraction_bits: u32,
+    #[serde(default)]
+    pub include_source_patterns: Vec<String>,
+    #[serde(default)]
+    pub exclude_source_patterns: Vec<String>,
     pub manifest: DataManifest,
 }
 
@@ -826,5 +836,40 @@ mod tests {
             .unwrap();
         assert!((checkpoint.elapsed_seconds - 0.3).abs() < 1e-10);
         assert!((base.elapsed_seconds - 3.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn profiling_stage_constants_are_all_distinct() {
+        let all = [
+            PROFILING_STAGE_STAGE_2_BENCHMARK,
+            PROFILING_STAGE_BC_INTERVAL,
+            PROFILING_STAGE_BC_EPOCH,
+            PROFILING_STAGE_RL_STEP,
+            PROFILING_STAGE_TRAIN,
+            PROFILING_STAGE_VALIDATION,
+            PROFILING_STAGE_CHECKPOINT,
+            PROFILING_STAGE_LOGGING,
+            PROFILING_STAGE_SELF_PLAY,
+            PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS,
+            PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
+            PROFILING_STAGE_COLLATION,
+            PROFILING_STAGE_FORWARD,
+            PROFILING_STAGE_LOSS,
+            PROFILING_STAGE_BACKWARD,
+            PROFILING_STAGE_OPTIMIZER_STEP,
+            PROFILING_STAGE_DATA_LOAD,
+            PROFILING_STAGE_PREFLIGHT_MODEL_INIT,
+            PROFILING_STAGE_PREFLIGHT_OPTIMIZER_INIT,
+            PROFILING_STAGE_PREFLIGHT_LOSS_INIT,
+            PROFILING_STAGE_PREFLIGHT_DATA_STREAM_INIT,
+            PROFILING_STAGE_PREFLIGHT_SHARD_LOAD,
+            PROFILING_STAGE_PREFLIGHT_CUDA_STAGING,
+        ];
+        let set: std::collections::HashSet<&str> = all.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            all.len(),
+            "profiling stage constants must be unique"
+        );
     }
 }

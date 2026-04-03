@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::{
@@ -12,8 +12,8 @@ use hydra_train::preflight::{
 };
 
 use super::artifacts::BcArtifactPaths;
-use super::config::display_num_threads;
 use super::config::TrainConfig;
+use super::config::display_num_threads;
 use super::probe_summary::probe_summary_iter;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
@@ -253,6 +253,16 @@ pub(super) fn format_probe_spinner_message(line: &str) -> Option<String> {
             };
             format!("dataset: {sources} sources, {games} games")
         }
+        "init_model" => "initializing model (backbone + heads)...".to_string(),
+        "init_optimizer" => "creating optimizer...".to_string(),
+        "init_loss" => "building loss functions...".to_string(),
+        "init_cuda_staging" => "allocating CUDA staging buffers...".to_string(),
+        "init_ready" => {
+            let model_ms = fields.get("model_ms").copied().unwrap_or("?");
+            let optimizer_ms = fields.get("optimizer_ms").copied().unwrap_or("?");
+            let loss_ms = fields.get("loss_ms").copied().unwrap_or("?");
+            format!("init complete (model={model_ms}ms opt={optimizer_ms}ms loss={loss_ms}ms)")
+        }
         "starting" => "building model...".to_string(),
         "warmup" => format!("warmup step {}", fields.get("step").copied().unwrap_or("?")),
         "measure_start" => format!(
@@ -361,6 +371,42 @@ pub(super) fn format_probe_progress_line(line: &str) -> Option<String> {
             };
             format!("{} {} {}", prefix, label, counts.green())
         }
+        "init_model" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_model initializing backbone + heads".white()
+        ),
+        "init_optimizer" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_optimizer creating optimizer".white()
+        ),
+        "init_loss" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_loss building loss functions".white()
+        ),
+        "init_cuda_staging" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_cuda_staging allocating CUDA staging buffers".white()
+        ),
+        "init_ready" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            format!(
+                "phase=init_ready model_ms={} optimizer_ms={} loss_ms={}",
+                fields.get("model_ms").copied().unwrap_or("?"),
+                fields.get("optimizer_ms").copied().unwrap_or("?"),
+                fields.get("loss_ms").copied().unwrap_or("?"),
+            )
+            .green()
+        ),
         "starting" => format!(
             "{} {} {}",
             prefix,
@@ -661,11 +707,11 @@ mod tests {
     use super::{
         bc_hyperparam_summary, explicit_preflight_recommendation, explicit_preflight_summary,
         format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
-        format_probe_results_table, format_probe_status_line, format_progress_message,
-        format_runtime_tuning_message, format_status_line, format_timed_phase_message,
-        format_warning_line, make_bar, make_spinner, model_kind, parse_probe_progress_fields,
-        phase_label, preflight_phase_label, probe_failure_reason, probe_status_label, timestamped,
-        with_utc_timestamp,
+        format_probe_results_table, format_probe_spinner_message, format_probe_status_line,
+        format_progress_message, format_runtime_tuning_message, format_status_line,
+        format_timed_phase_message, format_warning_line, make_bar, make_spinner, model_kind,
+        parse_probe_progress_fields, phase_label, preflight_phase_label, probe_failure_reason,
+        probe_status_label, timestamped, with_utc_timestamp,
     };
     use hydra_train::model::HydraModelConfig;
     use hydra_train::preflight::{
@@ -991,11 +1037,101 @@ mod tests {
         );
         assert!(done.contains("phase=done throughput=0.00 samples/s elapsed=1.25s"));
 
-        assert!(format_probe_progress_line(
-            "probe_progress kind=train candidate_mb=64 phase=unknown"
-        )
-        .is_none());
+        assert!(
+            format_probe_progress_line("probe_progress kind=train candidate_mb=64 phase=unknown")
+                .is_none()
+        );
         assert!(format_probe_progress_line("probe_progress kind=train phase=measure").is_none());
+    }
+
+    #[test]
+    fn format_probe_progress_line_covers_init_sub_stages() {
+        let init_model = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_model",
+            )
+            .expect("init_model should render"),
+        );
+        assert!(init_model.contains("[preflight:train] candidate_mb=64 phase=init_model"));
+        assert!(init_model.contains("initializing backbone + heads"));
+
+        let init_optimizer = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_optimizer",
+            )
+            .expect("init_optimizer should render"),
+        );
+        assert!(init_optimizer.contains("phase=init_optimizer creating optimizer"));
+
+        let init_loss = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_loss",
+            )
+            .expect("init_loss should render"),
+        );
+        assert!(init_loss.contains("phase=init_loss building loss functions"));
+
+        let init_cuda_staging = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_cuda_staging",
+            )
+            .expect("init_cuda_staging should render"),
+        );
+        assert!(init_cuda_staging.contains("phase=init_cuda_staging"));
+        assert!(init_cuda_staging.contains("allocating CUDA staging buffers"));
+
+        let init_ready = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_ready model_ms=142 optimizer_ms=23 loss_ms=8",
+            )
+            .expect("init_ready should render"),
+        );
+        assert!(init_ready.contains("phase=init_ready model_ms=142 optimizer_ms=23 loss_ms=8"));
+
+        let starting = format_probe_progress_line(
+            "probe_progress kind=train candidate_mb=64 phase=starting warmup_steps=2 measure_steps=3",
+        );
+        assert!(starting.is_some());
+    }
+
+    #[test]
+    fn format_probe_spinner_message_covers_init_sub_stages() {
+        let model = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_model",
+        )
+        .expect("spinner init_model");
+        assert!(model.contains("initializing model (backbone + heads)"));
+
+        let optimizer = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_optimizer",
+        )
+        .expect("spinner init_optimizer");
+        assert!(optimizer.contains("creating optimizer"));
+
+        let loss = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_loss",
+        )
+        .expect("spinner init_loss");
+        assert!(loss.contains("building loss functions"));
+
+        let cuda = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_cuda_staging",
+        )
+        .expect("spinner init_cuda_staging");
+        assert!(cuda.contains("CUDA staging"));
+
+        let ready = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_ready model_ms=142 optimizer_ms=23 loss_ms=8",
+        )
+        .expect("spinner init_ready");
+        assert!(ready.contains("init complete"));
+        assert!(ready.contains("model=142ms"));
+
+        let starting = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=starting",
+        )
+        .expect("spinner starting backward compat");
+        assert!(starting.contains("building model"));
     }
 
     #[test]

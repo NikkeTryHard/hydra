@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-use std::time::Instant;
 use burn::backend::libtorch::LibTorchDevice;
 use burn::tensor::backend::AutodiffBackend;
 use colored::Colorize;
@@ -16,16 +14,22 @@ use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationCont
 use hydra_train::training::orchestrator::{
     live_exit_config_from_plan, maintenance_plan, rl_phase_train_step_with_controller,
 };
+use std::collections::BTreeMap;
+#[cfg(not(test))]
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
+use super::TrainBackend;
 use super::config::{RlTrainConfig, TrainConfig, loader_runtime_config};
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::build_rl_loss_config;
-use super::preflight_runtime::{measure_samples_per_second, run_train_measurement_loop, TrainMeasurementSpec};
+use super::preflight_runtime::{
+    TrainMeasurementSpec, measure_samples_per_second, run_train_measurement_loop,
+};
 use super::presentation::{
     format_preflight_summary_line, format_runtime_tuning_message, format_timed_phase_message,
     make_bar,
 };
-use super::TrainBackend;
 
 pub(super) type RuntimeTuple = (usize, usize, usize);
 
@@ -101,10 +105,7 @@ fn loader_runtime_from_tuple(config: &TrainConfig, tuple: RuntimeTuple) -> Loade
     }
 }
 
-fn loader_runtime_score_seed_matches(
-    config: &TrainConfig,
-    seed: LoaderRuntimeScoreSeed,
-) -> bool {
+fn loader_runtime_score_seed_matches(config: &TrainConfig, seed: LoaderRuntimeScoreSeed) -> bool {
     seed.train_microbatch_size == current_train_runtime_microbatch(config)
         && seed.tuple == current_runtime_tuple(config)
         && seed.warmup_steps == runtime_autotune_warmup_steps(config)
@@ -213,12 +214,15 @@ pub(super) fn runtime_probe_loader_config(config: &TrainConfig) -> StreamingLoad
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
+        source_filters: config.source_filters.clone(),
+        replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
         delta_q_sidecar: None,
         delta_q_sidecar_source_net_hash: None,
         delta_q_sidecar_source_version: None,
+        num_threads: config.num_threads,
     }
 }
 
@@ -257,7 +261,9 @@ where
         manifest,
         train_device,
         on_start: Box::new(|_candidate_microbatch, _warmup_steps, _measure_steps| Ok(())),
-        on_step: Box::new(|_completed_steps, _candidate_microbatch, _request, _measure_start| Ok(())),
+        on_step: Box::new(
+            |_completed_steps, _candidate_microbatch, _request, _measure_start| Ok(()),
+        ),
         on_measure_start: Box::new(|_candidate_microbatch, _measure_steps| Ok(())),
         insufficient_data: Box::new(|_candidate_microbatch| {
             "not enough train data to finish runtime probe".to_string()
@@ -294,20 +300,12 @@ pub(super) fn measure_rl_runtime_throughput(
     train_device: &LibTorchDevice,
 ) -> Result<f64, String> {
     match config.precision_mode {
-        crate::config::PrecisionMode::Fp32 => {
-            measure_rl_runtime_throughput_for_backend::<super::TrainBackend>(
-                config,
-                rl,
-                train_device,
-            )
-        }
-        crate::config::PrecisionMode::Bf16Autocast => {
-            measure_rl_runtime_throughput_for_backend::<super::TrainBackend>(
-                config,
-                rl,
-                train_device,
-            )
-        }
+        crate::config::PrecisionMode::Fp32 => measure_rl_runtime_throughput_for_backend::<
+            super::TrainBackend,
+        >(config, rl, train_device),
+        crate::config::PrecisionMode::Bf16Autocast => measure_rl_runtime_throughput_for_backend::<
+            super::TrainBackend,
+        >(config, rl, train_device),
     }
 }
 
@@ -324,9 +322,9 @@ where
     let mut optimizer = super::config::trainer_config_from_train_config(config)
         .optimizer_config()
         .init();
-    let loss_fn = hydra_train::training::losses::HydraLoss::<B>::new(
-        build_rl_loss_config(config.advanced_loss.as_ref())?,
-    );
+    let loss_fn = hydra_train::training::losses::HydraLoss::<B>::new(build_rl_loss_config(
+        config.advanced_loss.as_ref(),
+    )?);
     let rl_cfg = rl_config_from_train_config(rl);
     let mut state = PipelineState {
         phase: rl.phase.to_training_phase(),
@@ -431,6 +429,13 @@ where
     let mut tuned = base.clone();
 
     for candidate in candidates {
+        #[cfg(not(test))]
+        if let Ok(flag) = super::probe_process::interrupt_flag() {
+            if flag.load(Ordering::SeqCst) {
+                progress.finish_with_message("interrupted".red().to_string());
+                return Err(format!("{knob_name} tuning interrupted"));
+            }
+        }
         progress.set_message(format_runtime_tuning_message(
             knob_name,
             display(*candidate),
@@ -596,6 +601,12 @@ where
 {
     let mut candidate = tuned.clone();
     for tuple in close_tuples {
+        #[cfg(not(test))]
+        if let Ok(flag) = super::probe_process::interrupt_flag() {
+            if flag.load(Ordering::SeqCst) {
+                return Err("loader runtime refine interrupted".to_string());
+            }
+        }
         candidate.clone_from(tuned);
         apply_runtime_tuple(&mut candidate, *tuple);
         let top_up_plan = runtime_refine_top_up_plan(
@@ -754,6 +765,13 @@ pub(super) fn autotune_ranked_loader_runtime_with_seed(
     for queue in &queue_candidates {
         for samples in &sample_candidates {
             for games in &game_candidates {
+                #[cfg(not(test))]
+                if let Ok(flag) = super::probe_process::interrupt_flag() {
+                    if flag.load(Ordering::SeqCst) {
+                        coarse_progress.finish_with_message("interrupted".red().to_string());
+                        return Err("loader runtime tuning interrupted".to_string());
+                    }
+                }
                 coarse_progress.set_message(format_runtime_tuning_message(
                     "coarse_search",
                     format!("q={queue}, samples={samples}, games={games}"),
@@ -806,9 +824,7 @@ pub(super) fn autotune_ranked_loader_runtime_with_seed(
             &mut score_cache,
             &mut best_score,
             &mut best_tuple,
-            |candidate, cache| {
-                push_runtime_tuple_sample(candidate, manifest, train_device, cache)
-            },
+            |candidate, cache| push_runtime_tuple_sample(candidate, manifest, train_device, cache),
         )?;
         println!(
             "{}",

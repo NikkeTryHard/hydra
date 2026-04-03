@@ -11,9 +11,6 @@ mod config_runtime;
 #[cfg(feature = "cuda-graph")]
 #[path = "train/cuda_graph.rs"]
 mod cuda_graph;
-#[cfg(feature = "cuda-graph")]
-#[path = "train/pinned_transfer.rs"]
-mod pinned_transfer;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]
@@ -24,6 +21,9 @@ mod loss_policy;
 mod modes;
 #[path = "train/nvtx.rs"]
 mod nvtx;
+#[cfg(feature = "cuda-graph")]
+#[path = "train/pinned_transfer.rs"]
+mod pinned_transfer;
 #[path = "train/preflight_fingerprint.rs"]
 mod preflight_fingerprint;
 #[path = "train/preflight_runtime.rs"]
@@ -48,13 +48,13 @@ mod resume;
 mod rl_runner;
 #[path = "train/runtime_autotune.rs"]
 mod runtime_autotune;
-#[cfg(test)]
-#[path = "train/test_loose_replay_fixtures.rs"]
-mod test_loose_replay_fixtures;
 #[path = "train/schedule.rs"]
 mod schedule;
 #[path = "train/status.rs"]
 mod status;
+#[cfg(test)]
+#[path = "train/test_loose_replay_fixtures.rs"]
+mod test_loose_replay_fixtures;
 #[path = "train/validation.rs"]
 mod validation;
 
@@ -260,7 +260,10 @@ mod tests {
         assert!(parsed.probe_only.is_none());
         match parsed.probe_child.expect("probe child should be present") {
             crate::config::ProbeChildRequest::Single(child) => {
-                assert_eq!(child.request.kind, hydra_train::preflight::ProbeKind::Validation);
+                assert_eq!(
+                    child.request.kind,
+                    hydra_train::preflight::ProbeKind::Validation
+                );
                 assert_eq!(child.request.candidate_microbatch, 192);
                 assert_eq!(child.request.warmup_steps, Some(4));
                 assert_eq!(child.request.measure_steps, Some(8));
@@ -299,7 +302,10 @@ mod tests {
         let parsed = parse_args(args).expect("internal probe batch child args should parse");
 
         assert!(parsed.probe_only.is_none());
-        match parsed.probe_child.expect("probe batch child should be present") {
+        match parsed
+            .probe_child
+            .expect("probe batch child should be present")
+        {
             crate::config::ProbeChildRequest::Batch(child) => {
                 assert_eq!(child.request.kind, hydra_train::preflight::ProbeKind::Train);
                 assert_eq!(child.request.candidate_microbatch, 256);
@@ -702,6 +708,7 @@ unexpected_field: true
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1135,6 +1142,7 @@ preflight:
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1187,6 +1195,7 @@ preflight:
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1240,6 +1249,7 @@ preflight:
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1385,6 +1395,7 @@ advanced_loss:
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1431,6 +1442,7 @@ advanced_loss:
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1474,6 +1486,7 @@ advanced_loss:
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,

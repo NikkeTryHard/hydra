@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hydra_train::config::TrainingPhase as PipelineTrainingPhase;
+use hydra_train::data::pipeline::SourceFilterConfig;
 use hydra_train::preflight::{PreflightConfig, ProbeKind};
 
 pub(crate) use super::config_runtime::{
@@ -31,6 +32,8 @@ pub(crate) struct TrainConfig {
     pub(crate) bc_shards_manifest_path: Option<PathBuf>,
     #[serde(default = "default_train_fraction")]
     pub(crate) train_fraction: f32,
+    #[serde(default)]
+    pub(crate) source_filters: SourceFilterConfig,
     #[serde(default = "default_augment")]
     pub(crate) augment: bool,
     pub(crate) resume_checkpoint: Option<PathBuf>,

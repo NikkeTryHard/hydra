@@ -1,30 +1,33 @@
 use colored::Colorize;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
-use hydra_train::eval::{run_paired_delta_q_arena_confirmation, PairedArenaEvalConfig};
+use hydra_train::eval::{PairedArenaEvalConfig, run_paired_delta_q_arena_confirmation};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 use hydra_train::training::delta_q_promotion::{
     DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPromotionRecommendation,
 };
 
+use super::TrainBackend;
 use super::artifacts::{
-    write_delta_q_promotion_artifact, BcArtifactPaths, PersistedDeltaQPromotionArtifact,
+    BcArtifactPaths, PersistedDeltaQPromotionArtifact, write_delta_q_promotion_artifact,
 };
 use super::bootstrap::TrainingReaders;
-use super::bootstrap::{initialize_rl_training_bootstrap, RlTrainingBootstrap, RlTrainingRuntime};
-use super::bootstrap::{initialize_training_bootstrap, TrainingBootstrap, TrainingRuntime};
-use super::config::{configure_threads, device_label, validate_config, TrainConfig};
-use super::epoch_runner::{run_epoch, EpochRunnerContext, EpochRuntimeMut};
+use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
+use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
+use super::config::{TrainConfig, configure_threads, device_label, validate_config};
+use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use super::presentation::{
     explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
     format_preflight_summary_line, format_probe_results_table, format_status_line,
-    format_warning_line, print_banner, print_preflight_banner, timestamped,
+    format_timed_phase_message, format_warning_line, print_banner, print_preflight_banner,
+    timestamped,
 };
 use super::probe_request::ProbeRequest;
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
@@ -32,9 +35,8 @@ use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
 use super::validation::materialize_validation_samples;
 use super::validation::{
-    run_validation_with_policy_baseline, ValidationContext, ValidationRuntime,
+    ValidationContext, ValidationRuntime, run_validation_with_policy_baseline,
 };
-use super::TrainBackend;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -164,6 +166,7 @@ pub(super) fn handle_preflight_mode(
     config_path: &std::path::Path,
     config: &TrainConfig,
 ) -> Result<(), String> {
+    let preflight_wall_start = Instant::now();
     validate_config(config)?;
     configure_threads(config.num_threads)?;
     if config.rl.is_some() {
@@ -189,6 +192,14 @@ pub(super) fn handle_preflight_mode(
             ProbeKind::RlMicrobatch,
             &preflight.rl_microbatch_probe_results,
             preflight.selected_microbatch_size,
+        );
+        println!(
+            "{}",
+            format_timed_phase_message(
+                "preflight_wall_clock",
+                "total elapsed including output",
+                preflight_wall_start.elapsed().as_secs_f64(),
+            )
         );
         return Ok(());
     }
@@ -235,6 +246,14 @@ pub(super) fn handle_preflight_mode(
         ProbeKind::Validation,
         &preflight.validation_probe_results,
         preflight.runtime.selected.validation_microbatch_size,
+    );
+    println!(
+        "{}",
+        format_timed_phase_message(
+            "preflight_wall_clock",
+            "total elapsed including output",
+            preflight_wall_start.elapsed().as_secs_f64(),
+        )
     );
     Ok(())
 }
@@ -705,6 +724,7 @@ mod tests {
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -838,10 +858,10 @@ mod tests {
         .expect("arena confirmation request should exist");
         assert!(request.same_seeds);
         assert_eq!(request.min_games, 10_000);
-        assert!(default_arena_confirmation_request(
-            DeltaQPromotionRecommendation::RejectAtOfflineGate,
-        )
-        .is_none());
+        assert!(
+            default_arena_confirmation_request(DeltaQPromotionRecommendation::RejectAtOfflineGate,)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1540,8 +1560,10 @@ mod tests {
         let probe_message =
             format_probe_only_status_message(dummy_probe_request(ProbeKind::Validation));
         assert!(probe_message.contains("Probe-only:"));
-        assert!(probe_message
-            .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8"));
+        assert!(
+            probe_message
+                .contains("kind=validation candidate_mb=192 warmup_steps=4 measure_steps=8")
+        );
 
         let rl_message = format_rl_preflight_selection_message(32, 8);
         assert!(rl_message.contains("Preflight:"));

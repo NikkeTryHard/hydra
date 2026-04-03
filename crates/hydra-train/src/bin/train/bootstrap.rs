@@ -30,6 +30,7 @@ use hydra_train::training::replay_exit::{
 };
 use hydra_train::training::rl::RlConfig;
 
+use super::TrainBackend;
 use super::artifacts::{
     BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, read_manifest_cache, read_preflight_cache,
     write_manifest_cache,
@@ -49,7 +50,6 @@ use super::resume::{
     validate_rl_resume_runtime_compatibility,
 };
 use super::schedule::schedule_total_steps;
-use super::TrainBackend;
 
 type JsonlAppender = super::artifacts::JsonlAppender;
 
@@ -59,11 +59,14 @@ fn load_or_scan_manifest(
     cache_path: &Path,
     data_dir: &Path,
     train_fraction: f32,
+    source_filters: &hydra_train::data::pipeline::SourceFilterConfig,
     progress: &indicatif::ProgressBar,
 ) -> Result<DataManifest, String> {
     if let Some(cached) = read_manifest_cache(cache_path)?
         && cached.data_dir == data_dir
         && cached.train_fraction_bits == train_fraction.to_bits()
+        && cached.include_source_patterns == source_filters.include_source_patterns
+        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
     {
         progress.finish_with_message(format!(
             "reused manifest: {} train / {} val games",
@@ -71,8 +74,9 @@ fn load_or_scan_manifest(
         ));
         return Ok(cached.manifest);
     }
-    let manifest = scan_data_sources_with_progress(data_dir, train_fraction, Some(progress))
-        .map_err(|err| {
+    let manifest =
+        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, Some(progress))
+            .map_err(|err| {
             format!(
                 "failed to scan MJAI data from {}: {err}",
                 data_dir.display()
@@ -83,6 +87,8 @@ fn load_or_scan_manifest(
         &ManifestCacheEntry {
             data_dir: data_dir.to_path_buf(),
             train_fraction_bits: train_fraction.to_bits(),
+            include_source_patterns: source_filters.include_source_patterns.clone(),
+            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
             manifest: manifest.clone(),
         },
     )?;
@@ -280,14 +286,16 @@ where
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: false,
+        source_filters: config.source_filters.clone(),
+        replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
         exit_sidecar,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
         delta_q_sidecar,
         delta_q_sidecar_source_net_hash: None,
         delta_q_sidecar_source_version: None,
+        num_threads: config.num_threads,
     };
-
     let scan_sources_len = if config.data_dir.is_file() {
         1
     } else {
@@ -312,6 +320,7 @@ where
         &preflight_paths.manifest_cache_path,
         &config.data_dir,
         config.train_fraction,
+        &config.source_filters,
         &scan_pb,
     )?;
     if !scan_pb.is_finished() && manifest.counts_exact {
@@ -745,7 +754,8 @@ mod tests {
     }
 
     fn save_latest_tiny_optimizer_sidecar(output_dir: &Path, data_dir: PathBuf) {
-        let train_cfg = trainer_config_from_train_config(&dummy_bc_config(data_dir, output_dir.to_path_buf()));
+        let train_cfg =
+            trainer_config_from_train_config(&dummy_bc_config(data_dir, output_dir.to_path_buf()));
         let optimizer = train_cfg
             .optimizer_config()
             .init::<TrainBackend, HydraModel<TrainBackend>>();
@@ -758,11 +768,14 @@ mod tests {
     fn initialize_training_bootstrap_with_tiny_model(
         output_dir: &Path,
         config: TrainConfig,
-    ) -> Result<(
-        TrainingBootstrap<TrainBackend>,
-        TrainingRuntime<TrainBackend>,
-        TrainingReaders,
-    ), String> {
+    ) -> Result<
+        (
+            TrainingBootstrap<TrainBackend>,
+            TrainingRuntime<TrainBackend>,
+            TrainingReaders,
+        ),
+        String,
+    > {
         initialize_training_bootstrap_for_backend_with_model_config::<TrainBackend>(
             output_dir,
             config,
@@ -780,8 +793,9 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
-        bc_shards_manifest_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 7,
@@ -1013,8 +1027,8 @@ mod tests {
     }
 
     #[test]
-    fn initialize_training_bootstrap_keeps_fresh_run_config_runtime_even_with_matching_preflight_cache(
-    ) {
+    fn initialize_training_bootstrap_keeps_fresh_run_config_runtime_even_with_matching_preflight_cache()
+     {
         use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
@@ -1082,7 +1096,10 @@ mod tests {
         assert_ne!(original_validation_microbatch, 16);
         assert_ne!(original_accum_steps, expected_accum_steps);
         assert_eq!(bootstrap.loader_config.buffer_games, original_buffer_games);
-        assert_eq!(bootstrap.loader_config.buffer_samples, original_buffer_samples);
+        assert_eq!(
+            bootstrap.loader_config.buffer_samples,
+            original_buffer_samples
+        );
         assert_eq!(
             bootstrap.loader_config.archive_queue_bound,
             original_archive_queue_bound
@@ -1192,8 +1209,8 @@ mod tests {
     }
 
     #[test]
-    fn initialize_training_bootstrap_reuses_only_selected_runtime_from_matching_preflight_cache_at_epoch_boundary(
-    ) {
+    fn initialize_training_bootstrap_reuses_only_selected_runtime_from_matching_preflight_cache_at_epoch_boundary()
+     {
         use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
@@ -1269,7 +1286,10 @@ mod tests {
         assert_eq!(bootstrap.current_runtime.accum_steps, 8);
         assert_eq!(bootstrap.microbatch_size, 32);
         assert_eq!(bootstrap.loader_config.buffer_games, original_buffer_games);
-        assert_eq!(bootstrap.loader_config.buffer_samples, original_buffer_samples);
+        assert_eq!(
+            bootstrap.loader_config.buffer_samples,
+            original_buffer_samples
+        );
         assert_eq!(
             bootstrap.loader_config.archive_queue_bound,
             original_archive_queue_bound
@@ -1322,6 +1342,8 @@ mod tests {
             &ManifestCacheEntry {
                 data_dir: root_dir.join("stale-data-dir"),
                 train_fraction_bits: config.train_fraction.to_bits(),
+                include_source_patterns: Vec::new(),
+                exclude_source_patterns: Vec::new(),
                 manifest: DataManifest {
                     sources: vec![DataSource::LooseFile(root_dir.join("stale.mjai.json"))],
                     total_games: 1,
@@ -1363,6 +1385,8 @@ mod tests {
             &ManifestCacheEntry {
                 data_dir: data_dir.clone(),
                 train_fraction_bits: 0.0f32.to_bits(),
+                include_source_patterns: Vec::new(),
+                exclude_source_patterns: Vec::new(),
                 manifest: DataManifest {
                     sources: vec![DataSource::LooseFile(root_dir.join("stale.mjai.json"))],
                     total_games: 1,
@@ -1546,13 +1570,12 @@ mod tests {
     }
 
     #[test]
-    fn initialize_training_bootstrap_rejects_partial_epoch_runtime_mismatch_even_with_matching_preflight_cache(
-    ) {
+    fn initialize_training_bootstrap_rejects_partial_epoch_runtime_mismatch_even_with_matching_preflight_cache()
+     {
         use crate::artifacts::{PreflightPaths, write_preflight_cache};
         use crate::preflight_fingerprint::preflight_cache_key;
         use hydra_train::preflight::{
-            EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry,
-            SelectedRuntimeConfig,
+            EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
         };
 
         let root_dir = unique_temp_dir("bc_partial_epoch_runtime_mismatch_with_cache");

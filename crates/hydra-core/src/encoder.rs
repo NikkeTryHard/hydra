@@ -24,6 +24,7 @@
 //! - 150..191: Group D Hand-EV context + presence mask
 use crate::hand_ev::HandEvFeatures;
 use crate::safety::SafetyInfo;
+use crate::shanten_batch::BatchShantenResult;
 use crate::tile::NUM_TILE_TYPES;
 
 // ---------------------------------------------------------------------------
@@ -238,12 +239,24 @@ impl ObservationEncoder {
     /// - Ch 3: count == 4
     #[inline]
     pub fn encode_hand(&mut self, hand_counts: &[u8; NUM_TILES]) {
+        let row0 = CH_HAND * NUM_TILES;
+        let row1 = row0 + NUM_TILES;
+        let row2 = row1 + NUM_TILES;
+        let row3 = row2 + NUM_TILES;
         for (tile, &count) in hand_counts.iter().enumerate() {
-            let vals = &THERMO[count as usize];
-            self.buffer[CH_HAND * NUM_TILES + tile] = vals[0];
-            self.buffer[(CH_HAND + 1) * NUM_TILES + tile] = vals[1];
-            self.buffer[(CH_HAND + 2) * NUM_TILES + tile] = vals[2];
-            self.buffer[(CH_HAND + 3) * NUM_TILES + tile] = vals[3];
+            if count == 0 {
+                continue;
+            }
+            self.buffer[row0 + tile] = 1.0;
+            if count >= 2 {
+                self.buffer[row1 + tile] = 1.0;
+            }
+            if count >= 3 {
+                self.buffer[row2 + tile] = 1.0;
+            }
+            if count == 4 {
+                self.buffer[row3 + tile] = 1.0;
+            }
         }
     }
 }
@@ -262,12 +275,24 @@ impl ObservationEncoder {
     /// - Ch 7: count == 4
     #[inline]
     pub fn encode_open_meld_hand(&mut self, counts: &[u8; NUM_TILES]) {
+        let row0 = CH_OPEN_MELD * NUM_TILES;
+        let row1 = row0 + NUM_TILES;
+        let row2 = row1 + NUM_TILES;
+        let row3 = row2 + NUM_TILES;
         for (tile, &count) in counts.iter().enumerate() {
-            let vals = &THERMO[count as usize];
-            self.buffer[CH_OPEN_MELD * NUM_TILES + tile] = vals[0];
-            self.buffer[(CH_OPEN_MELD + 1) * NUM_TILES + tile] = vals[1];
-            self.buffer[(CH_OPEN_MELD + 2) * NUM_TILES + tile] = vals[2];
-            self.buffer[(CH_OPEN_MELD + 3) * NUM_TILES + tile] = vals[3];
+            if count == 0 {
+                continue;
+            }
+            self.buffer[row0 + tile] = 1.0;
+            if count >= 2 {
+                self.buffer[row1 + tile] = 1.0;
+            }
+            if count >= 3 {
+                self.buffer[row2 + tile] = 1.0;
+            }
+            if count == 4 {
+                self.buffer[row3 + tile] = 1.0;
+            }
         }
     }
 }
@@ -306,6 +331,11 @@ impl ObservationEncoder {
         let total: u8 = hand.iter().sum();
         let len_div3 = total / 3;
         let batch = crate::shanten_batch::batch_discard_shanten(hand, len_div3);
+        self.encode_shanten_masks_from_batch(&batch);
+    }
+
+    #[inline]
+    pub fn encode_shanten_masks_from_batch(&mut self, batch: &BatchShantenResult) {
         for tile in 0..NUM_TILES {
             if let Some(after) = batch.discard[tile] {
                 if after <= batch.base {
@@ -324,7 +354,7 @@ impl ObservationEncoder {
 // ---------------------------------------------------------------------------
 
 /// A single discard event for encoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiscardEntry {
     /// Tile type (0-33).
     pub tile: u8,
@@ -335,7 +365,7 @@ pub struct DiscardEntry {
 }
 
 /// Per-player discard history for encoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerDiscards {
     /// Fixed-size array of discards (oldest first).
     pub discards: [DiscardEntry; 30],
@@ -420,15 +450,6 @@ const DISCARD_EXP_TABLE: [f32; 31] = [
     0.003_027_555, // exp(-5.8)
     0.002_478_752, // exp(-6.0)
 ];
-// Thermometer encoding table for 0..4 counts (per tile, 4 channels)
-const THERMO: [[f32; 4]; 5] = [
-    [0.0, 0.0, 0.0, 0.0],
-    [1.0, 0.0, 0.0, 0.0],
-    [1.0, 1.0, 0.0, 0.0],
-    [1.0, 1.0, 1.0, 0.0],
-    [1.0, 1.0, 1.0, 1.0],
-];
-
 impl ObservationEncoder {
     /// Encode discard info for all 4 players into channels 11-22.
     ///
@@ -441,19 +462,22 @@ impl ObservationEncoder {
         for (p, pd) in discards.iter().enumerate() {
             let ch_base = CH_DISCARDS + 3 * p;
             let sl = pd.as_slice();
-            let t_max = sl.iter().map(|d| d.turn).max().unwrap_or(0);
+            let t_max = sl.last().map(|d| d.turn).unwrap_or(0);
+            let row_presence = ch_base * NUM_TILES;
+            let row_tedashi = row_presence + NUM_TILES;
+            let row_temporal = row_tedashi + NUM_TILES;
             for d in sl {
                 let t = d.tile as usize;
                 if t >= NUM_TILES {
                     continue;
                 }
-                self.set(ch_base, t, 1.0);
+                self.buffer[row_presence + t] = 1.0;
                 if d.is_tedashi {
-                    self.set(ch_base + 1, t, 1.0);
+                    self.buffer[row_tedashi + t] = 1.0;
                 }
                 let dt = (t_max - d.turn).min(30) as usize;
                 let w = DISCARD_EXP_TABLE[dt];
-                let idx = (ch_base + 2) * NUM_TILES + t;
+                let idx = row_temporal + t;
                 if w > self.buffer[idx] {
                     self.buffer[idx] = w;
                 }
@@ -478,7 +502,7 @@ pub enum MeldType {
 }
 
 /// A single meld for encoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeldInfo {
     /// Tile types present in the meld (0-33 each). Up to 4 tiles.
     pub tiles: [u8; 4],
@@ -489,7 +513,7 @@ pub struct MeldInfo {
 }
 
 /// Per-player meld collection for encoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerMelds {
     /// Fixed-size array of melds (max 4 per player).
     pub melds: [MeldInfo; 4],
@@ -555,10 +579,21 @@ impl ObservationEncoder {
                     MeldType::Pon => 1,
                     MeldType::Kan => 2,
                 };
-                for &tile in &meld.tiles[..meld.tile_count as usize] {
-                    let t = tile as usize;
-                    if t < NUM_TILES {
-                        self.set(ch_base + ch_offset, t, 1.0);
+                let row = (ch_base + ch_offset) * NUM_TILES;
+                match meld.meld_type {
+                    MeldType::Chi => {
+                        for &tile in &meld.tiles[..meld.tile_count as usize] {
+                            let t = tile as usize;
+                            if t < NUM_TILES {
+                                self.buffer[row + t] = 1.0;
+                            }
+                        }
+                    }
+                    MeldType::Pon | MeldType::Kan => {
+                        let t = meld.tiles[0] as usize;
+                        if t < NUM_TILES {
+                            self.buffer[row + t] = 1.0;
+                        }
                     }
                 }
             }
@@ -571,7 +606,7 @@ impl ObservationEncoder {
 // ---------------------------------------------------------------------------
 
 /// Dora information for encoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DoraInfo {
     /// Dora indicator tile types (0-33). Fixed array, up to 5 kan dora.
     pub indicators: [u8; 5],
@@ -593,27 +628,39 @@ impl ObservationEncoder {
     #[inline]
     pub fn encode_dora(&mut self, dora: &DoraInfo) {
         let mut counts = [0u8; NUM_TILES];
+        let mut touched = [0usize; 5];
+        let mut touched_len = 0usize;
         for &ind in &dora.indicators[..dora.indicator_count as usize] {
             let i = ind as usize;
             if i < NUM_TILES {
+                if counts[i] == 0 {
+                    touched[touched_len] = i;
+                    touched_len += 1;
+                }
                 counts[i] = counts[i].saturating_add(1);
             }
         }
-        for (tile, &c) in counts.iter().enumerate() {
+        let row0 = CH_DORA * NUM_TILES;
+        let row1 = row0 + NUM_TILES;
+        let row2 = row1 + NUM_TILES;
+        let row3 = row2 + NUM_TILES;
+        let row4 = row3 + NUM_TILES;
+        for &tile in &touched[..touched_len] {
+            let c = counts[tile];
             if c >= 1 {
-                self.set(CH_DORA, tile, 1.0);
+                self.buffer[row0 + tile] = 1.0;
             }
             if c >= 2 {
-                self.set(CH_DORA + 1, tile, 1.0);
+                self.buffer[row1 + tile] = 1.0;
             }
             if c >= 3 {
-                self.set(CH_DORA + 2, tile, 1.0);
+                self.buffer[row2 + tile] = 1.0;
             }
             if c >= 4 {
-                self.set(CH_DORA + 3, tile, 1.0);
+                self.buffer[row3 + tile] = 1.0;
             }
             if c >= 5 {
-                self.set(CH_DORA + 4, tile, 1.0);
+                self.buffer[row4 + tile] = 1.0;
             }
         }
     }
@@ -639,7 +686,7 @@ impl ObservationEncoder {
 // ---------------------------------------------------------------------------
 
 /// Game metadata for encoding channels 43-61.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(C)]
 pub struct GameMetadata {
     /// Riichi status for all 4 players (relative to observer). Index 0 = self.
@@ -752,12 +799,7 @@ impl ObservationEncoder {
             for_each_set_bit(safety.genbutsu_riichi_era[opp], |tile| {
                 self.set(CH_SAFETY + 2 * NUM_OPPS + opp, tile, 1.0);
             });
-            for tile in 0..NUM_TILES {
-                let suji = safety.suji[opp][tile];
-                if suji > 0.0 {
-                    self.set(CH_SAFETY + 3 * NUM_OPPS + opp, tile, suji);
-                }
-            }
+            self.copy_channel(CH_SAFETY + 3 * NUM_OPPS + opp, &safety.suji[opp]);
         }
 
         // Ch 74-76: half-suji indicator per opponent
@@ -769,12 +811,7 @@ impl ObservationEncoder {
 
         // Ch 77-79: matagi-suji danger per opponent
         for opp in 0..NUM_OPPS {
-            for tile in 0..NUM_TILES {
-                let m = safety.matagi[opp][tile];
-                if m != 0.0 {
-                    self.set(CH_SAFETY + 15 + opp, tile, m);
-                }
-            }
+            self.copy_channel(CH_SAFETY + 15 + opp, &safety.matagi[opp]);
         }
 
         for_each_set_bit(safety.kabe, |tile| {
@@ -834,28 +871,29 @@ impl ObservationEncoder {
     pub fn encode_hand_ev_features(&mut self, hand_ev: &HandEvFeatures) {
         self.clear_range(CH_HAND_EV, CH_HAND_EV + HAND_EV_CHANNELS);
 
+        let tenpai0 = (CH_HAND_EV_TENPAI) * NUM_TILES;
+        let tenpai1 = tenpai0 + NUM_TILES;
+        let tenpai2 = tenpai1 + NUM_TILES;
+        let win0 = (CH_HAND_EV_WIN) * NUM_TILES;
+        let win1 = win0 + NUM_TILES;
+        let win2 = win1 + NUM_TILES;
+        let score = CH_HAND_EV_SCORE * NUM_TILES;
+
         for discard in 0..NUM_TILES {
-            for horizon in 0..3 {
-                self.set(
-                    CH_HAND_EV_TENPAI + horizon,
-                    discard,
-                    hand_ev.tenpai_prob[discard][horizon],
-                );
-                self.set(
-                    CH_HAND_EV_WIN + horizon,
-                    discard,
-                    hand_ev.win_prob[discard][horizon],
-                );
-            }
-            self.set(CH_HAND_EV_SCORE, discard, hand_ev.expected_score[discard]);
+            let tenpai = hand_ev.tenpai_prob[discard];
+            let win = hand_ev.win_prob[discard];
+            self.buffer[tenpai0 + discard] = tenpai[0];
+            self.buffer[tenpai1 + discard] = tenpai[1];
+            self.buffer[tenpai2 + discard] = tenpai[2];
+            self.buffer[win0 + discard] = win[0];
+            self.buffer[win1 + discard] = win[1];
+            self.buffer[win2 + discard] = win[2];
+            self.buffer[score + discard] = hand_ev.expected_score[discard];
         }
         for draw_tile in 0..NUM_TILES {
+            let row = (CH_HAND_EV_UKEIRE + draw_tile) * NUM_TILES;
             for discard in 0..NUM_TILES {
-                self.set(
-                    CH_HAND_EV_UKEIRE + draw_tile,
-                    discard,
-                    hand_ev.ukeire[discard][draw_tile],
-                );
+                self.buffer[row + discard] = hand_ev.ukeire[discard][draw_tile];
             }
         }
         self.fill_channel(CH_HAND_EV_MASK, 1.0);
@@ -886,6 +924,41 @@ impl ObservationEncoder {
             meta,
             safety,
         );
+        if let Some(features) = search_features {
+            self.encode_search_features(features);
+        }
+        if let Some(features) = hand_ev {
+            self.encode_hand_ev_features(features);
+        }
+        self.as_slice()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_with_context_and_shanten_batch(
+        &mut self,
+        hand: &[u8; NUM_TILES],
+        drawn_tile: Option<u8>,
+        open_meld_counts: &[u8; NUM_TILES],
+        discards: &[PlayerDiscards; NUM_PLAYERS],
+        melds: &[PlayerMelds; NUM_PLAYERS],
+        dora: &DoraInfo,
+        meta: &GameMetadata,
+        safety: &SafetyInfo,
+        shanten_batch: &BatchShantenResult,
+        search_features: Option<&SearchFeaturePlanes>,
+        hand_ev: Option<&HandEvFeatures>,
+    ) -> &[f32; OBS_SIZE] {
+        self.clear();
+        self.encode_hand(hand);
+        self.encode_open_meld_hand(open_meld_counts);
+        self.encode_drawn_tile(drawn_tile);
+        self.encode_shanten_masks_from_batch(shanten_batch);
+        self.encode_discards(discards);
+        self.encode_melds(melds);
+        self.encode_dora(dora);
+        self.encode_aka(dora);
+        self.encode_metadata(meta);
+        self.encode_safety(safety);
         if let Some(features) = search_features {
             self.encode_search_features(features);
         }
@@ -1245,7 +1318,7 @@ mod tests {
         hand[10] = 1;
         hand[11] = 1; // 1-3p
         hand[18] = 2; // 1s pair
-        // 14 tiles, len_div3=4, shanten=-1
+                      // 14 tiles, len_div3=4, shanten=-1
         enc.encode_shanten_masks(&hand);
         // After discarding any tile, shanten goes from -1 to 0 (worsens).
         // So next-shanten (ch10) should have NO tiles set.
@@ -1271,9 +1344,9 @@ mod tests {
         hand[9] = 3; // 1p x3
         hand[10] = 1; // 2p
         hand[22] = 1; // 5s (drawn tile)
-        // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
-        // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
-        // shanten = 0 (tenpai)
+                      // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
+                      // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
+                      // shanten = 0 (tenpai)
         enc.encode_shanten_masks(&hand);
         // Discarding 2p or 5s keeps tenpai (shanten stays 0), so ch9 should be set
         // The exact tiles depend on shanten calc, but at minimum some tiles on ch9
@@ -1612,11 +1685,9 @@ mod tests {
         enc.encode(
             &hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety,
         );
-        assert!(
-            enc.as_slice()[CH_SEARCH * NUM_TILES..]
-                .iter()
-                .all(|&v| v == 0.0)
-        );
+        assert!(enc.as_slice()[CH_SEARCH * NUM_TILES..]
+            .iter()
+            .all(|&v| v == 0.0));
     }
 
     #[test]
@@ -1821,5 +1892,129 @@ mod tests {
         let meta_start = CH_META * NUM_TILES;
         let scores_start = meta_start + 4 * NUM_TILES; // ch 47
         assert!((enc.as_slice()[scores_start] - 0.5).abs() < 1e-6); // 50000/100000
+    }
+
+    #[test]
+    fn profile_encode_clears_stale_hand_ev_when_reused_without_hand_ev() {
+        let mut enc = ObservationEncoder::new();
+        let hand = [0u8; NUM_TILES];
+        let open_meld = [0u8; NUM_TILES];
+        let discards = empty_discards();
+        let melds = empty_melds();
+        let dora = DoraInfo {
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 0,
+            aka_flags: [false; 3],
+        };
+        let meta = test_metadata();
+        let safety = SafetyInfo::new();
+        let shanten_batch = crate::shanten_batch::batch_discard_shanten(&hand, 0);
+
+        let mut hand_ev = HandEvFeatures::default();
+        hand_ev.tenpai_prob[3][0] = 0.2;
+        hand_ev.win_prob[3][2] = 0.5;
+        hand_ev.expected_score[3] = 6400.0;
+        hand_ev.ukeire[3][6] = 2.0;
+
+        enc.encode_with_context_and_shanten_batch(
+            &hand,
+            None,
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta,
+            &safety,
+            &shanten_batch,
+            None,
+            Some(&hand_ev),
+        );
+        assert_eq!(get(&enc, CH_HAND_EV_MASK, 0), 1.0);
+
+        enc.encode_with_context_and_shanten_batch(
+            &hand,
+            None,
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta,
+            &safety,
+            &shanten_batch,
+            None,
+            None,
+        );
+
+        let mask_offset = CH_HAND_EV_MASK * NUM_TILES;
+        assert_eq!(enc.as_slice()[mask_offset], 0.0);
+        assert!(enc.as_slice()[CH_HAND_EV * NUM_TILES..mask_offset]
+            .iter()
+            .all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn profile_encode_clears_stale_search_when_reused_without_search_features() {
+        let mut enc = ObservationEncoder::new();
+        let hand = [0u8; NUM_TILES];
+        let open_meld = [0u8; NUM_TILES];
+        let discards = empty_discards();
+        let melds = empty_melds();
+        let dora = DoraInfo {
+            indicators: [0, 0, 0, 0, 0],
+            indicator_count: 0,
+            aka_flags: [false; 3],
+        };
+        let meta = test_metadata();
+        let safety = SafetyInfo::new();
+        let shanten_batch = crate::shanten_batch::batch_discard_shanten(&hand, 0);
+
+        let mut search = SearchFeaturePlanes {
+            belief_features_present: true,
+            search_features_present: true,
+            robust_features_present: true,
+            context_features_present: true,
+            ..SearchFeaturePlanes::default()
+        };
+        search.belief_fields[0][5] = 0.75;
+        search.mixture_weights[1] = 0.4;
+        search.mixture_entropy = 0.8;
+        search.mixture_ess = 2.5;
+        search.delta_q[7] = -0.2;
+        search.opponent_risk[2][9] = 0.6;
+        search.opponent_stress[1] = 0.3;
+
+        enc.encode_with_context_and_shanten_batch(
+            &hand,
+            None,
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta,
+            &safety,
+            &shanten_batch,
+            Some(&search),
+            None,
+        );
+        assert_eq!(get(&enc, CH_SEARCH_MASKS, 0), 1.0);
+
+        enc.encode_with_context_and_shanten_batch(
+            &hand,
+            None,
+            &open_meld,
+            &discards,
+            &melds,
+            &dora,
+            &meta,
+            &safety,
+            &shanten_batch,
+            None,
+            None,
+        );
+
+        let mask_offset = CH_HAND_EV * NUM_TILES;
+        assert!(enc.as_slice()[CH_SEARCH * NUM_TILES..mask_offset]
+            .iter()
+            .all(|&v| v == 0.0));
     }
 }

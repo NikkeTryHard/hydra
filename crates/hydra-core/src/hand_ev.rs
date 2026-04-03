@@ -1,8 +1,11 @@
 //! Hand-EV oracle features: per-discard tenpai/win probability and ukeire.
 
-use crate::tile::NUM_TILE_TYPES;
-use riichienv_core::shanten::calc_shanten_from_counts;
+use std::collections::HashMap;
 
+use crate::shanten_batch::{BatchDrawShantenResult, batch_discard_shanten, batch_draw_shanten};
+use crate::tile::NUM_TILE_TYPES;
+
+#[derive(Clone)]
 pub struct HandEvFeatures {
     pub tenpai_prob: [[f32; 3]; NUM_TILE_TYPES],
     pub win_prob: [[f32; 3]; NUM_TILE_TYPES],
@@ -36,6 +39,25 @@ pub fn compute_ukeire(
         test_hand[t] += 1;
         let new_shanten = shanten_fn(&test_hand);
         if new_shanten < base_shanten {
+            ukeire[t] = remaining[t];
+        }
+    }
+    ukeire
+}
+
+#[inline]
+fn compute_ukeire_from_batch(
+    remaining: &[f32; NUM_TILE_TYPES],
+    batch: &BatchDrawShantenResult,
+) -> [f32; NUM_TILE_TYPES] {
+    let mut ukeire = [0.0f32; NUM_TILE_TYPES];
+    for t in 0..NUM_TILE_TYPES {
+        if remaining[t] <= 0.0 {
+            continue;
+        }
+        if let Some(new_shanten) = batch.draw[t]
+            && new_shanten < batch.base
+        {
             ukeire[t] = remaining[t];
         }
     }
@@ -205,10 +227,49 @@ fn immediate_win_probability(
     (waits / total_remaining).clamp(0.0, 1.0)
 }
 
+#[inline]
+fn immediate_win_probability_from_batch(
+    remaining: &[f32; NUM_TILE_TYPES],
+    batch: &BatchDrawShantenResult,
+) -> f32 {
+    if batch.base != 0 {
+        return 0.0;
+    }
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return 0.0;
+    }
+    let waits: f32 = batch
+        .draw
+        .iter()
+        .enumerate()
+        .filter_map(|(tile, shanten)| match shanten {
+            Some(value) if *value < 0 && remaining[tile] > 0.0 => Some(remaining[tile]),
+            _ => None,
+        })
+        .sum();
+    (waits / total_remaining).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Copy, Default)]
 struct FollowUpQuality {
     tenpai_prob: f32,
     win_prob: f32,
+}
+
+#[derive(Default)]
+struct HandEvLocalCache {
+    draw_batches_13: HashMap<[u8; NUM_TILE_TYPES], BatchDrawShantenResult>,
+}
+
+impl HandEvLocalCache {
+    #[inline]
+    fn draw_batch_13(&mut self, hand: &[u8; NUM_TILE_TYPES]) -> BatchDrawShantenResult {
+        self.draw_batches_13
+            .entry(*hand)
+            .or_insert_with(|| batch_draw_shanten(hand, hand.iter().sum::<u8>() / 3))
+            .clone()
+    }
 }
 
 #[inline]
@@ -256,6 +317,54 @@ fn best_follow_up_quality(
 }
 
 #[inline]
+fn best_follow_up_quality_default(
+    after_draw: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    cache: &mut HandEvLocalCache,
+) -> FollowUpQuality {
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return FollowUpQuality::default();
+    }
+
+    let discard_batch = batch_discard_shanten(after_draw, after_draw.iter().sum::<u8>() / 3);
+    let mut best = FollowUpQuality::default();
+    for discard in 0..NUM_TILE_TYPES {
+        if after_draw[discard] == 0 {
+            continue;
+        }
+        let Some(shanten_after) = discard_batch.discard[discard] else {
+            continue;
+        };
+        let mut after_rediscard = *after_draw;
+        after_rediscard[discard] -= 1;
+        let draw_batch = cache.draw_batch_13(&after_rediscard);
+        let uke = compute_ukeire_from_batch(remaining, &draw_batch);
+        let acceptance_ratio = (uke.iter().sum::<f32>() / total_remaining).clamp(0.0, 1.0);
+        let tenpai_prob = if shanten_after <= 0 {
+            1.0
+        } else {
+            acceptance_ratio
+        };
+        let win_prob = if shanten_after < 0 {
+            1.0
+        } else {
+            immediate_win_probability_from_batch(remaining, &draw_batch)
+                .max((acceptance_ratio * 0.35).clamp(0.0, 1.0))
+        };
+
+        if win_prob > best.win_prob || (win_prob == best.win_prob && tenpai_prob > best.tenpai_prob)
+        {
+            best = FollowUpQuality {
+                tenpai_prob,
+                win_prob,
+            };
+        }
+    }
+    best
+}
+
+#[inline]
 fn expected_follow_up_quality(
     after_discard: &[u8; NUM_TILE_TYPES],
     remaining: &[f32; NUM_TILE_TYPES],
@@ -280,6 +389,38 @@ fn expected_follow_up_quality(
 
         let draw_prob = remaining[draw] / total_remaining;
         let best = best_follow_up_quality(&after_draw, &remaining_after_draw, shanten_fn);
+        weighted.tenpai_prob += draw_prob * best.tenpai_prob;
+        weighted.win_prob += draw_prob * best.win_prob;
+    }
+
+    weighted
+}
+
+#[inline]
+fn expected_follow_up_quality_default(
+    after_discard: &[u8; NUM_TILE_TYPES],
+    remaining: &[f32; NUM_TILE_TYPES],
+    cache: &mut HandEvLocalCache,
+) -> FollowUpQuality {
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return FollowUpQuality::default();
+    }
+
+    let mut weighted = FollowUpQuality::default();
+    for draw in 0..NUM_TILE_TYPES {
+        if remaining[draw] <= 0.0 || after_discard[draw] >= 4 {
+            continue;
+        }
+
+        let mut after_draw = *after_discard;
+        after_draw[draw] += 1;
+
+        let mut remaining_after_draw = *remaining;
+        remaining_after_draw[draw] = (remaining_after_draw[draw] - 1.0).max(0.0);
+
+        let draw_prob = remaining[draw] / total_remaining;
+        let best = best_follow_up_quality_default(&after_draw, &remaining_after_draw, cache);
         weighted.tenpai_prob += draw_prob * best.tenpai_prob;
         weighted.win_prob += draw_prob * best.win_prob;
     }
@@ -326,17 +467,60 @@ pub fn best_discard_by_ukeire(
     best
 }
 
-#[inline]
-fn default_shanten_fn(counts: &[u8; NUM_TILE_TYPES]) -> i8 {
-    let hand_total: u8 = counts.iter().sum();
-    calc_shanten_from_counts(counts, hand_total / 3)
-}
-
 pub fn compute_hand_ev(
     hand: &[u8; NUM_TILE_TYPES],
     remaining: &[f32; NUM_TILE_TYPES],
 ) -> HandEvFeatures {
-    compute_hand_ev_with_shanten_fn(hand, remaining, &default_shanten_fn)
+    let mut features = HandEvFeatures::default();
+    let mut cache = HandEvLocalCache::default();
+    let total_remaining: f32 = remaining.iter().sum();
+    if total_remaining <= 0.0 {
+        return features;
+    }
+
+    for discard in 0..NUM_TILE_TYPES {
+        if hand[discard] == 0 {
+            continue;
+        }
+        let mut after_discard = *hand;
+        after_discard[discard] -= 1;
+        let shanten_batch =
+            batch_draw_shanten(&after_discard, after_discard.iter().sum::<u8>() / 3);
+        let uke = compute_ukeire_from_batch(remaining, &shanten_batch);
+        features.ukeire[discard] = uke;
+        let shanten_after = shanten_batch.base;
+        let acceptance: f32 = uke.iter().sum();
+        let acceptance_ratio = (acceptance / total_remaining).clamp(0.0, 1.0);
+        let follow_up_quality = expected_follow_up_quality_default(&after_discard, remaining, &mut cache);
+        let immediate_tenpai_draw_prob = if shanten_after <= 0 {
+            1.0
+        } else {
+            acceptance_ratio
+        };
+        let immediate_win_draw_prob = if shanten_after < 0 {
+            1.0
+        } else {
+            immediate_win_probability_from_batch(remaining, &shanten_batch)
+        };
+        let base_win = immediate_win_draw_prob.max((acceptance_ratio * 0.35).clamp(0.0, 1.0));
+        for horizon in 0..3 {
+            let draws = (horizon + 1) as u32;
+            let tenpai_continue = continuation_boost(horizon, shanten_after, acceptance_ratio)
+                .max(follow_up_quality.tenpai_prob * if horizon == 0 { 0.0 } else { 1.0 });
+            let win_continue = continuation_boost(horizon, shanten_after - 1, acceptance_ratio)
+                .max(follow_up_quality.win_prob * if horizon == 0 { 0.0 } else { 1.0 });
+            let tenpai_miss = 1.0 - immediate_tenpai_draw_prob;
+            let win_miss = 1.0 - base_win;
+            features.tenpai_prob[discard][horizon] =
+                (1.0 - tenpai_miss.powi(draws as i32) * (1.0 - tenpai_continue)).clamp(0.0, 1.0);
+            features.win_prob[discard][horizon] =
+                (1.0 - win_miss.powi(draws as i32) * (1.0 - win_continue)).clamp(0.0, 1.0);
+        }
+        let score_estimate = conditional_score_estimate(hand, discard, acceptance, shanten_after);
+        features.expected_score[discard] = features.win_prob[discard][2] * score_estimate;
+    }
+
+    features
 }
 
 pub fn compute_hand_ev_with_shanten_fn(
@@ -400,6 +584,7 @@ pub fn compute_hand_ev_with_shanten_fn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riichienv_core::shanten::calc_shanten_from_counts;
 
     #[test]
     fn simple_hand_shape_helpers_cover_counts_and_safe_selection() {

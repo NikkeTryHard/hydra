@@ -17,8 +17,8 @@ use crate::model::HydraModel;
 use crate::training::exit::ExitConfig;
 use crate::training::exit_validation::ExitValidationReport;
 use crate::training::live_exit::{
-    RootDecisionContext, SelfPlayExitAdapter, budget_from_legal_count, obs_hash,
-    try_exit_label_from_context_with_batched_child_values,
+    budget_from_legal_count, obs_hash, try_exit_label_from_context_with_batched_child_values,
+    RootDecisionContext, SelfPlayExitAdapter,
 };
 
 pub const REPLAY_EXIT_SEMANTICS_V1: &str = "exit_root_child_visits_v1";
@@ -385,9 +385,7 @@ mod tests {
                         obs_hash: obs_hash(&decision.obs_encoded),
                     },
                     action: decision.action_id,
-                    legal_mask_digest: legal_mask_digest_from_f32(&bool_mask_to_f32(
-                        decision.legal_mask,
-                    )),
+                    legal_mask_digest: legal_mask_digest_from_f32(&decision.legal_mask_f32),
                     source_net_hash,
                     source_version,
                     root_visit_count: 64,
@@ -595,16 +593,18 @@ mod tests {
             "game-1",
             crate::data::mjai_loader::SidecarProvenance::new(Some(123), Some(1)),
             crate::data::mjai_loader::SidecarProvenance::default(),
+            crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
+                false, false, false, false, true, false,
+            ),
             events,
             Some(&index),
             None,
         )
         .expect("load with sidecar");
-        assert!(
-            game.samples
-                .iter()
-                .any(|sample| sample.exit_target.is_some())
-        );
+        assert!(game
+            .samples
+            .iter()
+            .any(|sample| sample.exit_target.is_some()));
         assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
     }
 
@@ -641,10 +641,9 @@ mod tests {
         )
         .expect_err("invalid jsonl should fail");
         assert_eq!(err.kind(), ErrorKind::InvalidData);
-        assert!(
-            err.to_string()
-                .contains("invalid replay ExIt sidecar line 2")
-        );
+        assert!(err
+            .to_string()
+            .contains("invalid replay ExIt sidecar line 2"));
     }
 
     #[test]
@@ -760,27 +759,21 @@ mod tests {
         };
 
         record.version = 2;
-        assert!(
-            ExitSidecarIndex::from_records(vec![record.clone()])
-                .lookup_label(&key, 2, &mask, 9, 1)
-                .is_none()
-        );
+        assert!(ExitSidecarIndex::from_records(vec![record.clone()])
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .is_none());
 
         record.version = 1;
         record.semantics = "wrong-semantics".to_string();
-        assert!(
-            ExitSidecarIndex::from_records(vec![record.clone()])
-                .lookup_label(&key, 2, &mask, 9, 1)
-                .is_none()
-        );
+        assert!(ExitSidecarIndex::from_records(vec![record.clone()])
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .is_none());
 
         record.semantics = REPLAY_EXIT_SEMANTICS_V1.to_string();
         record.provenance = "manual".to_string();
-        assert!(
-            ExitSidecarIndex::from_records(vec![record])
-                .lookup_label(&key, 2, &mask, 9, 1)
-                .is_none()
-        );
+        assert!(ExitSidecarIndex::from_records(vec![record])
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .is_none());
     }
 
     #[test]
@@ -815,11 +808,9 @@ mod tests {
             mask: stored_mask.to_vec(),
         };
 
-        assert!(
-            ExitSidecarIndex::from_records(vec![record])
-                .lookup_label(&key, 2, &lookup_mask, 9, 1)
-                .is_none()
-        );
+        assert!(ExitSidecarIndex::from_records(vec![record])
+            .lookup_label(&key, 2, &lookup_mask, 9, 1)
+            .is_none());
     }
 
     #[test]

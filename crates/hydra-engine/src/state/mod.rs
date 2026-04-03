@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -24,6 +26,35 @@ use player::PlayerState;
 use wall::WallState;
 
 const NP: usize = 4;
+
+static REPLAY_OBS_PROFILE_PRINTED: AtomicBool = AtomicBool::new(false);
+static REPLAY_GET_OBSERVATION_NS: AtomicU64 = AtomicU64::new(0);
+static REPLAY_RETRY_RIICHI_NS: AtomicU64 = AtomicU64::new(0);
+static REPLAY_RETRY_KAKAN_NS: AtomicU64 = AtomicU64::new(0);
+
+fn maybe_print_replay_observation_profile() {
+    if REPLAY_OBS_PROFILE_PRINTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let get_obs = REPLAY_GET_OBSERVATION_NS.swap(0, Ordering::Relaxed) as u128;
+    let retry_riichi = REPLAY_RETRY_RIICHI_NS.swap(0, Ordering::Relaxed) as u128;
+    let retry_kakan = REPLAY_RETRY_KAKAN_NS.swap(0, Ordering::Relaxed) as u128;
+    let total = get_obs + retry_riichi + retry_kakan;
+    let pct = |part: u128| -> f64 {
+        if total == 0 {
+            0.0
+        } else {
+            part as f64 * 100.0 / total as f64
+        }
+    };
+    eprintln!(
+        "[replay-obs-profile] total={:.3}s get_observation={:.1}% retry_riichi={:.1}% retry_kakan={:.1}%",
+        total as f64 / 1_000_000_000.0,
+        pct(get_obs),
+        pct(retry_riichi),
+        pct(retry_kakan),
+    );
+}
 
 /// Insert `tile` into a sorted fixed-size hand array, maintaining sort order.
 #[inline]
@@ -517,7 +548,9 @@ impl GameState {
             _ => {}
         }
 
+        let t_get = Instant::now();
         let mut obs = self.get_observation(pid);
+        REPLAY_GET_OBSERVATION_NS.fetch_add(t_get.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let mut exists = obs
             ._legal_actions
@@ -529,7 +562,10 @@ impl GameState {
             && self.players[pid as usize].riichi_declared
         {
             self.players[pid as usize].riichi_declared = false;
+            let t_retry = Instant::now();
             let new_obs = self.get_observation(pid);
+            REPLAY_RETRY_RIICHI_NS
+                .fetch_add(t_retry.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let is_legal_retry = new_obs._legal_actions.iter().any(|a| {
                 a.action_type == ActionType::Discard
                     && match (a.tile, env_action.tile) {
@@ -550,7 +586,9 @@ impl GameState {
 
         if !exists && env_action.action_type == ActionType::Kakan && self.drawn_tile.is_some() {
             self.set_single_active_player(pid);
+            let t_retry = Instant::now();
             let new_obs = self.get_observation(pid);
+            REPLAY_RETRY_KAKAN_NS.fetch_add(t_retry.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let is_legal_retry = new_obs
                 ._legal_actions
                 .iter()
@@ -581,6 +619,7 @@ impl GameState {
             });
         }
 
+        maybe_print_replay_observation_profile();
         Ok(obs)
     }
 

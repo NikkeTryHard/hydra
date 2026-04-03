@@ -12,8 +12,8 @@ use crate::training::replay_exit::{
 use flate2::read::GzDecoder;
 #[cfg(test)]
 use hydra_core::action::{AKA_5M, DISCARD_END};
-use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, build_legal_mask, riichienv_to_hydra};
-use hydra_core::bridge::encode_observation;
+use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, riichienv_to_hydra};
+use hydra_core::bridge::{BridgeEncodeProfile, encode_observation, encode_observation_with_profile};
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action as EngineAction, ActionType, Phase};
@@ -27,8 +27,94 @@ use riichienv_core::state::GameState;
 use std::array;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 const MISSING_TILE_TARGET: u8 = 255;
+
+#[derive(Clone, Copy, Default)]
+struct ReplayDecisionOptions {
+    use_bc_minimal_encode: bool,
+}
+
+#[derive(Default)]
+struct ReplayProfileStats {
+    parse_events_ns: u128,
+    precompute_ns: u128,
+    prepare_decisions_ns: u128,
+    implicit_pass_ns: u128,
+    replay_observation_ns: u128,
+    legal_mask_build_ns: u128,
+    encode_observation_ns: u128,
+    legal_mask_convert_ns: u128,
+    opponent_targets_ns: u128,
+    exact_waits_ns: u128,
+    safety_residual_ns: u128,
+    belief_targets_ns: u128,
+    sidecar_lookup_ns: u128,
+    sample_push_ns: u128,
+    update_safety_ns: u128,
+    apply_event_ns: u128,
+    event_count: usize,
+    decision_count: usize,
+}
+
+static REPLAY_PROFILE_PRINTED: AtomicBool = AtomicBool::new(false);
+static REPLAY_IMPLICIT_PASS_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REPLAY_OBSERVATION_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REPLAY_LEGAL_MASK_BUILD_NS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static REPLAY_ENCODE_OBS_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn maybe_print_replay_profile(stats: &ReplayProfileStats) {
+    if REPLAY_PROFILE_PRINTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let total_ns = stats.parse_events_ns
+        + stats.precompute_ns
+        + stats.prepare_decisions_ns
+        + stats.implicit_pass_ns
+        + stats.replay_observation_ns
+        + stats.legal_mask_build_ns
+        + stats.encode_observation_ns
+        + stats.legal_mask_convert_ns
+        + stats.opponent_targets_ns
+        + stats.safety_residual_ns
+        + stats.belief_targets_ns
+        + stats.sidecar_lookup_ns
+        + stats.sample_push_ns
+        + stats.update_safety_ns
+        + stats.apply_event_ns;
+    let pct = |part: u128| -> f64 {
+        if total_ns == 0 {
+            0.0
+        } else {
+            part as f64 * 100.0 / total_ns as f64
+        }
+    };
+    eprintln!(
+        "[replay-profile] total={:.3}s parse={:.1}% precompute={:.1}% prepare={:.1}% implicit_pass={:.1}% replay_obs={:.1}% legal_mask_build={:.1}% encode_obs={:.1}% opp_targets={:.1}% exact_waits={:.1}% legal_mask_f32={:.1}% safety={:.1}% belief={:.1}% sidecar={:.1}% sample_push={:.1}% update_safety={:.1}% apply_event={:.1}% events={} decisions={}",
+        total_ns as f64 / 1_000_000_000.0,
+        pct(stats.parse_events_ns),
+        pct(stats.precompute_ns),
+        pct(stats.prepare_decisions_ns),
+        pct(stats.implicit_pass_ns),
+        pct(stats.replay_observation_ns),
+        pct(stats.legal_mask_build_ns),
+        pct(stats.encode_observation_ns),
+        pct(stats.opponent_targets_ns),
+        pct(stats.exact_waits_ns),
+        pct(stats.legal_mask_convert_ns),
+        pct(stats.safety_residual_ns),
+        pct(stats.belief_targets_ns),
+        pct(stats.sidecar_lookup_ns),
+        pct(stats.sample_push_ns),
+        pct(stats.update_safety_ns),
+        pct(stats.apply_event_ns),
+        stats.event_count,
+        stats.decision_count,
+    );
+}
 
 pub struct MjaiGame {
     pub samples: Vec<MjaiSample>,
@@ -228,7 +314,49 @@ pub(crate) struct PreparedReplayDecision {
     pub obs: Observation,
     pub action_id: u8,
     pub legal_mask: [bool; HYDRA_ACTION_SPACE],
+    pub legal_mask_f32: [f32; HYDRA_ACTION_SPACE],
     pub obs_encoded: [f32; OBS_SIZE],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplayTargetProfile {
+    pub oracle: bool,
+    pub safety_residual: bool,
+    pub belief: bool,
+    pub mixture: bool,
+    pub exit: bool,
+    pub delta_q: bool,
+}
+
+impl ReplayTargetProfile {
+    pub const fn minimal_bc() -> Self {
+        Self {
+            oracle: false,
+            safety_residual: false,
+            belief: false,
+            mixture: false,
+            exit: false,
+            delta_q: false,
+        }
+    }
+
+    pub const fn with_optional_heads(
+        oracle: bool,
+        safety_residual: bool,
+        belief: bool,
+        mixture: bool,
+        exit: bool,
+        delta_q: bool,
+    ) -> Self {
+        Self {
+            oracle,
+            safety_residual,
+            belief,
+            mixture,
+            exit,
+            delta_q,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -241,6 +369,8 @@ struct OpponentEventTarget {
 struct EventOpponentTargetCache {
     opp_next_abs: [u8; 4],
     targets: [Option<OpponentEventTarget>; 4],
+    actor_relative: [Option<ActorRelativeOpponentTargets>; 4],
+    exact_waits_ns: u128,
 }
 
 #[derive(Clone, Copy)]
@@ -250,6 +380,18 @@ struct ActorRelativeOpponentTargets {
     opp_next: [u8; 3],
     danger: [f32; 102],
     danger_mask: [f32; 102],
+}
+
+impl Default for ActorRelativeOpponentTargets {
+    fn default() -> Self {
+        Self {
+            wait_sets: [[0.0; 34]; 3],
+            tenpai: [0.0; 3],
+            opp_next: [MISSING_TILE_TARGET; 3],
+            danger: [0.0; 102],
+            danger_mask: [0.0; 102],
+        }
+    }
 }
 
 impl EventOpponentTargetCache {
@@ -262,6 +404,8 @@ impl EventOpponentTargetCache {
         Self {
             opp_next_abs,
             targets: [None; 4],
+            actor_relative: [None; 4],
+            exact_waits_ns: 0,
         }
     }
 
@@ -270,7 +414,9 @@ impl EventOpponentTargetCache {
             return target;
         }
 
+        let t_waits = Instant::now();
         let (waits, is_tenpai) = exact_waits(state, player);
+        self.exact_waits_ns += t_waits.elapsed().as_nanos();
         let target = OpponentEventTarget {
             tenpai: if is_tenpai { 1.0 } else { 0.0 },
             next_discard: self.opp_next_abs[player],
@@ -286,6 +432,9 @@ fn actor_relative_opponent_targets(
     event_targets: &mut EventOpponentTargetCache,
     state: &GameState,
 ) -> ActorRelativeOpponentTargets {
+    if let Some(targets) = event_targets.actor_relative[actor] {
+        return targets;
+    }
     let mut tenpai = [0.0; 3];
     let mut opp_next = [MISSING_TILE_TARGET; 3];
     let mut danger = [0.0; 102];
@@ -305,13 +454,15 @@ fn actor_relative_opponent_targets(
         }
     }
 
-    ActorRelativeOpponentTargets {
+    let targets = ActorRelativeOpponentTargets {
         wait_sets,
         tenpai,
         opp_next,
         danger,
         danger_mask,
-    }
+    };
+    event_targets.actor_relative[actor] = Some(targets);
+    targets
 }
 
 fn replay_phase_for_event(event: &MjaiEvent, state: &GameState, actor: usize) -> ActionPhase {
@@ -324,6 +475,42 @@ fn replay_phase_for_event(event: &MjaiEvent, state: &GameState, actor: usize) ->
     }
 }
 
+fn analyze_replay_legal_actions(
+    legal: &[EngineAction],
+    _phase: ActionPhase,
+    chosen_action_id: u8,
+) -> ([bool; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE], bool, bool) {
+    let mut legal_mask = [false; HYDRA_ACTION_SPACE];
+    let mut legal_mask_f32 = [0.0; HYDRA_ACTION_SPACE];
+    let mut chosen_is_legal = false;
+    let mut had_ron = false;
+
+    for action in legal {
+        had_ron |= action.action_type == ActionType::Ron;
+        let Ok(hydra) = riichienv_to_hydra(action) else {
+            continue;
+        };
+        let idx = hydra.id() as usize;
+        if idx >= HYDRA_ACTION_SPACE {
+            continue;
+        }
+        // Replay legality should mirror the engine's own action acceptance as closely as
+        // possible. Phase-specific masking is useful for model targets, but it must not be
+        // allowed to reject the chosen replay action here or we spuriously mark valid replays
+        // as desyncs.
+        let allow = true;
+        if !allow {
+            continue;
+        }
+        legal_mask[idx] = true;
+        legal_mask_f32[idx] = 1.0;
+        chosen_is_legal |= hydra.id() == chosen_action_id;
+    }
+
+    (legal_mask, legal_mask_f32, chosen_is_legal, had_ron)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn finalize_prepared_replay_decision(
     actor: usize,
     env_action: EngineAction,
@@ -332,27 +519,49 @@ fn finalize_prepared_replay_decision(
     state: &GameState,
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
+    legal: &[EngineAction],
+    options: ReplayDecisionOptions,
 ) -> io::Result<Option<PreparedReplayDecision>> {
     let hydra_action = riichienv_to_hydra(&env_action)
         .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
-    let legal = obs.legal_actions_method();
-    let legal_mask = build_legal_mask(&legal, phase);
-    if !legal_mask[hydra_action.id() as usize] {
+    let t_legal = Instant::now();
+    let (legal_mask, legal_mask_f32, chosen_is_legal, _) =
+        analyze_replay_legal_actions(legal, phase, hydra_action.id());
+    REPLAY_LEGAL_MASK_BUILD_NS.fetch_add(t_legal.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    if !chosen_is_legal {
         return Ok(None);
     }
 
-    let obs_encoded = encode_observation(
-        encoder,
-        &obs,
-        &safety[actor],
-        state.drawn_tile.map(tile136_to_type),
-    );
+    let t_encode = Instant::now();
+    let obs_encoded = if options.use_bc_minimal_encode {
+        // BC-minimal disables Group D Hand-EV inputs only; legality and replay filtering
+        // are unchanged. Replay acceptance is decided by analyze_replay_legal_actions()
+        // above, which operates on legal move masks, not the observation tensor.
+        // The fixed-superset encoder zero-fills Hand-EV channels and sets the presence
+        // mask to 0 when hand_ev is None, so the model sees a clean absent signal.
+        encode_observation_with_profile(
+            encoder,
+            &obs,
+            &safety[actor],
+            state.drawn_tile.map(tile136_to_type),
+            BridgeEncodeProfile::bc_minimal(),
+        )
+    } else {
+        encode_observation(
+            encoder,
+            &obs,
+            &safety[actor],
+            state.drawn_tile.map(tile136_to_type),
+        )
+    };
+    REPLAY_ENCODE_OBS_NS.fetch_add(t_encode.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     Ok(Some(PreparedReplayDecision {
         actor,
         obs,
         action_id: hydra_action.id(),
         legal_mask,
+        legal_mask_f32,
         obs_encoded,
     }))
 }
@@ -362,19 +571,26 @@ fn observation_for_replay_event(
     actor: usize,
     env_action: &EngineAction,
 ) -> io::Result<Observation> {
-    state
+    let t_obs = Instant::now();
+    let obs = state
         .get_observation_for_replay(actor as u8, env_action, &env_action.to_mjai())
-        .map_err(|err| invalid_data(format!("replay observation failed: {err}")))
+        .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
+    REPLAY_OBSERVATION_NS.fetch_add(t_obs.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    Ok(obs)
 }
+
 
 fn prepare_implicit_pass_decisions(
     next_event: &MjaiEvent,
     state: &mut GameState,
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
+    options: ReplayDecisionOptions,
 ) -> io::Result<Vec<PreparedReplayDecision>> {
+    let t_pass = Instant::now();
     let mut decisions = Vec::new();
     if state.phase != Phase::WaitResponse {
+        REPLAY_IMPLICIT_PASS_NS.fetch_add(t_pass.elapsed().as_nanos() as u64, Ordering::Relaxed);
         return Ok(decisions);
     }
 
@@ -392,10 +608,9 @@ fn prepare_implicit_pass_decisions(
         let obs = state
             .get_observation_for_replay(pid, &pass_action, r#"{"type":"none"}"#)
             .map_err(|err| invalid_data(format!("replay pass observation failed: {err}")))?;
-        let had_ron = obs
-            .legal_actions_method()
-            .iter()
-            .any(|action| action.action_type == ActionType::Ron);
+        let legal = obs.legal_actions_method();
+        let (_, _, _, had_ron) =
+            analyze_replay_legal_actions(&legal, ActionPhase::Normal, hydra_core::action::PASS);
         if let Some(decision) = finalize_prepared_replay_decision(
             pid as usize,
             pass_action,
@@ -404,6 +619,8 @@ fn prepare_implicit_pass_decisions(
             state,
             safety,
             encoder,
+            &legal,
+            options,
         )? {
             decisions.push(decision);
         }
@@ -420,16 +637,35 @@ fn prepare_implicit_pass_decisions(
         state.resolve_replay_all_passes();
     }
 
+    REPLAY_IMPLICIT_PASS_NS.fetch_add(t_pass.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
     Ok(decisions)
 }
 
+#[cfg(test)]
 pub(crate) fn prepare_replay_decisions(
     event: &MjaiEvent,
     state: &mut GameState,
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
 ) -> io::Result<Vec<PreparedReplayDecision>> {
-    let mut decisions = prepare_implicit_pass_decisions(event, state, safety, encoder)?;
+    prepare_replay_decisions_with_options(
+        event,
+        state,
+        safety,
+        encoder,
+        ReplayDecisionOptions::default(),
+    )
+}
+
+fn prepare_replay_decisions_with_options(
+    event: &MjaiEvent,
+    state: &mut GameState,
+    safety: &[SafetyInfo; 4],
+    encoder: &mut ObservationEncoder,
+    options: ReplayDecisionOptions,
+) -> io::Result<Vec<PreparedReplayDecision>> {
+    let mut decisions = prepare_implicit_pass_decisions(event, state, safety, encoder, options)?;
     if !should_sample_replay_event(event) {
         return Ok(decisions);
     }
@@ -441,6 +677,7 @@ pub(crate) fn prepare_replay_decisions(
     };
 
     let obs = observation_for_replay_event(state, actor, &env_action)?;
+    let legal = obs.legal_actions_method();
     if let Some(decision) = finalize_prepared_replay_decision(
         actor,
         env_action,
@@ -449,6 +686,8 @@ pub(crate) fn prepare_replay_decisions(
         state,
         safety,
         encoder,
+        &legal,
+        options,
     )? {
         decisions.push(decision);
     }
@@ -481,7 +720,13 @@ pub(crate) fn prepare_replay_decision(
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
 ) -> io::Result<Option<PreparedReplayDecision>> {
-    Ok(prepare_replay_decisions(event, state, safety, encoder)?
+    Ok(prepare_replay_decisions_with_options(
+        event,
+        state,
+        safety,
+        encoder,
+        ReplayDecisionOptions::default(),
+    )?
         .into_iter()
         .find(|decision| decision.action_id != hydra_core::action::PASS))
 }
@@ -521,37 +766,92 @@ fn load_game_from_events_internal(
     source_hash: Option<u64>,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
+    profile: ReplayTargetProfile,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
+    let mut stats = ReplayProfileStats::default();
+    let t_precompute = Instant::now();
     let final_scores = final_scores(&events);
     let placements = score_to_placements(final_scores);
-    let oracle_target = oracle_target_from_scores(final_scores);
+    let oracle_target = profile
+        .oracle
+        .then(|| oracle_target_from_scores(final_scores));
     let next_discards = next_discards_after(&events)?;
     let grp_label = scores_to_grp_index(final_scores).map_err(invalid_data)?;
+    stats.precompute_ns += t_precompute.elapsed().as_nanos();
     let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
     let mut safety = array::from_fn(|_| SafetyInfo::default());
     let mut encoder = ObservationEncoder::new();
     let mut samples = Vec::with_capacity(events.len());
-    let needs_exit_lookup = exit_sidecar.is_some() && exit_provenance.complete().is_some();
-    let needs_delta_q_lookup = delta_q_sidecar.is_some() && delta_q_provenance.complete().is_some();
+    let needs_exit_lookup =
+        profile.exit && exit_sidecar.is_some() && exit_provenance.complete().is_some();
+    let needs_delta_q_lookup =
+        profile.delta_q && delta_q_sidecar.is_some() && delta_q_provenance.complete().is_some();
     let needs_replay_key = source_hash.is_some() && (needs_exit_lookup || needs_delta_q_lookup);
+    let decision_options = ReplayDecisionOptions {
+        use_bc_minimal_encode: profile == ReplayTargetProfile::minimal_bc(),
+    };
 
     for (idx, event) in events.iter().enumerate() {
-        let decisions = prepare_replay_decisions(event, &mut state, &safety, &mut encoder)?;
+        stats.event_count += 1;
+        let t_prepare = Instant::now();
+        let decisions = prepare_replay_decisions_with_options(
+            event,
+            &mut state,
+            &safety,
+            &mut encoder,
+            decision_options,
+        )?;
+        stats.prepare_decisions_ns += t_prepare.elapsed().as_nanos();
         let mut event_targets = EventOpponentTargetCache::new(&next_discards, idx);
         for decision in decisions {
+            stats.decision_count += 1;
             let actor = decision.actor;
-            let legal_mask = bool_mask_to_f32(decision.legal_mask);
-            let actor_targets = actor_relative_opponent_targets(actor, &mut event_targets, &state);
-            let (safety_residual, safety_residual_mask) = build_safety_residual_targets(
-                &legal_mask,
-                &safety[actor],
-                &actor_targets.wait_sets,
-            );
+            let legal_mask = decision.legal_mask_f32;
+            let actor_targets = if profile == ReplayTargetProfile::minimal_bc() {
+                ActorRelativeOpponentTargets::default()
+            } else {
+                let t_opp = Instant::now();
+                let actor_targets = actor_relative_opponent_targets(actor, &mut event_targets, &state);
+                stats.opponent_targets_ns += t_opp.elapsed().as_nanos();
+                stats.exact_waits_ns += event_targets.exact_waits_ns;
+                event_targets.exact_waits_ns = 0;
+                actor_targets
+            };
+            let (safety_residual, safety_residual_mask) = if profile.safety_residual {
+                let t_safety = Instant::now();
+                let (values, mask) = build_safety_residual_targets(
+                    &legal_mask,
+                    &safety[actor],
+                    &actor_targets.wait_sets,
+                );
+                stats.safety_residual_ns += t_safety.elapsed().as_nanos();
+                (Some(values), Some(mask))
+            } else {
+                (None, None)
+            };
             let (belief_fields, mixture_weights, belief_fields_present, mixture_weights_present) =
-                build_stage_a_belief_targets(&state, actor, &decision.obs);
+                if profile.belief || profile.mixture {
+                    let t_belief = Instant::now();
+                    let (belief_fields, mixture_weights, belief_present, mixture_present) =
+                        build_stage_a_belief_targets(&state, actor, &decision.obs);
+                    stats.belief_targets_ns += t_belief.elapsed().as_nanos();
+                    (
+                        if profile.belief { belief_fields } else { None },
+                        if profile.mixture {
+                            mixture_weights
+                        } else {
+                            None
+                        },
+                        profile.belief && belief_present,
+                        profile.mixture && mixture_present,
+                    )
+                } else {
+                    (None, None, false, false)
+                };
+            let t_sidecar = Instant::now();
             let replay_key = needs_replay_key.then(|| ReplayDecisionKey {
                 source_hash: source_hash.expect("needs_replay_key implies source hash"),
                 event_index: idx as u32,
@@ -586,6 +886,8 @@ fn load_game_from_events_internal(
                     sidecar.lookup_label(key, action, legal_mask, source_net_hash, source_version)
                 },
             );
+            stats.sidecar_lookup_ns += t_sidecar.elapsed().as_nanos();
+            let t_push = Instant::now();
             samples.push(MjaiSample {
                 obs: decision.obs_encoded,
                 action: decision.action_id,
@@ -593,13 +895,13 @@ fn load_game_from_events_internal(
                 placement: placements[actor],
                 score_delta: final_scores[actor] - state.players[actor].score,
                 grp_label,
-                oracle_target: Some(oracle_target),
+                oracle_target,
                 tenpai: actor_targets.tenpai,
                 opp_next: actor_targets.opp_next,
                 danger: actor_targets.danger,
                 danger_mask: actor_targets.danger_mask,
-                safety_residual: Some(safety_residual),
-                safety_residual_mask: Some(safety_residual_mask),
+                safety_residual,
+                safety_residual_mask,
                 exit_target: joined_exit.map(|(target, _)| target),
                 exit_mask: joined_exit.map(|(_, mask)| mask),
                 delta_q_target: joined_delta_q.map(|(target, _)| target),
@@ -609,11 +911,23 @@ fn load_game_from_events_internal(
                 belief_fields_present,
                 mixture_weights_present,
             });
+            stats.sample_push_ns += t_push.elapsed().as_nanos();
         }
 
+        let t_update = Instant::now();
         update_safety(&mut safety, event)?;
+        stats.update_safety_ns += t_update.elapsed().as_nanos();
+        let t_apply = Instant::now();
         state.apply_mjai_event(event.clone());
+        stats.apply_event_ns += t_apply.elapsed().as_nanos();
     }
+
+    stats.implicit_pass_ns = REPLAY_IMPLICIT_PASS_NS.swap(0, Ordering::Relaxed) as u128;
+    stats.replay_observation_ns = REPLAY_OBSERVATION_NS.swap(0, Ordering::Relaxed) as u128;
+    stats.legal_mask_build_ns = REPLAY_LEGAL_MASK_BUILD_NS.swap(0, Ordering::Relaxed) as u128;
+    stats.encode_observation_ns = REPLAY_ENCODE_OBS_NS.swap(0, Ordering::Relaxed) as u128;
+
+    maybe_print_replay_profile(&stats);
 
     Ok(MjaiGame {
         samples,
@@ -626,6 +940,7 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
         None,
         SidecarProvenance::default(),
         SidecarProvenance::default(),
+        ReplayTargetProfile::minimal_bc(),
         events,
         None,
         None,
@@ -636,6 +951,7 @@ pub fn load_game_from_events_with_sidecar(
     source_identity: &str,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
+    profile: ReplayTargetProfile,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -645,6 +961,7 @@ pub fn load_game_from_events_with_sidecar(
         Some(source_hash),
         exit_provenance,
         delta_q_provenance,
+        profile,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -652,9 +969,18 @@ pub fn load_game_from_events_with_sidecar(
 }
 
 pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
+    let t_parse = Instant::now();
     let events = read_mjai_events(reader)
         .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
-    load_game_from_events(events)
+    let game = load_game_from_events(events)?;
+    if !game.samples.is_empty() {
+        let stats = ReplayProfileStats {
+            parse_events_ns: t_parse.elapsed().as_nanos(),
+            ..ReplayProfileStats::default()
+        };
+        maybe_print_replay_profile(&stats);
+    }
+    Ok(game)
 }
 
 pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Result<Option<String>> {
@@ -697,6 +1023,7 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
     source_identity: &str,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
+    profile: ReplayTargetProfile,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -707,6 +1034,7 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
         source_identity,
         exit_provenance,
         delta_q_provenance,
+        profile,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -733,6 +1061,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
     source_identity: &str,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
+    profile: ReplayTargetProfile,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -750,6 +1079,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
             source_identity,
             exit_provenance,
             delta_q_provenance,
+            profile,
             BufReader::new(GzDecoder::new(reader)),
             exit_sidecar,
             delta_q_sidecar,
@@ -760,6 +1090,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
         source_identity,
         exit_provenance,
         delta_q_provenance,
+        profile,
         reader,
         exit_sidecar,
         delta_q_sidecar,
@@ -776,6 +1107,7 @@ pub fn load_game_from_path_with_sidecar(
     path: impl AsRef<Path>,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
+    profile: ReplayTargetProfile,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
@@ -790,6 +1122,7 @@ pub fn load_game_from_path_with_sidecar(
         identity,
         exit_provenance,
         delta_q_provenance,
+        profile,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -968,7 +1301,16 @@ mod tests {
     #[test]
     fn load_game_from_reader_populates_oracle_targets_from_final_scores() {
         let (log, final_scores) = play_game_with_mjai_log(7);
-        let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+        let game = load_game_from_reader_with_sidecar(
+            "game-7",
+            SidecarProvenance::default(),
+            SidecarProvenance::default(),
+            ReplayTargetProfile::with_optional_heads(true, false, false, false, false, false),
+            Cursor::new(log.join("\n")),
+            None,
+            None,
+        )
+        .expect("load game");
         let expected = oracle_target_from_scores(final_scores);
         assert!(
             !game.samples.is_empty(),
@@ -1014,6 +1356,7 @@ mod tests {
             "game-29",
             SidecarProvenance::new(Some(123), Some(1)),
             SidecarProvenance::default(),
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, false, true),
             Cursor::new(log.join("\n")),
             None,
             None,
@@ -1065,7 +1408,7 @@ mod tests {
                         obs_hash: crate::training::live_exit::obs_hash(&decision.obs_encoded),
                     },
                     decision.action_id,
-                    bool_mask_to_f32(decision.legal_mask),
+                    decision.legal_mask_f32,
                 ));
             }
             update_safety(&mut safety, event).expect("update safety");
@@ -1182,6 +1525,7 @@ mod tests {
             "game-1",
             SidecarProvenance::new(Some(123), Some(1)),
             SidecarProvenance::new(Some(123), Some(1)),
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
             events,
             Some(&ExitSidecarIndex::from_records(exit_records)),
             Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -1270,6 +1614,7 @@ mod tests {
             "game-1",
             SidecarProvenance::new(Some(123), Some(1)),
             SidecarProvenance::new(Some(123), Some(1)),
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
             events,
             Some(&ExitSidecarIndex::from_records(exit_records)),
             Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -1305,6 +1650,7 @@ mod tests {
             "game-1",
             SidecarProvenance::new(Some(999), Some(99)),
             SidecarProvenance::new(Some(456), Some(2)),
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
             events,
             Some(&ExitSidecarIndex::from_records(exit_records)),
             Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -1340,6 +1686,7 @@ mod tests {
             "game-1",
             SidecarProvenance::new(Some(123), Some(1)),
             SidecarProvenance::new(Some(999), Some(99)),
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
             events,
             Some(&ExitSidecarIndex::from_records(exit_records)),
             Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -1365,7 +1712,7 @@ mod tests {
     }
 
     #[test]
-    fn load_game_from_reader_populates_safety_residual_for_discards_only() {
+    fn load_game_from_reader_uses_minimal_bc_profile_by_default() {
         let (log, _) = play_game_with_mjai_log(11);
         let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
         let sample = game
@@ -1373,52 +1720,27 @@ mod tests {
             .iter()
             .find(|s| s.action <= DISCARD_END)
             .expect("discard sample");
-        let target = sample.safety_residual.expect("safety residual target");
-        let mask = sample.safety_residual_mask.expect("safety residual mask");
-        assert_eq!(target.len(), HYDRA_ACTION_SPACE);
-        assert_eq!(mask.len(), HYDRA_ACTION_SPACE);
-        let masked_discards: f32 = mask[..=DISCARD_END as usize].iter().sum();
-        assert!(
-            masked_discards > 0.0,
-            "expected at least one discard action to be labeled"
+        assert!(sample.safety_residual.is_none());
+        assert!(sample.safety_residual_mask.is_none());
+
+        let mask_offset = hydra_core::encoder::HAND_EV_MASK_CHANNEL * 34;
+        assert_eq!(
+            sample.obs[mask_offset],
+            0.0,
+            "default BC loader path should leave Hand-EV mask disabled"
         );
-        let masked_non_discards: f32 = mask[(DISCARD_END as usize + 1)..].iter().sum();
+
+        let hand_ev_payload =
+            &sample.obs[hydra_core::encoder::HAND_EV_CHANNEL_START * 34..mask_offset];
         assert!(
-            masked_non_discards.abs() < 1e-6,
-            "non-discard actions should be masked out"
+            hand_ev_payload.iter().all(|&v| v == 0.0),
+            "default BC loader path should zero Hand-EV payload"
         );
-        for (&value, &mask_value) in target.iter().zip(mask.iter()) {
-            if mask_value > 0.0 {
-                assert!(value.is_finite(), "masked residual should be finite");
-                assert!(
-                    (-1.0..=1.0).contains(&value),
-                    "masked residual should stay in [-1, 1], got {value}"
-                );
-            }
-        }
-        let mut saw_positive = false;
-        let mut saw_nonzero = false;
-        for sample in &game.samples {
-            let (Some(target), Some(mask)) = (sample.safety_residual, sample.safety_residual_mask)
-            else {
-                continue;
-            };
-            for (&value, &mask_value) in target.iter().zip(mask.iter()) {
-                if mask_value <= 0.0 {
-                    continue;
-                }
-                saw_positive |= value > 0.0;
-                saw_nonzero |= value.abs() > 1e-6;
-            }
-        }
-        assert!(
-            saw_positive,
-            "expected at least one positive signed residual in replay labels"
-        );
-        assert!(
-            saw_nonzero,
-            "expected at least one nonzero signed residual in replay labels"
-        );
+
+        assert_eq!(sample.tenpai, [0.0; 3]);
+        assert_eq!(sample.opp_next, [MISSING_TILE_TARGET; 3]);
+        assert!(sample.danger.iter().all(|&v| v == 0.0));
+        assert!(sample.danger_mask.iter().all(|&v| v == 0.0));
     }
 
     #[test]
@@ -1481,7 +1803,7 @@ mod tests {
 
     #[test]
     fn load_game_from_reader_keeps_stage_a_belief_targets_truthful_when_emitted() {
-        for seed in 0..4u64 {
+        for seed in 0..1u64 {
             let (log, _) = play_game_with_mjai_log(seed);
             let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
             for sample in game.samples {

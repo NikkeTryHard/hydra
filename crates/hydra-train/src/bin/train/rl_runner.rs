@@ -3,27 +3,27 @@ use std::time::Instant;
 use colored::Colorize;
 
 use hydra_train::preflight::{
-    ProfilingEnvelope, PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING,
-    PROFILING_STAGE_RL_STEP, PROFILING_STAGE_SELF_PLAY, PROFILING_STAGE_TRAIN,
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_RL_STEP,
+    PROFILING_STAGE_SELF_PLAY, PROFILING_STAGE_TRAIN, ProfilingEnvelope,
 };
-use hydra_train::selfplay::{generate_self_play_rl_batch_reuse, CooperativeSelfPlayRequest};
+use hydra_train::selfplay::{CooperativeSelfPlayRequest, generate_self_play_rl_batch_reuse};
 use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{AdvancedHead, HeadState};
 use hydra_train::training::orchestrator::{
-    live_exit_config_from_plan, maintenance_plan, rl_phase_train_step_with_controller,
-    PhaseTrainReport,
+    PhaseTrainReport, live_exit_config_from_plan, maintenance_plan,
+    rl_phase_train_step_with_controller,
 };
 
 use super::artifacts::{
-    append_rl_step_log_to_writer, save_latest_rl_checkpoint_and_state, RlArtifactPaths,
+    RlArtifactPaths, append_rl_step_log_to_writer, save_latest_rl_checkpoint_and_state,
 };
 use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime};
 use super::config::RlTrainConfig;
 use super::nvtx;
 use super::presentation::{format_status_line, timestamped};
 use super::progress::RlStepLogEntry;
-use super::resume::{build_rl_resume_state, RlRuntimeResumeContract};
+use super::resume::{RlRuntimeResumeContract, build_rl_resume_state};
 use super::status::{reached_session_step_budget, session_steps_completed};
 
 fn rl_mode_summary(rl_config: &RlTrainConfig, total_steps: usize) -> String {
@@ -475,8 +475,8 @@ mod tests {
     use crate::config::RlPhaseConfig;
     use crate::config::TrainConfig;
     use crate::resume::read_rl_resume_state;
-    use burn::tensor::Int;
     use burn::Tensor;
+    use burn::tensor::Int;
     use hydra_train::config::{PipelineState, TrainingPhase};
     use hydra_train::preflight::PreflightConfig;
     use hydra_train::training::rl::RlBatch;
@@ -571,8 +571,9 @@ mod tests {
             validation_microbatch_size: Some(64),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
-        bc_shards_manifest_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: false,
             resume_checkpoint: None,
             seed: 7,
@@ -993,9 +994,11 @@ mod tests {
 
         assert!(latest_state_path.exists());
         assert!(latest_step_log_path.exists());
-        assert!(fs::read_to_string(&latest_step_log_path)
-            .expect("read empty RL step log")
-            .is_empty());
+        assert!(
+            fs::read_to_string(&latest_step_log_path)
+                .expect("read empty RL step log")
+                .is_empty()
+        );
 
         let state_yaml =
             fs::read_to_string(&latest_state_path).expect("latest RL state should exist");

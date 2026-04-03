@@ -21,6 +21,21 @@ pub(crate) fn apply_gpu_performance_flags(device: &str) {
     }
 
     LIBTORCH_CPU_POOL_CONFIG.call_once(|| {
+        // SAFETY: called inside Once, before any tensor ops or thread spawning.
+        unsafe {
+            std::env::set_var("OMP_NUM_THREADS", "1");
+            std::env::set_var("MKL_NUM_THREADS", "1");
+            // Cap the NVIDIA driver's internal PTX JIT compiler to 2 threads.
+            // Without this, it saturates ALL cores when compiling PTX->SASS
+            // for GPUs that lack precompiled SASS in the libtorch binary
+            // (e.g., Blackwell sm_120). Requires driver R570+ (CUDA 13.1).
+            if std::env::var("CUDA_BINARY_LOADER_THREAD_COUNT").is_err() {
+                std::env::set_var("CUDA_BINARY_LOADER_THREAD_COUNT", "2");
+            }
+            if std::env::var("CUDA_CACHE_MAXSIZE").is_err() {
+                std::env::set_var("CUDA_CACHE_MAXSIZE", "4294967296");
+            }
+        }
         tch::set_num_interop_threads(1);
         tch::set_num_threads(1);
     });

@@ -735,22 +735,28 @@ impl CooperativeGameRunner {
                 pending_exit.child_requests.get(start..end),
                 child_values.get(start..end),
             ) {
-                let mut value_by_child = std::collections::HashMap::<NodeIdx, f32>::new();
                 let mut valid = true;
 
-                for (child, &value) in child_slice.iter().zip(value_slice.iter()) {
+                for (_child, &value) in child_slice.iter().zip(value_slice.iter()) {
                     if !value.is_finite() {
                         valid = false;
                         break;
                     }
-                    value_by_child.insert(child.child_idx, value);
                 }
 
                 if valid {
                     exit_step.tree.run_search_iterations(
                         exit_step.root,
                         exit_step.budget,
-                        &|child_idx| value_by_child.get(&child_idx).copied().unwrap_or(0.0),
+                        &|child_idx| {
+                            child_slice
+                                .iter()
+                                .zip(value_slice.iter())
+                                .find_map(|(child, &value)| {
+                                    (child.child_idx == child_idx).then_some(value)
+                                })
+                                .unwrap_or(0.0)
+                        },
                     );
 
                     let exit = build_exit_from_afbs_tree(
@@ -1449,7 +1455,7 @@ mod tests {
 
     fn small_test_model_config() -> HydraModelConfig {
         HydraModelConfig::new(1)
-            .with_hidden_channels(4)
+            .with_hidden_channels(2)
             .with_se_bottleneck(1)
             .with_num_groups(1)
     }

@@ -2,7 +2,7 @@
 
 use crate::amp::maybe_autocast;
 use crate::config::OracleGuidingConfig;
-use crate::data::sample::{collate_sample_refs_with_batch, MjaiBatch, MjaiSample};
+use crate::data::sample::{collate_sample_refs_bc_owned, MjaiBatch, MjaiSample};
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::exit::exit_loss;
 use crate::training::head_gates::{
@@ -490,20 +490,25 @@ where
     let mut accum_agreement = 0.0;
 
     for chunk in samples.chunks(microbatch_size) {
-        let Some((obs, batch)) = collate_sample_refs_with_batch::<B>(chunk, augment, device)
+        let Some((obs, batch, targets)) = collate_sample_refs_bc_owned::<B>(chunk, augment, device)
             .expect("behavior cloning sample collation should be valid")
         else {
             continue;
         };
-        let targets = batch.to_hydra_targets();
-        let output = m.forward(obs.clone());
+        let output = m.forward(obs);
         accum_agreement += policy_agreement(
             output.policy_logits.clone(),
             targets.legal_mask.clone(),
             target_actions_from_policy_target(targets.policy_target.clone()),
         );
-        let total =
-            bc_total_with_exit(&output, &batch, &targets, loss_fn, &BcExitConfig::default());
+        let breakdown = loss_fn.total_loss(&output, &targets);
+        let total = maybe_add_exit_loss(
+            breakdown.total.clone(),
+            output.policy_logits.clone(),
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            &BcExitConfig::default(),
+        );
         let loss = total.clone().into_scalar().elem::<f64>();
         let grads = total.backward();
         let grads = GradientsParams::from_grads(grads, &m);

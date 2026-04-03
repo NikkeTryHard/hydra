@@ -13,7 +13,7 @@ use super::probe_ladder::{dynamic_probe_ceiling, top_k_refinement_candidates};
 use super::probe_process::{execute_probe_request_batch, probe_batch_results_path};
 use super::probe_request::{ProbeBatchRequest, ProbeRequest};
 use super::probe_summary::{
-    best_probe_summary, probe_kind_name, summarize_probe_results, ProbeCandidateSummary,
+    ProbeCandidateSummary, best_probe_summary, probe_kind_name, summarize_probe_results,
 };
 
 pub(super) struct ProbeRunSpec {
@@ -676,7 +676,7 @@ mod tests {
 
     use super::*;
     use crate::config::TrainConfig;
-    use crate::probe_process::{probe_batch_results_path, ProbeBatchArtifact};
+    use crate::probe_process::{ProbeBatchArtifact, probe_batch_results_path};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -690,6 +690,7 @@ mod tests {
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1317,9 +1318,11 @@ mod tests {
         assert!(passed);
         assert_eq!(called_paths.len(), 1);
         assert_eq!(results.len(), 3);
-        assert!(results
-            .iter()
-            .all(|result| result.status == ProbeStatus::Success));
+        assert!(
+            results
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
         assert_eq!(
             results
                 .iter()
@@ -1366,9 +1369,11 @@ mod tests {
 
         assert!(passed);
         assert_eq!(results.len(), 2);
-        assert!(results
-            .iter()
-            .all(|result| result.status == ProbeStatus::Success));
+        assert!(
+            results
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
         assert_eq!(
             results
                 .iter()
@@ -1564,9 +1569,11 @@ mod tests {
 
         assert!(passed);
         assert_eq!(results.len(), 2);
-        assert!(results
-            .iter()
-            .all(|result| result.status == ProbeStatus::Success));
+        assert!(
+            results
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
         assert_eq!(
             results
                 .iter()
