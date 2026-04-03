@@ -2,7 +2,8 @@ use burn::prelude::*;
 
 use crate::config::{GAE_GAMMA, GAE_LAMBDA};
 use crate::training::exit::{collate_delta_q_targets, collate_exit_targets};
-use crate::training::gae::{compute_per_player_gae, normalize_advantages, GaeConfig};
+use crate::training::gae::{compute_single_player_gae, normalize_advantages, GaeConfig};
+use crate::training::head_gates::{AdvancedHead, TargetPresence};
 use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;
 use hydra_core::action::HYDRA_ACTION_SPACE;
@@ -13,6 +14,32 @@ const SCORE_BINS: usize = 64;
 const GRP_CLASSES: usize = 24;
 const NUM_OPPONENTS: usize = 3;
 const NUM_TILES: usize = 34;
+
+#[derive(Default)]
+pub struct RlBatchScratch {
+    obs_flat: Vec<f32>,
+    actions: Vec<i32>,
+    pi_old: Vec<f32>,
+    advantages: Vec<f32>,
+    legal_mask: Vec<f32>,
+    policy_target: Vec<f32>,
+    value_target: Vec<f32>,
+    grp_target: Vec<f32>,
+    tenpai_target: Vec<f32>,
+    danger_target: Vec<f32>,
+    danger_mask: Vec<f32>,
+    opp_next_target: Vec<f32>,
+    score_pdf_target: Vec<f32>,
+    score_cdf_target: Vec<f32>,
+    base_logits: Vec<f32>,
+    exit_samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>>,
+    delta_q_samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>>,
+    player_indices: Vec<usize>,
+    player_rewards: Vec<f32>,
+    player_values: Vec<f32>,
+    dones: Vec<bool>,
+    player_advantages: Vec<f32>,
+}
 
 pub fn finalize_rewards(trajectory: &mut Trajectory) {
     let mut steps_per_player = [0usize; 4];
@@ -27,52 +54,57 @@ pub fn finalize_rewards(trajectory: &mut Trajectory) {
     }
 }
 
-fn compute_trajectory_advantages(
+fn compute_trajectory_advantages_reuse(
     trajectory: &Trajectory,
     values: &[f32],
     gae_config: &GaeConfig,
+    scratch: &mut RlBatchScratch,
 ) -> Vec<f32> {
     let mut advantages = vec![0.0f32; trajectory.steps.len()];
 
     for player in 0..4u8 {
-        let player_indices: Vec<usize> = trajectory
-            .steps
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, step)| (step.player_id == player).then_some(idx))
-            .collect();
-        if player_indices.is_empty() {
+        scratch.player_indices.clear();
+        for (idx, step) in trajectory.steps.iter().enumerate() {
+            if step.player_id == player {
+                scratch.player_indices.push(idx);
+            }
+        }
+        if scratch.player_indices.is_empty() {
             continue;
         }
 
-        let mut player_rewards = Vec::with_capacity(player_indices.len());
-        let mut player_values = Vec::with_capacity(player_indices.len() + 1);
-        let dones = vec![false; player_indices.len() - 1]
-            .into_iter()
-            .chain(std::iter::once(true))
-            .collect::<Vec<_>>();
-
-        for &idx in &player_indices {
-            let mut reward_row = [0.0f32; 4];
-            reward_row[player as usize] = trajectory.steps[idx].reward;
-            player_rewards.push(reward_row);
-
-            let mut value_row = [0.0f32; 4];
-            value_row[player as usize] = values.get(idx).copied().unwrap_or(0.0);
-            player_values.push(value_row);
+        scratch.player_rewards.clear();
+        scratch.player_rewards.reserve(scratch.player_indices.len());
+        scratch.player_values.clear();
+        scratch
+            .player_values
+            .reserve(scratch.player_indices.len() + 1);
+        scratch.dones.clear();
+        if scratch.player_indices.len() > 1 {
+            scratch
+                .dones
+                .extend(std::iter::repeat_n(false, scratch.player_indices.len() - 1));
         }
-        player_values.push([0.0; 4]);
+        scratch.dones.push(true);
 
-        let player_advantages = compute_per_player_gae(
-            &player_rewards,
-            &player_values,
-            &dones,
+        for &idx in &scratch.player_indices {
+            scratch.player_rewards.push(trajectory.steps[idx].reward);
+            scratch
+                .player_values
+                .push(values.get(idx).copied().unwrap_or(0.0));
+        }
+        scratch.player_values.push(0.0);
+
+        scratch.player_advantages = compute_single_player_gae(
+            &scratch.player_rewards,
+            &scratch.player_values,
+            &scratch.dones,
             gae_config.gamma,
             gae_config.lambda,
         );
 
-        for (local_idx, &global_idx) in player_indices.iter().enumerate() {
-            advantages[global_idx] = player_advantages[local_idx][player as usize];
+        for (local_idx, &global_idx) in scratch.player_indices.iter().enumerate() {
+            advantages[global_idx] = scratch.player_advantages[local_idx];
         }
     }
 
@@ -97,117 +129,174 @@ pub fn trajectories_to_rl_batch<B: Backend>(
     gae_config: &GaeConfig,
     device: &B::Device,
 ) -> RlBatch<B> {
+    let mut scratch = RlBatchScratch::default();
+    trajectories_to_rl_batch_reuse(trajectories, values, gae_config, device, &mut scratch)
+}
+
+pub fn trajectories_to_rl_batch_reuse<B: Backend>(
+    trajectories: &[Trajectory],
+    values: &[Vec<f32>],
+    gae_config: &GaeConfig,
+    device: &B::Device,
+    scratch: &mut RlBatchScratch,
+) -> RlBatch<B> {
     let total_steps: usize = trajectories
         .iter()
         .map(|trajectory| trajectory.steps.len())
         .sum();
 
-    let mut obs_flat = Vec::with_capacity(total_steps * OBS_SIZE);
-    let mut actions = Vec::with_capacity(total_steps);
-    let mut pi_old = Vec::with_capacity(total_steps);
-    let mut advantages = Vec::with_capacity(total_steps);
-    let mut legal_mask = Vec::with_capacity(total_steps * HYDRA_ACTION_SPACE);
-    let mut policy_target = vec![0.0f32; total_steps * HYDRA_ACTION_SPACE];
-    let mut value_target = Vec::with_capacity(total_steps);
-    let mut grp_target = vec![0.0f32; total_steps * GRP_CLASSES];
-    let tenpai_target = vec![0.0f32; total_steps * NUM_OPPONENTS];
-    let danger_target = vec![0.0f32; total_steps * NUM_OPPONENTS * NUM_TILES];
-    let danger_mask = vec![1.0f32; total_steps * NUM_OPPONENTS * NUM_TILES];
-    let mut opp_next_target = vec![0.0f32; total_steps * NUM_OPPONENTS * NUM_TILES];
-    let mut score_pdf_target = vec![0.0f32; total_steps * SCORE_BINS];
-    let mut score_cdf_target = vec![0.0f32; total_steps * SCORE_BINS];
-    let base_logits = vec![0.0f32; total_steps * HYDRA_ACTION_SPACE];
-    let mut exit_samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>> =
-        Vec::with_capacity(total_steps);
-    let mut delta_q_samples: Vec<Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>> =
-        Vec::with_capacity(total_steps);
+    scratch.obs_flat.clear();
+    scratch.obs_flat.reserve(total_steps * OBS_SIZE);
+    scratch.actions.clear();
+    scratch.actions.reserve(total_steps);
+    scratch.pi_old.clear();
+    scratch.pi_old.reserve(total_steps);
+    scratch.advantages.clear();
+    scratch.advantages.reserve(total_steps);
+    scratch.legal_mask.clear();
+    scratch.legal_mask.reserve(total_steps * HYDRA_ACTION_SPACE);
+    scratch.policy_target.clear();
+    scratch
+        .policy_target
+        .resize(total_steps * HYDRA_ACTION_SPACE, 0.0);
+    scratch.value_target.clear();
+    scratch.value_target.reserve(total_steps);
+    scratch.grp_target.clear();
+    scratch.grp_target.resize(total_steps * GRP_CLASSES, 0.0);
+    scratch.tenpai_target.clear();
+    scratch
+        .tenpai_target
+        .resize(total_steps * NUM_OPPONENTS, 0.0);
+    scratch.danger_target.clear();
+    scratch
+        .danger_target
+        .resize(total_steps * NUM_OPPONENTS * NUM_TILES, 0.0);
+    scratch.danger_mask.clear();
+    scratch
+        .danger_mask
+        .resize(total_steps * NUM_OPPONENTS * NUM_TILES, 1.0);
+    scratch.opp_next_target.clear();
+    scratch
+        .opp_next_target
+        .resize(total_steps * NUM_OPPONENTS * NUM_TILES, 0.0);
+    scratch.score_pdf_target.clear();
+    scratch
+        .score_pdf_target
+        .resize(total_steps * SCORE_BINS, 0.0);
+    scratch.score_cdf_target.clear();
+    scratch
+        .score_cdf_target
+        .resize(total_steps * SCORE_BINS, 0.0);
+    scratch.base_logits.clear();
+    scratch
+        .base_logits
+        .resize(total_steps * HYDRA_ACTION_SPACE, 0.0);
+    scratch.exit_samples.clear();
+    scratch.exit_samples.reserve(total_steps);
+    scratch.delta_q_samples.clear();
+    scratch.delta_q_samples.reserve(total_steps);
+    let mut target_presence = TargetPresence::with_batch_size(total_steps);
 
     let mut global_step = 0usize;
     for (trajectory_idx, trajectory) in trajectories.iter().enumerate() {
         let trajectory_values = values.get(trajectory_idx).map_or(&[][..], Vec::as_slice);
         let trajectory_advantages =
-            compute_trajectory_advantages(trajectory, trajectory_values, gae_config);
+            compute_trajectory_advantages_reuse(trajectory, trajectory_values, gae_config, scratch);
 
         for (step_idx, step) in trajectory.steps.iter().enumerate() {
-            obs_flat.extend_from_slice(&step.obs);
-            actions.push(step.action as i32);
-            pi_old.push(step.pi_old[step.action as usize]);
-            advantages.push(trajectory_advantages[step_idx]);
+            scratch.obs_flat.extend_from_slice(&step.obs);
+            scratch.actions.push(step.action as i32);
+            scratch.pi_old.push(step.pi_old[step.action as usize]);
+            scratch.advantages.push(trajectory_advantages[step_idx]);
 
             for action_idx in 0..HYDRA_ACTION_SPACE {
-                legal_mask.push(if step.legal_mask[action_idx] {
+                scratch.legal_mask.push(if step.legal_mask[action_idx] {
                     1.0
                 } else {
                     0.0
                 });
             }
-            exit_samples.push(step.exit_label.map(TrajectoryExitLabel::to_array_pair));
-            delta_q_samples.push(step.delta_q_label.map(TrajectoryDeltaQLabel::to_array_pair));
+            scratch
+                .exit_samples
+                .push(step.exit_label.map(TrajectoryExitLabel::to_array_pair));
+            let delta_q_sample = step.delta_q_label.map(TrajectoryDeltaQLabel::to_array_pair);
+            if let Some((_, mask)) = delta_q_sample.as_ref() {
+                let action_count = mask.iter().filter(|&&value| value > 0.0).count();
+                if action_count > 0 {
+                    target_presence.counts[AdvancedHead::DeltaQ.index()] += 1;
+                    target_presence.delta_q_actions_present += action_count;
+                }
+            }
+            scratch.delta_q_samples.push(delta_q_sample);
 
-            policy_target[global_step * HYDRA_ACTION_SPACE + step.action as usize] = 1.0;
-            value_target.push(step.reward);
+            scratch.policy_target[global_step * HYDRA_ACTION_SPACE + step.action as usize] = 1.0;
+            scratch.value_target.push(step.reward);
 
             let placement_class = trajectory.placement_for(step.player_id) as usize;
             if placement_class < GRP_CLASSES {
-                grp_target[global_step * GRP_CLASSES + placement_class] = 1.0;
+                scratch.grp_target[global_step * GRP_CLASSES + placement_class] = 1.0;
             }
 
             for opponent in 0..NUM_OPPONENTS {
-                opp_next_target[global_step * NUM_OPPONENTS * NUM_TILES + opponent * NUM_TILES] =
-                    1.0;
+                scratch.opp_next_target
+                    [global_step * NUM_OPPONENTS * NUM_TILES + opponent * NUM_TILES] = 1.0;
             }
 
             let score_bin = score_to_bin(trajectory.final_scores[step.player_id as usize]);
-            score_pdf_target[global_step * SCORE_BINS + score_bin] = 1.0;
+            scratch.score_pdf_target[global_step * SCORE_BINS + score_bin] = 1.0;
             for bin in score_bin..SCORE_BINS {
-                score_cdf_target[global_step * SCORE_BINS + bin] = 1.0;
+                scratch.score_cdf_target[global_step * SCORE_BINS + bin] = 1.0;
             }
 
             global_step += 1;
         }
     }
 
-    normalize_advantages(&mut advantages);
-    let (exit_target, exit_mask) = collate_exit_targets::<B>(&exit_samples, device);
-    let (delta_q_target, delta_q_mask) = collate_delta_q_targets::<B>(&delta_q_samples, device);
+    normalize_advantages(&mut scratch.advantages);
+    let (exit_target, exit_mask) = collate_exit_targets::<B>(&scratch.exit_samples, device);
+    let (delta_q_target, delta_q_mask) =
+        collate_delta_q_targets::<B>(&scratch.delta_q_samples, device);
 
     RlBatch {
-        obs: Tensor::<B, 1>::from_floats(obs_flat.as_slice(), device).reshape([
+        obs: Tensor::<B, 1>::from_floats(scratch.obs_flat.as_slice(), device).reshape([
             total_steps,
             NUM_CHANNELS,
             NUM_TILES,
         ]),
-        actions: Tensor::<B, 1, Int>::from_ints(actions.as_slice(), device),
-        pi_old: Tensor::<B, 1>::from_floats(pi_old.as_slice(), device),
-        advantages: Tensor::<B, 1>::from_floats(advantages.as_slice(), device),
-        base_logits: Tensor::<B, 1>::from_floats(base_logits.as_slice(), device)
+        actions: Tensor::<B, 1, Int>::from_ints(scratch.actions.as_slice(), device),
+        pi_old: Tensor::<B, 1>::from_floats(scratch.pi_old.as_slice(), device),
+        advantages: Tensor::<B, 1>::from_floats(scratch.advantages.as_slice(), device),
+        base_logits: Tensor::<B, 1>::from_floats(scratch.base_logits.as_slice(), device)
             .reshape([total_steps, HYDRA_ACTION_SPACE]),
         targets: HydraTargets {
-            policy_target: Tensor::<B, 1>::from_floats(policy_target.as_slice(), device)
+            policy_target: Tensor::<B, 1>::from_floats(scratch.policy_target.as_slice(), device)
                 .reshape([total_steps, HYDRA_ACTION_SPACE]),
-            legal_mask: Tensor::<B, 1>::from_floats(legal_mask.as_slice(), device)
+            legal_mask: Tensor::<B, 1>::from_floats(scratch.legal_mask.as_slice(), device)
                 .reshape([total_steps, HYDRA_ACTION_SPACE]),
-            value_target: Tensor::<B, 1>::from_floats(value_target.as_slice(), device),
-            grp_target: Tensor::<B, 1>::from_floats(grp_target.as_slice(), device)
+            value_target: Tensor::<B, 1>::from_floats(scratch.value_target.as_slice(), device),
+            grp_target: Tensor::<B, 1>::from_floats(scratch.grp_target.as_slice(), device)
                 .reshape([total_steps, GRP_CLASSES]),
-            tenpai_target: Tensor::<B, 1>::from_floats(tenpai_target.as_slice(), device)
+            tenpai_target: Tensor::<B, 1>::from_floats(scratch.tenpai_target.as_slice(), device)
                 .reshape([total_steps, NUM_OPPONENTS]),
-            danger_target: Tensor::<B, 1>::from_floats(danger_target.as_slice(), device).reshape([
-                total_steps,
-                NUM_OPPONENTS,
-                NUM_TILES,
-            ]),
-            danger_mask: Tensor::<B, 1>::from_floats(danger_mask.as_slice(), device).reshape([
-                total_steps,
-                NUM_OPPONENTS,
-                NUM_TILES,
-            ]),
-            opp_next_target: Tensor::<B, 1>::from_floats(opp_next_target.as_slice(), device)
+            danger_target: Tensor::<B, 1>::from_floats(scratch.danger_target.as_slice(), device)
                 .reshape([total_steps, NUM_OPPONENTS, NUM_TILES]),
-            score_pdf_target: Tensor::<B, 1>::from_floats(score_pdf_target.as_slice(), device)
-                .reshape([total_steps, SCORE_BINS]),
-            score_cdf_target: Tensor::<B, 1>::from_floats(score_cdf_target.as_slice(), device)
-                .reshape([total_steps, SCORE_BINS]),
+            danger_mask: Tensor::<B, 1>::from_floats(scratch.danger_mask.as_slice(), device)
+                .reshape([total_steps, NUM_OPPONENTS, NUM_TILES]),
+            opp_next_target: Tensor::<B, 1>::from_floats(
+                scratch.opp_next_target.as_slice(),
+                device,
+            )
+            .reshape([total_steps, NUM_OPPONENTS, NUM_TILES]),
+            score_pdf_target: Tensor::<B, 1>::from_floats(
+                scratch.score_pdf_target.as_slice(),
+                device,
+            )
+            .reshape([total_steps, SCORE_BINS]),
+            score_cdf_target: Tensor::<B, 1>::from_floats(
+                scratch.score_cdf_target.as_slice(),
+                device,
+            )
+            .reshape([total_steps, SCORE_BINS]),
             oracle_target: None,
             belief_fields_target: None,
             belief_fields_mask: None,
@@ -219,6 +308,7 @@ pub fn trajectories_to_rl_batch<B: Backend>(
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
+            target_presence: Some(target_presence),
         },
         exit_target,
         exit_mask,
@@ -341,5 +431,111 @@ mod tests {
         assert!(batch.exit_mask.is_some());
         assert!(batch.targets.delta_q_target.is_some());
         assert!(batch.targets.delta_q_mask.is_some());
+
+        let target_presence = batch
+            .targets
+            .target_presence
+            .as_ref()
+            .expect("RL self-play batches should cache target presence metadata");
+        assert_eq!(target_presence.batch_size, 2);
+        assert_eq!(
+            target_presence.count(crate::training::head_gates::AdvancedHead::DeltaQ),
+            2
+        );
+        assert_eq!(target_presence.delta_q_actions_present, 2);
+    }
+
+    #[test]
+    fn trajectories_to_rl_batch_reuse_matches_fresh_and_does_not_leak_state() {
+        let device = Default::default();
+        let mut trajectory_a = Trajectory::new(1, 42);
+        trajectory_a.final_scores = [32000, 24000, 22000, 22000];
+        trajectory_a.steps.push(test_step(0, 5, 0.2, false, 0));
+        trajectory_a.steps.push(test_step(1, 9, -0.1, true, 1));
+        let mut trajectory_a_reuse = Trajectory::new(1, 42);
+        trajectory_a_reuse.final_scores = [32000, 24000, 22000, 22000];
+        trajectory_a_reuse
+            .steps
+            .push(test_step(0, 5, 0.2, false, 0));
+        trajectory_a_reuse
+            .steps
+            .push(test_step(1, 9, -0.1, true, 1));
+
+        let mut trajectory_b = Trajectory::new(2, 77);
+        trajectory_b.final_scores = [18000, 26000, 28000, 28000];
+        trajectory_b.steps.push(test_step(2, 11, 0.3, false, 0));
+        trajectory_b.steps.push(test_step(2, 12, -0.2, true, 1));
+        let mut trajectory_b_reuse = Trajectory::new(2, 77);
+        trajectory_b_reuse.final_scores = [18000, 26000, 28000, 28000];
+        trajectory_b_reuse
+            .steps
+            .push(test_step(2, 11, 0.3, false, 0));
+        trajectory_b_reuse
+            .steps
+            .push(test_step(2, 12, -0.2, true, 1));
+
+        let mut scratch = RlBatchScratch::default();
+
+        let batch_a_reuse = trajectories_to_rl_batch_reuse::<TestBackend>(
+            &[trajectory_a_reuse],
+            &[vec![0.3, -0.2]],
+            &default_gae_config(),
+            &device,
+            &mut scratch,
+        );
+        let batch_a_fresh = trajectories_to_rl_batch::<TestBackend>(
+            &[trajectory_a],
+            &[vec![0.3, -0.2]],
+            &default_gae_config(),
+            &device,
+        );
+        assert_eq!(batch_a_reuse.obs.to_data(), batch_a_fresh.obs.to_data());
+        assert_eq!(
+            batch_a_reuse.actions.to_data(),
+            batch_a_fresh.actions.to_data()
+        );
+        assert_eq!(
+            batch_a_reuse.pi_old.to_data(),
+            batch_a_fresh.pi_old.to_data()
+        );
+        assert_eq!(
+            batch_a_reuse.advantages.to_data(),
+            batch_a_fresh.advantages.to_data()
+        );
+        assert_eq!(
+            batch_a_reuse.targets.policy_target.to_data(),
+            batch_a_fresh.targets.policy_target.to_data()
+        );
+
+        let batch_b_reuse = trajectories_to_rl_batch_reuse::<TestBackend>(
+            &[trajectory_b_reuse],
+            &[vec![0.1, 0.05]],
+            &default_gae_config(),
+            &device,
+            &mut scratch,
+        );
+        let batch_b_fresh = trajectories_to_rl_batch::<TestBackend>(
+            &[trajectory_b],
+            &[vec![0.1, 0.05]],
+            &default_gae_config(),
+            &device,
+        );
+        assert_eq!(batch_b_reuse.obs.to_data(), batch_b_fresh.obs.to_data());
+        assert_eq!(
+            batch_b_reuse.actions.to_data(),
+            batch_b_fresh.actions.to_data()
+        );
+        assert_eq!(
+            batch_b_reuse.pi_old.to_data(),
+            batch_b_fresh.pi_old.to_data()
+        );
+        assert_eq!(
+            batch_b_reuse.advantages.to_data(),
+            batch_b_fresh.advantages.to_data()
+        );
+        assert_eq!(
+            batch_b_reuse.targets.policy_target.to_data(),
+            batch_b_fresh.targets.policy_target.to_data()
+        );
     }
 }

@@ -77,6 +77,17 @@ impl GameRunner {
         }
     }
 
+    pub fn reset_for_new_game(&mut self, seed: Option<u64>) {
+        self.state.reset_for_new_game(seed);
+        for safety in &mut self.safety {
+            safety.reset();
+        }
+        self.total_actions = 0;
+        self.rounds_played = 1;
+        self.actions = [None; 4];
+        self.legal_buf.clear();
+    }
+
     #[inline]
     pub fn is_done(&self) -> bool {
         self.state.is_done

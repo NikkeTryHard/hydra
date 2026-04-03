@@ -1,38 +1,75 @@
-use std::collections::BTreeMap;
-use std::time::Instant;
-
 use burn::backend::libtorch::LibTorchDevice;
-use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
+use burn::tensor::backend::AutodiffBackend;
 use colored::Colorize;
 use hydra_train::config::PipelineState;
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::LoaderRuntimeConfig;
-use hydra_train::selfplay::generate_self_play_rl_batch;
+use hydra_train::selfplay::{
+    CooperativeSelfPlayCoordinator, CooperativeSelfPlayRequest, generate_self_play_rl_batch_reuse,
+};
 use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::orchestrator::{
     live_exit_config_from_plan, maintenance_plan, rl_phase_train_step_with_controller,
 };
+use std::collections::BTreeMap;
+#[cfg(not(test))]
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
+use super::TrainBackend;
 use super::config::{RlTrainConfig, TrainConfig, loader_runtime_config};
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::build_rl_loss_config;
-use super::preflight_runtime::measure_samples_per_second;
+use super::preflight_runtime::{
+    TrainMeasurementSpec, measure_samples_per_second, run_train_measurement_loop,
+};
 use super::presentation::{
     format_preflight_summary_line, format_runtime_tuning_message, format_timed_phase_message,
     make_bar,
 };
-use super::schedule::effective_lr;
 
-type RuntimeTuple = (usize, usize, usize);
+pub(super) type RuntimeTuple = (usize, usize, usize);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct RuntimeTupleStats {
+    pub count: usize,
+    pub sum: f64,
+}
+
+impl RuntimeTupleStats {
+    fn push(self, sample: f64) -> Self {
+        Self {
+            count: self.count + 1,
+            sum: self.sum + sample,
+        }
+    }
+
+    fn mean(self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.sum / self.count as f64
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RankedLoaderRuntime {
     pub(super) loader: LoaderRuntimeConfig,
     pub(super) tuple: RuntimeTuple,
     pub(super) train_samples_per_second: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct LoaderRuntimeScoreSeed {
+    pub(super) train_microbatch_size: usize,
+    pub(super) tuple: RuntimeTuple,
+    pub(super) warmup_steps: usize,
+    pub(super) measure_steps: usize,
+    pub(super) stats: RuntimeTupleStats,
 }
 
 fn apply_runtime_tuple(config: &mut TrainConfig, tuple: RuntimeTuple) {
@@ -49,6 +86,14 @@ fn current_runtime_tuple(config: &TrainConfig) -> RuntimeTuple {
     )
 }
 
+fn current_train_runtime_microbatch(config: &TrainConfig) -> usize {
+    config
+        .microbatch_size
+        .unwrap_or(config.batch_size)
+        .min(config.batch_size)
+        .max(1)
+}
+
 fn loader_runtime_from_tuple(config: &TrainConfig, tuple: RuntimeTuple) -> LoaderRuntimeConfig {
     LoaderRuntimeConfig {
         num_threads: Some(super::config::default_num_threads_for_system())
@@ -58,6 +103,25 @@ fn loader_runtime_from_tuple(config: &TrainConfig, tuple: RuntimeTuple) -> Loade
         buffer_samples: tuple.1,
         archive_queue_bound: tuple.0,
     }
+}
+
+fn loader_runtime_score_seed_matches(config: &TrainConfig, seed: LoaderRuntimeScoreSeed) -> bool {
+    seed.train_microbatch_size == current_train_runtime_microbatch(config)
+        && seed.tuple == current_runtime_tuple(config)
+        && seed.warmup_steps == runtime_autotune_warmup_steps(config)
+        && seed.measure_steps == runtime_autotune_measure_steps(config)
+        && seed.stats.count > 0
+}
+
+fn seed_runtime_score_cache(
+    config: &TrainConfig,
+    cache: &mut BTreeMap<RuntimeTuple, RuntimeTupleStats>,
+    seed: Option<LoaderRuntimeScoreSeed>,
+) {
+    let Some(seed) = seed.filter(|seed| loader_runtime_score_seed_matches(config, *seed)) else {
+        return;
+    };
+    cache.entry(seed.tuple).or_insert(seed.stats);
 }
 
 fn should_refine_close_tuples(close_tuples: &[RuntimeTuple]) -> bool {
@@ -87,6 +151,15 @@ fn should_count_measured_samples(completed_steps: usize, warmup_steps: usize) ->
     completed_steps > warmup_steps
 }
 
+fn runtime_autotune_warmup_steps(config: &TrainConfig) -> usize {
+    config.preflight.warmup_steps.max(1)
+}
+
+fn runtime_autotune_measure_steps(config: &TrainConfig) -> usize {
+    config.preflight.measure_steps.max(1)
+}
+
+#[cfg(test)]
 fn measured_train_samples(measure_steps: usize, batch_size: usize) -> usize {
     measure_steps * batch_size
 }
@@ -141,13 +214,61 @@ pub(super) fn runtime_probe_loader_config(config: &TrainConfig) -> StreamingLoad
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
+        source_filters: config.source_filters.clone(),
+        replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
         delta_q_sidecar: None,
         delta_q_sidecar_source_net_hash: None,
         delta_q_sidecar_source_version: None,
+        num_threads: config.num_threads,
     }
+}
+
+fn runtime_probe_model_config() -> HydraModelConfig {
+    #[cfg(test)]
+    {
+        HydraModelConfig::new(1)
+            .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1)
+    }
+
+    #[cfg(not(test))]
+    {
+        HydraModelConfig::learner()
+    }
+}
+
+fn measure_train_runtime_throughput_for_backend<B>(
+    config: &TrainConfig,
+    loader_config: &hydra_train::data::pipeline::StreamingLoaderConfig,
+    manifest: &DataManifest,
+    train_device: &LibTorchDevice,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
+    run_train_measurement_loop::<B>(TrainMeasurementSpec {
+        config,
+        model_config: &runtime_probe_model_config(),
+        candidate_microbatch: current_train_runtime_microbatch(config),
+        warmup_steps: runtime_autotune_warmup_steps(config),
+        measure_steps: runtime_autotune_measure_steps(config),
+        loader_config,
+        manifest,
+        train_device,
+        on_start: Box::new(|_candidate_microbatch, _warmup_steps, _measure_steps| Ok(())),
+        on_step: Box::new(
+            |_completed_steps, _candidate_microbatch, _request, _measure_start| Ok(()),
+        ),
+        on_measure_start: Box::new(|_candidate_microbatch, _measure_steps| Ok(())),
+        insufficient_data: Box::new(|_candidate_microbatch| {
+            "not enough train data to finish runtime probe".to_string()
+        }),
+    })
 }
 
 pub(super) fn measure_train_runtime_throughput(
@@ -156,69 +277,21 @@ pub(super) fn measure_train_runtime_throughput(
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
 ) -> Result<f64, String> {
-    let train_cfg = super::config::trainer_config_from_train_config(config);
-    let mut model =
-        hydra_train::model::HydraModelConfig::learner().init::<super::TrainBackend>(train_device);
-    let mut optimizer = train_cfg.optimizer_config().init();
-    let loss_fn = hydra_train::training::losses::HydraLoss::<super::TrainBackend>::new(
-        super::loss_policy::build_loss_config(config.advanced_loss.as_ref())?,
-    );
-    let microbatch_size = config
-        .microbatch_size
-        .unwrap_or(config.batch_size)
-        .min(config.batch_size)
-        .max(1);
-    let warmup_steps = config.preflight.warmup_steps.max(1);
-    let measure_steps = config.preflight.measure_steps.max(1);
-    let target_steps = warmup_steps + measure_steps;
-    let mut completed_steps = 0usize;
-    let mut pending_samples = std::collections::VecDeque::new();
-    let mut measure_start = None;
-
-    for buffer_result in
-        hydra_train::data::pipeline::stream_train_epoch(manifest, loader_config, 0, None)
-    {
-        let buffer = buffer_result.map_err(|err| format!("runtime train stream failed: {err}"))?;
-        pending_samples.extend(buffer);
-        while pending_samples.len() >= config.batch_size {
-            let logical_batch: Vec<hydra_train::data::sample::MjaiSample> =
-                pending_samples.drain(..config.batch_size).collect();
-            let logical_batch_len = logical_batch.len().max(1) as f32;
-            let mut accumulator: GradientsAccumulator<
-                hydra_train::model::HydraModel<super::TrainBackend>,
-            > = GradientsAccumulator::new();
-            for chunk in logical_batch.chunks(microbatch_size) {
-                let Some((obs, targets)) = hydra_train::data::sample::collate_samples::<
-                    super::TrainBackend,
-                >(chunk, config.augment, train_device)
-                .map_err(|err| format!("runtime autotune collation failed: {err}"))?
-                else {
-                    continue;
-                };
-                let output = model.forward(obs);
-                let breakdown = loss_fn.total_loss(&output, &targets);
-                let chunk_weight = chunk.len() as f32 / logical_batch_len;
-                let grads = (breakdown.total * chunk_weight).backward();
-                let grads = GradientsParams::from_grads(grads, &model);
-                accumulator.accumulate(&model, grads);
-            }
-            let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
-            let grads = accumulator.grads();
-            model = optimizer.step(lr, model, grads);
-            completed_steps += 1;
-            if should_start_measurement(completed_steps, warmup_steps) {
-                measure_start = Some(Instant::now());
-            }
-            if completed_steps >= target_steps {
-                return Ok(finalize_runtime_probe_throughput(
-                    measure_start,
-                    measured_train_samples(measure_steps, config.batch_size),
-                ));
-            }
+    match config.precision_mode {
+        crate::config::PrecisionMode::Fp32 => measure_train_runtime_throughput_for_backend::<
+            TrainBackend,
+        >(
+            config, loader_config, manifest, train_device
+        ),
+        crate::config::PrecisionMode::Bf16Autocast => {
+            measure_train_runtime_throughput_for_backend::<TrainBackend>(
+                config,
+                loader_config,
+                manifest,
+                train_device,
+            )
         }
     }
-
-    Err("not enough train data to finish runtime probe".to_string())
 }
 
 pub(super) fn measure_rl_runtime_throughput(
@@ -226,14 +299,32 @@ pub(super) fn measure_rl_runtime_throughput(
     rl: &RlTrainConfig,
     train_device: &LibTorchDevice,
 ) -> Result<f64, String> {
+    match config.precision_mode {
+        crate::config::PrecisionMode::Fp32 => measure_rl_runtime_throughput_for_backend::<
+            super::TrainBackend,
+        >(config, rl, train_device),
+        crate::config::PrecisionMode::Bf16Autocast => measure_rl_runtime_throughput_for_backend::<
+            super::TrainBackend,
+        >(config, rl, train_device),
+    }
+}
+
+fn measure_rl_runtime_throughput_for_backend<B>(
+    config: &TrainConfig,
+    rl: &RlTrainConfig,
+    train_device: &LibTorchDevice,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
     let model_config = HydraModelConfig::learner();
-    let mut model = model_config.init::<super::TrainBackend>(train_device);
+    let mut model = model_config.init::<B>(train_device);
     let mut optimizer = super::config::trainer_config_from_train_config(config)
         .optimizer_config()
         .init();
-    let loss_fn = hydra_train::training::losses::HydraLoss::<super::TrainBackend>::new(
-        build_rl_loss_config(config.advanced_loss.as_ref())?,
-    );
+    let loss_fn = hydra_train::training::losses::HydraLoss::<B>::new(build_rl_loss_config(
+        config.advanced_loss.as_ref(),
+    )?);
     let rl_cfg = rl_config_from_train_config(rl);
     let mut state = PipelineState {
         phase: rl.phase.to_training_phase(),
@@ -245,6 +336,7 @@ pub(super) fn measure_rl_runtime_throughput(
     let mut rebase_tracker = RebaseTracker::default_phase2();
     let distill_state = DistillState::default();
     let distill_cfg = DistillConfig::fast_distill();
+    let mut self_play_coordinator = CooperativeSelfPlayCoordinator::new();
     let warmup_steps = config.preflight.warmup_steps.max(1);
     let measure_steps = config.preflight.measure_steps.max(1);
     let target_steps = warmup_steps + measure_steps;
@@ -267,14 +359,17 @@ pub(super) fn measure_rl_runtime_throughput(
         let game_seeds: Vec<u64> = (0..rl.games_per_batch)
             .map(|idx| base_seed.wrapping_add(idx as u64))
             .collect();
-        let batch = generate_self_play_rl_batch(
-            &game_seeds,
-            rl.temperature,
-            base_seed,
+        let batch = generate_self_play_rl_batch_reuse(
+            &mut self_play_coordinator,
+            CooperativeSelfPlayRequest {
+                game_seeds: &game_seeds,
+                temperature: rl.temperature,
+                rng_seed: base_seed,
+                live_exit_cfg,
+            },
             &model,
             train_device,
             &hydra_train::training::gae::GaeConfig::default(),
-            live_exit_cfg,
         );
 
         controller.try_activate(hydra_train::training::head_gates::AdvancedHead::DeltaQ);
@@ -331,15 +426,23 @@ where
         .copied()
         .ok_or_else(|| format!("no candidates available for {knob_name}"))?;
     let mut best_score = f64::NEG_INFINITY;
+    let mut tuned = base.clone();
 
     for candidate in candidates {
+        #[cfg(not(test))]
+        if let Ok(flag) = super::probe_process::interrupt_flag() {
+            if flag.load(Ordering::SeqCst) {
+                progress.finish_with_message("interrupted".red().to_string());
+                return Err(format!("{knob_name} tuning interrupted"));
+            }
+        }
         progress.set_message(format_runtime_tuning_message(
             knob_name,
             display(*candidate),
             progress.position() as usize,
             progress.length().unwrap_or(1) as usize,
         ));
-        let mut tuned = base.clone();
+        tuned.clone_from(base);
         apply(&mut tuned, *candidate);
         let candidate_score = score(&tuned)?;
         progress.inc(1);
@@ -413,6 +516,23 @@ pub(super) fn runtime_refine_sample_budget(extra_samples: usize) -> usize {
     extra_samples.max(1)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeRefineTopUpPlan {
+    target_total_count: usize,
+    missing_samples: usize,
+}
+
+fn runtime_refine_top_up_plan(
+    stats: RuntimeTupleStats,
+    extra_samples: usize,
+) -> RuntimeRefineTopUpPlan {
+    let target_total_count = runtime_refine_sample_budget(extra_samples).saturating_add(1);
+    RuntimeRefineTopUpPlan {
+        target_total_count,
+        missing_samples: target_total_count.saturating_sub(stats.count),
+    }
+}
+
 pub(super) fn format_runtime_refine_summary(
     close_tuples: &[RuntimeTuple],
     extra_samples: usize,
@@ -430,17 +550,23 @@ pub(super) fn score_runtime_tuple(
     config: &TrainConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
-    cache: &mut BTreeMap<(usize, usize, usize), Vec<f64>>,
+    cache: &mut BTreeMap<(usize, usize, usize), RuntimeTupleStats>,
 ) -> Result<f64, String> {
     let key = runtime_tuple_key(config);
-    if let Some(scores) = cache.get(&key)
-        && !scores.is_empty()
+    if let Some(stats) = cache.get(&key)
+        && stats.count > 0
     {
-        return Ok(score_tuple_samples_mean(scores));
+        return Ok(stats.mean());
     }
     let loader = runtime_probe_loader_config(config);
     let score = measure_train_runtime_throughput(config, &loader, manifest, train_device)?;
-    cache.insert(key, vec![score]);
+    cache.insert(
+        key,
+        RuntimeTupleStats {
+            count: 1,
+            sum: score,
+        },
+    );
     Ok(score)
 }
 
@@ -448,48 +574,163 @@ pub(super) fn push_runtime_tuple_sample(
     config: &TrainConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
-    cache: &mut BTreeMap<(usize, usize, usize), Vec<f64>>,
+    cache: &mut BTreeMap<(usize, usize, usize), RuntimeTupleStats>,
 ) -> Result<f64, String> {
     let key = runtime_tuple_key(config);
     let loader = runtime_probe_loader_config(config);
     let sample = measure_train_runtime_throughput(config, &loader, manifest, train_device)?;
-    let samples = cache.entry(key).or_default();
-    samples.push(sample);
-    Ok(score_tuple_samples_mean(samples))
+    let stats = cache.entry(key).or_default();
+    *stats = stats.push(sample);
+    Ok(stats.mean())
 }
 
-pub(super) fn score_tuple_samples_mean(scores: &[f64]) -> f64 {
-    if scores.is_empty() {
-        return 0.0;
+fn refine_close_runtime_tuples<F>(
+    tuned: &TrainConfig,
+    close_tuples: &[RuntimeTuple],
+    extra_samples: usize,
+    score_cache: &mut BTreeMap<(usize, usize, usize), RuntimeTupleStats>,
+    best_score: &mut f64,
+    best_tuple: &mut RuntimeTuple,
+    mut push_sample: F,
+) -> Result<(), String>
+where
+    F: FnMut(
+        &TrainConfig,
+        &mut BTreeMap<(usize, usize, usize), RuntimeTupleStats>,
+    ) -> Result<f64, String>,
+{
+    let mut candidate = tuned.clone();
+    for tuple in close_tuples {
+        #[cfg(not(test))]
+        if let Ok(flag) = super::probe_process::interrupt_flag() {
+            if flag.load(Ordering::SeqCst) {
+                return Err("loader runtime refine interrupted".to_string());
+            }
+        }
+        candidate.clone_from(tuned);
+        apply_runtime_tuple(&mut candidate, *tuple);
+        let top_up_plan = runtime_refine_top_up_plan(
+            score_cache.get(tuple).copied().unwrap_or_default(),
+            extra_samples,
+        );
+        for _ in 0..top_up_plan.missing_samples {
+            let averaged = push_sample(&candidate, score_cache)?;
+            if averaged > *best_score {
+                *best_score = averaged;
+                *best_tuple = *tuple;
+            }
+        }
     }
-    scores.iter().sum::<f64>() / scores.len() as f64
+    Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+fn compare_runtime_tuple_scores(
+    left: &(RuntimeTuple, RuntimeTupleStats),
+    right: &(RuntimeTuple, RuntimeTupleStats),
+) -> std::cmp::Ordering {
+    right
+        .1
+        .mean()
+        .partial_cmp(&left.1.mean())
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| left.0.cmp(&right.0))
+}
+
+fn ranked_loader_runtime_from_score_cache(
+    base_config: &TrainConfig,
+    tuned_config: &TrainConfig,
+    score_cache: &BTreeMap<RuntimeTuple, RuntimeTupleStats>,
+    limit: usize,
+) -> Vec<RankedLoaderRuntime> {
+    let shortlist_limit = shortlist_limit(limit);
+    let tuned_loader = loader_runtime_config(tuned_config);
+    let current_tuple = current_runtime_tuple(tuned_config);
+    let mut ranked_tuples = score_cache
+        .iter()
+        .filter(|(_, stats)| stats.count > 0)
+        .map(|(tuple, stats)| (*tuple, *stats))
+        .collect::<Vec<_>>();
+    ranked_tuples.sort_by(compare_runtime_tuple_scores);
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut ranked = ranked_tuples
+        .into_iter()
+        .filter_map(|(tuple, stats)| {
+            seen.insert(tuple).then_some(RankedLoaderRuntime {
+                loader: if tuple == current_tuple {
+                    tuned_loader
+                } else {
+                    loader_runtime_from_tuple(base_config, tuple)
+                },
+                tuple,
+                train_samples_per_second: stats.mean(),
+            })
+        })
+        .take(shortlist_limit)
+        .collect::<Vec<_>>();
+
+    if ranked.is_empty() {
+        ranked.push(RankedLoaderRuntime {
+            loader: tuned_loader,
+            tuple: current_tuple,
+            train_samples_per_second: 0.0,
+        });
+    }
+
+    ranked
+}
+
+#[cfg(test)]
 pub(super) fn autotune_loader_runtime(
     config: &TrainConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
 ) -> Result<LoaderRuntimeConfig, String> {
-    Ok(autotune_ranked_loader_runtime(config, manifest, train_device, 1)?
-        .into_iter()
-        .next()
-        .map(|ranked| ranked.loader)
-        .unwrap_or_else(|| loader_runtime_config(config)))
+    Ok(
+        autotune_ranked_loader_runtime(config, manifest, train_device, 1)?
+            .into_iter()
+            .next()
+            .map(|ranked| ranked.loader)
+            .unwrap_or_else(|| loader_runtime_config(config)),
+    )
 }
 
+#[cfg(test)]
 pub(super) fn autotune_ranked_loader_runtime(
     config: &TrainConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     limit: usize,
 ) -> Result<Vec<RankedLoaderRuntime>, String> {
+    autotune_ranked_loader_runtime_with_seed(config, manifest, train_device, limit, None)
+}
+
+pub(super) fn autotune_ranked_loader_runtime_with_seed(
+    config: &TrainConfig,
+    manifest: &DataManifest,
+    train_device: &LibTorchDevice,
+    limit: usize,
+    score_seed: Option<LoaderRuntimeScoreSeed>,
+) -> Result<Vec<RankedLoaderRuntime>, String> {
+    if config.preflight.loader_runtime_rounds == 0
+        && config.preflight.loader_tuple_extra_samples == 0
+        && limit <= 1
+    {
+        let loader = loader_runtime_config(config);
+        return Ok(vec![RankedLoaderRuntime {
+            loader,
+            tuple: current_runtime_tuple(config),
+            train_samples_per_second: 0.0,
+        }]);
+    }
+
     let runtime_tuning_started = Instant::now();
     let mut tuned = config.clone();
     tuned.num_threads = loader_runtime_config(&tuned).num_threads;
     validate_runtime_threads(&tuned)?;
 
-    let mut score_cache: BTreeMap<(usize, usize, usize), Vec<f64>> = BTreeMap::new();
+    let mut score_cache: BTreeMap<(usize, usize, usize), RuntimeTupleStats> = BTreeMap::new();
+    seed_runtime_score_cache(&tuned, &mut score_cache, score_seed);
 
     let queue_candidates = autotune_archive_queue_candidates(&tuned);
     let sample_candidates = autotune_buffer_samples_candidates(&tuned);
@@ -520,16 +761,24 @@ pub(super) fn autotune_ranked_loader_runtime(
             as u64,
         "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
     )?;
+    let mut candidate = tuned.clone();
     for queue in &queue_candidates {
         for samples in &sample_candidates {
             for games in &game_candidates {
+                #[cfg(not(test))]
+                if let Ok(flag) = super::probe_process::interrupt_flag() {
+                    if flag.load(Ordering::SeqCst) {
+                        coarse_progress.finish_with_message("interrupted".red().to_string());
+                        return Err("loader runtime tuning interrupted".to_string());
+                    }
+                }
                 coarse_progress.set_message(format_runtime_tuning_message(
                     "coarse_search",
                     format!("q={queue}, samples={samples}, games={games}"),
                     coarse_progress.position() as usize,
                     coarse_progress.length().unwrap_or(1) as usize,
                 ));
-                let mut candidate = tuned.clone();
+                candidate.clone_from(&tuned);
                 apply_runtime_tuple(&mut candidate, (*queue, *samples, *games));
                 let score =
                     score_runtime_tuple(&candidate, manifest, train_device, &mut score_cache)?;
@@ -568,22 +817,15 @@ pub(super) fn autotune_ranked_loader_runtime(
                 config.preflight.loader_tuple_extra_samples
             )
         );
-        for tuple in &close_tuples {
-            let mut candidate = tuned.clone();
-            apply_runtime_tuple(&mut candidate, *tuple);
-            for _ in 0..runtime_refine_sample_budget(config.preflight.loader_tuple_extra_samples) {
-                let averaged = push_runtime_tuple_sample(
-                    &candidate,
-                    manifest,
-                    train_device,
-                    &mut score_cache,
-                )?;
-                if averaged > best_score {
-                    best_score = averaged;
-                    best_tuple = *tuple;
-                }
-            }
-        }
+        refine_close_runtime_tuples(
+            &tuned,
+            &close_tuples,
+            config.preflight.loader_tuple_extra_samples,
+            &mut score_cache,
+            &mut best_score,
+            &mut best_tuple,
+            |candidate, cache| push_runtime_tuple_sample(candidate, manifest, train_device, cache),
+        )?;
         println!(
             "{}",
             format_timed_phase_message(
@@ -641,58 +883,16 @@ pub(super) fn autotune_ranked_loader_runtime(
         )
     );
 
-    let tuned_loader = loader_runtime_config(&tuned);
-    let shortlist_limit = limit.max(1);
-    let current_tuple = current_runtime_tuple(&tuned);
-    let mut ranked_tuples = Vec::new();
-    ranked_tuples.push(best_tuple);
-    if !ranked_tuples.contains(&current_tuple) {
-        ranked_tuples.push(current_tuple);
-    }
-    for tuple in close_runtime_tuples(
-        &coarse_scores,
-        best_score,
-        config.preflight.loader_tuple_margin_ratio,
-        shortlist_limit,
-    ) {
-        if !ranked_tuples.contains(&tuple) {
-            ranked_tuples.push(tuple);
-        }
-        if ranked_tuples.len() >= shortlist_limit {
-            break;
-        }
-    }
-    if !ranked_tuples.contains(&current_tuple) && ranked_tuples.len() < shortlist_limit {
-        ranked_tuples.push(current_tuple);
-    }
+    Ok(ranked_loader_runtime_from_score_cache(
+        config,
+        &tuned,
+        &score_cache,
+        limit,
+    ))
+}
 
-    let mut ranked = ranked_tuples
-        .into_iter()
-        .take(shortlist_limit)
-        .map(|tuple| RankedLoaderRuntime {
-            loader: if tuple == current_tuple {
-                tuned_loader
-            } else {
-                loader_runtime_from_tuple(config, tuple)
-            },
-            tuple,
-            train_samples_per_second: score_cache
-                .get(&tuple)
-                .map(|scores| score_tuple_samples_mean(scores))
-                .unwrap_or(0.0),
-        })
-        .collect::<Vec<_>>();
-    if ranked.is_empty() {
-        ranked.push(RankedLoaderRuntime {
-            loader: tuned_loader,
-            tuple: current_tuple,
-            train_samples_per_second: score_cache
-                .get(&current_tuple)
-                .map(|scores| score_tuple_samples_mean(scores))
-                .unwrap_or(0.0),
-        });
-    }
-    Ok(ranked)
+fn shortlist_limit(limit: usize) -> usize {
+    limit.max(1)
 }
 
 #[cfg(test)]

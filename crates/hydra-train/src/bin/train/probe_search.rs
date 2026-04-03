@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use colored::Colorize;
@@ -9,7 +10,8 @@ use super::preflight_runtime::{
 };
 use super::presentation::{format_status_line, make_bar};
 use super::probe_ladder::{dynamic_probe_ceiling, top_k_refinement_candidates};
-use super::probe_request::ProbeRequest;
+use super::probe_process::{execute_probe_request_batch, probe_batch_results_path};
+use super::probe_request::{ProbeBatchRequest, ProbeRequest};
 use super::probe_summary::{
     ProbeCandidateSummary, best_probe_summary, probe_kind_name, summarize_probe_results,
 };
@@ -129,6 +131,35 @@ pub(super) fn run_candidate_attempts<F>(
 where
     F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
 {
+    run_candidate_attempts_with_batch_executor(
+        config_path,
+        result_path_for,
+        spec,
+        results,
+        progress,
+        |config_path, batch, results_path| {
+            execute_probe_request_batch(
+                config_path,
+                batch,
+                results_path,
+                super::preflight_runtime::classify_probe_detail,
+            )
+        },
+    )
+}
+
+fn run_candidate_attempts_with_batch_executor<F, E>(
+    config_path: &Path,
+    result_path_for: &mut F,
+    spec: ProbeRunSpec,
+    results: &mut Vec<ProbeResult>,
+    progress: &indicatif::ProgressBar,
+    mut execute_batch: E,
+) -> Result<bool, String>
+where
+    F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
+    E: FnMut(&Path, ProbeBatchRequest, &Path) -> Result<Vec<ProbeResult>, String>,
+{
     let ProbeRunSpec {
         kind,
         candidate,
@@ -136,7 +167,51 @@ where
         warmup_steps,
         measure_steps,
     } = spec;
-    for attempt in 0..attempts.max(1) {
+    let attempts = attempts.max(1);
+    let request = ProbeRequest {
+        kind,
+        candidate_microbatch: candidate,
+        warmup_steps,
+        measure_steps,
+    };
+    progress.set_message(format_probe_attempt_message(kind, candidate, 1, attempts));
+    let batch_results_path = probe_batch_results_path(&result_path_for(kind, candidate, 0));
+    println!(
+        "{}",
+        format_status_line(
+            &format!("[preflight:{}]", probe_kind_name(kind)),
+            format!(
+                "candidate_mb={} attempt=1/{} phase=probe",
+                candidate, attempts,
+            )
+        )
+    );
+    let batch_results = execute_batch(
+        config_path,
+        ProbeBatchRequest { request, attempts },
+        &batch_results_path,
+    )?;
+    Ok(replay_candidate_attempt_results(
+        kind,
+        candidate,
+        attempts,
+        batch_results,
+        results,
+        progress,
+        1,
+    ))
+}
+
+fn replay_candidate_attempt_results(
+    kind: ProbeKind,
+    candidate: usize,
+    attempts: usize,
+    batch_results: Vec<ProbeResult>,
+    results: &mut Vec<ProbeResult>,
+    progress: &indicatif::ProgressBar,
+    prelogged_attempts: usize,
+) -> bool {
+    for (attempt, result) in batch_results.into_iter().enumerate() {
         let attempt_number = attempt + 1;
         progress.set_message(format_probe_attempt_message(
             kind,
@@ -144,33 +219,27 @@ where
             attempt_number,
             attempts,
         ));
-        let request = ProbeRequest {
-            kind,
-            candidate_microbatch: candidate,
-            warmup_steps,
-            measure_steps,
-        };
-        let result_path = result_path_for(kind, candidate, attempt);
-        println!(
-            "{}",
-            format_status_line(
-                &format!("[preflight:{}]", probe_kind_name(kind)),
-                format!(
-                    "candidate_mb={} attempt={}/{} phase=probe",
-                    candidate, attempt_number, attempts,
+        if attempt >= prelogged_attempts {
+            println!(
+                "{}",
+                format_status_line(
+                    &format!("[preflight:{}]", probe_kind_name(kind)),
+                    format!(
+                        "candidate_mb={} attempt={}/{} phase=probe",
+                        candidate, attempt_number, attempts,
+                    )
                 )
-            )
-        );
-        let result = execute_probe_request(config_path, request, &result_path)?;
+            );
+        }
         let passed = result.status == ProbeStatus::Success;
         progress.inc(1);
         println!("{}", format_probe_result_summary(&result));
         results.push(result);
         if !passed {
-            return Ok(false);
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
 pub(super) fn rerun_candidate_attempts<F>(
@@ -276,6 +345,18 @@ where
     if candidates.is_empty() {
         return Ok(());
     }
+    let successful_elapsed = summaries
+        .iter()
+        .filter_map(|summary| {
+            (summary.status == ProbeStatus::Success)
+                .then_some(
+                    summary
+                        .average_elapsed_seconds
+                        .map(|elapsed| (summary.candidate_microbatch, elapsed)),
+                )
+                .flatten()
+        })
+        .collect::<Vec<_>>();
     println!(
         "{}",
         super::presentation::format_preflight_summary_line(
@@ -288,16 +369,11 @@ where
             )
         )
     );
-    let successful_summaries = summaries
-        .iter()
-        .filter(|summary| summary.status == ProbeStatus::Success)
-        .cloned()
-        .collect::<Vec<_>>();
     for candidate in candidates {
-        let seconds_per_step = successful_summaries
+        let seconds_per_step = successful_elapsed
             .iter()
-            .min_by_key(|summary| summary.candidate_microbatch.abs_diff(candidate))
-            .and_then(|summary| summary.average_elapsed_seconds)
+            .min_by_key(|(summary_candidate, _)| summary_candidate.abs_diff(candidate))
+            .map(|(_, elapsed)| *elapsed)
             .map(|elapsed| {
                 elapsed
                     / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
@@ -357,13 +433,14 @@ where
     if candidates.is_empty() {
         return Ok(());
     }
+    let successful_candidates = summaries
+        .iter()
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .map(|summary| summary.candidate_microbatch)
+        .collect::<BTreeSet<_>>();
     for _round in 0..config.preflight.search_coordinate_rounds.max(1) {
         for candidate in &candidates {
-            if results.iter().any(|result| {
-                result.kind == kind
-                    && result.candidate_microbatch == *candidate
-                    && result.status == ProbeStatus::Success
-            }) {
+            if successful_candidates.contains(candidate) {
                 continue;
             }
             let request = ProbeRequest {
@@ -406,6 +483,9 @@ pub(super) fn finalize_probe_search<F>(
 where
     F: Fn(ProbeKind, usize, usize) -> std::path::PathBuf + Copy,
 {
+    if config.bc_shards_manifest_path.is_some() {
+        return best_probe_summary(results).ok_or(missing_error);
+    }
     refine_probe_winner_locally(
         config_path,
         result_path_for,
@@ -422,20 +502,15 @@ where
         results,
         progress,
     )?;
-    let mut stable_results = results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .cloned()
-        .collect::<Vec<_>>();
     rerun_probe_finalists(
         config_path,
         result_path_for,
         kind,
         config,
-        &mut stable_results,
+        results,
         progress,
     )?;
-    best_probe_summary(&stable_results).ok_or(missing_error)
+    best_probe_summary(results).ok_or(missing_error)
 }
 
 pub(super) fn probe_candidate_ladder(
@@ -459,7 +534,6 @@ pub(super) fn probe_candidate_ladder(
         candidates.to_vec()
     };
     let mut results = Vec::new();
-    let mut stable_results = Vec::new();
     println!(
         "{}",
         super::presentation::format_preflight_summary_line(
@@ -479,7 +553,6 @@ pub(super) fn probe_candidate_ladder(
 
     for candidate in candidate_list {
         let mut stable = true;
-        let stable_start = results.len();
         let attempts = config.preflight.required_successes.max(1);
         let result_path_for = |kind, candidate, attempt| {
             super::probe_process::probe_result_path(artifacts, kind, candidate, attempt)
@@ -539,11 +612,8 @@ pub(super) fn probe_candidate_ladder(
                 break;
             }
         }
-        if stable {
-            stable_results.extend(results[stable_start..].iter().cloned());
-            if use_explicit_only {
-                return Ok((candidate, results));
-            }
+        if stable && use_explicit_only {
+            return Ok((candidate, results));
         }
     }
     progress.finish_with_message(
@@ -562,11 +632,6 @@ pub(super) fn probe_candidate_ladder(
         &mut results,
         &progress,
     )?;
-    stable_results = results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .cloned()
-        .collect();
     rerun_probe_finalists(
         config_path,
         |kind, candidate, attempt| {
@@ -574,7 +639,7 @@ pub(super) fn probe_candidate_ladder(
         },
         kind,
         config,
-        &mut stable_results,
+        &mut results,
         &progress,
     )?;
 
@@ -586,13 +651,13 @@ pub(super) fn probe_candidate_ladder(
         ));
     }
 
-    let selected_summary = best_probe_summary(&stable_results).ok_or_else(|| {
+    let selected_summary = best_probe_summary(&results).ok_or_else(|| {
         format!(
             "no stable {} microbatch found in preflight",
             probe_kind_name(kind)
         )
     })?;
-    if !stable_results.is_empty() {
+    if selected_summary.attempts > 0 {
         println!(
             "{}",
             super::presentation::format_preflight_selection_line(
@@ -611,6 +676,7 @@ mod tests {
 
     use super::*;
     use crate::config::TrainConfig;
+    use crate::probe_process::{ProbeBatchArtifact, probe_batch_results_path};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -622,7 +688,9 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -644,6 +712,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -674,6 +743,18 @@ mod tests {
             measured_samples_per_second,
             elapsed_seconds,
             detail: String::new(),
+        }
+    }
+
+    fn probe_result_with_detail(
+        kind: ProbeKind,
+        candidate_microbatch: usize,
+        status: ProbeStatus,
+        detail: &str,
+    ) -> ProbeResult {
+        ProbeResult {
+            detail: detail.to_string(),
+            ..probe_result(kind, candidate_microbatch, status, Some(123.0), Some(1.0))
         }
     }
 
@@ -1191,5 +1272,315 @@ mod tests {
         .expect_err("explicit-only train candidate should bubble probe-request failure");
 
         assert!(error.contains("failed to read config missing-config.yaml"));
+    }
+
+    #[test]
+    fn run_candidate_attempts_batches_attempts_and_preserves_result_order() {
+        let mut called_paths = Vec::new();
+        let mut results = Vec::new();
+        let progress = hidden_progress();
+        let returned_results = vec![
+            probe_result_with_detail(ProbeKind::Train, 1, ProbeStatus::Success, "attempt 1"),
+            probe_result_with_detail(ProbeKind::Train, 1, ProbeStatus::Success, "attempt 2"),
+            probe_result_with_detail(ProbeKind::Train, 1, ProbeStatus::Success, "attempt 3"),
+        ];
+
+        let passed = run_candidate_attempts_with_batch_executor(
+            Path::new("/dev/null.yaml"),
+            &mut |kind, candidate, attempt| {
+                let path = PathBuf::from("/home/nikketryhard/tmp").join(format!(
+                    "legacy-{}-{candidate}-{attempt}.json",
+                    probe_kind_name(kind)
+                ));
+                called_paths.push(path.clone());
+                path
+            },
+            ProbeRunSpec {
+                kind: ProbeKind::Train,
+                candidate: 1,
+                attempts: 3,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &mut results,
+            &progress,
+            |config_path, batch, results_path| {
+                assert_eq!(config_path, Path::new("/dev/null.yaml"));
+                assert_eq!(batch.request.kind, ProbeKind::Train);
+                assert_eq!(batch.request.candidate_microbatch, 1);
+                assert_eq!(batch.attempts, 3);
+                assert!(results_path.ends_with("legacy-train-1-0.batch.json"));
+                Ok(returned_results.clone())
+            },
+        )
+        .expect("batched candidate attempts should succeed");
+
+        assert!(passed);
+        assert_eq!(called_paths.len(), 1);
+        assert_eq!(results.len(), 3);
+        assert!(
+            results
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.detail.as_str())
+                .collect::<Vec<_>>(),
+            vec!["attempt 1", "attempt 2", "attempt 3"]
+        );
+        assert_eq!(progress.position(), 3);
+    }
+
+    #[test]
+    fn run_candidate_attempts_explicit_success_path_replays_all_logical_attempts() {
+        let mut results = Vec::new();
+        let progress = hidden_progress();
+        let returned_results = vec![
+            probe_result_with_detail(ProbeKind::Train, 1, ProbeStatus::Success, "first"),
+            probe_result_with_detail(ProbeKind::Train, 1, ProbeStatus::Success, "second"),
+        ];
+
+        let passed = run_candidate_attempts_with_batch_executor(
+            Path::new("/dev/null.yaml"),
+            &mut |kind, candidate, attempt| {
+                PathBuf::from("/home/nikketryhard/tmp").join(format!(
+                    "explicit-{}-{candidate}-{attempt}.json",
+                    probe_kind_name(kind)
+                ))
+            },
+            ProbeRunSpec {
+                kind: ProbeKind::Train,
+                candidate: 1,
+                attempts: 2,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &mut results,
+            &progress,
+            |_, batch, results_path| {
+                assert_eq!(batch.attempts, 2);
+                assert!(results_path.ends_with("explicit-train-1-0.batch.json"));
+                Ok(returned_results.clone())
+            },
+        )
+        .expect("explicit success path should replay every logical attempt");
+
+        assert!(passed);
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.detail.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(progress.position(), 2);
+    }
+
+    #[test]
+    fn run_candidate_attempts_stops_on_first_failure_with_same_prefix_results() {
+        let mut results = Vec::new();
+        let progress = hidden_progress();
+
+        let passed = run_candidate_attempts_with_batch_executor(
+            Path::new("/dev/null.yaml"),
+            &mut |kind, candidate, attempt| {
+                PathBuf::from("/home/nikketryhard/tmp").join(format!(
+                    "failure-{}-{candidate}-{attempt}.json",
+                    probe_kind_name(kind)
+                ))
+            },
+            ProbeRunSpec {
+                kind: ProbeKind::Train,
+                candidate: 64,
+                attempts: 4,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+            &mut results,
+            &progress,
+            |_, batch, results_path| {
+                assert_eq!(batch.attempts, 4);
+                assert!(results_path.ends_with("failure-train-64-0.batch.json"));
+                Ok(vec![
+                    probe_result_with_detail(
+                        ProbeKind::Train,
+                        64,
+                        ProbeStatus::Success,
+                        "attempt 1",
+                    ),
+                    probe_result_with_detail(
+                        ProbeKind::Train,
+                        64,
+                        ProbeStatus::BackendError,
+                        "attempt 2 failed",
+                    ),
+                    probe_result_with_detail(
+                        ProbeKind::Train,
+                        64,
+                        ProbeStatus::Success,
+                        "attempt 3 should not replay",
+                    ),
+                ])
+            },
+        )
+        .expect("first failing replay should bubble as Ok(false)");
+
+        assert!(!passed);
+        assert_eq!(progress.position(), 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.detail.as_str())
+                .collect::<Vec<_>>(),
+            vec!["attempt 1", "attempt 2 failed"]
+        );
+        assert_eq!(results[1].status, ProbeStatus::BackendError);
+    }
+
+    #[test]
+    fn run_candidate_attempts_uses_batch_artifact_path_without_legacy_collision() {
+        let legacy = PathBuf::from("/home/nikketryhard/tmp/legacy-train-128-0.json");
+        let batch = probe_batch_results_path(&legacy);
+        let artifact = ProbeBatchArtifact::from_results(
+            vec![probe_result_with_detail(
+                ProbeKind::Train,
+                128,
+                ProbeStatus::Success,
+                "attempt 1",
+            )],
+            true,
+        );
+
+        assert_eq!(
+            batch,
+            PathBuf::from("/home/nikketryhard/tmp/legacy-train-128-0.batch.json")
+        );
+        assert_ne!(batch, legacy);
+        assert_ne!(
+            batch,
+            PathBuf::from("/home/nikketryhard/tmp/legacy-train-128-1.json")
+        );
+        assert_eq!(artifact.replay_ordered_results().count(), 1);
+    }
+
+    #[test]
+    fn replay_candidate_attempt_results_preserves_order() {
+        let progress = hidden_progress();
+        let mut results = Vec::new();
+
+        let passed = replay_candidate_attempt_results(
+            ProbeKind::Validation,
+            32,
+            3,
+            vec![
+                probe_result_with_detail(
+                    ProbeKind::Validation,
+                    32,
+                    ProbeStatus::Success,
+                    "attempt 1",
+                ),
+                probe_result_with_detail(
+                    ProbeKind::Validation,
+                    32,
+                    ProbeStatus::Success,
+                    "attempt 2",
+                ),
+                probe_result_with_detail(
+                    ProbeKind::Validation,
+                    32,
+                    ProbeStatus::Success,
+                    "attempt 3",
+                ),
+            ],
+            &mut results,
+            &progress,
+            0,
+        );
+
+        assert!(passed);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.detail.as_str())
+                .collect::<Vec<_>>(),
+            vec!["attempt 1", "attempt 2", "attempt 3"]
+        );
+        assert_eq!(progress.position(), 3);
+    }
+
+    #[test]
+    fn replay_candidate_attempt_results_stops_on_first_failure() {
+        let progress = hidden_progress();
+        let mut results = Vec::new();
+
+        let passed = replay_candidate_attempt_results(
+            ProbeKind::Train,
+            64,
+            3,
+            vec![
+                probe_result_with_detail(ProbeKind::Train, 64, ProbeStatus::Success, "attempt 1"),
+                probe_result_with_detail(
+                    ProbeKind::Train,
+                    64,
+                    ProbeStatus::BackendError,
+                    "attempt 2 failed",
+                ),
+                probe_result_with_detail(ProbeKind::Train, 64, ProbeStatus::Success, "attempt 3"),
+            ],
+            &mut results,
+            &progress,
+            0,
+        );
+
+        assert!(!passed);
+        assert_eq!(progress.position(), 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].detail, "attempt 1");
+        assert_eq!(results[1].detail, "attempt 2 failed");
+        assert_eq!(results[1].status, ProbeStatus::BackendError);
+    }
+
+    #[test]
+    fn replay_candidate_attempt_results_explicit_success_path_replays_all_attempts() {
+        let progress = hidden_progress();
+        let mut results = Vec::new();
+
+        let passed = replay_candidate_attempt_results(
+            ProbeKind::Train,
+            96,
+            2,
+            vec![
+                probe_result_with_detail(ProbeKind::Train, 96, ProbeStatus::Success, "first"),
+                probe_result_with_detail(ProbeKind::Train, 96, ProbeStatus::Success, "second"),
+            ],
+            &mut results,
+            &progress,
+            0,
+        );
+
+        assert!(passed);
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.detail.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(progress.position(), 2);
     }
 }

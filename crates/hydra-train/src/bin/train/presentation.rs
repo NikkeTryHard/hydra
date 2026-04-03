@@ -1,4 +1,5 @@
 use colored::Colorize;
+use std::borrow::Cow;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -13,7 +14,7 @@ use hydra_train::preflight::{
 use super::artifacts::BcArtifactPaths;
 use super::config::TrainConfig;
 use super::config::display_num_threads;
-use super::probe_summary::summarize_probe_results;
+use super::probe_summary::probe_summary_iter;
 use super::progress::BannerStats;
 use hydra_train::training::bc::BCTrainerConfig;
 
@@ -170,6 +171,15 @@ fn print_banner_field(label: &str, value: impl std::fmt::Display) {
     println!("  {} {}", format!("{label}:").white(), value);
 }
 
+fn probe_kind_label(kind: ProbeKind) -> &'static str {
+    match kind {
+        ProbeKind::Train => "train",
+        ProbeKind::Validation => "validation",
+        ProbeKind::RlGames => "rl_games",
+        ProbeKind::RlMicrobatch => "rl_microbatch",
+    }
+}
+
 fn probe_status_label(status: &ProbeStatus) -> &'static str {
     match status {
         ProbeStatus::Success => "success",
@@ -216,8 +226,127 @@ fn parse_probe_progress_fields(line: &str) -> Option<std::collections::BTreeMap<
     Some(fields)
 }
 
+fn sanitize_probe_progress_line(line: &str) -> Cow<'_, str> {
+    if line.contains(" samples/s") {
+        Cow::Owned(line.replace(" samples/s", ""))
+    } else {
+        Cow::Borrowed(line)
+    }
+}
+
+pub(super) fn format_probe_spinner_message(line: &str) -> Option<String> {
+    let sanitized = sanitize_probe_progress_line(line);
+    let fields = parse_probe_progress_fields(&sanitized)?;
+    let kind = *fields.get("kind")?;
+    let candidate = *fields.get("candidate_mb")?;
+    let phase = *fields.get("phase")?;
+    let prefix = format!("[preflight:{kind}] mb={candidate}");
+
+    let message = match phase {
+        "scan_start" => "scanning dataset...".to_string(),
+        "scan_complete" => {
+            let sources = fields.get("sources").copied().unwrap_or("?");
+            let games = if fields.get("counts_exact").copied() == Some("true") {
+                fields.get("total_games").copied().unwrap_or("?")
+            } else {
+                "streaming"
+            };
+            format!("dataset: {sources} sources, {games} games")
+        }
+        "init_model" => "initializing model (backbone + heads)...".to_string(),
+        "init_optimizer" => "creating optimizer...".to_string(),
+        "init_loss" => "building loss functions...".to_string(),
+        "init_cuda_staging" => "allocating CUDA staging buffers...".to_string(),
+        "init_ready" => {
+            let model_ms = fields.get("model_ms").copied().unwrap_or("?");
+            let optimizer_ms = fields.get("optimizer_ms").copied().unwrap_or("?");
+            let loss_ms = fields.get("loss_ms").copied().unwrap_or("?");
+            format!("init complete (model={model_ms}ms opt={optimizer_ms}ms loss={loss_ms}ms)")
+        }
+        "starting" => "building model...".to_string(),
+        "warmup" => format!("warmup step {}", fields.get("step").copied().unwrap_or("?")),
+        "measure_start" => format!(
+            "measuring (0/{})",
+            fields.get("total_steps").copied().unwrap_or("?")
+        ),
+        "measure" => format!(
+            "measure step {} @ {} samples/s",
+            fields.get("step").copied().unwrap_or("?"),
+            fields.get("throughput").copied().unwrap_or("0.00")
+        ),
+        "done" => format!(
+            "finalizing @ {} samples/s...",
+            fields.get("throughput").copied().unwrap_or("0.00")
+        ),
+        "rl_selfplay" => "selfplay...".to_string(),
+        _ => return None,
+    };
+
+    Some(format!("{prefix} {message}"))
+}
+
+#[cfg(not(test))]
+fn format_probe_spinner_rate(samples_per_second: f64) -> String {
+    if (samples_per_second.fract()).abs() < 0.005 {
+        format!("{samples_per_second:.0}")
+    } else {
+        format!("{samples_per_second:.2}")
+    }
+}
+
+#[cfg(not(test))]
+fn format_probe_spinner_elapsed(elapsed_seconds: f64) -> String {
+    if elapsed_seconds >= 10.0 {
+        format!("{elapsed_seconds:.0}s")
+    } else {
+        format!("{elapsed_seconds:.1}s")
+    }
+}
+
+#[cfg(not(test))]
+pub(super) fn format_probe_spinner_finish_message(
+    result: &ProbeResult,
+    fallback_elapsed_seconds: f64,
+) -> String {
+    let kind = probe_kind_label(result.kind);
+    let elapsed = format_probe_spinner_elapsed(
+        result
+            .elapsed_seconds
+            .unwrap_or(fallback_elapsed_seconds.max(0.0)),
+    );
+
+    match result.status {
+        ProbeStatus::Success => format!(
+            "{} [{}] mb={} success @ {} samples/s ({elapsed})",
+            "✔".green(),
+            kind,
+            result.candidate_microbatch,
+            format_probe_spinner_rate(result.measured_samples_per_second.unwrap_or(0.0))
+        ),
+        ProbeStatus::Oom => format!(
+            "{} [{}] mb={} oom ({elapsed})",
+            "✘".red(),
+            kind,
+            result.candidate_microbatch,
+        ),
+        ProbeStatus::BackendError => format!(
+            "{} [{}] mb={} backend error ({elapsed})",
+            "✘".red(),
+            kind,
+            result.candidate_microbatch,
+        ),
+        ProbeStatus::DataError => format!(
+            "{} [{}] mb={} data error ({elapsed})",
+            "✘".red(),
+            kind,
+            result.candidate_microbatch,
+        ),
+    }
+}
+
 pub(super) fn format_probe_progress_line(line: &str) -> Option<String> {
-    let fields = parse_probe_progress_fields(line)?;
+    let sanitized = sanitize_probe_progress_line(line);
+    let fields = parse_probe_progress_fields(&sanitized)?;
     let kind = *fields.get("kind")?;
     let candidate = *fields.get("candidate_mb")?;
     let phase = *fields.get("phase")?;
@@ -242,6 +371,42 @@ pub(super) fn format_probe_progress_line(line: &str) -> Option<String> {
             };
             format!("{} {} {}", prefix, label, counts.green())
         }
+        "init_model" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_model initializing backbone + heads".white()
+        ),
+        "init_optimizer" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_optimizer creating optimizer".white()
+        ),
+        "init_loss" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_loss building loss functions".white()
+        ),
+        "init_cuda_staging" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            "phase=init_cuda_staging allocating CUDA staging buffers".white()
+        ),
+        "init_ready" => format!(
+            "{} {} {}",
+            prefix,
+            label,
+            format!(
+                "phase=init_ready model_ms={} optimizer_ms={} loss_ms={}",
+                fields.get("model_ms").copied().unwrap_or("?"),
+                fields.get("optimizer_ms").copied().unwrap_or("?"),
+                fields.get("loss_ms").copied().unwrap_or("?"),
+            )
+            .green()
+        ),
         "starting" => format!(
             "{} {} {}",
             prefix,
@@ -338,12 +503,7 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
         ProbeStatus::Success => with_utc_timestamp(
             format!(
                 "[{}] candidate_mb={} outcome=success throughput={:.2} samples/s elapsed={:.2}s",
-                match result.kind {
-                    ProbeKind::Train => "train",
-                    ProbeKind::Validation => "validation",
-                    ProbeKind::RlGames => "rl_games",
-                    ProbeKind::RlMicrobatch => "rl_microbatch",
-                },
+                probe_kind_label(result.kind),
                 result.candidate_microbatch,
                 result.measured_samples_per_second.unwrap_or(0.0),
                 result.elapsed_seconds.unwrap_or(0.0)
@@ -354,12 +514,7 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
         ProbeStatus::Oom => with_utc_timestamp(
             format!(
                 "[{}] candidate_mb={} outcome={} next=smaller_microbatch detail={}",
-                match result.kind {
-                    ProbeKind::Train => "train",
-                    ProbeKind::Validation => "validation",
-                    ProbeKind::RlGames => "rl_games",
-                    ProbeKind::RlMicrobatch => "rl_microbatch",
-                },
+                probe_kind_label(result.kind),
                 result.candidate_microbatch,
                 probe_failure_reason(result),
                 if result.detail.is_empty() {
@@ -374,12 +529,7 @@ pub(super) fn format_probe_status_line(result: &ProbeResult) -> String {
         _ => with_utc_timestamp(
             format!(
                 "[{}] candidate_mb={} outcome={} detail={}",
-                match result.kind {
-                    ProbeKind::Train => "train",
-                    ProbeKind::Validation => "validation",
-                    ProbeKind::RlGames => "rl_games",
-                    ProbeKind::RlMicrobatch => "rl_microbatch",
-                },
+                probe_kind_label(result.kind),
                 result.candidate_microbatch,
                 probe_failure_reason(result),
                 result.detail
@@ -401,24 +551,19 @@ pub(super) fn format_probe_results_table(
         ProbeKind::RlGames => "rl_games",
         ProbeKind::RlMicrobatch => "rl_microbatch",
     };
-    let summaries = summarize_probe_results(results);
     let mut lines = vec![format!(
         "kind         selected  candidate_mb  attempts  status                       avg_throughput(samples/s)  avg_elapsed(s)"
     )];
     lines.push(
         "------------ ---------  ------------  --------  ---------------------------  -------------------------  --------------".to_string(),
     );
-    for summary in summaries {
+    for summary in probe_summary_iter(results) {
         let selected = if selected_candidate == Some(summary.candidate_microbatch) {
             "yes"
         } else {
             "no"
         };
-        let status = results
-            .iter()
-            .find(|result| result.candidate_microbatch == summary.candidate_microbatch)
-            .map(probe_failure_reason)
-            .unwrap_or_else(|| probe_status_label(&summary.status));
+        let status = probe_status_label(&summary.status);
         let throughput = summary
             .average_samples_per_second
             .map(|value| format!("{value:.2}"))
@@ -562,11 +707,11 @@ mod tests {
     use super::{
         bc_hyperparam_summary, explicit_preflight_recommendation, explicit_preflight_summary,
         format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
-        format_probe_results_table, format_probe_status_line, format_progress_message,
-        format_runtime_tuning_message, format_status_line, format_timed_phase_message,
-        format_warning_line, make_bar, make_spinner, model_kind, parse_probe_progress_fields,
-        phase_label, preflight_phase_label, probe_failure_reason, probe_status_label, timestamped,
-        with_utc_timestamp,
+        format_probe_results_table, format_probe_spinner_message, format_probe_status_line,
+        format_progress_message, format_runtime_tuning_message, format_status_line,
+        format_timed_phase_message, format_warning_line, make_bar, make_spinner, model_kind,
+        parse_probe_progress_fields, phase_label, preflight_phase_label, probe_failure_reason,
+        probe_status_label, timestamped, with_utc_timestamp,
     };
     use hydra_train::model::HydraModelConfig;
     use hydra_train::preflight::{
@@ -897,6 +1042,96 @@ mod tests {
                 .is_none()
         );
         assert!(format_probe_progress_line("probe_progress kind=train phase=measure").is_none());
+    }
+
+    #[test]
+    fn format_probe_progress_line_covers_init_sub_stages() {
+        let init_model = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_model",
+            )
+            .expect("init_model should render"),
+        );
+        assert!(init_model.contains("[preflight:train] candidate_mb=64 phase=init_model"));
+        assert!(init_model.contains("initializing backbone + heads"));
+
+        let init_optimizer = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_optimizer",
+            )
+            .expect("init_optimizer should render"),
+        );
+        assert!(init_optimizer.contains("phase=init_optimizer creating optimizer"));
+
+        let init_loss = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_loss",
+            )
+            .expect("init_loss should render"),
+        );
+        assert!(init_loss.contains("phase=init_loss building loss functions"));
+
+        let init_cuda_staging = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_cuda_staging",
+            )
+            .expect("init_cuda_staging should render"),
+        );
+        assert!(init_cuda_staging.contains("phase=init_cuda_staging"));
+        assert!(init_cuda_staging.contains("allocating CUDA staging buffers"));
+
+        let init_ready = strip_ansi(
+            &format_probe_progress_line(
+                "probe_progress kind=train candidate_mb=64 phase=init_ready model_ms=142 optimizer_ms=23 loss_ms=8",
+            )
+            .expect("init_ready should render"),
+        );
+        assert!(init_ready.contains("phase=init_ready model_ms=142 optimizer_ms=23 loss_ms=8"));
+
+        let starting = format_probe_progress_line(
+            "probe_progress kind=train candidate_mb=64 phase=starting warmup_steps=2 measure_steps=3",
+        );
+        assert!(starting.is_some());
+    }
+
+    #[test]
+    fn format_probe_spinner_message_covers_init_sub_stages() {
+        let model = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_model",
+        )
+        .expect("spinner init_model");
+        assert!(model.contains("initializing model (backbone + heads)"));
+
+        let optimizer = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_optimizer",
+        )
+        .expect("spinner init_optimizer");
+        assert!(optimizer.contains("creating optimizer"));
+
+        let loss = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_loss",
+        )
+        .expect("spinner init_loss");
+        assert!(loss.contains("building loss functions"));
+
+        let cuda = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_cuda_staging",
+        )
+        .expect("spinner init_cuda_staging");
+        assert!(cuda.contains("CUDA staging"));
+
+        let ready = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=init_ready model_ms=142 optimizer_ms=23 loss_ms=8",
+        )
+        .expect("spinner init_ready");
+        assert!(ready.contains("init complete"));
+        assert!(ready.contains("model=142ms"));
+
+        let starting = format_probe_spinner_message(
+            "probe_progress kind=train candidate_mb=64 phase=starting",
+        )
+        .expect("spinner starting backward compat");
+        assert!(starting.contains("building model"));
     }
 
     #[test]

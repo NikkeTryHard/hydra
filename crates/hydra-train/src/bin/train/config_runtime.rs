@@ -273,7 +273,8 @@ pub(crate) fn validation_sample_limit(config: &TrainConfig) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::super::config::{
-        AdvancedLossConfig, BcHyperparamConfig, RlPhaseConfig, RlTrainConfig, TrainConfig,
+        AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, RlPhaseConfig, RlTrainConfig,
+        TrainConfig,
     };
     use super::*;
     use hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE;
@@ -289,7 +290,9 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -297,6 +300,7 @@ mod tests {
             rl: None,
             bc: BcHyperparamConfig::default(),
             device: "cpu".to_string(),
+            precision_mode: PrecisionMode::Fp32,
             buffer_games: 16,
             buffer_samples: 128,
             num_threads: Some(6),
@@ -413,5 +417,21 @@ mod tests {
 
         assert_eq!(train_microbatch_size(&config), 64);
         assert_eq!(validation_microbatch_size(&config), 32);
+    }
+
+    #[test]
+    fn validation_sample_limit_uses_validation_microbatch_size_when_only_batch_limit_is_set() {
+        let mut config = dummy_config();
+        config.max_validation_batches = Some(3);
+        config.max_validation_samples = None;
+        config.microbatch_size = Some(64);
+        config.validation_microbatch_size = None;
+
+        assert_eq!(validation_microbatch_size(&config), 64);
+        assert_eq!(validation_sample_limit(&config), Some(192));
+
+        config.validation_microbatch_size = Some(20);
+        assert_eq!(validation_microbatch_size(&config), 20);
+        assert_eq!(validation_sample_limit(&config), Some(60));
     }
 }

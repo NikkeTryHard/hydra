@@ -1,70 +1,138 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use burn::backend::libtorch::LibTorchDevice;
 use burn::module::AutodiffModule;
 use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::{Adam, GradientsAccumulator, GradientsParams, Optimizer};
+use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
+use hydra_train::data::bc_shards::{BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::pipeline::{
-    scan_data_sources_with_progress, stream_train_epoch, stream_val_pass, DataManifest,
-    StreamingLoaderConfig,
+    DataManifest, StreamingLoaderConfig, scan_data_sources_with_progress, stream_train_epoch,
+    stream_val_microbatches,
 };
-use hydra_train::data::sample::{collate_batch_samples, collate_samples, MjaiSample};
+use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 use hydra_train::preflight::{
-    candidate_ladder, resolve_runtime_config, BenchmarkMetadata, BenchmarkMode, BenchmarkResult,
-    BenchmarkRuntimeConfig, BenchmarkScore, EffectiveRuntimeConfig, ExplicitSettings,
-    LoaderRuntimeConfig, PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
+    BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
+    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, ManifestCacheEntry,
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK,
+    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, PreflightCacheEntry, ProbeKind, ProbeResult,
+    ProbeStatus, ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
 };
-use hydra_train::training::bc::{bc_total_with_exit, gated_bc_context};
+use hydra_train::training::bc::gated_bc_context;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::losses::HydraLoss;
 use tboard::EventWriter;
 
+use super::TrainBackend;
 use super::artifacts::{
-    append_step_log, log_tensorboard, save_latest_checkpoint_and_state, write_preflight_cache,
-    BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightPaths,
-    RlArtifactPaths, RlPreflightPaths,
+    BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightBenchmarkReport,
+    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_step_log, log_tensorboard,
+    read_manifest_cache, read_preflight_cache, save_latest_checkpoint_and_state,
+    write_manifest_cache, write_preflight_benchmark_report, write_preflight_cache,
+};
+use super::bc_fixed_shape::{
+    FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
+    probe_train_fixed_chunks,
 };
 use super::config::{
-    configure_threads, default_num_threads_for_system, train_device,
-    trainer_config_from_train_config, ProbeChildRequest, TrainConfig,
+    ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
+    train_device, trainer_config_from_train_config, validation_sample_limit,
 };
+use super::epoch_runner::{TrainLogicalBatchConfig, train_logical_batch_from_host_batch};
 use super::loss_policy::{build_bc_exit_config, build_loss_config};
+use super::nvtx;
+#[cfg(feature = "cuda-graph")]
+use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
 use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::{
-    format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
-    format_probe_status_line, format_timed_phase_message, make_bar, make_spinner,
-    preflight_phase_label,
+    format_preflight_selection_line, format_preflight_summary_line, format_probe_status_line,
+    format_timed_phase_message, make_bar, make_spinner, preflight_phase_label,
 };
 use super::probe_ladder::{candidate_average, dynamic_probe_ladder, probe_only_candidate_ladder};
 use super::probe_process::{
-    mem_available_bytes, probe_result_path, rl_probe_required_free_bytes, rl_probe_result_path,
-    write_probe_result,
+    ProbeBatchArtifact, mem_available_bytes, probe_result_path, rl_probe_required_free_bytes,
+    rl_probe_result_path, write_probe_batch_artifact, write_probe_result,
 };
-use super::probe_request::{probe_child_request_from_cli, ProbeRequest};
+use super::probe_request::{
+    ProbeBatchRequest, ProbeRequest, probe_batch_child_request_from_cli,
+    probe_child_request_from_cli,
+};
 use super::probe_search::{
-    finalize_probe_search, maybe_expand_probe_candidates, probe_candidate_ladder,
-    refine_probe_winner_locally, refine_top_k_probe_candidates_locally, rerun_probe_finalists,
-    run_candidate_attempts, ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec,
+    ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec, finalize_probe_search,
+    maybe_expand_probe_candidates, probe_candidate_ladder, refine_probe_winner_locally,
+    refine_top_k_probe_candidates_locally, rerun_probe_finalists, run_candidate_attempts,
 };
 use super::probe_summary::{
-    best_probe_summary, format_probe_selection_summary, probe_kind_name, summarize_probe_results,
-    ProbeCandidateSummary,
+    ProbeCandidateSummary, best_probe_summary, format_probe_selection_summary, probe_kind_name,
+    summarize_probe_results,
 };
-use super::progress::{ScalarAverages, StepLogEntry};
-use super::resume::{runtime_resume_contract, BestValidation, EpochContinuation};
-use super::runtime_autotune::{autotune_ranked_loader_runtime, RankedLoaderRuntime};
+use super::progress::{batch_stats_from_outputs, ScalarAverages, StepLogEntry};
+use super::resume::{BestValidation, EpochContinuation, runtime_resume_contract};
+use super::runtime_autotune::{
+    LoaderRuntimeScoreSeed, RankedLoaderRuntime, RuntimeTupleStats,
+    autotune_ranked_loader_runtime_with_seed,
+};
 use super::schedule::effective_lr;
 use super::validation::{
-    run_validation, validation_batch_stats, ValidationContext, ValidationRuntime, ValidationSummary,
+    ValidationContext, ValidationRuntime, ValidationSummary, materialize_validation_samples,
+    run_validation, run_validation_from_shards,
 };
-use super::{TrainBackend, ValidBackend};
 
-type BenchmarkOptimizer = OptimizerAdaptor<Adam, HydraModel<TrainBackend>, TrainBackend>;
+type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
+
+type BenchmarkOptimizerOf<B> = OptimizerAdaptor<Adam, HydraModel<B>, B>;
+type StageTwoCachedValidationSamples = Option<Arc<[Box<[MjaiSample]>]>>;
+
+fn cached_manifest_matches(
+    cached: &ManifestCacheEntry,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train::data::pipeline::SourceFilterConfig,
+) -> bool {
+    cached.data_dir == data_dir
+        && cached.train_fraction_bits == train_fraction.to_bits()
+        && cached.include_source_patterns == source_filters.include_source_patterns
+        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
+}
+
+fn load_or_scan_manifest(
+    cache_path: &Path,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train::data::pipeline::SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+) -> Result<DataManifest, String> {
+    if let Some(cached) = read_manifest_cache(cache_path)?
+        && cached_manifest_matches(&cached, data_dir, train_fraction, source_filters)
+    {
+        return Ok(cached.manifest);
+    }
+    let manifest =
+        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
+            .map_err(|err| {
+                format!(
+                    "failed to scan preflight data from {}: {err}",
+                    data_dir.display()
+                )
+            })?;
+    write_manifest_cache(
+        cache_path,
+        &ManifestCacheEntry {
+            data_dir: data_dir.to_path_buf(),
+            train_fraction_bits: train_fraction.to_bits(),
+            include_source_patterns: source_filters.include_source_patterns.clone(),
+            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
+            manifest: manifest.clone(),
+        },
+    )?;
+    Ok(manifest)
+}
 
 pub(super) struct PreflightRuntime {
     pub(super) runtime: EffectiveRuntimeConfig,
@@ -89,21 +157,157 @@ struct BenchmarkFinalist {
     loader_probe_samples_per_second: f64,
 }
 
-struct TrainBenchmarkOutcome {
-    model: HydraModel<TrainBackend>,
-    optimizer: BenchmarkOptimizer,
+struct TrainBenchmarkOutcome<B>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
+    model: HydraModel<B>,
+    optimizer: BenchmarkOptimizerOf<B>,
     head_controller: HeadActivationController,
     stats: ScalarAverages,
     elapsed_seconds: f64,
 }
 
-fn emit_probe_progress(line: &str) -> Result<(), String> {
-    if let Some(formatted) = format_probe_progress_line(line) {
-        println!("{formatted}");
+struct BenchmarkEvaluationOutcome {
+    score: BenchmarkScore,
+    profiling: ProfilingEnvelope,
+}
+
+struct StageTwoFinalistInputs<'a> {
+    config: &'a TrainConfig,
+    selected: &'a EffectiveRuntimeConfig,
+    train_candidates: &'a [ProbeCandidateSummary],
+    validation_candidates: &'a [ProbeCandidateSummary],
+    loader_candidates: &'a [RankedLoaderRuntime],
+    train_probe_results: &'a [ProbeResult],
+    validation_probe_results: &'a [ProbeResult],
+    ranked_loaders: &'a [RankedLoaderRuntime],
+}
+
+struct StageTwoBenchmarkContext<'a> {
+    config: &'a TrainConfig,
+    manifest: &'a DataManifest,
+    train_device: &'a LibTorchDevice,
+    artifacts: &'a BcArtifactPaths,
+    finalists: &'a [BenchmarkFinalist],
+    train_candidates: usize,
+    validation_candidates: usize,
+    loader_candidates: usize,
+}
+
+struct StageTwoBenchmarkRunContext<'a> {
+    config: &'a TrainConfig,
+    benchmark_config: &'a TrainConfig,
+    manifest: &'a DataManifest,
+    train_device: &'a LibTorchDevice,
+    candidate_artifacts: &'a BcArtifactPaths,
+    finalist: &'a BenchmarkFinalist,
+    train_candidates: usize,
+    validation_candidates: usize,
+    loader_candidates: usize,
+    benchmarked_count: usize,
+    cached_validation_samples: StageTwoCachedValidationSamples,
+    validation_materialization_seconds: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct StageTwoBenchmarkValidationCacheKey {
+    loader_archive_queue_bound: usize,
+    loader_buffer_samples: usize,
+    loader_buffer_games: usize,
+    loader_num_threads: Option<usize>,
+    validation_sample_limit: Option<usize>,
+}
+
+#[derive(Clone)]
+struct StageTwoBenchmarkValidationCacheEntry {
+    cached_samples: StageTwoCachedValidationSamples,
+    materialization_seconds: f64,
+    remaining_uses: usize,
+}
+
+#[derive(Default)]
+struct StageTwoBenchmarkValidationCache {
+    entries: BTreeMap<StageTwoBenchmarkValidationCacheKey, StageTwoBenchmarkValidationCacheEntry>,
+}
+
+impl StageTwoBenchmarkValidationCache {
+    fn new(config: &TrainConfig, finalists: &[BenchmarkFinalist]) -> Self {
+        let entries = stage_two_benchmark_validation_cache_plan(config, finalists)
+            .into_iter()
+            .filter(|(key, uses)| key.validation_sample_limit.is_some() && *uses > 1)
+            .map(|(key, remaining_uses)| {
+                (
+                    key,
+                    StageTwoBenchmarkValidationCacheEntry {
+                        cached_samples: None,
+                        materialization_seconds: 0.0,
+                        remaining_uses,
+                    },
+                )
+            })
+            .collect();
+        Self { entries }
     }
+
+    fn checkout(
+        &mut self,
+        key: StageTwoBenchmarkValidationCacheKey,
+        benchmark_config: &TrainConfig,
+        manifest: &DataManifest,
+    ) -> Result<(StageTwoCachedValidationSamples, f64), String> {
+        let Some(mut entry) = self.entries.remove(&key) else {
+            return Ok((None, 0.0));
+        };
+        if entry.cached_samples.is_none() {
+            let loader_config = benchmark_loader_config(
+                benchmark_config,
+                LoaderRuntimeConfig {
+                    num_threads: key.loader_num_threads,
+                    buffer_games: key.loader_buffer_games,
+                    buffer_samples: key.loader_buffer_samples,
+                    archive_queue_bound: key.loader_archive_queue_bound,
+                },
+            );
+            let started = Instant::now();
+            entry.cached_samples =
+                materialize_validation_samples(benchmark_config, &loader_config, manifest)?
+                    .map(Arc::<[Box<[MjaiSample]>]>::from);
+            entry.materialization_seconds = started.elapsed().as_secs_f64();
+        }
+        let cached_samples = entry.cached_samples.clone();
+        let materialization_seconds = entry.materialization_seconds;
+        entry.remaining_uses = entry.remaining_uses.saturating_sub(1);
+        if entry.remaining_uses > 0 {
+            self.entries.insert(key, entry);
+        }
+        Ok((cached_samples, materialization_seconds))
+    }
+}
+
+fn emit_probe_progress(line: &str) -> Result<(), String> {
+    println!("{}", line.trim());
     std::io::stdout()
         .flush()
         .map_err(|err| format!("failed flushing probe progress output: {err}"))
+}
+
+fn emit_probe_init_phase(kind_name: &str, candidate_mb: usize, phase: &str) -> Result<(), String> {
+    emit_probe_progress(&format!(
+        "probe_progress kind={kind_name} candidate_mb={candidate_mb} phase={phase}"
+    ))
+}
+
+fn emit_probe_init_ready(
+    kind_name: &str,
+    candidate_mb: usize,
+    model_ms: u128,
+    optimizer_ms: u128,
+    loss_ms: u128,
+) -> Result<(), String> {
+    emit_probe_progress(&format!(
+        "probe_progress kind={kind_name} candidate_mb={candidate_mb} phase=init_ready model_ms={model_ms} optimizer_ms={optimizer_ms} loss_ms={loss_ms}"
+    ))
 }
 
 fn emit_probe_step_progress(
@@ -143,12 +347,53 @@ fn emit_probe_step_progress(
     }
 }
 
+fn exact_train_probe_runtime_seed(
+    config: &TrainConfig,
+    selected_candidate: usize,
+    results: &[ProbeResult],
+    standard_attempts_len: usize,
+) -> Option<LoaderRuntimeScoreSeed> {
+    let standard_attempts = &results[..standard_attempts_len.min(results.len())];
+    let matching_attempts = standard_attempts
+        .iter()
+        .filter(|result| {
+            result.kind == ProbeKind::Train && result.candidate_microbatch == selected_candidate
+        })
+        .collect::<Vec<_>>();
+    if matching_attempts.len() != config.preflight.required_successes.max(1) {
+        return None;
+    }
+
+    let mut count = 0usize;
+    let mut sum = 0.0;
+    for attempt in matching_attempts {
+        if attempt.status != ProbeStatus::Success {
+            return None;
+        }
+        let throughput = attempt.measured_samples_per_second?;
+        count += 1;
+        sum += throughput;
+    }
+
+    Some(LoaderRuntimeScoreSeed {
+        train_microbatch_size: selected_candidate.min(config.batch_size).max(1),
+        tuple: (
+            config.archive_queue_bound,
+            config.buffer_samples,
+            config.buffer_games,
+        ),
+        warmup_steps: config.preflight.warmup_steps.max(1),
+        measure_steps: config.preflight.measure_steps.max(1),
+        stats: RuntimeTupleStats { count, sum },
+    })
+}
+
 fn search_train_microbatch(
     config_path: &Path,
     config: &TrainConfig,
     artifacts: &BcArtifactPaths,
     seed: usize,
-) -> Result<(usize, Vec<ProbeResult>), String> {
+) -> Result<(usize, Vec<ProbeResult>, Option<LoaderRuntimeScoreSeed>), String> {
     let mut candidates = dynamic_probe_ladder(config, ProbeKind::Train, seed);
     let explicit_candidate = config.microbatch_size;
     let use_explicit_only =
@@ -172,7 +417,6 @@ fn search_train_microbatch(
         "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
     )?;
     let mut results = Vec::new();
-    let mut stable_results = Vec::new();
     let mut best_score = f64::NEG_INFINITY;
     let mut last_successful_candidate: Option<usize> = None;
 
@@ -187,7 +431,6 @@ fn search_train_microbatch(
             results.push(blocked);
             continue;
         }
-        let stable_start = results.len();
         let mut result_path_for =
             |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
         let passed = run_candidate_attempts(
@@ -213,7 +456,6 @@ fn search_train_microbatch(
             }
             continue;
         }
-        stable_results.extend(results[stable_start..].iter().cloned());
         last_successful_candidate = Some(candidate);
         let throughput = candidate_average(&results, candidate).unwrap_or(0.0);
         if throughput > best_score {
@@ -222,11 +464,14 @@ fn search_train_microbatch(
 
         if use_explicit_only {
             progress.finish_with_message("preflight train ladder complete".green().to_string());
-            return Ok((candidate, results));
+            let baseline_seed =
+                exact_train_probe_runtime_seed(config, candidate, &results, results.len());
+            return Ok((candidate, results, baseline_seed));
         }
     }
 
     progress.finish_with_message("preflight train ladder complete".green().to_string());
+    let standard_attempts_len = results.len();
     refine_probe_winner_locally(
         config_path,
         |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
@@ -243,21 +488,22 @@ fn search_train_microbatch(
         &mut results,
         &progress,
     )?;
-    stable_results = results
-        .iter()
-        .filter(|result| result.status == ProbeStatus::Success)
-        .cloned()
-        .collect();
     rerun_probe_finalists(
         config_path,
         |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         ProbeKind::Train,
         config,
-        &mut stable_results,
+        &mut results,
         &progress,
     )?;
-    let selected_summary = best_probe_summary(&stable_results)
+    let selected_summary = best_probe_summary(&results)
         .ok_or_else(|| "no stable train microbatch found in preflight".to_string())?;
+    let baseline_seed = exact_train_probe_runtime_seed(
+        config,
+        selected_summary.candidate_microbatch,
+        &results,
+        standard_attempts_len,
+    );
     println!(
         "{}",
         format_preflight_selection_line(format_probe_selection_summary(
@@ -265,7 +511,11 @@ fn search_train_microbatch(
             &selected_summary,
         ))
     );
-    Ok((selected_summary.candidate_microbatch, results))
+    Ok((
+        selected_summary.candidate_microbatch,
+        results,
+        baseline_seed,
+    ))
 }
 
 fn search_validation_microbatch(
@@ -302,7 +552,6 @@ fn search_validation_microbatch(
         "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
     )?;
     let mut results = Vec::new();
-    let mut stable_results = Vec::new();
     let mut growth_patience = 0usize;
     let mut growth_steps = 0usize;
     let tolerance = config.preflight.measure_noise_tolerance_ratio;
@@ -322,7 +571,6 @@ fn search_validation_microbatch(
             results.push(blocked);
             break;
         }
-        let stable_start = results.len();
         let mut result_path_for =
             |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
         let passed = run_candidate_attempts(
@@ -350,7 +598,6 @@ fn search_validation_microbatch(
             }
             break;
         }
-        stable_results.extend(results[stable_start..].iter().cloned());
         last_successful_candidate = Some(candidate);
         if use_explicit_only {
             progress
@@ -358,7 +605,7 @@ fn search_validation_microbatch(
             return Ok((candidate, results));
         }
 
-        let summary = best_probe_summary(&stable_results)
+        let summary = best_probe_summary(&results)
             .ok_or_else(|| "no stable validation microbatch found in preflight".to_string())?;
         let candidate_score = candidate_average(&results, candidate).unwrap_or(0.0);
         let mut growth_state = ProbeGrowthState {
@@ -446,7 +693,11 @@ fn diverse_probe_candidates(
     }
 
     if let Some(idx) = selected_index {
-        for neighbor in [idx.saturating_sub(1), idx, (idx + 1).min(summaries.len() - 1)] {
+        for neighbor in [
+            idx.saturating_sub(1),
+            idx,
+            (idx + 1).min(summaries.len() - 1),
+        ] {
             let summary = &summaries[neighbor];
             if seen.insert(summary.candidate_microbatch) {
                 selected.push(summary.clone());
@@ -523,16 +774,17 @@ fn benchmark_runtime_matches_selected(
         && candidate.loader == selected.loader
 }
 
-fn build_stage_two_finalists(
-    config: &TrainConfig,
-    selected: &EffectiveRuntimeConfig,
-    train_candidates: &[ProbeCandidateSummary],
-    validation_candidates: &[ProbeCandidateSummary],
-    loader_candidates: &[RankedLoaderRuntime],
-    train_probe_results: &[ProbeResult],
-    validation_probe_results: &[ProbeResult],
-    ranked_loaders: &[RankedLoaderRuntime],
-) -> Vec<BenchmarkFinalist> {
+fn build_stage_two_finalists(inputs: StageTwoFinalistInputs<'_>) -> Vec<BenchmarkFinalist> {
+    let StageTwoFinalistInputs {
+        config,
+        selected,
+        train_candidates,
+        validation_candidates,
+        loader_candidates,
+        train_probe_results,
+        validation_probe_results,
+        ranked_loaders,
+    } = inputs;
     let mut finalists = Vec::new();
     let mut seen = BTreeSet::new();
     for train_summary in train_candidates {
@@ -633,12 +885,15 @@ fn benchmark_loader_config(
         archive_queue_bound: loader.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
+        source_filters: config.source_filters.clone(),
+        replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
         delta_q_sidecar: None,
         delta_q_sidecar_source_net_hash: None,
         delta_q_sidecar_source_version: None,
+        num_threads: config.num_threads,
     }
 }
 
@@ -667,6 +922,33 @@ fn benchmark_validation_config(
         );
     }
     tuned
+}
+
+fn stage_two_benchmark_validation_cache_key(
+    benchmark_config: &TrainConfig,
+    loader: LoaderRuntimeConfig,
+) -> StageTwoBenchmarkValidationCacheKey {
+    StageTwoBenchmarkValidationCacheKey {
+        loader_archive_queue_bound: loader.archive_queue_bound,
+        loader_buffer_samples: loader.buffer_samples,
+        loader_buffer_games: loader.buffer_games,
+        loader_num_threads: loader.num_threads,
+        validation_sample_limit: validation_sample_limit(benchmark_config),
+    }
+}
+
+fn stage_two_benchmark_validation_cache_plan(
+    config: &TrainConfig,
+    finalists: &[BenchmarkFinalist],
+) -> BTreeMap<StageTwoBenchmarkValidationCacheKey, usize> {
+    let mut counts = BTreeMap::new();
+    for finalist in finalists {
+        let benchmark_config = benchmark_validation_config(config, finalist.runtime);
+        let key =
+            stage_two_benchmark_validation_cache_key(&benchmark_config, finalist.runtime.loader);
+        *counts.entry(key).or_default() += 1;
+    }
+    counts
 }
 
 fn benchmark_projected_events(train_steps: usize, interval: usize) -> f64 {
@@ -707,12 +989,33 @@ fn benchmark_metadata(
 
 fn benchmark_score(
     config: &TrainConfig,
-    train_seconds: f64,
-    validation_seconds: f64,
-    checkpoint_seconds: f64,
-    logging_seconds: f64,
+    profiling: &ProfilingEnvelope,
     validation_samples: usize,
-) -> BenchmarkScore {
+) -> BenchmarkEvaluationOutcome {
+    let train_seconds = profiling
+        .children
+        .iter()
+        .find(|child| child.stage == PROFILING_STAGE_TRAIN)
+        .map(|child| child.elapsed_seconds)
+        .unwrap_or_default();
+    let validation_seconds = profiling
+        .children
+        .iter()
+        .find(|child| child.stage == PROFILING_STAGE_VALIDATION)
+        .map(|child| child.elapsed_seconds)
+        .unwrap_or_default();
+    let checkpoint_seconds = profiling
+        .children
+        .iter()
+        .find(|child| child.stage == PROFILING_STAGE_CHECKPOINT)
+        .map(|child| child.elapsed_seconds)
+        .unwrap_or_default();
+    let logging_seconds = profiling
+        .children
+        .iter()
+        .find(|child| child.stage == PROFILING_STAGE_LOGGING)
+        .map(|child| child.elapsed_seconds)
+        .unwrap_or_default();
     let train_steps = config.preflight.real_benchmark_train_steps.max(1);
     let train_samples = train_steps * config.batch_size;
     let projected_validation_events =
@@ -725,37 +1028,93 @@ fn benchmark_score(
         + validation_seconds * projected_validation_events
         + checkpoint_seconds * projected_checkpoint_events
         + logging_seconds * projected_logging_events;
-    BenchmarkScore {
-        wall_clock_samples_per_second: measure_samples_per_second(
-            train_samples,
-            Duration::from_secs_f64(total_elapsed_seconds.max(f64::EPSILON)),
+    BenchmarkEvaluationOutcome {
+        score: BenchmarkScore {
+            wall_clock_samples_per_second: measure_samples_per_second(
+                train_samples,
+                Duration::from_secs_f64(total_elapsed_seconds.max(f64::EPSILON)),
+            ),
+            train_only_samples_per_second: measure_samples_per_second(
+                train_samples,
+                Duration::from_secs_f64(train_seconds.max(f64::EPSILON)),
+            ),
+            train_seconds,
+            validation_seconds,
+            checkpoint_seconds,
+            logging_seconds,
+            total_elapsed_seconds,
+            train_steps,
+            validation_samples,
+        },
+        profiling: ProfilingEnvelope::nested(
+            PROFILING_STAGE_STAGE_2_BENCHMARK,
+            total_elapsed_seconds,
+            profiling.children.clone(),
         ),
-        train_only_samples_per_second: measure_samples_per_second(
-            train_samples,
-            Duration::from_secs_f64(train_seconds.max(f64::EPSILON)),
-        ),
-        train_seconds,
-        validation_seconds,
-        checkpoint_seconds,
-        logging_seconds,
-        total_elapsed_seconds,
-        train_steps,
-        validation_samples,
     }
 }
 
-fn benchmark_train_window(
+fn run_stage_two_benchmark_scopes<
+    TrainOut,
+    ValidationOut,
+    TrainFn,
+    ValidationFn,
+    CheckpointFn,
+    LoggingFn,
+>(
+    train: TrainFn,
+    validation: ValidationFn,
+    checkpoint: CheckpointFn,
+    logging: LoggingFn,
+) -> Result<(TrainOut, ValidationOut, f64, f64), String>
+where
+    TrainFn: FnOnce() -> Result<TrainOut, String>,
+    ValidationFn: FnOnce(&mut TrainOut) -> Result<ValidationOut, String>,
+    CheckpointFn: FnOnce(&TrainOut, &ValidationOut) -> Result<f64, String>,
+    LoggingFn: FnOnce(&TrainOut, &ValidationOut) -> Result<f64, String>,
+{
+    let _benchmark_scope = nvtx::scope(PROFILING_STAGE_STAGE_2_BENCHMARK);
+    let mut train_outcome = {
+        let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
+        train()?
+    };
+    let validation_summary = {
+        let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
+        validation(&mut train_outcome)?
+    };
+    let checkpoint_seconds = {
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+        checkpoint(&train_outcome, &validation_summary)?
+    };
+    let logging_seconds = {
+        let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
+        logging(&train_outcome, &validation_summary)?
+    };
+    Ok((
+        train_outcome,
+        validation_summary,
+        checkpoint_seconds,
+        logging_seconds,
+    ))
+}
+
+fn benchmark_train_window_for_backend<B>(
     config: &TrainConfig,
+    model_config: &HydraModelConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
-) -> Result<TrainBenchmarkOutcome, String> {
+) -> Result<TrainBenchmarkOutcome<B>, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
     let train_cfg = trainer_config_from_train_config(config);
-    let mut model = HydraModelConfig::learner().init::<TrainBackend>(train_device);
-    let mut optimizer: BenchmarkOptimizer = train_cfg.optimizer_config().init();
-    let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let mut model = model_config.init::<B>(train_device);
+    let mut optimizer: BenchmarkOptimizerOf<B> = train_cfg.optimizer_config().init();
+    let loss_fn = HydraLoss::<B>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
     let mut head_controller = HeadActivationController::new(
-        HeadActivationConfig::default_with_params(HydraModelConfig::learner().estimated_params()),
+        HeadActivationConfig::default_with_params(model_config.estimated_params()),
     );
     let loader = benchmark_loader_config(
         config,
@@ -786,45 +1145,70 @@ fn benchmark_train_window(
         while pending_samples.len() >= config.batch_size {
             let logical_batch: Vec<MjaiSample> =
                 pending_samples.drain(..config.batch_size).collect();
-            let logical_batch_len = logical_batch.len().max(1) as f32;
-            let mut accumulator: GradientsAccumulator<HydraModel<TrainBackend>> =
-                GradientsAccumulator::new();
             let mut step_batches = Vec::new();
 
-            for chunk in logical_batch.chunks(microbatch_size) {
-                let Some((obs, batch)) =
-                    collate_batch_samples::<TrainBackend>(chunk, config.augment, train_device)
-                        .map_err(|err| format!("benchmark train collation failed: {err}"))?
-                else {
-                    continue;
-                };
-                let targets = batch.to_hydra_targets();
-                let (active_loss_fn, warmup_heads) =
-                    gated_bc_context(Some(&mut head_controller), &loss_fn, &targets);
-                let output =
-                    model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
-                let breakdown = active_loss_fn.total_loss(&output, &targets);
-                let total = bc_total_with_exit(&output, &batch, &targets, &active_loss_fn, &exit_cfg);
-                step_batches.push(validation_batch_stats(
-                    chunk.len(),
-                    &output,
-                    &batch,
-                    &targets,
-                    &breakdown,
-                    &total,
-                    &exit_cfg,
-                ));
-                let chunk_weight = chunk.len() as f32 / logical_batch_len;
-                let grads = (total * chunk_weight).backward();
-                let grads = GradientsParams::from_grads(grads, &model);
-                accumulator.accumulate(&model, grads);
-            }
-
-            if !step_batches.is_empty() {
+            if let Some(fixed_shape) = benchmark_train_fixed_chunks(FixedShapeTrainConfig {
+                logical_batch: &logical_batch,
+                augment: config.augment,
+                microbatch_size,
+                train_device,
+                loss_fn: &loss_fn,
+                bc_exit_cfg: &exit_cfg,
+                head_controller: &mut head_controller,
+                model: &model,
+                use_amp: false,
+            })? {
                 let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
-                let grads = accumulator.grads();
-                model = optimizer.step(lr, model, grads);
+                model = optimizer.step(lr, model, fixed_shape.grads);
                 head_controller.tick_warmup();
+                step_batches = fixed_shape.batch_stats;
+            } else {
+                let logical_batch_len = logical_batch.len().max(1) as f32;
+                let mut accumulator: GradientsAccumulator<HydraModel<B>> =
+                    GradientsAccumulator::new();
+
+                for chunk in logical_batch.chunks(microbatch_size) {
+                    let Some((obs, batch, targets)) =
+                        collate_samples_bc_owned::<B>(chunk, config.augment, train_device)
+                            .map_err(|err| format!("benchmark train collation failed: {err}"))?
+                    else {
+                        continue;
+                    };
+                    let (active_loss_fn, warmup_heads) =
+                        gated_bc_context(Some(&mut head_controller), &loss_fn, &targets);
+                    let output = model.forward_with_warmup(
+                        obs,
+                        &active_loss_fn.config,
+                        &warmup_heads,
+                    );
+                    let breakdown = active_loss_fn.total_loss(&output, &targets);
+                    let total = hydra_train::training::bc::maybe_add_exit_loss(
+                        breakdown.total.clone(),
+                        output.policy_logits.clone(),
+                        batch.exit_target.as_ref(),
+                        batch.exit_mask.as_ref(),
+                        &exit_cfg,
+                    );
+                    step_batches.push(batch_stats_from_outputs(
+                        chunk.len(),
+                        output.policy_logits.clone(),
+                        targets.legal_mask.clone(),
+                        batch.actions.clone(),
+                        total.clone(),
+                        &breakdown,
+                    ));
+                    let chunk_weight = chunk.len() as f32 / logical_batch_len;
+                    let grads = (total * chunk_weight).backward();
+                    let grads = GradientsParams::from_grads(grads, &model);
+                    accumulator.accumulate(&model, grads);
+                }
+
+                if !step_batches.is_empty() {
+                    let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
+                    let grads = accumulator.grads();
+                    model = optimizer.step(lr, model, grads);
+                    head_controller.tick_warmup();
+                }
             }
 
             let next_completed_steps = completed_steps + 1;
@@ -855,14 +1239,20 @@ fn benchmark_train_window(
     Err("not enough train data to finish stage-2 benchmark train window".to_string())
 }
 
-fn benchmark_validation_pass(
+fn benchmark_validation_pass<B>(
     config: &TrainConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
-    outcome: &mut TrainBenchmarkOutcome,
-) -> Result<(ValidationSummary, f64), String> {
+    outcome: &mut TrainBenchmarkOutcome<B>,
+    cached_samples: Option<&[Box<[MjaiSample]>]>,
+    materialization_seconds: f64,
+) -> Result<(ValidationSummary, f64), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
     let valid_loss_fn =
-        HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+        HydraLoss::<ValidBackendOf<B>>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
     let loader = benchmark_loader_config(
         config,
@@ -880,7 +1270,8 @@ fn benchmark_validation_pass(
             config,
             loader_config: &loader,
             manifest,
-            cached_samples: None,
+            cached_samples,
+            shard_reader: None,
             device: train_device,
             loss_fn: &valid_loss_fn,
             exit_cfg: &exit_cfg,
@@ -890,14 +1281,20 @@ fn benchmark_validation_pass(
             progress: None,
         },
     )?;
-    Ok((summary, started.elapsed().as_secs_f64()))
+    Ok((
+        summary,
+        started.elapsed().as_secs_f64() + materialization_seconds,
+    ))
 }
 
-fn benchmark_checkpoint_cost(
+fn benchmark_checkpoint_cost<B>(
     artifacts: &BcArtifactPaths,
     config: &TrainConfig,
-    outcome: &TrainBenchmarkOutcome,
-) -> Result<f64, String> {
+    outcome: &TrainBenchmarkOutcome<B>,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
     let continuation = EpochContinuation {
         next_epoch: 0,
         skip_optimizer_steps_in_epoch: 0,
@@ -955,6 +1352,7 @@ fn benchmark_logging_cost(
         val_policy_loss: Some(validation_summary.policy_loss),
         val_policy_agreement: Some(validation_summary.agreement),
         val_delta_q_promotion: validation_summary.delta_q_promotion_snapshot,
+        profiling: None,
         best_val_policy_loss: best_validation.map(|value| value.policy_loss),
         best_val_agreement: best_validation.map(|value| value.agreement),
     };
@@ -977,63 +1375,61 @@ fn benchmark_logging_cost(
 }
 
 fn run_stage_two_finalist_benchmark(
-    config: &TrainConfig,
-    manifest: &DataManifest,
-    train_device: &LibTorchDevice,
-    artifacts: &BcArtifactPaths,
-    finalists: &[BenchmarkFinalist],
-    train_candidates: usize,
-    validation_candidates: usize,
-    loader_candidates: usize,
+    context: StageTwoBenchmarkContext<'_>,
 ) -> Result<BenchmarkResult, String> {
+    let StageTwoBenchmarkContext {
+        config,
+        manifest,
+        train_device,
+        artifacts,
+        finalists,
+        train_candidates,
+        validation_candidates,
+        loader_candidates,
+    } = context;
     let benchmark_paths = PreflightBenchmarkPaths::new(artifacts);
     benchmark_paths.create_root_dir()?;
-    let initial_count = finalists.len().min(config.preflight.real_benchmark_max_finalists.max(1));
+    let initial_count = finalists
+        .len()
+        .min(config.preflight.real_benchmark_max_finalists.max(1));
     let mut finalists_to_benchmark = finalists[..initial_count].to_vec();
     let mut benchmarked = 0usize;
     let mut best: Option<BenchmarkResult> = None;
     let mut scored_results = Vec::new();
     let mut tie_expansion_triggered = false;
     let mut candidate_index = 0usize;
+    let mut validation_cache = StageTwoBenchmarkValidationCache::new(config, finalists);
     while candidate_index < finalists_to_benchmark.len() {
         let finalist = &finalists_to_benchmark[candidate_index];
         let benchmark_config = benchmark_validation_config(config, finalist.runtime);
+        let validation_cache_key =
+            stage_two_benchmark_validation_cache_key(&benchmark_config, finalist.runtime.loader);
+        let (cached_validation_samples, validation_materialization_seconds) =
+            validation_cache.checkout(validation_cache_key, &benchmark_config, manifest)?;
         let candidate_output_dir = benchmark_paths.create_candidate_dir(candidate_index)?;
         let candidate_artifacts = BcArtifactPaths::new(&candidate_output_dir, 0);
         candidate_artifacts.create_root_dir()?;
-        let mut train_outcome = benchmark_train_window(&benchmark_config, manifest, train_device)?;
-        let (validation_summary, validation_seconds) = benchmark_validation_pass(
-            &benchmark_config,
+        let benchmark_run = StageTwoBenchmarkRunContext {
+            config,
+            benchmark_config: &benchmark_config,
             manifest,
             train_device,
-            &mut train_outcome,
-        )?;
-        let checkpoint_seconds =
-            benchmark_checkpoint_cost(&candidate_artifacts, &benchmark_config, &train_outcome)?;
-        let logging_seconds = benchmark_logging_cost(
-            &candidate_artifacts,
-            &benchmark_config,
-            &train_outcome.stats,
-            &validation_summary,
-        )?;
-        let score = benchmark_score(
-            &benchmark_config,
-            train_outcome.elapsed_seconds,
-            validation_seconds,
-            checkpoint_seconds,
-            logging_seconds,
-            validation_summary.samples,
-        );
-        let result = BenchmarkResult {
-            runtime: finalist.runtime,
-            score,
-            metadata: benchmark_metadata(
-                config,
-                train_candidates,
-                validation_candidates,
-                loader_candidates,
-                benchmarked + 1,
-            ),
+            candidate_artifacts: &candidate_artifacts,
+            finalist,
+            train_candidates,
+            validation_candidates,
+            loader_candidates,
+            benchmarked_count: benchmarked + 1,
+            cached_validation_samples,
+            validation_materialization_seconds,
+        };
+        let result = match config.precision_mode {
+            crate::config::PrecisionMode::Fp32 => {
+                run_stage_two_benchmark_for_backend::<TrainBackend>(benchmark_run)?
+            }
+            crate::config::PrecisionMode::Bf16Autocast => {
+                run_stage_two_benchmark_for_backend::<TrainBackend>(benchmark_run)?
+            }
         };
         println!(
             "{}",
@@ -1053,31 +1449,34 @@ fn run_stage_two_finalist_benchmark(
                 ),
             )
         );
-        if best.as_ref().is_none_or(|current| {
+        let replace_best = best.as_ref().is_none_or(|current| {
             result.score.wall_clock_samples_per_second > current.score.wall_clock_samples_per_second
-        }) {
+        });
+        if replace_best {
             best = Some(result.clone());
         }
-        scored_results.push(result.clone());
+        scored_results.push(result);
         benchmarked += 1;
         candidate_index += 1;
         if candidate_index == finalists_to_benchmark.len() {
-            let mut ranked = scored_results.clone();
-            ranked.sort_by(|left, right| {
-                right
-                    .score
-                    .wall_clock_samples_per_second
-                    .partial_cmp(&left.score.wall_clock_samples_per_second)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            if ranked.len() >= 2 {
-                let best_score = ranked[0].score.wall_clock_samples_per_second;
-                let next_score = ranked[1].score.wall_clock_samples_per_second;
+            let mut best_score = f64::NEG_INFINITY;
+            let mut next_score = f64::NEG_INFINITY;
+            for result in &scored_results {
+                let score = result.score.wall_clock_samples_per_second;
+                if score > best_score {
+                    next_score = best_score;
+                    best_score = score;
+                } else if score > next_score {
+                    next_score = score;
+                }
+            }
+            if scored_results.len() >= 2 {
                 let tie_margin = config.preflight.real_benchmark_tie_margin_ratio.max(0.0);
                 let threshold = best_score * (1.0 - tie_margin);
                 if next_score >= threshold {
                     let current_len = finalists_to_benchmark.len();
-                    let target_len = (current_len + config.preflight.real_benchmark_extra_finalists)
+                    let target_len = (current_len
+                        + config.preflight.real_benchmark_extra_finalists)
                         .min(finalists.len());
                     if target_len > current_len {
                         finalists_to_benchmark
@@ -1088,13 +1487,108 @@ fn run_stage_two_finalist_benchmark(
             }
         }
     }
-    let mut best = best
-        .ok_or_else(|| "stage-2 preflight benchmark had no finalists to score".to_string())?;
+    let mut best =
+        best.ok_or_else(|| "stage-2 preflight benchmark had no finalists to score".to_string())?;
     best.metadata.finalists_benchmarked = benchmarked;
     if tie_expansion_triggered {
         best.metadata.selection_metric.push_str(" + tie_expansion");
     }
     Ok(best)
+}
+
+fn run_stage_two_benchmark_for_backend<B>(
+    context: StageTwoBenchmarkRunContext<'_>,
+) -> Result<BenchmarkResult, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
+    let StageTwoBenchmarkRunContext {
+        config,
+        benchmark_config,
+        manifest,
+        train_device,
+        candidate_artifacts,
+        finalist,
+        train_candidates,
+        validation_candidates,
+        loader_candidates,
+        benchmarked_count,
+        cached_validation_samples,
+        validation_materialization_seconds,
+    } = context;
+    let (
+        train_outcome,
+        (validation_summary, validation_seconds),
+        checkpoint_seconds,
+        logging_seconds,
+    ) = run_stage_two_benchmark_scopes(
+        || {
+            benchmark_train_window_for_backend::<B>(
+                benchmark_config,
+                &HydraModelConfig::learner(),
+                manifest,
+                train_device,
+            )
+        },
+        |train_outcome| {
+            benchmark_validation_pass(
+                benchmark_config,
+                manifest,
+                train_device,
+                train_outcome,
+                cached_validation_samples.as_deref(),
+                validation_materialization_seconds,
+            )
+        },
+        |train_outcome, _| {
+            benchmark_checkpoint_cost(candidate_artifacts, benchmark_config, train_outcome)
+        },
+        |train_outcome, (validation_summary, _)| {
+            benchmark_logging_cost(
+                candidate_artifacts,
+                benchmark_config,
+                &train_outcome.stats,
+                validation_summary,
+            )
+        },
+    )?;
+
+    let evaluation = benchmark_score(
+        benchmark_config,
+        &ProfilingEnvelope::from_children(
+            PROFILING_STAGE_STAGE_2_BENCHMARK,
+            vec![
+                ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, train_outcome.elapsed_seconds),
+                validation_summary
+                    .profiling
+                    .clone()
+                    .map(|mut profiling| {
+                        profiling.elapsed_seconds = validation_seconds;
+                        profiling
+                    })
+                    .unwrap_or_else(|| {
+                        ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, validation_seconds)
+                    }),
+                ProfilingEnvelope::leaf(PROFILING_STAGE_CHECKPOINT, checkpoint_seconds),
+                ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, logging_seconds),
+            ],
+        ),
+        validation_summary.samples,
+    );
+
+    Ok(BenchmarkResult {
+        runtime: finalist.runtime,
+        score: evaluation.score,
+        metadata: benchmark_metadata(
+            config,
+            train_candidates,
+            validation_candidates,
+            loader_candidates,
+            benchmarked_count,
+        ),
+        profiling: Some(evaluation.profiling),
+    })
 }
 
 fn search_rl_runtime_candidate(
@@ -1140,7 +1634,6 @@ fn search_rl_runtime_candidate(
         "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
     )?;
     let mut results = Vec::new();
-    let mut stable_results = Vec::new();
     let mut growth_patience = 0usize;
     let mut growth_steps = 0usize;
     let tolerance = config.preflight.measure_noise_tolerance_ratio;
@@ -1157,7 +1650,6 @@ fn search_rl_runtime_candidate(
             results.push(blocked);
             break;
         }
-        let stable_start = results.len();
         let mut result_path_for =
             |kind, candidate, attempt| rl_probe_result_path(artifacts, kind, candidate, attempt);
         let passed = run_candidate_attempts(
@@ -1188,7 +1680,6 @@ fn search_rl_runtime_candidate(
             }
             break;
         }
-        stable_results.extend(results[stable_start..].iter().cloned());
         last_successful_candidate = Some(candidate);
         if use_explicit_only {
             progress.finish_with_message(
@@ -1199,7 +1690,7 @@ fn search_rl_runtime_candidate(
             return Ok((candidate, results));
         }
 
-        let summary = best_probe_summary(&stable_results).ok_or_else(|| {
+        let summary = best_probe_summary(&results).ok_or_else(|| {
             format!(
                 "no stable {} candidate found in preflight",
                 probe_kind_name(kind)
@@ -1306,26 +1797,132 @@ pub(super) fn measure_samples_per_second(samples: usize, elapsed: Duration) -> f
     }
 }
 
-pub(super) fn probe_train_candidate(
+fn probe_train_candidate_for_backend<B>(
     config: &TrainConfig,
+    model_config: &HydraModelConfig,
     request: ProbeRequest,
     loader_config: &StreamingLoaderConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
-) -> Result<f64, String> {
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
+    run_train_measurement_loop::<B>(TrainMeasurementSpec {
+        config,
+        model_config,
+        candidate_microbatch: request.candidate_microbatch,
+        warmup_steps: request.warmup_steps,
+        measure_steps: request.measure_steps,
+        loader_config,
+        manifest,
+        train_device,
+        on_start: Box::new(|candidate_microbatch, warmup_steps, measure_steps| {
+            emit_probe_progress(&format!(
+                "probe_progress kind=train candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
+                candidate_microbatch, warmup_steps, measure_steps
+            ))
+        }),
+        on_step: Box::new(
+            |completed_steps, candidate_microbatch, request, measure_start| {
+                emit_probe_step_progress(
+                    ProbeKind::Train,
+                    candidate_microbatch,
+                    completed_steps,
+                    ProbeRequest {
+                        kind: ProbeKind::Train,
+                        candidate_microbatch,
+                        warmup_steps: request.warmup_steps,
+                        measure_steps: request.measure_steps,
+                    },
+                    measure_start,
+                    config.batch_size,
+                )
+            },
+        ),
+        on_measure_start: Box::new(|candidate_microbatch, measure_steps| {
+            emit_probe_progress(&format!(
+                "probe_progress kind=train candidate_mb={} phase=measure_start total_steps={}",
+                candidate_microbatch,
+                measure_steps.max(1)
+            ))
+        }),
+        insufficient_data: Box::new(|candidate_microbatch| {
+            format!(
+                "not enough train data to finish preflight probe at microbatch {}",
+                candidate_microbatch
+            )
+        }),
+    })
+}
+
+type TrainMeasurementStepCallback<'a> =
+    dyn FnMut(usize, usize, ProbeRequest, Option<Instant>) -> Result<(), String> + 'a;
+
+pub(super) struct TrainMeasurementSpec<'a> {
+    pub(super) config: &'a TrainConfig,
+    pub(super) model_config: &'a HydraModelConfig,
+    pub(super) candidate_microbatch: usize,
+    pub(super) warmup_steps: usize,
+    pub(super) measure_steps: usize,
+    pub(super) loader_config: &'a StreamingLoaderConfig,
+    pub(super) manifest: &'a DataManifest,
+    pub(super) train_device: &'a LibTorchDevice,
+    pub(super) on_start: Box<dyn FnMut(usize, usize, usize) -> Result<(), String> + 'a>,
+    pub(super) on_step: Box<TrainMeasurementStepCallback<'a>>,
+    pub(super) on_measure_start: Box<dyn FnMut(usize, usize) -> Result<(), String> + 'a>,
+    pub(super) insufficient_data: Box<dyn FnOnce(usize) -> String + 'a>,
+}
+
+pub(super) fn run_train_measurement_loop<B>(spec: TrainMeasurementSpec<'_>) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
+    let TrainMeasurementSpec {
+        config,
+        model_config,
+        candidate_microbatch,
+        warmup_steps,
+        measure_steps,
+        loader_config,
+        manifest,
+        train_device,
+        mut on_start,
+        mut on_step,
+        mut on_measure_start,
+        insufficient_data,
+    } = spec;
     let train_cfg = trainer_config_from_train_config(config);
-    let mut model = HydraModelConfig::learner().init::<TrainBackend>(train_device);
-    let mut optimizer = train_cfg.optimizer_config().init();
-    let loss_fn = HydraLoss::<TrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
-    let microbatch_size = request.candidate_microbatch.min(config.batch_size).max(1);
-    let target_steps = request.warmup_steps + request.measure_steps;
+
+    emit_probe_init_phase("train", candidate_microbatch, "init_model")?;
+    let t0 = Instant::now();
+    let mut model = model_config.init::<B>(train_device);
+    let model_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_phase("train", candidate_microbatch, "init_optimizer")?;
+    let t0 = Instant::now();
+    let mut optimizer: BenchmarkOptimizerOf<B> = train_cfg.optimizer_config().init();
+    let optimizer_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_phase("train", candidate_microbatch, "init_loss")?;
+    let t0 = Instant::now();
+    let loss_fn = HydraLoss::<B>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let loss_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_ready(
+        "train",
+        candidate_microbatch,
+        model_ms,
+        optimizer_ms,
+        loss_ms,
+    )?;
+
+    let microbatch_size = candidate_microbatch.min(config.batch_size).max(1);
+    let target_steps = warmup_steps + measure_steps;
     let mut completed_steps = 0usize;
     let mut pending_samples = std::collections::VecDeque::new();
     let mut measure_start = None;
-    emit_probe_progress(&format!(
-        "probe_progress kind=train candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
-        microbatch_size, request.warmup_steps, request.measure_steps
-    ))?;
+    on_start(microbatch_size, warmup_steps, measure_steps)?;
 
     for buffer_result in stream_train_epoch(manifest, loader_config, 0, None) {
         let buffer =
@@ -1334,71 +1931,240 @@ pub(super) fn probe_train_candidate(
         while pending_samples.len() >= config.batch_size {
             let logical_batch: Vec<MjaiSample> =
                 pending_samples.drain(..config.batch_size).collect();
-            let logical_batch_len = logical_batch.len().max(1) as f32;
-            let mut accumulator: GradientsAccumulator<HydraModel<TrainBackend>> =
-                GradientsAccumulator::new();
-            for chunk in logical_batch.chunks(microbatch_size) {
-                let Some((obs, targets)) =
-                    collate_samples::<TrainBackend>(chunk, config.augment, train_device)
-                        .map_err(|err| format!("preflight train collation failed: {err}"))?
-                else {
-                    continue;
-                };
-                let output = model.forward(obs);
-                let breakdown = loss_fn.total_loss(&output, &targets);
-                let chunk_weight = chunk.len() as f32 / logical_batch_len;
-                let grads = (breakdown.total * chunk_weight).backward();
-                let grads = GradientsParams::from_grads(grads, &model);
-                accumulator.accumulate(&model, grads);
-            }
             let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
-            let grads = accumulator.grads();
-            model = optimizer.step(lr, model, grads);
-            emit_probe_step_progress(
-                ProbeKind::Train,
+            let grads = if let Some(grads) = probe_train_fixed_chunks(FixedShapeProbeConfig {
+                logical_batch: &logical_batch,
+                augment: config.augment,
                 microbatch_size,
+                train_device,
+                loss_fn: &loss_fn,
+                model: &model,
+                use_amp: false,
+            })? {
+                grads
+            } else {
+                let logical_batch_len = logical_batch.len().max(1) as f32;
+                let mut accumulator: GradientsAccumulator<HydraModel<B>> =
+                    GradientsAccumulator::new();
+                for chunk in logical_batch.chunks(microbatch_size) {
+                    let Some((obs, targets)) =
+                        collate_samples::<B>(chunk, config.augment, train_device)
+                            .map_err(|err| format!("preflight train collation failed: {err}"))?
+                    else {
+                        continue;
+                    };
+                    let output = model.forward(obs);
+                    let breakdown = loss_fn.total_loss(&output, &targets);
+                    let chunk_weight = chunk.len() as f32 / logical_batch_len;
+                    let grads = (breakdown.total * chunk_weight).backward();
+                    let grads = GradientsParams::from_grads(grads, &model);
+                    accumulator.accumulate(&model, grads);
+                }
+                accumulator.grads()
+            };
+            model = optimizer.step(lr, model, grads);
+            on_step(
                 completed_steps,
-                request,
+                microbatch_size,
+                ProbeRequest {
+                    kind: ProbeKind::Train,
+                    candidate_microbatch: microbatch_size,
+                    warmup_steps,
+                    measure_steps,
+                },
                 measure_start,
-                config.batch_size,
             )?;
             completed_steps += 1;
-            if completed_steps == request.warmup_steps {
+            if completed_steps == warmup_steps {
                 measure_start = Some(Instant::now());
-                emit_probe_progress(&format!(
-                    "probe_progress kind=train candidate_mb={} phase=measure_start total_steps={}",
-                    microbatch_size,
-                    request.measure_steps.max(1)
-                ))?;
+                on_measure_start(microbatch_size, measure_steps)?;
             }
             if completed_steps >= target_steps {
                 let elapsed = measure_start
                     .map(|start| start.elapsed())
                     .unwrap_or_default();
                 return Ok(measure_samples_per_second(
-                    request.measure_steps.max(1) * config.batch_size,
+                    measure_steps.max(1) * config.batch_size,
                     elapsed,
                 ));
             }
         }
     }
 
+    Err(insufficient_data(microbatch_size))
+}
+
+fn probe_train_candidate_from_shards_for_backend<B>(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    request: ProbeRequest,
+    train_device: &LibTorchDevice,
+    reader: &hydra_train::data::bc_shards::BcShardReader,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            FloatTensorPrimitive = burn::backend::libtorch::TchTensor,
+            IntTensorPrimitive = burn::backend::libtorch::TchTensor,
+        >,
+{
+    let train_cfg = trainer_config_from_train_config(config);
+
+    emit_probe_init_phase("train", request.candidate_microbatch, "init_model")?;
+    let t0 = Instant::now();
+    let mut model = Some(model_config.init::<B>(train_device));
+    let model_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_phase("train", request.candidate_microbatch, "init_optimizer")?;
+    let t0 = Instant::now();
+    let mut optimizer: BenchmarkOptimizerOf<B> = train_cfg.optimizer_config().init();
+    let optimizer_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_phase("train", request.candidate_microbatch, "init_loss")?;
+    let t0 = Instant::now();
+    let loss_fn = HydraLoss::<B>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
+    let mut head_controller = HeadActivationController::new(
+        HeadActivationConfig::default_with_params(model_config.estimated_params()),
+    );
+    let loss_ms = t0.elapsed().as_millis();
+
+    let microbatch_size = request.candidate_microbatch.min(config.batch_size).max(1);
+    let target_steps = request.warmup_steps + request.measure_steps;
+    let mut completed_steps = 0usize;
+    let mut measure_start = None;
+    let mut scratch = reader.new_scratch(config.batch_size);
+
+    #[cfg(feature = "cuda-graph")]
+    {
+        emit_probe_init_phase("train", request.candidate_microbatch, "init_cuda_staging")?;
+    }
+    #[cfg(feature = "cuda-graph")]
+    let mut staging_context = match train_device {
+        LibTorchDevice::Cuda(idx) => {
+            let device_index = *idx as i64;
+            Some((
+                PinnedStagingArea::new(config.batch_size),
+                AsyncH2DContext::new(device_index),
+                PreallocatedDeviceTensors::new(config.batch_size, train_device),
+            ))
+        }
+        _ => None,
+    };
+
+    emit_probe_init_ready(
+        "train",
+        request.candidate_microbatch,
+        model_ms,
+        optimizer_ms,
+        loss_ms,
+    )?;
+
+    emit_probe_progress(&format!(
+        "probe_progress kind=train candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
+        microbatch_size, request.warmup_steps, request.measure_steps
+    ))?;
+
+    let total_rows = reader.sample_count();
+    let mut idx = 0usize;
+    while idx < total_rows {
+        let take = config.batch_size.min(total_rows - idx);
+        if take < config.batch_size {
+            break;
+        }
+        reader.collate_host_batch_range_into(idx, take, config.augment, &mut scratch)?;
+        let host_batch = scratch.take_batch();
+        let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
+        let _ = train_logical_batch_from_host_batch(
+            host_batch,
+            TrainLogicalBatchConfig {
+                microbatch_size,
+                augment: config.augment,
+                train_device,
+                loss_fn: &loss_fn,
+                bc_exit_cfg: &exit_cfg,
+                lr,
+                use_amp: false,
+            },
+            &mut head_controller,
+            &mut model,
+            &mut optimizer,
+            #[cfg(feature = "cuda-graph")]
+            staging_context.as_mut(),
+        )?;
+        emit_probe_step_progress(
+            ProbeKind::Train,
+            microbatch_size,
+            completed_steps,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: microbatch_size,
+                warmup_steps: request.warmup_steps,
+                measure_steps: request.measure_steps,
+            },
+            measure_start,
+            config.batch_size,
+        )?;
+        completed_steps += 1;
+        if completed_steps == request.warmup_steps {
+            measure_start = Some(Instant::now());
+            emit_probe_progress(&format!(
+                "probe_progress kind=train candidate_mb={} phase=measure_start total_steps={}",
+                microbatch_size,
+                request.measure_steps.max(1)
+            ))?;
+        }
+        if completed_steps >= target_steps {
+            let elapsed = measure_start
+                .map(|start| start.elapsed())
+                .unwrap_or_default();
+            return Ok(measure_samples_per_second(
+                request.measure_steps.max(1) * config.batch_size,
+                elapsed,
+            ));
+        }
+        idx += take;
+    }
+
     Err(format!(
-        "not enough train data to finish preflight probe at microbatch {}",
+        "not enough train shard data to finish preflight probe at microbatch {}",
         microbatch_size
     ))
 }
 
-pub(super) fn probe_validation_candidate(
+fn probe_validation_candidate_for_backend<B>(
     config: &TrainConfig,
+    model_config: &HydraModelConfig,
     request: ProbeRequest,
     loader_config: &StreamingLoaderConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
-) -> Result<f64, String> {
-    let model = HydraModelConfig::learner().init::<TrainBackend>(train_device);
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
+    emit_probe_init_phase("validation", request.candidate_microbatch, "init_model")?;
+    let t0 = Instant::now();
+    let model = model_config.init::<B>(train_device);
     let model_valid = model.valid();
-    let loss_fn = HydraLoss::<ValidBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let model_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_phase("validation", request.candidate_microbatch, "init_loss")?;
+    let t0 = Instant::now();
+    let loss_fn =
+        HydraLoss::<ValidBackendOf<B>>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let loss_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_ready(
+        "validation",
+        request.candidate_microbatch,
+        model_ms,
+        0,
+        loss_ms,
+    )?;
+
     let microbatch_size = request.candidate_microbatch.max(1);
     let target_steps = request.warmup_steps + request.measure_steps;
     let mut completed_steps = 0usize;
@@ -1408,65 +2174,59 @@ pub(super) fn probe_validation_candidate(
         microbatch_size, request.warmup_steps, request.measure_steps
     ))?;
 
-    for buffer_result in stream_val_pass(manifest, loader_config, None) {
-        let buffer =
-            buffer_result.map_err(|err| format!("preflight validation stream failed: {err}"))?;
-        for chunk in buffer.chunks(microbatch_size) {
-            let Some((obs, batch)) =
-                hydra_train::data::sample::collate_batch_samples::<ValidBackend>(
-                    chunk,
-                    false,
-                    train_device,
-                )
-                .map_err(|err| format!("preflight validation collation failed: {err}"))?
-            else {
-                continue;
-            };
-            let targets = batch.to_hydra_targets();
-            let output = model_valid.forward(obs);
-            let breakdown = loss_fn.total_loss(&output, &targets);
-            let total = hydra_train::training::bc::bc_total_with_exit(
-                &output,
-                &batch,
-                &targets,
-                &loss_fn,
-                &hydra_train::training::bc::BcExitConfig::default(),
-            );
-            let _ = validation_batch_stats(
-                chunk.len(),
-                &output,
-                &batch,
-                &targets,
-                &breakdown,
-                &total,
-                &hydra_train::training::bc::BcExitConfig::default(),
-            );
-            emit_probe_step_progress(
-                ProbeKind::Validation,
+    for microbatch_result in stream_val_microbatches(manifest, loader_config, microbatch_size, None)
+    {
+        let microbatch =
+            microbatch_result.map_err(|err| format!("preflight validation stream failed: {err}"))?;
+        let Some((obs, batch, targets)) = hydra_train::data::sample::collate_samples_bc_owned::<
+            ValidBackendOf<B>,
+        >(microbatch.as_slice(), false, train_device)
+        .map_err(|err| format!("preflight validation collation failed: {err}"))?
+        else {
+            continue;
+        };
+        let output = model_valid.forward(obs);
+        let breakdown = loss_fn.total_loss(&output, &targets);
+        let total = hydra_train::training::bc::maybe_add_exit_loss(
+            breakdown.total.clone(),
+            output.policy_logits.clone(),
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            &hydra_train::training::bc::BcExitConfig::default(),
+        );
+        let _ = batch_stats_from_outputs(
+            microbatch.len(),
+            output.policy_logits.clone(),
+            targets.legal_mask.clone(),
+            batch.actions.clone(),
+            total.clone(),
+            &breakdown,
+        );
+        emit_probe_step_progress(
+            ProbeKind::Validation,
+            microbatch_size,
+            completed_steps,
+            request,
+            measure_start,
+            microbatch_size,
+        )?;
+        completed_steps += 1;
+        if completed_steps == request.warmup_steps {
+            measure_start = Some(Instant::now());
+            emit_probe_progress(&format!(
+                "probe_progress kind=validation candidate_mb={} phase=measure_start total_steps={}",
                 microbatch_size,
-                completed_steps,
-                request,
-                measure_start,
-                microbatch_size,
-            )?;
-            completed_steps += 1;
-            if completed_steps == request.warmup_steps {
-                measure_start = Some(Instant::now());
-                emit_probe_progress(&format!(
-                    "probe_progress kind=validation candidate_mb={} phase=measure_start total_steps={}",
-                    microbatch_size,
-                    request.measure_steps.max(1)
-                ))?;
-            }
-            if completed_steps >= target_steps {
-                let elapsed = measure_start
-                    .map(|start| start.elapsed())
-                    .unwrap_or_default();
-                return Ok(measure_samples_per_second(
-                    request.measure_steps.max(1) * microbatch_size,
-                    elapsed,
-                ));
-            }
+                request.measure_steps.max(1)
+            ))?;
+        }
+        if completed_steps >= target_steps {
+            let elapsed = measure_start
+                .map(|start| start.elapsed())
+                .unwrap_or_default();
+            return Ok(measure_samples_per_second(
+                request.measure_steps.max(1) * microbatch_size,
+                elapsed,
+            ));
         }
     }
 
@@ -1476,11 +2236,295 @@ pub(super) fn probe_validation_candidate(
     ))
 }
 
+fn probe_validation_candidate_from_shards_for_backend<B>(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    _request: ProbeRequest,
+    train_device: &LibTorchDevice,
+    reader: &hydra_train::data::bc_shards::BcShardReader,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+{
+    emit_probe_init_phase("validation", _request.candidate_microbatch, "init_model")?;
+    let t0 = Instant::now();
+    let model = model_config.init::<B>(train_device);
+    let baseline_model = model.clone();
+    let model_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_phase("validation", _request.candidate_microbatch, "init_loss")?;
+    let t0 = Instant::now();
+    let loss_fn =
+        HydraLoss::<ValidBackendOf<B>>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let loss_ms = t0.elapsed().as_millis();
+
+    emit_probe_init_ready(
+        "validation",
+        _request.candidate_microbatch,
+        model_ms,
+        0,
+        loss_ms,
+    )?;
+
+    let started_at = Instant::now();
+    let _ = run_validation_from_shards(
+        &model,
+        &baseline_model,
+        ValidationContext {
+            config,
+            loader_config: &StreamingLoaderConfig {
+                buffer_games: config.buffer_games,
+                buffer_samples: config.buffer_samples,
+                train_fraction: config.train_fraction,
+                seed: config.seed,
+                archive_queue_bound: config.archive_queue_bound,
+                max_skip_logs_per_source: config.max_skip_logs_per_source,
+                aggregate_skip_logs: true,
+                source_filters: config.source_filters.clone(),
+                replay_target_profile:
+                    hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
+                exit_sidecar: None,
+                exit_sidecar_source_net_hash: None,
+                exit_sidecar_source_version: None,
+                delta_q_sidecar: None,
+                delta_q_sidecar_source_net_hash: None,
+                delta_q_sidecar_source_version: None,
+                num_threads: config.num_threads,
+            },
+            manifest: &DataManifest {
+                sources: Vec::new(),
+                total_games: 0,
+                train_count: 0,
+                val_count: 0,
+                counts_exact: true,
+            },
+            cached_samples: None,
+            shard_reader: Some(reader),
+            device: train_device,
+            loss_fn: &loss_fn,
+            exit_cfg: &build_bc_exit_config(config.advanced_loss.as_ref()),
+        },
+        ValidationRuntime {
+            head_controller: None,
+            progress: None,
+        },
+        &reader,
+    )?;
+    Ok(measure_samples_per_second(
+        validation_sample_limit(config)
+            .unwrap_or(reader.sample_count())
+            .min(reader.sample_count()),
+        started_at.elapsed(),
+    ))
+}
+
 fn run_rl_probe_only(
     config: &TrainConfig,
     request: ProbeRequest,
     result_path: &Path,
 ) -> Result<(), String> {
+    let result = run_rl_probe_only_result(config, request)?;
+    write_probe_result(result_path, &result)
+}
+
+fn build_probe_success_result(
+    request: ProbeRequest,
+    measured_samples_per_second: f64,
+    elapsed_seconds: f64,
+    detail: String,
+) -> ProbeResult {
+    ProbeResult {
+        kind: request.kind,
+        candidate_microbatch: request.candidate_microbatch,
+        status: ProbeStatus::Success,
+        measured_samples_per_second: Some(measured_samples_per_second),
+        elapsed_seconds: Some(elapsed_seconds),
+        detail,
+    }
+}
+
+fn configure_probe_threads(config: &TrainConfig) -> Result<(), String> {
+    configure_threads(config.num_threads)
+        .map_err(|err| format!("failed to configure rayon threads for probe child: {err}"))
+}
+
+fn run_probe_attempt_result(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    manifest: Option<&DataManifest>,
+    request: ProbeRequest,
+) -> Result<ProbeResult, String> {
+    if matches!(request.kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
+        run_rl_probe_only_result(config, request)
+    } else {
+        run_probe_only_with_model_config_result(config, model_config, manifest, request)
+    }
+}
+
+fn run_probe_attempt_with_shard_readers_result(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    train_reader: Option<&hydra_train::data::bc_shards::BcShardReader>,
+    validation_reader: Option<&hydra_train::data::bc_shards::BcShardReader>,
+    request: ProbeRequest,
+) -> Result<ProbeResult, String> {
+    let train_device = train_device(&config.device)?;
+    let started_at = Instant::now();
+    let measured_samples_per_second = match request.kind {
+        ProbeKind::Train => match config.precision_mode {
+            crate::config::PrecisionMode::Fp32 | crate::config::PrecisionMode::Bf16Autocast => {
+                probe_train_candidate_from_shards_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &train_device,
+                    train_reader.ok_or_else(|| {
+                        "train shard reader missing for shard train probe".to_string()
+                    })?,
+                )?
+            }
+        },
+        ProbeKind::Validation => match config.precision_mode {
+            crate::config::PrecisionMode::Fp32 | crate::config::PrecisionMode::Bf16Autocast => {
+                let reader = validation_reader.ok_or_else(|| {
+                    "validation shard reader missing for shard validation probe".to_string()
+                })?;
+                probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &train_device,
+                    reader,
+                )?
+            }
+        },
+        ProbeKind::RlGames | ProbeKind::RlMicrobatch => {
+            return run_rl_probe_only_result(config, request);
+        }
+    };
+    let elapsed_seconds = started_at.elapsed().as_secs_f64();
+    Ok(build_probe_success_result(
+        request,
+        measured_samples_per_second,
+        elapsed_seconds,
+        format!(
+            "stable {} probe on shard dataset",
+            probe_kind_name(request.kind)
+        ),
+    ))
+}
+
+fn load_probe_batch_manifest(
+    config: &TrainConfig,
+    kind: ProbeKind,
+    manifest_cache_path: Option<&Path>,
+) -> Result<Option<DataManifest>, String> {
+    if config.bc_shards_manifest_path.is_some()
+        && matches!(kind, ProbeKind::Train | ProbeKind::Validation)
+    {
+        return Ok(None);
+    }
+    if matches!(kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
+        return Ok(None);
+    }
+
+    if let Some(path) = manifest_cache_path {
+        if let Some(cached) = read_manifest_cache(path)? {
+            return Ok(Some(cached.manifest));
+        }
+        return load_or_scan_manifest(
+            path,
+            &config.data_dir,
+            config.train_fraction,
+            &config.source_filters,
+            None,
+        )
+        .map(Some);
+    }
+
+    let cache_path =
+        PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0)).manifest_cache_path;
+    load_or_scan_manifest(
+        &cache_path,
+        &config.data_dir,
+        config.train_fraction,
+        &config.source_filters,
+        None,
+    )
+    .map(Some)
+}
+
+fn run_probe_child_batch_request_with_model_config(
+    config: &TrainConfig,
+    batch: ProbeBatchRequest,
+    results_path: &Path,
+    manifest_cache_path: Option<&Path>,
+    model_config: &HydraModelConfig,
+) -> Result<ProbeBatchArtifact, String> {
+    configure_probe_threads(config)?;
+    std::fs::remove_file(results_path).ok();
+    let manifest = load_probe_batch_manifest(config, batch.request.kind, manifest_cache_path)?;
+    let (train_reader, validation_reader) = if config.bc_shards_manifest_path.is_some()
+        && matches!(batch.request.kind, ProbeKind::Train | ProbeKind::Validation)
+    {
+        let shard_manifest_path = config
+            .bc_shards_manifest_path
+            .as_ref()
+            .ok_or_else(|| "bc_shards_manifest_path missing for shard probe batch".to_string())?;
+        let train_reader = if matches!(batch.request.kind, ProbeKind::Train) {
+            Some(load_bc_shard_reader(
+                shard_manifest_path,
+                BcShardSplit::Train,
+            )?)
+        } else {
+            None
+        };
+        let validation_reader = if matches!(batch.request.kind, ProbeKind::Validation) {
+            Some(load_bc_shard_reader(
+                shard_manifest_path,
+                BcShardSplit::Validation,
+            )?)
+        } else {
+            None
+        };
+        (train_reader, validation_reader)
+    } else {
+        (None, None)
+    };
+    let mut artifact = ProbeBatchArtifact::pending();
+
+    for _attempt in 0..batch.attempts {
+        let result = if config.bc_shards_manifest_path.is_some()
+            && matches!(batch.request.kind, ProbeKind::Train | ProbeKind::Validation)
+        {
+            run_probe_attempt_with_shard_readers_result(
+                config,
+                model_config,
+                train_reader.as_ref(),
+                validation_reader.as_ref(),
+                batch.request,
+            )?
+        } else {
+            run_probe_attempt_result(config, model_config, manifest.as_ref(), batch.request)?
+        };
+        let passed = result.status == ProbeStatus::Success;
+        artifact.push_result(result);
+        write_probe_batch_artifact(results_path, &artifact)?;
+        if !passed {
+            return Ok(artifact);
+        }
+    }
+
+    artifact.mark_finished();
+    write_probe_batch_artifact(results_path, &artifact)?;
+    Ok(artifact)
+}
+
+fn run_rl_probe_only_result(
+    config: &TrainConfig,
+    request: ProbeRequest,
+) -> Result<ProbeResult, String> {
     let train_device = train_device(&config.device)?;
     let rl = config
         .rl
@@ -1517,30 +2561,39 @@ fn run_rl_probe_only(
         measured_samples_per_second,
         elapsed_seconds,
     ))?;
-    write_probe_result(
-        result_path,
-        &ProbeResult {
-            kind: request.kind,
-            candidate_microbatch: request.candidate_microbatch,
-            status: ProbeStatus::Success,
-            measured_samples_per_second: Some(measured_samples_per_second),
-            elapsed_seconds: Some(elapsed_seconds),
-            detail: String::new(),
-        },
-    )
+    Ok(build_probe_success_result(
+        request,
+        measured_samples_per_second,
+        elapsed_seconds,
+        String::new(),
+    ))
 }
 
-pub(super) fn run_probe_only(
+fn run_probe_only_with_model_config(
     config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    manifest: Option<&DataManifest>,
     request: ProbeRequest,
     result_path: &Path,
 ) -> Result<(), String> {
-    configure_threads(config.num_threads)
-        .map_err(|err| format!("failed to configure rayon threads for probe child: {err}"))?;
-
+    configure_probe_threads(config)?;
     if matches!(request.kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
         return run_rl_probe_only(config, request, result_path);
     }
+    let result = run_probe_only_with_model_config_result(config, model_config, manifest, request)?;
+    write_probe_result(result_path, &result)
+}
+
+fn run_probe_only_with_model_config_result(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    manifest: Option<&DataManifest>,
+    request: ProbeRequest,
+) -> Result<ProbeResult, String> {
+    debug_assert!(matches!(
+        request.kind,
+        ProbeKind::Train | ProbeKind::Validation
+    ));
 
     let loader_config = StreamingLoaderConfig {
         buffer_games: config.buffer_games,
@@ -1550,45 +2603,155 @@ pub(super) fn run_probe_only(
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
+        source_filters: config.source_filters.clone(),
+        replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
         delta_q_sidecar: None,
         delta_q_sidecar_source_net_hash: None,
         delta_q_sidecar_source_version: None,
+        num_threads: config.num_threads,
     };
-    emit_probe_progress(&format!(
-        "probe_progress kind={} candidate_mb={} phase=scan_start data_dir={}",
-        probe_kind_name(request.kind),
-        request.candidate_microbatch,
-        config.data_dir.display(),
-    ))?;
-    let manifest = scan_data_sources_with_progress(&config.data_dir, config.train_fraction, None)
-        .map_err(|err| {
-        format!(
-            "failed to scan preflight data from {}: {err}",
-            config.data_dir.display()
-        )
-    })?;
-    emit_probe_progress(&format!(
-        "probe_progress kind={} candidate_mb={} phase=scan_complete sources={} total_games={} train_count={} val_count={} counts_exact={}",
-        probe_kind_name(request.kind),
-        request.candidate_microbatch,
-        manifest.sources.len(),
-        manifest.total_games,
-        manifest.train_count,
-        manifest.val_count,
-        manifest.counts_exact,
-    ))?;
+    let manifest = if let Some(manifest) = manifest.cloned() {
+        manifest
+    } else {
+        emit_probe_progress(&format!(
+            "probe_progress kind={} candidate_mb={} phase=scan_start data_dir={}",
+            probe_kind_name(request.kind),
+            request.candidate_microbatch,
+            config.data_dir.display(),
+        ))?;
+        let cache_path =
+            PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0)).manifest_cache_path;
+        let manifest = load_or_scan_manifest(
+            &cache_path,
+            &config.data_dir,
+            config.train_fraction,
+            &config.source_filters,
+            None,
+        )?;
+        emit_probe_progress(&format!(
+            "probe_progress kind={} candidate_mb={} phase=scan_complete sources={} total_games={} train_count={} val_count={} counts_exact={}",
+            probe_kind_name(request.kind),
+            request.candidate_microbatch,
+            manifest.sources.len(),
+            manifest.total_games,
+            manifest.train_count,
+            manifest.val_count,
+            manifest.counts_exact,
+        ))?;
+        manifest
+    };
     let train_device = train_device(&config.device)?;
     let started_at = Instant::now();
     let measured_samples_per_second = match request.kind {
-        ProbeKind::Train => {
-            probe_train_candidate(config, request, &loader_config, &manifest, &train_device)?
-        }
-        ProbeKind::Validation => {
-            probe_validation_candidate(config, request, &loader_config, &manifest, &train_device)?
-        }
+        ProbeKind::Train => match config.precision_mode {
+            crate::config::PrecisionMode::Fp32 => {
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_train_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
+                                "bc_shards_manifest_path missing for shard train probe".to_string()
+                            })?,
+                            BcShardSplit::Train,
+                        )?,
+                    )?
+                } else {
+                    probe_train_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
+            }
+            crate::config::PrecisionMode::Bf16Autocast => {
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_train_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
+                                "bc_shards_manifest_path missing for shard train probe".to_string()
+                            })?,
+                            BcShardSplit::Train,
+                        )?,
+                    )?
+                } else {
+                    probe_train_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
+            }
+        },
+        ProbeKind::Validation => match config.precision_mode {
+            crate::config::PrecisionMode::Fp32 => {
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
+                                "bc_shards_manifest_path missing for shard validation probe"
+                                    .to_string()
+                            })?,
+                            BcShardSplit::Validation,
+                        )?,
+                    )?
+                } else {
+                    probe_validation_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
+            }
+            crate::config::PrecisionMode::Bf16Autocast => {
+                if config.bc_shards_manifest_path.is_some() {
+                    probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &train_device,
+                        &load_bc_shard_reader(
+                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
+                                "bc_shards_manifest_path missing for shard validation probe"
+                                    .to_string()
+                            })?,
+                            BcShardSplit::Validation,
+                        )?,
+                    )?
+                } else {
+                    probe_validation_candidate_for_backend::<TrainBackend>(
+                        config,
+                        model_config,
+                        request,
+                        &loader_config,
+                        &manifest,
+                        &train_device,
+                    )?
+                }
+            }
+        },
         ProbeKind::RlGames | ProbeKind::RlMicrobatch => {
             unreachable!("RL probes handled by run_rl_probe_only")
         }
@@ -1601,31 +2764,149 @@ pub(super) fn run_probe_only(
         measured_samples_per_second,
         elapsed_seconds,
     ))?;
-    write_probe_result(
+    Ok(build_probe_success_result(
+        request,
+        measured_samples_per_second,
+        elapsed_seconds,
+        format!(
+            "stable {} probe on real dataset",
+            probe_kind_name(request.kind)
+        ),
+    ))
+}
+
+#[cfg(test)]
+pub(super) fn run_probe_only(
+    config: &TrainConfig,
+    request: ProbeRequest,
+    result_path: &Path,
+) -> Result<(), String> {
+    run_probe_only_with_model_config(
+        config,
+        &HydraModelConfig::learner(),
+        None,
+        request,
         result_path,
-        &ProbeResult {
-            kind: request.kind,
-            candidate_microbatch: request.candidate_microbatch,
-            status: ProbeStatus::Success,
-            measured_samples_per_second: Some(measured_samples_per_second),
-            elapsed_seconds: Some(elapsed_seconds),
-            detail: format!(
-                "stable {} probe on real dataset",
-                probe_kind_name(request.kind)
-            ),
-        },
     )
+}
+
+#[cfg(test)]
+pub(super) fn run_probe_only_with_test_model_config_result(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    request: ProbeRequest,
+) -> Result<ProbeResult, String> {
+    configure_probe_threads(config)?;
+    run_probe_only_with_model_config_result(config, model_config, None, request)
 }
 
 pub(super) fn run_probe_child_mode(
     config: &TrainConfig,
     child: Option<ProbeChildRequest>,
 ) -> Result<bool, String> {
-    let Some((request, result_path)) = probe_child_request_from_cli(child)? else {
+    run_probe_child_mode_with_model_config(config, child, &HydraModelConfig::learner())
+}
+
+#[cfg(test)]
+fn run_probe_child_mode_with_model_config_output(
+    config: &TrainConfig,
+    child: Option<ProbeChildRequest>,
+    model_config: &HydraModelConfig,
+) -> Result<Option<(std::path::PathBuf, ProbeResult)>, String> {
+    let Some((request, result_path, manifest_cache_path)) = probe_child_request_from_cli(child)?
+    else {
+        return Ok(None);
+    };
+    configure_probe_threads(config)?;
+    let manifest = if let Some(path) = manifest_cache_path.as_ref() {
+        read_manifest_cache(path)?.map(|cached| cached.manifest)
+    } else {
+        None
+    };
+    let result = if matches!(request.kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
+        run_rl_probe_only_result(config, request)?
+    } else {
+        run_probe_only_with_model_config_result(config, model_config, manifest.as_ref(), request)?
+    };
+    Ok(Some((result_path, result)))
+}
+
+pub(super) fn run_probe_child_mode_with_model_config(
+    config: &TrainConfig,
+    child: Option<ProbeChildRequest>,
+    model_config: &HydraModelConfig,
+) -> Result<bool, String> {
+    if let Some((batch, results_path, manifest_cache_path)) =
+        probe_batch_child_request_from_cli(child.clone())?
+    {
+        run_probe_child_batch_request_with_model_config(
+            config,
+            batch,
+            &results_path,
+            manifest_cache_path.as_deref(),
+            model_config,
+        )?;
+        return Ok(true);
+    }
+
+    let Some((request, result_path, manifest_cache_path)) = probe_child_request_from_cli(child)?
+    else {
         return Ok(false);
     };
-    run_probe_only(config, request, &result_path)?;
+    let manifest = if let Some(path) = manifest_cache_path.as_ref() {
+        read_manifest_cache(path)?.map(|cached| cached.manifest)
+    } else {
+        None
+    };
+    run_probe_only_with_model_config(
+        config,
+        model_config,
+        manifest.as_ref(),
+        request,
+        &result_path,
+    )?;
     Ok(true)
+}
+
+#[cfg(test)]
+pub(super) fn run_probe_child_mode_result(
+    config: &TrainConfig,
+    child: Option<ProbeChildRequest>,
+) -> Result<Option<ProbeResult>, String> {
+    // Use a tiny model for test speed instead of the full learner() model.
+    let tiny = HydraModelConfig::new(1)
+        .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1);
+    Ok(
+        run_probe_child_mode_with_model_config_output(config, child, &tiny)?
+            .map(|(_, result)| result),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn run_probe_child_batch_mode_result(
+    config: &TrainConfig,
+    child: Option<ProbeChildRequest>,
+) -> Result<Option<ProbeBatchArtifact>, String> {
+    let Some((batch, results_path, manifest_cache_path)) =
+        probe_batch_child_request_from_cli(child)?
+    else {
+        return Ok(None);
+    };
+    let tiny = HydraModelConfig::new(1)
+        .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1);
+    Ok(Some(run_probe_child_batch_request_with_model_config(
+        config,
+        batch,
+        &results_path,
+        manifest_cache_path.as_deref(),
+        &tiny,
+    )?))
 }
 
 pub(super) fn execute_probe_request(
@@ -1671,14 +2952,13 @@ pub(super) fn run_probe_ladder_only(
         "scanning data for {} probe",
         probe_kind_name(request.kind)
     ));
-    let _ =
-        scan_data_sources_with_progress(&config.data_dir, config.train_fraction, Some(&scan_pb))
-            .map_err(|err| {
-                format!(
-                    "failed to scan preflight data from {}: {err}",
-                    config.data_dir.display()
-                )
-            })?;
+    let _ = load_or_scan_manifest(
+        &PreflightPaths::new(artifacts).manifest_cache_path,
+        &config.data_dir,
+        config.train_fraction,
+        &config.source_filters,
+        Some(&scan_pb),
+    )?;
     scan_pb.finish_with_message(
         format!("scan complete for {} probe", probe_kind_name(request.kind))
             .green()
@@ -1713,6 +2993,7 @@ pub(super) fn run_preflight(
     device_label: &str,
     artifacts: &BcArtifactPaths,
 ) -> Result<PreflightRuntime, String> {
+    let preflight_started = Instant::now();
     let cache_key = preflight_cache_key(
         config,
         model_config,
@@ -1724,64 +3005,178 @@ pub(super) fn run_preflight(
         train_microbatch_explicit: config.microbatch_size.is_some(),
         validation_microbatch_explicit: config.validation_microbatch_size.is_some(),
     };
-    let phase_pb = make_bar(6, "[{bar:30.magenta/black}] {pos}/{len} {msg}")?;
-    phase_pb.set_message(preflight_phase_label("train microbatch probe"));
 
-    let train_seed = config
-        .microbatch_size
-        .unwrap_or_else(|| candidate_ladder(&config.preflight, config.batch_size)[0]);
-    let (train_microbatch, train_probe_results) =
-        search_train_microbatch(config_path, config, artifacts, train_seed)?;
-    phase_pb.inc(1);
-    phase_pb.set_message(preflight_phase_label("validation microbatch probe"));
-    let validation_seed = config.validation_microbatch_size.unwrap_or(train_seed);
-    let (validation_microbatch, validation_probe_results) =
-        search_validation_microbatch(config_path, config, artifacts, validation_seed)?;
-    phase_pb.inc(1);
-    phase_pb.set_message(preflight_phase_label("resolve runtime"));
-    let selected = resolve_runtime_config(
-        config.batch_size,
-        explicit,
-        train_microbatch,
-        validation_microbatch,
-    );
-    println!(
-        "{}",
-        format_timed_phase_message(
-            "post_validation",
-            "selected validation candidate; preparing runtime tuning",
+    // Phase 1-3: Probe search (or cache hit -- skip probes, keep cached selections)
+    let (
+        _train_microbatch,
+        train_probe_results,
+        train_runtime_seed,
+        _validation_microbatch,
+        validation_probe_results,
+        selected,
+        cache_hit,
+        probe_train_secs,
+        probe_val_secs,
+        resolve_secs,
+    ) = if let Some(cached) = read_preflight_cache(&paths.cache_path)?
+        && cached.cache_key == cache_key
+    {
+        println!(
+            "{}",
+            format_preflight_summary_line(
+                "Preflight cache hit:",
+                format!(
+                    "reusing cached probe results train_mb={} val_mb={} -- re-benchmarking to verify",
+                    cached.runtime.selected.train_microbatch_size,
+                    cached.runtime.selected.validation_microbatch_size,
+                ),
+            )
+        );
+        let selected = cached.runtime.selected;
+        (
+            selected.train_microbatch_size,
+            Vec::new(),
+            None,
+            selected.validation_microbatch_size,
+            Vec::new(),
+            selected,
+            true,
+            0.0,
+            0.0,
             0.0,
         )
-    );
-    phase_pb.inc(1);
-    phase_pb.set_message(preflight_phase_label("scan runtime data"));
+    } else {
+        let phase_pb = make_bar(6, "[{bar:30.magenta/black}] {pos}/{len} {msg}")?;
+        phase_pb.set_message(preflight_phase_label("train microbatch probe"));
+
+        let train_seed = config
+            .microbatch_size
+            .unwrap_or_else(|| candidate_ladder(&config.preflight, config.batch_size)[0]);
+
+        let t_train_probe = Instant::now();
+        let (train_microbatch, train_probe_results, train_runtime_seed) =
+            search_train_microbatch(config_path, config, artifacts, train_seed)?;
+        let probe_train_secs = t_train_probe.elapsed().as_secs_f64();
+        phase_pb.inc(1);
+
+        phase_pb.set_message(preflight_phase_label("validation microbatch probe"));
+        let validation_seed = config.validation_microbatch_size.unwrap_or(train_seed);
+        let t_val_probe = Instant::now();
+        let (validation_microbatch, validation_probe_results) =
+            search_validation_microbatch(config_path, config, artifacts, validation_seed)?;
+        let probe_val_secs = t_val_probe.elapsed().as_secs_f64();
+        phase_pb.inc(1);
+
+        phase_pb.set_message(preflight_phase_label("resolve runtime"));
+        let t_resolve = Instant::now();
+        let selected = resolve_runtime_config(
+            config.batch_size,
+            explicit,
+            train_microbatch,
+            validation_microbatch,
+        );
+        let resolve_secs = t_resolve.elapsed().as_secs_f64();
+        println!(
+            "{}",
+            format_timed_phase_message(
+                "post_validation",
+                "selected validation candidate; preparing runtime tuning",
+                0.0,
+            )
+        );
+        phase_pb.inc(1);
+        phase_pb.finish_and_clear();
+
+        (
+            train_microbatch,
+            train_probe_results,
+            Some(train_runtime_seed),
+            validation_microbatch,
+            validation_probe_results,
+            selected,
+            false,
+            probe_train_secs,
+            probe_val_secs,
+            resolve_secs,
+        )
+    };
+
+    // Phase 4: Manifest scan (always runs)
+    let t_scan = Instant::now();
     let mut tuned_config = config.clone();
     tuned_config.microbatch_size = Some(selected.train_microbatch_size);
     tuned_config.validation_microbatch_size = Some(selected.validation_microbatch_size);
-    let manifest = scan_data_sources_with_progress(&config.data_dir, config.train_fraction, None)
-        .map_err(|err| {
-        format!(
-            "failed to scan preflight runtime data from {}: {err}",
-            config.data_dir.display()
+    let manifest = load_or_scan_manifest(
+        &paths.manifest_cache_path,
+        &config.data_dir,
+        config.train_fraction,
+        &config.source_filters,
+        None,
+    )
+    .map_err(|err| {
+        err.replacen(
+            "failed to scan preflight data",
+            "failed to scan preflight runtime data",
+            1,
         )
     })?;
-    phase_pb.inc(1);
-    phase_pb.set_message(preflight_phase_label("loader runtime tuning"));
+    let scan_secs = t_scan.elapsed().as_secs_f64();
+
+    // Phase 5: Loader runtime tuning (always runs)
+    let t_loader = Instant::now();
     let train_device = train_device(&config.device)?;
-    let ranked_loaders = autotune_ranked_loader_runtime(
-        &tuned_config,
-        &manifest,
-        &train_device,
-        config.preflight.real_benchmark_loader_candidates.max(1),
-    )?;
+    let ranked_loaders = if config.bc_shards_manifest_path.is_some() {
+        vec![super::runtime_autotune::RankedLoaderRuntime {
+            loader: super::config::loader_runtime_config(&tuned_config),
+            tuple: (
+                tuned_config.archive_queue_bound,
+                tuned_config.buffer_samples,
+                tuned_config.buffer_games,
+            ),
+            train_samples_per_second: 0.0,
+        }]
+    } else if let Some(seed) = train_runtime_seed {
+        autotune_ranked_loader_runtime_with_seed(
+            &tuned_config,
+            &manifest,
+            &train_device,
+            config.preflight.real_benchmark_loader_candidates.max(1),
+            seed,
+        )?
+    } else {
+        // Cache-hit path: no probe seed available, use default loader config
+        vec![super::runtime_autotune::RankedLoaderRuntime {
+            loader: super::config::loader_runtime_config(&tuned_config),
+            tuple: (
+                tuned_config.archive_queue_bound,
+                tuned_config.buffer_samples,
+                tuned_config.buffer_games,
+            ),
+            train_samples_per_second: 0.0,
+        }]
+    };
     let loader = ranked_loaders
         .first()
         .map(|ranked| ranked.loader)
         .ok_or_else(|| "loader runtime autotune returned no ranked candidates".to_string())?;
     let mut runtime = EffectiveRuntimeConfig { selected, loader };
-    phase_pb.inc(1);
-    phase_pb.set_message(preflight_phase_label("stage-2 finalist benchmark"));
-    let benchmark = if config.preflight.real_benchmark_enabled {
+    let loader_secs = t_loader.elapsed().as_secs_f64();
+
+    // Phase 6: Stage-2 finalist benchmark (always runs when enabled --
+    // the benchmark IS the ground truth for tuning values)
+    let t_benchmark = Instant::now();
+    let benchmark = if config.preflight.real_benchmark_enabled
+        && config.bc_shards_manifest_path.is_none()
+    {
+        if cache_hit {
+            println!(
+                "{}",
+                format_preflight_summary_line(
+                    "Re-benchmark:",
+                    "running stage-2 benchmark with cached probe results to verify tuning values",
+                )
+            );
+        }
         let train_candidates = diverse_probe_candidates(
             &train_probe_results,
             selected.train_microbatch_size,
@@ -1800,26 +3195,26 @@ pub(super) fn run_preflight(
             config.preflight.finalist_margin_ratio,
             runtime.loader,
         );
-        let finalists = build_stage_two_finalists(
+        let finalists = build_stage_two_finalists(StageTwoFinalistInputs {
             config,
-            &runtime,
-            &train_candidates,
-            &validation_candidates,
-            &loader_candidates,
-            &train_probe_results,
-            &validation_probe_results,
-            &ranked_loaders,
-        );
-        let best = run_stage_two_finalist_benchmark(
+            selected: &runtime,
+            train_candidates: &train_candidates,
+            validation_candidates: &validation_candidates,
+            loader_candidates: &loader_candidates,
+            train_probe_results: &train_probe_results,
+            validation_probe_results: &validation_probe_results,
+            ranked_loaders: &ranked_loaders,
+        });
+        let best = run_stage_two_finalist_benchmark(StageTwoBenchmarkContext {
             config,
-            &manifest,
-            &train_device,
+            manifest: &manifest,
+            train_device: &train_device,
             artifacts,
-            &finalists,
-            train_candidates.len(),
-            validation_candidates.len(),
-            loader_candidates.len(),
-        )?;
+            finalists: &finalists,
+            train_candidates: train_candidates.len(),
+            validation_candidates: validation_candidates.len(),
+            loader_candidates: loader_candidates.len(),
+        })?;
         runtime = EffectiveRuntimeConfig {
             selected: resolve_runtime_config(
                 config.batch_size,
@@ -1844,16 +3239,83 @@ pub(super) fn run_preflight(
     } else {
         None
     };
+    let benchmark_secs = t_benchmark.elapsed().as_secs_f64();
+
+    // Atomic cache write: only update cache after ALL work completes successfully
     write_preflight_cache(
         &paths.cache_path,
         &PreflightCacheEntry {
-            cache_key,
+            cache_key: cache_key.clone(),
             runtime,
             benchmark: benchmark.clone(),
         },
     )?;
-    phase_pb.inc(1);
-    phase_pb.finish_with_message("preflight complete".green().to_string());
+    if let Some(benchmark) = benchmark.clone() {
+        let benchmark_paths = PreflightBenchmarkPaths::new(artifacts);
+        benchmark_paths.create_root_dir()?;
+        write_preflight_benchmark_report(
+            &benchmark_paths.report_path(),
+            &PreflightBenchmarkReport {
+                cache_key,
+                runtime,
+                benchmark,
+            },
+        )?;
+    }
+
+    // Timing summary
+    let total_secs = preflight_started.elapsed().as_secs_f64();
+    if !cache_hit {
+        println!(
+            "{}",
+            format_timed_phase_message("train_probe", "microbatch search", probe_train_secs)
+        );
+        println!(
+            "{}",
+            format_timed_phase_message("validation_probe", "microbatch search", probe_val_secs)
+        );
+        println!(
+            "{}",
+            format_timed_phase_message("runtime_resolve", "config resolution", resolve_secs)
+        );
+    }
+    println!(
+        "{}",
+        format_timed_phase_message("manifest_scan", "data source scan", scan_secs)
+    );
+    println!(
+        "{}",
+        format_timed_phase_message("loader_tuning", "runtime autotune", loader_secs)
+    );
+    println!(
+        "{}",
+        format_timed_phase_message(
+            "stage_2_benchmark",
+            &format!(
+                "{} finalists",
+                benchmark
+                    .as_ref()
+                    .map(|b| b.metadata.finalists_benchmarked)
+                    .unwrap_or(0)
+            ),
+            benchmark_secs
+        )
+    );
+    if benchmark.is_some() {
+        let benchmark_paths = PreflightBenchmarkPaths::new(artifacts);
+        println!(
+            "{}",
+            format_preflight_summary_line(
+                "Preflight benchmark report:",
+                benchmark_paths.report_path().display(),
+            )
+        );
+    }
+    println!(
+        "{}",
+        format_timed_phase_message("preflight_total", "all phases complete", total_secs)
+    );
+
     Ok(PreflightRuntime {
         runtime,
         train_probe_results,
@@ -1882,6 +3344,38 @@ pub(super) fn run_rl_preflight(
         &config.device,
         default_num_threads_for_system(),
     );
+
+    if let Some(cached) = read_preflight_cache(&paths.cache_path)?
+        && cached.cache_key == cache_key
+    {
+        let tuned_games = cached.runtime.loader.buffer_games;
+        let tuned_microbatch = cached.runtime.selected.train_microbatch_size;
+        println!(
+            "{}",
+            format_preflight_summary_line(
+                "RL preflight cache hit:",
+                format!(
+                    "reusing cached runtime games_per_batch={} microbatch_size={} (identical fingerprint)",
+                    tuned_games, tuned_microbatch,
+                ),
+            )
+        );
+        println!(
+            "{}",
+            format_timed_phase_message(
+                "rl_runtime_tuning",
+                "complete (cached)",
+                started.elapsed().as_secs_f64(),
+            )
+        );
+        return Ok(RlPreflightRuntime {
+            selected_games_per_batch: tuned_games,
+            selected_microbatch_size: tuned_microbatch,
+            rl_games_probe_results: Vec::new(),
+            rl_microbatch_probe_results: Vec::new(),
+        });
+    }
+
     println!(
         "{}",
         format_timed_phase_message("rl_runtime_tuning", "starting", 0.0)
@@ -1964,8 +3458,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::config::{loader_runtime_config, ProbeChildRequest, ProbeCliRequest, RlTrainConfig};
-    use hydra_train::preflight::{PreflightConfig, ProbeStatus};
+    use crate::config::{
+        ProbeBatchChildRequest, ProbeChildRequest, ProbeCliRequest, ProbeSingleChildRequest,
+        RlTrainConfig, loader_runtime_config,
+    };
+    use crate::test_loose_replay_fixtures::{
+        write_real_preflight_fixture, write_real_probe_fixture,
+    };
+    use hydra_train::preflight::{
+        PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK,
+        PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, PreflightConfig, ProbeStatus,
+    };
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -1977,7 +3480,9 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1999,6 +3504,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -2033,26 +3539,63 @@ mod tests {
         }
     }
 
-    fn tiny_real_mjai_replay() -> String {
-        [
-            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
-            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
-            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
-            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
-            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
-            r#"{"type":"ryukyoku"}"#,
-            r#"{"type":"end_kyoku"}"#,
-        ]
-        .join("\n")
+    fn tiny_test_probe_model_config() -> HydraModelConfig {
+        HydraModelConfig::new(1)
+            .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1)
     }
 
-    fn write_real_probe_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let root = unique_test_path(label);
-        fs::create_dir_all(&root).expect("create real probe fixture dir");
-        let replay_path = root.join("game.mjai.json");
-        fs::write(&replay_path, tiny_real_mjai_replay()).expect("write real probe replay");
-        let result_path = root.join("probe-result.json");
-        (root, replay_path, result_path)
+    fn empty_manifest() -> DataManifest {
+        DataManifest {
+            sources: Vec::new(),
+            total_games: 0,
+            train_count: 0,
+            val_count: 0,
+            counts_exact: true,
+        }
+    }
+
+    fn benchmark_finalist(runtime: BenchmarkRuntimeConfig) -> BenchmarkFinalist {
+        BenchmarkFinalist {
+            runtime,
+            train_probe_samples_per_second: 0.0,
+            validation_probe_samples_per_second: 0.0,
+            loader_probe_samples_per_second: 0.0,
+        }
+    }
+
+    fn assert_probe_result_matches_with_tolerance(left: &ProbeResult, right: &ProbeResult) {
+        assert_eq!(left.kind, right.kind);
+        assert_eq!(left.candidate_microbatch, right.candidate_microbatch);
+        assert_eq!(left.status, right.status);
+        assert_eq!(left.elapsed_seconds, right.elapsed_seconds);
+        assert_eq!(left.detail, right.detail);
+        match (
+            left.measured_samples_per_second,
+            right.measured_samples_per_second,
+        ) {
+            (Some(left), Some(right)) => {
+                assert!((left - right).abs() < 1e-12);
+            }
+            (None, None) => {}
+            (left, right) => {
+                panic!("mismatched measured throughput presence: left={left:?} right={right:?}")
+            }
+        }
+    }
+
+    fn sample_stage_two_benchmark_profiling() -> ProfilingEnvelope {
+        ProfilingEnvelope::from_children(
+            PROFILING_STAGE_STAGE_2_BENCHMARK,
+            vec![
+                ProfilingEnvelope::leaf(PROFILING_STAGE_TRAIN, 10.0),
+                ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 2.0),
+                ProfilingEnvelope::leaf(PROFILING_STAGE_CHECKPOINT, 0.5),
+                ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, 0.25),
+            ],
+        )
     }
 
     #[test]
@@ -2066,17 +3609,486 @@ mod tests {
         );
     }
 
+    fn probe_result_with_runtime(
+        kind: ProbeKind,
+        candidate_microbatch: usize,
+        status: ProbeStatus,
+        measured_samples_per_second: Option<f64>,
+    ) -> ProbeResult {
+        ProbeResult {
+            kind,
+            candidate_microbatch,
+            status,
+            measured_samples_per_second,
+            elapsed_seconds: Some(1.0),
+            detail: String::new(),
+        }
+    }
+
     #[test]
-    fn run_probe_only_train_writes_success_result_for_real_loose_replay() {
-        let (root, replay_path, result_path) = write_real_probe_fixture("train-success");
+    fn exact_train_probe_runtime_seed_uses_only_exact_standard_attempts() {
         let mut config = dummy_config();
-        config.data_dir = replay_path;
+        config.preflight.required_successes = 2;
+        config.preflight.warmup_steps = 2;
+        config.preflight.measure_steps = 3;
+        config.batch_size = 256;
+        config.microbatch_size = Some(64);
+        config.archive_queue_bound = 8;
+        config.buffer_samples = 128;
+        config.buffer_games = 16;
+        let results = vec![
+            probe_result_with_runtime(ProbeKind::Train, 64, ProbeStatus::Success, Some(100.0)),
+            probe_result_with_runtime(ProbeKind::Train, 64, ProbeStatus::Success, Some(110.0)),
+            probe_result_with_runtime(ProbeKind::Train, 64, ProbeStatus::Success, Some(400.0)),
+            probe_result_with_runtime(ProbeKind::Train, 72, ProbeStatus::Success, Some(999.0)),
+        ];
+
+        let seed = exact_train_probe_runtime_seed(&config, 64, &results, 2)
+            .expect("selected train candidate should seed from exact standard attempts only");
+
+        assert_eq!(seed.train_microbatch_size, 64);
+        assert_eq!(seed.tuple, (8, 128, 16));
+        assert_eq!(seed.warmup_steps, 2);
+        assert_eq!(seed.measure_steps, 3);
+        assert_eq!(seed.stats.count, 2);
+        assert!((seed.stats.sum - 210.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exact_train_probe_runtime_seed_ignores_non_standard_or_mismatched_attempts() {
+        let mut config = dummy_config();
+        config.preflight.required_successes = 2;
+        config.preflight.warmup_steps = 2;
+        config.preflight.measure_steps = 3;
+        let selected = 64;
+
+        let wrong_candidate = vec![
+            probe_result_with_runtime(ProbeKind::Train, 32, ProbeStatus::Success, Some(100.0)),
+            probe_result_with_runtime(ProbeKind::Train, 32, ProbeStatus::Success, Some(110.0)),
+        ];
+        assert!(exact_train_probe_runtime_seed(&config, selected, &wrong_candidate, 2).is_none());
+
+        let non_standard_only = vec![
+            probe_result_with_runtime(
+                ProbeKind::Train,
+                selected,
+                ProbeStatus::Success,
+                Some(100.0),
+            ),
+            probe_result_with_runtime(
+                ProbeKind::Train,
+                selected,
+                ProbeStatus::Success,
+                Some(110.0),
+            ),
+            probe_result_with_runtime(
+                ProbeKind::Train,
+                selected,
+                ProbeStatus::Success,
+                Some(120.0),
+            ),
+        ];
+        assert!(exact_train_probe_runtime_seed(&config, selected, &non_standard_only, 1).is_none());
+
+        let missing_throughput = vec![
+            probe_result_with_runtime(
+                ProbeKind::Train,
+                selected,
+                ProbeStatus::Success,
+                Some(100.0),
+            ),
+            probe_result_with_runtime(ProbeKind::Train, selected, ProbeStatus::Success, None),
+        ];
+        assert!(
+            exact_train_probe_runtime_seed(&config, selected, &missing_throughput, 2).is_none()
+        );
+
+        let failed_attempt = vec![
+            probe_result_with_runtime(
+                ProbeKind::Train,
+                selected,
+                ProbeStatus::Success,
+                Some(100.0),
+            ),
+            probe_result_with_runtime(
+                ProbeKind::Train,
+                selected,
+                ProbeStatus::BackendError,
+                Some(110.0),
+            ),
+        ];
+        assert!(exact_train_probe_runtime_seed(&config, selected, &failed_attempt, 2).is_none());
+
+        let mixed_kind = vec![
+            probe_result_with_runtime(
+                ProbeKind::Train,
+                selected,
+                ProbeStatus::Success,
+                Some(100.0),
+            ),
+            probe_result_with_runtime(
+                ProbeKind::Validation,
+                selected,
+                ProbeStatus::Success,
+                Some(110.0),
+            ),
+        ];
+        assert!(exact_train_probe_runtime_seed(&config, selected, &mixed_kind, 2).is_none());
+    }
+
+    #[test]
+    fn benchmark_score_builds_stage_two_profiling_projection() {
+        let config = dummy_config();
+        let evaluation = benchmark_score(&config, &sample_stage_two_benchmark_profiling(), 512);
+
+        assert_eq!(
+            evaluation.profiling.stage,
+            PROFILING_STAGE_STAGE_2_BENCHMARK
+        );
+        assert_eq!(evaluation.profiling.children.len(), 4);
+        assert_eq!(evaluation.score.train_seconds, 10.0);
+        assert_eq!(evaluation.score.validation_seconds, 2.0);
+        assert_eq!(evaluation.score.checkpoint_seconds, 0.5);
+        assert_eq!(evaluation.score.logging_seconds, 0.25);
+        assert_eq!(evaluation.score.validation_samples, 512);
+        assert!(evaluation.score.wall_clock_samples_per_second.is_finite());
+    }
+
+    #[test]
+    fn stage_two_finalists_accept_loader_ranked_first_by_runtime_autotune() {
+        let mut config = dummy_config();
+        config.preflight.real_benchmark_loader_candidates = 1;
+        config.preflight.real_benchmark_max_finalists = 2;
+        let selected_loader = LoaderRuntimeConfig {
+            num_threads: Some(6),
+            buffer_games: 32,
+            buffer_samples: 256,
+            archive_queue_bound: 16,
+        };
+        let ranked_loaders = vec![
+            RankedLoaderRuntime {
+                loader: selected_loader,
+                tuple: (16, 256, 32),
+                train_samples_per_second: 105.0,
+            },
+            RankedLoaderRuntime {
+                loader: loader_runtime_config(&dummy_config()),
+                tuple: (8, 128, 16),
+                train_samples_per_second: 100.0,
+            },
+        ];
+        let selected = EffectiveRuntimeConfig {
+            selected: hydra_train::preflight::SelectedRuntimeConfig {
+                train_microbatch_size: 64,
+                validation_microbatch_size: 32,
+                accum_steps: 4,
+            },
+            loader: selected_loader,
+        };
+        let train_candidates = vec![ProbeCandidateSummary {
+            candidate_microbatch: 64,
+            status: ProbeStatus::Success,
+            attempts: 1,
+            average_samples_per_second: Some(400.0),
+            average_elapsed_seconds: Some(1.0),
+        }];
+        let validation_candidates = vec![ProbeCandidateSummary {
+            candidate_microbatch: 32,
+            status: ProbeStatus::Success,
+            attempts: 1,
+            average_samples_per_second: Some(300.0),
+            average_elapsed_seconds: Some(1.0),
+        }];
+
+        let loader_candidates = select_loader_finalists(
+            &ranked_loaders,
+            config.preflight.real_benchmark_loader_candidates,
+            config.preflight.finalist_margin_ratio,
+            selected.loader,
+        );
+        let finalists = build_stage_two_finalists(StageTwoFinalistInputs {
+            config: &config,
+            selected: &selected,
+            train_candidates: &train_candidates,
+            validation_candidates: &validation_candidates,
+            loader_candidates: &loader_candidates,
+            train_probe_results: &[],
+            validation_probe_results: &[],
+            ranked_loaders: &ranked_loaders,
+        });
+
+        assert_eq!(loader_candidates.len(), 1);
+        assert_eq!(loader_candidates[0].loader, selected_loader);
+        assert!(
+            finalists
+                .iter()
+                .any(|finalist| finalist.runtime.loader == selected_loader)
+        );
+        assert_eq!(finalists[0].runtime.loader, selected_loader);
+        assert_eq!(finalists[0].loader_probe_samples_per_second, 105.0);
+    }
+
+    #[test]
+    fn stage_two_validation_cache_plan_groups_only_identical_validation_workloads() {
+        let mut config = dummy_config();
+        config.batch_size = 32;
+        let shared_loader = LoaderRuntimeConfig {
+            num_threads: Some(2),
+            buffer_games: 8,
+            buffer_samples: 64,
+            archive_queue_bound: 4,
+        };
+        let other_loader = LoaderRuntimeConfig {
+            num_threads: Some(4),
+            ..shared_loader
+        };
+        let shared_runtime_a = BenchmarkRuntimeConfig {
+            train_microbatch_size: 16,
+            validation_microbatch_size: 8,
+            accum_steps: 2,
+            loader: shared_loader,
+        };
+        let shared_runtime_b = BenchmarkRuntimeConfig {
+            train_microbatch_size: 32,
+            validation_microbatch_size: 8,
+            accum_steps: 1,
+            loader: shared_loader,
+        };
+        let other_runtime = BenchmarkRuntimeConfig {
+            train_microbatch_size: 32,
+            validation_microbatch_size: 8,
+            accum_steps: 1,
+            loader: other_loader,
+        };
+        let shared_key = stage_two_benchmark_validation_cache_key(
+            &benchmark_validation_config(&config, shared_runtime_a),
+            shared_loader,
+        );
+        let other_key = stage_two_benchmark_validation_cache_key(
+            &benchmark_validation_config(&config, other_runtime),
+            other_loader,
+        );
+
+        let plan = stage_two_benchmark_validation_cache_plan(
+            &config,
+            &[
+                benchmark_finalist(shared_runtime_a),
+                benchmark_finalist(shared_runtime_b),
+                benchmark_finalist(other_runtime),
+            ],
+        );
+
+        assert_eq!(shared_key.validation_sample_limit, Some(64));
+        assert_eq!(plan.get(&shared_key), Some(&2));
+        assert_eq!(plan.get(&other_key), Some(&1));
+        assert_eq!(plan.len(), 2);
+    }
+
+    #[test]
+    fn stage_two_validation_cache_key_separates_resolved_sample_limits() {
+        let mut config = dummy_config();
+        config.batch_size = 32;
+        config.max_validation_batches = Some(3);
+        let loader = LoaderRuntimeConfig {
+            num_threads: Some(2),
+            buffer_games: 8,
+            buffer_samples: 64,
+            archive_queue_bound: 4,
+        };
+        let smaller_runtime = BenchmarkRuntimeConfig {
+            train_microbatch_size: 16,
+            validation_microbatch_size: 8,
+            accum_steps: 2,
+            loader,
+        };
+        let larger_runtime = BenchmarkRuntimeConfig {
+            train_microbatch_size: 16,
+            validation_microbatch_size: 16,
+            accum_steps: 2,
+            loader,
+        };
+        let smaller_key = stage_two_benchmark_validation_cache_key(
+            &benchmark_validation_config(&config, smaller_runtime),
+            loader,
+        );
+        let larger_key = stage_two_benchmark_validation_cache_key(
+            &benchmark_validation_config(&config, larger_runtime),
+            loader,
+        );
+
+        let plan = stage_two_benchmark_validation_cache_plan(
+            &config,
+            &[
+                benchmark_finalist(smaller_runtime),
+                benchmark_finalist(larger_runtime),
+            ],
+        );
+
+        assert_ne!(smaller_key, larger_key);
+        assert_eq!(smaller_key.validation_sample_limit, Some(24));
+        assert_eq!(larger_key.validation_sample_limit, Some(48));
+        assert_eq!(plan.get(&smaller_key), Some(&1));
+        assert_eq!(plan.get(&larger_key), Some(&1));
+    }
+
+    #[test]
+    fn stage_two_validation_cache_drops_entries_after_planned_reuses() {
+        let mut config = dummy_config();
+        config.batch_size = 32;
+        let loader = LoaderRuntimeConfig {
+            num_threads: Some(2),
+            buffer_games: 8,
+            buffer_samples: 64,
+            archive_queue_bound: 4,
+        };
+        let runtime_a = BenchmarkRuntimeConfig {
+            train_microbatch_size: 16,
+            validation_microbatch_size: 8,
+            accum_steps: 2,
+            loader,
+        };
+        let runtime_b = BenchmarkRuntimeConfig {
+            train_microbatch_size: 32,
+            validation_microbatch_size: 8,
+            accum_steps: 1,
+            loader,
+        };
+        let benchmark_config = benchmark_validation_config(&config, runtime_a);
+        let key = stage_two_benchmark_validation_cache_key(&benchmark_config, loader);
+        let mut cache = StageTwoBenchmarkValidationCache::new(
+            &config,
+            &[benchmark_finalist(runtime_a), benchmark_finalist(runtime_b)],
+        );
+
+        assert_eq!(cache.entries.len(), 1);
+
+        let (first_samples, first_materialization_seconds) = cache
+            .checkout(key, &benchmark_config, &empty_manifest())
+            .expect("first cache checkout should materialize cached validation samples");
+        assert!(first_samples.is_some());
+        assert!(first_materialization_seconds >= 0.0);
+        assert_eq!(
+            cache.entries.get(&key).map(|entry| entry.remaining_uses),
+            Some(1)
+        );
+
+        let (second_samples, second_materialization_seconds) = cache
+            .checkout(key, &benchmark_config, &empty_manifest())
+            .expect("second cache checkout should reuse cached validation samples");
+        assert!(second_samples.is_some());
+        assert!((second_materialization_seconds - first_materialization_seconds).abs() < 1e-12);
+        assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn benchmark_validation_pass_charges_materialization_seconds_into_validation_time() {
+        let mut config = dummy_config();
+        config.batch_size = 32;
+        let device = LibTorchDevice::Cpu;
+        let train_cfg = trainer_config_from_train_config(&config);
+        let optimizer: BenchmarkOptimizerOf<TrainBackend> = train_cfg.optimizer_config().init();
+        let mut outcome = TrainBenchmarkOutcome {
+            model: tiny_test_probe_model_config().init::<TrainBackend>(&device),
+            optimizer,
+            head_controller: HeadActivationController::new(
+                HeadActivationConfig::default_with_params(1),
+            ),
+            stats: ScalarAverages::default(),
+            elapsed_seconds: 0.0,
+        };
+
+        let (summary, validation_seconds) = benchmark_validation_pass(
+            &config,
+            &empty_manifest(),
+            &device,
+            &mut outcome,
+            Some(&[]),
+            0.75,
+        )
+        .expect("benchmark validation pass should succeed on empty cached validation samples");
+
+        assert_eq!(summary.samples, 0);
+        assert!(validation_seconds >= 0.75);
+    }
+
+    #[test]
+    fn stage_two_benchmark_scopes_record_expected_nested_order() {
+        let (result, events) = crate::nvtx::with_test_recorder(|| {
+            run_stage_two_benchmark_scopes(
+                || Ok(10usize),
+                |train_outcome| {
+                    *train_outcome += 1;
+                    Ok((20usize, 2.5f64))
+                },
+                |_, _| Ok(0.5),
+                |_, _| Ok(0.25),
+            )
+            .expect("stage two benchmark scopes should succeed")
+        });
+
+        assert_eq!(result, (11, (20, 2.5), 0.5, 0.25));
+        assert_eq!(
+            events,
+            vec![
+                "push:stage_2_benchmark".to_string(),
+                "push:train".to_string(),
+                "pop:train".to_string(),
+                "push:validation".to_string(),
+                "pop:validation".to_string(),
+                "push:checkpoint".to_string(),
+                "pop:checkpoint".to_string(),
+                "push:logging".to_string(),
+                "pop:logging".to_string(),
+                "pop:stage_2_benchmark".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn run_probe_only_train_writes_success_result_for_real_loose_replay_variants() {
+        let (root, replay_path, _result_path) = write_real_probe_fixture("train-success");
+        let manifest =
+            crate::test_loose_replay_fixtures::loose_file_manifest(replay_path.clone(), 1, 0);
+
+        assert_probe_only_train_success_real_loose_replay_case(
+            &root,
+            &replay_path,
+            &manifest,
+            "fp32",
+            crate::config::PrecisionMode::Fp32,
+        );
+
+        assert_probe_only_train_success_real_loose_replay_case(
+            &root,
+            &replay_path,
+            &manifest,
+            "bf16",
+            crate::config::PrecisionMode::Bf16Autocast,
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn assert_probe_only_train_success_real_loose_replay_case(
+        root: &Path,
+        replay_path: &Path,
+        manifest: &DataManifest,
+        label: &str,
+        precision_mode: crate::config::PrecisionMode,
+    ) {
+        let result_path = root.join(format!("probe-result-{label}.json"));
+        let mut config = dummy_config();
+        config.data_dir = replay_path.to_path_buf();
+        config.output_dir = root.join(format!("out-{label}"));
         config.batch_size = 1;
         config.train_fraction = 1.0;
         config.device = "cpu".to_string();
+        config.precision_mode = precision_mode;
 
-        run_probe_only(
+        run_probe_only_with_model_config(
             &config,
+            &tiny_test_probe_model_config(),
+            Some(manifest),
             ProbeRequest {
                 kind: ProbeKind::Train,
                 candidate_microbatch: 1,
@@ -2097,21 +4109,24 @@ mod tests {
         assert!(result.measured_samples_per_second.is_some());
         assert!(result.elapsed_seconds.is_some());
         assert_eq!(result.detail, "stable train probe on real dataset");
-
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn run_probe_only_validation_writes_success_result_for_real_loose_replay() {
         let (root, replay_path, result_path) = write_real_probe_fixture("validation-success");
+        let manifest =
+            crate::test_loose_replay_fixtures::loose_file_manifest(replay_path.clone(), 0, 1);
         let mut config = dummy_config();
         config.data_dir = replay_path;
+        config.output_dir = root.join("out");
         config.batch_size = 1;
         config.train_fraction = 0.0;
         config.device = "cpu".to_string();
 
-        run_probe_only(
+        run_probe_only_with_model_config(
             &config,
+            &tiny_test_probe_model_config(),
+            Some(&manifest),
             ProbeRequest {
                 kind: ProbeKind::Validation,
                 candidate_microbatch: 1,
@@ -2135,6 +4150,24 @@ mod tests {
         assert_eq!(result.detail, "stable validation probe on real dataset");
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn benchmark_train_window_bf16_fails_fast_without_train_data() {
+        let config = dummy_config();
+        let err = benchmark_train_window_for_backend::<TrainBackend>(
+            &config,
+            &tiny_test_probe_model_config(),
+            &empty_manifest(),
+            &LibTorchDevice::Cpu,
+        )
+        .err()
+        .expect("empty manifests should fail before BF16 stage-2 train benchmarking");
+
+        assert_eq!(
+            err,
+            "not enough train data to finish stage-2 benchmark train window"
+        );
     }
 
     #[test]
@@ -2409,7 +4442,7 @@ mod tests {
 
         let warmup_err = run_probe_child_mode(
             &config,
-            Some(ProbeChildRequest {
+            Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
                 request: ProbeCliRequest {
                     kind: ProbeKind::Train,
                     candidate_microbatch: 32,
@@ -2417,7 +4450,8 @@ mod tests {
                     measure_steps: Some(2),
                 },
                 result_path: result_path.clone(),
-            }),
+                manifest_cache_path: None,
+            })),
         )
         .expect_err("missing warmup steps should be rejected before running child mode");
         assert_eq!(
@@ -2427,7 +4461,7 @@ mod tests {
 
         let measure_err = run_probe_child_mode(
             &config,
-            Some(ProbeChildRequest {
+            Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
                 request: ProbeCliRequest {
                     kind: ProbeKind::Validation,
                     candidate_microbatch: 32,
@@ -2435,7 +4469,8 @@ mod tests {
                     measure_steps: None,
                 },
                 result_path,
-            }),
+                manifest_cache_path: None,
+            })),
         )
         .expect_err("missing measure steps should be rejected before running child mode");
         assert_eq!(
@@ -2448,11 +4483,12 @@ mod tests {
     fn run_probe_child_mode_bubbles_probe_runtime_errors_after_cli_resolution() {
         let mut config = dummy_config();
         config.data_dir = missing_test_path("probe-child-missing-data");
+        config.output_dir = unique_test_path("probe-child-runtime-error-out");
         let result_path = unique_test_path("probe-child-runtime-error.json");
 
         let err = run_probe_child_mode(
             &config,
-            Some(ProbeChildRequest {
+            Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
                 request: ProbeCliRequest {
                     kind: ProbeKind::Validation,
                     candidate_microbatch: 32,
@@ -2460,7 +4496,8 @@ mod tests {
                     measure_steps: Some(1),
                 },
                 result_path: result_path.clone(),
-            }),
+                manifest_cache_path: None,
+            })),
         )
         .expect_err("resolved child requests should bubble probe runtime errors");
 
@@ -2470,13 +4507,146 @@ mod tests {
     }
 
     #[test]
+    fn run_probe_child_mode_reuses_manifest_cache_for_child_probe_scan_bypass() {
+        let (root, replay_path, result_path) =
+            write_real_probe_fixture("probe-child-manifest-reuse");
+        let mut config = dummy_config();
+        config.data_dir = missing_test_path("probe-child-missing-data-but-cached-manifest");
+        config.batch_size = 1;
+        config.train_fraction = 0.0;
+        config.device = "cpu".to_string();
+
+        let manifest_cache_path = root.join("preflight_manifest.json");
+        write_manifest_cache(
+            &manifest_cache_path,
+            &ManifestCacheEntry {
+                data_dir: replay_path.clone(),
+                train_fraction_bits: 0.0f32.to_bits(),
+                include_source_patterns: Vec::new(),
+                exclude_source_patterns: Vec::new(),
+                manifest: DataManifest {
+                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
+                        replay_path,
+                    )],
+                    total_games: 1,
+                    train_count: 0,
+                    val_count: 1,
+                    counts_exact: true,
+                },
+            },
+        )
+        .expect("write manifest cache for child probe");
+
+        run_probe_child_mode_with_model_config(
+            &config,
+            Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Validation,
+                    candidate_microbatch: 1,
+                    warmup_steps: Some(1),
+                    measure_steps: Some(1),
+                },
+                result_path: result_path.clone(),
+                manifest_cache_path: Some(manifest_cache_path),
+            })),
+            &tiny_test_probe_model_config(),
+        )
+        .expect("child probe should reuse manifest cache and succeed without rescanning data_dir");
+
+        assert!(result_path.exists());
+        let raw = fs::read_to_string(&result_path).expect("read child probe result");
+        let result: ProbeResult =
+            serde_json::from_str(&raw).expect("deserialize child probe result");
+        assert_eq!(result.kind, ProbeKind::Validation);
+        assert_eq!(result.status, ProbeStatus::Success);
+        assert!(result.measured_samples_per_second.is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_probe_child_batch_mode_reuses_manifest_cache_across_attempts() {
+        let (root, replay_path, _result_path) =
+            write_real_probe_fixture("probe-child-batch-manifest-reuse");
+        let mut config = dummy_config();
+        config.data_dir = missing_test_path("probe-child-batch-missing-data-but-cached-manifest");
+        config.batch_size = 1;
+        config.train_fraction = 0.0;
+        config.device = "cpu".to_string();
+
+        let manifest_cache_path = root.join("preflight_manifest.json");
+        let results_path = root.join("probe-batch-results.json");
+        write_manifest_cache(
+            &manifest_cache_path,
+            &ManifestCacheEntry {
+                data_dir: replay_path.clone(),
+                train_fraction_bits: 0.0f32.to_bits(),
+                include_source_patterns: Vec::new(),
+                exclude_source_patterns: Vec::new(),
+                manifest: DataManifest {
+                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
+                        replay_path,
+                    )],
+                    total_games: 1,
+                    train_count: 0,
+                    val_count: 1,
+                    counts_exact: true,
+                },
+            },
+        )
+        .expect("write manifest cache for child batch probe");
+
+        let artifact = run_probe_child_batch_mode_result(
+            &config,
+            Some(ProbeChildRequest::Batch(ProbeBatchChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Validation,
+                    candidate_microbatch: 1,
+                    warmup_steps: Some(1),
+                    measure_steps: Some(1),
+                },
+                attempts: 2,
+                results_path: results_path.clone(),
+                manifest_cache_path: Some(manifest_cache_path),
+            })),
+        )
+        .expect("child batch probe should reuse manifest cache across attempts")
+        .expect("child batch artifact should be present");
+
+        assert!(artifact.is_finished());
+        assert_eq!(artifact.results.len(), 2);
+        assert!(
+            artifact
+                .results
+                .iter()
+                .all(|result| result.kind == ProbeKind::Validation)
+        );
+        assert!(
+            artifact
+                .results
+                .iter()
+                .all(|result| result.status == ProbeStatus::Success)
+        );
+
+        let persisted = super::super::probe_process::read_probe_batch_artifact(&results_path)
+            .expect("persisted child batch artifact should parse");
+        assert_eq!(persisted.is_finished(), artifact.is_finished());
+        assert_eq!(persisted.results.len(), artifact.results.len());
+        for (persisted_result, artifact_result) in persisted.results.iter().zip(&artifact.results) {
+            assert_probe_result_matches_with_tolerance(persisted_result, artifact_result);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn run_probe_child_mode_routes_rl_requests_into_rl_probe_wrapper_errors() {
         let config = dummy_config();
         let result_path = unique_test_path("probe-child-rl-runtime-error.json");
 
         let err = run_probe_child_mode(
             &config,
-            Some(ProbeChildRequest {
+            Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
                 request: ProbeCliRequest {
                     kind: ProbeKind::RlGames,
                     candidate_microbatch: 8,
@@ -2484,7 +4654,8 @@ mod tests {
                     measure_steps: Some(1),
                 },
                 result_path: result_path.clone(),
-            }),
+                manifest_cache_path: None,
+            })),
         )
         .expect_err("resolved RL child requests should route into the RL probe wrapper");
 
@@ -2655,7 +4826,7 @@ mod tests {
 
         let err = run_probe_child_mode(
             &config,
-            Some(ProbeChildRequest {
+            Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
                 request: ProbeCliRequest {
                     kind: ProbeKind::RlMicrobatch,
                     candidate_microbatch: 16,
@@ -2663,7 +4834,8 @@ mod tests {
                     measure_steps: Some(1),
                 },
                 result_path: result_path.clone(),
-            }),
+                manifest_cache_path: None,
+            })),
         )
         .expect_err("invalid rayon thread config should bubble before child probe execution");
 
@@ -2675,6 +4847,7 @@ mod tests {
     fn run_probe_only_train_fails_fast_when_dataset_scan_cannot_start() {
         let mut config = dummy_config();
         config.data_dir = missing_test_path("missing-train-data");
+        config.output_dir = unique_test_path("missing-train-data-out");
         let result_path = unique_test_path("train-probe-result.json");
 
         let err = run_probe_only(
@@ -2700,6 +4873,7 @@ mod tests {
         fs::create_dir_all(&root).expect("create empty data dir");
         let mut config = dummy_config();
         config.data_dir = root.clone();
+        config.output_dir = unique_test_path("train-invalid-device-out");
         config.device = "definitely-not-a-device".to_string();
         let result_path = unique_test_path("train-invalid-device-result.json");
 
@@ -2726,6 +4900,7 @@ mod tests {
         fs::create_dir_all(&root).expect("create empty data dir");
         let mut config = dummy_config();
         config.data_dir = root.clone();
+        config.output_dir = unique_test_path("validation-invalid-device-out");
         config.device = "definitely-not-a-device".to_string();
         let result_path = unique_test_path("validation-invalid-device-result.json");
 
@@ -2750,6 +4925,7 @@ mod tests {
     fn run_probe_ladder_only_fails_before_probe_attempts_when_data_scan_fails() {
         let mut config = dummy_config();
         config.data_dir = missing_test_path("missing-ladder-data");
+        config.output_dir = unique_test_path("missing-ladder-data-out");
         let artifacts = BcArtifactPaths::new(&unique_test_path("ladder-artifacts"), 0);
 
         let err = run_probe_ladder_only(
@@ -2767,6 +4943,115 @@ mod tests {
 
         assert!(err.starts_with("failed to scan preflight data from "));
         assert!(err.contains(config.data_dir.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn run_probe_ladder_only_rescans_when_manifest_cache_data_dir_mismatches() {
+        let (root, replay_path, _) = write_real_probe_fixture("ladder-manifest-mismatch");
+        let mut config = dummy_config();
+        config.data_dir = root.clone();
+        config.output_dir = unique_test_path("ladder-manifest-mismatch-out");
+        config.device = "definitely-not-a-device".to_string();
+        let config_path = unique_test_path("ladder-manifest-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize ladder manifest config");
+        fs::write(&config_path, config_yaml).expect("write ladder manifest config");
+        let artifacts = BcArtifactPaths::new(&unique_test_path("ladder-manifest-artifacts"), 0);
+        artifacts
+            .create_root_dir()
+            .expect("create ladder artifact root");
+        let manifest_cache_path = PreflightPaths::new(&artifacts).manifest_cache_path;
+        write_manifest_cache(
+            &manifest_cache_path,
+            &ManifestCacheEntry {
+                data_dir: missing_test_path("stale-ladder-data-dir"),
+                train_fraction_bits: config.train_fraction.to_bits(),
+                include_source_patterns: Vec::new(),
+                exclude_source_patterns: Vec::new(),
+                manifest: DataManifest {
+                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
+                        replay_path,
+                    )],
+                    total_games: 1,
+                    train_count: 1,
+                    val_count: 0,
+                    counts_exact: true,
+                },
+            },
+        )
+        .expect("write stale manifest cache");
+
+        let err = run_probe_ladder_only(
+            &config_path,
+            &config,
+            &artifacts,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err("mismatched manifest cache should fall back to rescanning real data");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(artifacts.root);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn run_probe_ladder_only_rescans_when_manifest_cache_train_fraction_mismatches() {
+        let (root, replay_path, _) = write_real_probe_fixture("ladder-manifest-fraction-mismatch");
+        let mut config = dummy_config();
+        config.data_dir = root.clone();
+        config.output_dir = unique_test_path("ladder-manifest-fraction-mismatch-out");
+        config.device = "definitely-not-a-device".to_string();
+        let config_path =
+            unique_test_path("ladder-manifest-fraction-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize ladder fraction config");
+        fs::write(&config_path, config_yaml).expect("write ladder fraction config");
+        let artifacts = BcArtifactPaths::new(&unique_test_path("ladder-fraction-artifacts"), 0);
+        artifacts
+            .create_root_dir()
+            .expect("create ladder fraction artifact root");
+        let manifest_cache_path = PreflightPaths::new(&artifacts).manifest_cache_path;
+        write_manifest_cache(
+            &manifest_cache_path,
+            &ManifestCacheEntry {
+                data_dir: root.clone(),
+                train_fraction_bits: 0.0f32.to_bits(),
+                include_source_patterns: Vec::new(),
+                exclude_source_patterns: Vec::new(),
+                manifest: DataManifest {
+                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
+                        replay_path,
+                    )],
+                    total_games: 1,
+                    train_count: 0,
+                    val_count: 1,
+                    counts_exact: true,
+                },
+            },
+        )
+        .expect("write stale train-fraction manifest cache");
+
+        let err = run_probe_ladder_only(
+            &config_path,
+            &config,
+            &artifacts,
+            ProbeRequest {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                warmup_steps: 1,
+                measure_steps: 1,
+            },
+        )
+        .expect_err("mismatched train_fraction cache should fall back to rescanning real data");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(artifacts.root);
+        let _ = fs::remove_file(config_path);
     }
 
     #[test]
@@ -2851,6 +5136,79 @@ mod tests {
     }
 
     #[test]
+    fn run_preflight_succeeds_on_real_loose_replay_in_bf16_mode() {
+        let root = write_real_preflight_fixture("preflight-success-bf16");
+        let output_dir = unique_test_path("preflight-success-bf16-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        artifacts
+            .create_root_dir()
+            .expect("create BF16 preflight artifact root");
+        let mut config = dummy_config();
+        config.data_dir = root.clone();
+        config.output_dir = output_dir.clone();
+        config.batch_size = 1;
+        config.microbatch_size = Some(1);
+        config.validation_microbatch_size = Some(1);
+        config.train_fraction = 0.5;
+        config.augment = false;
+        config.buffer_games = 1;
+        config.buffer_samples = 1;
+        config.archive_queue_bound = 1;
+        config.device = "cpu".to_string();
+        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        config.preflight.allow_override_explicit_microbatch = false;
+        config.preflight.required_successes = 1;
+        config.preflight.warmup_steps = 1;
+        config.preflight.measure_steps = 1;
+        config.preflight.real_benchmark_enabled = false;
+        config.preflight.loader_runtime_rounds = 0;
+        config.preflight.loader_tuple_extra_samples = 0;
+        config.preflight.real_benchmark_loader_candidates = 1;
+        config.preflight.real_benchmark_train_candidates = 1;
+        config.preflight.real_benchmark_validation_candidates = 1;
+        config.preflight.finalist_max_candidates = 1;
+        config.preflight.candidate_microbatches = vec![1];
+        config.preflight.local_refinement_enabled = false;
+        config.preflight.search_coordinate_rounds = 0;
+        let config_path = unique_test_path("preflight-success-bf16-config").with_extension("yaml");
+        let config_yaml =
+            serde_yaml::to_string(&config).expect("serialize valid BF16 preflight config");
+        fs::write(&config_path, config_yaml).expect("write valid BF16 preflight config yaml");
+
+        let runtime = run_preflight(
+            &config_path,
+            &config,
+            &tiny_test_probe_model_config(),
+            "cpu",
+            &artifacts,
+        )
+        .expect("BF16 preflight should succeed on a real loose replay");
+
+        assert_eq!(runtime.runtime.selected.train_microbatch_size, 1);
+        assert_eq!(runtime.runtime.selected.validation_microbatch_size, 1);
+        assert_eq!(runtime.runtime.selected.accum_steps, 1);
+        assert!(runtime.benchmark.is_none());
+        assert!(!runtime.train_probe_results.is_empty());
+        assert!(!runtime.validation_probe_results.is_empty());
+        assert!(
+            runtime
+                .train_probe_results
+                .iter()
+                .any(|result| result.status == ProbeStatus::Success)
+        );
+        assert!(
+            runtime
+                .validation_probe_results
+                .iter()
+                .any(|result| result.status == ProbeStatus::Success)
+        );
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(output_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
     fn run_rl_preflight_handles_missing_rl_config_and_invalid_probe_config_path() {
         let train_device = LibTorchDevice::Cpu;
         let config_path = write_temp_file("invalid-rl-preflight-config", "txt", "not yaml");
@@ -2913,7 +5271,10 @@ mod tests {
         )
         .expect_err("explicit RL microbatch failure should use explicit-only error path");
 
-        assert_eq!(err, "explicit rl_microbatch candidate 24 failed preflight");
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
         let _ = fs::remove_dir_all(data_dir);
         let _ = fs::remove_file(config_path);
     }
@@ -2939,7 +5300,10 @@ mod tests {
         let err = search_train_microbatch(&config_path, &config, &artifacts, 64)
             .expect_err("explicit train microbatch failure should use explicit-only error path");
 
-        assert_eq!(err, "explicit train microbatch 96 failed preflight");
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
         let _ = fs::remove_dir_all(data_dir);
         let _ = fs::remove_file(config_path);
     }
@@ -2963,7 +5327,10 @@ mod tests {
         let err = search_train_microbatch(&config_path, &config, &artifacts, 64)
             .expect_err("all-failing train search should report no stable result");
 
-        assert_eq!(err, "no stable train microbatch found in preflight");
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
         let _ = fs::remove_dir_all(data_dir);
         let _ = fs::remove_file(config_path);
     }
@@ -2991,7 +5358,10 @@ mod tests {
             "explicit validation microbatch failure should use explicit-only error path",
         );
 
-        assert_eq!(err, "explicit validation microbatch 48 failed preflight");
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
         let _ = fs::remove_dir_all(data_dir);
         let _ = fs::remove_file(config_path);
     }
@@ -3016,7 +5386,10 @@ mod tests {
         let err = search_validation_microbatch(&config_path, &config, &artifacts, 32)
             .expect_err("non-explicit validation failure should report no stable result");
 
-        assert_eq!(err, "no stable validation microbatch found in preflight");
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
         let _ = fs::remove_dir_all(data_dir);
         let _ = fs::remove_file(config_path);
     }
@@ -3042,7 +5415,10 @@ mod tests {
             search_rl_runtime_candidate(&config_path, &config, &artifacts, ProbeKind::RlGames, 16)
                 .expect_err("all-failing RL games search should report no stable result");
 
-        assert_eq!(err, "no stable rl_games candidate found in preflight");
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
         let _ = fs::remove_dir_all(data_dir);
         let _ = fs::remove_file(config_path);
     }
@@ -3074,7 +5450,10 @@ mod tests {
         )
         .expect_err("all-failing RL microbatch search should report no stable result");
 
-        assert_eq!(err, "no stable rl_microbatch candidate found in preflight");
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
         let _ = fs::remove_dir_all(data_dir);
         let _ = fs::remove_file(config_path);
     }
@@ -3115,11 +5494,15 @@ mod tests {
         config.preflight.rl_probe_memory_headroom_ratio = 0.0;
         config.preflight.rl_probe_growth_safety_factor = 1.0;
 
-        let blocked =
-            maybe_block_host_ram_growth_probe(&config, ProbeKind::RlMicrobatch, 64, Some(32))
-                .expect(
-                "growth probe should be blocked when required free memory matches available memory",
-            );
+        let blocked = maybe_block_host_ram_growth_probe(
+            &config,
+            ProbeKind::RlMicrobatch,
+            64,
+            Some(32),
+        )
+        .expect(
+            "growth probe should be blocked when required free memory matches available memory",
+        );
 
         assert_eq!(blocked.kind, ProbeKind::RlMicrobatch);
         assert_eq!(blocked.candidate_microbatch, 64);
@@ -3237,6 +5620,7 @@ mod tests {
     fn run_probe_ladder_only_accepts_rl_request_wrapper_and_fails_on_missing_data_first() {
         let mut config = dummy_config();
         config.data_dir = missing_test_path("missing-rl-ladder-data");
+        config.output_dir = unique_test_path("missing-rl-ladder-data-out");
         config.rl = Some(dummy_rl_train_config());
         let artifacts = BcArtifactPaths::new(&unique_test_path("rl-ladder-artifacts"), 0);
 
@@ -3382,5 +5766,343 @@ mod tests {
 
         assert!(summary.contains("[train] candidate_mb=40 outcome=backend_error(generic)"));
         assert!(summary.ends_with("detail="));
+    }
+
+    #[test]
+    fn run_preflight_returns_cached_runtime_on_identical_fingerprint() {
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
+        use crate::preflight_fingerprint::preflight_cache_key;
+        use hydra_train::preflight::{
+            EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
+        };
+
+        let output_dir = unique_test_path("preflight-cache-hit-out");
+        let data_dir = unique_test_path("preflight-cache-hit-data");
+        fs::create_dir_all(&data_dir).expect("create empty data dir for cache hit test");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        artifacts
+            .create_root_dir()
+            .expect("create artifact root for cache hit test");
+
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.preflight.real_benchmark_enabled = false;
+        let model_config = HydraModelConfig::learner();
+        let key = preflight_cache_key(
+            &config,
+            &model_config,
+            "cpu",
+            crate::config::default_num_threads_for_system(),
+        );
+
+        let cached_runtime = EffectiveRuntimeConfig {
+            selected: SelectedRuntimeConfig {
+                train_microbatch_size: 42,
+                validation_microbatch_size: 21,
+                accum_steps: 7,
+            },
+            loader: LoaderRuntimeConfig {
+                num_threads: Some(4),
+                buffer_games: 256,
+                buffer_samples: 1024,
+                archive_queue_bound: 16,
+            },
+        };
+        let paths = PreflightPaths::new(&artifacts);
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: key,
+                runtime: cached_runtime,
+                benchmark: None,
+            },
+        )
+        .expect("write matching cache entry");
+
+        let config_path = write_temp_file(
+            "preflight-cache-hit-config",
+            "yaml",
+            &serde_yaml::to_string(&config).expect("serialize config"),
+        );
+        let result = run_preflight(&config_path, &config, &model_config, "cpu", &artifacts)
+            .expect("cache hit should succeed through common path");
+
+        assert_eq!(result.runtime.selected.train_microbatch_size, 42);
+        assert_eq!(result.runtime.selected.validation_microbatch_size, 21);
+        assert_eq!(result.runtime.selected.accum_steps, 7);
+        assert!(
+            result.train_probe_results.is_empty(),
+            "cache hit should skip probing"
+        );
+        assert!(
+            result.validation_probe_results.is_empty(),
+            "cache hit should skip validation probing"
+        );
+
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn run_preflight_cache_hit_preserves_benchmark_result() {
+        use crate::artifacts::{PreflightBenchmarkPaths, PreflightPaths, write_preflight_cache};
+        use crate::preflight_fingerprint::preflight_cache_key;
+        use hydra_train::preflight::{
+            BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig,
+            BenchmarkScore, EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry,
+            ProfilingEnvelope, SelectedRuntimeConfig,
+        };
+
+        let output_dir = unique_test_path("preflight-cache-hit-benchmark-out");
+        let data_dir = unique_test_path("preflight-cache-hit-benchmark-data");
+        fs::create_dir_all(&data_dir).expect("create empty data dir for benchmark cache hit test");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        artifacts
+            .create_root_dir()
+            .expect("create artifact root for benchmark cache hit test");
+
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        // Disable re-benchmark so we can test cache-hit probe-skip path in isolation
+        config.preflight.real_benchmark_enabled = false;
+        let model_config = HydraModelConfig::learner();
+        let key = preflight_cache_key(
+            &config,
+            &model_config,
+            "cpu",
+            crate::config::default_num_threads_for_system(),
+        );
+
+        let benchmark = BenchmarkResult {
+            runtime: BenchmarkRuntimeConfig {
+                train_microbatch_size: 8,
+                validation_microbatch_size: 4,
+                accum_steps: 2,
+                loader: LoaderRuntimeConfig {
+                    num_threads: Some(2),
+                    buffer_games: 32,
+                    buffer_samples: 128,
+                    archive_queue_bound: 4,
+                },
+            },
+            score: BenchmarkScore {
+                wall_clock_samples_per_second: 123.456,
+                train_only_samples_per_second: 200.0,
+                train_seconds: 1.0,
+                validation_seconds: 0.5,
+                checkpoint_seconds: 0.1,
+                logging_seconds: 0.05,
+                total_elapsed_seconds: 1.65,
+                train_steps: 10,
+                validation_samples: 50,
+            },
+            metadata: BenchmarkMetadata {
+                mode: BenchmarkMode::CadenceAwareProjection,
+                ..Default::default()
+            },
+            profiling: Some(ProfilingEnvelope::leaf("stage_2_benchmark", 1.5)),
+        };
+
+        let paths = PreflightPaths::new(&artifacts);
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: key,
+                runtime: EffectiveRuntimeConfig {
+                    selected: SelectedRuntimeConfig {
+                        train_microbatch_size: 8,
+                        validation_microbatch_size: 4,
+                        accum_steps: 2,
+                    },
+                    loader: LoaderRuntimeConfig {
+                        num_threads: Some(2),
+                        buffer_games: 32,
+                        buffer_samples: 128,
+                        archive_queue_bound: 4,
+                    },
+                },
+                benchmark: Some(benchmark),
+            },
+        )
+        .expect("write cache entry with benchmark");
+
+        let config_path = write_temp_file(
+            "preflight-cache-hit-benchmark-config",
+            "yaml",
+            &serde_yaml::to_string(&config).expect("serialize config"),
+        );
+        let result = run_preflight(&config_path, &config, &model_config, "cpu", &artifacts)
+            .expect("cache hit should succeed through common path");
+
+        // With real_benchmark_enabled=false, the stage-2 benchmark is skipped
+        // so the returned benchmark should be None (fresh run, not carried from cache)
+        assert!(
+            result.benchmark.is_none(),
+            "benchmark should be None when real_benchmark_enabled=false"
+        );
+        assert_eq!(result.runtime.selected.train_microbatch_size, 8);
+        assert_eq!(result.runtime.selected.validation_microbatch_size, 4);
+        assert!(
+            !PreflightBenchmarkPaths::new(&artifacts).report_path().exists(),
+            "cache-hit preflight without stage-2 benchmark should not emit benchmark report"
+        );
+
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn run_preflight_misses_cache_on_different_fingerprint() {
+        use crate::artifacts::{PreflightPaths, write_preflight_cache};
+        use hydra_train::preflight::{
+            EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
+            PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
+        };
+
+        let output_dir = unique_test_path("preflight-cache-miss-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        artifacts
+            .create_root_dir()
+            .expect("create artifact root for cache miss test");
+
+        let stale_key = PreflightCacheKey {
+            hardware: HardwareFingerprint {
+                device_label: "stale-gpu".to_string(),
+                backend: "burn-libtorch".to_string(),
+                cpu_logical_cores: 999,
+                total_memory_bytes: None,
+            },
+            workload: WorkloadFingerprint {
+                batch_size: 9999,
+                augment: false,
+                precision_mode: "fp32".to_string(),
+                train_fraction_bits: 0,
+                max_skip_logs_per_source: 0,
+                max_validation_batches: None,
+                max_validation_samples: None,
+                model_signature: "stale".to_string(),
+                code_signature: "stale".to_string(),
+                advanced_loss_signature: "stale".to_string(),
+                preflight_config_signature: "stale".to_string(),
+                explicit_train_microbatch: None,
+                explicit_validation_microbatch: None,
+            },
+        };
+        let paths = PreflightPaths::new(&artifacts);
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: stale_key,
+                runtime: EffectiveRuntimeConfig {
+                    selected: SelectedRuntimeConfig {
+                        train_microbatch_size: 99,
+                        validation_microbatch_size: 99,
+                        accum_steps: 1,
+                    },
+                    loader: LoaderRuntimeConfig {
+                        num_threads: Some(1),
+                        buffer_games: 999,
+                        buffer_samples: 999,
+                        archive_queue_bound: 1,
+                    },
+                },
+                benchmark: None,
+            },
+        )
+        .expect("write stale cache entry");
+
+        let config_path = write_temp_file("preflight-cache-miss-config", "txt", "not yaml");
+        let config = dummy_config();
+        let result = run_preflight(
+            &config_path,
+            &config,
+            &HydraModelConfig::learner(),
+            "cpu",
+            &artifacts,
+        );
+
+        assert!(
+            result.is_err(),
+            "stale cache should miss and proceed to probing which fails on invalid config"
+        );
+
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn run_rl_preflight_returns_cached_runtime_on_identical_fingerprint() {
+        use crate::artifacts::{RlArtifactPaths, RlPreflightPaths, write_preflight_cache};
+        use crate::preflight_fingerprint::preflight_cache_key;
+        use hydra_train::preflight::{
+            EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
+        };
+
+        let output_dir = unique_test_path("rl-preflight-cache-hit-out");
+        let mut config = dummy_config();
+        config.rl = Some(dummy_rl_train_config());
+        config.output_dir = output_dir.clone();
+        config.device = "cpu".to_string();
+
+        let artifacts = RlArtifactPaths::new(&output_dir, 0);
+        artifacts
+            .create_root_dir()
+            .expect("create RL artifact root for cache hit test");
+
+        let model_config = HydraModelConfig::learner();
+        let key = preflight_cache_key(
+            &config,
+            &model_config,
+            &config.device,
+            crate::config::default_num_threads_for_system(),
+        );
+
+        let cached_runtime = EffectiveRuntimeConfig {
+            selected: SelectedRuntimeConfig {
+                train_microbatch_size: 77,
+                validation_microbatch_size: 33,
+                accum_steps: 3,
+            },
+            loader: LoaderRuntimeConfig {
+                num_threads: Some(4),
+                buffer_games: 256,
+                buffer_samples: 1024,
+                archive_queue_bound: 16,
+            },
+        };
+        let paths = RlPreflightPaths::new(&artifacts);
+        write_preflight_cache(
+            &paths.cache_path,
+            &PreflightCacheEntry {
+                cache_key: key,
+                runtime: cached_runtime,
+                benchmark: None,
+            },
+        )
+        .expect("write matching RL cache entry");
+
+        let config_path =
+            write_temp_file("rl-preflight-cache-hit-config", "yaml", "batch_size: 256\n");
+        let device = burn::backend::libtorch::LibTorchDevice::Cpu;
+        let result = run_rl_preflight(&config_path, &config, &device)
+            .expect("RL cache hit should return Ok without probing");
+
+        assert_eq!(
+            result.selected_games_per_batch, 256,
+            "games_per_batch should come from cached loader.buffer_games"
+        );
+        assert_eq!(
+            result.selected_microbatch_size, 77,
+            "microbatch_size should come from cached selected.train_microbatch_size"
+        );
+        assert!(
+            result.rl_games_probe_results.is_empty(),
+            "cache hit should skip RL games probing"
+        );
+        assert!(
+            result.rl_microbatch_probe_results.is_empty(),
+            "cache hit should skip RL microbatch probing"
+        );
+
+        let _ = fs::remove_dir_all(&output_dir);
     }
 }

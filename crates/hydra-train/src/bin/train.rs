@@ -1,17 +1,29 @@
 #[path = "train/artifacts.rs"]
 mod artifacts;
+#[path = "train/bc_fixed_shape.rs"]
+mod bc_fixed_shape;
 #[path = "train/bootstrap.rs"]
 mod bootstrap;
 #[path = "train/config.rs"]
 mod config;
 #[path = "train/config_runtime.rs"]
 mod config_runtime;
+#[cfg(feature = "cuda-graph")]
+#[path = "train/cuda_graph.rs"]
+mod cuda_graph;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
+#[path = "train/gpu_config.rs"]
+mod gpu_config;
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
 #[path = "train/modes.rs"]
 mod modes;
+#[path = "train/nvtx.rs"]
+mod nvtx;
+#[cfg(feature = "cuda-graph")]
+#[path = "train/pinned_transfer.rs"]
+mod pinned_transfer;
 #[path = "train/preflight_fingerprint.rs"]
 mod preflight_fingerprint;
 #[path = "train/preflight_runtime.rs"]
@@ -40,6 +52,9 @@ mod runtime_autotune;
 mod schedule;
 #[path = "train/status.rs"]
 mod status;
+#[cfg(test)]
+#[path = "train/test_loose_replay_fixtures.rs"]
+mod test_loose_replay_fixtures;
 #[path = "train/validation.rs"]
 mod validation;
 
@@ -72,12 +87,12 @@ use self::resume::{
 use hydra_train::preflight::PreflightConfig;
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
-type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
 
 fn run() -> Result<(), String> {
     color_control::set_override(true);
     let cli = parse_args(env::args())?;
     let config = read_config(&cli.config_path)?;
+    gpu_config::apply_gpu_performance_flags(&config.device);
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
         return Ok(());
     }
@@ -223,6 +238,93 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_accepts_single_probe_child_flags_unchanged() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "validation".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+            "--probe-warmup-steps".to_string(),
+            "4".to_string(),
+            "--probe-measure-steps".to_string(),
+            "8".to_string(),
+            "--probe-result-path".to_string(),
+            "/tmp/probe.json".to_string(),
+            "--probe-manifest-cache-path".to_string(),
+            "/tmp/manifest.json".to_string(),
+        ];
+        let parsed = parse_args(args).expect("single probe child args should parse");
+
+        assert!(parsed.probe_only.is_none());
+        match parsed.probe_child.expect("probe child should be present") {
+            crate::config::ProbeChildRequest::Single(child) => {
+                assert_eq!(
+                    child.request.kind,
+                    hydra_train::preflight::ProbeKind::Validation
+                );
+                assert_eq!(child.request.candidate_microbatch, 192);
+                assert_eq!(child.request.warmup_steps, Some(4));
+                assert_eq!(child.request.measure_steps, Some(8));
+                assert_eq!(child.result_path, PathBuf::from("/tmp/probe.json"));
+                assert_eq!(
+                    child.manifest_cache_path,
+                    Some(PathBuf::from("/tmp/manifest.json"))
+                );
+            }
+            crate::config::ProbeChildRequest::Batch(_) => {
+                panic!("single probe child flags should stay on the single-request path")
+            }
+        }
+    }
+
+    #[test]
+    fn parse_args_accepts_internal_probe_batch_child_flags() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "256".to_string(),
+            "--probe-warmup-steps".to_string(),
+            "5".to_string(),
+            "--probe-measure-steps".to_string(),
+            "9".to_string(),
+            "--probe-attempts".to_string(),
+            "3".to_string(),
+            "--probe-results-path".to_string(),
+            "/tmp/probe-results.json".to_string(),
+            "--probe-manifest-cache-path".to_string(),
+            "/tmp/manifest.json".to_string(),
+        ];
+        let parsed = parse_args(args).expect("internal probe batch child args should parse");
+
+        assert!(parsed.probe_only.is_none());
+        match parsed
+            .probe_child
+            .expect("probe batch child should be present")
+        {
+            crate::config::ProbeChildRequest::Batch(child) => {
+                assert_eq!(child.request.kind, hydra_train::preflight::ProbeKind::Train);
+                assert_eq!(child.request.candidate_microbatch, 256);
+                assert_eq!(child.request.warmup_steps, Some(5));
+                assert_eq!(child.request.measure_steps, Some(9));
+                assert_eq!(child.attempts, 3);
+                assert_eq!(child.results_path, PathBuf::from("/tmp/probe-results.json"));
+                assert_eq!(
+                    child.manifest_cache_path,
+                    Some(PathBuf::from("/tmp/manifest.json"))
+                );
+            }
+            crate::config::ProbeChildRequest::Single(_) => {
+                panic!("batch probe child flags should stay on the batch-request path")
+            }
+        }
+    }
+
+    #[test]
     fn parse_args_accepts_preflight_flag() {
         let args = vec![
             "train".to_string(),
@@ -323,6 +425,64 @@ mod tests {
         assert!(
             err.contains("probe mode requires both --probe-kind and --probe-candidate-microbatch")
         );
+    }
+
+    #[test]
+    fn parse_args_rejects_probe_batch_child_flags_without_both_batch_fields() {
+        let missing_attempts = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+            "--probe-results-path".to_string(),
+            "/tmp/probe-results.json".to_string(),
+        ];
+        let err = parse_args(missing_attempts)
+            .expect_err("batch child mode should require attempts with results path");
+        assert!(
+            err.contains("internal probe batch child mode requires both --probe-attempts and --probe-results-path")
+        );
+
+        let missing_results_path = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+            "--probe-attempts".to_string(),
+            "2".to_string(),
+        ];
+        let err = parse_args(missing_results_path)
+            .expect_err("batch child mode should require results path with attempts");
+        assert!(
+            err.contains("internal probe batch child mode requires both --probe-attempts and --probe-results-path")
+        );
+    }
+
+    #[test]
+    fn parse_args_rejects_mixing_single_and_batch_probe_child_flags() {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "train".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+            "--probe-result-path".to_string(),
+            "/tmp/probe.json".to_string(),
+            "--probe-attempts".to_string(),
+            "2".to_string(),
+            "--probe-results-path".to_string(),
+            "/tmp/probe-results.json".to_string(),
+        ];
+        let err = parse_args(args)
+            .expect_err("single and batch child probe flags should be mutually exclusive");
+        assert!(err.contains(
+            "internal probe child mode cannot combine --probe-result-path with --probe-attempts/--probe-results-path"
+        ));
     }
 
     #[test]
@@ -546,7 +706,9 @@ unexpected_field: true
             validation_microbatch_size: Some(16),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -568,6 +730,7 @@ unexpected_field: true
             max_validation_batches: None,
             max_validation_samples: Some(8192),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         assert_eq!(schedule_total_steps(&cfg, 0), 1000);
         assert_eq!(schedule_total_steps(&cfg, 400), 1400);
@@ -921,6 +1084,7 @@ preflight:
             policy_loss: 1.0,
             agreement: 0.35,
             samples: 8192,
+            profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,
             delta_q_promotion_snapshot: None,
@@ -941,6 +1105,7 @@ preflight:
             policy_loss: 1.0,
             agreement: 0.40,
             samples: 8192,
+            profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,
             delta_q_promotion_snapshot: None,
@@ -975,7 +1140,9 @@ preflight:
             validation_microbatch_size: None,
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -997,6 +1164,7 @@ preflight:
             max_validation_batches: Some(32),
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
 
         assert_eq!(train_microbatch_size(&cfg), 64);
@@ -1025,7 +1193,9 @@ preflight:
             validation_microbatch_size: Some(0),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1047,6 +1217,7 @@ preflight:
             max_validation_batches: None,
             max_validation_samples: Some(0),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
 
         let err = validate_config(&cfg).expect_err("zero validation controls should fail");
@@ -1076,7 +1247,9 @@ preflight:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1098,6 +1271,7 @@ preflight:
             max_validation_batches: None,
             max_validation_samples: Some(64),
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
 
         validate_config(&cfg).expect("basic rl block should validate");
@@ -1219,7 +1393,9 @@ advanced_loss:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1247,6 +1423,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("invalid bc ranges should fail");
         assert!(err.contains("bc.min_learning_rate"));
@@ -1263,7 +1440,9 @@ advanced_loss:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1288,6 +1467,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("exit loss without sidecar should fail");
         assert!(err.contains("exit_sidecar_path"));
@@ -1304,7 +1484,9 @@ advanced_loss:
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -1329,6 +1511,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("delta_q loss without sidecar should fail");
         assert!(err.contains("delta_q_sidecar_path"));

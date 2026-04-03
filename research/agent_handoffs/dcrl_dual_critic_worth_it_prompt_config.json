@@ -1,0 +1,341 @@
+{
+  "version": 1,
+  "repo_root": "../..",
+  "defaults": {
+    "title": "Hydra prompt — DCRL / dual-critic worth-it evaluation",
+    "artifact_container_tag": "artifacts",
+    "artifact_ids": [
+      "prompt-packing-reminder",
+      "task-context"
+    ],
+    "shell_sections": []
+  },
+  "artifacts": [
+    {
+      "id": "prompt-packing-reminder",
+      "type": "literal",
+      "label": "Prompt-packing reminder",
+      "explanation": "Short task-specific reminder aligned with Hydra's prompt style guide: answer the narrow hard question, but pack enough local evidence that the research agent does not waste its first pass rediscovering repo reality.",
+      "source_label": "META",
+      "fence_language": "text",
+      "content_lines": [
+        "This is a serious but narrow Hydra research-decision prompt.",
+        "The goal is not a generic literature survey; the goal is a decision-ready verdict on whether DCRL / dual-critic / asymmetric-critic prior art is worth explicit Hydra attention.",
+        "Bias toward the smallest justified next action.",
+        "If the repo already contains the stronger adjacent prior-art framing, say so.",
+        "If DCRL matters mainly as a documentation-positioning citation rather than a method pivot, say that clearly."
+      ]
+    },
+    {
+      "id": "task-context",
+      "type": "literal",
+      "label": "Local narrowing summary",
+      "explanation": "Compact local context from repo triage and external note reading so the research agent starts from the real narrowed question instead of redoing first-mile speculation.",
+      "source_label": "META",
+      "fence_language": "text",
+      "content_lines": [
+        "User context: people mocked Hydra because Hydra docs did not explicitly mention a nearby dual-critic paper / adjacent prior-art family.",
+        "Important distinction already narrowed locally: this is not automatically a claim that Hydra's method is fake or copied; the narrower question is whether missing that prior-art positioning makes the docs materially worse and whether the method should react at all.",
+        "Repo-grounded starting point from local search: promoted Hydra docs and research notes already mention CTDE, oracle critics, oracle guiding, RVR, centralized value function language, and Suphx / LuckyJ / AlphaStar-style adjacent ideas; exact DCRL / UAAC / 'dual critic' wording was not found in README or promoted docs during local triage.",
+        "OpenReview note context from local external triage: the linked DCRL note supports novelty / literature-positioning skepticism more than a strong accusation that a specific prior paper was literally unknown.",
+        "Your job is to decide whether explicit DCRL-or-adjacent coverage is actually worth adding, and whether that answer changes only docs positioning or also Hydra's method / roadmap."
+      ]
+    },
+    {
+      "id": "repo-readme",
+      "type": "file_full",
+      "path": "README.md",
+      "label": "Top-level repo routing and research surface",
+      "explanation": "Shows the public-facing project summary, current documentation routing, and what the repo chooses to expose at the README layer. This is the main evidence for whether DCRL-adjacent prior-art omission is visible at the most public surface.",
+      "source_label": "DOC",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "current-status",
+      "type": "file_full",
+      "path": "docs/CURRENT_STATUS.md",
+      "label": "Current shipped / staged status snapshot",
+      "explanation": "Live status snapshot helps the research agent separate current implementation reality from long-term doctrine when judging whether DCRL-adjacent work is only a citation issue or a live method issue.",
+      "source_label": "DOC",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "game-engine",
+      "type": "file_full",
+      "path": "docs/GAME_ENGINE.md",
+      "label": "Runtime semantics and engine truth",
+      "explanation": "Grounds the current runtime surface so the research agent can avoid inventing architecture deltas that do not match live engine semantics.",
+      "source_label": "DOC",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "compatibility-surface",
+      "type": "file_full",
+      "path": "docs/COMPATIBILITY_SURFACE.md",
+      "label": "Compatibility-sensitive runtime surface",
+      "explanation": "Short but important live-surface reminder showing what compatibility contracts already constrain Hydra's real build path.",
+      "source_label": "DOC",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "hydra-final",
+      "type": "file_full",
+      "path": "research/design/HYDRA_FINAL.md",
+      "label": "Promoted Hydra architecture doctrine",
+      "explanation": "Primary promoted architecture doctrine. High-value evidence for Hydra's current framing around ExIt, search-as-feature, CTDE, oracle critics, belief/search features, and training priorities.",
+      "source_label": "DESIGN",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "hydra-reconciliation",
+      "type": "file_full",
+      "path": "research/design/HYDRA_RECONCILIATION.md",
+      "label": "Operational doctrine and roadmap to Hydra v1",
+      "explanation": "Operational doctrine and near-term sequencing authority. Useful for judging whether DCRL-adjacent prior art should trigger any real roadmap change rather than just docs positioning.",
+      "source_label": "DESIGN",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "reward-design",
+      "type": "file_full",
+      "path": "research/design/REWARD_DESIGN.md",
+      "label": "Reward variance reduction and oracle value design",
+      "explanation": "Crucial adjacent prior-art surface: explains Hydra's take on RVR, oracle baselines, expected reward network, centralized value function language, and what Hydra already treats as directly relevant work.",
+      "source_label": "DESIGN",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "training-paradigms",
+      "type": "file_full",
+      "path": "research/comparisons/TRAINING_PARADIGMS.md",
+      "label": "Training paradigm comparison survey",
+      "explanation": "Major local survey artifact for asymmetric/oracle training, ExIt, world-model lanes, and other adjacent paradigms. Helps the research agent see what Hydra already knows about asymmetric oracle training versus what DCRL might add.",
+      "source_label": "COMPARE",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "references",
+      "type": "file_full",
+      "path": "research/intel/REFERENCES.md",
+      "label": "Hydra citation index",
+      "explanation": "Single citation index for the repo. Key evidence for whether adjacent work is already cited and what canonical external papers Hydra currently foregrounds.",
+      "source_label": "REF",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "community-insights",
+      "type": "file_full",
+      "path": "research/intel/COMMUNITY_INSIGHTS.md",
+      "label": "Community and LuckyJ prior-art reconstruction",
+      "explanation": "High-signal background on LuckyJ, Suphx, search-as-feature, RVR, and how Hydra reconstructs adjacent production systems from public evidence. Important for deciding whether DCRL is a core omission or only one adjacent citation among many.",
+      "source_label": "INTEL",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "belief-state-survey",
+      "type": "file_full",
+      "path": "research/evidence/BELIEF_STATE_SURVEY.md",
+      "label": "Belief-state and oracle-guiding survey",
+      "explanation": "Relevant evidence for partial observability, oracle guiding, belief-state training, and teacher / student framing under imperfect information.",
+      "source_label": "EVIDENCE",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "incremental-belief-survey",
+      "type": "file_full",
+      "path": "research/evidence/incremental-belief-survey.md",
+      "label": "Incremental belief and POMDP survey",
+      "explanation": "Large evidence surface covering DreamerV3, POMDP belief methods, and partial-observability handling. Useful as adjacent context when deciding whether DCRL deserves more attention than the other nearby POMDP / oracle / belief lines Hydra already tracks.",
+      "source_label": "EVIDENCE",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "paradigm-breaking-game-ai",
+      "type": "file_full",
+      "path": "research/evidence/paradigm_breaking_game_ai_research.md",
+      "label": "Broad game-AI paradigm scan",
+      "explanation": "Dense adjacent-field artifact covering world models, broader game-AI methods, and cross-field possibility space. Gives the research agent enough surrounding context to judge whether DCRL is actually a standout omission or just one neighboring ingredient family.",
+      "source_label": "EVIDENCE",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "rnad-drda-report",
+      "type": "file_full",
+      "path": "research/evidence/rnad_drda_report.md",
+      "label": "R-NaD and DRDA evidence report",
+      "explanation": "Useful nearby reinforcement-learning evidence. Also helps the agent avoid acronym confusion between DRDA and DCRL while comparing Hydra's existing research intake against the claimed omission.",
+      "source_label": "EVIDENCE",
+      "fence_language": "markdown",
+      "show_line_numbers": true
+    },
+    {
+      "id": "heads-rs",
+      "type": "file_full",
+      "path": "crates/hydra-train/src/heads.rs",
+      "label": "Training heads including oracle critic",
+      "explanation": "Code-level ground truth for how Hydra currently defines its heads, including the explicit oracle critic surface. Important for method-overlap judgments.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "model-rs",
+      "type": "file_full",
+      "path": "crates/hydra-train/src/model.rs",
+      "label": "Model wiring and head outputs",
+      "explanation": "Core code evidence for how the model wires value, policy, delta_q, and oracle-related outputs together. The research agent can use this to judge whether DCRL is only adjacent framing or structurally close to current Hydra model reality.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "losses-rs",
+      "type": "file_full",
+      "path": "crates/hydra-train/src/training/losses.rs",
+      "label": "Training losses and weighting logic",
+      "explanation": "Large but high-value code artifact showing how Hydra currently composes losses, target weights, and head-gating behavior. Useful for deciding whether any DCRL-like weighting insight is absent or already subsumed.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "drda-rs",
+      "type": "file_full",
+      "path": "crates/hydra-train/src/training/drda.rs",
+      "label": "DRDA training module",
+      "explanation": "Nearby training logic artifact included so the research agent can compare current advanced training surfaces against external adjacent methods without conflating acronyms or mechanisms.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "ach-rs",
+      "type": "file_full",
+      "path": "crates/hydra-train/src/training/ach.rs",
+      "label": "ACH training module",
+      "explanation": "Code-level evidence for one of Hydra's major chosen training paradigms. Helps the research agent compare DCRL-like prior art against Hydra's actual active optimization path, not just doc prose.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "bridge-rs",
+      "type": "file_full",
+      "path": "crates/hydra-core/src/bridge.rs",
+      "label": "Search-feature bridge and delta_q plumbing",
+      "explanation": "Important code surface for search-as-feature wiring and search-derived labels. Gives the research agent the real bridge between doctrine and code when deciding if DCRL-level method attention is warranted.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    },
+    {
+      "id": "arena-rs",
+      "type": "file_full",
+      "path": "crates/hydra-core/src/arena.rs",
+      "label": "Arena trajectory labels and validation surfaces",
+      "explanation": "Ground truth for how search labels and trajectory artifacts are validated at the core layer. Included so the research agent can judge implementation implications rather than staying at doc-level analogies.",
+      "source_label": "CODE",
+      "fence_language": "rust",
+      "show_line_numbers": true
+    }
+  ],
+  "variants": [
+    {
+      "name": "balanced-narrow",
+      "title": "Hydra prompt — DCRL / dual-critic worth-it evaluation",
+      "shell_source_path": "research/agent_handoffs/combined_all_variants/reference_prompt_example_003_balanced_narrow_not_overconstrained.md",
+      "output_file": "hydra_dcrl_dual_critic_worth_it_prompt.md",
+      "artifact_ids": [
+        "repo-readme",
+        "current-status",
+        "game-engine",
+        "compatibility-surface",
+        "hydra-final",
+        "hydra-reconciliation",
+        "reward-design",
+        "training-paradigms",
+        "references",
+        "community-insights",
+        "belief-state-survey",
+        "incremental-belief-survey",
+        "paradigm-breaking-game-ai",
+        "rnad-drda-report",
+        "heads-rs",
+        "model-rs",
+        "losses-rs",
+        "drda-rs",
+        "ach-rs",
+        "bridge-rs",
+        "arena-rs"
+      ],
+      "shell_sections": [
+        {
+          "tag": "role",
+          "mode": "append",
+          "lines": [
+            "You are evaluating whether one nearby prior-art family deserves explicit Hydra attention.",
+            "This is a narrow research-decision prompt, not a generic RL literature survey.",
+            "You are allowed to conclude that the right action is tiny, docs-only, or no-op if that is what the evidence supports."
+          ]
+        },
+        {
+          "tag": "task",
+          "mode": "append",
+          "lines": [
+            "Answer the narrow question: is it worth explicitly integrating DCRL / dual-critic / asymmetric-critic prior-art coverage into Hydra's promoted docs, and is any deeper method attention warranted beyond docs positioning?",
+            "",
+            "Treat this as two separate decisions that may diverge:",
+            "- docs-worth-it: should Hydra explicitly cite/discuss DCRL or adjacent dual/asymmetric critic work in README, promoted doctrine, or reference surfaces?",
+            "- method-worth-it: should Hydra change architecture priorities, add a concrete reserve lane, or otherwise materially react at the method level?",
+            "",
+            "We want a detailed answer that makes clear:",
+            "- what the repo artifacts already prove about Hydra's current oracle critic / CTDE / RVR / search-feature / training surfaces",
+            "- what exact overlap exists between Hydra and DCRL-like prior work versus what is only superficial naming overlap",
+            "- what external primary sources materially change the answer",
+            "- what is directly supported by artifacts, what is externally supported, and what is only inference",
+            "- what confidence each major conclusion deserves",
+            "- the smallest docs patch set if explicit coverage is worth it",
+            "- the smallest method-level follow-up if deeper attention is worth it",
+            "- the exact no-op rationale if the right answer is only 'mention lightly' or 'do nothing'",
+            "- what evidence would falsify the current recommendation",
+            "",
+            "Do not stop at 'yes it is related' or 'no it is different.' We need a decision-ready verdict with the narrowest justified next action. Use the artifacts below to derive your conclusions."
+          ]
+        },
+        {
+          "tag": "rules",
+          "mode": "append",
+          "lines": [
+            "- keep docs-worth-it and method-worth-it separate all the way through the answer",
+            "- do not treat adjacency as equivalence; distinguish shared ingredients, same training trust object, same deployment trust object, and same optimization target",
+            "- prefer full papers, official docs, and original repos for DCRL, UAAC, asymmetric critic, oracle guiding, and related primary comparisons when available",
+            "- if Hydra already covers a stronger or more directly relevant adjacent prior-art family than DCRL, say that explicitly instead of inflating DCRL importance",
+            "- if the right recommendation is only a citation or two plus one paragraph of positioning, say that instead of inventing a bigger lane"
+          ]
+        },
+        {
+          "tag": "style",
+          "mode": "append",
+          "lines": [
+            "- lead with a crisp verdict before the deeper justification",
+            "- include a small decision matrix or comparison table if it sharpens the answer",
+            "- if you recommend docs edits, make them concrete enough that a maintainer could implement them without another research pass"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -3,12 +3,12 @@
 use std::fmt;
 
 use burn::prelude::Backend;
-use hydra_core::action::DISCARD_END;
+use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
 use hydra_core::arena::{TrajectoryStep, softmax_temperature};
 
 use crate::model::HydraModel;
-use crate::selfplay::generate_self_play_batch_source;
-use crate::training::exit::{ExitConfig, compatible_discard_state, is_hard_state};
+use crate::selfplay::generate_self_play_batch_source_cooperative;
+use crate::training::exit::{ExitConfig, compatible_discard_state};
 use crate::training::live_exit::{LiveExitConfig, budget_from_legal_count};
 
 /// Aggregated metrics from an observational delta-q validation run.
@@ -307,20 +307,16 @@ pub fn collect_validation_metrics_for_step<B: Backend>(
     }
     report.compatible_discard_states += 1;
 
-    let legal_discards = legal_discard_actions(step);
-    if legal_discards.len() < 2 {
+    let legal_discard_count = count_legal_discards(step);
+    if legal_discard_count < 2 {
         report.labels_rejected += 1;
         report.rejected_too_few_discards += 1;
         return;
     }
 
-    let (policy_logits, _) = model.policy_value_cpu(&step.obs, device);
+    let policy_logits = model.policy_cpu(&step.obs, device);
     let base_pi = softmax_temperature(&policy_logits, &step.legal_mask, 1.0);
-    let hard_slice: Vec<f32> = legal_discards
-        .iter()
-        .map(|&action| base_pi[action])
-        .collect();
-    if !is_hard_state(&hard_slice, cfg.hard_state_threshold) {
+    if !is_hard_state_for_legal_discards(&base_pi, step, cfg.hard_state_threshold) {
         report.labels_rejected += 1;
         report.rejected_not_hard_state += 1;
         return;
@@ -352,8 +348,8 @@ pub fn collect_validation_metrics_for_step<B: Backend>(
         }
     }
     report.supported_actions_sum += supported as u64;
-    report.coverage_sum += supported as f64 / legal_discards.len() as f64;
-    report.root_visits_sum += budget_from_legal_count(cfg, legal_discards.len()) as u64;
+    report.coverage_sum += supported as f64 / legal_discard_count as f64;
+    report.root_visits_sum += budget_from_legal_count(cfg, legal_discard_count) as u64;
 }
 
 /// Runs an observational delta-q validation pass over self-play trajectories.
@@ -365,7 +361,7 @@ pub fn run_delta_q_validation<B: Backend>(
     device: &B::Device,
     exit_config: ExitConfig,
 ) -> DeltaQValidationReport {
-    let source = generate_self_play_batch_source(
+    let source = generate_self_play_batch_source_cooperative(
         game_seeds,
         temperature,
         rng_seed,
@@ -410,10 +406,40 @@ fn push_min_criterion(
     });
 }
 
+#[cfg(test)]
 fn legal_discard_actions(step: &TrajectoryStep) -> Vec<usize> {
     (0..=DISCARD_END as usize)
         .filter(|&action| step.legal_mask[action])
         .collect()
+}
+
+fn count_legal_discards(step: &TrajectoryStep) -> usize {
+    (0..=DISCARD_END as usize)
+        .filter(|&action| step.legal_mask[action])
+        .count()
+}
+
+fn is_hard_state_for_legal_discards(
+    policy: &[f32; HYDRA_ACTION_SPACE],
+    step: &TrajectoryStep,
+    threshold: f32,
+) -> bool {
+    let mut count = 0usize;
+    let mut best = f32::NEG_INFINITY;
+    let mut second = f32::NEG_INFINITY;
+    for (action, &value) in policy.iter().enumerate().take(DISCARD_END as usize + 1) {
+        if !step.legal_mask[action] {
+            continue;
+        }
+        count += 1;
+        if value > best {
+            second = best;
+            best = value;
+        } else if value > second {
+            second = value;
+        }
+    }
+    count >= 2 && (best - second) >= threshold
 }
 
 fn ratio_u64(numerator: u64, denominator: u64) -> f64 {

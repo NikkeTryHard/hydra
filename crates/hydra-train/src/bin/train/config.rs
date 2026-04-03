@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hydra_train::config::TrainingPhase as PipelineTrainingPhase;
+use hydra_train::data::pipeline::SourceFilterConfig;
 use hydra_train::preflight::{PreflightConfig, ProbeKind};
 
 pub(crate) use super::config_runtime::{
@@ -27,8 +28,12 @@ pub(crate) struct TrainConfig {
     pub(crate) exit_sidecar_path: Option<PathBuf>,
     #[serde(default)]
     pub(crate) delta_q_sidecar_path: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) bc_shards_manifest_path: Option<PathBuf>,
     #[serde(default = "default_train_fraction")]
     pub(crate) train_fraction: f32,
+    #[serde(default)]
+    pub(crate) source_filters: SourceFilterConfig,
     #[serde(default = "default_augment")]
     pub(crate) augment: bool,
     pub(crate) resume_checkpoint: Option<PathBuf>,
@@ -42,6 +47,8 @@ pub(crate) struct TrainConfig {
     pub(crate) bc: BcHyperparamConfig,
     #[serde(default = "default_device")]
     pub(crate) device: String,
+    #[serde(default)]
+    pub(crate) precision_mode: PrecisionMode,
     #[serde(default = "default_buffer_games")]
     pub(crate) buffer_games: usize,
     #[serde(default = "default_buffer_samples")]
@@ -70,6 +77,20 @@ pub(crate) struct TrainConfig {
     pub(crate) max_validation_samples: Option<usize>,
     #[serde(default)]
     pub(crate) preflight: PreflightConfig,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PrecisionMode {
+    #[default]
+    Fp32,
+    Bf16Autocast,
+}
+
+impl TrainConfig {
+    pub(crate) fn use_amp(&self) -> bool {
+        matches!(self.precision_mode, PrecisionMode::Bf16Autocast)
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,9 +151,24 @@ pub(crate) struct ProbeCliRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProbeChildRequest {
+pub(crate) struct ProbeSingleChildRequest {
     pub(crate) request: ProbeCliRequest,
     pub(crate) result_path: PathBuf,
+    pub(crate) manifest_cache_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProbeBatchChildRequest {
+    pub(crate) request: ProbeCliRequest,
+    pub(crate) attempts: usize,
+    pub(crate) results_path: PathBuf,
+    pub(crate) manifest_cache_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProbeChildRequest {
+    Single(ProbeSingleChildRequest),
+    Batch(ProbeBatchChildRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,7 +356,10 @@ where
     let mut candidate_microbatch = None;
     let mut warmup_steps = None;
     let mut measure_steps = None;
+    let mut probe_attempts = None;
     let mut probe_result_path = None;
+    let mut probe_results_path = None;
+    let mut probe_manifest_cache_path = None;
     let mut preflight = false;
     let mut delta_q_promotion = false;
     let mut delta_q_baseline_checkpoint = None;
@@ -359,11 +398,26 @@ where
             "--probe-measure-steps" => {
                 measure_steps = Some(parse_usize_flag("--probe-measure-steps", args.next())?);
             }
+            "--probe-attempts" => {
+                probe_attempts = Some(parse_usize_flag("--probe-attempts", args.next())?);
+            }
             "--probe-result-path" => {
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --probe-result-path".to_string())?;
                 probe_result_path = Some(PathBuf::from(value));
+            }
+            "--probe-results-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --probe-results-path".to_string())?;
+                probe_results_path = Some(PathBuf::from(value));
+            }
+            "--probe-manifest-cache-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --probe-manifest-cache-path".to_string())?;
+                probe_manifest_cache_path = Some(PathBuf::from(value));
             }
             _ => return Err(usage(&program)),
         }
@@ -373,6 +427,8 @@ where
     if preflight
         && (probe_kind.is_some()
             || probe_result_path.is_some()
+            || probe_results_path.is_some()
+            || probe_attempts.is_some()
             || delta_q_promotion
             || delta_q_baseline_checkpoint.is_some())
     {
@@ -381,7 +437,12 @@ where
             usage(&program)
         ));
     }
-    if delta_q_promotion && (probe_kind.is_some() || probe_result_path.is_some()) {
+    if delta_q_promotion
+        && (probe_kind.is_some()
+            || probe_result_path.is_some()
+            || probe_results_path.is_some()
+            || probe_attempts.is_some())
+    {
         return Err(format!(
             "{}\n--delta-q-promotion cannot be combined with probe-only flags",
             usage(&program)
@@ -393,8 +454,26 @@ where
             usage(&program)
         ));
     }
-    match (probe_kind, candidate_microbatch, probe_result_path) {
-        (None, None, None) => Ok(TrainCli {
+    if probe_result_path.is_some() && (probe_results_path.is_some() || probe_attempts.is_some()) {
+        return Err(format!(
+            "{}\ninternal probe child mode cannot combine --probe-result-path with --probe-attempts/--probe-results-path",
+            usage(&program)
+        ));
+    }
+    if probe_results_path.is_some() ^ probe_attempts.is_some() {
+        return Err(format!(
+            "{}\ninternal probe batch child mode requires both --probe-attempts and --probe-results-path",
+            usage(&program)
+        ));
+    }
+    match (
+        probe_kind,
+        candidate_microbatch,
+        probe_result_path,
+        probe_results_path,
+        probe_attempts,
+    ) {
+        (None, None, None, None, None) => Ok(TrainCli {
             config_path,
             preflight,
             delta_q_promotion,
@@ -402,7 +481,7 @@ where
             probe_only: None,
             probe_child: None,
         }),
-        (Some(kind), Some(candidate_microbatch), None) => Ok(TrainCli {
+        (Some(kind), Some(candidate_microbatch), None, None, None) => Ok(TrainCli {
             config_path,
             preflight: false,
             delta_q_promotion: false,
@@ -415,13 +494,13 @@ where
             }),
             probe_child: None,
         }),
-        (Some(kind), Some(candidate_microbatch), Some(result_path)) => Ok(TrainCli {
+        (Some(kind), Some(candidate_microbatch), Some(result_path), None, None) => Ok(TrainCli {
             config_path,
             preflight: false,
             delta_q_promotion: false,
             delta_q_baseline_checkpoint: None,
             probe_only: None,
-            probe_child: Some(ProbeChildRequest {
+            probe_child: Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
                 request: ProbeCliRequest {
                     kind,
                     candidate_microbatch,
@@ -429,8 +508,29 @@ where
                     measure_steps,
                 },
                 result_path,
-            }),
+                manifest_cache_path: probe_manifest_cache_path,
+            })),
         }),
+        (Some(kind), Some(candidate_microbatch), None, Some(results_path), Some(attempts)) => {
+            Ok(TrainCli {
+                config_path,
+                preflight: false,
+                delta_q_promotion: false,
+                delta_q_baseline_checkpoint: None,
+                probe_only: None,
+                probe_child: Some(ProbeChildRequest::Batch(ProbeBatchChildRequest {
+                    request: ProbeCliRequest {
+                        kind,
+                        candidate_microbatch,
+                        warmup_steps,
+                        measure_steps,
+                    },
+                    attempts,
+                    results_path,
+                    manifest_cache_path: probe_manifest_cache_path,
+                })),
+            })
+        }
         _ => Err(format!(
             "{}\nprobe mode requires both --probe-kind and --probe-candidate-microbatch",
             usage(&program)

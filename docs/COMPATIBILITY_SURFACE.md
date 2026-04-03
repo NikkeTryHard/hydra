@@ -21,6 +21,9 @@ Primary runtime owner: `docs/GAME_ENGINE.md`
 | Runtime/train entrypoint | `crates/hydra-train/src/bin/train.rs` | root `AGENTS.md`, crate docs | Main train binary entry surface |
 | BC selected-runtime authority | fresh run = config-derived; epoch-boundary resume may reuse matching preflight-selected runtime; partial-epoch resume requires identical runtime | `crates/hydra-train/src/bin/train/bootstrap.rs`, `crates/hydra-train/src/bin/train/resume.rs` | Applies only to selected-runtime tuple (`train_microbatch_size`, `validation_microbatch_size`, `accum_steps`) |
 | BC loader-runtime authority | config-derived | `crates/hydra-train/src/bin/train/bootstrap.rs`, `crates/hydra-train/src/bin/train/config_runtime.rs` | Matching BC preflight cache does not make loader-runtime authoritative |
+| Preflight cache key (v4) | hardware + workload + preflight config signature + explicit microbatch overrides | `crates/hydra-train/src/bin/train/preflight_fingerprint.rs`, `crates/hydra-train/src/preflight.rs` | `data_dir`, `seed`, `num_threads`, `buffer_games`, `buffer_samples` deliberately excluded from key |
+| Preflight identical-run fast path | `run_preflight` and `run_rl_preflight` read cache before probing; cache hit on matching v4 key skips all probes | `crates/hydra-train/src/bin/train/preflight_runtime.rs` | Does not affect bootstrap authority; probe result vectors empty on cache hit |
+| Precision mode dispatch (BF16/AMP) | BC training dispatches by `PrecisionMode`; RL training and DeltaQ promotion explicitly gated with hard errors | `crates/hydra-train/src/bin/train/modes.rs` | RL BF16 is a staged surface, not a shipped surface |
 | Runtime truth on drift | current code wins | `docs/GAME_ENGINE.md`, root `AGENTS.md` | Docs are compatibility aids, not stronger than code |
 
 ## Crate ownership quick reference

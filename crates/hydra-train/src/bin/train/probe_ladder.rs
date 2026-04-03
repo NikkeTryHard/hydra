@@ -4,17 +4,32 @@ use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus, candidate_ladd
 
 use super::config::TrainConfig;
 use super::probe_request::{ProbeRequest, probe_candidate_ceiling};
-use super::probe_summary::{ProbeCandidateSummary, summarize_probe_results};
+use super::probe_summary::{ProbeCandidateSummary, probe_summary_iter};
 
 const MAX_DYNAMIC_PROBE_CANDIDATE: usize = 8192;
 
 pub(super) fn candidate_average(results: &[ProbeResult], candidate: usize) -> Option<f64> {
-    summarize_probe_results(results)
-        .into_iter()
-        .find(|summary| {
-            summary.candidate_microbatch == candidate && summary.status == ProbeStatus::Success
-        })
-        .and_then(|summary| summary.average_samples_per_second)
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    let mut saw_failure = false;
+    for result in results {
+        if result.candidate_microbatch != candidate {
+            continue;
+        }
+        if result.status != ProbeStatus::Success {
+            saw_failure = true;
+            continue;
+        }
+        if let Some(value) = result.measured_samples_per_second {
+            sum += value;
+            count += 1;
+        }
+    }
+    if saw_failure || count == 0 {
+        None
+    } else {
+        Some(sum / count as f64)
+    }
 }
 
 pub(super) fn close_probe_finalists(
@@ -22,8 +37,7 @@ pub(super) fn close_probe_finalists(
     margin_ratio: f64,
     max_candidates: usize,
 ) -> Vec<ProbeCandidateSummary> {
-    let mut summaries = summarize_probe_results(results)
-        .into_iter()
+    let mut summaries = probe_summary_iter(results)
         .filter(|summary| summary.status == ProbeStatus::Success)
         .collect::<Vec<_>>();
     summaries.sort_by(|left, right| {
@@ -57,7 +71,7 @@ pub(super) fn local_refinement_candidates(
     max_candidates: usize,
     ceiling: usize,
 ) -> Vec<usize> {
-    let mut successful = summaries
+    let Some(winner) = summaries
         .iter()
         .filter(|summary| summary.status == ProbeStatus::Success)
         .filter_map(|summary| {
@@ -65,23 +79,27 @@ pub(super) fn local_refinement_candidates(
                 .average_samples_per_second
                 .map(|score| (summary.candidate_microbatch, score))
         })
-        .collect::<Vec<_>>();
-    successful.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let Some((winner, _)) = successful.first().copied() else {
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(candidate, _)| candidate)
+    else {
         return Vec::new();
     };
 
-    let mut all_candidates = successful
+    let all_candidates = summaries
         .iter()
-        .map(|(candidate, _)| *candidate)
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .filter_map(|summary| {
+            summary
+                .average_samples_per_second
+                .map(|_| summary.candidate_microbatch)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
-    all_candidates.sort_unstable();
-    all_candidates.dedup();
 
     let winner_index = all_candidates
         .iter()
@@ -127,27 +145,23 @@ pub(super) fn top_k_refinement_candidates(
     ceiling: usize,
 ) -> Vec<usize> {
     let finalists = close_probe_finalists_from_summaries(summaries, margin_ratio, top_k);
-    let mut successful = summaries
+    let all_candidates = summaries
         .iter()
         .filter(|summary| summary.status == ProbeStatus::Success)
         .filter_map(|summary| {
             summary
                 .average_samples_per_second
-                .map(|score| (summary.candidate_microbatch, score))
+                .map(|_| summary.candidate_microbatch)
         })
-        .collect::<Vec<_>>();
-    successful.sort_by_key(|(candidate, _)| *candidate);
-    successful.dedup_by_key(|(candidate, _)| *candidate);
-    let all_candidates = successful
-        .iter()
-        .map(|(candidate, _)| *candidate)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
 
     let mut refined = BTreeSet::new();
     for finalist in finalists {
         let Some(index) = all_candidates
             .iter()
-            .position(|candidate| *candidate == finalist.candidate_microbatch)
+            .position(|candidate| *candidate == finalist)
         else {
             continue;
         };
@@ -158,14 +172,13 @@ pub(super) fn top_k_refinement_candidates(
         let failed_above = summaries
             .iter()
             .filter(|summary| {
-                summary.candidate_microbatch > finalist.candidate_microbatch
-                    && summary.status != ProbeStatus::Success
+                summary.candidate_microbatch > finalist && summary.status != ProbeStatus::Success
             })
             .map(|summary| summary.candidate_microbatch)
             .min();
         for neighbor in [lower, upper, failed_above].into_iter().flatten() {
-            let lo = neighbor.min(finalist.candidate_microbatch);
-            let hi = neighbor.max(finalist.candidate_microbatch);
+            let lo = neighbor.min(finalist);
+            let hi = neighbor.max(finalist);
             if hi.saturating_sub(lo) < min_gap.max(1) {
                 continue;
             }
@@ -183,11 +196,10 @@ fn close_probe_finalists_from_summaries(
     summaries: &[ProbeCandidateSummary],
     margin_ratio: f64,
     max_candidates: usize,
-) -> Vec<ProbeCandidateSummary> {
+) -> Vec<usize> {
     let mut successful = summaries
         .iter()
         .filter(|summary| summary.status == ProbeStatus::Success)
-        .cloned()
         .collect::<Vec<_>>();
     successful.sort_by(|left, right| {
         right
@@ -210,6 +222,7 @@ fn close_probe_finalists_from_summaries(
                 .map(|score| score >= best * (1.0 - margin_ratio.max(0.0)))
                 .unwrap_or(false)
         })
+        .map(|summary| summary.candidate_microbatch)
         .take(max_candidates.max(1))
         .collect()
 }
@@ -297,7 +310,9 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -319,6 +334,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 

@@ -19,6 +19,12 @@ pub struct BatchShantenResult {
     pub discard: [Option<i8>; 34],
 }
 
+#[derive(Debug, Clone)]
+pub struct BatchDrawShantenResult {
+    pub base: i8,
+    pub draw: [Option<i8>; 34],
+}
+
 /// Chain the four cached suit keys into a normal-form shanten value.
 #[inline]
 fn chain_normal(k0_m: usize, k0_p: usize, k0_s: usize, k0_z: usize, m: usize) -> i8 {
@@ -122,6 +128,77 @@ pub fn batch_discard_shanten(hand: &[u8; TILE_MAX], len_div3: u8) -> BatchShante
         let normal = (KEYS3[(k2_mps * 55 + new_k0_z) * 5 + m_after] as i8) - 1;
         result.discard[t] = Some(combined_shanten(normal, &tmp, after_len_div3));
         tmp[t] += 1;
+    }
+
+    result
+}
+
+pub fn batch_draw_shanten(hand: &[u8; TILE_MAX], len_div3: u8) -> BatchDrawShantenResult {
+    let k0_m = SHUPAI_KEYS[hash_shupai(&hand[0..9])] as usize;
+    let k0_p = SHUPAI_KEYS[hash_shupai(&hand[9..18])] as usize;
+    let k0_s = SHUPAI_KEYS[hash_shupai(&hand[18..27])] as usize;
+    let k0_z = ZIPAI_KEYS[hash_zipai(&hand[27..34])] as usize;
+    let m_base = len_div3 as usize;
+
+    let base_normal = chain_normal(k0_m, k0_p, k0_s, k0_z, m_base);
+    let base = combined_shanten(base_normal, hand, len_div3);
+
+    let k1_mp = KEYS1[k0_m * 126 + k0_p] as usize;
+    let k2_mps = KEYS2[k1_mp * 126 + k0_s] as usize;
+
+    let mut result = BatchDrawShantenResult {
+        base,
+        draw: [None; 34],
+    };
+
+    let total: u8 = hand.iter().sum();
+    let m_after = ((total + 1) / 3) as usize;
+    let after_len_div3 = (total + 1) / 3;
+    let mut tmp = *hand;
+
+    for t in 0..9 {
+        if tmp[t] >= 4 {
+            continue;
+        }
+        tmp[t] += 1;
+        let new_k0_m = SHUPAI_KEYS[hash_shupai(&tmp[0..9])] as usize;
+        let normal = chain_normal(new_k0_m, k0_p, k0_s, k0_z, m_after);
+        result.draw[t] = Some(combined_shanten(normal, &tmp, after_len_div3));
+        tmp[t] -= 1;
+    }
+
+    for t in 9..18 {
+        if tmp[t] >= 4 {
+            continue;
+        }
+        tmp[t] += 1;
+        let new_k0_p = SHUPAI_KEYS[hash_shupai(&tmp[9..18])] as usize;
+        let normal = chain_normal(k0_m, new_k0_p, k0_s, k0_z, m_after);
+        result.draw[t] = Some(combined_shanten(normal, &tmp, after_len_div3));
+        tmp[t] -= 1;
+    }
+
+    for t in 18..27 {
+        if tmp[t] >= 4 {
+            continue;
+        }
+        tmp[t] += 1;
+        let new_k0_s = SHUPAI_KEYS[hash_shupai(&tmp[18..27])] as usize;
+        let new_k2 = KEYS2[k1_mp * 126 + new_k0_s] as usize;
+        let normal = (KEYS3[(new_k2 * 55 + k0_z) * 5 + m_after] as i8) - 1;
+        result.draw[t] = Some(combined_shanten(normal, &tmp, after_len_div3));
+        tmp[t] -= 1;
+    }
+
+    for t in 27..34 {
+        if tmp[t] >= 4 {
+            continue;
+        }
+        tmp[t] += 1;
+        let new_k0_z = ZIPAI_KEYS[hash_zipai(&tmp[27..34])] as usize;
+        let normal = (KEYS3[(k2_mps * 55 + new_k0_z) * 5 + m_after] as i8) - 1;
+        result.draw[t] = Some(combined_shanten(normal, &tmp, after_len_div3));
+        tmp[t] -= 1;
     }
 
     result
@@ -241,5 +318,56 @@ mod tests {
         let mut hand = [0u8; 34];
         hand[0] = 4;
         assert_batch_matches_naive(&hand);
+    }
+
+    fn assert_draw_batch_matches_naive(hand: &[u8; 34]) {
+        let total: u8 = hand.iter().sum();
+        let len_div3 = total / 3;
+        let batch = batch_draw_shanten(hand, len_div3);
+        let naive_base = calc_shanten_from_counts(hand, len_div3);
+        assert_eq!(batch.base, naive_base, "base mismatch");
+
+        let after_len_div3 = (total + 1) / 3;
+        let mut tmp = *hand;
+        for t in 0..34 {
+            if hand[t] >= 4 {
+                assert!(
+                    batch.draw[t].is_none(),
+                    "tile {t} already exhausted in hand"
+                );
+            } else {
+                tmp[t] += 1;
+                let naive = calc_shanten_from_counts(&tmp, after_len_div3);
+                assert_eq!(batch.draw[t], Some(naive), "draw tile {t}");
+                tmp[t] -= 1;
+            }
+        }
+    }
+
+    #[test]
+    fn batch_draw_complete_hand_matches_naive() {
+        let mut hand = [0u8; 34];
+        hand[0..3].fill(1);
+        hand[12..15].fill(1);
+        hand[24..27].fill(1);
+        hand[27] = 2;
+        hand[28] = 2;
+        assert_draw_batch_matches_naive(&hand);
+    }
+
+    #[test]
+    fn batch_draw_single_tile_matches_naive() {
+        let mut hand = [0u8; 34];
+        hand[5] = 1;
+        assert_draw_batch_matches_naive(&hand);
+    }
+
+    #[test]
+    fn batch_draw_four_of_a_kind_skips_full_tile() {
+        let mut hand = [0u8; 34];
+        hand[0] = 4;
+        let batch = batch_draw_shanten(&hand, 1);
+        assert!(batch.draw[0].is_none());
+        assert_draw_batch_matches_naive(&hand);
     }
 }

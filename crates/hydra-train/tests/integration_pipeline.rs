@@ -607,5 +607,6 @@ fn make_test_targets(
         safety_residual_target: None,
         safety_residual_mask: None,
         oracle_guidance_mask: None,
+        target_presence: None,
     }
 }

@@ -37,6 +37,7 @@ impl<B: Backend> HydraOutput<B> {
     pub fn policy_logits_cpu(&self) -> Option<Vec<f32>> {
         self.policy_logits
             .to_data()
+            .convert::<f32>()
             .as_slice::<f32>()
             .ok()
             .map(|s| s.to_vec())
@@ -45,6 +46,7 @@ impl<B: Backend> HydraOutput<B> {
     pub fn value_scalar(&self) -> Option<f32> {
         self.value
             .to_data()
+            .convert::<f32>()
             .as_slice::<f32>()
             .ok()
             .and_then(|s| s.first().copied())
@@ -52,14 +54,14 @@ impl<B: Backend> HydraOutput<B> {
 
     pub fn is_finite(&self) -> bool {
         let check2 = |t: &Tensor<B, 2>| -> bool {
-            if let Ok(s) = t.to_data().as_slice::<f32>() {
+            if let Ok(s) = t.to_data().convert::<f32>().as_slice::<f32>() {
                 s.iter().all(|v| v.is_finite())
             } else {
                 false
             }
         };
         let check3 = |t: &Tensor<B, 3>| -> bool {
-            if let Ok(s) = t.to_data().as_slice::<f32>() {
+            if let Ok(s) = t.to_data().convert::<f32>().as_slice::<f32>() {
                 s.iter().all(|v| v.is_finite())
             } else {
                 false
@@ -288,6 +290,7 @@ impl<B: Backend> HydraModel<B> {
         let (policy_logits, value) = self.forward_policy_value(input);
         let logits_vec = policy_logits
             .to_data()
+            .convert::<f32>()
             .as_slice::<f32>()
             .expect("policy logits extraction failed")
             .to_vec();
@@ -296,21 +299,66 @@ impl<B: Backend> HydraModel<B> {
             .expect("policy logits length mismatch");
         let value_scalar = value
             .to_data()
+            .convert::<f32>()
             .as_slice::<f32>()
             .expect("value extraction failed")[0];
         (logits, value_scalar)
     }
 
+    pub fn policy_cpu(
+        &self,
+        obs: &[f32; OBS_SIZE],
+        device: &B::Device,
+    ) -> [f32; HYDRA_ACTION_SPACE] {
+        let input = Tensor::<B, 1>::from_floats(obs.as_slice(), device).reshape([
+            1,
+            NUM_CHANNELS,
+            NUM_TILES,
+        ]);
+        let policy_logits = self.forward_policy(input);
+        let logits_data = policy_logits.to_data().convert::<f32>();
+        let logits_slice = logits_data
+            .as_slice::<f32>()
+            .expect("policy logits extraction failed");
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits.copy_from_slice(&logits_slice[..HYDRA_ACTION_SPACE]);
+        logits
+    }
+
+    pub fn value_cpu(&self, obs: &[f32; OBS_SIZE], device: &B::Device) -> f32 {
+        let input = Tensor::<B, 1>::from_floats(obs.as_slice(), device).reshape([
+            1,
+            NUM_CHANNELS,
+            NUM_TILES,
+        ]);
+        let value = self.forward_value(input);
+        value
+            .to_data()
+            .convert::<f32>()
+            .as_slice::<f32>()
+            .expect("value extraction failed")[0]
+    }
+
+    pub fn policy_and_value_cpu(
+        &self,
+        obs: &[f32; OBS_SIZE],
+        device: &B::Device,
+    ) -> ([f32; HYDRA_ACTION_SPACE], f32) {
+        self.policy_value_cpu(obs, device)
+    }
+
     /// Batch inference using a caller-provided flat buffer to avoid
     /// per-call allocation. The buffer is cleared and reused each call.
-    pub fn batch_policy_value_cpu_reuse(
+    pub fn fill_batch_policy_value_cpu(
         &self,
         observations: &[[f32; OBS_SIZE]],
         device: &B::Device,
         flat_buf: &mut Vec<f32>,
-    ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
+        outputs: &mut Vec<([f32; HYDRA_ACTION_SPACE], f32)>,
+    ) {
         if observations.is_empty() {
-            return Vec::new();
+            outputs.clear();
+            return;
         }
         let n = observations.len();
         flat_buf.clear();
@@ -324,28 +372,78 @@ impl<B: Backend> HydraModel<B> {
             NUM_TILES as i32,
         ]);
         let (policy_logits, value) = self.forward_policy_value(input);
-        let logits_flat = policy_logits
-            .to_data()
+        let logits_data = policy_logits.to_data().convert::<f32>();
+        let logits_flat = logits_data
             .as_slice::<f32>()
-            .expect("batch policy logits extraction failed")
-            .to_vec();
-        let values_flat = value
-            .to_data()
+            .expect("batch policy logits extraction failed");
+        let values_data = value.to_data().convert::<f32>();
+        let values_flat = values_data
             .as_slice::<f32>()
-            .expect("batch value extraction failed")
-            .to_vec();
+            .expect("batch value extraction failed");
 
-        (0..n)
-            .map(|i| {
-                let logits_start = i * HYDRA_ACTION_SPACE;
-                let logits: [f32; HYDRA_ACTION_SPACE] = logits_flat
-                    [logits_start..logits_start + HYDRA_ACTION_SPACE]
-                    .try_into()
-                    .expect("logits slice length mismatch");
-                let value = values_flat[i];
-                (logits, value)
-            })
-            .collect()
+        outputs.clear();
+        outputs.reserve(n);
+        for (i, &value) in values_flat.iter().enumerate().take(n) {
+            let logits_start = i * HYDRA_ACTION_SPACE;
+            let logits: [f32; HYDRA_ACTION_SPACE] = logits_flat
+                [logits_start..logits_start + HYDRA_ACTION_SPACE]
+                .try_into()
+                .expect("logits slice length mismatch");
+            outputs.push((logits, value));
+        }
+    }
+
+    pub fn batch_policy_value_cpu_reuse(
+        &self,
+        observations: &[[f32; OBS_SIZE]],
+        device: &B::Device,
+        flat_buf: &mut Vec<f32>,
+        outputs: &mut Vec<([f32; HYDRA_ACTION_SPACE], f32)>,
+    ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
+        self.fill_batch_policy_value_cpu(observations, device, flat_buf, outputs);
+        outputs.clone()
+    }
+
+    pub fn fill_batch_value_cpu(
+        &self,
+        observations: &[[f32; OBS_SIZE]],
+        device: &B::Device,
+        flat_buf: &mut Vec<f32>,
+        values_out: &mut Vec<f32>,
+    ) {
+        if observations.is_empty() {
+            values_out.clear();
+            return;
+        }
+        let n = observations.len();
+        flat_buf.clear();
+        flat_buf.reserve(n * OBS_SIZE);
+        for obs in observations {
+            flat_buf.extend_from_slice(obs);
+        }
+        let input = Tensor::<B, 1>::from_floats(flat_buf.as_slice(), device).reshape([
+            n as i32,
+            NUM_CHANNELS as i32,
+            NUM_TILES as i32,
+        ]);
+        let value = self.forward_value(input);
+        let values_data = value.to_data().convert::<f32>();
+        let values = values_data
+            .as_slice::<f32>()
+            .expect("batch value extraction failed");
+        values_out.clear();
+        values_out.extend_from_slice(values);
+    }
+
+    pub fn batch_value_cpu_reuse(
+        &self,
+        observations: &[[f32; OBS_SIZE]],
+        device: &B::Device,
+        flat_buf: &mut Vec<f32>,
+        values_out: &mut Vec<f32>,
+    ) -> Vec<f32> {
+        self.fill_batch_value_cpu(observations, device, flat_buf, values_out);
+        values_out.clone()
     }
 
     /// Runs a batch of observations through the full model and returns
@@ -375,11 +473,13 @@ impl<B: Backend> HydraModel<B> {
         let (policy_logits, value) = self.forward_policy_value(input);
         let logits_flat = policy_logits
             .to_data()
+            .convert::<f32>()
             .as_slice::<f32>()
             .expect("batch policy logits extraction failed")
             .to_vec();
         let values_flat = value
             .to_data()
+            .convert::<f32>()
             .as_slice::<f32>()
             .expect("batch value extraction failed")
             .to_vec();
@@ -402,6 +502,16 @@ impl<B: Backend> HydraModel<B> {
     /// Self-play inference only needs logits and value. Skipping the
     /// other 12 heads avoids ~12 unnecessary matmuls and their VRAM
     /// allocations per forward pass.
+    pub fn forward_value(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
+        let (_, pooled) = self.backbone.forward(x);
+        self.value.forward(pooled)
+    }
+
+    pub fn forward_policy(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
+        let (_, pooled) = self.backbone.forward(x);
+        self.policy.forward(pooled)
+    }
+
     pub fn forward_policy_value(&self, x: Tensor<B, 3>) -> (Tensor<B, 2>, Tensor<B, 2>) {
         let (_, pooled) = self.backbone.forward(x);
         let policy_logits = self.policy.forward(pooled.clone());
@@ -554,8 +664,13 @@ impl<B: Backend> HydraModel<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::training::losses::{tests::make_dummy_targets, HydraLoss, HydraLossConfig};
     use burn::backend::Autodiff;
+    use burn::backend::LibTorch;
     use burn::backend::NdArray;
+    use burn::optim::AdamConfig;
+    use burn::optim::Optimizer;
+    use burn::tensor::bf16;
 
     type B = NdArray<f32>;
     type AB = Autodiff<NdArray<f32>>;
@@ -620,6 +735,204 @@ mod tests {
         assert_eq!(logits.len(), HYDRA_ACTION_SPACE);
         assert!(value.is_finite());
         assert!(logits.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn policy_and_value_cpu_matches_policy_value_cpu() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let obs = [0.125f32; OBS_SIZE];
+
+        let direct = model.policy_value_cpu(&obs, &device);
+        let via_helper = model.policy_and_value_cpu(&obs, &device);
+
+        assert_eq!(direct.0, via_helper.0);
+        assert!((direct.1 - via_helper.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn forward_policy_matches_forward_policy_value_logits() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([2, INPUT_CHANNELS, 34], &device);
+
+        let policy_only = model.forward_policy(x.clone());
+        let (policy_logits, _) = model.forward_policy_value(x);
+
+        let policy_only_data = policy_only
+            .to_data()
+            .convert::<f32>()
+            .as_slice::<f32>()
+            .expect("policy-only logits should be readable")
+            .to_vec();
+        let policy_value_data = policy_logits
+            .to_data()
+            .convert::<f32>()
+            .as_slice::<f32>()
+            .expect("policy-value logits should be readable")
+            .to_vec();
+
+        assert_eq!(policy_only_data, policy_value_data);
+    }
+
+    #[test]
+    fn batch_policy_value_cpu_matches_single_sample_path() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let obs_a = [0.0f32; OBS_SIZE];
+        let obs_b = [0.25f32; OBS_SIZE];
+        let observations = [obs_a, obs_b];
+
+        let single_outputs: Vec<_> = observations
+            .iter()
+            .map(|obs| model.policy_value_cpu(obs, &device))
+            .collect();
+        let batch_outputs = model.batch_policy_value_cpu(&observations, &device);
+
+        assert_eq!(batch_outputs.len(), single_outputs.len());
+        for ((batch_logits, batch_value), (single_logits, single_value)) in
+            batch_outputs.iter().zip(single_outputs.iter())
+        {
+            for (batch, single) in batch_logits.iter().zip(single_logits.iter()) {
+                assert!((batch - single).abs() < 1e-6);
+            }
+            assert!((batch_value - single_value).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn batch_policy_value_cpu_reuse_matches_non_reuse_path() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let obs_a = [0.1f32; OBS_SIZE];
+        let obs_b = [0.2f32; OBS_SIZE];
+        let obs_c = [0.3f32; OBS_SIZE];
+        let observations = [obs_a, obs_b, obs_c];
+
+        let expected = model.batch_policy_value_cpu(&observations, &device);
+        let mut flat_buf = vec![42.0f32; 17];
+        let mut outputs_buf = Vec::new();
+        let reused = model.batch_policy_value_cpu_reuse(
+            &observations,
+            &device,
+            &mut flat_buf,
+            &mut outputs_buf,
+        );
+
+        assert_eq!(reused.len(), expected.len());
+        for ((reuse_logits, reuse_value), (expected_logits, expected_value)) in
+            reused.iter().zip(expected.iter())
+        {
+            for (reuse, expected) in reuse_logits.iter().zip(expected_logits.iter()) {
+                assert!((reuse - expected).abs() < 1e-6);
+            }
+            assert!((reuse_value - expected_value).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
+        let device = Default::default();
+        let model = HydraModelConfig::actor().init::<B>(&device);
+        let observations = [
+            [0.05f32; OBS_SIZE],
+            [0.15f32; OBS_SIZE],
+            [0.25f32; OBS_SIZE],
+        ];
+
+        let expected = model.batch_policy_value_cpu(&observations, &device);
+        let mut flat_buf = vec![13.0f32; 29];
+        let mut values_buf = Vec::new();
+        let values =
+            model.batch_value_cpu_reuse(&observations, &device, &mut flat_buf, &mut values_buf);
+
+        assert_eq!(values.len(), expected.len());
+        for (value, (_, expected_value)) in values.iter().zip(expected.iter()) {
+            assert!((value - expected_value).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn batch_value_cpu_reuse_supports_libtorch_bf16_backend() {
+        type Bf16Backend = LibTorch<bf16>;
+
+        let tiny_model_config = HydraModelConfig::new(1)
+            .with_input_channels(INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1);
+
+        let device = burn::backend::libtorch::LibTorchDevice::Cpu;
+        let model = tiny_model_config.init::<Bf16Backend>(&device);
+        let observations = [[0.05f32; OBS_SIZE]];
+        let mut flat_buf = vec![7.0f32; 11];
+        let mut values_buf = Vec::new();
+
+        let values =
+            model.batch_value_cpu_reuse(&observations, &device, &mut flat_buf, &mut values_buf);
+        assert_eq!(values.len(), observations.len());
+        assert!(values.iter().all(|value| value.is_finite()));
+
+        let outputs = model.batch_policy_value_cpu(&observations, &device);
+        for (value, (_, expected_value)) in values.iter().zip(outputs.iter()) {
+            assert!((value - expected_value).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn hydra_loss_runs_on_libtorch_bf16_backend() {
+        type Bf16Backend = LibTorch<bf16>;
+
+        let tiny_model_config = HydraModelConfig::new(1)
+            .with_input_channels(INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1);
+
+        let device = burn::backend::libtorch::LibTorchDevice::Cpu;
+        let model = tiny_model_config.init::<Bf16Backend>(&device);
+        let x = Tensor::<Bf16Backend, 3>::zeros([1, INPUT_CHANNELS, 34], &device);
+        let out = model.forward(x);
+        let targets = make_dummy_targets::<Bf16Backend>(&device, 1);
+        let hydra_loss = HydraLoss::<Bf16Backend>::new(HydraLossConfig::new());
+        let breakdown = hydra_loss.total_loss(&out, &targets);
+        let total = breakdown
+            .total
+            .into_data()
+            .convert::<f32>()
+            .as_slice::<f32>()
+            .expect("bf16 total loss should be readable as f32")[0];
+
+        assert!(total.is_finite());
+        assert!(total >= 0.0);
+    }
+
+    #[test]
+    fn hydra_training_step_runs_on_libtorch_bf16_backend() {
+        type Bf16Backend = Autodiff<LibTorch<bf16>>;
+
+        let tiny_model_config = HydraModelConfig::new(1)
+            .with_input_channels(INPUT_CHANNELS)
+            .with_hidden_channels(4)
+            .with_num_groups(4)
+            .with_se_bottleneck(1);
+
+        let device = burn::backend::libtorch::LibTorchDevice::Cpu;
+        let model = tiny_model_config.init::<Bf16Backend>(&device);
+        let x = Tensor::<Bf16Backend, 3>::zeros([1, INPUT_CHANNELS, 34], &device);
+        let out = model.forward(x);
+        let targets = make_dummy_targets::<Bf16Backend>(&device, 1);
+        let hydra_loss = HydraLoss::<Bf16Backend>::new(HydraLossConfig::new());
+        let breakdown = hydra_loss.total_loss(&out, &targets);
+        let loss = breakdown.total;
+        let grads = loss.backward();
+        let grads = burn::optim::GradientsParams::from_grads(grads, &model);
+        let mut optim = AdamConfig::new().init();
+        let model = optim.step(1e-4, model, grads);
+
+        let outputs = model.batch_policy_value_cpu(&[[0.0f32; OBS_SIZE]], &device);
+        assert_eq!(outputs.len(), 1);
+        assert!(outputs[0].1.is_finite());
     }
 
     #[test]

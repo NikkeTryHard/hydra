@@ -58,7 +58,9 @@ mod tests {
             validation_microbatch_size: None,
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -80,6 +82,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: hydra_train::preflight::PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 

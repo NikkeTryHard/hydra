@@ -62,6 +62,9 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 | Hand-EV baseline surface | shipped baseline | Stronger local evaluator is live; representative-world CT-SMC Hand-EV remains staged |
 | Belief semantics baseline | shipped baseline | Stronger public-teacher belief tranche is in the live baseline |
 | BC runtime authority | shipped baseline | Fresh runs are config-derived; epoch-boundary resumes may reuse matching preflight-selected runtime for selected-runtime only; partial-epoch resumes still require identical runtime; loader-runtime remains config-derived |
+| BF16/AMP precision | shipped baseline (BC); staged (RL, DeltaQ) | BC training, preflight, probe, autotune, and stage-2 benchmark all dispatch by precision. RL training and DeltaQ promotion are explicitly gated with hard errors. |
+| Preflight cache system | shipped baseline | Fingerprint v4 key covers hardware, workload, preflight config, explicit microbatch overrides. Identical-run fast path skips probing on cache hit. BC and RL bootstrap read cache under documented authority rules. |
+| NVTX profiling | shipped baseline | Orchestration-level fully instrumented (epoch, step, validation, checkpoint, logging, self-play, stage-2 benchmark). BC microbatch sub-stages (collation, forward, loss, backward, optimizer_step) instrumented. Library internals not yet instrumented. Gated by `HYDRA_NVTX` env var via dlopen. |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |
 | ExIt carrier | shipped baseline | Live self-play lane + replay/sample sidecar-first lane |
 | DeltaQ lane | implemented but not default-on | Arena-confirmation path implemented; promotion artifact now records pre-arena recommendation plus final `arena_decision`/`arena_report` |

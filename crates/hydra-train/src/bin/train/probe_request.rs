@@ -2,14 +2,23 @@ use std::path::PathBuf;
 
 use hydra_train::preflight::ProbeKind;
 
-use super::config::{ProbeChildRequest, ProbeCliRequest, TrainConfig};
+use super::config::{
+    ProbeBatchChildRequest, ProbeChildRequest, ProbeCliRequest, ProbeSingleChildRequest,
+    TrainConfig,
+};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ProbeRequest {
     pub(super) kind: ProbeKind,
     pub(super) candidate_microbatch: usize,
     pub(super) warmup_steps: usize,
     pub(super) measure_steps: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ProbeBatchRequest {
+    pub(super) request: ProbeRequest,
+    pub(super) attempts: usize,
 }
 
 pub(super) fn probe_request_from_cli(
@@ -42,27 +51,69 @@ pub(super) fn probe_request_from_cli(
 
 pub(super) fn probe_child_request_from_cli(
     child: Option<ProbeChildRequest>,
-) -> Result<Option<(ProbeRequest, PathBuf)>, String> {
+) -> Result<Option<(ProbeRequest, PathBuf, Option<PathBuf>)>, String> {
     let Some(child) = child else {
         return Ok(None);
     };
-    let request = ProbeRequest {
-        kind: child.request.kind,
-        candidate_microbatch: child.request.candidate_microbatch,
-        warmup_steps: child
-            .request
-            .warmup_steps
-            .ok_or_else(|| "internal probe child missing resolved warmup steps".to_string())?,
-        measure_steps: child
-            .request
-            .measure_steps
-            .ok_or_else(|| "internal probe child missing resolved measure steps".to_string())?,
+    match child {
+        ProbeChildRequest::Single(child) => Ok(Some(resolve_probe_single_child_request(child)?)),
+        ProbeChildRequest::Batch(_) => Ok(None),
+    }
+}
+
+pub(super) fn probe_batch_child_request_from_cli(
+    child: Option<ProbeChildRequest>,
+) -> Result<Option<(ProbeBatchRequest, PathBuf, Option<PathBuf>)>, String> {
+    let Some(child) = child else {
+        return Ok(None);
     };
-    Ok(Some((request, child.result_path)))
+    match child {
+        ProbeChildRequest::Single(_) => Ok(None),
+        ProbeChildRequest::Batch(child) => Ok(Some(resolve_probe_batch_child_request(child)?)),
+    }
 }
 
 pub(super) fn probe_candidate_ceiling(request: ProbeRequest) -> usize {
     request.candidate_microbatch.max(1)
+}
+
+fn resolve_probe_request(request: ProbeCliRequest) -> Result<ProbeRequest, String> {
+    Ok(ProbeRequest {
+        kind: request.kind,
+        candidate_microbatch: request.candidate_microbatch,
+        warmup_steps: request
+            .warmup_steps
+            .ok_or_else(|| "internal probe child missing resolved warmup steps".to_string())?,
+        measure_steps: request
+            .measure_steps
+            .ok_or_else(|| "internal probe child missing resolved measure steps".to_string())?,
+    })
+}
+
+fn resolve_probe_single_child_request(
+    child: ProbeSingleChildRequest,
+) -> Result<(ProbeRequest, PathBuf, Option<PathBuf>), String> {
+    Ok((
+        resolve_probe_request(child.request)?,
+        child.result_path,
+        child.manifest_cache_path,
+    ))
+}
+
+fn resolve_probe_batch_child_request(
+    child: ProbeBatchChildRequest,
+) -> Result<(ProbeBatchRequest, PathBuf, Option<PathBuf>), String> {
+    if child.attempts == 0 {
+        return Err("internal probe batch child missing positive attempts".to_string());
+    }
+    Ok((
+        ProbeBatchRequest {
+            request: resolve_probe_request(child.request)?,
+            attempts: child.attempts,
+        },
+        child.results_path,
+        child.manifest_cache_path,
+    ))
 }
 
 #[cfg(test)]
@@ -83,7 +134,9 @@ mod tests {
             validation_microbatch_size: Some(32),
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
             train_fraction: 0.9,
+            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
@@ -105,6 +158,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
+            precision_mode: crate::config::PrecisionMode::Fp32,
         }
     }
 
@@ -168,15 +222,18 @@ mod tests {
 
     #[test]
     fn probe_child_request_from_cli_parses_child_probe_inputs() {
-        let (request, path) = probe_child_request_from_cli(Some(ProbeChildRequest {
-            request: ProbeCliRequest {
-                kind: ProbeKind::Train,
-                candidate_microbatch: 192,
-                warmup_steps: Some(4),
-                measure_steps: Some(12),
-            },
-            result_path: PathBuf::from("/tmp/probe.json"),
-        }))
+        let (request, path, manifest_cache_path) = probe_child_request_from_cli(Some(
+            ProbeChildRequest::Single(ProbeSingleChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Train,
+                    candidate_microbatch: 192,
+                    warmup_steps: Some(4),
+                    measure_steps: Some(12),
+                },
+                result_path: PathBuf::from("/tmp/probe.json"),
+                manifest_cache_path: Some(PathBuf::from("/tmp/manifest.json")),
+            }),
+        ))
         .expect("child request should parse")
         .expect("child request should be present");
         assert_eq!(request.kind, ProbeKind::Train);
@@ -184,5 +241,77 @@ mod tests {
         assert_eq!(request.warmup_steps, 4);
         assert_eq!(request.measure_steps, 12);
         assert_eq!(path, PathBuf::from("/tmp/probe.json"));
+        assert_eq!(
+            manifest_cache_path,
+            Some(PathBuf::from("/tmp/manifest.json"))
+        );
+    }
+
+    #[test]
+    fn probe_child_request_from_cli_ignores_batch_child_inputs() {
+        let child = ProbeChildRequest::Batch(ProbeBatchChildRequest {
+            request: ProbeCliRequest {
+                kind: ProbeKind::Validation,
+                candidate_microbatch: 64,
+                warmup_steps: Some(2),
+                measure_steps: Some(3),
+            },
+            attempts: 2,
+            results_path: PathBuf::from("/tmp/probe-results.json"),
+            manifest_cache_path: None,
+        });
+
+        let parsed = probe_child_request_from_cli(Some(child)).expect("batch child should parse");
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn probe_batch_child_request_from_cli_parses_batch_probe_inputs() {
+        let (batch, path, manifest_cache_path) = probe_batch_child_request_from_cli(Some(
+            ProbeChildRequest::Batch(ProbeBatchChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Validation,
+                    candidate_microbatch: 256,
+                    warmup_steps: Some(5),
+                    measure_steps: Some(9),
+                },
+                attempts: 3,
+                results_path: PathBuf::from("/tmp/probe-results.json"),
+                manifest_cache_path: Some(PathBuf::from("/tmp/manifest.json")),
+            }),
+        ))
+        .expect("batch child request should parse")
+        .expect("batch child request should be present");
+
+        assert_eq!(batch.request.kind, ProbeKind::Validation);
+        assert_eq!(batch.request.candidate_microbatch, 256);
+        assert_eq!(batch.request.warmup_steps, 5);
+        assert_eq!(batch.request.measure_steps, 9);
+        assert_eq!(batch.attempts, 3);
+        assert_eq!(path, PathBuf::from("/tmp/probe-results.json"));
+        assert_eq!(
+            manifest_cache_path,
+            Some(PathBuf::from("/tmp/manifest.json"))
+        );
+    }
+
+    #[test]
+    fn probe_batch_child_request_from_cli_rejects_zero_attempts() {
+        let err = probe_batch_child_request_from_cli(Some(ProbeChildRequest::Batch(
+            ProbeBatchChildRequest {
+                request: ProbeCliRequest {
+                    kind: ProbeKind::Train,
+                    candidate_microbatch: 128,
+                    warmup_steps: Some(2),
+                    measure_steps: Some(4),
+                },
+                attempts: 0,
+                results_path: PathBuf::from("/tmp/probe-results.json"),
+                manifest_cache_path: None,
+            },
+        )))
+        .expect_err("zero attempts should fail");
+
+        assert_eq!(err, "internal probe batch child missing positive attempts");
     }
 }

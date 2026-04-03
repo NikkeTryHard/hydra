@@ -48,6 +48,8 @@
 //! real flattened shared-trunk gradients instead.
 
 use crate::training::losses::{HydraLossConfig, HydraTargets};
+use std::borrow::Cow;
+
 use burn::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -175,10 +177,11 @@ pub enum HeadState {
 // ---------------------------------------------------------------------------
 
 /// Per-head count of samples with valid targets in a single batch.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TargetPresence {
     /// Per-head count of samples carrying a valid target in this batch.
     pub counts: [usize; NUM_ADVANCED_HEADS],
+    pub delta_q_actions_present: usize,
     /// Total samples in this batch.
     pub batch_size: usize,
 }
@@ -187,6 +190,7 @@ impl Default for TargetPresence {
     fn default() -> Self {
         Self {
             counts: [0; NUM_ADVANCED_HEADS],
+            delta_q_actions_present: 0,
             batch_size: 0,
         }
     }
@@ -197,6 +201,7 @@ impl TargetPresence {
     pub fn with_batch_size(batch_size: usize) -> Self {
         Self {
             counts: [0; NUM_ADVANCED_HEADS],
+            delta_q_actions_present: 0,
             batch_size,
         }
     }
@@ -213,6 +218,9 @@ impl TargetPresence {
 /// counts the number of samples where the mask is nonzero. For targets
 /// without per-sample masks, counts `batch_size` when the target is present.
 pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetPresence {
+    if let Some(presence) = targets.target_presence.clone() {
+        return presence;
+    }
     let batch_size = targets.policy_target.dims()[0];
     let mut counts = [0usize; NUM_ADVANCED_HEADS];
 
@@ -265,12 +273,26 @@ pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetP
         _ => 0,
     };
 
-    TargetPresence { counts, batch_size }
+    TargetPresence {
+        counts,
+        delta_q_actions_present: 0,
+        batch_size,
+    }
+}
+
+pub fn borrow_or_extract_target_presence<B: Backend>(
+    targets: &HydraTargets<B>,
+) -> Cow<'_, TargetPresence> {
+    if let Some(presence) = targets.target_presence.as_ref() {
+        Cow::Borrowed(presence)
+    } else {
+        Cow::Owned(extract_target_presence(targets))
+    }
 }
 
 /// Counts nonzero entries in a 1-D tensor.
 fn count_nonzero_1d<B: Backend>(tensor: &Tensor<B, 1>) -> usize {
-    match tensor.to_data().as_slice::<f32>() {
+    match tensor.to_data().convert::<f32>().as_slice::<f32>() {
         Ok(data) => data.iter().filter(|&&v| v > 0.0).count(),
         Err(_) => 0,
     }
@@ -280,31 +302,26 @@ fn count_nonzero_1d_with_optional_gate<B: Backend>(
     tensor: &Tensor<B, 1>,
     gate: Option<&Tensor<B, 1>>,
 ) -> usize {
-    let tensor_data = tensor.to_data();
+    let tensor_data = tensor.to_data().convert::<f32>();
     let Ok(data) = tensor_data.as_slice::<f32>() else {
         return 0;
     };
-    let gate_owned = gate.and_then(|gate| {
-        let gate_data = gate.to_data();
-        gate_data
-            .as_slice::<f32>()
-            .ok()
-            .map(|values| values.to_vec())
-    });
+    let gate_data = gate.map(|gate| gate.to_data().convert::<f32>());
+    let gate_slice = gate_data
+        .as_ref()
+        .and_then(|data| data.as_slice::<f32>().ok());
     data.iter()
         .enumerate()
         .filter(|(idx, value)| {
             **value > 0.0
-                && gate_owned
-                    .as_ref()
-                    .is_none_or(|gate| gate.get(*idx).copied().unwrap_or(0.0) > 0.0)
+                && gate_slice.is_none_or(|gate| gate.get(*idx).copied().unwrap_or(0.0) > 0.0)
         })
         .count()
 }
 
 fn count_nonzero_rows_2d<B: Backend>(tensor: &Tensor<B, 2>) -> usize {
     let [_rows, cols] = tensor.dims();
-    match tensor.to_data().as_slice::<f32>() {
+    match tensor.to_data().convert::<f32>().as_slice::<f32>() {
         Ok(data) => data
             .chunks(cols)
             .filter(|row| row.iter().any(|&v| v > 0.0))
@@ -1315,6 +1332,7 @@ mod tests {
             safety_residual_target: None,
             safety_residual_mask: None,
             oracle_guidance_mask: None,
+            target_presence: None,
         }
     }
 
@@ -1423,6 +1441,24 @@ mod tests {
 
         let presence = extract_target_presence(&targets);
         assert_eq!(presence.count(AdvancedHead::DeltaQ), 0);
+    }
+
+    #[test]
+    fn extract_presence_prefers_cached_metadata() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.delta_q_target = Some(Tensor::zeros([4, 46], &device));
+        targets.delta_q_mask = Some(Tensor::ones([4, 46], &device));
+        targets.target_presence = Some(TargetPresence {
+            counts: [0, 0, 0, 0, 1, 0],
+            delta_q_actions_present: 9,
+            batch_size: 4,
+        });
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::DeltaQ), 1);
+        assert_eq!(presence.delta_q_actions_present, 9);
+        assert_eq!(presence.batch_size, 4);
     }
 
     // -- Full integration: controller with extract_target_presence ----------

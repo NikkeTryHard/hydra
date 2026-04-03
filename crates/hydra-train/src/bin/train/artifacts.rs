@@ -5,11 +5,15 @@ use std::path::{Path, PathBuf};
 use burn::optim::Optimizer;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
+use burn::tensor::backend::{AutodiffBackend, Backend};
 use tboard::EventWriter;
 
 use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
-use hydra_train::preflight::{default_cache_name, PreflightCacheEntry};
+use hydra_train::preflight::{
+    BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
+    PreflightCacheKey, default_cache_name, default_manifest_cache_name,
+};
 use hydra_train::training::bc::CheckpointMeta;
 use hydra_train::training::delta_q_promotion::{
     DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPolicyTransferReport,
@@ -19,11 +23,10 @@ use hydra_train::training::delta_q_promotion::{
 
 use super::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
 use super::resume::{
-    build_resume_state, current_timestamp_s, write_resume_state, BestValidation, EpochContinuation,
-    RlResumeState, RuntimeResumeContract,
+    BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
+    current_timestamp_s, read_resume_state, read_rl_resume_state, write_resume_state,
 };
 use super::validation::ValidationSummary;
-use super::TrainBackend;
 
 pub(crate) struct BcArtifactPaths {
     pub(crate) root: PathBuf,
@@ -50,10 +53,18 @@ pub(crate) struct RlArtifactPaths {
 
 pub(crate) struct PreflightPaths {
     pub(crate) cache_path: PathBuf,
+    pub(crate) manifest_cache_path: PathBuf,
 }
 
 pub(crate) struct PreflightBenchmarkPaths {
     pub(crate) root: PathBuf,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct PreflightBenchmarkReport {
+    pub(crate) cache_key: PreflightCacheKey,
+    pub(crate) runtime: EffectiveRuntimeConfig,
+    pub(crate) benchmark: BenchmarkResult,
 }
 
 pub(crate) struct RlPreflightPaths {
@@ -68,10 +79,13 @@ pub(crate) struct LatestCheckpointState<'a> {
     pub(crate) runtime: RuntimeResumeContract,
 }
 
+pub(crate) type JsonlAppender = fs::File;
+
 impl PreflightPaths {
     pub(crate) fn new(artifacts: &BcArtifactPaths) -> Self {
         Self {
             cache_path: artifacts.root.join(default_cache_name()),
+            manifest_cache_path: artifacts.root.join(default_manifest_cache_name()),
         }
     }
 }
@@ -105,6 +119,10 @@ impl PreflightBenchmarkPaths {
             )
         })?;
         Ok(path)
+    }
+
+    pub(crate) fn report_path(&self) -> PathBuf {
+        self.root.join("report.json")
     }
 }
 
@@ -213,6 +231,32 @@ pub(crate) fn write_preflight_cache(
         .map_err(|err| format!("failed to write preflight cache {}: {err}", path.display()))
 }
 
+pub(crate) fn write_preflight_benchmark_report(
+    path: &Path,
+    report: &PreflightBenchmarkReport,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create preflight benchmark report dir {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let json = serde_json::to_string_pretty(report).map_err(|err| {
+        format!(
+            "failed to serialize preflight benchmark report {}: {err}",
+            path.display()
+        )
+    })?;
+    fs::write(path, json).map_err(|err| {
+        format!(
+            "failed to write preflight benchmark report {}: {err}",
+            path.display()
+        )
+    })
+}
+
 pub(crate) fn read_preflight_cache(path: &Path) -> Result<Option<PreflightCacheEntry>, String> {
     if !path.exists() {
         return Ok(None);
@@ -224,14 +268,57 @@ pub(crate) fn read_preflight_cache(path: &Path) -> Result<Option<PreflightCacheE
     Ok(Some(entry))
 }
 
-pub(crate) fn save_latest_checkpoint_and_state<O>(
+pub(crate) fn write_manifest_cache(path: &Path, entry: &ManifestCacheEntry) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(entry).map_err(|err| {
+        format!(
+            "failed to serialize manifest cache {}: {err}",
+            path.display()
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create manifest cache parent dir {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, json).map_err(|err| {
+        format!(
+            "failed to write manifest cache temp file {}: {err}",
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, path).map_err(|err| {
+        format!(
+            "failed to atomically replace manifest cache {} from {}: {err}",
+            path.display(),
+            tmp_path.display()
+        )
+    })
+}
+
+pub(crate) fn read_manifest_cache(path: &Path) -> Result<Option<ManifestCacheEntry>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read manifest cache {}: {err}", path.display()))?;
+    let entry: ManifestCacheEntry = serde_json::from_str(&raw)
+        .map_err(|err| format!("failed to parse manifest cache {}: {err}", path.display()))?;
+    Ok(Some(entry))
+}
+
+pub(crate) fn save_latest_checkpoint_and_state<B, O>(
     artifacts: &BcArtifactPaths,
-    model: &HydraModel<TrainBackend>,
+    model: &HydraModel<B>,
     optimizer: &O,
     state: LatestCheckpointState<'_>,
 ) -> Result<(), String>
 where
-    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    B: AutodiffBackend,
+    O: Optimizer<HydraModel<B>, B>,
 {
     let LatestCheckpointState {
         global_step,
@@ -240,25 +327,12 @@ where
         continuation,
         runtime,
     } = state;
-    save_checkpoint(
-        model,
-        &artifacts.latest_model_base,
-        global_step,
-        train_loss,
-        None,
-    )?;
-    let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-    optimizer_recorder
-        .record(
-            optimizer.to_record(),
-            artifacts.latest_optimizer_base.clone(),
-        )
-        .map_err(|err| {
-            format!(
-                "failed to save optimizer state {}: {err}",
-                artifacts.latest_optimizer_base.display()
-            )
-        })?;
+    let skip_payload_write = latest_bc_payload_is_current(artifacts, global_step);
+    if !skip_payload_write {
+        save_model_payload(model, &artifacts.latest_model_base)?;
+        save_optimizer_payload(optimizer, &artifacts.latest_optimizer_base)?;
+    }
+    write_checkpoint_meta(&artifacts.latest_model_base, global_step, train_loss, None)?;
     let state = build_resume_state(
         continuation.next_epoch,
         continuation.skip_optimizer_steps_in_epoch,
@@ -269,32 +343,69 @@ where
     write_resume_state(&artifacts.latest_state_path, &state)
 }
 
-pub(crate) fn save_checkpoint(
-    model: &HydraModel<TrainBackend>,
+pub(crate) fn save_checkpoint<B: Backend>(
+    model: &HydraModel<B>,
     base: &Path,
     epoch: usize,
     loss: f64,
     val_summary: Option<&ValidationSummary>,
 ) -> Result<(), String> {
+    save_model_payload(model, base)?;
+    write_checkpoint_meta(base, epoch, loss, val_summary)
+}
+
+fn save_model_payload<B: Backend>(model: &HydraModel<B>, base: &Path) -> Result<(), String> {
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     model
         .clone()
         .save_file(base, &recorder)
-        .map_err(|err| format!("failed to save checkpoint {}: {err}", base.display()))?;
-    let meta = CheckpointMeta::new(
+        .map_err(|err| format!("failed to save checkpoint {}: {err}", base.display()))
+}
+
+fn checkpoint_meta(
+    epoch: usize,
+    loss: f64,
+    val_summary: Option<&ValidationSummary>,
+) -> CheckpointMeta {
+    CheckpointMeta::new(
         epoch as u32,
         loss,
         val_summary.map(|summary| summary.agreement),
         val_summary.map(|summary| summary.policy_loss),
         val_summary.map(|summary| summary.total_loss),
-    );
-    let meta_json = serde_json::to_string_pretty(&meta).map_err(|err| {
-        format!(
-            "failed to serialize checkpoint metadata {}: {err}",
-            base.display()
-        )
-    })?;
+    )
+}
+
+fn checkpoint_meta_semantically_matches(
+    existing: &CheckpointMeta,
+    candidate: &CheckpointMeta,
+) -> bool {
+    existing.epoch == candidate.epoch
+        && existing.train_loss == candidate.train_loss
+        && existing.eval_agreement == candidate.eval_agreement
+        && existing.eval_policy_loss == candidate.eval_policy_loss
+        && existing.eval_total_loss == candidate.eval_total_loss
+        && existing.num_blocks == candidate.num_blocks
+        && existing.hidden_channels == candidate.hidden_channels
+}
+
+fn write_checkpoint_meta(
+    base: &Path,
+    epoch: usize,
+    loss: f64,
+    val_summary: Option<&ValidationSummary>,
+) -> Result<(), String> {
+    let meta = checkpoint_meta(epoch, loss, val_summary);
     let meta_path = base.with_extension("meta.json");
+    if let Ok(raw) = fs::read_to_string(&meta_path)
+        && let Ok(existing) = serde_json::from_str::<CheckpointMeta>(&raw)
+        && checkpoint_meta_semantically_matches(&existing, &meta)
+    {
+        return Ok(());
+    }
+    let meta_json = serde_json::to_string_pretty(&meta).map_err(|err| {
+        format!("failed to serialize checkpoint metadata for epoch {epoch}: {err}")
+    })?;
     fs::write(&meta_path, meta_json).map_err(|err| {
         format!(
             "failed to write checkpoint metadata {}: {err}",
@@ -303,40 +414,139 @@ pub(crate) fn save_checkpoint(
     })
 }
 
-pub(crate) fn append_training_log(path: &Path, entry: &EpochLogEntry) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new()
+fn save_optimizer_payload<B, O>(optimizer: &O, base: &Path) -> Result<(), String>
+where
+    B: AutodiffBackend,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+    optimizer_recorder
+        .record(optimizer.to_record(), base.to_path_buf())
+        .map_err(|err| format!("failed to save optimizer state {}: {err}", base.display()))
+}
+
+fn latest_checkpoint_payload_exists(model_base: &Path, optimizer_base: &Path) -> bool {
+    model_base.with_extension("mpk").exists()
+        && model_base.with_extension("meta.json").exists()
+        && optimizer_base.with_extension("bin").exists()
+}
+
+fn latest_bc_payload_is_current(artifacts: &BcArtifactPaths, global_step: usize) -> bool {
+    latest_checkpoint_payload_exists(
+        &artifacts.latest_model_base,
+        &artifacts.latest_optimizer_base,
+    ) && read_resume_state(&artifacts.latest_state_path)
+        .map(|state| state.global_step == global_step)
+        .unwrap_or(false)
+}
+
+fn latest_rl_payload_is_current(artifacts: &RlArtifactPaths, global_step: usize) -> bool {
+    latest_checkpoint_payload_exists(
+        &artifacts.latest_model_base,
+        &artifacts.latest_optimizer_base,
+    ) && read_rl_resume_state(&artifacts.latest_state_path)
+        .map(|state| state.global_step == global_step)
+        .unwrap_or(false)
+}
+
+fn open_jsonl_appender(path: &Path, log_name: &str) -> Result<JsonlAppender, String> {
+    fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
-        .map_err(|err| format!("failed to open training log {}: {err}", path.display()))?;
+        .map_err(|err| format!("failed to open {log_name} {}: {err}", path.display()))
+}
+
+fn append_jsonl_entry<W, T>(
+    writer: &mut W,
+    entry: &T,
+    target: &str,
+    entry_name: &str,
+) -> Result<(), String>
+where
+    W: Write,
+    T: serde::Serialize,
+{
     let line = serde_json::to_string(entry)
-        .map_err(|err| format!("failed to serialize training log entry: {err}"))?;
-    writeln!(file, "{line}")
-        .map_err(|err| format!("failed to append training log {}: {err}", path.display()))
+        .map_err(|err| format!("failed to serialize {entry_name}: {err}"))?;
+    writeln!(writer, "{line}").map_err(|err| format!("failed to append {target}: {err}"))?;
+    writer
+        .flush()
+        .map_err(|err| format!("failed to flush {target}: {err}"))
+}
+
+pub(crate) fn open_training_log_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "training log")
+}
+
+pub(crate) fn open_step_log_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "step log")
+}
+
+pub(crate) fn open_rl_step_log_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "RL step log")
+}
+
+pub(crate) fn append_training_log_to_writer<W>(
+    writer: &mut W,
+    entry: &EpochLogEntry,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(writer, entry, "training log", "training log entry")
+}
+
+pub(crate) fn append_step_log_to_writer<W>(
+    writer: &mut W,
+    entry: &StepLogEntry,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(writer, entry, "step log", "step log entry")
+}
+
+pub(crate) fn append_rl_step_log_to_writer<W>(
+    writer: &mut W,
+    entry: &RlStepLogEntry,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(writer, entry, "RL step log", "RL step log entry")
+}
+
+#[cfg(test)]
+pub(crate) fn append_training_log(path: &Path, entry: &EpochLogEntry) -> Result<(), String> {
+    let mut file = open_training_log_appender(path)?;
+    append_jsonl_entry(
+        &mut file,
+        entry,
+        &format!("training log {}", path.display()),
+        "training log entry",
+    )
 }
 
 pub(crate) fn append_step_log(path: &Path, entry: &StepLogEntry) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|err| format!("failed to open step log {}: {err}", path.display()))?;
-    let line = serde_json::to_string(entry)
-        .map_err(|err| format!("failed to serialize step log entry: {err}"))?;
-    writeln!(file, "{line}")
-        .map_err(|err| format!("failed to append step log {}: {err}", path.display()))
+    let mut file = open_step_log_appender(path)?;
+    append_jsonl_entry(
+        &mut file,
+        entry,
+        &format!("step log {}", path.display()),
+        "step log entry",
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn append_rl_step_log(path: &Path, entry: &RlStepLogEntry) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|err| format!("failed to open RL step log {}: {err}", path.display()))?;
-    let line = serde_json::to_string(entry)
-        .map_err(|err| format!("failed to serialize RL step log entry: {err}"))?;
-    writeln!(file, "{line}")
-        .map_err(|err| format!("failed to append RL step log {}: {err}", path.display()))
+    let mut file = open_rl_step_log_appender(path)?;
+    append_jsonl_entry(
+        &mut file,
+        entry,
+        &format!("RL step log {}", path.display()),
+        "RL step log entry",
+    )
 }
 
 #[derive(serde::Serialize)]
@@ -368,36 +578,24 @@ pub(crate) fn write_delta_q_promotion_artifact(
     })
 }
 
-pub(crate) fn save_latest_rl_checkpoint_and_state<O>(
+pub(crate) fn save_latest_rl_checkpoint_and_state<B, O>(
     artifacts: &RlArtifactPaths,
-    model: &HydraModel<TrainBackend>,
+    model: &HydraModel<B>,
     optimizer: &O,
     global_step: usize,
     train_loss: f64,
     state: &RlResumeState,
 ) -> Result<(), String>
 where
-    O: Optimizer<HydraModel<TrainBackend>, TrainBackend>,
+    B: AutodiffBackend,
+    O: Optimizer<HydraModel<B>, B>,
 {
-    save_checkpoint(
-        model,
-        &artifacts.latest_model_base,
-        global_step,
-        train_loss,
-        None,
-    )?;
-    let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-    optimizer_recorder
-        .record(
-            optimizer.to_record(),
-            artifacts.latest_optimizer_base.clone(),
-        )
-        .map_err(|err| {
-            format!(
-                "failed to save RL optimizer state {}: {err}",
-                artifacts.latest_optimizer_base.display()
-            )
-        })?;
+    let skip_payload_write = latest_rl_payload_is_current(artifacts, global_step);
+    if !skip_payload_write {
+        save_model_payload(model, &artifacts.latest_model_base)?;
+        save_optimizer_payload(optimizer, &artifacts.latest_optimizer_base)?;
+    }
+    write_checkpoint_meta(&artifacts.latest_model_base, global_step, train_loss, None)?;
     write_rl_resume_state(&artifacts.latest_state_path, state)
 }
 
@@ -529,9 +727,11 @@ mod tests {
     use crate::resume::{RlResumeSemantics, RlRuntimeResumeContract};
     use crate::validation::DeltaQPromotionSnapshot;
     use hydra_train::config::{PipelineState, TrainingPhase};
+    use hydra_train::data::pipeline::{DataManifest, DataSource};
     use hydra_train::preflight::{
-        EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheKey,
-        SelectedRuntimeConfig, WorkloadFingerprint,
+        BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
+        EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
+        PreflightCacheKey, ProfilingEnvelope, SelectedRuntimeConfig, WorkloadFingerprint,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
     use tboard::SummaryReader;
@@ -556,6 +756,7 @@ mod tests {
                 workload: WorkloadFingerprint {
                     batch_size: 128,
                     augment: true,
+                    precision_mode: "fp32".to_string(),
                     train_fraction_bits: 1234,
                     max_skip_logs_per_source: 5,
                     max_validation_batches: Some(7),
@@ -563,6 +764,9 @@ mod tests {
                     model_signature: "model-sig".to_string(),
                     code_signature: "code-sig".to_string(),
                     advanced_loss_signature: "loss-sig".to_string(),
+                    preflight_config_signature: "preflight-sig".to_string(),
+                    explicit_train_microbatch: Some(32),
+                    explicit_validation_microbatch: Some(64),
                 },
             },
             runtime: EffectiveRuntimeConfig {
@@ -579,6 +783,84 @@ mod tests {
                 },
             },
             benchmark: None,
+        }
+    }
+
+    fn sample_preflight_cache_entry_with_benchmark() -> PreflightCacheEntry {
+        let mut entry = sample_preflight_cache_entry();
+        entry.benchmark = Some(BenchmarkResult {
+            runtime: BenchmarkRuntimeConfig {
+                train_microbatch_size: 32,
+                validation_microbatch_size: 64,
+                accum_steps: 4,
+                loader: LoaderRuntimeConfig {
+                    num_threads: Some(8),
+                    buffer_games: 512,
+                    buffer_samples: 2048,
+                    archive_queue_bound: 32,
+                },
+            },
+            score: BenchmarkScore {
+                wall_clock_samples_per_second: 111.0,
+                train_only_samples_per_second: 140.0,
+                train_seconds: 10.0,
+                validation_seconds: 2.0,
+                checkpoint_seconds: 0.5,
+                logging_seconds: 0.25,
+                total_elapsed_seconds: 12.75,
+                train_steps: 64,
+                validation_samples: 1024,
+            },
+            metadata: BenchmarkMetadata {
+                mode: BenchmarkMode::CadenceAwareProjection,
+                selection_metric: "wall_clock_effective_throughput".to_string(),
+                train_probe_candidates_considered: 4,
+                validation_probe_candidates_considered: 4,
+                loader_candidates_considered: 3,
+                finalists_benchmarked: 2,
+                warmup_steps: 8,
+                measured_train_steps: 64,
+                projected_validation_events: 6.0,
+                projected_checkpoint_events: 6.0,
+                projected_logging_events: 6.0,
+            },
+            profiling: Some(ProfilingEnvelope::nested(
+                "stage_2_benchmark",
+                12.75,
+                vec![
+                    ProfilingEnvelope::leaf("train", 10.0),
+                    ProfilingEnvelope::nested(
+                        "validation",
+                        2.0,
+                        vec![
+                            ProfilingEnvelope::leaf("candidate_forward_and_loss", 1.5),
+                            ProfilingEnvelope::leaf("delta_q_baseline_forward", 0.5),
+                        ],
+                    ),
+                    ProfilingEnvelope::leaf("checkpoint", 0.5),
+                    ProfilingEnvelope::leaf("logging", 0.25),
+                ],
+            )),
+        });
+        entry
+    }
+
+    fn sample_manifest_cache_entry() -> ManifestCacheEntry {
+        ManifestCacheEntry {
+            data_dir: PathBuf::from("/data"),
+            train_fraction_bits: 0.9f32.to_bits(),
+            include_source_patterns: Vec::new(),
+            exclude_source_patterns: Vec::new(),
+            manifest: DataManifest {
+                sources: vec![
+                    DataSource::LooseFile(PathBuf::from("/data/a.mjai.json")),
+                    DataSource::Archive(PathBuf::from("/data/b.tar.zst")),
+                ],
+                total_games: 1,
+                train_count: 1,
+                val_count: 0,
+                counts_exact: false,
+            },
         }
     }
 
@@ -601,6 +883,7 @@ mod tests {
             val_policy_loss: Some(0.9),
             val_policy_agreement: Some(0.75),
             val_delta_q_promotion: None,
+            profiling: Some(ProfilingEnvelope::leaf("bc_epoch", 1.2)),
             best_val_policy_loss: Some(0.8),
             best_val_agreement: Some(0.77),
             num_batches: 4,
@@ -626,6 +909,7 @@ mod tests {
             val_policy_loss: Some(0.9),
             val_policy_agreement: Some(0.75),
             val_delta_q_promotion: None,
+            profiling: Some(ProfilingEnvelope::leaf("bc_interval", 0.6)),
             best_val_policy_loss: Some(0.8),
             best_val_agreement: Some(0.77),
         }
@@ -643,6 +927,7 @@ mod tests {
             total_games: 1024,
             total_samples: 8192,
             delta_q_state: "Active".to_string(),
+            profiling: Some(ProfilingEnvelope::leaf("rl_step", 0.4)),
         }
     }
 
@@ -657,6 +942,7 @@ mod tests {
             policy_loss: 0.8,
             agreement: 0.7,
             samples: 64,
+            profiling: Some(ProfilingEnvelope::leaf("validation", 0.9)),
             delta_q_promotion: Some(promotion_report.clone()),
             delta_q_promotion_result: Some(promotion_result.clone()),
             delta_q_promotion_snapshot: Some(DeltaQPromotionSnapshot {
@@ -793,6 +1079,10 @@ mod tests {
             bc_artifacts.root.join(default_cache_name())
         );
         assert_eq!(
+            bc_preflight.manifest_cache_path,
+            bc_artifacts.root.join(default_manifest_cache_name())
+        );
+        assert_eq!(
             rl_preflight.cache_path,
             rl_artifacts.root.join(default_cache_name())
         );
@@ -852,6 +1142,107 @@ mod tests {
     }
 
     #[test]
+    fn preflight_cache_roundtrips_nested_benchmark_profiling() {
+        let output_dir = temp_dir_path("preflight_cache_benchmark_roundtrip");
+        fs::create_dir_all(&output_dir).expect("create temp dir");
+        let path = output_dir.join("preflight_cache.json");
+        let entry = sample_preflight_cache_entry_with_benchmark();
+
+        write_preflight_cache(&path, &entry).expect("write preflight cache with benchmark");
+        let restored = read_preflight_cache(&path)
+            .expect("read preflight cache")
+            .expect("cache entry present");
+
+        assert_eq!(restored, entry);
+
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn manifest_cache_roundtrips_through_json() {
+        let output_dir = temp_dir_path("manifest_cache_roundtrip");
+        fs::create_dir_all(&output_dir).expect("create temp dir");
+        let path = output_dir.join("preflight_manifest.json");
+        let entry = sample_manifest_cache_entry();
+
+        write_manifest_cache(&path, &entry).expect("write manifest cache");
+        let restored = read_manifest_cache(&path)
+            .expect("read manifest cache")
+            .expect("manifest cache entry present");
+
+        assert_eq!(restored, entry);
+
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn preflight_benchmark_paths_report_path_is_stable() {
+        let artifacts = BcArtifactPaths::new(Path::new("/tmp/out"), 0);
+        let paths = PreflightBenchmarkPaths::new(&artifacts);
+        assert_eq!(
+            paths.report_path(),
+            Path::new("/tmp/out").join("bc/preflight_benchmark/report.json")
+        );
+    }
+
+    #[test]
+    fn preflight_benchmark_report_roundtrips_through_json() {
+        let output_dir = temp_dir_path("preflight_benchmark_report_roundtrip");
+        fs::create_dir_all(&output_dir).expect("create temp dir");
+        let path = output_dir.join("preflight_benchmark/report.json");
+        let benchmark = hydra_train::preflight::BenchmarkResult {
+            runtime: hydra_train::preflight::BenchmarkRuntimeConfig {
+                train_microbatch_size: 8,
+                validation_microbatch_size: 4,
+                accum_steps: 2,
+                loader: hydra_train::preflight::LoaderRuntimeConfig {
+                    num_threads: Some(2),
+                    buffer_games: 32,
+                    buffer_samples: 128,
+                    archive_queue_bound: 4,
+                },
+            },
+            score: hydra_train::preflight::BenchmarkScore {
+                wall_clock_samples_per_second: 123.456,
+                train_only_samples_per_second: 200.0,
+                train_seconds: 1.0,
+                validation_seconds: 0.5,
+                checkpoint_seconds: 0.1,
+                logging_seconds: 0.05,
+                total_elapsed_seconds: 1.65,
+                train_steps: 10,
+                validation_samples: 50,
+            },
+            metadata: hydra_train::preflight::BenchmarkMetadata {
+                mode: hydra_train::preflight::BenchmarkMode::CadenceAwareProjection,
+                ..Default::default()
+            },
+            profiling: Some(hydra_train::preflight::ProfilingEnvelope::leaf(
+                "stage_2_benchmark",
+                1.5,
+            )),
+        };
+        let report = PreflightBenchmarkReport {
+            cache_key: sample_preflight_cache_entry().cache_key,
+            runtime: sample_preflight_cache_entry().runtime,
+            benchmark,
+        };
+
+        write_preflight_benchmark_report(&path, &report)
+            .expect("write preflight benchmark report");
+
+        let raw = fs::read_to_string(&path).expect("read preflight benchmark report");
+        let restored: PreflightBenchmarkReport =
+            serde_json::from_str(&raw).expect("parse preflight benchmark report");
+
+        assert_eq!(restored.cache_key, report.cache_key);
+        assert_eq!(restored.runtime, report.runtime);
+        assert_eq!(restored.benchmark, report.benchmark);
+
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
     fn append_training_log_appends_jsonl_lines() {
         let output_dir = temp_dir_path("append_training_log");
         fs::create_dir_all(&output_dir).expect("create temp dir");
@@ -871,6 +1262,7 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"epoch\":3"));
         assert!(lines[1].contains("\"epoch\":4"));
+        assert!(lines[0].contains("\"profiling\":{"));
 
         cleanup_dir(&output_dir);
     }
@@ -889,8 +1281,10 @@ mod tests {
         let rl_raw = fs::read_to_string(&rl_path).expect("read rl step log");
         assert!(step_raw.contains("\"global_step\":17"));
         assert!(step_raw.contains("\"best_val_policy_loss\":0.8"));
+        assert!(step_raw.contains("\"profiling\":{"));
         assert!(rl_raw.contains("\"phase\":\"exit_pondering\""));
         assert!(rl_raw.contains("\"delta_q_state\":\"Active\""));
+        assert!(rl_raw.contains("\"profiling\":{"));
 
         cleanup_dir(&output_dir);
     }
@@ -916,6 +1310,7 @@ mod tests {
                 games_per_batch: 16,
                 microbatch_size: 32,
                 phase: RlPhaseConfig::ExitPondering,
+                precision_mode: crate::config::PrecisionMode::Fp32,
             },
             saved_at_unix_s: 123,
         };
@@ -967,12 +1362,14 @@ mod tests {
         assert!(tags.iter().any(|tag| tag == "val/policy_agreement"));
         assert!(tags.iter().any(|tag| tag == "val/policy_loss"));
         assert!(tags.iter().any(|tag| tag == "val/total_loss"));
-        assert!(tags
-            .iter()
-            .any(|tag| tag == "val/delta_q_candidate_top1_agreement"));
-        assert!(tags
-            .iter()
-            .any(|tag| tag == "val/delta_q_offline_gate_passed"));
+        assert!(
+            tags.iter()
+                .any(|tag| tag == "val/delta_q_candidate_top1_agreement")
+        );
+        assert!(
+            tags.iter()
+                .any(|tag| tag == "val/delta_q_offline_gate_passed")
+        );
         assert!(tags.iter().any(|tag| tag == "lr"));
         assert!(tags.iter().any(|tag| tag == "val/best_policy_loss"));
         assert!(tags.iter().any(|tag| tag == "val/best_policy_agreement"));

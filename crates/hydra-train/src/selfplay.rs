@@ -22,7 +22,7 @@ use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 
 use crate::model::HydraModel;
-use crate::selfplay_batch::finalize_rewards;
+use crate::selfplay_batch::{RlBatchScratch, finalize_rewards, trajectories_to_rl_batch_reuse};
 use crate::training::exit::{
     build_delta_q_from_afbs_tree, build_exit_from_afbs_tree, compatible_discard_state,
     is_hard_state,
@@ -42,7 +42,10 @@ use cooperative_state::{
 pub use crate::selfplay_batch::{default_gae_config, trajectories_to_rl_batch};
 
 const DEFAULT_GAME_MODE: u8 = 0;
+#[cfg(not(test))]
 const MAX_SELF_PLAY_STEPS: u32 = 50_000;
+#[cfg(test)]
+const MAX_SELF_PLAY_STEPS: u32 = 500;
 const NUM_OPPONENTS: usize = 3;
 
 #[derive(Clone, Copy)]
@@ -155,6 +158,16 @@ impl NnActionSelector {
         for safety in &mut self.safety {
             safety.reset();
         }
+    }
+
+    pub fn reset_for_new_game(&mut self, temperature: f32, seed: u64) {
+        self.reset_safety();
+        self.temperature = temperature.max(1e-3);
+        self.rng_state = seed.max(1);
+        self.last_step = None;
+        self.pending_logits = None;
+        self.pending_obs = None;
+        self.pending_context = None;
     }
 
     pub fn safety(&self, player: u8) -> &SafetyInfo {
@@ -464,6 +477,7 @@ struct CooperativeGameRunner {
     trajectory: Trajectory,
     legal_buf: Vec<Action>,
     total_steps: u32,
+    max_steps: u32,
     done: bool,
     pending_policy_obs: Option<PendingPolicyRequest>,
     pending_exit_search: Option<ExitSearchState>,
@@ -471,6 +485,7 @@ struct CooperativeGameRunner {
     exit_adapter: SelfPlayExitAdapter,
     live_exit_cfg: LiveExitConfig,
     step_values: Vec<f32>,
+    exit_child_requests: Vec<(NodeIdx, [f32; OBS_SIZE])>,
 }
 
 impl CooperativeGameRunner {
@@ -482,6 +497,7 @@ impl CooperativeGameRunner {
             trajectory: Trajectory::new(0, game_seed),
             legal_buf: Vec::with_capacity(HYDRA_ACTION_SPACE),
             total_steps: 0,
+            max_steps: MAX_SELF_PLAY_STEPS,
             done: false,
             pending_policy_obs: None,
             pending_exit_search: None,
@@ -489,18 +505,53 @@ impl CooperativeGameRunner {
             exit_adapter: SelfPlayExitAdapter::new(),
             live_exit_cfg,
             step_values: Vec::new(),
+            exit_child_requests: Vec::new(),
         }
+    }
+
+    fn reset_for_new_game(&mut self, game_seed: u64, temperature: f32, rng_seed: u64) {
+        self.state.reset_for_new_game(Some(game_seed));
+        self.selector.reset_for_new_game(temperature, rng_seed);
+        self.trajectory = Trajectory::new(self.trajectory.game_id, game_seed);
+        self.legal_buf.clear();
+        self.total_steps = 0;
+        self.done = false;
+        self.pending_policy_obs = None;
+        self.pending_exit_search = None;
+        self.turn_state = None;
+        self.exit_adapter.reset();
+        self.step_values.clear();
+        self.exit_child_requests.clear();
     }
 
     fn is_finished(&self) -> bool {
         self.done
     }
 
-    fn into_trajectory_and_values(mut self) -> (Trajectory, Vec<f32>) {
+    fn take_trajectory_and_values(&mut self) -> (Trajectory, Vec<f32>) {
         if !self.done {
             self.finalize();
         }
-        (self.trajectory, self.step_values)
+
+        let next_step_capacity = self.trajectory.steps.capacity();
+        let game_id = self.trajectory.game_id;
+        let seed = self.trajectory.seed;
+        let trajectory = std::mem::replace(
+            &mut self.trajectory,
+            Trajectory {
+                steps: Vec::with_capacity(next_step_capacity),
+                final_scores: [0; 4],
+                game_id,
+                seed,
+            },
+        );
+        let next_value_capacity = self.step_values.capacity();
+        let values = std::mem::replace(
+            &mut self.step_values,
+            Vec::with_capacity(next_value_capacity),
+        );
+
+        (trajectory, values)
     }
 
     fn advance_until_inference_needed(&mut self) -> GameAdvance {
@@ -513,7 +564,7 @@ impl CooperativeGameRunner {
                 return GameAdvance { needs_policy: true };
             }
 
-            if self.state.is_done || self.total_steps >= MAX_SELF_PLAY_STEPS {
+            if self.state.is_done || self.total_steps >= self.max_steps {
                 self.finalize();
                 return GameAdvance::default();
             }
@@ -559,7 +610,9 @@ impl CooperativeGameRunner {
             }
 
             let obs = self.state.observe(pid);
-            let obs_encoded = self.selector.encode_observation_ref(&obs, &self.legal_buf, pid);
+            let obs_encoded = self
+                .selector
+                .encode_observation_ref(&obs, &self.legal_buf, pid);
             self.pending_policy_obs = Some(PendingPolicyRequest {
                 pid,
                 obs_encoded,
@@ -635,10 +688,7 @@ impl CooperativeGameRunner {
                 turn_state.pending_steps.len() - 1
             };
 
-            let owned_obs = self.state.get_observation(pending.pid);
-            if let Some(prepared) =
-                self.prepare_exit_search(&owned_obs, &step_record, pending.turn)
-            {
+            if let Some(prepared) = self.prepare_exit_search(&step_record, pending.turn) {
                 let pending_exit = self
                     .pending_exit_search
                     .get_or_insert_with(ExitSearchState::new);
@@ -685,22 +735,28 @@ impl CooperativeGameRunner {
                 pending_exit.child_requests.get(start..end),
                 child_values.get(start..end),
             ) {
-                let mut value_by_child = std::collections::HashMap::<NodeIdx, f32>::new();
                 let mut valid = true;
 
-                for (child, &value) in child_slice.iter().zip(value_slice.iter()) {
+                for (_child, &value) in child_slice.iter().zip(value_slice.iter()) {
                     if !value.is_finite() {
                         valid = false;
                         break;
                     }
-                    value_by_child.insert(child.child_idx, value);
                 }
 
                 if valid {
                     exit_step.tree.run_search_iterations(
                         exit_step.root,
                         exit_step.budget,
-                        &|child_idx| value_by_child.get(&child_idx).copied().unwrap_or(0.0),
+                        &|child_idx| {
+                            child_slice
+                                .iter()
+                                .zip(value_slice.iter())
+                                .find_map(|(child, &value)| {
+                                    (child.child_idx == child_idx).then_some(value)
+                                })
+                                .unwrap_or(0.0)
+                        },
                     );
 
                     let exit = build_exit_from_afbs_tree(
@@ -739,7 +795,6 @@ impl CooperativeGameRunner {
 
     fn prepare_exit_search(
         &mut self,
-        obs: &Observation,
         step_record: &StepRecord,
         turn: u32,
     ) -> Option<PreparedExitSearch> {
@@ -785,16 +840,17 @@ impl CooperativeGameRunner {
         seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
 
         let player_safety = self.selector.safety(step_record.player_id).clone();
-        let mut child_requests = Vec::with_capacity(tree.nodes[root as usize].children.len());
+        self.exit_child_requests.clear();
+        self.exit_child_requests
+            .reserve(tree.nodes[root as usize].children.len());
         for &(action, child_idx) in &tree.nodes[root as usize].children.clone() {
-            let child_obs = self.exit_adapter.child_public_obs_after_discard(
+            let child_obs = self.exit_adapter.child_public_obs_after_discard_ref(
                 &self.state,
-                obs,
                 ctx.player_id,
                 action,
                 &player_safety,
             )?;
-            child_requests.push((child_idx, child_obs));
+            self.exit_child_requests.push((child_idx, child_obs));
         }
 
         Some(PreparedExitSearch {
@@ -810,7 +866,7 @@ impl CooperativeGameRunner {
                 child_count: 0,
                 output_index: 0,
             },
-            child_requests,
+            child_requests: std::mem::take(&mut self.exit_child_requests),
         })
     }
 
@@ -869,6 +925,215 @@ impl CooperativeGameRunner {
     }
 }
 
+pub struct CooperativeSelfPlayCoordinator {
+    games: Vec<CooperativeGameRunner>,
+    batch_game_indices: Vec<usize>,
+    batch_observations: Vec<[f32; OBS_SIZE]>,
+    batch_outputs: Vec<([f32; HYDRA_ACTION_SPACE], f32)>,
+    exit_game_indices: Vec<usize>,
+    exit_counts: Vec<usize>,
+    exit_observations: Vec<[f32; OBS_SIZE]>,
+    exit_values: Vec<f32>,
+    flat_buf: Vec<f32>,
+    rl_batch_scratch: RlBatchScratch,
+    max_steps: u32,
+}
+
+pub struct CooperativeSelfPlayRequest<'a> {
+    pub game_seeds: &'a [u64],
+    pub temperature: f32,
+    pub rng_seed: u64,
+    pub live_exit_cfg: LiveExitConfig,
+}
+
+impl CooperativeSelfPlayCoordinator {
+    pub fn new() -> Self {
+        Self {
+            games: Vec::new(),
+            batch_game_indices: Vec::new(),
+            batch_observations: Vec::new(),
+            batch_outputs: Vec::new(),
+            exit_game_indices: Vec::new(),
+            exit_counts: Vec::new(),
+            exit_observations: Vec::new(),
+            exit_values: Vec::new(),
+            flat_buf: Vec::new(),
+            rl_batch_scratch: RlBatchScratch::default(),
+            max_steps: MAX_SELF_PLAY_STEPS,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_max_steps(mut self, max_steps: u32) -> Self {
+        self.max_steps = max_steps;
+        self
+    }
+
+    fn prepare_games(
+        &mut self,
+        game_seeds: &[u64],
+        temperature: f32,
+        rng_seed: u64,
+        live_exit_cfg: &LiveExitConfig,
+    ) {
+        if self.games.len() < game_seeds.len() {
+            for (idx, &seed) in game_seeds.iter().enumerate().skip(self.games.len()) {
+                let mut game = CooperativeGameRunner::new(
+                    seed,
+                    temperature,
+                    rng_seed.wrapping_add(idx as u64),
+                    live_exit_cfg.clone(),
+                );
+                game.max_steps = self.max_steps;
+                self.games.push(game);
+            }
+        }
+
+        for (idx, game) in self.games.iter_mut().take(game_seeds.len()).enumerate() {
+            game.live_exit_cfg = live_exit_cfg.clone();
+            game.max_steps = self.max_steps;
+            game.reset_for_new_game(
+                game_seeds[idx],
+                temperature,
+                rng_seed.wrapping_add(idx as u64),
+            );
+        }
+
+        let n = game_seeds.len();
+        self.batch_game_indices.clear();
+        self.batch_observations.clear();
+        self.exit_game_indices.clear();
+        self.exit_counts.clear();
+        self.exit_observations.clear();
+
+        if self.batch_game_indices.capacity() < n {
+            self.batch_game_indices
+                .reserve(n - self.batch_game_indices.capacity());
+        }
+        if self.batch_observations.capacity() < n {
+            self.batch_observations
+                .reserve(n - self.batch_observations.capacity());
+        }
+        if self.exit_game_indices.capacity() < n {
+            self.exit_game_indices
+                .reserve(n - self.exit_game_indices.capacity());
+        }
+        if self.exit_counts.capacity() < n {
+            self.exit_counts.reserve(n - self.exit_counts.capacity());
+        }
+        let exit_capacity = n.saturating_mul(14);
+        if self.exit_observations.capacity() < exit_capacity {
+            self.exit_observations
+                .reserve(exit_capacity - self.exit_observations.capacity());
+        }
+        let flat_capacity = n.saturating_mul(OBS_SIZE);
+        if self.flat_buf.capacity() < flat_capacity {
+            self.flat_buf
+                .reserve(flat_capacity - self.flat_buf.capacity());
+        }
+    }
+
+    fn run<B: Backend>(
+        &mut self,
+        game_seeds: &[u64],
+        temperature: f32,
+        rng_seed: u64,
+        model: &HydraModel<B>,
+        device: &B::Device,
+        live_exit_cfg: LiveExitConfig,
+    ) -> SelfPlayBatchSource {
+        self.prepare_games(game_seeds, temperature, rng_seed, &live_exit_cfg);
+        let active_games = &mut self.games[..game_seeds.len()];
+
+        while active_games.iter().any(|game| !game.is_finished()) {
+            loop {
+                self.batch_game_indices.clear();
+                self.batch_observations.clear();
+
+                for (game_idx, game) in active_games.iter_mut().enumerate() {
+                    let advance = game.advance_until_inference_needed();
+                    if advance.needs_policy
+                        && let Some(obs) = game.pending_policy_obs()
+                    {
+                        self.batch_game_indices.push(game_idx);
+                        self.batch_observations.push(obs);
+                    }
+                }
+
+                if self.batch_game_indices.is_empty() {
+                    break;
+                }
+
+                model.fill_batch_policy_value_cpu(
+                    &self.batch_observations,
+                    device,
+                    &mut self.flat_buf,
+                    &mut self.batch_outputs,
+                );
+                for (game_idx, (policy_logits, value)) in self
+                    .batch_game_indices
+                    .drain(..)
+                    .zip(self.batch_outputs.drain(..))
+                {
+                    active_games[game_idx].provide_policy_result(policy_logits, value);
+                }
+            }
+
+            self.exit_game_indices.clear();
+            self.exit_counts.clear();
+            self.exit_observations.clear();
+            for (game_idx, game) in active_games.iter().enumerate() {
+                let child_count = game.pending_exit_child_count();
+                if child_count > 0 {
+                    self.exit_game_indices.push(game_idx);
+                    self.exit_counts.push(child_count);
+                    game.append_pending_exit_obs(&mut self.exit_observations);
+                }
+            }
+
+            if self.exit_game_indices.is_empty() {
+                continue;
+            }
+
+            model.fill_batch_value_cpu(
+                &self.exit_observations,
+                device,
+                &mut self.flat_buf,
+                &mut self.exit_values,
+            );
+            let mut offset = 0usize;
+            for (game_idx, child_count) in self
+                .exit_game_indices
+                .drain(..)
+                .zip(self.exit_counts.drain(..))
+            {
+                active_games[game_idx]
+                    .finalize_pending_exit_search(&self.exit_values[offset..offset + child_count]);
+                offset += child_count;
+            }
+        }
+
+        let mut trajectories = Vec::with_capacity(active_games.len());
+        let mut all_values = Vec::with_capacity(active_games.len());
+        for game in active_games.iter_mut() {
+            let (trajectory, values) = game.take_trajectory_and_values();
+            trajectories.push(trajectory);
+            all_values.push(values);
+        }
+
+        SelfPlayBatchSource {
+            trajectories,
+            values: all_values,
+        }
+    }
+}
+
+impl Default for CooperativeSelfPlayCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn generate_self_play_batch_source<B: Backend>(
     game_seeds: &[u64],
     temperature: f32,
@@ -883,14 +1148,12 @@ pub fn generate_self_play_batch_source<B: Backend>(
     for (idx, &seed) in game_seeds.iter().enumerate() {
         let game_rng = rng_seed.wrapping_add(idx as u64);
 
-        let infer_fn = |obs: &[f32; OBS_SIZE]| -> [f32; HYDRA_ACTION_SPACE] {
-            let (logits, _) = model.policy_value_cpu(obs, device);
-            logits
-        };
+        let infer_fn =
+            |obs: &[f32; OBS_SIZE]| -> [f32; HYDRA_ACTION_SPACE] { model.policy_cpu(obs, device) };
 
         let exit_cfg = live_exit_cfg.clone();
         let exit_fn = make_live_exit_fn(exit_cfg, |obs: &[f32; OBS_SIZE]| {
-            model.policy_value_cpu(obs, device)
+            model.policy_and_value_cpu(obs, device)
         });
 
         let trajectory =
@@ -899,10 +1162,7 @@ pub fn generate_self_play_batch_source<B: Backend>(
         let step_values: Vec<f32> = trajectory
             .steps
             .iter()
-            .map(|step| {
-                let (_, value) = model.policy_value_cpu(&step.obs, device);
-                value
-            })
+            .map(|step| model.value_cpu(&step.obs, device))
             .collect();
 
         all_values.push(step_values);
@@ -923,96 +1183,34 @@ pub fn generate_self_play_batch_source_cooperative<B: Backend>(
     device: &B::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource {
-    let mut games: Vec<CooperativeGameRunner> = game_seeds
-        .iter()
-        .enumerate()
-        .map(|(idx, &seed)| {
-            CooperativeGameRunner::new(
-                seed,
-                temperature,
-                rng_seed.wrapping_add(idx as u64),
-                live_exit_cfg.clone(),
-            )
-        })
-        .collect();
+    let mut coordinator = CooperativeSelfPlayCoordinator::new();
+    coordinator.run(
+        game_seeds,
+        temperature,
+        rng_seed,
+        model,
+        device,
+        live_exit_cfg,
+    )
+}
 
-    let n = games.len();
-    let mut batch_game_indices: Vec<usize> = Vec::with_capacity(n);
-    let mut batch_observations: Vec<[f32; OBS_SIZE]> = Vec::with_capacity(n);
-    let mut exit_game_indices: Vec<usize> = Vec::with_capacity(n);
-    let mut exit_counts: Vec<usize> = Vec::with_capacity(n);
-    let mut exit_observations: Vec<[f32; OBS_SIZE]> = Vec::with_capacity(n * 14);
-    let mut flat_buf: Vec<f32> = Vec::with_capacity(n * OBS_SIZE);
-
-    while games.iter().any(|game| !game.is_finished()) {
-        loop {
-            batch_game_indices.clear();
-            batch_observations.clear();
-
-            for (game_idx, game) in games.iter_mut().enumerate() {
-                let advance = game.advance_until_inference_needed();
-                if advance.needs_policy
-                    && let Some(obs) = game.pending_policy_obs()
-                {
-                    batch_game_indices.push(game_idx);
-                    batch_observations.push(obs);
-                }
-            }
-
-            if batch_game_indices.is_empty() {
-                break;
-            }
-
-            let batch_outputs =
-                model.batch_policy_value_cpu_reuse(&batch_observations, device, &mut flat_buf);
-            for (game_idx, (policy_logits, value)) in
-                batch_game_indices.drain(..).zip(batch_outputs)
-            {
-                games[game_idx].provide_policy_result(policy_logits, value);
-            }
-        }
-
-        exit_game_indices.clear();
-        exit_counts.clear();
-        exit_observations.clear();
-        for (game_idx, game) in games.iter().enumerate() {
-            let child_count = game.pending_exit_child_count();
-            if child_count > 0 {
-                exit_game_indices.push(game_idx);
-                exit_counts.push(child_count);
-                game.append_pending_exit_obs(&mut exit_observations);
-            }
-        }
-
-        if exit_game_indices.is_empty() {
-            continue;
-        }
-
-        let exit_outputs =
-            model.batch_policy_value_cpu_reuse(&exit_observations, device, &mut flat_buf);
-        let mut offset = 0usize;
-        for (game_idx, child_count) in exit_game_indices.drain(..).zip(exit_counts.drain(..)) {
-            let child_values: Vec<f32> = exit_outputs[offset..offset + child_count]
-                .iter()
-                .map(|(_, value)| *value)
-                .collect();
-            games[game_idx].finalize_pending_exit_search(&child_values);
-            offset += child_count;
-        }
-    }
-
-    let mut trajectories = Vec::with_capacity(games.len());
-    let mut all_values = Vec::with_capacity(games.len());
-    for game in games {
-        let (trajectory, values) = game.into_trajectory_and_values();
-        trajectories.push(trajectory);
-        all_values.push(values);
-    }
-
-    SelfPlayBatchSource {
-        trajectories,
-        values: all_values,
-    }
+pub fn generate_self_play_batch_source_cooperative_reuse<B: Backend>(
+    coordinator: &mut CooperativeSelfPlayCoordinator,
+    game_seeds: &[u64],
+    temperature: f32,
+    rng_seed: u64,
+    model: &HydraModel<B>,
+    device: &B::Device,
+    live_exit_cfg: LiveExitConfig,
+) -> SelfPlayBatchSource {
+    coordinator.run(
+        game_seeds,
+        temperature,
+        rng_seed,
+        model,
+        device,
+        live_exit_cfg,
+    )
 }
 
 pub fn generate_self_play_batch_source_batched<B: Backend>(
@@ -1060,6 +1258,32 @@ pub fn generate_self_play_rl_batch<B: AutodiffBackend>(
     trajectories_to_rl_batch(&source.trajectories, &source.values, gae_config, device)
 }
 
+pub fn generate_self_play_rl_batch_reuse<B: AutodiffBackend>(
+    coordinator: &mut CooperativeSelfPlayCoordinator,
+    request: CooperativeSelfPlayRequest<'_>,
+    model: &HydraModel<B>,
+    device: &B::Device,
+    gae_config: &GaeConfig,
+) -> RlBatch<B> {
+    let valid_model = model.valid();
+    let source = generate_self_play_batch_source_cooperative_reuse(
+        coordinator,
+        request.game_seeds,
+        request.temperature,
+        request.rng_seed,
+        &valid_model,
+        device,
+        request.live_exit_cfg,
+    );
+    trajectories_to_rl_batch_reuse(
+        &source.trajectories,
+        &source.values,
+        gae_config,
+        device,
+        &mut coordinator.rl_batch_scratch,
+    )
+}
+
 fn run_player_decision<F, E>(
     env: &mut DecisionEnv<'_, F>,
     pid: u8,
@@ -1081,7 +1305,9 @@ fn run_player_decision<F, E>(
     }
 
     let obs = env.state.observe(pid);
-    let encoded = env.selector.encode_observation_ref(&obs, env.legal_buf, pid);
+    let encoded = env
+        .selector
+        .encode_observation_ref(&obs, env.legal_buf, pid);
     let logits = (env.infer_fn)(&encoded);
     env.selector.set_logits(logits);
 
@@ -1098,9 +1324,8 @@ fn run_player_decision<F, E>(
     if let Some(step_record) = env.selector.take_last_step() {
         let player_safety = env.selector.safety(pid);
         let owned_obs = env.state.get_observation(pid);
-        let search_labels =
-            exit_label_fn(env.state, &owned_obs, &step_record, player_safety, turn)
-                .unwrap_or_default();
+        let search_labels = exit_label_fn(env.state, &owned_obs, &step_record, player_safety, turn)
+            .unwrap_or_default();
         env.trajectory.steps.push(TrajectoryStep {
             obs: step_record.obs,
             action: step_record.action,
@@ -1134,9 +1359,7 @@ fn run_mixed_player_decision<B: Backend>(
 
     let obs = state.observe(pid);
     let encoded = selector.encode_observation_ref(&obs, legal_buf, pid);
-    let logits = seat_models[pid as usize]
-        .policy_value_cpu(&encoded, device)
-        .0;
+    let logits = seat_models[pid as usize].policy_cpu(&encoded, device);
     selector.set_logits(logits);
 
     let drawn_tile_before_action = state.drawn_tile;
@@ -1231,10 +1454,10 @@ mod tests {
     }
 
     fn small_test_model_config() -> HydraModelConfig {
-        HydraModelConfig::new(2)
-            .with_hidden_channels(16)
-            .with_se_bottleneck(4)
-            .with_num_groups(4)
+        HydraModelConfig::new(1)
+            .with_hidden_channels(2)
+            .with_se_bottleneck(1)
+            .with_num_groups(1)
     }
 
     fn make_test_step_record(player_id: u8, action: u8) -> StepRecord {
@@ -1482,13 +1705,178 @@ mod tests {
         }
     }
 
+    fn assert_batch_sources_match(expected: &SelfPlayBatchSource, actual: &SelfPlayBatchSource) {
+        assert_eq!(expected.trajectories.len(), actual.trajectories.len());
+        assert_eq!(expected.values.len(), actual.values.len());
+
+        for (idx, (lhs, rhs)) in expected
+            .trajectories
+            .iter()
+            .zip(actual.trajectories.iter())
+            .enumerate()
+        {
+            assert_eq!(lhs.seed, rhs.seed, "trajectory {idx} seed mismatch");
+            assert_eq!(
+                lhs.final_scores, rhs.final_scores,
+                "trajectory {idx} final score mismatch"
+            );
+            assert_eq!(
+                lhs.steps.len(),
+                rhs.steps.len(),
+                "trajectory {idx} step count mismatch"
+            );
+
+            for (step_idx, (lhs_step, rhs_step)) in
+                lhs.steps.iter().zip(rhs.steps.iter()).enumerate()
+            {
+                assert_eq!(
+                    lhs_step.action, rhs_step.action,
+                    "trajectory {idx} step {step_idx} action mismatch"
+                );
+                assert_eq!(
+                    lhs_step.player_id, rhs_step.player_id,
+                    "trajectory {idx} step {step_idx} player mismatch"
+                );
+                assert_eq!(
+                    lhs_step.turn, rhs_step.turn,
+                    "trajectory {idx} step {step_idx} turn mismatch"
+                );
+                assert_eq!(
+                    lhs_step.done, rhs_step.done,
+                    "trajectory {idx} step {step_idx} done mismatch"
+                );
+                assert_eq!(
+                    lhs_step.legal_mask, rhs_step.legal_mask,
+                    "trajectory {idx} step {step_idx} legal mask mismatch"
+                );
+                assert_eq!(
+                    lhs_step.exit_label, rhs_step.exit_label,
+                    "trajectory {idx} step {step_idx} exit label mismatch"
+                );
+                assert_eq!(
+                    lhs_step.delta_q_label, rhs_step.delta_q_label,
+                    "trajectory {idx} step {step_idx} delta q mismatch"
+                );
+                assert_eq!(
+                    lhs_step.obs, rhs_step.obs,
+                    "trajectory {idx} step {step_idx} obs mismatch"
+                );
+                assert_eq!(
+                    lhs_step.pi_old, rhs_step.pi_old,
+                    "trajectory {idx} step {step_idx} pi_old mismatch"
+                );
+            }
+        }
+
+        for (idx, (lhs, rhs)) in expected.values.iter().zip(actual.values.iter()).enumerate() {
+            assert_eq!(lhs.len(), rhs.len(), "values {idx} len mismatch");
+            for (step_idx, (&lhs_value, &rhs_value)) in lhs.iter().zip(rhs.iter()).enumerate() {
+                assert!(
+                    (lhs_value - rhs_value).abs() < 1e-6,
+                    "values {idx} step {step_idx} mismatch: {lhs_value} vs {rhs_value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cooperative_reuse_matches_fresh_batches() {
+        let device = Default::default();
+        let model = small_test_model_config().init::<B>(&device);
+        let seeds = [42u64];
+        let cfg = LiveExitConfig {
+            enabled: false,
+            ..LiveExitConfig::default()
+        };
+
+        let fresh = generate_self_play_batch_source_cooperative(
+            &seeds,
+            1.0,
+            4,
+            &model,
+            &device,
+            cfg.clone(),
+        );
+        let mut coordinator = CooperativeSelfPlayCoordinator::new();
+        let reused = generate_self_play_batch_source_cooperative_reuse(
+            &mut coordinator,
+            &seeds,
+            1.0,
+            4,
+            &model,
+            &device,
+            cfg,
+        );
+
+        assert_batch_sources_match(&fresh, &reused);
+    }
+
+    #[test]
+    fn cooperative_reuse_does_not_leak_state_across_batches() {
+        let device = Default::default();
+        let model = small_test_model_config().init::<B>(&device);
+        let first_seeds = [100u64];
+        let second_seeds = [200u64];
+        let cfg = LiveExitConfig {
+            enabled: false,
+            ..LiveExitConfig::default()
+        };
+
+        let mut coordinator = CooperativeSelfPlayCoordinator::new();
+        let first_reused = generate_self_play_batch_source_cooperative_reuse(
+            &mut coordinator,
+            &first_seeds,
+            0.85,
+            7,
+            &model,
+            &device,
+            cfg.clone(),
+        );
+        let second_reused = generate_self_play_batch_source_cooperative_reuse(
+            &mut coordinator,
+            &second_seeds,
+            0.85,
+            9,
+            &model,
+            &device,
+            cfg.clone(),
+        );
+
+        let first_fresh = generate_self_play_batch_source_cooperative(
+            &first_seeds,
+            0.85,
+            7,
+            &model,
+            &device,
+            cfg.clone(),
+        );
+        let second_fresh = generate_self_play_batch_source_cooperative(
+            &second_seeds,
+            0.85,
+            9,
+            &model,
+            &device,
+            cfg,
+        );
+
+        assert_batch_sources_match(&first_fresh, &first_reused);
+        assert_batch_sources_match(&second_fresh, &second_reused);
+        assert_eq!(
+            second_reused
+                .trajectories
+                .iter()
+                .map(|trajectory| trajectory.seed)
+                .collect::<Vec<_>>(),
+            second_seeds
+        );
+    }
+
     #[test]
     fn mixed_policy_runner_matches_single_model_selfplay_when_all_seats_share_model() {
         let device = Default::default();
         let model = small_test_model_config().init::<B>(&device);
 
-        let trajectory =
-            run_self_play_game(77, 1.0, 1234, |obs| model.policy_value_cpu(obs, &device).0);
+        let trajectory = run_self_play_game(77, 1.0, 1234, |obs| model.policy_cpu(obs, &device));
         let scores =
             run_mixed_policy_game_scores(77, 1.0, 1234, [&model, &model, &model, &model], &device);
 

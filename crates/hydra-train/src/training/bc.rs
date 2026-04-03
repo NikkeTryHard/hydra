@@ -1,19 +1,19 @@
 //! Behavioral cloning training loop (Phase 0).
 
+use crate::amp::maybe_autocast;
+use crate::config::OracleGuidingConfig;
+use crate::data::sample::{collate_sample_refs_bc_owned, MjaiBatch, MjaiSample};
+use crate::model::{HydraModel, HydraModelConfig};
+use crate::training::exit::exit_loss;
+use crate::training::head_gates::{
+    borrow_or_extract_target_presence, AdvancedHead, HeadActivationController,
+};
+use crate::training::losses::{HydraLoss, HydraTargets};
 use burn::grad_clipping::GradientClippingConfig;
 use burn::module::AutodiffModule;
 use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-
-use crate::config::OracleGuidingConfig;
-use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_with_batch};
-use crate::model::{HydraModel, HydraModelConfig};
-use crate::training::exit::exit_loss;
-use crate::training::head_gates::{
-    AdvancedHead, HeadActivationController, extract_target_presence,
-};
-use crate::training::losses::{HydraLoss, HydraTargets};
 
 pub fn phase_learning_rate(
     phase: crate::config::TrainingPhase,
@@ -115,6 +115,62 @@ impl Default for BcExitConfig {
     }
 }
 
+pub fn bc_total_with_exit_from_breakdown<B: Backend>(
+    output: &crate::model::HydraOutput<B>,
+    batch: &MjaiBatch<B>,
+    breakdown: &crate::training::losses::LossBreakdown<B>,
+    exit_cfg: &BcExitConfig,
+) -> Tensor<B, 1> {
+    let mut total = breakdown.total.clone();
+    total = maybe_add_exit_loss(
+        total,
+        output.policy_logits.clone(),
+        batch.exit_target.as_ref(),
+        batch.exit_mask.as_ref(),
+        exit_cfg,
+    );
+    total
+}
+
+pub fn maybe_add_exit_loss<B: Backend>(
+    total: Tensor<B, 1>,
+    policy_logits: Tensor<B, 2>,
+    exit_target: Option<&Tensor<B, 2>>,
+    exit_mask: Option<&Tensor<B, 2>>,
+    exit_cfg: &BcExitConfig,
+) -> Tensor<B, 1> {
+    if let (Some(exit_target), Some(exit_mask)) = (exit_target, exit_mask) {
+        total
+            + exit_loss(
+                policy_logits,
+                exit_target.clone(),
+                exit_mask.clone(),
+                exit_cfg.exit_weight,
+            )
+    } else {
+        total
+    }
+}
+
+pub fn bc_total_with_optional_exit_from_breakdown<B: Backend>(
+    output: &crate::model::HydraOutput<B>,
+    batch: Option<&MjaiBatch<B>>,
+    breakdown: &crate::training::losses::LossBreakdown<B>,
+    exit_cfg: &BcExitConfig,
+) -> Tensor<B, 1> {
+    let mut total = breakdown.total.clone();
+    if let Some(batch) = batch {
+        total = maybe_add_exit_loss(
+            total,
+            output.policy_logits.clone(),
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            exit_cfg,
+        );
+    }
+    total
+}
+
 pub fn bc_total_with_exit<B: Backend>(
     output: &crate::model::HydraOutput<B>,
     batch: &MjaiBatch<B>,
@@ -123,17 +179,7 @@ pub fn bc_total_with_exit<B: Backend>(
     exit_cfg: &BcExitConfig,
 ) -> Tensor<B, 1> {
     let breakdown = loss_fn.total_loss(output, targets);
-    let mut total = breakdown.total;
-    if let (Some(exit_target), Some(exit_mask)) = (&batch.exit_target, &batch.exit_mask) {
-        total = total
-            + exit_loss(
-                output.policy_logits.clone(),
-                exit_target.clone(),
-                exit_mask.clone(),
-                exit_cfg.exit_weight,
-            );
-    }
-    total
+    bc_total_with_exit_from_breakdown(output, batch, &breakdown, exit_cfg)
 }
 
 pub fn gated_bc_context<B: Backend>(
@@ -143,7 +189,7 @@ pub fn gated_bc_context<B: Backend>(
 ) -> (HydraLoss<B>, Vec<AdvancedHead>) {
     if let Some(ctrl) = controller {
         if base_loss_fn.config.w_delta_q > 0.0 {
-            let presence = extract_target_presence(targets);
+            let presence = borrow_or_extract_target_presence(targets);
             ctrl.record_batch(&presence);
             ctrl.try_activate(AdvancedHead::DeltaQ);
         }
@@ -172,8 +218,16 @@ pub fn policy_agreement_counts<B: Backend>(
     let masked = logits + (mask.ones_like() - mask) * (-1e9f32);
     let predicted = masked.argmax(1).squeeze_dim::<1>(1);
     let correct = predicted.equal(targets);
-    let total = correct.dims()[0];
-    let correct = correct.int().sum().into_scalar().elem::<i64>() as usize;
+    let dims = correct.dims();
+    let total = dims[0];
+    let correct = correct
+        .into_data()
+        .convert::<i64>()
+        .as_slice::<i64>()
+        .expect("policy agreement correctness should be readable as i64")
+        .iter()
+        .map(|&value| value as usize)
+        .sum();
     (correct, total)
 }
 
@@ -191,12 +245,20 @@ pub fn bc_train_step<B: AutodiffBackend>(
     targets: &HydraTargets<B>,
     loss_fn: &HydraLoss<B>,
     exit_cfg: &BcExitConfig,
+    use_amp: bool,
     lr: f64,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    let output = model.forward(obs);
-    let total = bc_total_with_exit(&output, batch, targets, loss_fn, exit_cfg);
-    let loss_val = total.clone().into_scalar().elem::<f64>();
+    let output = maybe_autocast(use_amp, || model.forward(obs));
+    let breakdown = loss_fn.total_loss(&output, targets);
+    let total =
+        bc_total_with_optional_exit_from_breakdown(&output, Some(batch), &breakdown, exit_cfg);
+    let loss_val = total
+        .clone()
+        .into_data()
+        .convert::<f64>()
+        .as_slice::<f64>()
+        .expect("bc total loss should be readable as f64")[0];
     let grads = total.backward();
     let grads = GradientsParams::from_grads(grads, &model);
     let model = optimizer.step(lr, model, grads);
@@ -211,7 +273,11 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob { 1.0 } else { 0.0 }
+            if sample < keep_prob {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -264,51 +330,28 @@ pub fn oracle_guiding_train_step<B: AutodiffBackend>(
 
     let batch_size = obs.dims()[0];
     let device = obs.device();
-    let oracle_mask =
-        oracle_guidance_mask_tensor::<B>(batch_size, oracle_keep_prob, rng_values, &device);
-    let kept_oracle_fraction =
-        oracle_mask.clone().sum().into_scalar().elem::<f32>() / batch_size as f32;
+    let oracle_mask_values = oracle_guidance_mask_values(batch_size, oracle_keep_prob, rng_values);
+    let kept_oracle_fraction = oracle_mask_values.iter().copied().sum::<f32>() / batch_size as f32;
+    let oracle_mask = Tensor::<B, 1>::from_floats(oracle_mask_values.as_slice(), &device);
     let mut masked_targets = targets.clone();
     masked_targets.oracle_guidance_mask = Some(oracle_mask);
-    let empty_batch = MjaiBatch {
-        obs: Tensor::zeros([batch_size, crate::config::INPUT_CHANNELS, 34], &device),
-        actions: Tensor::zeros([batch_size], &device),
-        legal_mask: targets.legal_mask.clone(),
-        value_target: targets.value_target.clone(),
-        grp_target: targets.grp_target.clone(),
-        oracle_target: targets.oracle_target.clone(),
-        oracle_target_mask: masked_targets
-            .oracle_guidance_mask
-            .clone()
-            .unwrap_or_else(|| Tensor::zeros([batch_size], &device)),
-        tenpai_target: targets.tenpai_target.clone(),
-        danger_target: targets.danger_target.clone(),
-        danger_mask: targets.danger_mask.clone(),
-        safety_residual_target: targets.safety_residual_target.clone(),
-        safety_residual_mask: targets.safety_residual_mask.clone(),
-        exit_target: None,
-        exit_mask: None,
-        delta_q_target: targets.delta_q_target.clone(),
-        delta_q_mask: targets.delta_q_mask.clone(),
-        belief_fields_target: targets.belief_fields_target.clone(),
-        mixture_weight_target: targets.mixture_weight_target.clone(),
-        belief_fields_mask: targets.belief_fields_mask.clone(),
-        mixture_weight_mask: targets.mixture_weight_mask.clone(),
-        opp_next_target: targets.opp_next_target.clone(),
-        score_pdf_target: targets.score_pdf_target.clone(),
-        score_cdf_target: targets.score_cdf_target.clone(),
-    };
-
-    let (model, loss) = bc_train_step(
-        model,
-        obs,
-        &empty_batch,
-        &masked_targets,
-        loss_fn,
+    let output = model.forward(obs);
+    let breakdown = loss_fn.total_loss(&output, &masked_targets);
+    let total = bc_total_with_optional_exit_from_breakdown(
+        &output,
+        None,
+        &breakdown,
         &BcExitConfig::default(),
-        effective_lr,
-        optimizer,
     );
+    let loss = total
+        .clone()
+        .into_data()
+        .convert::<f64>()
+        .as_slice::<f64>()
+        .expect("oracle-guided total loss should be readable as f64")[0];
+    let grads = total.backward();
+    let grads = GradientsParams::from_grads(grads, &model);
+    let model = optimizer.step(effective_lr, model, grads);
     (
         model,
         OracleGuidingStepStats {
@@ -447,20 +490,25 @@ where
     let mut accum_agreement = 0.0;
 
     for chunk in samples.chunks(microbatch_size) {
-        let Some((obs, batch)) = collate_sample_refs_with_batch::<B>(chunk, augment, device)
+        let Some((obs, batch, targets)) = collate_sample_refs_bc_owned::<B>(chunk, augment, device)
             .expect("behavior cloning sample collation should be valid")
         else {
             continue;
         };
-        let targets = batch.to_hydra_targets();
-        let output = m.forward(obs.clone());
+        let output = m.forward(obs);
         accum_agreement += policy_agreement(
             output.policy_logits.clone(),
             targets.legal_mask.clone(),
             target_actions_from_policy_target(targets.policy_target.clone()),
         );
-        let total =
-            bc_total_with_exit(&output, &batch, &targets, loss_fn, &BcExitConfig::default());
+        let breakdown = loss_fn.total_loss(&output, &targets);
+        let total = maybe_add_exit_loss(
+            breakdown.total.clone(),
+            output.policy_logits.clone(),
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            &BcExitConfig::default(),
+        );
         let loss = total.clone().into_scalar().elem::<f64>();
         let grads = total.backward();
         let grads = GradientsParams::from_grads(grads, &m);
@@ -563,7 +611,7 @@ impl CheckpointMeta {
 mod tests {
     use super::*;
     use crate::data::sample::MjaiBatch;
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
@@ -605,6 +653,7 @@ mod tests {
             opp_next_target: Tensor::zeros([batch, 3, 34], device),
             score_pdf_target: Tensor::zeros([batch, 64], device),
             score_cdf_target: Tensor::zeros([batch, 64], device),
+            target_presence: None,
         }
     }
 
@@ -652,6 +701,7 @@ mod tests {
             &targets,
             &loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut optimizer,
         );
@@ -685,6 +735,7 @@ mod tests {
                 &targets,
                 &loss_fn,
                 &BcExitConfig::default(),
+                false,
                 1e-3,
                 &mut optimizer,
             );
@@ -882,6 +933,7 @@ mod tests {
             &baseline_targets,
             &baseline_loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut opt1,
         );
@@ -928,6 +980,7 @@ mod tests {
             &advanced_targets,
             &advanced_loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut opt2,
         );
@@ -982,6 +1035,7 @@ mod tests {
             &targets,
             &loss_fn,
             &BcExitConfig::default(),
+            false,
             1e-3,
             &mut optimizer,
         );

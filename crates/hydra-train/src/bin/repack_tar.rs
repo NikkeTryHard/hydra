@@ -45,11 +45,10 @@ fn parse_args() -> Result<Config, String> {
                 let value = args
                     .next()
                     .ok_or_else(|| "--max-output-gb requires a value".to_string())?;
-                max_output_gb = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|err| format!("invalid --max-output-gb value `{value}`: {err}"))?,
-                );
+                max_output_gb =
+                    Some(value.parse::<u64>().map_err(|err| {
+                        format!("invalid --max-output-gb value `{value}`: {err}")
+                    })?);
             }
             other => {
                 return Err(format!("unexpected argument: {other}"));
@@ -93,7 +92,9 @@ fn free_bytes(path: &Path) -> io::Result<u64> {
         .nth(3)
         .ok_or_else(|| io::Error::other("missing available column in df output"))?;
     available.parse::<u64>().map_err(|err| {
-        io::Error::other(format!("failed to parse available bytes `{available}`: {err}"))
+        io::Error::other(format!(
+            "failed to parse available bytes `{available}`: {err}"
+        ))
     })
 }
 
@@ -209,7 +210,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&config.output_dir)?;
 
     let min_free_bytes = config.min_free_gb.saturating_mul(1024_u64.pow(3));
-    let max_output_bytes = config.max_output_gb.map(|gb| gb.saturating_mul(1024_u64.pow(3)));
+    let max_output_bytes = config
+        .max_output_gb
+        .map(|gb| gb.saturating_mul(1024_u64.pow(3)));
 
     let mut archives = Vec::new();
     for entry in fs::read_dir(&config.input_dir)? {
