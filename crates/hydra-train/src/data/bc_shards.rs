@@ -1984,6 +1984,55 @@ fn sidecar_manifest(
     })
 }
 
+fn replay_target_profile_for_bc_shards(config: &BuildBcShardsConfig) -> crate::data::mjai_loader::ReplayTargetProfile {
+    crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
+        false,
+        false,
+        false,
+        false,
+        config.exit_sidecar.is_some(),
+        config.delta_q_sidecar.is_some(),
+    )
+}
+
+fn load_bc_shard_game_from_path(
+    path: &Path,
+    config: &BuildBcShardsConfig,
+) -> io::Result<MjaiGame> {
+    if config.exit_sidecar.is_some() || config.delta_q_sidecar.is_some() {
+        load_game_from_path_with_sidecar(
+            path,
+            config.exit_provenance,
+            config.delta_q_provenance,
+            replay_target_profile_for_bc_shards(config),
+            config.exit_sidecar.as_deref(),
+            config.delta_q_sidecar.as_deref(),
+        )
+    } else {
+        load_game_from_path(path)
+    }
+}
+
+fn load_bc_shard_game_from_stream<R: Read>(
+    identity: &str,
+    stream: R,
+    config: &BuildBcShardsConfig,
+) -> io::Result<MjaiGame> {
+    if config.exit_sidecar.is_some() || config.delta_q_sidecar.is_some() {
+        load_game_from_stream_with_sidecar(
+            identity,
+            config.exit_provenance,
+            config.delta_q_provenance,
+            replay_target_profile_for_bc_shards(config),
+            stream,
+            config.exit_sidecar.as_deref(),
+            config.delta_q_sidecar.as_deref(),
+        )
+    } else {
+        load_game_from_stream(stream)
+    }
+}
+
 fn process_loose_file(
     path: &Path,
     config: &BuildBcShardsConfig,
@@ -1996,25 +2045,7 @@ fn process_loose_file(
     let Some(split) = split_for_identity(&identity, config) else {
         return Ok(());
     };
-    let result = if config.exit_sidecar.is_some() || config.delta_q_sidecar.is_some() {
-        load_game_from_path_with_sidecar(
-            path,
-            config.exit_provenance,
-            config.delta_q_provenance,
-            crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
-                false,
-                false,
-                false,
-                false,
-                config.exit_sidecar.is_some(),
-                config.delta_q_sidecar.is_some(),
-            ),
-            config.exit_sidecar.as_deref(),
-            config.delta_q_sidecar.as_deref(),
-        )
-    } else {
-        load_game_from_path(path)
-    };
+    let result = load_bc_shard_game_from_path(path, config);
     handle_loaded_game(
         &identity,
         split,
@@ -2059,26 +2090,7 @@ fn process_archive(
         let Some(split) = split_for_identity(&identity, config) else {
             continue;
         };
-        let result = if config.exit_sidecar.is_some() || config.delta_q_sidecar.is_some() {
-            load_game_from_stream_with_sidecar(
-                &identity,
-                config.exit_provenance,
-                config.delta_q_provenance,
-                crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
-                    false,
-                    false,
-                    false,
-                    false,
-                    config.exit_sidecar.is_some(),
-                    config.delta_q_sidecar.is_some(),
-                ),
-                entry,
-                config.exit_sidecar.as_deref(),
-                config.delta_q_sidecar.as_deref(),
-            )
-        } else {
-            load_game_from_stream(entry)
-        };
+        let result = load_bc_shard_game_from_stream(&identity, entry, config);
         handle_loaded_game(
             &identity,
             split,
