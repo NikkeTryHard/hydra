@@ -84,6 +84,36 @@ pub(crate) struct LatestCheckpointState<'a> {
 
 pub(crate) type JsonlAppender = fs::File;
 
+pub(crate) fn atomic_write_text(path: &Path, contents: &str, label: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {label} dir {}: {err}", parent.display()))?;
+    }
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("tmp");
+    let tmp_path = path.with_extension(format!(
+        "{extension}.tmp-{}-{}",
+        std::process::id(),
+        current_timestamp_s()
+    ));
+    fs::write(&tmp_path, contents).map_err(|err| {
+        format!(
+            "failed to write temporary {label} {}: {err}",
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        format!(
+            "failed to finalize {label} {} from {}: {err}",
+            path.display(),
+            tmp_path.display()
+        )
+    })
+}
+
 impl PreflightPaths {
     pub(crate) fn new(artifacts: &BcArtifactPaths) -> Self {
         Self {
@@ -230,34 +260,20 @@ pub(crate) fn write_preflight_cache(
             path.display()
         )
     })?;
-    fs::write(path, json)
-        .map_err(|err| format!("failed to write preflight cache {}: {err}", path.display()))
+    atomic_write_text(path, &json, "preflight cache")
 }
 
 pub(crate) fn write_preflight_benchmark_report(
     path: &Path,
     report: &PreflightBenchmarkReport,
 ) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "failed to create preflight benchmark report dir {}: {err}",
-                parent.display()
-            )
-        })?;
-    }
     let json = serde_json::to_string_pretty(report).map_err(|err| {
         format!(
             "failed to serialize preflight benchmark report {}: {err}",
             path.display()
         )
     })?;
-    fs::write(path, json).map_err(|err| {
-        format!(
-            "failed to write preflight benchmark report {}: {err}",
-            path.display()
-        )
-    })
+    atomic_write_text(path, &json, "preflight benchmark report")
 }
 
 pub(crate) fn read_preflight_cache(path: &Path) -> Result<Option<PreflightCacheEntry>, String> {
@@ -278,28 +294,7 @@ pub(crate) fn write_manifest_cache(path: &Path, entry: &ManifestCacheEntry) -> R
             path.display()
         )
     })?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "failed to create manifest cache parent dir {}: {err}",
-                parent.display()
-            )
-        })?;
-    }
-    let tmp_path = path.with_extension("json.tmp");
-    fs::write(&tmp_path, json).map_err(|err| {
-        format!(
-            "failed to write manifest cache temp file {}: {err}",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).map_err(|err| {
-        format!(
-            "failed to atomically replace manifest cache {} from {}: {err}",
-            path.display(),
-            tmp_path.display()
-        )
-    })
+    atomic_write_text(path, &json, "manifest cache")
 }
 
 pub(crate) fn read_manifest_cache(path: &Path) -> Result<Option<ManifestCacheEntry>, String> {
@@ -352,6 +347,34 @@ pub(crate) fn scan_and_write_manifest_cache(
         },
     )?;
     Ok(manifest)
+}
+
+pub(crate) fn load_or_scan_manifest_cache<F>(
+    cache_path: &Path,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+    scan_error_context: &str,
+    on_cache_hit: F,
+) -> Result<DataManifest, String>
+where
+    F: FnOnce(&ManifestCacheEntry),
+{
+    if let Some(cached) = read_manifest_cache(cache_path)?
+        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
+    {
+        on_cache_hit(&cached);
+        return Ok(cached.manifest);
+    }
+    scan_and_write_manifest_cache(
+        cache_path,
+        data_dir,
+        train_fraction,
+        source_filters,
+        progress,
+        scan_error_context,
+    )
 }
 
 pub(crate) fn save_latest_checkpoint_and_state<B, O>(

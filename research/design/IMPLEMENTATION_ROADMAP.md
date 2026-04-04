@@ -36,7 +36,7 @@
 
 - `hydra-train` is already registered in the workspace (`Cargo.toml`).
 - `crates/hydra-train/Cargo.toml` already exists and the crate builds as part of the live workspace.
-- The current `src/lib.rs` exports `backbone`, `config`, `data`, `eval`, `heads`, `inference`, `league`, `model`, `saf`, `selfplay`, `teacher`, and `training`.
+- The current `src/lib.rs` exports `backbone`, `config`, `data`, `eval`, `heads`, `inference`, `model`, `preflight`, `saf`, `selfplay`, `selfplay_batch`, `teacher`, and `training`.
 
 ### 1.2 Current module structure
 
@@ -51,11 +51,12 @@ crates/hydra-train/
     eval.rs
     heads.rs
     inference.rs
-    league.rs
     lib.rs
     model.rs
+    preflight.rs
     saf.rs
     selfplay.rs
+    selfplay_batch.rs
     teacher/
     training/
 ```
@@ -835,13 +836,9 @@ Loss: `L_kd = KL(sg(learner_pi) || actor_pi) + 0.5 * MSE(sg(learner_v), actor_v)
 
 ### 12.5 Population League
 
-**File**: `hydra-train/src/league.rs`
+**Historical note**: the old reserve-shelf `hydra-train/src/league.rs` surface is no longer part of the live crate export set.
 
-**League**: `agents: Vec<LeagueAgent>`, `elo_ratings: Vec<f32>`
-**LeagueAgent**: `weights_path: PathBuf`, `agent_type: AgentType`
-**AgentType**: `Current | Checkpoint(u32) | BcAnchor | Exploiter`
-- Latest ActorNet, 3 trailing checkpoints, 2 BC-anchors, 1 exploiter. Uniform random matchmaking.
-- Tests: `league_matchmaking_is_uniform`, `elo_updates_correctly`
+The remaining league/opponent-pool text in older infrastructure docs should be read as reserve-stage historical planning only. It is not an implementation target for the current branch, and the old crate surface/tests listed in earlier roadmap revisions no longer exist in-tree.
 
 ### 12.6 Evaluation Harness
 

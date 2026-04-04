@@ -8,30 +8,6 @@ use super::probe_summary::{ProbeCandidateSummary, probe_summary_iter};
 
 const MAX_DYNAMIC_PROBE_CANDIDATE: usize = 8192;
 
-pub(super) fn candidate_average(results: &[ProbeResult], candidate: usize) -> Option<f64> {
-    let mut sum = 0.0;
-    let mut count = 0usize;
-    let mut saw_failure = false;
-    for result in results {
-        if result.candidate_microbatch != candidate {
-            continue;
-        }
-        if result.status != ProbeStatus::Success {
-            saw_failure = true;
-            continue;
-        }
-        if let Some(value) = result.measured_samples_per_second {
-            sum += value;
-            count += 1;
-        }
-    }
-    if saw_failure || count == 0 {
-        None
-    } else {
-        Some(sum / count as f64)
-    }
-}
-
 pub(super) fn close_probe_finalists(
     results: &[ProbeResult],
     margin_ratio: f64,
@@ -293,49 +269,14 @@ pub(super) fn dynamic_probe_ladder(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use hydra_train::preflight::{PreflightConfig, ProbeKind, ProbeResult, ProbeStatus};
+    use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
     use super::*;
     use crate::config::TrainConfig;
+    use crate::test_support::dummy_train_config;
 
     fn dummy_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/tmp/data"),
-            output_dir: PathBuf::from("/tmp/out"),
-            num_epochs: 1,
-            batch_size: 256,
-            microbatch_size: Some(64),
-            validation_microbatch_size: Some(32),
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: 0.9,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: true,
-            resume_checkpoint: None,
-            seed: 0,
-            advanced_loss: None,
-            rl: None,
-            bc: Default::default(),
-            device: "cpu".to_string(),
-            buffer_games: 16,
-            buffer_samples: 128,
-            num_threads: None,
-            tensorboard: false,
-            archive_queue_bound: 8,
-            validation_every_n_epochs: 1,
-            max_skip_logs_per_source: 4,
-            log_every_n_steps: 10,
-            validate_every_n_steps: 10,
-            checkpoint_every_n_steps: 10,
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: None,
-            preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
-        }
+        dummy_train_config()
     }
 
     #[test]

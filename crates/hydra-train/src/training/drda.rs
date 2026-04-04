@@ -68,39 +68,8 @@ impl RebaseTracker {
         self.gpu_hours_since_rebase = 0.0;
     }
 
-    pub fn summary(&self) -> String {
-        format!(
-            "rebases={} hours_since={:.1}",
-            self.total_rebases, self.gpu_hours_since_rebase
-        )
-    }
-
     pub fn tick(&mut self, hours: f32) {
         self.gpu_hours_since_rebase += hours;
-    }
-}
-
-type BaseLogitsFn<B> = Box<dyn Fn(Tensor<B, 3>) -> Tensor<B, 2>>;
-
-pub struct DrdaWrapper<B: Backend> {
-    pub base_logits_fn: Option<BaseLogitsFn<B>>,
-    pub tau_drda: f32,
-}
-
-impl<B: Backend> DrdaWrapper<B> {
-    pub fn new(tau_drda: f32) -> Self {
-        Self {
-            base_logits_fn: None,
-            tau_drda: tau_drda.max(MIN_TAU_DRDA),
-        }
-    }
-
-    pub fn combined_logits(
-        &self,
-        base_logits: Tensor<B, 2>,
-        residual_logits: Tensor<B, 2>,
-    ) -> Tensor<B, 2> {
-        base_logits + residual_logits / self.tau_drda
     }
 }
 
@@ -138,25 +107,6 @@ pub fn compute_rebase_kl<B: Backend>(
     let pi_before = activation::softmax(combined + neg_inf.clone(), 1);
     let pi_after = activation::softmax(base_logits + neg_inf, 1);
     verify_rebase_preserves_pi(pi_before, pi_after)
-}
-
-pub fn compute_new_base_logits<B: Backend>(
-    base_logits: Tensor<B, 2>,
-    residual_logits: Tensor<B, 2>,
-    tau_drda: f32,
-) -> Tensor<B, 2> {
-    base_logits + residual_logits / tau_drda
-}
-
-pub fn policy_head_is_zeroed<B: Backend>(logits: Tensor<B, 2>) -> bool {
-    let max_abs = logits
-        .abs()
-        .max()
-        .into_data()
-        .convert::<f32>()
-        .as_slice::<f32>()
-        .expect("max-abs scalar should be readable as f32")[0];
-    max_abs < 1e-6
 }
 
 #[cfg(test)]
@@ -212,19 +162,6 @@ mod tests {
     }
 
     #[test]
-    fn test_drda_wrapper_method() {
-        let device = Default::default();
-        let wrapper = DrdaWrapper::<B>::new(4.0);
-        let base = Tensor::<B, 2>::from_floats([[1.0, 2.0]], &device);
-        let res = Tensor::<B, 2>::from_floats([[8.0, 4.0]], &device);
-        let out = wrapper.combined_logits(base, res);
-        let data = out.to_data();
-        let vals = data.as_slice::<f32>().expect("f32");
-        assert!((vals[0] - 3.0).abs() < 1e-5);
-        assert!((vals[1] - 3.0).abs() < 1e-5);
-    }
-
-    #[test]
     fn test_compute_rebase_kl_zero_residual() {
         let device = Default::default();
         let base = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
@@ -269,17 +206,5 @@ mod tests {
             "after record_rebase, should_rebase must be false"
         );
         assert_eq!(tracker.total_rebases, 1);
-    }
-
-    #[test]
-    fn test_compute_new_base_logits() {
-        let device = Default::default();
-        let base = Tensor::<B, 2>::from_floats([[1.0, 2.0, 3.0]], &device);
-        let residual = Tensor::<B, 2>::from_floats([[4.0, 0.0, -4.0]], &device);
-        let new_base = compute_new_base_logits(base, residual, 4.0);
-        let data: Vec<f32> = new_base.to_data().as_slice::<f32>().unwrap().to_vec();
-        assert!((data[0] - 2.0).abs() < 1e-5, "1.0 + 4.0/4.0 = 2.0");
-        assert!((data[1] - 2.0).abs() < 1e-5, "2.0 + 0.0/4.0 = 2.0");
-        assert!((data[2] - 2.0).abs() < 1e-5, "3.0 + -4.0/4.0 = 2.0");
     }
 }

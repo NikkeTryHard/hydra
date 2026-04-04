@@ -10,11 +10,12 @@ use super::preflight_runtime::{
 };
 use super::presentation::{format_status_line, make_bar};
 use super::probe_ladder::{dynamic_probe_ceiling, top_k_refinement_candidates};
-use super::probe_process::{execute_probe_request_batch, probe_batch_results_path};
+use super::probe_process::execute_probe_request_batch;
 use super::probe_request::{ProbeBatchRequest, ProbeRequest};
 use super::probe_summary::{
     ProbeCandidateSummary, best_probe_summary, probe_kind_name, summarize_probe_results,
 };
+use super::probe_transport::{probe_batch_results_path, probe_result_path};
 
 pub(super) struct ProbeRunSpec {
     pub(super) kind: ProbeKind,
@@ -554,9 +555,8 @@ pub(super) fn probe_candidate_ladder(
     for candidate in candidate_list {
         let mut stable = true;
         let attempts = config.preflight.required_successes.max(1);
-        let result_path_for = |kind, candidate, attempt| {
-            super::probe_process::probe_result_path(artifacts, kind, candidate, attempt)
-        };
+        let result_path_for =
+            |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
         for attempt in 0..attempts {
             let attempt_number = attempt + 1;
             println!(
@@ -624,9 +624,7 @@ pub(super) fn probe_candidate_ladder(
 
     refine_probe_winner_locally(
         config_path,
-        |kind, candidate, attempt| {
-            super::probe_process::probe_result_path(artifacts, kind, candidate, attempt)
-        },
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         kind,
         config,
         &mut results,
@@ -634,9 +632,7 @@ pub(super) fn probe_candidate_ladder(
     )?;
     rerun_probe_finalists(
         config_path,
-        |kind, candidate, attempt| {
-            super::probe_process::probe_result_path(artifacts, kind, candidate, attempt)
-        },
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         kind,
         config,
         &mut results,
@@ -676,7 +672,7 @@ mod tests {
 
     use super::*;
     use crate::config::TrainConfig;
-    use crate::probe_process::{ProbeBatchArtifact, probe_batch_results_path};
+    use crate::probe_transport::{ProbeBatchArtifact, probe_batch_results_path};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {

@@ -143,6 +143,13 @@ What those do:
 - ExIt sidecars hydrate replay-time search-derived labels when provenance, source identity, source version, source net hash, and legal-mask digest all match.
 - DeltaQ sidecars hydrate replay-time delta-Q labels under a stricter contract that also validates the action-mask/target shape.
 
+One identity detail is easy to miss but operationally important:
+
+- loose replay files join by replay file name
+- archive-backed replay entries join by full archive-entry identity
+
+So a sidecar keyed to `game.json` is not automatically valid for an archive entry identified as `replays.tar.zst/path/inside/game.json`.
+
 For how to generate and validate those sidecars, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 
 ## BC shards
@@ -153,6 +160,15 @@ Use this when:
 
 - you have already materialized a shard dataset for repeated BC runs
 - you want training input layout to be driven by a precomputed shard manifest rather than raw replay discovery
+
+What changes operationally when shard mode is enabled:
+
+- the train path reads prebuilt shard rows instead of rescanning replay archives on each run
+- the validation path also switches to shard readers instead of the loose-replay validation stream
+- validation-sample materialization is disabled in this mode, so the run does not build a cached in-memory validation microbatch set up front even when `max_validation_samples` is set
+- shard-backed validation becomes a sequential shard-row scan with a small host-batch prefetch queue rather than replay-stream microbatch iteration
+
+That means shard-backed runs change both startup behavior and validation transport. If you are comparing runtime or memory behavior against a loose-replay run, treat shard mode as a different data path rather than just a faster input source.
 
 For the build/inspect/consume workflow and manifest interpretation, read [`docs/BC_SHARDS.md`](BC_SHARDS.md).
 

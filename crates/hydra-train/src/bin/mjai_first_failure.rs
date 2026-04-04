@@ -1,22 +1,12 @@
 use std::fs::File;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use hydra_train::data::archive_helpers::is_mjai_archive_entry;
 use hydra_train::data::mjai_loader::load_game_from_stream;
 
 fn usage(program: &str) -> String {
     format!("Usage: {program} <archive.tar.zst>")
-}
-
-fn is_mjai_archive_entry(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name)
-            if name.ends_with(".json")
-                || name.ends_with(".json.gz")
-                || name.ends_with(".mjai.json")
-                || name.ends_with(".mjai.json.gz")
-    )
 }
 
 fn run(path: PathBuf) -> Result<(), String> {

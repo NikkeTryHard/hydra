@@ -1,4 +1,3 @@
-#![cfg(feature = "cuda-graph")]
 #![allow(dead_code)]
 
 use std::ffi::{c_int, c_void};

@@ -8,9 +8,9 @@ Training crate for the Hydra Riichi Mahjong AI. It owns the model stack, replay/
 
 - `hydra-engine` owns low-level Riichi rules and replay parsing
 - `hydra-core` owns runtime bridging, encoding, simulation, seeding, and search/runtime feature plumbing
-- `hydra-train` owns model definition, losses, BC/RL/self-play orchestration, sidecar generation, and training/evaluation utilities
+- `hydra-train` owns model definition, losses, the active BC/RL/self-play orchestration surface, sidecar generation, and training/evaluation utilities
 
-The crate is built around Burn and the current Hydra training baseline. The shipped baseline already includes the live `192x34` encoder/model contract, replay-derived `safety_residual`, the stronger public-teacher belief semantics tranche, and the ExIt carrier across both live self-play and replay/sample sidecar-first lanes. Promotion-gated DeltaQ tooling also lives here, but it is not the default-on training lane.
+The crate is built around Burn and the current Hydra training baseline. The shipped baseline already includes the live `192x34` encoder/model contract, replay-derived `safety_residual`, the stronger public-teacher belief semantics tranche, and the ExIt carrier across both live self-play and replay/sample sidecar-first lanes. Promotion-gated DeltaQ tooling also lives here, but it is not the default-on training lane. Some internal modules remain preserved for staged or reserve work, so treat the module table below as the supported crate surface rather than a list of every file in the crate.
 
 For current shipped-vs-staged status, read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md).
 For active-path sequencing, read [`research/design/HYDRA_RECONCILIATION.md`](../../research/design/HYDRA_RECONCILIATION.md).
@@ -33,13 +33,13 @@ It does **not** own the Riichi rules engine itself. When rule semantics drift, `
 
 | Module | Description |
 |--------|-------------|
+| `amp` | AMP/BF16 runtime helpers shared by training flows |
 | `backbone` | Backbone building blocks for Hydra's network stack |
 | `config` | Shared training/runtime config types and parsing helpers |
 | `data` | Replay loading, data-source scanning, augmentation, and batch/sample plumbing |
 | `eval` | Arena/evaluation helpers and training/eval metric summaries |
 | `heads` | Policy / value / auxiliary head definitions |
 | `inference` | Train-side model inference helpers |
-| `league` | League-style model coordination and related utilities |
 | `model` | Top-level `HydraModel` assembly and config surface |
 | `preflight` | Probe/preflight configuration for runtime selection and autotune flows |
 | `saf` | SAF-related train-side helpers |
@@ -62,8 +62,9 @@ The crate currently exposes these workspace binaries:
 | `build_replay_exit_sidecar` | Builds replay-side ExIt sidecars |
 | `mjai_debug_failure` | Debug helper for replay failures |
 | `mjai_first_failure` | Finds/inspects the first replay failure in a dataset |
+| `build_bc_shards` | Builds BC shard datasets and manifests from replay corpora |
 
-The main training entrypoint lives at [`src/bin/train.rs`](src/bin/train.rs).
+The main training entrypoint lives at [`src/bin/train.rs`](src/bin/train.rs). It is split into focused `src/bin/train/*` submodules for runtime/preflight selection, probe transport, autotune, resume/state persistence, and test support.
 
 ## Operator workflow docs
 

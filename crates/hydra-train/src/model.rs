@@ -664,7 +664,7 @@ impl<B: Backend> HydraModel<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::losses::{tests::make_dummy_targets, HydraLoss, HydraLossConfig};
+    use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::LibTorch;
     use burn::backend::NdArray;

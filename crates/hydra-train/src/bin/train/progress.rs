@@ -294,7 +294,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        batch_stats_from_breakdown, batch_stats_from_outputs, scalar1, BatchStats, ScalarAverages,
+        BatchStats, ScalarAverages, batch_stats_from_breakdown, batch_stats_from_outputs, scalar1,
     };
 
     fn batch(sample_count: usize, total_loss: f64, agreement: f64) -> BatchStats {

@@ -7,7 +7,8 @@ use crate::config::{OracleGuidingConfig, PipelineState, TrainingPhase};
 use crate::data::sample::MjaiBatch;
 use crate::model::HydraModel;
 use crate::training::bc::{
-    bc_train_step, oracle_guiding_train_step, phase_learning_rate, BcExitConfig,
+    BcExitConfig, BcTrainBatchInput, BcTrainStepContext, OracleGuidingBatchInput,
+    OracleGuidingStepSchedule, bc_train_step, oracle_guiding_train_step, phase_learning_rate,
 };
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
@@ -15,7 +16,9 @@ use crate::training::exit::ExitConfig;
 use crate::training::head_gates::HeadActivationController;
 use crate::training::live_exit::LiveExitConfig;
 use crate::training::losses::{HydraLoss, HydraTargets};
-use crate::training::rl::{rl_step_with_phase_progress_and_controller, RlBatch, RlConfig};
+use crate::training::rl::{
+    RlBatch, RlConfig, RlStepRequest, rl_step_with_phase_progress_and_controller,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchmarkGateMetrics {
@@ -62,6 +65,27 @@ pub struct MaintenancePlan {
     pub distill_warning: bool,
     pub shallow_exit_enabled: bool,
     pub deep_exit_enabled: bool,
+}
+
+pub struct RlPhaseTrainRequest<'a, B: Backend> {
+    pub state: &'a PipelineState,
+    pub batch: &'a RlBatch<B>,
+    pub cfg: &'a RlConfig,
+    pub loss_fn: &'a HydraLoss<B>,
+    pub controller: Option<&'a mut HeadActivationController>,
+}
+
+pub struct SupervisedPhaseTrainRequest<'a, B: Backend> {
+    pub state: &'a PipelineState,
+    pub obs: Tensor<B, 3>,
+    pub targets: &'a HydraTargets<B>,
+    pub loss_fn: &'a HydraLoss<B>,
+    pub oracle_cfg: &'a OracleGuidingConfig,
+    pub step: usize,
+    pub total_steps: usize,
+    pub importance_weight: f32,
+    pub max_importance_weight: f32,
+    pub rng_values: &'a [f32],
 }
 
 pub fn evaluate_benchmark_gates(
@@ -196,11 +220,6 @@ pub fn maintenance_plan(
     }
 }
 
-/// Builds the live ExIt producer config from the current maintenance plan.
-///
-/// Returns a [`LiveExitConfig`] with `enabled` set according to the plan's
-/// exit flags. The producer remains default-off when neither shallow nor
-/// deep exit is active.
 pub fn live_exit_config_from_plan(plan: &MaintenancePlan) -> LiveExitConfig {
     LiveExitConfig {
         enabled: plan.shallow_exit_enabled || plan.deep_exit_enabled,
@@ -208,57 +227,48 @@ pub fn live_exit_config_from_plan(plan: &MaintenancePlan) -> LiveExitConfig {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn supervised_phase_train_step<B: AutodiffBackend>(
-    state: &PipelineState,
     model: HydraModel<B>,
-    obs: Tensor<B, 3>,
-    targets: &HydraTargets<B>,
-    loss_fn: &HydraLoss<B>,
+    request: SupervisedPhaseTrainRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
-    oracle_cfg: &OracleGuidingConfig,
-    step: usize,
-    total_steps: usize,
-    importance_weight: f32,
-    max_importance_weight: f32,
-    rng_values: &[f32],
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
-    let batch_size = obs.dims()[0];
-    let device = obs.device();
+    let batch_size = request.obs.dims()[0];
+    let device = request.obs.device();
     let empty_batch = MjaiBatch {
         obs: Tensor::zeros([batch_size, crate::config::INPUT_CHANNELS, 34], &device),
         actions: Tensor::zeros([batch_size], &device),
-        legal_mask: targets.legal_mask.clone(),
-        value_target: targets.value_target.clone(),
-        grp_target: targets.grp_target.clone(),
-        oracle_target: targets.oracle_target.clone(),
-        oracle_target_mask: targets
+        legal_mask: request.targets.legal_mask.clone(),
+        value_target: request.targets.value_target.clone(),
+        grp_target: request.targets.grp_target.clone(),
+        oracle_target: request.targets.oracle_target.clone(),
+        oracle_target_mask: request
+            .targets
             .oracle_guidance_mask
             .clone()
             .unwrap_or_else(|| Tensor::zeros([batch_size], &device)),
-        tenpai_target: targets.tenpai_target.clone(),
-        danger_target: targets.danger_target.clone(),
-        danger_mask: targets.danger_mask.clone(),
-        safety_residual_target: targets.safety_residual_target.clone(),
-        safety_residual_mask: targets.safety_residual_mask.clone(),
+        tenpai_target: request.targets.tenpai_target.clone(),
+        danger_target: request.targets.danger_target.clone(),
+        danger_mask: request.targets.danger_mask.clone(),
+        safety_residual_target: request.targets.safety_residual_target.clone(),
+        safety_residual_mask: request.targets.safety_residual_mask.clone(),
         exit_target: None,
         exit_mask: None,
-        belief_fields_target: targets.belief_fields_target.clone(),
-        mixture_weight_target: targets.mixture_weight_target.clone(),
-        delta_q_target: targets.delta_q_target.clone(),
-        delta_q_mask: targets.delta_q_mask.clone(),
-        belief_fields_mask: targets.belief_fields_mask.clone(),
-        mixture_weight_mask: targets.mixture_weight_mask.clone(),
-        opp_next_target: targets.opp_next_target.clone(),
-        score_pdf_target: targets.score_pdf_target.clone(),
-        score_cdf_target: targets.score_cdf_target.clone(),
-        target_presence: targets.target_presence,
+        belief_fields_target: request.targets.belief_fields_target.clone(),
+        mixture_weight_target: request.targets.mixture_weight_target.clone(),
+        delta_q_target: request.targets.delta_q_target.clone(),
+        delta_q_mask: request.targets.delta_q_mask.clone(),
+        belief_fields_mask: request.targets.belief_fields_mask.clone(),
+        mixture_weight_mask: request.targets.mixture_weight_mask.clone(),
+        opp_next_target: request.targets.opp_next_target.clone(),
+        score_pdf_target: request.targets.score_pdf_target.clone(),
+        score_cdf_target: request.targets.score_cdf_target.clone(),
+        target_presence: request.targets.target_presence,
     };
-    match state.phase {
+    match request.state.phase {
         TrainingPhase::BenchmarkGates => Ok((
             model,
             PhaseTrainReport {
-                phase: state.phase,
+                phase: request.state.phase,
                 skipped: true,
                 loss: None,
                 effective_lr: 0.0,
@@ -268,22 +278,26 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
             },
         )),
         TrainingPhase::BcWarmStart => {
-            let lr = phase_learning_rate(state.phase, step, total_steps);
+            let lr = phase_learning_rate(request.state.phase, request.step, request.total_steps);
             let (model, loss) = bc_train_step(
                 model,
-                obs,
-                &empty_batch,
-                targets,
-                loss_fn,
-                &BcExitConfig::default(),
-                false,
-                lr,
+                BcTrainBatchInput {
+                    obs: request.obs,
+                    batch: &empty_batch,
+                    targets: request.targets,
+                },
+                BcTrainStepContext {
+                    loss_fn: request.loss_fn,
+                    exit_cfg: &BcExitConfig::default(),
+                    use_amp: false,
+                    lr,
+                },
                 optimizer,
             );
             Ok((
                 model,
                 PhaseTrainReport {
-                    phase: state.phase,
+                    phase: request.state.phase,
                     skipped: false,
                     loss: Some(loss),
                     effective_lr: lr,
@@ -296,22 +310,30 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
         TrainingPhase::OracleGuiding => {
             let (model, stats) = oracle_guiding_train_step(
                 model,
-                obs,
-                targets,
-                loss_fn,
-                phase_learning_rate(state.phase, step, total_steps),
-                oracle_cfg,
-                step,
-                total_steps,
-                importance_weight,
-                max_importance_weight,
-                rng_values,
+                OracleGuidingBatchInput {
+                    obs: request.obs,
+                    targets: request.targets,
+                    loss_fn: request.loss_fn,
+                    importance_weight: request.importance_weight,
+                    max_importance_weight: request.max_importance_weight,
+                    rng_values: request.rng_values,
+                },
+                OracleGuidingStepSchedule {
+                    base_lr: phase_learning_rate(
+                        request.state.phase,
+                        request.step,
+                        request.total_steps,
+                    ),
+                    oracle_cfg: request.oracle_cfg,
+                    step: request.step,
+                    total_steps: request.total_steps,
+                },
                 optimizer,
             );
             Ok((
                 model,
                 PhaseTrainReport {
-                    phase: state.phase,
+                    phase: request.state.phase,
                     skipped: stats.skipped,
                     loss: stats.loss,
                     effective_lr: stats.effective_lr,
@@ -333,33 +355,48 @@ pub fn rl_phase_train_step<B: AutodiffBackend>(
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
-    rl_phase_train_step_with_controller(state, model, batch, cfg, loss_fn, optimizer, None)
+    rl_phase_train_step_with_controller(
+        model,
+        RlPhaseTrainRequest {
+            state,
+            batch,
+            cfg,
+            loss_fn,
+            controller: None,
+        },
+        optimizer,
+    )
 }
 
 pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
-    state: &PipelineState,
     model: HydraModel<B>,
-    batch: &RlBatch<B>,
-    cfg: &RlConfig,
-    loss_fn: &HydraLoss<B>,
+    request: RlPhaseTrainRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
-    controller: Option<&mut HeadActivationController>,
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
-    match state.phase {
+    match request.state.phase {
         TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
-            let exit_phase = state.phase.exit_schedule_phase();
-            let progress = state.phase_progress();
-            let exit_weight = cfg.effective_exit_weight(exit_phase, progress);
+            let exit_phase = request.state.phase.exit_schedule_phase();
+            let progress = request.state.phase_progress();
+            let exit_weight = request.cfg.effective_exit_weight(exit_phase, progress);
             let (model, loss) = rl_step_with_phase_progress_and_controller(
-                model, batch, cfg, exit_phase, progress, loss_fn, optimizer, controller,
+                model,
+                RlStepRequest {
+                    batch: request.batch,
+                    cfg: request.cfg,
+                    phase: exit_phase,
+                    progress,
+                    loss_fn: request.loss_fn,
+                    controller: request.controller,
+                },
+                optimizer,
             );
             Ok((
                 model,
                 PhaseTrainReport {
-                    phase: state.phase,
+                    phase: request.state.phase,
                     skipped: false,
                     loss: Some(loss),
-                    effective_lr: cfg.lr,
+                    effective_lr: request.cfg.lr,
                     oracle_keep_prob: None,
                     kept_oracle_fraction: None,
                     exit_weight: Some(exit_weight),
@@ -607,13 +644,15 @@ mod tests {
             HeadActivationController::new(HeadActivationConfig::default_with_params(1));
 
         let (_, report) = rl_phase_train_step_with_controller(
-            &state,
             model,
-            &batch,
-            &cfg,
-            &loss_fn,
+            RlPhaseTrainRequest {
+                state: &state,
+                batch: &batch,
+                cfg: &cfg,
+                loss_fn: &loss_fn,
+                controller: Some(&mut controller),
+            },
             &mut optimizer,
-            Some(&mut controller),
         )
         .expect("rl step with controller");
 
@@ -660,13 +699,15 @@ mod tests {
         controller.try_activate(AdvancedHead::DeltaQ);
 
         let (_, report) = rl_phase_train_step_with_controller(
-            &state,
             model,
-            &batch,
-            &cfg,
-            &loss_fn,
+            RlPhaseTrainRequest {
+                state: &state,
+                batch: &batch,
+                cfg: &cfg,
+                loss_fn: &loss_fn,
+                controller: Some(&mut controller),
+            },
             &mut optimizer,
-            Some(&mut controller),
         )
         .expect("rl step with controller");
 
@@ -697,18 +738,20 @@ mod tests {
         };
 
         let (_, report) = supervised_phase_train_step(
-            &state,
             model,
-            obs,
-            &targets,
-            &loss_fn,
+            SupervisedPhaseTrainRequest {
+                state: &state,
+                obs,
+                targets: &targets,
+                loss_fn: &loss_fn,
+                oracle_cfg: &OracleGuidingConfig::default(),
+                step: 50,
+                total_steps: 100,
+                importance_weight: 1.0,
+                max_importance_weight: 2.0,
+                rng_values: &[0.0, 0.9],
+            },
             &mut optimizer,
-            &OracleGuidingConfig::default(),
-            50,
-            100,
-            1.0,
-            2.0,
-            &[0.0, 0.9],
         )
         .expect("oracle step");
 

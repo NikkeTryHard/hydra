@@ -234,6 +234,7 @@ fn run() -> Result<(), String> {
         train_fraction: cli.train_fraction,
         shard_samples: cli.shard_samples,
         split_mode: cli.split_mode,
+        source_manifest: Some(scan.clone()),
         exit_sidecar,
         exit_sidecar_path: cli.exit_sidecar,
         exit_provenance: SidecarProvenance::new(cli.exit_source_net_hash, cli.exit_source_version),

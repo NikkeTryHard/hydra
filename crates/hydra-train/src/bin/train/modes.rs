@@ -702,52 +702,19 @@ fn print_probe_table(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use hydra_train::preflight::{PreflightConfig, ProbeKind, ProbeResult, ProbeStatus};
+    use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
     use hydra_train::training::delta_q_promotion::DeltaQPromotionRecommendation;
+    use std::path::{Path, PathBuf};
 
-    use super::super::config::{BcHyperparamConfig, RlTrainConfig, TrainConfig};
+    use super::super::config::{RlTrainConfig, TrainConfig};
     use super::super::resume::BestValidation;
     use super::*;
+    use crate::test_support::{dummy_train_config, unique_test_path as shared_unique_test_path};
 
     fn dummy_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/tmp/data"),
-            output_dir: PathBuf::from("/tmp/out"),
-            num_epochs: 1,
-            batch_size: 256,
-            microbatch_size: Some(64),
-            validation_microbatch_size: Some(32),
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: 0.9,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: true,
-            resume_checkpoint: None,
-            seed: 0,
-            advanced_loss: None,
-            rl: None,
-            bc: BcHyperparamConfig::default(),
-            device: "cpu".to_string(),
-            buffer_games: 16,
-            buffer_samples: 128,
-            num_threads: Some(1),
-            tensorboard: false,
-            archive_queue_bound: 8,
-            validation_every_n_epochs: 1,
-            max_skip_logs_per_source: 4,
-            log_every_n_steps: 10,
-            validate_every_n_steps: 10,
-            checkpoint_every_n_steps: 10,
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: None,
-            preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
-        }
+        let mut config = dummy_train_config();
+        config.num_threads = Some(1);
+        config
     }
 
     fn dummy_probe_request(kind: ProbeKind) -> ProbeRequest {
@@ -782,11 +749,7 @@ mod tests {
     }
 
     fn unique_test_path(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("hydra-modes-test-{label}-{unique}"))
+        shared_unique_test_path("hydra-modes-test", label)
     }
 
     #[test]

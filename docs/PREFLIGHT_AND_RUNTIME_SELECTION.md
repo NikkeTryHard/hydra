@@ -83,6 +83,13 @@ Current docs and code agree that the preflight key covers:
 - preflight config signature
 - explicit microbatch overrides
 
+The manifest-cache identity used by probe/preflight scan reuse is narrower than the full training config, but it is not just `data_dir`. The cache reuse path also requires the replay-selection contract to match, including:
+
+- `train_fraction`
+- `source_filters`
+
+That matters when you are comparing two runs that point at the same replay root but use different include/exclude filters. A manifest cache hit means Hydra believes the replay-selection problem is the same; changing `source_filters` intentionally breaks that identity.
+
 And deliberately excludes some knobs that do not define the selected-runtime contract, such as:
 
 - `data_dir`
@@ -141,6 +148,25 @@ These govern how hard Hydra searches data-path throughput rather than pure train
 - `real_benchmark_max_finalists`
 
 These control whether the more expensive end-to-end finalist benchmark is allowed to refine the winner.
+
+### Stage-2 validation cache
+
+The stage-2 benchmark can reuse pre-materialized validation samples across finalists when two conditions hold:
+
+- the validation sample limit is finite, so there is an actual bounded validation cache to materialize
+- multiple finalists share the same loader-runtime tuple and resolved validation sample limit
+
+When that happens, Hydra materializes the validation samples once, reuses them across those finalists, and records the one-time materialization cost separately. That materialization time is still charged into the benchmark accounting so operators do not misread the finalist as “free validation.”
+
+This reuse only applies to the loose-replay validation cache path. Shard-backed validation does not use this in-memory cached-sample route.
+
+When `bc_shards_manifest_path` is set, preflight behavior changes more broadly than just validation caching:
+
+- BC train and validation probes load shard readers directly instead of using the replay-manifest scan/cache path for those probe kinds
+- loader-runtime tuning collapses to the config-derived loader tuple instead of running the normal loader finalist search
+- the stage-2 finalist benchmark is skipped entirely for shard-backed BC runs, even if `real_benchmark_enabled` is true
+
+That means shard-backed preflight results are not directly comparable to loose-replay preflight results when you are reasoning about replay-scan throughput or stage-2 winner selection.
 
 ### Local refinement and coordinate search
 
@@ -208,6 +234,7 @@ The preflight config also carries RL-oriented memory and growth-safety knobs, bu
 - A cache hit does not mean loader-runtime became authoritative.
 - A cache hit can intentionally produce no probe results because Hydra skipped probing.
 - Precision-mode changes can invalidate assumptions even if the YAML looks mostly the same.
+- Stage-2 benchmark throughput can include one-time validation materialization cost when Hydra decides that cache reuse is valid for a finalist group.
 
 ## Recommended operator workflow
 

@@ -361,6 +361,36 @@ impl ReplayTargetProfile {
     }
 }
 
+pub(crate) struct ReplayLoadPolicy<'a> {
+    pub profile: ReplayTargetProfile,
+    pub exit_provenance: SidecarProvenance,
+    pub delta_q_provenance: SidecarProvenance,
+    pub exit_sidecar: Option<&'a ExitSidecarIndex>,
+    pub delta_q_sidecar: Option<&'a DeltaQSidecarIndex>,
+}
+
+impl<'a> ReplayLoadPolicy<'a> {
+    pub const fn new(
+        profile: ReplayTargetProfile,
+        exit_provenance: SidecarProvenance,
+        delta_q_provenance: SidecarProvenance,
+        exit_sidecar: Option<&'a ExitSidecarIndex>,
+        delta_q_sidecar: Option<&'a DeltaQSidecarIndex>,
+    ) -> Self {
+        Self {
+            profile,
+            exit_provenance,
+            delta_q_provenance,
+            exit_sidecar,
+            delta_q_sidecar,
+        }
+    }
+
+    fn has_joined_sidecars(&self) -> bool {
+        self.exit_sidecar.is_some() || self.delta_q_sidecar.is_some()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct OpponentEventTarget {
     tenpai: f32,
@@ -505,10 +535,6 @@ fn analyze_replay_legal_actions(
         // possible. Phase-specific masking is useful for model targets, but it must not be
         // allowed to reject the chosen replay action here or we spuriously mark valid replays
         // as desyncs.
-        let allow = true;
-        if !allow {
-            continue;
-        }
         legal_mask[idx] = true;
         legal_mask_f32[idx] = 1.0;
         chosen_is_legal |= hydra.id() == chosen_action_id;
@@ -1136,6 +1162,43 @@ pub fn load_game_from_path_with_sidecar(
     )
 }
 
+pub(crate) fn load_game_from_path_with_policy(
+    path: impl AsRef<Path>,
+    policy: Option<&ReplayLoadPolicy<'_>>,
+) -> io::Result<MjaiGame> {
+    let path = path.as_ref();
+    match policy.filter(|policy| policy.has_joined_sidecars()) {
+        Some(policy) => load_game_from_path_with_sidecar(
+            path,
+            policy.exit_provenance,
+            policy.delta_q_provenance,
+            policy.profile,
+            policy.exit_sidecar,
+            policy.delta_q_sidecar,
+        ),
+        None => load_game_from_path(path),
+    }
+}
+
+pub(crate) fn load_game_from_stream_with_policy<R: Read>(
+    source_identity: &str,
+    reader: R,
+    policy: Option<&ReplayLoadPolicy<'_>>,
+) -> io::Result<MjaiGame> {
+    match policy.filter(|policy| policy.has_joined_sidecars()) {
+        Some(policy) => load_game_from_stream_with_sidecar(
+            source_identity,
+            policy.exit_provenance,
+            policy.delta_q_provenance,
+            policy.profile,
+            reader,
+            policy.exit_sidecar,
+            policy.delta_q_sidecar,
+        ),
+        None => load_game_from_stream(reader),
+    }
+}
+
 pub fn load_dataset_from_paths<P: AsRef<Path>>(
     paths: &[P],
     train_fraction: f32,
@@ -1195,8 +1258,9 @@ mod tests {
     use riichienv_core::action::Phase;
     use riichienv_core::replay::read_mjai_events;
     use std::collections::HashMap;
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::{Cursor, Write};
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn dummy_game() -> MjaiGame {
@@ -1394,7 +1458,9 @@ mod tests {
         .join("\n")
     }
 
-    fn replay_guardrail_decisions() -> Vec<(ReplayDecisionKey, u8, [f32; HYDRA_ACTION_SPACE])> {
+    fn replay_guardrail_decisions(
+        source_identity: &str,
+    ) -> Vec<(ReplayDecisionKey, u8, [f32; HYDRA_ACTION_SPACE])> {
         let events =
             read_mjai_events(Cursor::new(replay_sidecar_guardrail_log())).expect("parse events");
         let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
@@ -1409,7 +1475,7 @@ mod tests {
             {
                 decisions.push((
                     ReplayDecisionKey {
-                        source_hash: source_hash_from_identity("game-1"),
+                        source_hash: source_hash_from_identity(source_identity),
                         event_index: idx as u32,
                         actor: decision.actor as u8,
                         obs_hash: crate::training::live_exit::obs_hash(&decision.obs_encoded),
@@ -1426,10 +1492,11 @@ mod tests {
     }
 
     fn synthetic_exit_records(
+        source_identity: &str,
         source_net_hash: u64,
         source_version: u32,
     ) -> Vec<ReplayExitRecordV1> {
-        replay_guardrail_decisions()
+        replay_guardrail_decisions(source_identity)
             .into_iter()
             .take(2)
             .map(|(key, action, legal_mask)| {
@@ -1462,10 +1529,11 @@ mod tests {
     }
 
     fn synthetic_delta_q_records(
+        source_identity: &str,
         source_net_hash: u64,
         source_version: u32,
     ) -> Vec<ReplayDeltaQRecordV1> {
-        replay_guardrail_decisions()
+        replay_guardrail_decisions(source_identity)
             .into_iter()
             .take(2)
             .map(|(key, action, legal_mask)| {
@@ -1491,12 +1559,26 @@ mod tests {
             .collect()
     }
 
+    fn unique_loader_temp_path(prefix: &str, file_name: &str) -> PathBuf {
+        let base = PathBuf::from("/home/nikketryhard/tmp");
+        fs::create_dir_all(&base).expect("create loader temp root");
+        base.join(format!(
+            "{prefix}_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ))
+        .join(file_name)
+    }
+
     #[test]
     fn loader_replay_key_parity_matches_exit_and_delta_q_sidecars() {
         let log = replay_sidecar_guardrail_log();
         let events = read_mjai_events(Cursor::new(log)).expect("parse events");
-        let exit_records = synthetic_exit_records(123, 1);
-        let delta_q_records = synthetic_delta_q_records(123, 1);
+        let exit_records = synthetic_exit_records("game-1", 123, 1);
+        let delta_q_records = synthetic_delta_q_records("game-1", 123, 1);
 
         assert!(
             !exit_records.is_empty() || !delta_q_records.is_empty(),
@@ -1601,8 +1683,8 @@ mod tests {
     fn mismatched_obs_hash_prevents_sidecar_hydration() {
         let log = replay_sidecar_guardrail_log();
         let events = read_mjai_events(Cursor::new(log)).expect("parse events");
-        let mut exit_records = synthetic_exit_records(123, 1);
-        let mut delta_q_records = synthetic_delta_q_records(123, 1);
+        let mut exit_records = synthetic_exit_records("game-1", 123, 1);
+        let mut delta_q_records = synthetic_delta_q_records("game-1", 123, 1);
 
         assert!(!exit_records.is_empty(), "expected exit sidecar records");
         assert!(
@@ -1650,8 +1732,8 @@ mod tests {
     fn mismatched_exit_provenance_does_not_block_delta_q_hydration() {
         let log = replay_sidecar_guardrail_log();
         let events = read_mjai_events(Cursor::new(log)).expect("parse events");
-        let exit_records = synthetic_exit_records(123, 1);
-        let delta_q_records = synthetic_delta_q_records(456, 2);
+        let exit_records = synthetic_exit_records("game-1", 123, 1);
+        let delta_q_records = synthetic_delta_q_records("game-1", 456, 2);
 
         let game = load_game_from_events_with_sidecar(
             "game-1",
@@ -1686,8 +1768,8 @@ mod tests {
     fn mismatched_delta_q_provenance_does_not_block_exit_hydration() {
         let log = replay_sidecar_guardrail_log();
         let events = read_mjai_events(Cursor::new(log)).expect("parse events");
-        let exit_records = synthetic_exit_records(123, 1);
-        let delta_q_records = synthetic_delta_q_records(456, 2);
+        let exit_records = synthetic_exit_records("game-1", 123, 1);
+        let delta_q_records = synthetic_delta_q_records("game-1", 456, 2);
 
         let game = load_game_from_events_with_sidecar(
             "game-1",
@@ -1747,6 +1829,122 @@ mod tests {
         assert_eq!(sample.opp_next, [MISSING_TILE_TARGET; 3]);
         assert!(sample.danger.iter().all(|&v| v == 0.0));
         assert!(sample.danger_mask.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn load_game_from_path_with_policy_uses_file_name_identity_for_sidecars() {
+        let path = unique_loader_temp_path("loader_policy_path", "game-1.mjai.json");
+        let parent = path.parent().expect("temp file parent");
+        fs::create_dir_all(parent).expect("create temp parent");
+        fs::write(&path, replay_sidecar_guardrail_log()).expect("write replay log");
+
+        let exit_records = synthetic_exit_records("game-1.mjai.json", 123, 1);
+        let delta_q_records = synthetic_delta_q_records("game-1.mjai.json", 456, 2);
+        let exit_index = ExitSidecarIndex::from_records(exit_records);
+        let delta_q_index = DeltaQSidecarIndex::from_records(delta_q_records);
+        let policy = ReplayLoadPolicy::new(
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+            SidecarProvenance::new(Some(123), Some(1)),
+            SidecarProvenance::new(Some(456), Some(2)),
+            Some(&exit_index),
+            Some(&delta_q_index),
+        );
+
+        let game = load_game_from_path_with_policy(&path, Some(&policy)).expect("load with policy");
+        fs::remove_file(&path).ok();
+        fs::remove_dir_all(parent).ok();
+
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.exit_target.is_some())
+        );
+        assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_target.is_some())
+        );
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_mask.is_some())
+        );
+    }
+
+    #[test]
+    fn load_game_from_stream_with_policy_uses_explicit_source_identity() {
+        let source_identity = "archive.tar.zst/game-1.mjai.json";
+        let exit_records = synthetic_exit_records(source_identity, 123, 1);
+        let delta_q_records = synthetic_delta_q_records(source_identity, 456, 2);
+        let exit_index = ExitSidecarIndex::from_records(exit_records);
+        let delta_q_index = DeltaQSidecarIndex::from_records(delta_q_records);
+        let policy = ReplayLoadPolicy::new(
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+            SidecarProvenance::new(Some(123), Some(1)),
+            SidecarProvenance::new(Some(456), Some(2)),
+            Some(&exit_index),
+            Some(&delta_q_index),
+        );
+
+        let game = load_game_from_stream_with_policy(
+            source_identity,
+            Cursor::new(replay_sidecar_guardrail_log()),
+            Some(&policy),
+        )
+        .expect("load stream with policy");
+
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.exit_target.is_some())
+        );
+        assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_target.is_some())
+        );
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_mask.is_some())
+        );
+    }
+
+    #[test]
+    fn load_game_from_stream_with_empty_policy_falls_back_to_default_loader() {
+        let policy = ReplayLoadPolicy::new(
+            ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+            SidecarProvenance::default(),
+            SidecarProvenance::default(),
+            None,
+            None,
+        );
+
+        let game = load_game_from_stream_with_policy(
+            "archive.tar.zst/game-1.mjai.json",
+            Cursor::new(replay_sidecar_guardrail_log()),
+            Some(&policy),
+        )
+        .expect("load stream without sidecars");
+
+        assert!(
+            game.samples
+                .iter()
+                .all(|sample| sample.exit_target.is_none())
+        );
+        assert!(game.samples.iter().all(|sample| sample.exit_mask.is_none()));
+        assert!(
+            game.samples
+                .iter()
+                .all(|sample| sample.delta_q_target.is_none())
+        );
+        assert!(
+            game.samples
+                .iter()
+                .all(|sample| sample.delta_q_mask.is_none())
+        );
     }
 
     #[test]

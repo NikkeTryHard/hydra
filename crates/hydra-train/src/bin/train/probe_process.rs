@@ -22,11 +22,10 @@ use std::time::Instant;
 
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressStyle};
-use serde::{Deserialize, Serialize};
 
 use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
-use super::artifacts::{BcArtifactPaths, RlArtifactPaths};
+use super::artifacts::BcArtifactPaths;
 #[cfg(test)]
 use super::presentation::format_probe_progress_line;
 #[cfg(test)]
@@ -36,7 +35,15 @@ use super::presentation::{
     format_probe_spinner_finish_message, format_probe_spinner_message, make_spinner,
 };
 use super::probe_request::{ProbeBatchRequest, ProbeRequest};
+#[cfg(not(test))]
 use super::probe_summary::probe_kind_name;
+use super::probe_transport::recover_probe_batch_results;
+#[cfg(test)]
+use super::probe_transport::should_suppress_probe_output_line;
+#[cfg(test)]
+use super::probe_transport::write_probe_batch_artifact;
+#[cfg(not(test))]
+use super::probe_transport::{build_probe_failure_result, read_probe_result};
 
 #[cfg(not(test))]
 fn probe_child_executable() -> Result<PathBuf, String> {
@@ -112,21 +119,6 @@ pub(super) fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
         let _ = HANDLER_INSTALLED.set(());
     }
     Ok(flag)
-}
-
-fn should_suppress_probe_output_line(line: &str) -> bool {
-    let lowered = line.to_ascii_lowercase();
-    lowered.contains("thread 'main'")
-        || lowered.contains("called `result::unwrap()`")
-        || lowered.contains("called `result::unwrap()")
-        || lowered.contains("note: run with `rust_backtrace=1`")
-        || lowered.contains("stack backtrace")
-        || lowered.contains("frame #")
-        || lowered.contains("exception raised from malloc")
-        || lowered.contains("/pytorch/")
-        || lowered.contains("/opt/conda/lib/python")
-        || lowered.contains("cudacachingallocator")
-        || lowered.contains("skipping ")
 }
 
 #[cfg(test)]
@@ -274,117 +266,6 @@ fn wait_for_probe_child_with_spinner(
     }
 }
 
-fn summarize_probe_failure_output(output: &str) -> String {
-    let mut lines = Vec::new();
-    for line in output.lines() {
-        if should_suppress_probe_output_line(line) {
-            continue;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("probe_progress ") {
-            continue;
-        }
-        lines.push(trimmed.to_string());
-        if lines.len() >= 3 {
-            break;
-        }
-    }
-    lines.join(" | ")
-}
-
-fn probe_failure_detail(
-    status: ProbeStatus,
-    stdout: &str,
-    stderr: &str,
-    exit_code: Option<i32>,
-) -> String {
-    match status {
-        ProbeStatus::Oom => format!(
-            "probe process status={exit_code:?} detail=libtorch/cuda oom during preflight probe; raw panic output suppressed"
-        ),
-        _ => {
-            let summary = summarize_probe_failure_output(stderr);
-            let fallback = if summary.is_empty() {
-                summarize_probe_failure_output(stdout)
-            } else {
-                summary
-            };
-            if fallback.is_empty() {
-                format!(
-                    "probe process status={exit_code:?} detail=probe child failed without structured result"
-                )
-            } else {
-                format!("probe process status={exit_code:?} detail={fallback}")
-            }
-        }
-    }
-}
-
-fn build_probe_failure_result(
-    request: ProbeRequest,
-    stdout: &str,
-    stderr: &str,
-    exit_code: Option<i32>,
-    classify_probe_detail: impl Fn(&str) -> ProbeStatus,
-) -> ProbeResult {
-    let combined = format!("stdout={stdout} stderr={stderr}");
-    let status = classify_probe_detail(&combined);
-    let detail = probe_failure_detail(status.clone(), stdout, stderr, exit_code);
-    ProbeResult {
-        kind: request.kind,
-        candidate_microbatch: request.candidate_microbatch,
-        status,
-        measured_samples_per_second: None,
-        elapsed_seconds: None,
-        detail,
-    }
-}
-
-fn recover_probe_batch_results(
-    batch: ProbeBatchRequest,
-    results_path: &Path,
-    status: ExitStatus,
-    stdout: &[u8],
-    stderr: &[u8],
-    classify_probe_detail: impl Fn(&str) -> ProbeStatus,
-) -> Result<Vec<ProbeResult>, String> {
-    let stdout = String::from_utf8_lossy(stdout);
-    let stderr = String::from_utf8_lossy(stderr);
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
-
-    if results_path.exists() {
-        let artifact = read_probe_batch_artifact(results_path)?;
-        fs::remove_file(results_path).ok();
-        if status.success() || artifact.is_finished() {
-            return Ok(artifact.replay_ordered_results().cloned().collect());
-        }
-
-        let mut recovered = artifact.completed_results_before_failure().to_vec();
-        let has_recorded_failure = recovered
-            .last()
-            .is_some_and(|result| result.status != ProbeStatus::Success);
-        if !has_recorded_failure && recovered.len() < batch.attempts.max(1) {
-            recovered.push(build_probe_failure_result(
-                batch.request,
-                stdout,
-                stderr,
-                status.code(),
-                classify_probe_detail,
-            ));
-        }
-        return Ok(recovered);
-    }
-
-    Ok(vec![build_probe_failure_result(
-        batch.request,
-        stdout,
-        stderr,
-        status.code(),
-        classify_probe_detail,
-    )])
-}
-
 fn join_output_forwarder(
     handle: thread::JoinHandle<Result<Vec<u8>, String>>,
     stream_name: &str,
@@ -410,41 +291,47 @@ struct ProbeChildRunOutput {
 }
 
 #[cfg(not(test))]
-fn run_probe_child_process(
-    config_path: &Path,
+struct ProbeChildRunRequest<'a> {
+    config_path: &'a Path,
     kind: ProbeKind,
     candidate_microbatch: usize,
     warmup_steps: usize,
     measure_steps: usize,
-    result_flag: &str,
-    result_path: &Path,
+    result_flag: &'a str,
+    result_path: &'a Path,
     attempts: Option<usize>,
-    manifest_cache_path: &Path,
+    manifest_cache_path: &'a Path,
+}
+
+#[cfg(not(test))]
+fn run_probe_child_process(
+    request: ProbeChildRunRequest<'_>,
 ) -> Result<ProbeChildRunOutput, String> {
     let interrupted = interrupt_flag()?;
     interrupted.store(false, Ordering::SeqCst);
     let probe_started = Instant::now();
-    let (spinner_message, spinner) = spawn_probe_spinner(kind, candidate_microbatch)?;
+    let (spinner_message, spinner) =
+        spawn_probe_spinner(request.kind, request.candidate_microbatch)?;
     let child_exe = probe_child_executable()?;
     let mut child_cmd = Command::new(&child_exe);
     child_cmd
-        .arg(config_path)
+        .arg(request.config_path)
         .arg("--probe-kind")
-        .arg(probe_kind_name(kind))
+        .arg(probe_kind_name(request.kind))
         .arg("--probe-candidate-microbatch")
-        .arg(candidate_microbatch.to_string())
+        .arg(request.candidate_microbatch.to_string())
         .arg("--probe-warmup-steps")
-        .arg(warmup_steps.to_string())
+        .arg(request.warmup_steps.to_string())
         .arg("--probe-measure-steps")
-        .arg(measure_steps.to_string());
-    if let Some(attempts) = attempts {
+        .arg(request.measure_steps.to_string());
+    if let Some(attempts) = request.attempts {
         child_cmd.arg("--probe-attempts").arg(attempts.to_string());
     }
     child_cmd
-        .arg(result_flag)
-        .arg(result_path)
+        .arg(request.result_flag)
+        .arg(request.result_path)
         .arg("--probe-manifest-cache-path")
-        .arg(manifest_cache_path)
+        .arg(request.manifest_cache_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -472,7 +359,7 @@ fn run_probe_child_process(
     )?
     .is_none();
     if interrupted_run {
-        fs::remove_file(result_path).ok();
+        fs::remove_file(request.result_path).ok();
         interrupted.store(true, Ordering::SeqCst);
         if let Some(handle) = stdout_handle {
             let _ = join_output_forwarder(handle, "stdout");
@@ -485,8 +372,8 @@ fn run_probe_child_process(
             format!(
                 "{} [{}] mb={} interrupted ({:.1}s)",
                 "✘".red(),
-                probe_kind_name(kind),
-                candidate_microbatch,
+                probe_kind_name(request.kind),
+                request.candidate_microbatch,
                 probe_started.elapsed().as_secs_f64(),
             ),
         );
@@ -573,138 +460,6 @@ fn wait_for_probe_child(
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct ProbeBatchArtifact {
-    pub(super) finished: bool,
-    pub(super) results: Vec<ProbeResult>,
-}
-
-impl ProbeBatchArtifact {
-    pub(super) fn pending() -> Self {
-        Self {
-            finished: false,
-            results: Vec::new(),
-        }
-    }
-
-    pub(super) fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    pub(super) fn push_result(&mut self, result: ProbeResult) {
-        if !self.finished {
-            self.results.push(result);
-        }
-    }
-
-    pub(super) fn mark_finished(&mut self) {
-        self.finished = true;
-    }
-
-    #[cfg(test)]
-    pub(super) fn from_results(results: Vec<ProbeResult>, finished: bool) -> Self {
-        Self { finished, results }
-    }
-
-    pub(super) fn replay_ordered_results(&self) -> impl Iterator<Item = &ProbeResult> {
-        self.results.iter()
-    }
-
-    pub(super) fn completed_results_before_failure(&self) -> &[ProbeResult] {
-        let len = self
-            .results
-            .iter()
-            .position(|result| result.status != ProbeStatus::Success)
-            .map(|index| index + 1)
-            .unwrap_or(self.results.len());
-        &self.results[..len]
-    }
-}
-
-pub(super) fn write_probe_result(path: &Path, result: &ProbeResult) -> Result<(), String> {
-    let json = serde_json::to_string(result)
-        .map_err(|err| format!("failed to serialize probe result {}: {err}", path.display()))?;
-    fs::write(path, json)
-        .map_err(|err| format!("failed to write probe result {}: {err}", path.display()))
-}
-
-pub(super) fn read_probe_result(path: &Path) -> Result<ProbeResult, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read probe result {}: {err}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse probe result {}: {err}", path.display()))
-}
-
-pub(super) fn write_probe_batch_artifact(
-    path: &Path,
-    artifact: &ProbeBatchArtifact,
-) -> Result<(), String> {
-    let json = serde_json::to_string(artifact).map_err(|err| {
-        format!(
-            "failed to serialize probe batch artifact {}: {err}",
-            path.display()
-        )
-    })?;
-    fs::write(path, json).map_err(|err| {
-        format!(
-            "failed to write probe batch artifact {}: {err}",
-            path.display()
-        )
-    })
-}
-
-pub(super) fn read_probe_batch_artifact(path: &Path) -> Result<ProbeBatchArtifact, String> {
-    let raw = fs::read_to_string(path).map_err(|err| {
-        format!(
-            "failed to read probe batch artifact {}: {err}",
-            path.display()
-        )
-    })?;
-    serde_json::from_str(&raw).map_err(|err| {
-        format!(
-            "failed to parse probe batch artifact {}: {err}",
-            path.display()
-        )
-    })
-}
-
-pub(super) fn probe_result_path(
-    artifacts: &BcArtifactPaths,
-    kind: ProbeKind,
-    candidate_microbatch: usize,
-    attempt: usize,
-) -> PathBuf {
-    artifacts.root.join(format!(
-        "preflight_probe_{}_{}_{}.json",
-        probe_kind_name(kind),
-        candidate_microbatch,
-        attempt
-    ))
-}
-
-pub(super) fn probe_batch_results_path(result_path: &Path) -> PathBuf {
-    match result_path.extension() {
-        Some(extension) => {
-            result_path.with_extension(format!("batch.{}", extension.to_string_lossy()))
-        }
-        None => result_path.with_extension("batch"),
-    }
-}
-
-pub(super) fn rl_probe_result_path(
-    artifacts: &RlArtifactPaths,
-    kind: ProbeKind,
-    candidate_microbatch: usize,
-    attempt: usize,
-) -> PathBuf {
-    artifacts.root.join(format!(
-        "preflight_probe_{}_{}_{}.json",
-        probe_kind_name(kind),
-        candidate_microbatch,
-        attempt
-    ))
-}
-
 pub(super) fn execute_probe_request(
     config_path: &Path,
     request: ProbeRequest,
@@ -761,17 +516,17 @@ pub(super) fn execute_probe_request(
                 .manifest_cache_path;
 
         fs::remove_file(result_path).ok();
-        let child_run = run_probe_child_process(
+        let child_run = run_probe_child_process(ProbeChildRunRequest {
             config_path,
-            request.kind,
-            request.candidate_microbatch,
-            request.warmup_steps,
-            request.measure_steps,
-            "--probe-result-path",
+            kind: request.kind,
+            candidate_microbatch: request.candidate_microbatch,
+            warmup_steps: request.warmup_steps,
+            measure_steps: request.measure_steps,
+            result_flag: "--probe-result-path",
             result_path,
-            None,
-            &manifest_cache_path,
-        )?;
+            attempts: None,
+            manifest_cache_path: &manifest_cache_path,
+        })?;
         let output = child_run.output;
 
         let result = if result_path.exists() {
@@ -860,17 +615,17 @@ pub(super) fn execute_probe_request_batch(
         let candidate_microbatch = batch.request.candidate_microbatch;
 
         fs::remove_file(results_path).ok();
-        let child_run = run_probe_child_process(
+        let child_run = run_probe_child_process(ProbeChildRunRequest {
             config_path,
             kind,
             candidate_microbatch,
-            batch.request.warmup_steps,
-            batch.request.measure_steps,
-            "--probe-results-path",
-            results_path,
-            Some(batch.attempts),
-            &manifest_cache_path,
-        )?;
+            warmup_steps: batch.request.warmup_steps,
+            measure_steps: batch.request.measure_steps,
+            result_flag: "--probe-results-path",
+            result_path: results_path,
+            attempts: Some(batch.attempts),
+            manifest_cache_path: &manifest_cache_path,
+        })?;
         let output = child_run.output;
         let results = recover_probe_batch_results(
             batch,
@@ -914,57 +669,42 @@ mod tests {
         default_validation_every_n_epochs,
     };
     use super::*;
+    use crate::probe_transport::{
+        ProbeBatchArtifact, probe_batch_results_path, probe_failure_detail, probe_result_path,
+        read_probe_batch_artifact, read_probe_result, rl_probe_result_path,
+        summarize_probe_failure_output, write_probe_batch_artifact, write_probe_result,
+    };
     use crate::test_loose_replay_fixtures::write_real_probe_fixture;
+    use crate::test_support::{dummy_train_config, unique_test_path_with_extension};
 
     fn test_train_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/tmp/hydra-data"),
-            output_dir: PathBuf::from("/tmp/hydra-output"),
-            num_epochs: 1,
-            batch_size: default_batch_size(),
-            microbatch_size: None,
-            validation_microbatch_size: None,
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: default_train_fraction(),
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: default_augment(),
-            resume_checkpoint: None,
-            seed: default_seed(),
-            advanced_loss: None,
-            rl: None,
-            bc: BcHyperparamConfig::default(),
-            device: default_device(),
-            buffer_games: default_buffer_games(),
-            buffer_samples: default_buffer_samples(),
-            num_threads: None,
-            tensorboard: default_tensorboard(),
-            archive_queue_bound: default_archive_queue_bound(),
-            validation_every_n_epochs: default_validation_every_n_epochs(),
-            max_skip_logs_per_source: default_max_skip_logs_per_source(),
-            log_every_n_steps: default_log_every_n_steps(),
-            validate_every_n_steps: default_validate_every_n_steps(),
-            checkpoint_every_n_steps: default_checkpoint_every_n_steps(),
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: default_max_validation_samples(),
-            preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
-        }
+        let mut config = dummy_train_config();
+        config.data_dir = PathBuf::from("/tmp/hydra-data");
+        config.output_dir = PathBuf::from("/tmp/hydra-output");
+        config.batch_size = default_batch_size();
+        config.microbatch_size = None;
+        config.validation_microbatch_size = None;
+        config.train_fraction = default_train_fraction();
+        config.augment = default_augment();
+        config.seed = default_seed();
+        config.bc = BcHyperparamConfig::default();
+        config.device = default_device();
+        config.buffer_games = default_buffer_games();
+        config.buffer_samples = default_buffer_samples();
+        config.tensorboard = default_tensorboard();
+        config.archive_queue_bound = default_archive_queue_bound();
+        config.validation_every_n_epochs = default_validation_every_n_epochs();
+        config.max_skip_logs_per_source = default_max_skip_logs_per_source();
+        config.log_every_n_steps = default_log_every_n_steps();
+        config.validate_every_n_steps = default_validate_every_n_steps();
+        config.checkpoint_every_n_steps = default_checkpoint_every_n_steps();
+        config.max_validation_samples = default_max_validation_samples();
+        config.preflight = PreflightConfig::default();
+        config
     }
 
     fn unique_test_path(name: &str, extension: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock should be after unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "hydra_probe_process_{name}_{}_{}.{}",
-            std::process::id(),
-            nanos,
-            extension
-        ))
+        unique_test_path_with_extension("hydra-probe-process", name, extension)
     }
 
     fn write_probe_config(

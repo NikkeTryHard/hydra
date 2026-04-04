@@ -4,17 +4,17 @@ use burn::prelude::Tensor;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use hydra_train::amp::maybe_autocast;
-use hydra_train::data::sample::{collate_samples, collate_samples_bc_owned, MjaiSample};
+use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
     PROFILING_STAGE_LOSS,
 };
-use hydra_train::training::bc::{gated_bc_context, maybe_add_exit_loss, BcExitConfig};
+use hydra_train::training::bc::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, LossBreakdown};
 
-use crate::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums, BatchStats};
+use crate::progress::{BatchStats, batch_metric_sums_from_outputs, batch_stats_from_metric_sums};
 
 use std::time::Instant;
 

@@ -148,13 +148,17 @@ pub(super) fn success_message(
     )
 }
 
+pub(super) struct ReplaySidecarWriteRequest<'a> {
+    pub input: &'a Path,
+    pub checkpoint: &'a Path,
+    pub output: &'a Path,
+    pub source_version: u32,
+    pub lane_name: &'a str,
+    pub record_label: &'a str,
+}
+
 pub(super) fn write_sidecar_with<Record, Report, Generate, WriteJsonl, WriteReport>(
-    input: &Path,
-    checkpoint: &Path,
-    output: &Path,
-    source_version: u32,
-    lane_name: &str,
-    record_label: &str,
+    request: ReplaySidecarWriteRequest<'_>,
     generate: Generate,
     write_jsonl_fn: WriteJsonl,
     write_report_fn: WriteReport,
@@ -166,19 +170,19 @@ where
     WriteJsonl: FnOnce(&Path, &[Record]) -> Result<(), String>,
     WriteReport: FnOnce(&Path, &Report) -> Result<PathBuf, String>,
 {
-    let source_identity = source_identity_from_input(input)?;
-    let source_net_hash = source_net_hash_from_checkpoint(checkpoint);
-    let (records, report) = generate(source_identity, source_net_hash, source_version)
-        .map_err(|err| format!("failed to generate {lane_name}: {err}"))?;
+    let source_identity = source_identity_from_input(request.input)?;
+    let source_net_hash = source_net_hash_from_checkpoint(request.checkpoint);
+    let (records, report) = generate(source_identity, source_net_hash, request.source_version)
+        .map_err(|err| format!("failed to generate {}: {err}", request.lane_name))?;
 
-    write_jsonl_fn(output, &records)?;
-    let report_path = write_report_fn(output, &report)?;
+    write_jsonl_fn(request.output, &records)?;
+    let report_path = write_report_fn(request.output, &report)?;
 
     Ok(success_message(
         records.len(),
-        output,
+        request.output,
         &report_path,
-        record_label,
+        request.record_label,
     ))
 }
 
@@ -447,12 +451,14 @@ mod tests {
         let seen_report_write = RefCell::new(None::<(PathBuf, WrapperReport)>);
 
         let summary = write_sidecar_with(
-            input,
-            checkpoint,
-            output,
-            7,
-            "replay ExIt sidecar",
-            "replay ExIt records",
+            ReplaySidecarWriteRequest {
+                input,
+                checkpoint,
+                output,
+                source_version: 7,
+                lane_name: "replay ExIt sidecar",
+                record_label: "replay ExIt records",
+            },
             |source_identity, source_net_hash, source_version| {
                 *seen_identity.borrow_mut() = Some(source_identity.to_string());
                 *seen_hash.borrow_mut() = Some(source_net_hash);
@@ -504,12 +510,14 @@ mod tests {
     #[test]
     fn write_sidecar_with_wraps_generator_errors() {
         let err = write_sidecar_with::<WrapperRecord, WrapperReport, _, _, _>(
-            Path::new("game.json.gz"),
-            Path::new("model_base"),
-            Path::new("out.jsonl"),
-            1,
-            "replay delta_q sidecar",
-            "replay delta_q records",
+            ReplaySidecarWriteRequest {
+                input: Path::new("game.json.gz"),
+                checkpoint: Path::new("model_base"),
+                output: Path::new("out.jsonl"),
+                source_version: 1,
+                lane_name: "replay delta_q sidecar",
+                record_label: "replay delta_q records",
+            },
             |_source_identity, _source_net_hash, _source_version| {
                 Err("kaboom while generating".to_string())
             },
@@ -529,12 +537,14 @@ mod tests {
         let report_writer_called = RefCell::new(false);
 
         let err = write_sidecar_with(
-            Path::new("game.json.gz"),
-            Path::new("model_base"),
-            Path::new("out.jsonl"),
-            1,
-            "replay ExIt sidecar",
-            "replay ExIt records",
+            ReplaySidecarWriteRequest {
+                input: Path::new("game.json.gz"),
+                checkpoint: Path::new("model_base"),
+                output: Path::new("out.jsonl"),
+                source_version: 1,
+                lane_name: "replay ExIt sidecar",
+                record_label: "replay ExIt records",
+            },
             |_source_identity, _source_net_hash, _source_version| {
                 Ok((
                     vec![WrapperRecord { id: 1 }],
@@ -556,12 +566,14 @@ mod tests {
     #[test]
     fn write_sidecar_with_propagates_report_write_errors() {
         let err = write_sidecar_with(
-            Path::new("game.json.gz"),
-            Path::new("model_base"),
-            Path::new("out.jsonl"),
-            1,
-            "replay ExIt sidecar",
-            "replay ExIt records",
+            ReplaySidecarWriteRequest {
+                input: Path::new("game.json.gz"),
+                checkpoint: Path::new("model_base"),
+                output: Path::new("out.jsonl"),
+                source_version: 1,
+                lane_name: "replay ExIt sidecar",
+                record_label: "replay ExIt records",
+            },
             |_source_identity, _source_net_hash, _source_version| {
                 Ok((
                     vec![WrapperRecord { id: 1 }],
@@ -582,12 +594,14 @@ mod tests {
         let expected_report_path = PathBuf::from("out.report.json");
 
         let summary = write_sidecar_with(
-            Path::new("game.json.gz"),
-            Path::new("model_base"),
-            output,
-            1,
-            "replay ExIt sidecar",
-            "replay ExIt records",
+            ReplaySidecarWriteRequest {
+                input: Path::new("game.json.gz"),
+                checkpoint: Path::new("model_base"),
+                output,
+                source_version: 1,
+                lane_name: "replay ExIt sidecar",
+                record_label: "replay ExIt records",
+            },
             |_source_identity, _source_net_hash, _source_version| {
                 Ok((
                     Vec::<WrapperRecord>::new(),

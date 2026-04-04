@@ -4,44 +4,17 @@ use std::path::PathBuf;
 use super::*;
 use crate::preflight_runtime::classify_probe_detail;
 use crate::test_loose_replay_fixtures::single_loose_train_manifest;
+use crate::test_support::dummy_train_config;
 use hydra_train::preflight::{PreflightConfig, ProbeStatus};
 
 fn dummy_config() -> TrainConfig {
-    TrainConfig {
-        data_dir: PathBuf::from("/tmp/data"),
-        output_dir: PathBuf::from("/tmp/out"),
-        num_epochs: 1,
-        batch_size: 256,
-        microbatch_size: Some(64),
-        validation_microbatch_size: Some(32),
-        exit_sidecar_path: Some(PathBuf::from("/tmp/exit.sidecar")),
-        delta_q_sidecar_path: Some(PathBuf::from("/tmp/delta-q.sidecar")),
-        bc_shards_manifest_path: None,
-        train_fraction: 0.9,
-        source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-        augment: true,
-        resume_checkpoint: None,
-        seed: 7,
-        advanced_loss: None,
-        rl: None,
-        bc: Default::default(),
-        device: "cpu".to_string(),
-        buffer_games: 16,
-        buffer_samples: 128,
-        num_threads: Some(6),
-        tensorboard: false,
-        archive_queue_bound: 8,
-        validation_every_n_epochs: 1,
-        max_skip_logs_per_source: 4,
-        log_every_n_steps: 10,
-        validate_every_n_steps: 10,
-        checkpoint_every_n_steps: 10,
-        max_train_steps: None,
-        max_validation_batches: None,
-        max_validation_samples: None,
-        preflight: PreflightConfig::default(),
-        precision_mode: crate::config::PrecisionMode::Fp32,
-    }
+    let mut config = dummy_train_config();
+    config.seed = 7;
+    config.num_threads = Some(6);
+    config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.sidecar"));
+    config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.sidecar"));
+    config.preflight = PreflightConfig::default();
+    config
 }
 
 fn runtime_tuple_score_cache(

@@ -206,6 +206,24 @@ impl RlConfig {
     }
 }
 
+pub struct RlStepRequest<'a, B: Backend> {
+    pub batch: &'a RlBatch<B>,
+    pub cfg: &'a RlConfig,
+    pub phase: u8,
+    pub progress: f32,
+    pub loss_fn: &'a HydraLoss<B>,
+    pub controller: Option<&'a mut HeadActivationController>,
+}
+
+struct RlFastPathRequest<'a, B: Backend> {
+    batch: &'a RlBatch<B>,
+    advantages_normed: &'a Tensor<B, 1>,
+    cfg: &'a RlConfig,
+    phase: u8,
+    progress: f32,
+    loss_fn: &'a HydraLoss<B>,
+}
+
 pub fn rl_step<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch: &RlBatch<B>,
@@ -213,7 +231,18 @@ pub fn rl_step<B: AutodiffBackend>(
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    rl_step_with_phase_progress_and_controller(model, batch, cfg, 3, 1.0, loss_fn, optimizer, None)
+    rl_step_with_phase_progress_and_controller(
+        model,
+        RlStepRequest {
+            batch,
+            cfg,
+            phase: 3,
+            progress: 1.0,
+            loss_fn,
+            controller: None,
+        },
+        optimizer,
+    )
 }
 
 pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
@@ -226,7 +255,16 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
     rl_step_with_phase_progress_and_controller(
-        model, batch, cfg, phase, progress, loss_fn, optimizer, None,
+        model,
+        RlStepRequest {
+            batch,
+            cfg,
+            phase,
+            progress,
+            loss_fn,
+            controller: None,
+        },
+        optimizer,
     )
 }
 
@@ -236,49 +274,44 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
 /// statistics match the non-microbatched path exactly. Each microbatch
 /// runs forward+backward independently; gradients are accumulated and
 /// applied in one optimizer step at the end.
-#[allow(clippy::too_many_arguments)]
 pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     model: HydraModel<B>,
-    batch: &RlBatch<B>,
-    cfg: &RlConfig,
-    phase: u8,
-    progress: f32,
-    loss_fn: &HydraLoss<B>,
+    mut request: RlStepRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
-    mut controller: Option<&mut HeadActivationController>,
 ) -> (HydraModel<B>, f64) {
     let effective_loss_fn;
-    let active_loss_fn = if let Some(ctrl) = controller.as_mut() {
-        let (effective_cfg, _) = apply_head_gating_to_batch(ctrl, &loss_fn.config, &batch.targets)
-            .expect("validated optional targets before RL step");
+    let active_loss_fn = if let Some(ctrl) = request.controller.as_mut() {
+        let (effective_cfg, _) =
+            apply_head_gating_to_batch(ctrl, &request.loss_fn.config, &request.batch.targets)
+                .expect("validated optional targets before RL step");
         effective_loss_fn = HydraLoss::<B>::new(effective_cfg);
         &effective_loss_fn
     } else {
-        loss_fn
+        request.loss_fn
     };
 
     // Normalize advantages over the full batch before splitting.
-    let adv = batch.advantages.clone();
+    let adv = request.batch.advantages.clone();
     let adv_mean = adv.clone().mean();
     let adv_var = (adv.clone() - adv_mean.clone()).powf_scalar(2.0).mean();
     let adv_std = (adv_var + 1e-8).sqrt();
     let advantages_normed = (adv - adv_mean) / adv_std;
 
-    let total_samples = batch.batch_size();
-    let mb_size = cfg.microbatch_size.unwrap_or(total_samples);
+    let total_samples = request.batch.batch_size();
+    let mb_size = request.cfg.microbatch_size.unwrap_or(total_samples);
 
     if mb_size >= total_samples {
         // Fast path: entire batch fits in one shot (original behavior).
         return rl_microbatch_forward(
             model,
-            batch,
-            &advantages_normed,
-            0,
-            total_samples,
-            cfg,
-            phase,
-            progress,
-            active_loss_fn,
+            RlFastPathRequest {
+                batch: request.batch,
+                advantages_normed: &advantages_normed,
+                cfg: request.cfg,
+                phase: request.phase,
+                progress: request.progress,
+                loss_fn: active_loss_fn,
+            },
             optimizer,
         );
     }
@@ -287,13 +320,13 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
     let mut num_chunks = 0usize;
     let mut m = model;
-    let device = batch.obs.device();
+    let device = request.batch.obs.device();
     let mut total_loss_tensor = Tensor::<B, 1>::zeros([1], &device);
 
     let mut start = 0;
     while start < total_samples {
         let end = (start + mb_size).min(total_samples);
-        let mb_batch = batch.slice(start, end);
+        let mb_batch = request.batch.slice(start, end);
         #[allow(clippy::single_range_in_vec_init)]
         let mb_adv = advantages_normed.clone().slice([start..end]);
 
@@ -301,7 +334,7 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
         let combined = drda::combined_logits(
             mb_batch.base_logits.clone(),
             output.policy_logits.clone(),
-            cfg.tau_drda,
+            request.cfg.tau_drda,
         );
         let ach_loss = ach_policy_loss(
             combined,
@@ -309,12 +342,14 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
             mb_batch.actions.clone(),
             mb_batch.pi_old.clone(),
             mb_adv,
-            &cfg.ach_cfg,
+            &request.cfg.ach_cfg,
         );
         let aux = active_loss_fn.total_loss(&output, &mb_batch.targets);
-        let mut chunk_total = ach_loss + aux.total * cfg.aux_weight;
+        let mut chunk_total = ach_loss + aux.total * request.cfg.aux_weight;
         if let (Some(exit_target), Some(exit_mask)) = (&mb_batch.exit_target, &mb_batch.exit_mask) {
-            let exit_weight = cfg.effective_exit_weight(phase, progress);
+            let exit_weight = request
+                .cfg
+                .effective_exit_weight(request.phase, request.progress);
             let exit_loss = crate::training::exit::exit_loss(
                 output.policy_logits,
                 exit_target.clone(),
@@ -333,7 +368,7 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     }
 
     let grads = accumulator.grads();
-    m = optimizer.step(cfg.lr, m, grads);
+    m = optimizer.step(request.cfg.lr, m, grads);
     let avg_loss = if num_chunks > 0 {
         total_loss_tensor
             .into_data()
@@ -349,37 +384,33 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
 
 /// Run a single (micro)batch forward+backward+step. Used for the fast
 /// path when the entire batch fits in VRAM without splitting.
-#[allow(clippy::too_many_arguments)]
 fn rl_microbatch_forward<B: AutodiffBackend>(
     model: HydraModel<B>,
-    batch: &RlBatch<B>,
-    advantages_normed: &Tensor<B, 1>,
-    _start: usize,
-    _end: usize,
-    cfg: &RlConfig,
-    phase: u8,
-    progress: f32,
-    loss_fn: &HydraLoss<B>,
+    request: RlFastPathRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    let output = model.forward_active(batch.obs.clone(), &loss_fn.config);
+    let output = model.forward_active(request.batch.obs.clone(), &request.loss_fn.config);
     let combined = drda::combined_logits(
-        batch.base_logits.clone(),
+        request.batch.base_logits.clone(),
         output.policy_logits.clone(),
-        cfg.tau_drda,
+        request.cfg.tau_drda,
     );
     let ach_loss = ach_policy_loss(
         combined,
-        batch.targets.legal_mask.clone(),
-        batch.actions.clone(),
-        batch.pi_old.clone(),
-        advantages_normed.clone(),
-        &cfg.ach_cfg,
+        request.batch.targets.legal_mask.clone(),
+        request.batch.actions.clone(),
+        request.batch.pi_old.clone(),
+        request.advantages_normed.clone(),
+        &request.cfg.ach_cfg,
     );
-    let aux = loss_fn.total_loss(&output, &batch.targets);
-    let mut total = ach_loss + aux.total * cfg.aux_weight;
-    if let (Some(exit_target), Some(exit_mask)) = (&batch.exit_target, &batch.exit_mask) {
-        let exit_weight = cfg.effective_exit_weight(phase, progress);
+    let aux = request.loss_fn.total_loss(&output, &request.batch.targets);
+    let mut total = ach_loss + aux.total * request.cfg.aux_weight;
+    if let (Some(exit_target), Some(exit_mask)) =
+        (&request.batch.exit_target, &request.batch.exit_mask)
+    {
+        let exit_weight = request
+            .cfg
+            .effective_exit_weight(request.phase, request.progress);
         let exit_loss = crate::training::exit::exit_loss(
             output.policy_logits,
             exit_target.clone(),
@@ -396,7 +427,7 @@ fn rl_microbatch_forward<B: AutodiffBackend>(
         .expect("rl microbatch total loss should be readable as f64")[0];
     let grads = total.backward();
     let grads = GradientsParams::from_grads(grads, &model);
-    let model = optimizer.step(cfg.lr, model, grads);
+    let model = optimizer.step(request.cfg.lr, model, grads);
     (model, loss_val)
 }
 
@@ -827,13 +858,15 @@ mod tests {
 
         let (_, loss) = rl_step_with_phase_progress_and_controller(
             model,
-            &batch,
-            &cfg,
-            3,
-            1.0,
-            &loss_fn,
+            RlStepRequest {
+                batch: &batch,
+                cfg: &cfg,
+                phase: 3,
+                progress: 1.0,
+                loss_fn: &loss_fn,
+                controller: Some(&mut controller),
+            },
             &mut optimizer,
-            Some(&mut controller),
         );
 
         assert!(loss.is_finite());
@@ -878,13 +911,15 @@ mod tests {
 
         let (_, loss) = rl_step_with_phase_progress_and_controller(
             model,
-            &batch,
-            &cfg,
-            3,
-            1.0,
-            &loss_fn,
+            RlStepRequest {
+                batch: &batch,
+                cfg: &cfg,
+                phase: 3,
+                progress: 1.0,
+                loss_fn: &loss_fn,
+                controller: Some(&mut controller),
+            },
             &mut optimizer,
-            Some(&mut controller),
         );
 
         assert!(loss.is_finite());

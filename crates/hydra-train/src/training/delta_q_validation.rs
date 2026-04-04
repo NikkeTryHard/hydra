@@ -3,13 +3,16 @@
 use std::fmt;
 
 use burn::prelude::Backend;
-use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
-use hydra_core::arena::{TrajectoryStep, softmax_temperature};
+use hydra_core::action::DISCARD_END;
+use hydra_core::arena::TrajectoryStep;
 
 use crate::model::HydraModel;
 use crate::selfplay::generate_self_play_batch_source_cooperative;
-use crate::training::exit::{ExitConfig, compatible_discard_state};
+use crate::training::exit::ExitConfig;
 use crate::training::live_exit::{LiveExitConfig, budget_from_legal_count};
+use crate::training::validation_common::{
+    CommonGateOutcome, evaluate_common_validation_gate, ratio_f64, ratio_u64,
+};
 
 /// Aggregated metrics from an observational delta-q validation run.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -297,31 +300,32 @@ pub fn collect_validation_metrics_for_step<B: Backend>(
 ) {
     report.total_states += 1;
 
-    let legal_f32 = step
-        .legal_mask
-        .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
-    if !compatible_discard_state(&legal_f32) {
-        report.labels_rejected += 1;
-        report.rejected_incompatible_state += 1;
-        return;
-    }
-    report.compatible_discard_states += 1;
-
-    let legal_discard_count = count_legal_discards(step);
-    if legal_discard_count < 2 {
-        report.labels_rejected += 1;
-        report.rejected_too_few_discards += 1;
-        return;
-    }
-
-    let policy_logits = model.policy_cpu(&step.obs, device);
-    let base_pi = softmax_temperature(&policy_logits, &step.legal_mask, 1.0);
-    if !is_hard_state_for_legal_discards(&base_pi, step, cfg.hard_state_threshold) {
-        report.labels_rejected += 1;
-        report.rejected_not_hard_state += 1;
-        return;
-    }
-    report.hard_states += 1;
+    let gate = evaluate_common_validation_gate(step, model, device, cfg.hard_state_threshold);
+    let legal_discard_count = match gate {
+        CommonGateOutcome::IncompatibleState => {
+            report.labels_rejected += 1;
+            report.rejected_incompatible_state += 1;
+            return;
+        }
+        CommonGateOutcome::TooFewDiscards => {
+            report.compatible_discard_states += 1;
+            report.labels_rejected += 1;
+            report.rejected_too_few_discards += 1;
+            return;
+        }
+        CommonGateOutcome::NotHardState => {
+            report.compatible_discard_states += 1;
+            report.labels_rejected += 1;
+            report.rejected_not_hard_state += 1;
+            return;
+        }
+        CommonGateOutcome::Pass(pass) => {
+            let pass = *pass;
+            report.compatible_discard_states += 1;
+            report.hard_states += 1;
+            pass.legal_discard_count
+        }
+    };
 
     let Some(label) = step.delta_q_label else {
         report.labels_rejected += 1;
@@ -407,63 +411,14 @@ fn push_min_criterion(
 }
 
 #[cfg(test)]
-fn legal_discard_actions(step: &TrajectoryStep) -> Vec<usize> {
-    (0..=DISCARD_END as usize)
-        .filter(|&action| step.legal_mask[action])
-        .collect()
-}
-
-fn count_legal_discards(step: &TrajectoryStep) -> usize {
-    (0..=DISCARD_END as usize)
-        .filter(|&action| step.legal_mask[action])
-        .count()
-}
-
-fn is_hard_state_for_legal_discards(
-    policy: &[f32; HYDRA_ACTION_SPACE],
-    step: &TrajectoryStep,
-    threshold: f32,
-) -> bool {
-    let mut count = 0usize;
-    let mut best = f32::NEG_INFINITY;
-    let mut second = f32::NEG_INFINITY;
-    for (action, &value) in policy.iter().enumerate().take(DISCARD_END as usize + 1) {
-        if !step.legal_mask[action] {
-            continue;
-        }
-        count += 1;
-        if value > best {
-            second = best;
-            best = value;
-        } else if value > second {
-            second = value;
-        }
-    }
-    count >= 2 && (best - second) >= threshold
-}
-
-fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
-    if denominator == 0 {
-        0.0
-    } else {
-        numerator as f64 / denominator as f64
-    }
-}
-
-fn ratio_f64(numerator: f64, denominator: u64) -> f64 {
-    if denominator == 0 {
-        0.0
-    } else {
-        numerator / denominator as f64
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::HydraModelConfig;
+    use burn::backend::NdArray;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::arena::TrajectoryDeltaQLabel;
-    use hydra_core::encoder::OBS_SIZE;
+
+    type B = NdArray<f32>;
 
     fn step_with_discards(discard_actions: &[usize]) -> TrajectoryStep {
         let mut legal_mask = [false; HYDRA_ACTION_SPACE];
@@ -471,7 +426,7 @@ mod tests {
             legal_mask[action] = true;
         }
         TrajectoryStep {
-            obs: [0.0; OBS_SIZE],
+            obs: [0.0; hydra_core::encoder::OBS_SIZE],
             action: discard_actions.first().copied().unwrap_or_default() as u8,
             pi_old: [0.0; HYDRA_ACTION_SPACE],
             legal_mask,
@@ -484,6 +439,15 @@ mod tests {
             turn: 0,
             temperature: 1.0,
         }
+    }
+
+    fn tiny_model() -> HydraModel<B> {
+        let device = Default::default();
+        HydraModelConfig::new(1)
+            .with_hidden_channels(16)
+            .with_se_bottleneck(4)
+            .with_num_groups(4)
+            .init::<B>(&device)
     }
 
     fn passing_report() -> DeltaQValidationReport {
@@ -751,25 +715,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ratio_helpers_handle_zero_and_nonzero_denominators() {
-        assert_eq!(ratio_u64(3, 0), 0.0);
-        assert_eq!(ratio_f64(3.0, 0), 0.0);
-        assert!((ratio_u64(3, 4) - 0.75).abs() < 1e-12);
-        assert!((ratio_f64(3.0, 4) - 0.75).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_legal_discard_actions_filters_to_discard_range_only() {
-        let mut step = step_with_discards(&[0, 4, DISCARD_END as usize]);
-        step.legal_mask[DISCARD_END as usize + 1] = true;
-        step.legal_mask[HYDRA_ACTION_SPACE - 1] = true;
-
-        let actions = legal_discard_actions(&step);
-
-        assert_eq!(actions, vec![0, 4, DISCARD_END as usize]);
-    }
-
-    #[test]
     fn test_delta_q_label_sign_fractions_cover_positive_negative_and_zero_cases() {
         let report = DeltaQValidationReport {
             labels_emitted: 1,
@@ -788,44 +733,24 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_q_rejection_bookkeeping_matches_incompatible_and_too_few_paths() {
-        let mut incompatible = step_with_discards(&[0, 1]);
-        incompatible.legal_mask[DISCARD_END as usize + 1] = true;
-        let legal_f32 = incompatible
-            .legal_mask
-            .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
-        assert!(!compatible_discard_state(&legal_f32));
-
-        let mut report = DeltaQValidationReport::default();
-        report.total_states += 1;
-        if !compatible_discard_state(&legal_f32) {
-            report.labels_rejected += 1;
-            report.rejected_incompatible_state += 1;
-        }
-        assert_eq!(report.labels_rejected, 1);
-        assert_eq!(report.rejected_incompatible_state, 1);
-
-        let too_few = step_with_discards(&[2]);
-        let legal_f32 = too_few
-            .legal_mask
-            .map(|is_legal| if is_legal { 1.0 } else { 0.0 });
-        assert!(compatible_discard_state(&legal_f32));
-        let discards = legal_discard_actions(&too_few);
-        assert_eq!(discards, vec![2]);
-
-        report.total_states += 1;
-        report.compatible_discard_states += 1;
-        if discards.len() < 2 {
-            report.labels_rejected += 1;
-            report.rejected_too_few_discards += 1;
-        }
-        assert_eq!(report.labels_rejected, 2);
-        assert_eq!(report.rejected_too_few_discards, 1);
-    }
-
-    #[test]
     fn test_delta_q_supported_action_counting_ignores_unmasked_entries() {
-        let mut step = step_with_discards(&[1, 2, 3]);
+        let mut step = TrajectoryStep {
+            obs: [0.0; hydra_core::encoder::OBS_SIZE],
+            action: 1,
+            pi_old: [0.0; HYDRA_ACTION_SPACE],
+            legal_mask: [false; HYDRA_ACTION_SPACE],
+            exit_label: None,
+            delta_q_label: None,
+            reward: 0.0,
+            done: false,
+            player_id: 0,
+            game_id: 0,
+            turn: 0,
+            temperature: 1.0,
+        };
+        for action in [1, 2, 3] {
+            step.legal_mask[action] = true;
+        }
         let mut target = [0.0f32; HYDRA_ACTION_SPACE];
         let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
         target[1] = 0.2;
@@ -862,6 +787,79 @@ mod tests {
         assert_eq!(report.masked_negative_count, 1);
         assert_eq!(report.masked_zero_count, 1);
         assert!((report.coverage_sum - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_collect_validation_metrics_maps_gate_outcomes_to_delta_q_counters() {
+        let device = Default::default();
+        let model = tiny_model();
+        let mut report = DeltaQValidationReport::default();
+
+        let mut incompatible = step_with_discards(&[0, 1]);
+        incompatible.legal_mask[DISCARD_END as usize + 1] = true;
+        collect_validation_metrics_for_step(
+            &incompatible,
+            &model,
+            &device,
+            &ExitConfig::default_phase3(),
+            &mut report,
+        );
+        assert_eq!(report.total_states, 1);
+        assert_eq!(report.compatible_discard_states, 0);
+        assert_eq!(report.hard_states, 0);
+        assert_eq!(report.labels_rejected, 1);
+        assert_eq!(report.rejected_incompatible_state, 1);
+
+        let too_few = step_with_discards(&[2]);
+        collect_validation_metrics_for_step(
+            &too_few,
+            &model,
+            &device,
+            &ExitConfig::default_phase3(),
+            &mut report,
+        );
+        assert_eq!(report.total_states, 2);
+        assert_eq!(report.compatible_discard_states, 1);
+        assert_eq!(report.hard_states, 0);
+        assert_eq!(report.labels_rejected, 2);
+        assert_eq!(report.rejected_too_few_discards, 1);
+
+        let not_hard = step_with_discards(&[1, 3]);
+        let strict_cfg = ExitConfig {
+            hard_state_threshold: f32::INFINITY,
+            ..ExitConfig::default_phase3()
+        };
+        collect_validation_metrics_for_step(&not_hard, &model, &device, &strict_cfg, &mut report);
+        assert_eq!(report.total_states, 3);
+        assert_eq!(report.compatible_discard_states, 2);
+        assert_eq!(report.hard_states, 0);
+        assert_eq!(report.labels_rejected, 3);
+        assert_eq!(report.rejected_not_hard_state, 1);
+
+        let mut passing = step_with_discards(&[1, 3]);
+        let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+        let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+        target[1] = 0.25;
+        target[3] = -0.25;
+        mask[1] = 1.0;
+        mask[3] = 1.0;
+        passing.delta_q_label = Some(TrajectoryDeltaQLabel { target, mask });
+        let permissive_cfg = ExitConfig {
+            hard_state_threshold: -1.0,
+            ..ExitConfig::default_phase3()
+        };
+        collect_validation_metrics_for_step(
+            &passing,
+            &model,
+            &device,
+            &permissive_cfg,
+            &mut report,
+        );
+        assert_eq!(report.total_states, 4);
+        assert_eq!(report.compatible_discard_states, 3);
+        assert_eq!(report.hard_states, 1);
+        assert_eq!(report.labels_emitted, 1);
+        assert_eq!(report.labels_rejected, 3);
     }
 
     #[test]

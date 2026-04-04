@@ -12,7 +12,8 @@ use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::orchestrator::{
-    live_exit_config_from_plan, maintenance_plan, rl_phase_train_step_with_controller,
+    RlPhaseTrainRequest, live_exit_config_from_plan, maintenance_plan,
+    rl_phase_train_step_with_controller,
 };
 use std::collections::BTreeMap;
 #[cfg(not(test))]
@@ -375,13 +376,15 @@ where
         controller.try_activate(hydra_train::training::head_gates::AdvancedHead::DeltaQ);
         let batch_samples = batch.batch_size();
         let (next_model, _) = rl_phase_train_step_with_controller(
-            &state,
             model,
-            &batch,
-            &rl_cfg,
-            &loss_fn,
+            RlPhaseTrainRequest {
+                state: &state,
+                batch: &batch,
+                cfg: &rl_cfg,
+                loss_fn: &loss_fn,
+                controller: Some(&mut controller),
+            },
             &mut optimizer,
-            Some(&mut controller),
         )
         .map_err(|err| format!("RL runtime probe step failed: {err}"))?;
         model = next_model;
@@ -430,11 +433,11 @@ where
 
     for candidate in candidates {
         #[cfg(not(test))]
-        if let Ok(flag) = super::probe_process::interrupt_flag() {
-            if flag.load(Ordering::SeqCst) {
-                progress.finish_with_message("interrupted".red().to_string());
-                return Err(format!("{knob_name} tuning interrupted"));
-            }
+        if let Ok(flag) = super::probe_process::interrupt_flag()
+            && flag.load(Ordering::SeqCst)
+        {
+            progress.finish_with_message("interrupted".red().to_string());
+            return Err(format!("{knob_name} tuning interrupted"));
         }
         progress.set_message(format_runtime_tuning_message(
             knob_name,
@@ -602,10 +605,10 @@ where
     let mut candidate = tuned.clone();
     for tuple in close_tuples {
         #[cfg(not(test))]
-        if let Ok(flag) = super::probe_process::interrupt_flag() {
-            if flag.load(Ordering::SeqCst) {
-                return Err("loader runtime refine interrupted".to_string());
-            }
+        if let Ok(flag) = super::probe_process::interrupt_flag()
+            && flag.load(Ordering::SeqCst)
+        {
+            return Err("loader runtime refine interrupted".to_string());
         }
         candidate.clone_from(tuned);
         apply_runtime_tuple(&mut candidate, *tuple);
@@ -766,11 +769,11 @@ pub(super) fn autotune_ranked_loader_runtime_with_seed(
         for samples in &sample_candidates {
             for games in &game_candidates {
                 #[cfg(not(test))]
-                if let Ok(flag) = super::probe_process::interrupt_flag() {
-                    if flag.load(Ordering::SeqCst) {
-                        coarse_progress.finish_with_message("interrupted".red().to_string());
-                        return Err("loader runtime tuning interrupted".to_string());
-                    }
+                if let Ok(flag) = super::probe_process::interrupt_flag()
+                    && flag.load(Ordering::SeqCst)
+                {
+                    coarse_progress.finish_with_message("interrupted".red().to_string());
+                    return Err("loader runtime tuning interrupted".to_string());
                 }
                 coarse_progress.set_message(format_runtime_tuning_message(
                     "coarse_search",

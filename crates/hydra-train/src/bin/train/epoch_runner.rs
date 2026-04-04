@@ -12,40 +12,41 @@ use tboard::EventWriter;
 
 use hydra_train::amp::maybe_autocast;
 use hydra_train::data::bc_shards::{
-    load_bc_shard_reader, BcShardHostBatch, BcShardReader, BcShardSplit,
+    BcShardHostBatch, BcShardReader, BcShardSplit, load_bc_shard_reader,
 };
-use hydra_train::data::pipeline::{stream_train_epoch, DataManifest, StreamingLoaderConfig};
-use hydra_train::data::sample::{collate_samples_bc_owned, MjaiBcBatch, MjaiSample};
+use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
+use hydra_train::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
-    ProfilingEnvelope, PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH,
-    PROFILING_STAGE_BC_INTERVAL, PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION,
-    PROFILING_STAGE_FORWARD, PROFILING_STAGE_LOGGING, PROFILING_STAGE_LOSS,
-    PROFILING_STAGE_OPTIMIZER_STEP, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
+    PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
+    PROFILING_STAGE_LOGGING, PROFILING_STAGE_LOSS, PROFILING_STAGE_OPTIMIZER_STEP,
+    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
 };
 use hydra_train::training::bc::{
-    gated_bc_context, maybe_add_exit_loss, BCTrainerConfig, BcExitConfig,
+    BCTrainerConfig, BcExitConfig, gated_bc_context, maybe_add_exit_loss,
 };
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
 
+use super::TrainBackend;
 use super::artifacts::{
+    BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
     append_step_log_to_writer, append_training_log_to_writer, log_tensorboard, save_checkpoint,
-    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact, BcArtifactPaths,
-    JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
+    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
 };
-use super::bc_fixed_shape::{run_train_logical_batch_fixed_chunks, FixedShapeTrainConfig};
-use super::config::{validation_sample_limit, TrainConfig};
+use super::bc_fixed_shape::{FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks};
+use super::config::{TrainConfig, validation_sample_limit};
 use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
 use super::progress::{
-    batch_metric_sums_from_outputs, batch_stats_from_metric_sums, BatchStats, EpochLogEntry,
-    ScalarAverages, StepLogEntry,
+    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_metric_sums_from_outputs,
+    batch_stats_from_metric_sums,
 };
 use super::resume::{
-    paused_training_message, BestValidation, EpochContinuation, RuntimeResumeContract,
+    BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
@@ -53,16 +54,19 @@ use super::status::{
     estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
 };
 use super::validation::{
-    is_better_validation, run_validation, ValidationContext, ValidationRuntime, ValidationSummary,
+    ValidationContext, ValidationRuntime, ValidationSummary, is_better_validation, run_validation,
 };
-use super::TrainBackend;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 pub(super) struct EpochRunnerContext<'a, B = TrainBackend>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     pub(super) epoch: usize,
     pub(super) config: &'a TrainConfig,
@@ -123,7 +127,11 @@ where
 struct ValidationStepContext<'a, B = TrainBackend>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     multi: &'a MultiProgress,
     config: &'a TrainConfig,
@@ -173,7 +181,11 @@ struct PeriodicCheckpointState {
 struct EpochEndValidationContext<'a, B = TrainBackend>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     config: &'a TrainConfig,
     loader_config: &'a StreamingLoaderConfig,
@@ -204,8 +216,103 @@ struct EpochFinalizeContext<'a> {
     profiling: Option<ProfilingEnvelope>,
 }
 
+struct CompletedValidationContext<'a, B = TrainBackend>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
+    model: &'a HydraModel<B>,
+    artifacts: &'a BcArtifactPaths,
+    best_validation: &'a mut Option<BestValidation>,
+    checkpoint_index: usize,
+    checkpoint_loss: f64,
+    delta_q_scope: &'static str,
+}
+
 fn should_run_epoch_end_validation(epoch: usize, num_epochs: usize, every_n_epochs: usize) -> bool {
     (epoch + 1).is_multiple_of(every_n_epochs) || epoch + 1 == num_epochs
+}
+
+fn validation_delta_q_suffix(summary: &ValidationSummary) -> colored::ColoredString {
+    summary
+        .delta_q_promotion_snapshot
+        .as_ref()
+        .map(|report| {
+            format!(
+            " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
+            report.mean_decision_lift,
+            report.candidate_mean_regret,
+            report.baseline_mean_regret,
+            report.regret_beats_baseline_rate * 100.0,
+            report.passed
+        )
+        })
+        .unwrap_or_default()
+        .yellow()
+}
+
+fn finalize_completed_validation<B>(
+    context: CompletedValidationContext<'_, B>,
+    summary: &ValidationSummary,
+) -> Result<(), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
+    let CompletedValidationContext {
+        model,
+        artifacts,
+        best_validation,
+        checkpoint_index,
+        checkpoint_loss,
+        delta_q_scope,
+    } = context;
+    if is_better_validation(summary, *best_validation) {
+        *best_validation = Some(BestValidation {
+            policy_loss: summary.policy_loss,
+            agreement: summary.agreement,
+        });
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+        save_checkpoint(
+            model,
+            &artifacts.best_model_base,
+            checkpoint_index,
+            checkpoint_loss,
+            Some(summary),
+        )?;
+    }
+
+    if let (Some(report), Some(result)) = (
+        summary.delta_q_promotion.as_ref(),
+        summary.delta_q_promotion_result.as_ref(),
+    ) {
+        write_delta_q_promotion_artifact(
+            &artifacts.delta_q_promotion_path,
+            &PersistedDeltaQPromotionArtifact {
+                scope: delta_q_scope,
+                step_or_epoch: checkpoint_index,
+                recommendation: result.recommendation(),
+                stage: "offline_gate",
+                arena_confirmation: None,
+                arena_decision: None,
+                arena_report: None,
+                report,
+                result,
+                policy_transfer: summary.delta_q_policy_transfer.as_ref(),
+                policy_transfer_result: summary.delta_q_policy_transfer_result.as_ref(),
+            },
+        )?;
+    }
+
+    Ok(())
 }
 
 fn build_epoch_continuation(
@@ -485,7 +592,11 @@ fn maybe_run_interval_validation<B>(
 ) -> Result<Option<ValidationSummary>, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     let ValidationStepContext {
         multi,
@@ -542,20 +653,17 @@ where
             },
         )?
     };
-    if is_better_validation(&summary, *best_validation) {
-        *best_validation = Some(BestValidation {
-            policy_loss: summary.policy_loss,
-            agreement: summary.agreement,
-        });
-        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
-        save_checkpoint(
+    finalize_completed_validation(
+        CompletedValidationContext {
             model,
-            &artifacts.best_model_base,
-            global_step,
-            step_window_total_loss,
-            Some(&summary),
-        )?;
-    }
+            artifacts,
+            best_validation,
+            checkpoint_index: global_step,
+            checkpoint_loss: step_window_total_loss,
+            delta_q_scope: "step_validation",
+        },
+        &summary,
+    )?;
 
     multi
         .println(timestamped(format!(
@@ -571,43 +679,9 @@ where
             format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
             format!("val_total={:.4}", summary.total_loss).yellow(),
             format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
-            summary
-                .delta_q_promotion_snapshot
-                .as_ref()
-                .map(|report| format!(
-                    " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
-                    report.mean_decision_lift,
-                    report.candidate_mean_regret,
-                    report.baseline_mean_regret,
-                    report.regret_beats_baseline_rate * 100.0,
-                    report.passed
-                ))
-                .unwrap_or_default()
-                .yellow(),
+            validation_delta_q_suffix(&summary),
         )))
         .map_err(|err| format!("failed to print validation summary: {err}"))?;
-
-    if let (Some(report), Some(result)) = (
-        summary.delta_q_promotion.as_ref(),
-        summary.delta_q_promotion_result.as_ref(),
-    ) {
-        write_delta_q_promotion_artifact(
-            &artifacts.delta_q_promotion_path,
-            &PersistedDeltaQPromotionArtifact {
-                scope: "step_validation",
-                step_or_epoch: global_step,
-                recommendation: result.recommendation(),
-                stage: "offline_gate",
-                arena_confirmation: None,
-                arena_decision: None,
-                arena_report: None,
-                report,
-                result,
-                policy_transfer: summary.delta_q_policy_transfer.as_ref(),
-                policy_transfer_result: summary.delta_q_policy_transfer_result.as_ref(),
-            },
-        )?;
-    }
 
     Ok(Some(summary))
 }
@@ -826,7 +900,11 @@ fn run_epoch_end_validation<B>(
 ) -> Result<Option<ValidationSummary>, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     let EpochEndValidationContext {
         config,
@@ -877,20 +955,17 @@ where
             },
         )?
     };
-    if is_better_validation(&summary, *best_validation) {
-        *best_validation = Some(BestValidation {
-            policy_loss: summary.policy_loss,
-            agreement: summary.agreement,
-        });
-        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
-        save_checkpoint(
+    finalize_completed_validation(
+        CompletedValidationContext {
             model,
-            &artifacts.best_model_base,
-            epoch + 1,
-            train_total_loss,
-            Some(&summary),
-        )?;
-    }
+            artifacts,
+            best_validation,
+            checkpoint_index: epoch + 1,
+            checkpoint_loss: train_total_loss,
+            delta_q_scope: "epoch_validation",
+        },
+        &summary,
+    )?;
     if !benchmark_quiet() {
         println!(
             "{}",
@@ -901,42 +976,9 @@ where
                 format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
                 format!("val_total={:.4}", summary.total_loss).yellow(),
                 format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
-                summary
-                    .delta_q_promotion_snapshot
-                    .as_ref()
-                    .map(|report| format!(
-                        " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
-                        report.mean_decision_lift,
-                        report.candidate_mean_regret,
-                        report.baseline_mean_regret,
-                        report.regret_beats_baseline_rate * 100.0,
-                        report.passed
-                    ))
-                    .unwrap_or_default()
-                    .yellow(),
+                validation_delta_q_suffix(&summary),
             ))
         );
-    }
-    if let (Some(report), Some(result)) = (
-        summary.delta_q_promotion.as_ref(),
-        summary.delta_q_promotion_result.as_ref(),
-    ) {
-        write_delta_q_promotion_artifact(
-            &artifacts.delta_q_promotion_path,
-            &PersistedDeltaQPromotionArtifact {
-                scope: "epoch_validation",
-                step_or_epoch: epoch + 1,
-                recommendation: result.recommendation(),
-                stage: "offline_gate",
-                arena_confirmation: None,
-                arena_decision: None,
-                arena_report: None,
-                report,
-                result,
-                policy_transfer: summary.delta_q_policy_transfer.as_ref(),
-                policy_transfer_result: summary.delta_q_policy_transfer_result.as_ref(),
-            },
-        )?;
     }
     Ok(Some(summary))
 }
@@ -2415,9 +2457,11 @@ mod tests {
         assert_eq!(drained[0].sample_count, 2);
         assert_eq!(drained[0].batch_count, 2);
         assert!(drained.iter().all(|stats| stats.total_loss.is_finite()));
-        assert!(drained
-            .iter()
-            .all(|stats| stats.policy_agreement.is_finite()));
+        assert!(
+            drained
+                .iter()
+                .all(|stats| stats.policy_agreement.is_finite())
+        );
         assert!(model_slot.is_some());
     }
 
@@ -2452,9 +2496,11 @@ mod tests {
         assert_eq!(drained[0].sample_count, logical_batch.len());
         assert_eq!(drained[0].batch_count, 1);
         assert!(drained.iter().all(|stats| stats.total_loss.is_finite()));
-        assert!(drained
-            .iter()
-            .all(|stats| stats.policy_agreement.is_finite()));
+        assert!(
+            drained
+                .iter()
+                .all(|stats| stats.policy_agreement.is_finite())
+        );
         assert!(model_slot.is_some());
     }
 
@@ -2853,10 +2899,12 @@ mod tests {
 
         assert!(!artifacts.latest_state_path.exists());
         assert!(!artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(!artifacts
-            .latest_optimizer_base
-            .with_extension("bin")
-            .exists());
+        assert!(
+            !artifacts
+                .latest_optimizer_base
+                .with_extension("bin")
+                .exists()
+        );
     }
 
     #[test]
@@ -2898,14 +2946,18 @@ mod tests {
         assert_eq!(state.runtime, dummy_runtime_resume_contract());
         assert!(artifacts.latest_state_path.exists());
         assert!(artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .latest_model_base
-            .with_extension("meta.json")
-            .exists());
-        assert!(artifacts
-            .latest_optimizer_base
-            .with_extension("bin")
-            .exists());
+        assert!(
+            artifacts
+                .latest_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
+        assert!(
+            artifacts
+                .latest_optimizer_base
+                .with_extension("bin")
+                .exists()
+        );
     }
 
     #[test]
@@ -2992,10 +3044,12 @@ mod tests {
             })
         );
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .best_model_base
-            .with_extension("meta.json")
-            .exists());
+        assert!(
+            artifacts
+                .best_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -3268,10 +3322,12 @@ mod tests {
             })
         );
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .best_model_base
-            .with_extension("meta.json")
-            .exists());
+        assert!(
+            artifacts
+                .best_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -3721,19 +3777,25 @@ mod tests {
         assert_eq!(state.global_step, 7);
         assert_eq!(state.best_validation, None);
         assert!(artifacts.latest_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .latest_model_base
-            .with_extension("meta.json")
-            .exists());
-        assert!(artifacts
-            .latest_optimizer_base
-            .with_extension("bin")
-            .exists());
+        assert!(
+            artifacts
+                .latest_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
+        assert!(
+            artifacts
+                .latest_optimizer_base
+                .with_extension("bin")
+                .exists()
+        );
         assert!(artifacts.best_model_base.with_extension("mpk").exists());
-        assert!(artifacts
-            .best_model_base
-            .with_extension("meta.json")
-            .exists());
+        assert!(
+            artifacts
+                .best_model_base
+                .with_extension("meta.json")
+                .exists()
+        );
     }
 
     #[test]

@@ -641,6 +641,7 @@ fn bench_shard_collation(c: &mut Criterion) {
         train_fraction: 1.0,
         shard_samples: 10_000,
         split_mode: BcShardSplitMode::Train,
+        source_manifest: None,
         exit_sidecar: None,
         exit_sidecar_path: None,
         exit_provenance: SidecarProvenance::default(),

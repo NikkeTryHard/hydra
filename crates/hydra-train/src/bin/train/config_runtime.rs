@@ -273,49 +273,20 @@ pub(crate) fn validation_sample_limit(config: &TrainConfig) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::super::config::{
-        AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, RlPhaseConfig, RlTrainConfig,
-        TrainConfig,
+        AdvancedLossConfig, PrecisionMode, RlPhaseConfig, RlTrainConfig, TrainConfig,
     };
     use super::*;
+    use crate::test_support::dummy_train_config;
     use hydra_train::training::rl::DEFAULT_RL_MICROBATCH_SIZE;
     use std::path::PathBuf;
 
     fn dummy_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/data"),
-            output_dir: PathBuf::from("/output"),
-            num_epochs: 1,
-            batch_size: 256,
-            microbatch_size: Some(64),
-            validation_microbatch_size: Some(32),
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: 0.9,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: true,
-            resume_checkpoint: None,
-            seed: 0,
-            advanced_loss: None,
-            rl: None,
-            bc: BcHyperparamConfig::default(),
-            device: "cpu".to_string(),
-            precision_mode: PrecisionMode::Fp32,
-            buffer_games: 16,
-            buffer_samples: 128,
-            num_threads: Some(6),
-            tensorboard: false,
-            archive_queue_bound: 8,
-            validation_every_n_epochs: 1,
-            max_skip_logs_per_source: 4,
-            log_every_n_steps: 10,
-            validate_every_n_steps: 10,
-            checkpoint_every_n_steps: 10,
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: None,
-            preflight: hydra_train::preflight::PreflightConfig::default(),
-        }
+        let mut config = dummy_train_config();
+        config.data_dir = PathBuf::from("/data");
+        config.output_dir = PathBuf::from("/output");
+        config.precision_mode = PrecisionMode::Fp32;
+        config.num_threads = Some(6);
+        config
     }
 
     #[test]

@@ -115,6 +115,22 @@ That includes:
 - `source_net_hash` match
 - `source_version` match
 
+### Identity matching for loose files versus archives
+
+The source-identity part of that contract is intentionally not the same for all replay shapes.
+
+- Loose replay loading joins sidecars by the replay file name Hydra loads, not by an absolute host path.
+- Archive-backed replay loading joins sidecars by the explicit archive-entry identity string, for example `replays.tar.zst/path/inside/game.json`.
+- That means a sidecar record keyed only to `game.json` will match a loose replay load of `game.json`, but it will not match an archive entry whose identity is `replays.tar.zst/path/inside/game.json`.
+
+This distinction matters because Hydra treats archive entries as first-class replay identities rather than as anonymous extracted files. It avoids accidental collisions between two different archive entries that happen to share the same base file name.
+
+Operationally:
+
+- if you generate or inspect sidecars for loose replay files, expect file-name identity semantics
+- if you generate or inspect sidecars for archive-backed replay corpora, expect full archive-entry identity semantics
+- if a sidecar looks structurally valid but hydration does not happen, mismatched identity shape is one of the first things to check
+
 For ExIt, the lookup returns target/mask arrays when the sidecar contract matches.
 
 For DeltaQ, Hydra additionally validates that:

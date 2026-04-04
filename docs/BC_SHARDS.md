@@ -161,6 +161,17 @@ The builder is not blindly attaching labels from any JSONL file. It is preservin
 
 That means the shard manifest records sidecar provenance so later consumers can understand what optional supervision was baked into the artifact.
 
+### Identity rules are preserved when shards are built
+
+BC shard production does not flatten replay identity semantics when it joins sidecars before writing shard rows.
+
+- Loose replay inputs use the replay file name as the sidecar identity key.
+- Archive-backed replay inputs use the full archive-entry identity string.
+
+In practice, that means a sidecar record keyed to `game.json` can hydrate a loose replay named `game.json`, but it will not hydrate an archive entry identified as `replays.tar.zst/path/inside/game.json`.
+
+This is deliberate. The shard builder preserves the same sidecar join contract Hydra uses in the normal replay loader so that shard-backed BC runs and loose-replay BC runs do not silently disagree about which labels belong to which replay decisions.
+
 ### Example: ExIt-backed shard build
 
 ```bash
@@ -276,6 +287,14 @@ Use this when:
 - you want reproducible repeated BC runs on the same dataset layout
 - startup/scanning cost on raw replay inputs is no longer worth paying each run
 
+Training does not only switch the train loader in this mode. Validation also runs against shard readers, which means:
+
+- validation no longer streams loose replay files from `data_dir`
+- the validation helper that normally pre-materializes a bounded in-memory validation cache is bypassed
+- validation sample limits still apply, but they are enforced over shard rows rather than over replay-stream microbatches
+
+This is important when you compare shard-backed and loose-replay runs. A shard manifest changes the full BC data path, including validation transport and the memory/runtime shape of validation.
+
 The current training docs already cover that field at a high level; this document is the missing production-side runbook explaining how to create the artifact it points to.
 
 ## Recommended operator workflow
@@ -296,14 +315,28 @@ Rebuild when any of these change in a way you want reflected in the dataset:
 - shard sizing (`shard_samples`)
 - ExIt sidecar provenance or path
 - DeltaQ sidecar provenance or path
+- encoder geometry or shard layout compatibility (`obs_size`, base record size, feature-flag-driven row layout)
 
 Do not assume old shards automatically reflect a new sidecar index or a new replay corpus snapshot.
+
+Hydra also rejects shard artifacts at load time when the current binary and the manifest/header contract no longer agree. The important operator-visible cases are:
+
+- the manifest `obs_size` no longer matches the current encoder geometry
+- the manifest `base_record_size` no longer matches the current binary
+- the requested `train` or `validation` split is missing from the manifest
+- an individual shard header disagrees with the manifest about split, feature flags, record size, or shard version
+
+Treat those failures as a rebuild signal, not as something to work around with manual manifest edits.
+
+One more artifact detail matters operationally: shard files are resolved relative to the manifest file's parent directory, not relative to the current shell working directory. Moving a manifest without moving its shard files breaks the artifact.
 
 ## Common mistakes
 
 - Supplying only part of the sidecar provenance tuple; Hydra requires all sidecar provenance fields together.
 - Treating the manifest path as a magical cache key instead of a concrete dataset artifact.
 - Forgetting that shard production bakes in whether ExIt or DeltaQ supervision was available at build time.
+- Assuming a manifest with only one split can still satisfy both train and validation consumers.
+- Moving the manifest file independently from the shard files it references.
 - Skipping corpus validation and then debugging shard failures downstream instead of fixing the replay input first.
 
 ## Relationship to other docs

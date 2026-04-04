@@ -20,8 +20,8 @@ pub(crate) fn permutation_tables() -> &'static SuitPermutationTables {
         let mut tile_34 = [[0usize; NUM_TILES]; 6];
         let mut action_37 = [[0usize; 37]; 6];
         for (perm_index, perm) in ALL_PERMUTATIONS.iter().enumerate() {
-            for tile in 0..NUM_TILES {
-                tile_34[perm_index][tile] = permute_tile_type(tile as u8, perm) as usize;
+            for (tile, dst) in tile_34[perm_index].iter_mut().enumerate().take(NUM_TILES) {
+                *dst = permute_tile_type(tile as u8, perm) as usize;
             }
             for action in 0..37u8 {
                 action_37[perm_index][action as usize] =
@@ -67,8 +67,8 @@ pub fn augment_obs_suit_into(obs: &[f32; OBS_SIZE], perm: &[u8; 3], dst: &mut [f
 
         // Block-copy each suit (9 tiles) to its permuted destination,
         // then copy honors (7 tiles) in place.  4 memcpy ops vs 34 scatter writes.
-        for src_suit in 0..3usize {
-            let dst_suit = perm[src_suit] as usize;
+        for (src_suit, dst_suit) in perm.iter().copied().enumerate().take(3usize) {
+            let dst_suit = dst_suit as usize;
             dst[dst_ch + dst_suit * SUIT_TILES..dst_ch + (dst_suit + 1) * SUIT_TILES]
                 .copy_from_slice(
                     &obs[src_ch + src_suit * SUIT_TILES..src_ch + (src_suit + 1) * SUIT_TILES],
@@ -98,8 +98,8 @@ pub fn augment_obs_suit_from_le_bytes(src_bytes: &[u8], perm: &[u8; 3], dst: &mu
     let permute_normal_channel = |ch: usize, dst: &mut [f32], src_bytes: &[u8]| {
         let src_off = ch * NUM_TILES * 4;
         let dst_ch = ch * NUM_TILES;
-        for src_suit in 0..3usize {
-            let dst_suit = perm[src_suit] as usize;
+        for (src_suit, dst_suit) in perm.iter().copied().enumerate().take(3usize) {
+            let dst_suit = dst_suit as usize;
             let s_byte = src_off + src_suit * SUIT_TILES * 4;
             let d_idx = dst_ch + dst_suit * SUIT_TILES;
             unsafe {

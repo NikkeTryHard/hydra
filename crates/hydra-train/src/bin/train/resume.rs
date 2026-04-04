@@ -7,6 +7,7 @@ use colored::Colorize;
 
 use hydra_train::config::PipelineState;
 
+use super::artifacts::atomic_write_text;
 use super::config::{PrecisionMode, RlPhaseConfig, RlTrainConfig};
 
 use super::config::{TrainConfig, train_microbatch_size, validation_microbatch_size};
@@ -347,8 +348,7 @@ pub(crate) fn test_runtime_resume_contract(
 pub(crate) fn write_resume_state(path: &Path, state: &BcResumeState) -> Result<(), String> {
     let yaml = serde_yaml::to_string(state)
         .map_err(|err| format!("failed to serialize resume state {}: {err}", path.display()))?;
-    fs::write(path, yaml)
-        .map_err(|err| format!("failed to write resume state {}: {err}", path.display()))
+    atomic_write_text(path, &yaml, "resume state")
 }
 
 pub(crate) fn build_resume_state(
@@ -451,44 +451,16 @@ mod tests {
     use hydra_train::config::TrainingPhase;
     use std::fs;
 
-    use crate::config::{BcHyperparamConfig, PrecisionMode, TrainConfig};
+    use crate::config::{PrecisionMode, TrainConfig};
+    use crate::test_support::{dummy_train_config, unique_test_path as shared_unique_test_path};
 
     fn dummy_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/tmp/data"),
-            output_dir: PathBuf::from("/tmp/out"),
-            num_epochs: 4,
-            batch_size: 256,
-            microbatch_size: Some(64),
-            validation_microbatch_size: Some(32),
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: 0.9,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: true,
-            resume_checkpoint: None,
-            seed: 7,
-            advanced_loss: None,
-            rl: None,
-            bc: BcHyperparamConfig::default(),
-            device: "cpu".to_string(),
-            precision_mode: PrecisionMode::Fp32,
-            buffer_games: 16,
-            buffer_samples: 128,
-            num_threads: Some(1),
-            tensorboard: false,
-            archive_queue_bound: 8,
-            validation_every_n_epochs: 1,
-            max_skip_logs_per_source: 4,
-            log_every_n_steps: 10,
-            validate_every_n_steps: 10,
-            checkpoint_every_n_steps: 10,
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: None,
-            preflight: Default::default(),
-        }
+        let mut config = dummy_train_config();
+        config.num_epochs = 4;
+        config.seed = 7;
+        config.precision_mode = PrecisionMode::Fp32;
+        config.num_threads = Some(1);
+        config
     }
 
     fn dummy_best_validation() -> BestValidation {
@@ -499,11 +471,7 @@ mod tests {
     }
 
     fn unique_test_path(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("hydra-resume-test-{label}-{unique}"))
+        shared_unique_test_path("hydra-resume-test", label)
     }
 
     fn write_yaml_file(label: &str, contents: &str) -> PathBuf {
@@ -590,6 +558,18 @@ mod tests {
         let err = validate_resume_runtime_compatibility(&state, mismatched_precision)
             .expect_err("partial epoch resume should reject precision mode mismatch");
         assert!(err.contains("partial-epoch resume requires identical runtime contract"));
+    }
+
+    #[test]
+    fn validate_resume_runtime_compatibility_allows_epoch_boundary_runtime_changes() {
+        let checkpoint_runtime = test_runtime_resume_contract(256, 64, 32);
+        let state = build_resume_state(2, 0, 12, Some(dummy_best_validation()), checkpoint_runtime);
+        let current = test_runtime_resume_contract(256, 32, 16);
+
+        assert_eq!(
+            validate_resume_runtime_compatibility(&state, current),
+            Ok(())
+        );
     }
 
     #[test]
@@ -773,6 +753,12 @@ saved_at_unix_s: 1
         );
         assert!(effective_banner.contains("runtime=train_mb:64 val_mb:32 accum_steps:4"));
         assert!(effective_banner.contains("effective_runtime=train_mb:32 val_mb:16 accum_steps:8"));
+
+        let unchanged_runtime_banner = resume_banner_message(
+            &immediate_state,
+            Some(test_runtime_resume_contract(256, 64, 32)),
+        );
+        assert!(!unchanged_runtime_banner.contains("effective_runtime="));
 
         let rl_banner = rl_resume_banner_message(&build_rl_resume_state(
             10,

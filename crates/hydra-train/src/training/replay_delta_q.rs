@@ -17,12 +17,12 @@ use crate::model::HydraModel;
 use crate::training::delta_q_validation::DeltaQValidationReport;
 use crate::training::exit::ExitConfig;
 use crate::training::live_exit::{
-    budget_from_legal_count, obs_hash, try_search_labels_from_context_with_batched_child_values,
-    RootDecisionContext, SelfPlayExitAdapter,
+    RootDecisionContext, SelfPlayExitAdapter, budget_from_legal_count, obs_hash,
+    try_search_labels_from_context_with_batched_child_values,
 };
 use crate::training::replay_exit::{
-    copy_label_arrays, legal_mask_digest_from_f32, read_jsonl_records, source_hash_from_identity,
-    ReplayDecisionKey,
+    ReplayDecisionKey, copy_label_arrays, legal_mask_digest_from_f32, read_jsonl_records,
+    source_hash_from_identity,
 };
 
 pub const REPLAY_DELTA_Q_SEMANTICS_V1: &str = "delta_q_child_minus_root_v1";
@@ -408,14 +408,16 @@ mod tests {
             Some(&index),
         )
         .expect("load with sidecar");
-        assert!(game
-            .samples
-            .iter()
-            .any(|sample| sample.delta_q_target.is_some()));
-        assert!(game
-            .samples
-            .iter()
-            .any(|sample| sample.delta_q_mask.is_some()));
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_target.is_some())
+        );
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_mask.is_some())
+        );
     }
 
     #[test]
@@ -572,9 +574,10 @@ mod tests {
         let err = DeltaQSidecarIndex::from_jsonl_reader(Cursor::new("\nnot-json\n"))
             .expect_err("invalid jsonl should fail");
         assert_eq!(err.kind(), ErrorKind::InvalidData);
-        assert!(err
-            .to_string()
-            .contains("invalid replay delta_q sidecar line 2"));
+        assert!(
+            err.to_string()
+                .contains("invalid replay delta_q sidecar line 2")
+        );
     }
 
     #[test]
@@ -627,21 +630,27 @@ mod tests {
         };
 
         record.version = 2;
-        assert!(DeltaQSidecarIndex::from_records(vec![record.clone()])
-            .lookup_label(&key, 2, &legal_mask, 9, 1)
-            .is_none());
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record.clone()])
+                .lookup_label(&key, 2, &legal_mask, 9, 1)
+                .is_none()
+        );
 
         record.version = 1;
         record.semantics = "wrong-semantics".to_string();
-        assert!(DeltaQSidecarIndex::from_records(vec![record.clone()])
-            .lookup_label(&key, 2, &legal_mask, 9, 1)
-            .is_none());
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record.clone()])
+                .lookup_label(&key, 2, &legal_mask, 9, 1)
+                .is_none()
+        );
 
         record.semantics = REPLAY_DELTA_Q_SEMANTICS_V1.to_string();
         record.provenance = "manual".to_string();
-        assert!(DeltaQSidecarIndex::from_records(vec![record])
-            .lookup_label(&key, 2, &legal_mask, 9, 1)
-            .is_none());
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record])
+                .lookup_label(&key, 2, &legal_mask, 9, 1)
+                .is_none()
+        );
     }
 
     #[test]
@@ -673,17 +682,21 @@ mod tests {
             mask: mask.to_vec(),
         };
 
-        assert!(DeltaQSidecarIndex::from_records(vec![record.clone()])
-            .lookup_label(&key, 2, &lookup_legal_mask, 9, 1)
-            .is_none());
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![record.clone()])
+                .lookup_label(&key, 2, &lookup_legal_mask, 9, 1)
+                .is_none()
+        );
 
         let no_mask_record = ReplayDeltaQRecordV1 {
             mask: vec![0.0; HYDRA_ACTION_SPACE],
             ..record
         };
-        assert!(DeltaQSidecarIndex::from_records(vec![no_mask_record])
-            .lookup_label(&key, 2, &stored_legal_mask, 9, 1)
-            .is_none());
+        assert!(
+            DeltaQSidecarIndex::from_records(vec![no_mask_record])
+                .lookup_label(&key, 2, &stored_legal_mask, 9, 1)
+                .is_none()
+        );
     }
 
     #[test]

@@ -40,6 +40,8 @@ mod probe_request;
 mod probe_search;
 #[path = "train/probe_summary.rs"]
 mod probe_summary;
+#[path = "train/probe_transport.rs"]
+mod probe_transport;
 #[path = "train/progress.rs"]
 mod progress;
 #[path = "train/resume.rs"]
@@ -55,6 +57,9 @@ mod status;
 #[cfg(test)]
 #[path = "train/test_loose_replay_fixtures.rs"]
 mod test_loose_replay_fixtures;
+#[cfg(test)]
+#[path = "train/test_support.rs"]
+mod test_support;
 #[path = "train/validation.rs"]
 mod validation;
 

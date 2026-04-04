@@ -179,17 +179,22 @@ fn encode_extracted_observation_with_profile(
     profile: BridgeEncodeProfile,
 ) -> [f32; OBS_SIZE] {
     let hand_ev = if profile.include_hand_ev {
-        Some(compute_hand_ev_from_context(hand, discards, melds, dora, search_context))
+        Some(compute_hand_ev_from_context(
+            hand,
+            discards,
+            melds,
+            dora,
+            search_context,
+        ))
     } else {
         None
     };
-    let search_features = if profile.include_search_features
-        && search_context_has_runtime_planes(search_context)
-    {
-        Some(build_search_features(safety, search_context))
-    } else {
-        None
-    };
+    let search_features =
+        if profile.include_search_features && search_context_has_runtime_planes(search_context) {
+            Some(build_search_features(safety, search_context))
+        } else {
+            None
+        };
     let slice = encoder.encode_with_context_and_shanten_batch(
         hand,
         drawn_tile,
@@ -1257,8 +1262,7 @@ mod tests {
         );
         let full_mask_offset = crate::encoder::HAND_EV_MASK_CHANNEL * NUM_TILE_TYPES;
         assert_eq!(
-            full[full_mask_offset],
-            1.0,
+            full[full_mask_offset], 1.0,
             "full encode should populate Hand-EV mask"
         );
 
@@ -1270,8 +1274,7 @@ mod tests {
             BridgeEncodeProfile::bc_minimal(),
         );
         assert_eq!(
-            minimal[full_mask_offset],
-            0.0,
+            minimal[full_mask_offset], 0.0,
             "reused encoder should clear Hand-EV mask on BC-minimal encode"
         );
         let hand_ev_payload =

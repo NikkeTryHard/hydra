@@ -2,7 +2,7 @@ use burn::prelude::*;
 
 use crate::config::{GAE_GAMMA, GAE_LAMBDA};
 use crate::training::exit::{collate_delta_q_targets, collate_exit_targets};
-use crate::training::gae::{compute_single_player_gae, normalize_advantages, GaeConfig};
+use crate::training::gae::{GaeConfig, compute_single_player_gae, normalize_advantages};
 use crate::training::head_gates::{AdvancedHead, TargetPresence};
 use crate::training::losses::HydraTargets;
 use crate::training::rl::RlBatch;

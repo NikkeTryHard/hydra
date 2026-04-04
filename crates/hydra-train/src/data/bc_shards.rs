@@ -14,15 +14,19 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use crate::data::archive_helpers::{
+    compact_error_message, compact_identity, identity_for_archive_entry, is_mjai_archive_entry,
+    is_tar_zst_file,
+};
 #[cfg(not(target_endian = "little"))]
 use crate::data::augment::augment_action_vector_suit_into;
 use crate::data::augment::{augment_obs_suit_from_le_bytes, permutation_tables};
 use crate::data::mjai_loader::{
-    MjaiGame, SidecarProvenance, invalid_data, load_game_from_path,
-    load_game_from_path_with_sidecar, load_game_from_stream, load_game_from_stream_with_sidecar,
+    MjaiGame, ReplayLoadPolicy, SidecarProvenance, invalid_data, load_game_from_path_with_policy,
+    load_game_from_stream_with_policy,
 };
 use crate::data::pipeline::{
-    DataSource, identity_for_loose_file, is_train_game, scan_data_sources,
+    DataManifest, DataSource, identity_for_loose_file, is_train_game, scan_data_sources,
 };
 use crate::data::sample::{MjaiBcBatch, score_delta_to_bin, score_delta_to_value};
 use crate::training::head_gates::{AdvancedHead, TargetPresence};
@@ -191,6 +195,7 @@ pub struct BuildBcShardsConfig {
     pub train_fraction: f32,
     pub shard_samples: usize,
     pub split_mode: BcShardSplitMode,
+    pub source_manifest: Option<DataManifest>,
     pub exit_sidecar: Option<Arc<ExitSidecarIndex>>,
     pub exit_sidecar_path: Option<PathBuf>,
     pub exit_provenance: SidecarProvenance,
@@ -208,6 +213,7 @@ impl Default for BuildBcShardsConfig {
             train_fraction: 0.9,
             shard_samples: 10_000,
             split_mode: BcShardSplitMode::Both,
+            source_manifest: None,
             exit_sidecar: None,
             exit_sidecar_path: None,
             exit_provenance: SidecarProvenance::default(),
@@ -915,7 +921,10 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
         return Err(invalid_data("shard_samples must be > 0"));
     }
     fs::create_dir_all(&config.output_dir)?;
-    let source_manifest = scan_data_sources(&config.input)?;
+    let source_manifest = match &config.source_manifest {
+        Some(manifest) => manifest.clone(),
+        None => scan_data_sources(&config.input)?,
+    };
     let feature_flags = feature_flags_from_config(config);
 
     let mut train_state = config
@@ -1798,8 +1807,8 @@ fn write_augmented_row_into_scratch(
     for opp in 0..OPPONENT_COUNT {
         let src_start = cursor + opp * TILE_COUNT;
         let dst_start = opp * TILE_COUNT;
-        for src_suit in 0..3usize {
-            let dst_suit = perm[src_suit] as usize;
+        for (src_suit, dst_suit) in perm.iter().copied().enumerate().take(3usize) {
+            let dst_suit = dst_suit as usize;
             for t in 0..SUIT_TILES {
                 unsafe {
                     *danger_dst.get_unchecked_mut(dst_start + dst_suit * SUIT_TILES + t) =
@@ -1825,8 +1834,8 @@ fn write_augmented_row_into_scratch(
     for opp in 0..OPPONENT_COUNT {
         let src_start = cursor + opp * TILE_COUNT;
         let dst_start = opp * TILE_COUNT;
-        for src_suit in 0..3usize {
-            let dst_suit = perm[src_suit] as usize;
+        for (src_suit, dst_suit) in perm.iter().copied().enumerate().take(3usize) {
+            let dst_suit = dst_suit as usize;
             for t in 0..SUIT_TILES {
                 unsafe {
                     *dmask_dst.get_unchecked_mut(dst_start + dst_suit * SUIT_TILES + t) =
@@ -1984,7 +1993,9 @@ fn sidecar_manifest(
     })
 }
 
-fn replay_target_profile_for_bc_shards(config: &BuildBcShardsConfig) -> crate::data::mjai_loader::ReplayTargetProfile {
+fn replay_target_profile_for_bc_shards(
+    config: &BuildBcShardsConfig,
+) -> crate::data::mjai_loader::ReplayTargetProfile {
     crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
         false,
         false,
@@ -1995,22 +2006,19 @@ fn replay_target_profile_for_bc_shards(config: &BuildBcShardsConfig) -> crate::d
     )
 }
 
-fn load_bc_shard_game_from_path(
-    path: &Path,
-    config: &BuildBcShardsConfig,
-) -> io::Result<MjaiGame> {
-    if config.exit_sidecar.is_some() || config.delta_q_sidecar.is_some() {
-        load_game_from_path_with_sidecar(
-            path,
-            config.exit_provenance,
-            config.delta_q_provenance,
-            replay_target_profile_for_bc_shards(config),
-            config.exit_sidecar.as_deref(),
-            config.delta_q_sidecar.as_deref(),
-        )
-    } else {
-        load_game_from_path(path)
-    }
+fn replay_load_policy_for_bc_shards(config: &BuildBcShardsConfig) -> ReplayLoadPolicy<'_> {
+    ReplayLoadPolicy::new(
+        replay_target_profile_for_bc_shards(config),
+        config.exit_provenance,
+        config.delta_q_provenance,
+        config.exit_sidecar.as_deref(),
+        config.delta_q_sidecar.as_deref(),
+    )
+}
+
+fn load_bc_shard_game_from_path(path: &Path, config: &BuildBcShardsConfig) -> io::Result<MjaiGame> {
+    let policy = replay_load_policy_for_bc_shards(config);
+    load_game_from_path_with_policy(path, Some(&policy))
 }
 
 fn load_bc_shard_game_from_stream<R: Read>(
@@ -2018,19 +2026,16 @@ fn load_bc_shard_game_from_stream<R: Read>(
     stream: R,
     config: &BuildBcShardsConfig,
 ) -> io::Result<MjaiGame> {
-    if config.exit_sidecar.is_some() || config.delta_q_sidecar.is_some() {
-        load_game_from_stream_with_sidecar(
-            identity,
-            config.exit_provenance,
-            config.delta_q_provenance,
-            replay_target_profile_for_bc_shards(config),
-            stream,
-            config.exit_sidecar.as_deref(),
-            config.delta_q_sidecar.as_deref(),
-        )
-    } else {
-        load_game_from_stream(stream)
-    }
+    let policy = replay_load_policy_for_bc_shards(config);
+    load_game_from_stream_with_policy(identity, stream, Some(&policy))
+}
+
+struct LoadedGameContext<'a> {
+    config: &'a BuildBcShardsConfig,
+    train_state: &'a mut Option<SplitBuildState>,
+    val_state: &'a mut Option<SplitBuildState>,
+    skipped_games: &'a mut u64,
+    empty_games: &'a mut u64,
 }
 
 fn process_loose_file(
@@ -2046,16 +2051,14 @@ fn process_loose_file(
         return Ok(());
     };
     let result = load_bc_shard_game_from_path(path, config);
-    handle_loaded_game(
-        &identity,
-        split,
-        result,
+    let mut ctx = LoadedGameContext {
         config,
         train_state,
         val_state,
         skipped_games,
         empty_games,
-    )
+    };
+    handle_loaded_game(&identity, split, result, &mut ctx)
 }
 
 fn process_archive(
@@ -2091,16 +2094,14 @@ fn process_archive(
             continue;
         };
         let result = load_bc_shard_game_from_stream(&identity, entry, config);
-        handle_loaded_game(
-            &identity,
-            split,
-            result,
+        let mut ctx = LoadedGameContext {
             config,
             train_state,
             val_state,
             skipped_games,
             empty_games,
-        )?;
+        };
+        handle_loaded_game(&identity, split, result, &mut ctx)?;
     }
     Ok(())
 }
@@ -2109,33 +2110,29 @@ fn handle_loaded_game(
     identity: &str,
     split: BcShardSplit,
     result: io::Result<MjaiGame>,
-    config: &BuildBcShardsConfig,
-    train_state: &mut Option<SplitBuildState>,
-    val_state: &mut Option<SplitBuildState>,
-    skipped_games: &mut u64,
-    empty_games: &mut u64,
+    ctx: &mut LoadedGameContext<'_>,
 ) -> io::Result<()> {
     match result {
         Ok(game) => {
             if game.samples.is_empty() {
-                *empty_games += 1;
+                *ctx.empty_games += 1;
                 return Ok(());
             }
             match split {
                 BcShardSplit::Train => {
-                    if let Some(state) = train_state.as_mut() {
-                        state.push_game(&config.output_dir, config.shard_samples, &game)?;
+                    if let Some(state) = ctx.train_state.as_mut() {
+                        state.push_game(&ctx.config.output_dir, ctx.config.shard_samples, &game)?;
                     }
                 }
                 BcShardSplit::Validation => {
-                    if let Some(state) = val_state.as_mut() {
-                        state.push_game(&config.output_dir, config.shard_samples, &game)?;
+                    if let Some(state) = ctx.val_state.as_mut() {
+                        state.push_game(&ctx.config.output_dir, ctx.config.shard_samples, &game)?;
                     }
                 }
             }
         }
         Err(err) => {
-            *skipped_games += 1;
+            *ctx.skipped_games += 1;
             eprintln!(
                 "Skipping {}: {}",
                 compact_identity(identity),
@@ -2153,57 +2150,6 @@ fn split_for_identity(identity: &str, config: &BuildBcShardsConfig) -> Option<Bc
         BcShardSplit::Validation
     };
     config.split_mode.includes(split).then_some(split)
-}
-
-fn identity_for_archive_entry(archive_path: &Path, entry_path: &Path) -> io::Result<String> {
-    let archive_name = archive_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| invalid_data(format!("invalid archive name {}", archive_path.display())))?;
-    Ok(format!("{archive_name}/{}", entry_path.display()))
-}
-
-fn is_tar_zst_file(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name) if name.ends_with(".tar.zst") || name.contains(".tar-") && name.ends_with(".zst")
-    )
-}
-
-fn is_mjai_archive_entry(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name)
-            if name.ends_with(".json")
-                || name.ends_with(".json.gz")
-                || name.ends_with(".mjai.json")
-                || name.ends_with(".mjai.json.gz")
-    )
-}
-
-fn compact_identity(identity: &str) -> &str {
-    identity.rsplit('/').next().unwrap_or(identity)
-}
-
-fn compact_error_message(err: &dyn std::fmt::Display) -> &'static str {
-    let raw = err.to_string();
-    if raw.contains("Replay desync") {
-        "replay desync"
-    } else if raw.contains("replay observation failed") {
-        "replay observation failed"
-    } else if raw.contains("replay action conversion failed") {
-        "replay action conversion failed"
-    } else if raw.contains("hydra action mapping failed") {
-        "hydra action mapping failed"
-    } else if raw.contains("failed to parse MJAI events") {
-        "invalid mjai events"
-    } else if raw.contains("failed to load MJAI events") {
-        "failed to load mjai events"
-    } else if raw.contains("failed to inspect MJAI stream") {
-        "failed to inspect mjai stream"
-    } else {
-        "load error"
-    }
 }
 
 fn write_shard_header<W: Write>(
@@ -2577,8 +2523,24 @@ fn policy_target_from_actions<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::mjai_loader::{load_game_from_path, prepare_replay_decision, update_safety};
+    use crate::training::replay_delta_q::{DeltaQSidecarIndex, ReplayDeltaQRecordV1};
+    use crate::training::replay_exit::{
+        ExitSidecarIndex, ReplayDecisionKey, ReplayExitRecordV1, legal_mask_digest_from_f32,
+        source_hash_from_identity,
+    };
+    use crate::training::{live_exit, replay_delta_q, replay_exit};
     use hydra_core::action::HYDRA_ACTION_SPACE;
+    use hydra_core::encoder::ObservationEncoder;
+    use hydra_core::safety::SafetyInfo;
+    use riichienv_core::replay::read_mjai_events;
+    use riichienv_core::rule::GameRule;
+    use riichienv_core::state::GameState;
     use std::fs;
+    use std::io::Cursor;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use burn::backend::NdArray;
 
@@ -2633,6 +2595,134 @@ mod tests {
         .join("\n")
     }
 
+    fn replay_sidecar_guardrail_log() -> String {
+        [
+            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+            r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+            r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+            r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+            r#"{"type":"ryukyoku"}"#,
+            r#"{"type":"end_kyoku"}"#,
+        ]
+        .join("\n")
+    }
+
+    fn replay_guardrail_decisions_for_identity(
+        identity: &str,
+    ) -> Vec<(ReplayDecisionKey, u8, [f32; HYDRA_ACTION_SPACE])> {
+        let events = read_mjai_events(Cursor::new(replay_sidecar_guardrail_log()))
+            .expect("parse sidecar replay");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = std::array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+        let mut decisions = Vec::new();
+
+        for (idx, event) in events.iter().enumerate() {
+            if let Some(decision) =
+                prepare_replay_decision(event, &mut state, &safety, &mut encoder)
+                    .expect("prepare replay decision")
+            {
+                decisions.push((
+                    ReplayDecisionKey {
+                        source_hash: source_hash_from_identity(identity),
+                        event_index: idx as u32,
+                        actor: decision.actor as u8,
+                        obs_hash: live_exit::obs_hash(&decision.obs_encoded),
+                    },
+                    decision.action_id,
+                    decision.legal_mask_f32,
+                ));
+            }
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        decisions
+    }
+
+    fn synthetic_exit_records(
+        identity: &str,
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayExitRecordV1> {
+        replay_guardrail_decisions_for_identity(identity)
+            .into_iter()
+            .take(2)
+            .map(|(key, action, legal_mask)| {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                target[action as usize] = 1.0;
+                mask[action as usize] = 1.0;
+                ReplayExitRecordV1 {
+                    version: 1,
+                    semantics: replay_exit::REPLAY_EXIT_SEMANTICS_V1.to_string(),
+                    provenance: replay_exit::REPLAY_EXIT_PROVENANCE.to_string(),
+                    key,
+                    action,
+                    legal_mask_digest: legal_mask_digest_from_f32(&legal_mask),
+                    source_net_hash,
+                    source_version,
+                    root_visit_count: 64,
+                    legal_discard_count: legal_mask[..=36]
+                        .iter()
+                        .filter(|&&value| value > 0.0)
+                        .count() as u8,
+                    supported_actions: 1,
+                    coverage: 1.0,
+                    kl_to_base: 0.0,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                }
+            })
+            .collect()
+    }
+
+    fn synthetic_delta_q_records(
+        identity: &str,
+        source_net_hash: u64,
+        source_version: u32,
+    ) -> Vec<ReplayDeltaQRecordV1> {
+        replay_guardrail_decisions_for_identity(identity)
+            .into_iter()
+            .take(2)
+            .map(|(key, action, legal_mask)| {
+                let mut target = [0.0f32; HYDRA_ACTION_SPACE];
+                let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
+                target[action as usize] = 0.25;
+                mask[action as usize] = 1.0;
+                ReplayDeltaQRecordV1 {
+                    version: 1,
+                    semantics: replay_delta_q::REPLAY_DELTA_Q_SEMANTICS_V1.to_string(),
+                    provenance: replay_delta_q::REPLAY_DELTA_Q_PROVENANCE.to_string(),
+                    key,
+                    action,
+                    legal_mask_digest: legal_mask_digest_from_f32(&legal_mask),
+                    source_net_hash,
+                    source_version,
+                    target: target.to_vec(),
+                    mask: mask.to_vec(),
+                }
+            })
+            .collect()
+    }
+
+    fn unique_bc_shard_temp_dir(label: &str) -> PathBuf {
+        let root = PathBuf::from("/home/nikketryhard/tmp");
+        fs::create_dir_all(&root).expect("create bc_shard temp root");
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        let dir = root.join(format!(
+            "hydra_bc_shards_{label}_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).expect("create bc_shard temp dir");
+        dir
+    }
+
     #[test]
     fn compact_header_size_constant_matches_written_bytes() {
         let mut bytes = Vec::new();
@@ -2685,6 +2775,7 @@ mod tests {
             train_fraction: 1.0,
             shard_samples: 10_000,
             split_mode: BcShardSplitMode::Train,
+            source_manifest: None,
             exit_sidecar: None,
             exit_sidecar_path: None,
             exit_provenance: SidecarProvenance::default(),
@@ -2811,6 +2902,7 @@ mod tests {
             train_fraction: 1.0,
             shard_samples: 10_000,
             split_mode: BcShardSplitMode::Train,
+            source_manifest: None,
             exit_sidecar: None,
             exit_sidecar_path: None,
             exit_provenance: SidecarProvenance::default(),
@@ -2911,12 +3003,18 @@ mod tests {
             owned.targets.score_cdf_target.clone(),
             "score_cdf",
         );
-        match (borrowed.batch.exit_target.clone(), owned.batch.exit_target.clone()) {
+        match (
+            borrowed.batch.exit_target.clone(),
+            owned.batch.exit_target.clone(),
+        ) {
             (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "exit_target"),
             (None, None) => {}
             (lhs, rhs) => panic!("exit_target presence mismatch: {lhs:?} vs {rhs:?}"),
         }
-        match (borrowed.batch.exit_mask.clone(), owned.batch.exit_mask.clone()) {
+        match (
+            borrowed.batch.exit_mask.clone(),
+            owned.batch.exit_mask.clone(),
+        ) {
             (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "exit_mask"),
             (None, None) => {}
             (lhs, rhs) => panic!("exit_mask presence mismatch: {lhs:?} vs {rhs:?}"),
@@ -2945,20 +3043,221 @@ mod tests {
             (None, None) => {}
             (lhs, rhs) => panic!("delta_q_target presence mismatch: {lhs:?} vs {rhs:?}"),
         }
-        match (borrowed.targets.delta_q_mask.clone(), owned.targets.delta_q_mask.clone()) {
+        match (
+            borrowed.targets.delta_q_mask.clone(),
+            owned.targets.delta_q_mask.clone(),
+        ) {
             (Some(lhs), Some(rhs)) => assert_tensor_close(lhs, rhs, "delta_q_mask"),
             (None, None) => {}
             (lhs, rhs) => panic!("delta_q_mask presence mismatch: {lhs:?} vs {rhs:?}"),
         }
 
-        let borrowed_presence = borrowed.targets.target_presence.expect("borrowed target presence");
-        let owned_presence = owned.targets.target_presence.expect("owned target presence");
+        let borrowed_presence = borrowed
+            .targets
+            .target_presence
+            .expect("borrowed target presence");
+        let owned_presence = owned
+            .targets
+            .target_presence
+            .expect("owned target presence");
         assert_eq!(borrowed_presence.batch_size, owned_presence.batch_size);
         assert_eq!(borrowed_presence.counts, owned_presence.counts);
         assert_eq!(
             borrowed_presence.delta_q_actions_present,
             owned_presence.delta_q_actions_present
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn supplied_source_manifest_is_written_into_output_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "bc-shard-source-manifest-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("temp dir should be creatable");
+        let replay_path = root.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("fixture should write");
+        let shard_dir = root.join("shards");
+
+        let supplied_manifest = DataManifest {
+            sources: vec![DataSource::LooseFile(replay_path.clone())],
+            total_games: 17,
+            train_count: 11,
+            val_count: 6,
+            counts_exact: false,
+        };
+
+        let build = build_bc_shards(&BuildBcShardsConfig {
+            input: replay_path,
+            output_dir: shard_dir,
+            manifest_name: "manifest.json".into(),
+            train_fraction: 1.0,
+            shard_samples: 10_000,
+            split_mode: BcShardSplitMode::Train,
+            source_manifest: Some(supplied_manifest.clone()),
+            exit_sidecar: None,
+            exit_sidecar_path: None,
+            exit_provenance: SidecarProvenance::default(),
+            delta_q_sidecar: None,
+            delta_q_sidecar_path: None,
+            delta_q_provenance: SidecarProvenance::default(),
+        })
+        .expect("shards should build");
+
+        assert_eq!(build.manifest.source_count, supplied_manifest.sources.len());
+        assert_eq!(
+            build.manifest.source_total_games_hint,
+            supplied_manifest.total_games
+        );
+        assert_eq!(
+            build.manifest.source_train_count_hint,
+            supplied_manifest.train_count
+        );
+        assert_eq!(
+            build.manifest.source_val_count_hint,
+            supplied_manifest.val_count
+        );
+        assert_eq!(
+            build.manifest.source_counts_exact,
+            supplied_manifest.counts_exact
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_bc_shard_game_from_path_uses_file_name_identity_for_sidecars() {
+        let root = unique_bc_shard_temp_dir("sidecar_path");
+        let replay_path = root.join("game-1.mjai.json");
+        fs::write(&replay_path, replay_sidecar_guardrail_log()).expect("fixture should write");
+
+        let exit_records = synthetic_exit_records("game-1.mjai.json", 123, 1);
+        let delta_q_records = synthetic_delta_q_records("game-1.mjai.json", 456, 2);
+        let config = BuildBcShardsConfig {
+            input: replay_path.clone(),
+            output_dir: root.join("shards"),
+            exit_sidecar: Some(Arc::new(ExitSidecarIndex::from_records(exit_records))),
+            exit_provenance: SidecarProvenance::new(Some(123), Some(1)),
+            delta_q_sidecar: Some(Arc::new(DeltaQSidecarIndex::from_records(delta_q_records))),
+            delta_q_provenance: SidecarProvenance::new(Some(456), Some(2)),
+            ..BuildBcShardsConfig::default()
+        };
+
+        let game =
+            load_bc_shard_game_from_path(&replay_path, &config).expect("path replay should load");
+
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.exit_target.is_some())
+        );
+        assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_target.is_some())
+        );
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_mask.is_some())
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_bc_shard_game_from_stream_uses_explicit_source_identity() {
+        let identity = "archive.tar.zst/game-1.mjai.json";
+        let exit_records = synthetic_exit_records(identity, 123, 1);
+        let delta_q_records = synthetic_delta_q_records(identity, 456, 2);
+        let config = BuildBcShardsConfig {
+            input: PathBuf::from("archive.tar.zst"),
+            output_dir: PathBuf::from("/home/nikketryhard/tmp/bc_shard_unused"),
+            exit_sidecar: Some(Arc::new(ExitSidecarIndex::from_records(exit_records))),
+            exit_provenance: SidecarProvenance::new(Some(123), Some(1)),
+            delta_q_sidecar: Some(Arc::new(DeltaQSidecarIndex::from_records(delta_q_records))),
+            delta_q_provenance: SidecarProvenance::new(Some(456), Some(2)),
+            ..BuildBcShardsConfig::default()
+        };
+
+        let game = load_bc_shard_game_from_stream(
+            identity,
+            Cursor::new(replay_sidecar_guardrail_log()),
+            &config,
+        )
+        .expect("archive replay should load");
+
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.exit_target.is_some())
+        );
+        assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_target.is_some())
+        );
+        assert!(
+            game.samples
+                .iter()
+                .any(|sample| sample.delta_q_mask.is_some())
+        );
+    }
+
+    #[test]
+    fn load_bc_shard_reader_rejects_manifest_missing_requested_split() {
+        let root = std::env::temp_dir().join(format!(
+            "bc-shard-missing-split-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("temp dir should be creatable");
+        let replay_path = root.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("fixture should write");
+        let shard_dir = root.join("shards");
+
+        let build = build_bc_shards(&BuildBcShardsConfig {
+            input: replay_path,
+            output_dir: shard_dir.clone(),
+            manifest_name: "manifest.json".into(),
+            train_fraction: 1.0,
+            shard_samples: 10_000,
+            split_mode: BcShardSplitMode::Train,
+            source_manifest: None,
+            exit_sidecar: None,
+            exit_sidecar_path: None,
+            exit_provenance: SidecarProvenance::default(),
+            delta_q_sidecar: None,
+            delta_q_sidecar_path: None,
+            delta_q_provenance: SidecarProvenance::default(),
+        })
+        .expect("shards should build");
+
+        let mut manifest: BcShardManifest = serde_json::from_str(
+            &fs::read_to_string(&build.manifest_path).expect("manifest should exist"),
+        )
+        .expect("manifest should deserialize");
+        manifest.splits.clear();
+        fs::write(
+            &build.manifest_path,
+            serde_json::to_string_pretty(&manifest).expect("manifest should serialize"),
+        )
+        .expect("mutated manifest should write");
+
+        let err = match load_bc_shard_reader(&build.manifest_path, BcShardSplit::Validation) {
+            Ok(_) => panic!("missing split should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("missing Validation split"));
 
         let _ = fs::remove_dir_all(root);
     }

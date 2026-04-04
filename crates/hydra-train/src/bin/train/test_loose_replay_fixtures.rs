@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hydra_train::data::pipeline::{is_train_game, DataManifest, DataSource};
+use hydra_train::data::pipeline::{DataManifest, DataSource, is_train_game};
 
 fn loose_identity_for_test(path: &std::path::Path) -> String {
     let file_name = path

@@ -491,7 +491,8 @@ pub fn compute_hand_ev(
         let shanten_after = shanten_batch.base;
         let acceptance: f32 = uke.iter().sum();
         let acceptance_ratio = (acceptance / total_remaining).clamp(0.0, 1.0);
-        let follow_up_quality = expected_follow_up_quality_default(&after_discard, remaining, &mut cache);
+        let follow_up_quality =
+            expected_follow_up_quality_default(&after_discard, remaining, &mut cache);
         let immediate_tenpai_draw_prob = if shanten_after <= 0 {
             1.0
         } else {

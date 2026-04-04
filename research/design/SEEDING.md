@@ -45,7 +45,7 @@ Seed derivation uses SHA-256 KDF (matching hydra-core's existing seeding infrast
 | 1 | DataLoader workers | Seeds Burn DataLoader shuffle RNG |
 | 2 | Suit augmentation | Seeds per-worker permutation selection |
 | 3 | Rust game engine | Session seed for self-play game generation |
-| 4 | Reserve opponent-pool selection | Seeds opponent category sampling if a future league/pool phase is revived |
+| 4 | Reserved future tranche | Kept unassigned in the active branch; only reuse if a future promoted phase needs its own deterministic child |
 | 5 | Evaluation seed bank | Seeds generation of the fixed evaluation game set |
 
 **Phase-level derivation:** Each major training stage can derive its own seed via `derive_seed(master_seed, stage_number)` using SHA-256 KDF. This keeps replay/debug isolation clean when Hydra adds or revives later stages.
@@ -68,7 +68,7 @@ graph TD
 
     P3 --> S0_3["derive(0): Burn Init"]
     P3 --> S3_3["derive(3): Rust Self-Play"]
-    P3 --> S4_3["derive(4): Opponent Pool"]
+    P3 --> S4_3["derive(4): Reserved future tranche"]
 
     S3_3 --> GAME["Per-Game: set_stream(game_index)"]
     GAME --> KYOKU["Per-Kyoku: SHA-256 KDF --> wall shuffle"]
@@ -108,9 +108,9 @@ The Rust game engine receives a session seed derived from the hierarchy's game e
 
 Game seeds are determined before dispatch to rayon workers — rayon distributes work, not randomness. Each game instance receives its pre-computed seed as a value parameter; no per-thread RNG is needed for game simulation. The rayon thread pool is a pure compute resource. If per-thread RNG is ever needed for future extensions (e.g., exploration noise during inference), the pattern is a `thread_local` `ChaCha8Rng` seeded from `game_seed XOR thread_index`, ensuring reproducibility regardless of work-stealing order.
 
-**3f. Reserve Opponent-Pool Selection**
+**3f. Reserved Future Tranche**
 
-If Hydra later revives a league/pool phase, opponent category selection should use its own derived seed child so matchup schedules are reproducible under the same seed and pool contents. Keep this as reserve planning guidance, not as a claim about the current active tranche.
+Spawn index 4 remains intentionally unused by the active branch. If Hydra later promotes a new deterministic subsystem that needs its own independent child stream, it should consume this reserved slot rather than silently reshuffling the existing seed allocation table.
 
 ### GPU Determinism
 

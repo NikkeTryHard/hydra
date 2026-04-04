@@ -33,8 +33,8 @@ use super::TrainBackend;
 #[cfg(test)]
 use super::artifacts::write_manifest_cache;
 use super::artifacts::{
-    BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, manifest_cache_matches,
-    read_manifest_cache, read_preflight_cache, scan_and_write_manifest_cache,
+    BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, load_or_scan_manifest_cache,
+    read_preflight_cache,
 };
 use super::config::{
     RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
@@ -55,32 +55,6 @@ use super::schedule::schedule_total_steps;
 type JsonlAppender = super::artifacts::JsonlAppender;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
-
-fn load_or_scan_manifest(
-    cache_path: &Path,
-    data_dir: &Path,
-    train_fraction: f32,
-    source_filters: &hydra_train::data::pipeline::SourceFilterConfig,
-    progress: &indicatif::ProgressBar,
-) -> Result<DataManifest, String> {
-    if let Some(cached) = read_manifest_cache(cache_path)?
-        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
-    {
-        progress.finish_with_message(format!(
-            "reused manifest: {} train / {} val games",
-            cached.manifest.train_count, cached.manifest.val_count
-        ));
-        return Ok(cached.manifest);
-    }
-    scan_and_write_manifest_cache(
-        cache_path,
-        data_dir,
-        train_fraction,
-        source_filters,
-        Some(progress),
-        "MJAI data",
-    )
-}
 
 fn apply_cached_bc_runtime_if_matching(
     config: &mut TrainConfig,
@@ -303,12 +277,19 @@ where
     )?;
     scan_pb.set_message("Scanning archives...".to_string());
     let preflight_paths = crate::artifacts::PreflightPaths::new(&artifacts);
-    let manifest = load_or_scan_manifest(
+    let manifest = load_or_scan_manifest_cache(
         &preflight_paths.manifest_cache_path,
         &config.data_dir,
         config.train_fraction,
         &config.source_filters,
-        &scan_pb,
+        Some(&scan_pb),
+        "MJAI data",
+        |cached| {
+            scan_pb.finish_with_message(format!(
+                "reused manifest: {} train / {} val games",
+                cached.manifest.train_count, cached.manifest.val_count
+            ));
+        },
     )?;
     if !scan_pb.is_finished() && manifest.counts_exact {
         scan_pb.finish_with_message(format!(

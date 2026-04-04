@@ -1318,7 +1318,7 @@ mod tests {
         hand[10] = 1;
         hand[11] = 1; // 1-3p
         hand[18] = 2; // 1s pair
-                      // 14 tiles, len_div3=4, shanten=-1
+        // 14 tiles, len_div3=4, shanten=-1
         enc.encode_shanten_masks(&hand);
         // After discarding any tile, shanten goes from -1 to 0 (worsens).
         // So next-shanten (ch10) should have NO tiles set.
@@ -1344,9 +1344,9 @@ mod tests {
         hand[9] = 3; // 1p x3
         hand[10] = 1; // 2p
         hand[22] = 1; // 5s (drawn tile)
-                      // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
-                      // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
-                      // shanten = 0 (tenpai)
+        // 14 tiles. This is tenpai (waiting on 2p or 5s-related).
+        // Actually 123m 456m 789m 111p + 2p 5s = tenpai waiting on 3p
+        // shanten = 0 (tenpai)
         enc.encode_shanten_masks(&hand);
         // Discarding 2p or 5s keeps tenpai (shanten stays 0), so ch9 should be set
         // The exact tiles depend on shanten calc, but at minimum some tiles on ch9
@@ -1685,9 +1685,11 @@ mod tests {
         enc.encode(
             &hand, None, &open_meld, &discards, &melds, &dora, &meta, &safety,
         );
-        assert!(enc.as_slice()[CH_SEARCH * NUM_TILES..]
-            .iter()
-            .all(|&v| v == 0.0));
+        assert!(
+            enc.as_slice()[CH_SEARCH * NUM_TILES..]
+                .iter()
+                .all(|&v| v == 0.0)
+        );
     }
 
     #[test]
@@ -1947,9 +1949,11 @@ mod tests {
 
         let mask_offset = CH_HAND_EV_MASK * NUM_TILES;
         assert_eq!(enc.as_slice()[mask_offset], 0.0);
-        assert!(enc.as_slice()[CH_HAND_EV * NUM_TILES..mask_offset]
-            .iter()
-            .all(|&v| v == 0.0));
+        assert!(
+            enc.as_slice()[CH_HAND_EV * NUM_TILES..mask_offset]
+                .iter()
+                .all(|&v| v == 0.0)
+        );
     }
 
     #[test]
@@ -2013,8 +2017,10 @@ mod tests {
         );
 
         let mask_offset = CH_HAND_EV * NUM_TILES;
-        assert!(enc.as_slice()[CH_SEARCH * NUM_TILES..mask_offset]
-            .iter()
-            .all(|&v| v == 0.0));
+        assert!(
+            enc.as_slice()[CH_SEARCH * NUM_TILES..mask_offset]
+                .iter()
+                .all(|&v| v == 0.0)
+        );
     }
 }

@@ -11,7 +11,7 @@ use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{AdvancedHead, HeadState};
 use hydra_train::training::orchestrator::{
-    PhaseTrainReport, live_exit_config_from_plan, maintenance_plan,
+    PhaseTrainReport, RlPhaseTrainRequest, live_exit_config_from_plan, maintenance_plan,
     rl_phase_train_step_with_controller,
 };
 
@@ -400,13 +400,15 @@ pub(super) fn run_rl_training_loop(
         let (model, report) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
             rl_phase_train_step_with_controller(
-                &runtime.pipeline_state,
                 runtime.model,
-                &batch,
-                &rl_step_cfg,
-                &loss_fn,
+                RlPhaseTrainRequest {
+                    state: &runtime.pipeline_state,
+                    batch: &batch,
+                    cfg: &rl_step_cfg,
+                    loss_fn: &loss_fn,
+                    controller: Some(&mut runtime.head_controller),
+                },
                 &mut runtime.optimizer,
-                Some(&mut runtime.head_controller),
             )
             .map_err(|err| format!("rl phase train step failed: {err}"))?
         };

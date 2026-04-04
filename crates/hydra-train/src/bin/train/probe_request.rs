@@ -120,46 +120,13 @@ fn resolve_probe_batch_child_request(
 mod tests {
     use std::path::PathBuf;
 
-    use hydra_train::preflight::{PreflightConfig, ProbeKind};
+    use hydra_train::preflight::ProbeKind;
 
     use super::*;
+    use crate::test_support::dummy_train_config;
 
     fn dummy_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/tmp/data"),
-            output_dir: PathBuf::from("/tmp/out"),
-            num_epochs: 1,
-            batch_size: 256,
-            microbatch_size: Some(64),
-            validation_microbatch_size: Some(32),
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: 0.9,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: true,
-            resume_checkpoint: None,
-            seed: 0,
-            advanced_loss: None,
-            rl: None,
-            bc: Default::default(),
-            device: "cpu".to_string(),
-            buffer_games: 16,
-            buffer_samples: 128,
-            num_threads: None,
-            tensorboard: false,
-            archive_queue_bound: 8,
-            validation_every_n_epochs: 1,
-            max_skip_logs_per_source: 4,
-            log_every_n_steps: 10,
-            validate_every_n_steps: 10,
-            checkpoint_every_n_steps: 10,
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: None,
-            preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
-        }
+        dummy_train_config()
     }
 
     #[test]

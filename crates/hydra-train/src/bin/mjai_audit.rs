@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use hydra_train::data::archive_helpers::is_mjai_archive_entry;
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
 use hydra_train::data::pipeline::{DataSource, scan_data_sources};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -212,13 +213,6 @@ fn is_archive_file(path: &Path) -> bool {
         Some(name)
             if name.ends_with(".tar.zst")
                 || name.contains(".tar-") && name.ends_with(".zst")
-    )
-}
-
-fn is_mjai_archive_entry(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name) if name.ends_with(".json") || name.ends_with(".json.gz") || name.ends_with(".mjai.json") || name.ends_with(".mjai.json.gz")
     )
 }
 

@@ -1,3 +1,4 @@
+use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::module::AutodiffModule;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
@@ -9,7 +10,7 @@ use hydra_train::data::bc_shards::{
     BcShardHostBatch, BcShardReader, BcShardSplit, load_bc_shard_reader,
 };
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_microbatches};
-use hydra_train::data::sample::{MjaiSample, collate_samples_bc_owned};
+use hydra_train::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
 use hydra_train::model::HydraModel;
 #[cfg(test)]
 use hydra_train::model::HydraOutput;
@@ -25,19 +26,15 @@ use hydra_train::training::delta_q_promotion::{
     evaluate_policy_transfer_report, evaluate_promotion_report,
 };
 use hydra_train::training::head_gates::HeadActivationController;
-use hydra_train::training::losses::HydraLoss;
-#[cfg(test)]
-use hydra_train::training::losses::HydraTargets;
+use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
 use super::nvtx;
 #[cfg(feature = "cuda-graph")]
 use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
-use super::progress::{
-    batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
-};
 #[cfg(test)]
 use super::progress::{BatchStats, batch_stats_from_outputs};
+use super::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums};
 use super::resume::BestValidation;
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -128,6 +125,236 @@ pub(super) struct ValidationSummary {
     pub(super) delta_q_policy_transfer_snapshot: Option<DeltaQPolicyTransferSnapshot>,
 }
 
+struct ValidationAccumulator<B: Backend> {
+    metric_sums: Option<Tensor<B, 1>>,
+    microbatch_count: usize,
+    total_samples: usize,
+    delta_q_promotion: DeltaQPromotionReport,
+    delta_q_policy_transfer: DeltaQPolicyTransferReport,
+    saw_delta_q_targets: bool,
+    profiling: ProfilingEnvelope,
+}
+
+impl<B: Backend> ValidationAccumulator<B> {
+    fn new() -> Self {
+        Self {
+            metric_sums: None,
+            microbatch_count: 0,
+            total_samples: 0,
+            delta_q_promotion: DeltaQPromotionReport::new(),
+            delta_q_policy_transfer: DeltaQPolicyTransferReport::new(),
+            saw_delta_q_targets: false,
+            profiling: ProfilingEnvelope::nested(
+                PROFILING_STAGE_VALIDATION,
+                0.0,
+                vec![
+                    ProfilingEnvelope::leaf(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, 0.0),
+                    ProfilingEnvelope::leaf(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD, 0.0),
+                ],
+            ),
+        }
+    }
+}
+
+struct ValidationModels<'a, TB>
+where
+    TB: AutodiffBackend,
+{
+    model: &'a HydraModel<TB>,
+    baseline_model: &'a HydraModel<TB>,
+    model_valid: &'a HydraModel<ValidBackendOf<TB>>,
+    baseline_valid: &'a HydraModel<ValidBackendOf<TB>>,
+}
+
+struct ValidationBatchInput<B: Backend> {
+    obs: Tensor<B, 3>,
+    batch: MjaiBcBatch<B>,
+    targets: HydraTargets<B>,
+    sample_count: usize,
+}
+
+fn process_validation_batch<TB>(
+    models: ValidationModels<'_, TB>,
+    loss_fn: &HydraLoss<ValidBackendOf<TB>>,
+    exit_cfg: &BcExitConfig,
+    batch_input: ValidationBatchInput<ValidBackendOf<TB>>,
+    head_controller: &mut Option<&mut HeadActivationController>,
+    accumulator: &mut ValidationAccumulator<ValidBackendOf<TB>>,
+) where
+    TB: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<TB>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
+    let ValidationModels {
+        model,
+        baseline_model,
+        model_valid,
+        baseline_valid,
+    } = models;
+    let ValidationBatchInput {
+        obs,
+        batch,
+        targets,
+        sample_count,
+    } = batch_input;
+    let (active_loss_fn, warmup_heads) =
+        gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
+    let candidate_started = Instant::now();
+    let (output, breakdown, total) = {
+        let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
+        let output =
+            model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+        let breakdown = active_loss_fn.total_loss(&output, &targets);
+        let total = maybe_add_exit_loss(
+            breakdown.total.clone(),
+            output.policy_logits.clone(),
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            exit_cfg,
+        );
+        (output, breakdown, total)
+    };
+    let candidate_elapsed_seconds = candidate_started.elapsed().as_secs_f64();
+    let chunk_metric_sums = batch_metric_sums_from_outputs(
+        sample_count,
+        output.policy_logits.clone(),
+        targets.legal_mask.clone(),
+        batch.actions.clone(),
+        total.clone(),
+        &breakdown,
+    );
+    let mut baseline_elapsed_seconds = 0.0;
+    if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
+        let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
+            output.policy_logits.clone()
+        } else {
+            let baseline_started = Instant::now();
+            let baseline_policy_logits = {
+                let _baseline_scope = nvtx::scope(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD);
+                baseline_valid.forward_policy(obs)
+            };
+            baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
+            baseline_policy_logits
+        };
+        accumulator
+            .delta_q_promotion
+            .merge(&collect_promotion_metrics_from_outputs(
+                &output, &targets, 0.75,
+            ));
+        accumulator.delta_q_policy_transfer.merge(
+            &collect_policy_transfer_metrics_from_policy_outputs(
+                output.policy_logits.clone(),
+                baseline_policy_logits,
+                &targets,
+            ),
+        );
+        accumulator.saw_delta_q_targets = true;
+    }
+    accumulator
+        .profiling
+        .merge_assign(&ProfilingEnvelope::nested(
+            PROFILING_STAGE_VALIDATION,
+            candidate_elapsed_seconds + baseline_elapsed_seconds,
+            vec![
+                ProfilingEnvelope::leaf(
+                    PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS,
+                    candidate_elapsed_seconds,
+                ),
+                ProfilingEnvelope::leaf(
+                    PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
+                    baseline_elapsed_seconds,
+                ),
+            ],
+        ));
+    accumulator.metric_sums = Some(match accumulator.metric_sums.take() {
+        Some(existing) => existing + chunk_metric_sums,
+        None => chunk_metric_sums,
+    });
+    accumulator.microbatch_count += 1;
+    accumulator.total_samples += sample_count;
+}
+
+fn finalize_validation_summary<B: Backend>(
+    accumulator: ValidationAccumulator<B>,
+) -> ValidationSummary {
+    let ValidationAccumulator {
+        metric_sums,
+        microbatch_count,
+        total_samples,
+        delta_q_promotion,
+        delta_q_policy_transfer,
+        saw_delta_q_targets,
+        profiling,
+    } = accumulator;
+
+    if total_samples == 0 {
+        return ValidationSummary {
+            total_loss: 0.0,
+            policy_loss: 0.0,
+            agreement: 0.0,
+            samples: 0,
+            profiling: Some(profiling),
+            delta_q_promotion: None,
+            delta_q_promotion_result: None,
+            delta_q_promotion_snapshot: None,
+            delta_q_policy_transfer: None,
+            delta_q_policy_transfer_result: None,
+            delta_q_policy_transfer_snapshot: None,
+        };
+    }
+
+    let stats = batch_stats_from_metric_sums(
+        total_samples,
+        microbatch_count,
+        metric_sums.expect("validation metric sums should exist when samples > 0"),
+    );
+    let (
+        delta_q_promotion,
+        delta_q_promotion_result,
+        delta_q_promotion_snapshot,
+        delta_q_policy_transfer,
+        delta_q_policy_transfer_result,
+        delta_q_policy_transfer_snapshot,
+    ) = if saw_delta_q_targets {
+        let result =
+            evaluate_promotion_report(&delta_q_promotion, &DeltaQPromotionThresholds::default());
+        let policy_transfer_result = evaluate_policy_transfer_report(
+            &delta_q_policy_transfer,
+            &DeltaQPolicyTransferThresholds::default(),
+        );
+        let snapshot = DeltaQPromotionSnapshot::from_report(&delta_q_promotion, &result);
+        let policy_transfer_snapshot =
+            DeltaQPolicyTransferSnapshot::from_report(&delta_q_policy_transfer);
+        (
+            Some(delta_q_promotion),
+            Some(result),
+            Some(snapshot),
+            Some(delta_q_policy_transfer),
+            Some(policy_transfer_result),
+            Some(policy_transfer_snapshot),
+        )
+    } else {
+        (None, None, None, None, None, None)
+    };
+
+    ValidationSummary {
+        total_loss: stats.total_loss,
+        policy_loss: stats.loss_policy,
+        agreement: stats.policy_agreement,
+        samples: total_samples,
+        profiling: Some(profiling),
+        delta_q_promotion,
+        delta_q_promotion_result,
+        delta_q_promotion_snapshot,
+        delta_q_policy_transfer,
+        delta_q_policy_transfer_result,
+        delta_q_policy_transfer_snapshot,
+    }
+}
+
 #[cfg(test)]
 pub(super) fn validation_batch_stats<B: Backend>(
     sample_count: usize,
@@ -167,7 +394,12 @@ pub(super) fn run_validation<TB>(
     runtime: ValidationRuntime<'_>,
 ) -> Result<ValidationSummary, String>
 where
-    TB: AutodiffBackend,
+    TB: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<TB>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     run_validation_with_policy_baseline(model, model, context, runtime)
 }
@@ -179,7 +411,12 @@ pub(super) fn run_validation_with_policy_baseline<TB>(
     runtime: ValidationRuntime<'_>,
 ) -> Result<ValidationSummary, String>
 where
-    TB: AutodiffBackend,
+    TB: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<TB>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     if let Some(reader) = context.shard_reader {
         return run_validation_from_shards(model, baseline_model, context, runtime, reader);
@@ -206,31 +443,12 @@ where
     let baseline_valid = baseline_model.valid();
     let validation_batch_size = validation_microbatch_size(config);
     let validation_sample_limit = validation_sample_limit(config);
-    let mut metric_sums: Option<Tensor<ValidBackendOf<TB>, 1>> = None;
-    let mut microbatch_count = 0usize;
-    let mut total_samples = 0usize;
+    let mut accumulator = ValidationAccumulator::new();
     let mut head_controller = head_controller;
-    let mut delta_q_promotion = DeltaQPromotionReport::new();
-    let mut delta_q_policy_transfer = DeltaQPolicyTransferReport::new();
-    let mut saw_delta_q_targets = false;
-    let mut validation_profiling = ProfilingEnvelope::nested(
-        PROFILING_STAGE_VALIDATION,
-        0.0,
-        vec![
-            ProfilingEnvelope::leaf(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, 0.0),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD, 0.0),
-        ],
-    );
 
     let run_chunk = |capped_chunk: &[MjaiSample],
-                     metric_sums: &mut Option<Tensor<ValidBackendOf<TB>, 1>>,
-                     microbatch_count: &mut usize,
-                     total_samples: &mut usize,
                      head_controller: &mut Option<&mut HeadActivationController>,
-                     delta_q_promotion: &mut DeltaQPromotionReport,
-                     delta_q_policy_transfer: &mut DeltaQPolicyTransferReport,
-                     saw_delta_q_targets: &mut bool,
-                     validation_profiling: &mut ProfilingEnvelope|
+                     accumulator: &mut ValidationAccumulator<ValidBackendOf<TB>>|
      -> Result<(), String> {
         let Some((obs, batch, targets)) =
             collate_samples_bc_owned::<ValidBackendOf<TB>>(capped_chunk, false, device)
@@ -238,87 +456,36 @@ where
         else {
             return Ok(());
         };
-        let (active_loss_fn, warmup_heads) =
-            gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
-        let candidate_started = Instant::now();
-        let (output, breakdown, total) = {
-            let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
-            let output =
-                model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
-            let breakdown = active_loss_fn.total_loss(&output, &targets);
-            let total = maybe_add_exit_loss(
-                breakdown.total.clone(),
-                output.policy_logits.clone(),
-                batch.exit_target.as_ref(),
-                batch.exit_mask.as_ref(),
-                exit_cfg,
-            );
-            (output, breakdown, total)
-        };
-        let candidate_elapsed_seconds = candidate_started.elapsed().as_secs_f64();
-        let chunk_metric_sums = batch_metric_sums_from_outputs(
-            capped_chunk.len(),
-            output.policy_logits.clone(),
-            targets.legal_mask.clone(),
-            batch.actions.clone(),
-            total.clone(),
-            &breakdown,
+        process_validation_batch(
+            ValidationModels {
+                model,
+                baseline_model,
+                model_valid: &model_valid,
+                baseline_valid: &baseline_valid,
+            },
+            loss_fn,
+            exit_cfg,
+            ValidationBatchInput {
+                obs,
+                batch,
+                targets,
+                sample_count: capped_chunk.len(),
+            },
+            head_controller,
+            accumulator,
         );
-        let mut baseline_elapsed_seconds = 0.0;
-        if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
-            let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
-                output.policy_logits.clone()
-            } else {
-                let baseline_started = Instant::now();
-                let baseline_policy_logits = {
-                    let _baseline_scope = nvtx::scope(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD);
-                    baseline_valid.forward_policy(obs)
-                };
-                baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
-                baseline_policy_logits
-            };
-            delta_q_promotion.merge(&collect_promotion_metrics_from_outputs(
-                &output, &targets, 0.75,
-            ));
-            delta_q_policy_transfer.merge(&collect_policy_transfer_metrics_from_policy_outputs(
-                output.policy_logits.clone(),
-                baseline_policy_logits,
-                &targets,
-            ));
-            *saw_delta_q_targets = true;
-        }
-        validation_profiling.merge_assign(&ProfilingEnvelope::nested(
-            PROFILING_STAGE_VALIDATION,
-            candidate_elapsed_seconds + baseline_elapsed_seconds,
-            vec![
-                ProfilingEnvelope::leaf(
-                    PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS,
-                    candidate_elapsed_seconds,
-                ),
-                ProfilingEnvelope::leaf(
-                    PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
-                    baseline_elapsed_seconds,
-                ),
-            ],
-        ));
-        *metric_sums = Some(match metric_sums.take() {
-            Some(existing) => existing + chunk_metric_sums,
-            None => chunk_metric_sums,
-        });
-        *microbatch_count += 1;
-        *total_samples += capped_chunk.len();
         Ok(())
     };
 
     if let Some(cached_samples) = cached_samples {
         for chunk in cached_samples {
             if let Some(limit) = validation_sample_limit
-                && total_samples >= limit
+                && accumulator.total_samples >= limit
             {
                 break;
             }
             let capped_chunk = if let Some(limit) = validation_sample_limit {
-                let remaining = limit.saturating_sub(total_samples);
+                let remaining = limit.saturating_sub(accumulator.total_samples);
                 &chunk[..chunk.len().min(remaining)]
             } else {
                 chunk.as_ref()
@@ -326,17 +493,7 @@ where
             if capped_chunk.is_empty() {
                 break;
             }
-            run_chunk(
-                capped_chunk,
-                &mut metric_sums,
-                &mut microbatch_count,
-                &mut total_samples,
-                &mut head_controller,
-                &mut delta_q_promotion,
-                &mut delta_q_policy_transfer,
-                &mut saw_delta_q_targets,
-                &mut validation_profiling,
-            )?;
+            run_chunk(capped_chunk, &mut head_controller, &mut accumulator)?;
         }
     } else {
         for microbatch_result in
@@ -345,12 +502,12 @@ where
             let microbatch =
                 microbatch_result.map_err(|err| format!("validation stream failed: {err}"))?;
             if let Some(limit) = validation_sample_limit
-                && total_samples >= limit
+                && accumulator.total_samples >= limit
             {
                 break;
             }
             let capped_chunk = if let Some(limit) = validation_sample_limit {
-                let remaining = limit.saturating_sub(total_samples);
+                let remaining = limit.saturating_sub(accumulator.total_samples);
                 &microbatch[..microbatch.len().min(remaining)]
             } else {
                 microbatch.as_slice()
@@ -358,89 +515,16 @@ where
             if capped_chunk.is_empty() {
                 break;
             }
-            run_chunk(
-                capped_chunk,
-                &mut metric_sums,
-                &mut microbatch_count,
-                &mut total_samples,
-                &mut head_controller,
-                &mut delta_q_promotion,
-                &mut delta_q_policy_transfer,
-                &mut saw_delta_q_targets,
-                &mut validation_profiling,
-            )?;
+            run_chunk(capped_chunk, &mut head_controller, &mut accumulator)?;
             if let Some(limit) = validation_sample_limit
-                && total_samples >= limit
+                && accumulator.total_samples >= limit
             {
                 break;
             }
         }
     }
 
-    if total_samples == 0 {
-        Ok(ValidationSummary {
-            total_loss: 0.0,
-            policy_loss: 0.0,
-            agreement: 0.0,
-            samples: 0,
-            profiling: Some(validation_profiling),
-            delta_q_promotion: None,
-            delta_q_promotion_result: None,
-            delta_q_promotion_snapshot: None,
-            delta_q_policy_transfer: None,
-            delta_q_policy_transfer_result: None,
-            delta_q_policy_transfer_snapshot: None,
-        })
-    } else {
-        let stats = batch_stats_from_metric_sums(
-            total_samples,
-            microbatch_count,
-            metric_sums.expect("validation metric sums should exist when samples > 0"),
-        );
-        let (
-            delta_q_promotion,
-            delta_q_promotion_result,
-            delta_q_promotion_snapshot,
-            delta_q_policy_transfer,
-            delta_q_policy_transfer_result,
-            delta_q_policy_transfer_snapshot,
-        ) = if saw_delta_q_targets {
-            let result = evaluate_promotion_report(
-                &delta_q_promotion,
-                &DeltaQPromotionThresholds::default(),
-            );
-            let policy_transfer_result = evaluate_policy_transfer_report(
-                &delta_q_policy_transfer,
-                &DeltaQPolicyTransferThresholds::default(),
-            );
-            let snapshot = DeltaQPromotionSnapshot::from_report(&delta_q_promotion, &result);
-            let policy_transfer_snapshot =
-                DeltaQPolicyTransferSnapshot::from_report(&delta_q_policy_transfer);
-            (
-                Some(delta_q_promotion),
-                Some(result),
-                Some(snapshot),
-                Some(delta_q_policy_transfer),
-                Some(policy_transfer_result),
-                Some(policy_transfer_snapshot),
-            )
-        } else {
-            (None, None, None, None, None, None)
-        };
-        Ok(ValidationSummary {
-            total_loss: stats.total_loss,
-            policy_loss: stats.loss_policy,
-            agreement: stats.policy_agreement,
-            samples: total_samples,
-            profiling: Some(validation_profiling),
-            delta_q_promotion,
-            delta_q_promotion_result,
-            delta_q_promotion_snapshot,
-            delta_q_policy_transfer,
-            delta_q_policy_transfer_result,
-            delta_q_policy_transfer_snapshot,
-        })
-    }
+    Ok(finalize_validation_summary(accumulator))
 }
 
 pub(super) fn materialize_validation_samples(
@@ -469,7 +553,13 @@ pub(super) fn materialize_validation_samples(
             break;
         }
         let take = microbatch.len().min(remaining);
-        microbatches.push(microbatch.into_iter().take(take).collect::<Vec<_>>().into_boxed_slice());
+        microbatches.push(
+            microbatch
+                .into_iter()
+                .take(take)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
         total_samples += take;
     }
     Ok(Some(microbatches.into_boxed_slice()))
@@ -490,7 +580,12 @@ pub(super) fn run_validation_from_shards<TB>(
     reader: &BcShardReader,
 ) -> Result<ValidationSummary, String>
 where
-    TB: AutodiffBackend,
+    TB: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<TB>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     let ValidationContext {
         config,
@@ -510,21 +605,8 @@ where
     let baseline_valid = baseline_model.valid();
     let validation_batch_size = validation_microbatch_size(config);
     let validation_sample_limit = validation_sample_limit(config);
-    let mut metric_sums: Option<Tensor<ValidBackendOf<TB>, 1>> = None;
-    let mut microbatch_count = 0usize;
-    let mut total_samples = 0usize;
+    let mut accumulator = ValidationAccumulator::new();
     let mut head_controller = head_controller;
-    let mut delta_q_promotion = DeltaQPromotionReport::new();
-    let mut delta_q_policy_transfer = DeltaQPolicyTransferReport::new();
-    let mut saw_delta_q_targets = false;
-    let mut validation_profiling = ProfilingEnvelope::nested(
-        PROFILING_STAGE_VALIDATION,
-        0.0,
-        vec![
-            ProfilingEnvelope::leaf(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, 0.0),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD, 0.0),
-        ],
-    );
 
     let total_rows = reader.sample_count();
     let limit_rows = validation_sample_limit
@@ -579,104 +661,52 @@ where
         for recv_result in rx {
             let (host_batch, take) = recv_result?;
             #[cfg(feature = "cuda-graph")]
-            let (shard_batch, recycled_host_batch) = {
-                if let Some((ref mut pinned_staging, ref h2d_ctx, ref mut gpu_tensors)) =
-                    staging_context
-                {
-                    (
-                        super::pinned_transfer::materialize_staged_reuse_inner::<ValidBackendOf<TB>>(
-                            &host_batch,
-                            pinned_staging,
-                            h2d_ctx,
-                            device,
-                            gpu_tensors,
-                        ),
-                        Some(host_batch),
-                    )
-                } else {
-                    (host_batch.materialize_owned::<ValidBackendOf<TB>>(device), None)
-                }
-            };
-            #[cfg(not(feature = "cuda-graph"))]
             let (shard_batch, recycled_host_batch) =
-                (host_batch.materialize_owned::<ValidBackendOf<TB>>(device), None);
+                {
+                    if let Some((ref mut pinned_staging, ref h2d_ctx, ref mut gpu_tensors)) =
+                        staging_context
+                    {
+                        (
+                            super::pinned_transfer::materialize_staged_reuse_inner::<
+                                ValidBackendOf<TB>,
+                            >(
+                                &host_batch, pinned_staging, h2d_ctx, device, gpu_tensors
+                            ),
+                            Some(host_batch),
+                        )
+                    } else {
+                        (
+                            host_batch.materialize_owned::<ValidBackendOf<TB>>(device),
+                            None,
+                        )
+                    }
+                };
+            #[cfg(not(feature = "cuda-graph"))]
+            let (shard_batch, recycled_host_batch) = (
+                host_batch.materialize_owned::<ValidBackendOf<TB>>(device),
+                None,
+            );
             let obs = shard_batch.obs;
             let batch = shard_batch.batch;
             let targets = shard_batch.targets;
-            let (active_loss_fn, warmup_heads) =
-                gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
-            let candidate_started = Instant::now();
-            let (output, breakdown, total) = {
-                let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
-                let output = model_valid.forward_with_warmup(
-                    obs.clone(),
-                    &active_loss_fn.config,
-                    &warmup_heads,
-                );
-                let breakdown = active_loss_fn.total_loss(&output, &targets);
-                let total = maybe_add_exit_loss(
-                    breakdown.total.clone(),
-                    output.policy_logits.clone(),
-                    batch.exit_target.as_ref(),
-                    batch.exit_mask.as_ref(),
-                    exit_cfg,
-                );
-                (output, breakdown, total)
-            };
-            let candidate_elapsed_seconds = candidate_started.elapsed().as_secs_f64();
-            let chunk_metric_sums = batch_metric_sums_from_outputs(
-                take,
-                output.policy_logits.clone(),
-                targets.legal_mask.clone(),
-                batch.actions.clone(),
-                total.clone(),
-                &breakdown,
+            process_validation_batch(
+                ValidationModels {
+                    model,
+                    baseline_model,
+                    model_valid: &model_valid,
+                    baseline_valid: &baseline_valid,
+                },
+                loss_fn,
+                exit_cfg,
+                ValidationBatchInput {
+                    obs,
+                    batch,
+                    targets,
+                    sample_count: take,
+                },
+                &mut head_controller,
+                &mut accumulator,
             );
-            let mut baseline_elapsed_seconds = 0.0;
-            if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
-                let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
-                    output.policy_logits.clone()
-                } else {
-                    let baseline_started = Instant::now();
-                    let baseline_policy_logits = {
-                        let _baseline_scope = nvtx::scope(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD);
-                        baseline_valid.forward_policy(obs)
-                    };
-                    baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
-                    baseline_policy_logits
-                };
-                delta_q_promotion.merge(&collect_promotion_metrics_from_outputs(
-                    &output, &targets, 0.75,
-                ));
-                delta_q_policy_transfer.merge(
-                    &collect_policy_transfer_metrics_from_policy_outputs(
-                        output.policy_logits.clone(),
-                        baseline_policy_logits,
-                        &targets,
-                    ),
-                );
-                saw_delta_q_targets = true;
-            }
-            validation_profiling.merge_assign(&ProfilingEnvelope::nested(
-                PROFILING_STAGE_VALIDATION,
-                candidate_elapsed_seconds + baseline_elapsed_seconds,
-                vec![
-                    ProfilingEnvelope::leaf(
-                        PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS,
-                        candidate_elapsed_seconds,
-                    ),
-                    ProfilingEnvelope::leaf(
-                        PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
-                        baseline_elapsed_seconds,
-                    ),
-                ],
-            ));
-            metric_sums = Some(match metric_sums.take() {
-                Some(existing) => existing + chunk_metric_sums,
-                None => chunk_metric_sums,
-            });
-            microbatch_count += 1;
-            total_samples += take;
             if let Some(host_batch) = recycled_host_batch {
                 let _ = recycle_tx.try_send(host_batch);
             }
@@ -688,70 +718,7 @@ where
     });
     consumer_result?;
 
-    if total_samples == 0 {
-        Ok(ValidationSummary {
-            total_loss: 0.0,
-            policy_loss: 0.0,
-            agreement: 0.0,
-            samples: 0,
-            profiling: Some(validation_profiling),
-            delta_q_promotion: None,
-            delta_q_promotion_result: None,
-            delta_q_promotion_snapshot: None,
-            delta_q_policy_transfer: None,
-            delta_q_policy_transfer_result: None,
-            delta_q_policy_transfer_snapshot: None,
-        })
-    } else {
-        let stats = batch_stats_from_metric_sums(
-            total_samples,
-            microbatch_count,
-            metric_sums.expect("validation metric sums should exist when samples > 0"),
-        );
-        let (
-            delta_q_promotion,
-            delta_q_promotion_result,
-            delta_q_promotion_snapshot,
-            delta_q_policy_transfer,
-            delta_q_policy_transfer_result,
-            delta_q_policy_transfer_snapshot,
-        ) = if saw_delta_q_targets {
-            let result = evaluate_promotion_report(
-                &delta_q_promotion,
-                &DeltaQPromotionThresholds::default(),
-            );
-            let snapshot = DeltaQPromotionSnapshot::from_report(&delta_q_promotion, &result);
-            let policy_transfer_snapshot =
-                DeltaQPolicyTransferSnapshot::from_report(&delta_q_policy_transfer);
-            let policy_transfer_result = evaluate_policy_transfer_report(
-                &delta_q_policy_transfer,
-                &DeltaQPolicyTransferThresholds::default(),
-            );
-            (
-                Some(delta_q_promotion),
-                Some(result),
-                Some(snapshot),
-                Some(delta_q_policy_transfer),
-                Some(policy_transfer_result),
-                Some(policy_transfer_snapshot),
-            )
-        } else {
-            (None, None, None, None, None, None)
-        };
-        Ok(ValidationSummary {
-            total_loss: stats.total_loss,
-            policy_loss: stats.loss_policy,
-            agreement: stats.policy_agreement,
-            samples: total_samples,
-            profiling: Some(validation_profiling),
-            delta_q_promotion,
-            delta_q_promotion_result,
-            delta_q_promotion_snapshot,
-            delta_q_policy_transfer,
-            delta_q_policy_transfer_result,
-            delta_q_policy_transfer_snapshot,
-        })
-    }
+    Ok(finalize_validation_summary(accumulator))
 }
 
 #[cfg(test)]
@@ -769,7 +736,6 @@ mod tests {
     use hydra_train::data::sample::MjaiBatch;
     use hydra_train::data::sample::MjaiSample;
     use hydra_train::model::HydraModelConfig;
-    use hydra_train::preflight::PreflightConfig;
     use hydra_train::training::bc::{BcExitConfig, bc_total_with_exit};
     use hydra_train::training::losses::HydraLossConfig;
 
@@ -777,6 +743,7 @@ mod tests {
     use crate::config::{BcHyperparamConfig, TrainConfig};
     use crate::resume::BestValidation;
     use crate::test_loose_replay_fixtures::write_real_preflight_fixture;
+    use crate::test_support::dummy_train_config;
 
     type TestValidBackend = ValidBackendOf<TrainBackend>;
 
@@ -795,41 +762,10 @@ mod tests {
     }
 
     fn dummy_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/data"),
-            output_dir: PathBuf::from("/output"),
-            num_epochs: 1,
-            batch_size: 256,
-            microbatch_size: Some(64),
-            validation_microbatch_size: Some(32),
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: 0.9,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: true,
-            resume_checkpoint: None,
-            seed: 0,
-            advanced_loss: None,
-            rl: None,
-            bc: BcHyperparamConfig::default(),
-            device: "cpu".to_string(),
-            buffer_games: 16,
-            buffer_samples: 128,
-            num_threads: Some(2),
-            tensorboard: false,
-            archive_queue_bound: 8,
-            validation_every_n_epochs: 1,
-            max_skip_logs_per_source: 4,
-            log_every_n_steps: 10,
-            validate_every_n_steps: 10,
-            checkpoint_every_n_steps: 10,
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: None,
-            preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
-        }
+        let mut config = dummy_train_config();
+        config.bc = BcHyperparamConfig::default();
+        config.num_threads = Some(2);
+        config
     }
 
     fn empty_manifest() -> DataManifest {
@@ -1313,7 +1249,10 @@ mod tests {
             .expect("validation cache should materialize when a sample limit is configured");
 
         assert_eq!(
-            cached_samples.iter().map(|batch| batch.len()).sum::<usize>(),
+            cached_samples
+                .iter()
+                .map(|batch| batch.len())
+                .sum::<usize>(),
             total_streamed_samples
         );
 

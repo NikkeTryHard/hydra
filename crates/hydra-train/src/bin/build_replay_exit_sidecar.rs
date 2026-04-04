@@ -3,8 +3,8 @@ use burn::backend::libtorch::LibTorchDevice;
 mod replay_sidecar_common;
 
 use self::replay_sidecar_common::{
-    build_exit_config, load_model, parse_args, read_events, write_jsonl, write_report,
-    write_sidecar_with,
+    ReplaySidecarWriteRequest, build_exit_config, load_model, parse_args, read_events, write_jsonl,
+    write_report, write_sidecar_with,
 };
 use hydra_train::training::replay_exit::replay_exit_records_for_identity;
 
@@ -16,12 +16,14 @@ fn run() -> Result<(), String> {
 
     let events = read_events(&cli.input)?;
     let summary = write_sidecar_with(
-        &cli.input,
-        &cli.checkpoint,
-        &cli.output,
-        cli.source_version,
-        "replay ExIt sidecar",
-        "replay ExIt records",
+        ReplaySidecarWriteRequest {
+            input: &cli.input,
+            checkpoint: &cli.checkpoint,
+            output: &cli.output,
+            source_version: cli.source_version,
+            lane_name: "replay ExIt sidecar",
+            record_label: "replay ExIt records",
+        },
         |source_identity, source_net_hash, source_version| {
             replay_exit_records_for_identity(
                 source_identity,

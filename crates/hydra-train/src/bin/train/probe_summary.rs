@@ -121,6 +121,14 @@ pub(super) fn best_probe_summary(results: &[ProbeResult]) -> Option<ProbeCandida
         })
 }
 
+pub(super) fn candidate_average(results: &[ProbeResult], candidate: usize) -> Option<f64> {
+    summarize_probe_results(results)
+        .into_iter()
+        .find(|summary| summary.candidate_microbatch == candidate)
+        .filter(|summary| summary.status == ProbeStatus::Success)
+        .and_then(|summary| summary.average_samples_per_second)
+}
+
 #[cfg(test)]
 mod tests {
     use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};

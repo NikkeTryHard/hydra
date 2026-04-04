@@ -2,11 +2,11 @@
 
 use crate::amp::maybe_autocast;
 use crate::config::OracleGuidingConfig;
-use crate::data::sample::{collate_sample_refs_bc_owned, MjaiBatch, MjaiSample};
+use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_bc_owned};
 use crate::model::{HydraModel, HydraModelConfig};
 use crate::training::exit::exit_loss;
 use crate::training::head_gates::{
-    borrow_or_extract_target_presence, AdvancedHead, HeadActivationController,
+    AdvancedHead, HeadActivationController, borrow_or_extract_target_presence,
 };
 use crate::training::losses::{HydraLoss, HydraTargets};
 use burn::grad_clipping::GradientClippingConfig;
@@ -102,6 +102,35 @@ pub struct OracleGuidingStepStats {
     pub oracle_keep_prob: f32,
     pub kept_oracle_fraction: f32,
     pub loss: Option<f64>,
+}
+
+pub struct BcTrainBatchInput<'a, B: Backend> {
+    pub obs: Tensor<B, 3>,
+    pub batch: &'a MjaiBatch<B>,
+    pub targets: &'a HydraTargets<B>,
+}
+
+pub struct BcTrainStepContext<'a, B: AutodiffBackend> {
+    pub loss_fn: &'a HydraLoss<B>,
+    pub exit_cfg: &'a BcExitConfig,
+    pub use_amp: bool,
+    pub lr: f64,
+}
+
+pub struct OracleGuidingBatchInput<'a, B: Backend> {
+    pub obs: Tensor<B, 3>,
+    pub targets: &'a HydraTargets<B>,
+    pub loss_fn: &'a HydraLoss<B>,
+    pub importance_weight: f32,
+    pub max_importance_weight: f32,
+    pub rng_values: &'a [f32],
+}
+
+pub struct OracleGuidingStepSchedule<'a> {
+    pub base_lr: f64,
+    pub oracle_cfg: &'a OracleGuidingConfig,
+    pub step: usize,
+    pub total_steps: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -237,22 +266,22 @@ pub fn target_actions_from_policy_target<B: Backend>(
     policy_target.argmax(1).squeeze_dim::<1>(1)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn bc_train_step<B: AutodiffBackend>(
     model: HydraModel<B>,
-    obs: Tensor<B, 3>,
-    batch: &MjaiBatch<B>,
-    targets: &HydraTargets<B>,
-    loss_fn: &HydraLoss<B>,
-    exit_cfg: &BcExitConfig,
-    use_amp: bool,
-    lr: f64,
+    batch_input: BcTrainBatchInput<'_, B>,
+    step_context: BcTrainStepContext<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    let output = maybe_autocast(use_amp, || model.forward(obs));
-    let breakdown = loss_fn.total_loss(&output, targets);
-    let total =
-        bc_total_with_optional_exit_from_breakdown(&output, Some(batch), &breakdown, exit_cfg);
+    let output = maybe_autocast(step_context.use_amp, || model.forward(batch_input.obs));
+    let breakdown = step_context
+        .loss_fn
+        .total_loss(&output, batch_input.targets);
+    let total = bc_total_with_optional_exit_from_breakdown(
+        &output,
+        Some(batch_input.batch),
+        &breakdown,
+        step_context.exit_cfg,
+    );
     let loss_val = total
         .clone()
         .into_data()
@@ -261,7 +290,7 @@ pub fn bc_train_step<B: AutodiffBackend>(
         .expect("bc total loss should be readable as f64")[0];
     let grads = total.backward();
     let grads = GradientsParams::from_grads(grads, &model);
-    let model = optimizer.step(lr, model, grads);
+    let model = optimizer.step(step_context.lr, model, grads);
     (model, loss_val)
 }
 
@@ -273,11 +302,7 @@ pub fn oracle_guidance_mask_values(
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob {
-                1.0
-            } else {
-                0.0
-            }
+            if sample < keep_prob { 1.0 } else { 0.0 }
         })
         .collect()
 }
@@ -292,29 +317,26 @@ pub fn oracle_guidance_mask_tensor<B: Backend>(
     Tensor::<B, 1>::from_floats(mask.as_slice(), device)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn oracle_guiding_train_step<B: AutodiffBackend>(
     model: HydraModel<B>,
-    obs: Tensor<B, 3>,
-    targets: &HydraTargets<B>,
-    loss_fn: &HydraLoss<B>,
-    base_lr: f64,
-    oracle_cfg: &OracleGuidingConfig,
-    step: usize,
-    total_steps: usize,
-    importance_weight: f32,
-    max_importance_weight: f32,
-    rng_values: &[f32],
+    batch_input: OracleGuidingBatchInput<'_, B>,
+    schedule: OracleGuidingStepSchedule<'_>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, OracleGuidingStepStats) {
-    let oracle_keep_prob = oracle_cfg.dropout_at_step(step, total_steps);
-    let effective_lr = oracle_cfg.effective_learning_rate(base_lr, step, total_steps);
+    let oracle_keep_prob = schedule
+        .oracle_cfg
+        .dropout_at_step(schedule.step, schedule.total_steps);
+    let effective_lr = schedule.oracle_cfg.effective_learning_rate(
+        schedule.base_lr,
+        schedule.step,
+        schedule.total_steps,
+    );
 
-    if oracle_cfg.should_reject_importance_weight(
-        importance_weight,
-        max_importance_weight,
-        step,
-        total_steps,
+    if schedule.oracle_cfg.should_reject_importance_weight(
+        batch_input.importance_weight,
+        batch_input.max_importance_weight,
+        schedule.step,
+        schedule.total_steps,
     ) {
         return (
             model,
@@ -328,15 +350,16 @@ pub fn oracle_guiding_train_step<B: AutodiffBackend>(
         );
     }
 
-    let batch_size = obs.dims()[0];
-    let device = obs.device();
-    let oracle_mask_values = oracle_guidance_mask_values(batch_size, oracle_keep_prob, rng_values);
+    let batch_size = batch_input.obs.dims()[0];
+    let device = batch_input.obs.device();
+    let oracle_mask_values =
+        oracle_guidance_mask_values(batch_size, oracle_keep_prob, batch_input.rng_values);
     let kept_oracle_fraction = oracle_mask_values.iter().copied().sum::<f32>() / batch_size as f32;
     let oracle_mask = Tensor::<B, 1>::from_floats(oracle_mask_values.as_slice(), &device);
-    let mut masked_targets = targets.clone();
+    let mut masked_targets = batch_input.targets.clone();
     masked_targets.oracle_guidance_mask = Some(oracle_mask);
-    let output = model.forward(obs);
-    let breakdown = loss_fn.total_loss(&output, &masked_targets);
+    let output = model.forward(batch_input.obs);
+    let breakdown = batch_input.loss_fn.total_loss(&output, &masked_targets);
     let total = bc_total_with_optional_exit_from_breakdown(
         &output,
         None,
@@ -611,7 +634,7 @@ impl CheckpointMeta {
 mod tests {
     use super::*;
     use crate::data::sample::MjaiBatch;
-    use crate::training::losses::{tests::make_dummy_targets, HydraLossConfig};
+    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
@@ -696,13 +719,17 @@ mod tests {
         let batch = empty_batch(&device, 4);
         let (_, loss1) = bc_train_step(
             model,
-            obs,
-            &batch,
-            &targets,
-            &loss_fn,
-            &BcExitConfig::default(),
-            false,
-            1e-3,
+            BcTrainBatchInput {
+                obs,
+                batch: &batch,
+                targets: &targets,
+            },
+            BcTrainStepContext {
+                loss_fn: &loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+                use_amp: false,
+                lr: 1e-3,
+            },
             &mut optimizer,
         );
         assert!(loss1.is_finite(), "loss should be finite: {loss1}");
@@ -730,13 +757,17 @@ mod tests {
         for _ in 0..25 {
             let (m, loss) = bc_train_step(
                 model,
-                obs.clone(),
-                &batch,
-                &targets,
-                &loss_fn,
-                &BcExitConfig::default(),
-                false,
-                1e-3,
+                BcTrainBatchInput {
+                    obs: obs.clone(),
+                    batch: &batch,
+                    targets: &targets,
+                },
+                BcTrainStepContext {
+                    loss_fn: &loss_fn,
+                    exit_cfg: &BcExitConfig::default(),
+                    use_amp: false,
+                    lr: 1e-3,
+                },
                 &mut optimizer,
             );
             model = m;
@@ -765,16 +796,20 @@ mod tests {
 
         let (_, stats) = oracle_guiding_train_step(
             model,
-            obs,
-            &targets,
-            &loss_fn,
-            1e-4,
-            &oracle_cfg,
-            100,
-            100,
-            3.0,
-            2.0,
-            &[0.1, 0.9],
+            OracleGuidingBatchInput {
+                obs,
+                targets: &targets,
+                loss_fn: &loss_fn,
+                importance_weight: 3.0,
+                max_importance_weight: 2.0,
+                rng_values: &[0.1, 0.9],
+            },
+            OracleGuidingStepSchedule {
+                base_lr: 1e-4,
+                oracle_cfg: &oracle_cfg,
+                step: 100,
+                total_steps: 100,
+            },
             &mut optimizer,
         );
 
@@ -809,16 +844,20 @@ mod tests {
 
         let (_, stats) = oracle_guiding_train_step(
             model,
-            obs,
-            &targets,
-            &loss_fn,
-            1e-4,
-            &oracle_cfg,
-            50,
-            100,
-            1.0,
-            2.0,
-            &[0.0, 0.9],
+            OracleGuidingBatchInput {
+                obs,
+                targets: &targets,
+                loss_fn: &loss_fn,
+                importance_weight: 1.0,
+                max_importance_weight: 2.0,
+                rng_values: &[0.0, 0.9],
+            },
+            OracleGuidingStepSchedule {
+                base_lr: 1e-4,
+                oracle_cfg: &oracle_cfg,
+                step: 50,
+                total_steps: 100,
+            },
             &mut optimizer,
         );
 
@@ -928,13 +967,17 @@ mod tests {
         let baseline_batch = empty_batch(&device, 4);
         let (_, loss_baseline) = bc_train_step(
             model1,
-            obs.clone(),
-            &baseline_batch,
-            &baseline_targets,
-            &baseline_loss_fn,
-            &BcExitConfig::default(),
-            false,
-            1e-3,
+            BcTrainBatchInput {
+                obs: obs.clone(),
+                batch: &baseline_batch,
+                targets: &baseline_targets,
+            },
+            BcTrainStepContext {
+                loss_fn: &baseline_loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+                use_amp: false,
+                lr: 1e-3,
+            },
             &mut opt1,
         );
 
@@ -975,13 +1018,17 @@ mod tests {
         let advanced_batch = empty_batch(&device, 4);
         let (_, loss_advanced) = bc_train_step(
             model2,
-            obs,
-            &advanced_batch,
-            &advanced_targets,
-            &advanced_loss_fn,
-            &BcExitConfig::default(),
-            false,
-            1e-3,
+            BcTrainBatchInput {
+                obs,
+                batch: &advanced_batch,
+                targets: &advanced_targets,
+            },
+            BcTrainStepContext {
+                loss_fn: &advanced_loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+                use_amp: false,
+                lr: 1e-3,
+            },
             &mut opt2,
         );
 
@@ -1030,13 +1077,17 @@ mod tests {
         let batch = empty_batch(&device, 4);
         let (_, stats) = bc_train_step(
             model,
-            obs,
-            &batch,
-            &targets,
-            &loss_fn,
-            &BcExitConfig::default(),
-            false,
-            1e-3,
+            BcTrainBatchInput {
+                obs,
+                batch: &batch,
+                targets: &targets,
+            },
+            BcTrainStepContext {
+                loss_fn: &loss_fn,
+                exit_cfg: &BcExitConfig::default(),
+                use_amp: false,
+                lr: 1e-3,
+            },
             &mut optimizer,
         );
 

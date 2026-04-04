@@ -234,55 +234,248 @@ fn sanitize_probe_progress_line(line: &str) -> Cow<'_, str> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeProgressPhase {
+    ScanStart,
+    ScanComplete,
+    InitModel,
+    InitOptimizer,
+    InitLoss,
+    InitCudaStaging,
+    InitReady,
+    Starting,
+    Warmup,
+    MeasureStart,
+    Measure,
+    Done,
+    RlSelfplay,
+}
+
+impl ProbeProgressPhase {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "scan_start" => Some(Self::ScanStart),
+            "scan_complete" => Some(Self::ScanComplete),
+            "init_model" => Some(Self::InitModel),
+            "init_optimizer" => Some(Self::InitOptimizer),
+            "init_loss" => Some(Self::InitLoss),
+            "init_cuda_staging" => Some(Self::InitCudaStaging),
+            "init_ready" => Some(Self::InitReady),
+            "starting" => Some(Self::Starting),
+            "warmup" => Some(Self::Warmup),
+            "measure_start" => Some(Self::MeasureStart),
+            "measure" => Some(Self::Measure),
+            "done" => Some(Self::Done),
+            "rl_selfplay" => Some(Self::RlSelfplay),
+            _ => None,
+        }
+    }
+}
+
+struct ProbeProgressEvent {
+    kind: String,
+    candidate_mb: String,
+    phase: ProbeProgressPhase,
+    fields: std::collections::BTreeMap<String, String>,
+}
+
+impl ProbeProgressEvent {
+    fn parse(line: &str) -> Option<Self> {
+        let sanitized = sanitize_probe_progress_line(line);
+        let borrowed_fields = parse_probe_progress_fields(&sanitized)?;
+        let kind = borrowed_fields.get("kind")?.to_string();
+        let candidate_mb = borrowed_fields.get("candidate_mb")?.to_string();
+        let phase = ProbeProgressPhase::parse(borrowed_fields.get("phase").copied()?)?;
+        let fields = borrowed_fields
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        Some(Self {
+            kind,
+            candidate_mb,
+            phase,
+            fields,
+        })
+    }
+
+    fn field(&self, key: &str) -> &str {
+        self.fields.get(key).map(String::as_str).unwrap_or("?")
+    }
+
+    fn field_or<'b>(&'b self, key: &str, default: &'b str) -> &'b str {
+        self.fields.get(key).map(String::as_str).unwrap_or(default)
+    }
+
+    fn spinner_prefix(&self) -> String {
+        format!("[preflight:{}] mb={}", self.kind, self.candidate_mb)
+    }
+
+    fn spinner_message(&self) -> String {
+        match self.phase {
+            ProbeProgressPhase::ScanStart => "scanning dataset...".to_string(),
+            ProbeProgressPhase::ScanComplete => {
+                let sources = self.field("sources");
+                let games = if self.fields.get("counts_exact").map(String::as_str) == Some("true") {
+                    self.field("total_games")
+                } else {
+                    "streaming"
+                };
+                format!("dataset: {sources} sources, {games} games")
+            }
+            ProbeProgressPhase::InitModel => "initializing model (backbone + heads)...".to_string(),
+            ProbeProgressPhase::InitOptimizer => "creating optimizer...".to_string(),
+            ProbeProgressPhase::InitLoss => "building loss functions...".to_string(),
+            ProbeProgressPhase::InitCudaStaging => "allocating CUDA staging buffers...".to_string(),
+            ProbeProgressPhase::InitReady => format!(
+                "init complete (model={}ms opt={}ms loss={}ms)",
+                self.field("model_ms"),
+                self.field("optimizer_ms"),
+                self.field("loss_ms")
+            ),
+            ProbeProgressPhase::Starting => "building model...".to_string(),
+            ProbeProgressPhase::Warmup => format!("warmup step {}", self.field("step")),
+            ProbeProgressPhase::MeasureStart => {
+                format!("measuring (0/{})", self.field("total_steps"))
+            }
+            ProbeProgressPhase::Measure => format!(
+                "measure step {} @ {} samples/s",
+                self.field("step"),
+                self.field_or("throughput", "0.00")
+            ),
+            ProbeProgressPhase::Done => {
+                format!(
+                    "finalizing @ {} samples/s...",
+                    self.field_or("throughput", "0.00")
+                )
+            }
+            ProbeProgressPhase::RlSelfplay => "selfplay...".to_string(),
+        }
+    }
+
+    fn progress_message(&self) -> String {
+        let prefix = format!("[preflight:{}]", self.kind).cyan().bold();
+        let label = format!("candidate_mb={}", self.candidate_mb).yellow();
+        match self.phase {
+            ProbeProgressPhase::ScanStart => {
+                format!(
+                    "{} {} {}",
+                    prefix,
+                    label,
+                    "phase=scan dataset=streaming".white()
+                )
+            }
+            ProbeProgressPhase::ScanComplete => {
+                let sources = self.field("sources");
+                let counts = if self.fields.get("counts_exact").map(String::as_str) == Some("true")
+                {
+                    format!("sources={sources} games={}", self.field("total_games"))
+                } else {
+                    format!("sources={sources} games=streaming")
+                };
+                format!("{} {} {}", prefix, label, counts.green())
+            }
+            ProbeProgressPhase::InitModel => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                "phase=init_model initializing backbone + heads".white()
+            ),
+            ProbeProgressPhase::InitOptimizer => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                "phase=init_optimizer creating optimizer".white()
+            ),
+            ProbeProgressPhase::InitLoss => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                "phase=init_loss building loss functions".white()
+            ),
+            ProbeProgressPhase::InitCudaStaging => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                "phase=init_cuda_staging allocating CUDA staging buffers".white()
+            ),
+            ProbeProgressPhase::InitReady => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                format!(
+                    "phase=init_ready model_ms={} optimizer_ms={} loss_ms={}",
+                    self.field("model_ms"),
+                    self.field("optimizer_ms"),
+                    self.field("loss_ms"),
+                )
+                .green()
+            ),
+            ProbeProgressPhase::Starting => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                format!(
+                    "phase=probe warmup={} measure={}",
+                    self.field("warmup_steps"),
+                    self.field("measure_steps")
+                )
+                .white()
+            ),
+            ProbeProgressPhase::Warmup => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                format!("phase=warmup step={}", self.field("step")).dimmed()
+            ),
+            ProbeProgressPhase::Measure => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                format!(
+                    "phase=measure step={} throughput={} samples/s",
+                    self.field("step"),
+                    self.field_or("throughput", "0.00")
+                )
+                .green()
+            ),
+            ProbeProgressPhase::MeasureStart => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                format!(
+                    "phase=measure_start total_steps={}",
+                    self.field("total_steps")
+                )
+                .dimmed()
+            ),
+            ProbeProgressPhase::RlSelfplay => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                "phase=rl_selfplay running cooperative self-play + learner step".bright_blue()
+            ),
+            ProbeProgressPhase::Done => format!(
+                "{} {} {}",
+                prefix,
+                label,
+                format!(
+                    "phase=done throughput={} samples/s elapsed={}s",
+                    self.field_or("throughput", "0.00"),
+                    self.field_or("elapsed", "0.00")
+                )
+                .green()
+            ),
+        }
+    }
+}
+
 pub(super) fn format_probe_spinner_message(line: &str) -> Option<String> {
-    let sanitized = sanitize_probe_progress_line(line);
-    let fields = parse_probe_progress_fields(&sanitized)?;
-    let kind = *fields.get("kind")?;
-    let candidate = *fields.get("candidate_mb")?;
-    let phase = *fields.get("phase")?;
-    let prefix = format!("[preflight:{kind}] mb={candidate}");
-
-    let message = match phase {
-        "scan_start" => "scanning dataset...".to_string(),
-        "scan_complete" => {
-            let sources = fields.get("sources").copied().unwrap_or("?");
-            let games = if fields.get("counts_exact").copied() == Some("true") {
-                fields.get("total_games").copied().unwrap_or("?")
-            } else {
-                "streaming"
-            };
-            format!("dataset: {sources} sources, {games} games")
-        }
-        "init_model" => "initializing model (backbone + heads)...".to_string(),
-        "init_optimizer" => "creating optimizer...".to_string(),
-        "init_loss" => "building loss functions...".to_string(),
-        "init_cuda_staging" => "allocating CUDA staging buffers...".to_string(),
-        "init_ready" => {
-            let model_ms = fields.get("model_ms").copied().unwrap_or("?");
-            let optimizer_ms = fields.get("optimizer_ms").copied().unwrap_or("?");
-            let loss_ms = fields.get("loss_ms").copied().unwrap_or("?");
-            format!("init complete (model={model_ms}ms opt={optimizer_ms}ms loss={loss_ms}ms)")
-        }
-        "starting" => "building model...".to_string(),
-        "warmup" => format!("warmup step {}", fields.get("step").copied().unwrap_or("?")),
-        "measure_start" => format!(
-            "measuring (0/{})",
-            fields.get("total_steps").copied().unwrap_or("?")
-        ),
-        "measure" => format!(
-            "measure step {} @ {} samples/s",
-            fields.get("step").copied().unwrap_or("?"),
-            fields.get("throughput").copied().unwrap_or("0.00")
-        ),
-        "done" => format!(
-            "finalizing @ {} samples/s...",
-            fields.get("throughput").copied().unwrap_or("0.00")
-        ),
-        "rl_selfplay" => "selfplay...".to_string(),
-        _ => return None,
-    };
-
-    Some(format!("{prefix} {message}"))
+    let event = ProbeProgressEvent::parse(line)?;
+    Some(format!(
+        "{} {}",
+        event.spinner_prefix(),
+        event.spinner_message()
+    ))
 }
 
 #[cfg(not(test))]
@@ -345,131 +538,8 @@ pub(super) fn format_probe_spinner_finish_message(
 }
 
 pub(super) fn format_probe_progress_line(line: &str) -> Option<String> {
-    let sanitized = sanitize_probe_progress_line(line);
-    let fields = parse_probe_progress_fields(&sanitized)?;
-    let kind = *fields.get("kind")?;
-    let candidate = *fields.get("candidate_mb")?;
-    let phase = *fields.get("phase")?;
-    let prefix = format!("[preflight:{kind}]").cyan().bold();
-    let label = format!("candidate_mb={candidate}").yellow();
-
-    let message = match phase {
-        "scan_start" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            "phase=scan dataset=streaming".white()
-        ),
-        "scan_complete" => {
-            let sources = fields.get("sources").copied().unwrap_or("?");
-            let total_games = fields.get("total_games").copied().unwrap_or("?");
-            let counts_exact = fields.get("counts_exact").copied().unwrap_or("false");
-            let counts = if counts_exact == "true" {
-                format!("sources={sources} games={total_games}")
-            } else {
-                format!("sources={sources} games=streaming")
-            };
-            format!("{} {} {}", prefix, label, counts.green())
-        }
-        "init_model" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            "phase=init_model initializing backbone + heads".white()
-        ),
-        "init_optimizer" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            "phase=init_optimizer creating optimizer".white()
-        ),
-        "init_loss" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            "phase=init_loss building loss functions".white()
-        ),
-        "init_cuda_staging" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            "phase=init_cuda_staging allocating CUDA staging buffers".white()
-        ),
-        "init_ready" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            format!(
-                "phase=init_ready model_ms={} optimizer_ms={} loss_ms={}",
-                fields.get("model_ms").copied().unwrap_or("?"),
-                fields.get("optimizer_ms").copied().unwrap_or("?"),
-                fields.get("loss_ms").copied().unwrap_or("?"),
-            )
-            .green()
-        ),
-        "starting" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            format!(
-                "phase=probe warmup={} measure={}",
-                fields.get("warmup_steps").copied().unwrap_or("?"),
-                fields.get("measure_steps").copied().unwrap_or("?")
-            )
-            .white()
-        ),
-        "warmup" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            format!(
-                "phase=warmup step={}",
-                fields.get("step").copied().unwrap_or("?"),
-            )
-            .dimmed()
-        ),
-        "measure" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            format!(
-                "phase=measure step={} throughput={} samples/s",
-                fields.get("step").copied().unwrap_or("?"),
-                fields.get("throughput").copied().unwrap_or("0.00")
-            )
-            .green()
-        ),
-        "measure_start" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            format!(
-                "phase=measure_start total_steps={}",
-                fields.get("total_steps").copied().unwrap_or("?")
-            )
-            .dimmed()
-        ),
-        "rl_selfplay" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            "phase=rl_selfplay running cooperative self-play + learner step".bright_blue()
-        ),
-        "done" => format!(
-            "{} {} {}",
-            prefix,
-            label,
-            format!(
-                "phase=done throughput={} samples/s elapsed={}s",
-                fields.get("throughput").copied().unwrap_or("0.00"),
-                fields.get("elapsed").copied().unwrap_or("0.00")
-            )
-            .green()
-        ),
-        _ => return None,
-    };
-
-    Some(with_utc_timestamp(message))
+    let event = ProbeProgressEvent::parse(line)?;
+    Some(with_utc_timestamp(event.progress_message()))
 }
 
 pub(super) fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &str) {

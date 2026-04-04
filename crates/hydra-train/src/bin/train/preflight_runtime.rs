@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use burn::backend::libtorch::LibTorchDevice;
+use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::module::AutodiffModule;
 use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::{Adam, GradientsAccumulator, GradientsParams, Optimizer};
@@ -35,10 +35,9 @@ use super::TrainBackend;
 use super::artifacts::write_manifest_cache;
 use super::artifacts::{
     BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightBenchmarkReport,
-    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_step_log, log_tensorboard,
-    manifest_cache_matches, read_manifest_cache, read_preflight_cache,
-    save_latest_checkpoint_and_state, scan_and_write_manifest_cache,
-    write_preflight_benchmark_report, write_preflight_cache,
+    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_step_log,
+    load_or_scan_manifest_cache, log_tensorboard, read_manifest_cache, read_preflight_cache,
+    save_latest_checkpoint_and_state, write_preflight_benchmark_report, write_preflight_cache,
 };
 use super::bc_fixed_shape::{
     FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
@@ -58,11 +57,8 @@ use super::presentation::{
     format_preflight_selection_line, format_preflight_summary_line, format_probe_status_line,
     format_timed_phase_message, make_bar, make_spinner, preflight_phase_label,
 };
-use super::probe_ladder::{candidate_average, dynamic_probe_ladder, probe_only_candidate_ladder};
-use super::probe_process::{
-    ProbeBatchArtifact, mem_available_bytes, probe_result_path, rl_probe_required_free_bytes,
-    rl_probe_result_path, write_probe_batch_artifact, write_probe_result,
-};
+use super::probe_ladder::{dynamic_probe_ladder, probe_only_candidate_ladder};
+use super::probe_process::{mem_available_bytes, rl_probe_required_free_bytes};
 use super::probe_request::{
     ProbeBatchRequest, ProbeRequest, probe_batch_child_request_from_cli,
     probe_child_request_from_cli,
@@ -73,8 +69,12 @@ use super::probe_search::{
     refine_top_k_probe_candidates_locally, rerun_probe_finalists, run_candidate_attempts,
 };
 use super::probe_summary::{
-    ProbeCandidateSummary, best_probe_summary, format_probe_selection_summary, probe_kind_name,
-    summarize_probe_results,
+    ProbeCandidateSummary, best_probe_summary, candidate_average, format_probe_selection_summary,
+    probe_kind_name, summarize_probe_results,
+};
+use super::probe_transport::{
+    ProbeBatchArtifact, probe_result_path, rl_probe_result_path, write_probe_batch_artifact,
+    write_probe_result,
 };
 use super::progress::{ScalarAverages, StepLogEntry, batch_stats_from_outputs};
 use super::resume::{BestValidation, EpochContinuation, runtime_resume_contract};
@@ -93,26 +93,66 @@ type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 type BenchmarkOptimizerOf<B> = OptimizerAdaptor<Adam, HydraModel<B>, B>;
 type StageTwoCachedValidationSamples = Option<Arc<[Box<[MjaiSample]>]>>;
 
-fn load_or_scan_manifest(
-    cache_path: &Path,
-    data_dir: &Path,
-    train_fraction: f32,
-    source_filters: &hydra_train::data::pipeline::SourceFilterConfig,
-    progress: Option<&indicatif::ProgressBar>,
-) -> Result<DataManifest, String> {
-    if let Some(cached) = read_manifest_cache(cache_path)?
-        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
-    {
-        return Ok(cached.manifest);
+struct ProbeLoopState {
+    completed_steps: usize,
+    measure_start: Option<Instant>,
+}
+
+impl ProbeLoopState {
+    fn new() -> Self {
+        Self {
+            completed_steps: 0,
+            measure_start: None,
+        }
     }
-    scan_and_write_manifest_cache(
-        cache_path,
-        data_dir,
-        train_fraction,
-        source_filters,
-        progress,
-        "preflight data",
-    )
+}
+
+fn emit_probe_start_progress(request: ProbeRequest, microbatch_size: usize) -> Result<(), String> {
+    emit_probe_progress(&format!(
+        "probe_progress kind={} candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
+        probe_kind_name(request.kind),
+        microbatch_size,
+        request.warmup_steps,
+        request.measure_steps,
+    ))
+}
+
+fn advance_probe_loop(
+    state: &mut ProbeLoopState,
+    request: ProbeRequest,
+    microbatch_size: usize,
+    measured_samples_per_step: usize,
+) -> Result<Option<f64>, String> {
+    emit_probe_step_progress(
+        request.kind,
+        microbatch_size,
+        state.completed_steps,
+        request,
+        state.measure_start,
+        measured_samples_per_step,
+    )?;
+    state.completed_steps += 1;
+    if state.completed_steps == request.warmup_steps {
+        state.measure_start = Some(Instant::now());
+        emit_probe_progress(&format!(
+            "probe_progress kind={} candidate_mb={} phase=measure_start total_steps={}",
+            probe_kind_name(request.kind),
+            microbatch_size,
+            request.measure_steps.max(1)
+        ))?;
+    }
+    let target_steps = request.warmup_steps + request.measure_steps;
+    if state.completed_steps >= target_steps {
+        let elapsed = state
+            .measure_start
+            .map(|start| start.elapsed())
+            .unwrap_or_default();
+        return Ok(Some(measure_samples_per_second(
+            request.measure_steps.max(1) * measured_samples_per_step,
+            elapsed,
+        )));
+    }
+    Ok(None)
 }
 
 pub(super) struct PreflightRuntime {
@@ -505,134 +545,22 @@ fn search_validation_microbatch(
     artifacts: &BcArtifactPaths,
     seed: usize,
 ) -> Result<(usize, Vec<ProbeResult>), String> {
-    let explicit_candidate = config.validation_microbatch_size;
-    let use_explicit_only =
-        explicit_candidate.is_some() && !config.preflight.allow_override_explicit_microbatch;
-    let mut candidates = if use_explicit_only {
-        vec![explicit_candidate.unwrap_or(1)]
-    } else {
-        dynamic_probe_ladder(config, ProbeKind::Validation, seed)
-    };
-    let mut seen = BTreeSet::new();
-    candidates.retain(|candidate| seen.insert(*candidate));
-    println!(
-        "{}",
-        format_preflight_summary_line(
-            "Preflight ladder:",
-            format!(
-                "kind=validation candidates={:?} required_successes={} growth_patience={} growth_max_steps={}",
-                candidates,
-                config.preflight.required_successes.max(1),
-                config.preflight.validation_growth_patience.max(1),
-                config.preflight.validation_growth_max_steps.max(1)
-            )
-        )
-    );
-    let progress = make_bar(
-        (candidates.len() * config.preflight.required_successes.max(1)) as u64,
-        "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
-    )?;
-    let mut results = Vec::new();
-    let mut growth_patience = 0usize;
-    let mut growth_steps = 0usize;
-    let tolerance = config.preflight.measure_noise_tolerance_ratio;
-    let mut prior_best_score: Option<f64> = None;
-    let mut last_successful_candidate: Option<usize> = None;
-
-    let mut index = 0usize;
-    while index < candidates.len() {
-        let candidate = candidates[index];
-        if let Some(blocked) = maybe_block_host_ram_growth_probe(
-            config,
-            ProbeKind::Validation,
-            candidate,
-            last_successful_candidate,
-        ) {
-            println!("{}", format_probe_status_line(&blocked));
-            results.push(blocked);
-            break;
-        }
-        let mut result_path_for =
-            |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
-        let passed = run_candidate_attempts(
-            config_path,
-            &mut result_path_for,
-            ProbeRunSpec {
-                kind: ProbeKind::Validation,
-                candidate,
-                attempts: config.preflight.required_successes.max(1),
-                warmup_steps: config.preflight.warmup_steps,
-                measure_steps: config.preflight.measure_steps,
-            },
-            &mut results,
-            &progress,
-        )?;
-        if !passed {
-            if use_explicit_only {
-                progress.finish_with_message(
-                    "preflight validation ladder complete".green().to_string(),
-                );
-                return Err(format!(
-                    "explicit validation microbatch {} failed preflight",
-                    candidate
-                ));
-            }
-            break;
-        }
-        last_successful_candidate = Some(candidate);
-        if use_explicit_only {
-            progress
-                .finish_with_message("preflight validation ladder complete".green().to_string());
-            return Ok((candidate, results));
-        }
-
-        let summary = best_probe_summary(&results)
-            .ok_or_else(|| "no stable validation microbatch found in preflight".to_string())?;
-        let candidate_score = candidate_average(&results, candidate).unwrap_or(0.0);
-        let mut growth_state = ProbeGrowthState {
-            patience: growth_patience,
-            steps: growth_steps,
-            prior_best_score,
-        };
-        if maybe_expand_probe_candidates(
-            &mut candidates,
-            ProbeGrowthDecision {
-                index,
-                kind: ProbeKind::Validation,
-                candidate,
-                summary: &summary,
-                candidate_score,
-                tolerance,
-            },
-            config,
-            &mut growth_state,
-        ) {
-            break;
-        }
-        growth_patience = growth_state.patience;
-        growth_steps = growth_state.steps;
-        prior_best_score = growth_state.prior_best_score;
-        index += 1;
-    }
-
-    progress.finish_with_message("preflight validation ladder complete".green().to_string());
-    let selected_summary = finalize_probe_search(
+    let result = search_probe_candidate_ladder(
         config_path,
-        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
-        ProbeKind::Validation,
         config,
-        &mut results,
-        &progress,
-        "no stable validation microbatch found in preflight".to_string(),
+        ProbeSearchSpec::new(ProbeKind::Validation, seed)
+            .with_explicit_candidate(config.validation_microbatch_size)
+            .with_no_stable_error("no stable validation microbatch found in preflight"),
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
     )?;
     println!(
         "{}",
         format_preflight_selection_line(format_probe_selection_summary(
             ProbeKind::Validation,
-            &selected_summary,
+            &result.selected_summary,
         ))
     );
-    Ok((selected_summary.candidate_microbatch, results))
+    Ok((result.selected_summary.candidate_microbatch, result.results))
 }
 
 fn diverse_probe_candidates(
@@ -1087,7 +1015,11 @@ fn benchmark_train_window_for_backend<B>(
 ) -> Result<TrainBenchmarkOutcome<B>, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     let train_cfg = trainer_config_from_train_config(config);
     let mut model = model_config.init::<B>(train_device);
@@ -1227,7 +1159,11 @@ fn benchmark_validation_pass<B>(
 ) -> Result<(ValidationSummary, f64), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     let valid_loss_fn =
         HydraLoss::<ValidBackendOf<B>>::new(build_loss_config(config.advanced_loss.as_ref())?);
@@ -1479,7 +1415,11 @@ fn run_stage_two_benchmark_for_backend<B>(
 ) -> Result<BenchmarkResult, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     let StageTwoBenchmarkRunContext {
         config,
@@ -1583,13 +1523,84 @@ fn search_rl_runtime_candidate(
             return Err("non-RL probe kind passed to RL runtime search".to_string());
         }
     };
-    let use_explicit_only = explicit_candidate.is_some()
+    let result = search_probe_candidate_ladder(
+        config_path,
+        config,
+        ProbeSearchSpec::new(kind, seed.max(1))
+            .with_explicit_candidate(explicit_candidate)
+            .with_allow_explicit_override(!matches!(kind, ProbeKind::RlGames))
+            .with_no_stable_error(format!(
+                "no stable {} candidate found in preflight",
+                probe_kind_name(kind)
+            )),
+        |kind, candidate, attempt| rl_probe_result_path(artifacts, kind, candidate, attempt),
+    )?;
+    println!(
+        "{}",
+        format_preflight_selection_line(format_probe_selection_summary(
+            kind,
+            &result.selected_summary,
+        ))
+    );
+    Ok((result.selected_summary.candidate_microbatch, result.results))
+}
+
+struct ProbeSearchSpec {
+    kind: ProbeKind,
+    seed: usize,
+    explicit_candidate: Option<usize>,
+    allow_explicit_override: bool,
+    no_stable_error: String,
+}
+
+impl ProbeSearchSpec {
+    fn new(kind: ProbeKind, seed: usize) -> Self {
+        Self {
+            kind,
+            seed,
+            explicit_candidate: None,
+            allow_explicit_override: true,
+            no_stable_error: String::new(),
+        }
+    }
+
+    fn with_explicit_candidate(mut self, explicit_candidate: Option<usize>) -> Self {
+        self.explicit_candidate = explicit_candidate;
+        self
+    }
+
+    fn with_allow_explicit_override(mut self, allow_explicit_override: bool) -> Self {
+        self.allow_explicit_override = allow_explicit_override;
+        self
+    }
+
+    fn with_no_stable_error(mut self, no_stable_error: impl Into<String>) -> Self {
+        self.no_stable_error = no_stable_error.into();
+        self
+    }
+}
+
+struct ProbeSearchOutcome {
+    selected_summary: ProbeCandidateSummary,
+    results: Vec<ProbeResult>,
+}
+
+fn search_probe_candidate_ladder<F>(
+    config_path: &Path,
+    config: &TrainConfig,
+    spec: ProbeSearchSpec,
+    mut result_path_for: F,
+) -> Result<ProbeSearchOutcome, String>
+where
+    F: Fn(ProbeKind, usize, usize) -> PathBuf + Copy,
+{
+    let use_explicit_only = spec.explicit_candidate.is_some()
         && !config.preflight.allow_override_explicit_microbatch
-        && !matches!(kind, ProbeKind::RlGames);
+        && spec.allow_explicit_override;
     let mut candidates = if use_explicit_only {
-        vec![explicit_candidate.unwrap_or(seed.max(1)).max(1)]
+        vec![spec.explicit_candidate.unwrap_or(spec.seed.max(1)).max(1)]
     } else {
-        dynamic_probe_ladder(config, kind, seed.max(1))
+        dynamic_probe_ladder(config, spec.kind, spec.seed.max(1))
     };
     let mut seen = BTreeSet::new();
     candidates.retain(|candidate| seen.insert(*candidate));
@@ -1599,7 +1610,7 @@ fn search_rl_runtime_candidate(
             "Preflight ladder:",
             format!(
                 "kind={} candidates={:?} required_successes={} growth_patience={} growth_max_steps={}",
-                probe_kind_name(kind),
+                probe_kind_name(spec.kind),
                 candidates,
                 config.preflight.required_successes.max(1),
                 config.preflight.validation_growth_patience.max(1),
@@ -1621,20 +1632,21 @@ fn search_rl_runtime_candidate(
     let mut index = 0usize;
     while index < candidates.len() {
         let candidate = candidates[index];
-        if let Some(blocked) =
-            maybe_block_host_ram_growth_probe(config, kind, candidate, last_successful_candidate)
-        {
+        if let Some(blocked) = maybe_block_host_ram_growth_probe(
+            config,
+            spec.kind,
+            candidate,
+            last_successful_candidate,
+        ) {
             println!("{}", format_probe_status_line(&blocked));
             results.push(blocked);
             break;
         }
-        let mut result_path_for =
-            |kind, candidate, attempt| rl_probe_result_path(artifacts, kind, candidate, attempt);
         let passed = run_candidate_attempts(
             config_path,
             &mut result_path_for,
             ProbeRunSpec {
-                kind,
+                kind: spec.kind,
                 candidate,
                 attempts: config.preflight.required_successes.max(1),
                 warmup_steps: config.preflight.warmup_steps,
@@ -1646,13 +1658,13 @@ fn search_rl_runtime_candidate(
         if !passed {
             if use_explicit_only {
                 progress.finish_with_message(
-                    format!("preflight {} ladder complete", probe_kind_name(kind))
+                    format!("preflight {} ladder complete", probe_kind_name(spec.kind))
                         .green()
                         .to_string(),
                 );
                 return Err(format!(
                     "explicit {} candidate {} failed preflight",
-                    probe_kind_name(kind),
+                    probe_kind_name(spec.kind),
                     candidate
                 ));
             }
@@ -1661,19 +1673,19 @@ fn search_rl_runtime_candidate(
         last_successful_candidate = Some(candidate);
         if use_explicit_only {
             progress.finish_with_message(
-                format!("preflight {} ladder complete", probe_kind_name(kind))
+                format!("preflight {} ladder complete", probe_kind_name(spec.kind))
                     .green()
                     .to_string(),
             );
-            return Ok((candidate, results));
+            let selected_summary =
+                best_probe_summary(&results).ok_or_else(|| spec.no_stable_error.clone())?;
+            return Ok(ProbeSearchOutcome {
+                selected_summary,
+                results,
+            });
         }
 
-        let summary = best_probe_summary(&results).ok_or_else(|| {
-            format!(
-                "no stable {} candidate found in preflight",
-                probe_kind_name(kind)
-            )
-        })?;
+        let summary = best_probe_summary(&results).ok_or_else(|| spec.no_stable_error.clone())?;
         let candidate_score = candidate_average(&results, candidate).unwrap_or(0.0);
         let mut growth_state = ProbeGrowthState {
             patience: growth_patience,
@@ -1684,7 +1696,7 @@ fn search_rl_runtime_candidate(
             &mut candidates,
             ProbeGrowthDecision {
                 index,
-                kind,
+                kind: spec.kind,
                 candidate,
                 summary: &summary,
                 candidate_score,
@@ -1702,27 +1714,23 @@ fn search_rl_runtime_candidate(
     }
 
     progress.finish_with_message(
-        format!("preflight {} ladder complete", probe_kind_name(kind))
+        format!("preflight {} ladder complete", probe_kind_name(spec.kind))
             .green()
             .to_string(),
     );
     let selected_summary = finalize_probe_search(
         config_path,
-        |kind, candidate, attempt| rl_probe_result_path(artifacts, kind, candidate, attempt),
-        kind,
+        result_path_for,
+        spec.kind,
         config,
         &mut results,
         &progress,
-        format!(
-            "no stable {} candidate found in preflight",
-            probe_kind_name(kind)
-        ),
+        spec.no_stable_error,
     )?;
-    println!(
-        "{}",
-        format_preflight_selection_line(format_probe_selection_summary(kind, &selected_summary,))
-    );
-    Ok((selected_summary.candidate_microbatch, results))
+    Ok(ProbeSearchOutcome {
+        selected_summary,
+        results,
+    })
 }
 
 fn maybe_block_host_ram_growth_probe(
@@ -1897,9 +1905,8 @@ where
 
     let microbatch_size = candidate_microbatch.min(config.batch_size).max(1);
     let target_steps = warmup_steps + measure_steps;
-    let mut completed_steps = 0usize;
+    let mut probe_state = ProbeLoopState::new();
     let mut pending_samples = std::collections::VecDeque::new();
-    let mut measure_start = None;
     on_start(microbatch_size, warmup_steps, measure_steps)?;
 
     for buffer_result in stream_train_epoch(manifest, loader_config, 0, None) {
@@ -1909,7 +1916,7 @@ where
         while pending_samples.len() >= config.batch_size {
             let logical_batch: Vec<MjaiSample> =
                 pending_samples.drain(..config.batch_size).collect();
-            let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
+            let lr = effective_lr(&train_cfg, probe_state.completed_steps, target_steps.max(1));
             let grads = if let Some(grads) = probe_train_fixed_chunks(FixedShapeProbeConfig {
                 logical_batch: &logical_batch,
                 augment: config.augment,
@@ -1942,7 +1949,7 @@ where
             };
             model = optimizer.step(lr, model, grads);
             on_step(
-                completed_steps,
+                probe_state.completed_steps,
                 microbatch_size,
                 ProbeRequest {
                     kind: ProbeKind::Train,
@@ -1950,15 +1957,16 @@ where
                     warmup_steps,
                     measure_steps,
                 },
-                measure_start,
+                probe_state.measure_start,
             )?;
-            completed_steps += 1;
-            if completed_steps == warmup_steps {
-                measure_start = Some(Instant::now());
+            probe_state.completed_steps += 1;
+            if probe_state.completed_steps == warmup_steps {
+                probe_state.measure_start = Some(Instant::now());
                 on_measure_start(microbatch_size, measure_steps)?;
             }
-            if completed_steps >= target_steps {
-                let elapsed = measure_start
+            if probe_state.completed_steps >= target_steps {
+                let elapsed = probe_state
+                    .measure_start
                     .map(|start| start.elapsed())
                     .unwrap_or_default();
                 return Ok(measure_samples_per_second(
@@ -2010,8 +2018,7 @@ where
 
     let microbatch_size = request.candidate_microbatch.min(config.batch_size).max(1);
     let target_steps = request.warmup_steps + request.measure_steps;
-    let mut completed_steps = 0usize;
-    let mut measure_start = None;
+    let mut probe_state = ProbeLoopState::new();
     let mut scratch = reader.new_scratch(config.batch_size);
 
     #[cfg(feature = "cuda-graph")]
@@ -2039,10 +2046,7 @@ where
         loss_ms,
     )?;
 
-    emit_probe_progress(&format!(
-        "probe_progress kind=train candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
-        microbatch_size, request.warmup_steps, request.measure_steps
-    ))?;
+    emit_probe_start_progress(request, microbatch_size)?;
 
     let total_rows = reader.sample_count();
     let mut idx = 0usize;
@@ -2053,7 +2057,7 @@ where
         }
         reader.collate_host_batch_range_into(idx, take, config.augment, &mut scratch)?;
         let host_batch = scratch.take_batch();
-        let lr = effective_lr(&train_cfg, completed_steps, target_steps.max(1));
+        let lr = effective_lr(&train_cfg, probe_state.completed_steps, target_steps.max(1));
         let _ = train_logical_batch_from_host_batch(
             host_batch,
             TrainLogicalBatchConfig {
@@ -2071,36 +2075,18 @@ where
             #[cfg(feature = "cuda-graph")]
             staging_context.as_mut(),
         )?;
-        emit_probe_step_progress(
-            ProbeKind::Train,
-            microbatch_size,
-            completed_steps,
+        if let Some(throughput) = advance_probe_loop(
+            &mut probe_state,
             ProbeRequest {
                 kind: ProbeKind::Train,
                 candidate_microbatch: microbatch_size,
                 warmup_steps: request.warmup_steps,
                 measure_steps: request.measure_steps,
             },
-            measure_start,
+            microbatch_size,
             config.batch_size,
-        )?;
-        completed_steps += 1;
-        if completed_steps == request.warmup_steps {
-            measure_start = Some(Instant::now());
-            emit_probe_progress(&format!(
-                "probe_progress kind=train candidate_mb={} phase=measure_start total_steps={}",
-                microbatch_size,
-                request.measure_steps.max(1)
-            ))?;
-        }
-        if completed_steps >= target_steps {
-            let elapsed = measure_start
-                .map(|start| start.elapsed())
-                .unwrap_or_default();
-            return Ok(measure_samples_per_second(
-                request.measure_steps.max(1) * config.batch_size,
-                elapsed,
-            ));
+        )? {
+            return Ok(throughput);
         }
         idx += take;
     }
@@ -2121,7 +2107,11 @@ fn probe_validation_candidate_for_backend<B>(
 ) -> Result<f64, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     emit_probe_init_phase("validation", request.candidate_microbatch, "init_model")?;
     let t0 = Instant::now();
@@ -2144,13 +2134,8 @@ where
     )?;
 
     let microbatch_size = request.candidate_microbatch.max(1);
-    let target_steps = request.warmup_steps + request.measure_steps;
-    let mut completed_steps = 0usize;
-    let mut measure_start = None;
-    emit_probe_progress(&format!(
-        "probe_progress kind=validation candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
-        microbatch_size, request.warmup_steps, request.measure_steps
-    ))?;
+    let mut probe_state = ProbeLoopState::new();
+    emit_probe_start_progress(request, microbatch_size)?;
 
     for microbatch_result in stream_val_microbatches(manifest, loader_config, microbatch_size, None)
     {
@@ -2180,31 +2165,10 @@ where
             total.clone(),
             &breakdown,
         );
-        emit_probe_step_progress(
-            ProbeKind::Validation,
-            microbatch_size,
-            completed_steps,
-            request,
-            measure_start,
-            microbatch_size,
-        )?;
-        completed_steps += 1;
-        if completed_steps == request.warmup_steps {
-            measure_start = Some(Instant::now());
-            emit_probe_progress(&format!(
-                "probe_progress kind=validation candidate_mb={} phase=measure_start total_steps={}",
-                microbatch_size,
-                request.measure_steps.max(1)
-            ))?;
-        }
-        if completed_steps >= target_steps {
-            let elapsed = measure_start
-                .map(|start| start.elapsed())
-                .unwrap_or_default();
-            return Ok(measure_samples_per_second(
-                request.measure_steps.max(1) * microbatch_size,
-                elapsed,
-            ));
+        if let Some(throughput) =
+            advance_probe_loop(&mut probe_state, request, microbatch_size, microbatch_size)?
+        {
+            return Ok(throughput);
         }
     }
 
@@ -2223,7 +2187,11 @@ fn probe_validation_candidate_from_shards_for_backend<B>(
 ) -> Result<f64, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     emit_probe_init_phase("validation", _request.candidate_microbatch, "init_model")?;
     let t0 = Instant::now();
@@ -2287,7 +2255,7 @@ where
             head_controller: None,
             progress: None,
         },
-        &reader,
+        reader,
     )?;
     Ok(measure_samples_per_second(
         validation_sample_limit(config)
@@ -2337,6 +2305,95 @@ fn run_probe_attempt_result(
         run_rl_probe_only_result(config, request)
     } else {
         run_probe_only_with_model_config_result(config, model_config, manifest, request)
+    }
+}
+
+struct ProbeDataContext {
+    manifest: Option<DataManifest>,
+    train_reader: Option<hydra_train::data::bc_shards::BcShardReader>,
+    validation_reader: Option<hydra_train::data::bc_shards::BcShardReader>,
+}
+
+impl ProbeDataContext {
+    fn manifest_ref(&self) -> Option<&DataManifest> {
+        self.manifest.as_ref()
+    }
+
+    fn train_reader_ref(&self) -> Option<&hydra_train::data::bc_shards::BcShardReader> {
+        self.train_reader.as_ref()
+    }
+
+    fn validation_reader_ref(&self) -> Option<&hydra_train::data::bc_shards::BcShardReader> {
+        self.validation_reader.as_ref()
+    }
+}
+
+fn resolve_probe_data_context(
+    config: &TrainConfig,
+    kind: ProbeKind,
+    manifest_cache_path: Option<&Path>,
+) -> Result<ProbeDataContext, String> {
+    if matches!(kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
+        return Ok(ProbeDataContext {
+            manifest: None,
+            train_reader: None,
+            validation_reader: None,
+        });
+    }
+
+    if config.bc_shards_manifest_path.is_some()
+        && matches!(kind, ProbeKind::Train | ProbeKind::Validation)
+    {
+        let shard_manifest_path = config
+            .bc_shards_manifest_path
+            .as_ref()
+            .ok_or_else(|| "bc_shards_manifest_path missing for shard probe".to_string())?;
+        let train_reader = if matches!(kind, ProbeKind::Train) {
+            Some(load_bc_shard_reader(
+                shard_manifest_path,
+                BcShardSplit::Train,
+            )?)
+        } else {
+            None
+        };
+        let validation_reader = if matches!(kind, ProbeKind::Validation) {
+            Some(load_bc_shard_reader(
+                shard_manifest_path,
+                BcShardSplit::Validation,
+            )?)
+        } else {
+            None
+        };
+        return Ok(ProbeDataContext {
+            manifest: None,
+            train_reader,
+            validation_reader,
+        });
+    }
+
+    Ok(ProbeDataContext {
+        manifest: load_probe_batch_manifest(config, kind, manifest_cache_path)?,
+        train_reader: None,
+        validation_reader: None,
+    })
+}
+
+fn run_probe_attempt_with_data_context(
+    config: &TrainConfig,
+    model_config: &HydraModelConfig,
+    context: &ProbeDataContext,
+    request: ProbeRequest,
+) -> Result<ProbeResult, String> {
+    if context.train_reader.is_some() || context.validation_reader.is_some() {
+        run_probe_attempt_with_shard_readers_result(
+            config,
+            model_config,
+            context.train_reader_ref(),
+            context.validation_reader_ref(),
+            request,
+        )
+    } else {
+        run_probe_attempt_result(config, model_config, context.manifest_ref(), request)
     }
 }
 
@@ -2411,26 +2468,38 @@ fn load_probe_batch_manifest(
         if let Some(cached) = read_manifest_cache(path)? {
             return Ok(Some(cached.manifest));
         }
-        return load_or_scan_manifest(
+        return load_or_scan_manifest_cache(
             path,
             &config.data_dir,
             config.train_fraction,
             &config.source_filters,
             None,
+            "preflight data",
+            |_| {},
         )
         .map(Some);
     }
 
     let cache_path =
         PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0)).manifest_cache_path;
-    load_or_scan_manifest(
+    load_or_scan_manifest_cache(
         &cache_path,
         &config.data_dir,
         config.train_fraction,
         &config.source_filters,
         None,
+        "preflight data",
+        |_| {},
     )
     .map(Some)
+}
+
+fn load_probe_child_manifest(
+    config: &TrainConfig,
+    kind: ProbeKind,
+    manifest_cache_path: Option<&Path>,
+) -> Result<Option<DataManifest>, String> {
+    load_probe_batch_manifest(config, kind, manifest_cache_path)
 }
 
 fn run_probe_child_batch_request_with_model_config(
@@ -2442,50 +2511,12 @@ fn run_probe_child_batch_request_with_model_config(
 ) -> Result<ProbeBatchArtifact, String> {
     configure_probe_threads(config)?;
     std::fs::remove_file(results_path).ok();
-    let manifest = load_probe_batch_manifest(config, batch.request.kind, manifest_cache_path)?;
-    let (train_reader, validation_reader) = if config.bc_shards_manifest_path.is_some()
-        && matches!(batch.request.kind, ProbeKind::Train | ProbeKind::Validation)
-    {
-        let shard_manifest_path = config
-            .bc_shards_manifest_path
-            .as_ref()
-            .ok_or_else(|| "bc_shards_manifest_path missing for shard probe batch".to_string())?;
-        let train_reader = if matches!(batch.request.kind, ProbeKind::Train) {
-            Some(load_bc_shard_reader(
-                shard_manifest_path,
-                BcShardSplit::Train,
-            )?)
-        } else {
-            None
-        };
-        let validation_reader = if matches!(batch.request.kind, ProbeKind::Validation) {
-            Some(load_bc_shard_reader(
-                shard_manifest_path,
-                BcShardSplit::Validation,
-            )?)
-        } else {
-            None
-        };
-        (train_reader, validation_reader)
-    } else {
-        (None, None)
-    };
+    let context = resolve_probe_data_context(config, batch.request.kind, manifest_cache_path)?;
     let mut artifact = ProbeBatchArtifact::pending();
 
     for _attempt in 0..batch.attempts {
-        let result = if config.bc_shards_manifest_path.is_some()
-            && matches!(batch.request.kind, ProbeKind::Train | ProbeKind::Validation)
-        {
-            run_probe_attempt_with_shard_readers_result(
-                config,
-                model_config,
-                train_reader.as_ref(),
-                validation_reader.as_ref(),
-                batch.request,
-            )?
-        } else {
-            run_probe_attempt_result(config, model_config, manifest.as_ref(), batch.request)?
-        };
+        let result =
+            run_probe_attempt_with_data_context(config, model_config, &context, batch.request)?;
         let passed = result.status == ProbeStatus::Success;
         artifact.push_result(result);
         write_probe_batch_artifact(results_path, &artifact)?;
@@ -2591,8 +2622,14 @@ fn run_probe_only_with_model_config_result(
         delta_q_sidecar_source_version: None,
         num_threads: config.num_threads,
     };
-    let manifest = if let Some(manifest) = manifest.cloned() {
-        manifest
+    let probe_context = if config.bc_shards_manifest_path.is_some() {
+        resolve_probe_data_context(config, request.kind, None)?
+    } else if let Some(manifest) = manifest.cloned() {
+        ProbeDataContext {
+            manifest: Some(manifest),
+            train_reader: None,
+            validation_reader: None,
+        }
     } else {
         emit_probe_progress(&format!(
             "probe_progress kind={} candidate_mb={} phase=scan_start data_dir={}",
@@ -2602,12 +2639,14 @@ fn run_probe_only_with_model_config_result(
         ))?;
         let cache_path =
             PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0)).manifest_cache_path;
-        let manifest = load_or_scan_manifest(
+        let manifest = load_or_scan_manifest_cache(
             &cache_path,
             &config.data_dir,
             config.train_fraction,
             &config.source_filters,
             None,
+            "preflight data",
+            |_| {},
         )?;
         emit_probe_progress(&format!(
             "probe_progress kind={} candidate_mb={} phase=scan_complete sources={} total_games={} train_count={} val_count={} counts_exact={}",
@@ -2619,117 +2658,59 @@ fn run_probe_only_with_model_config_result(
             manifest.val_count,
             manifest.counts_exact,
         ))?;
-        manifest
+        ProbeDataContext {
+            manifest: Some(manifest),
+            train_reader: None,
+            validation_reader: None,
+        }
     };
     let train_device = train_device(&config.device)?;
     let started_at = Instant::now();
     let measured_samples_per_second = match request.kind {
-        ProbeKind::Train => match config.precision_mode {
-            crate::config::PrecisionMode::Fp32 => {
-                if config.bc_shards_manifest_path.is_some() {
-                    probe_train_candidate_from_shards_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &train_device,
-                        &load_bc_shard_reader(
-                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
-                                "bc_shards_manifest_path missing for shard train probe".to_string()
-                            })?,
-                            BcShardSplit::Train,
-                        )?,
-                    )?
-                } else {
-                    probe_train_candidate_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &loader_config,
-                        &manifest,
-                        &train_device,
-                    )?
-                }
+        ProbeKind::Train => {
+            if let Some(reader) = probe_context.train_reader_ref() {
+                probe_train_candidate_from_shards_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &train_device,
+                    reader,
+                )?
+            } else {
+                probe_train_candidate_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &loader_config,
+                    probe_context
+                        .manifest_ref()
+                        .ok_or_else(|| "manifest missing for non-shard train probe".to_string())?,
+                    &train_device,
+                )?
             }
-            crate::config::PrecisionMode::Bf16Autocast => {
-                if config.bc_shards_manifest_path.is_some() {
-                    probe_train_candidate_from_shards_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &train_device,
-                        &load_bc_shard_reader(
-                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
-                                "bc_shards_manifest_path missing for shard train probe".to_string()
-                            })?,
-                            BcShardSplit::Train,
-                        )?,
-                    )?
-                } else {
-                    probe_train_candidate_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &loader_config,
-                        &manifest,
-                        &train_device,
-                    )?
-                }
+        }
+        ProbeKind::Validation => {
+            if let Some(reader) = probe_context.validation_reader_ref() {
+                probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &train_device,
+                    reader,
+                )?
+            } else {
+                probe_validation_candidate_for_backend::<TrainBackend>(
+                    config,
+                    model_config,
+                    request,
+                    &loader_config,
+                    probe_context.manifest_ref().ok_or_else(|| {
+                        "manifest missing for non-shard validation probe".to_string()
+                    })?,
+                    &train_device,
+                )?
             }
-        },
-        ProbeKind::Validation => match config.precision_mode {
-            crate::config::PrecisionMode::Fp32 => {
-                if config.bc_shards_manifest_path.is_some() {
-                    probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &train_device,
-                        &load_bc_shard_reader(
-                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
-                                "bc_shards_manifest_path missing for shard validation probe"
-                                    .to_string()
-                            })?,
-                            BcShardSplit::Validation,
-                        )?,
-                    )?
-                } else {
-                    probe_validation_candidate_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &loader_config,
-                        &manifest,
-                        &train_device,
-                    )?
-                }
-            }
-            crate::config::PrecisionMode::Bf16Autocast => {
-                if config.bc_shards_manifest_path.is_some() {
-                    probe_validation_candidate_from_shards_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &train_device,
-                        &load_bc_shard_reader(
-                            config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
-                                "bc_shards_manifest_path missing for shard validation probe"
-                                    .to_string()
-                            })?,
-                            BcShardSplit::Validation,
-                        )?,
-                    )?
-                } else {
-                    probe_validation_candidate_for_backend::<TrainBackend>(
-                        config,
-                        model_config,
-                        request,
-                        &loader_config,
-                        &manifest,
-                        &train_device,
-                    )?
-                }
-            }
-        },
+        }
         ProbeKind::RlGames | ProbeKind::RlMicrobatch => {
             unreachable!("RL probes handled by run_rl_probe_only")
         }
@@ -2796,11 +2777,7 @@ fn run_probe_child_mode_with_model_config_output(
         return Ok(None);
     };
     configure_probe_threads(config)?;
-    let manifest = if let Some(path) = manifest_cache_path.as_ref() {
-        read_manifest_cache(path)?.map(|cached| cached.manifest)
-    } else {
-        None
-    };
+    let manifest = load_probe_child_manifest(config, request.kind, manifest_cache_path.as_deref())?;
     let result = if matches!(request.kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
         run_rl_probe_only_result(config, request)?
     } else {
@@ -2831,11 +2808,7 @@ pub(super) fn run_probe_child_mode_with_model_config(
     else {
         return Ok(false);
     };
-    let manifest = if let Some(path) = manifest_cache_path.as_ref() {
-        read_manifest_cache(path)?.map(|cached| cached.manifest)
-    } else {
-        None
-    };
+    let manifest = load_probe_child_manifest(config, request.kind, manifest_cache_path.as_deref())?;
     run_probe_only_with_model_config(
         config,
         model_config,
@@ -2930,12 +2903,14 @@ pub(super) fn run_probe_ladder_only(
         "scanning data for {} probe",
         probe_kind_name(request.kind)
     ));
-    let _ = load_or_scan_manifest(
+    let _ = load_or_scan_manifest_cache(
         &PreflightPaths::new(artifacts).manifest_cache_path,
         &config.data_dir,
         config.train_fraction,
         &config.source_filters,
         Some(&scan_pb),
+        "preflight data",
+        |_| {},
     )?;
     scan_pb.finish_with_message(
         format!("scan complete for {} probe", probe_kind_name(request.kind))
@@ -3084,12 +3059,14 @@ pub(super) fn run_preflight(
     let mut tuned_config = config.clone();
     tuned_config.microbatch_size = Some(selected.train_microbatch_size);
     tuned_config.validation_microbatch_size = Some(selected.validation_microbatch_size);
-    let manifest = load_or_scan_manifest(
+    let manifest = load_or_scan_manifest_cache(
         &paths.manifest_cache_path,
         &config.data_dir,
         config.train_fraction,
         &config.source_filters,
         None,
+        "preflight data",
+        |_| {},
     )
     .map_err(|err| {
         err.replacen(
@@ -3443,57 +3420,18 @@ mod tests {
     use crate::test_loose_replay_fixtures::{
         write_real_preflight_fixture, write_real_probe_fixture,
     };
+    use crate::test_support::{dummy_train_config, unique_test_path as shared_unique_test_path};
     use hydra_train::preflight::{
         PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK,
-        PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, PreflightConfig, ProbeStatus,
+        PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProbeStatus,
     };
 
     fn dummy_config() -> TrainConfig {
-        TrainConfig {
-            data_dir: PathBuf::from("/home/nikketryhard/tmp/hydra-test-data"),
-            output_dir: PathBuf::from("/home/nikketryhard/tmp/hydra-test-out"),
-            num_epochs: 1,
-            batch_size: 256,
-            microbatch_size: Some(64),
-            validation_microbatch_size: Some(32),
-            exit_sidecar_path: None,
-            delta_q_sidecar_path: None,
-            bc_shards_manifest_path: None,
-            train_fraction: 0.9,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
-            augment: true,
-            resume_checkpoint: None,
-            seed: 0,
-            advanced_loss: None,
-            rl: None,
-            bc: Default::default(),
-            device: "cpu".to_string(),
-            buffer_games: 16,
-            buffer_samples: 128,
-            num_threads: None,
-            tensorboard: false,
-            archive_queue_bound: 8,
-            validation_every_n_epochs: 1,
-            max_skip_logs_per_source: 4,
-            log_every_n_steps: 10,
-            validate_every_n_steps: 10,
-            checkpoint_every_n_steps: 10,
-            max_train_steps: None,
-            max_validation_batches: None,
-            max_validation_samples: None,
-            preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
-        }
+        dummy_train_config()
     }
 
     fn unique_test_path(label: &str) -> PathBuf {
-        let base = PathBuf::from("/home/nikketryhard/tmp");
-        fs::create_dir_all(&base).expect("test temp root should be creatable");
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after unix epoch")
-            .as_nanos();
-        base.join(format!("hydra-preflight-runtime-{label}-{unique}"))
+        shared_unique_test_path("hydra-preflight-runtime", label)
     }
 
     fn write_temp_file(label: &str, extension: &str, contents: &str) -> PathBuf {
@@ -3585,6 +3523,69 @@ mod tests {
             measure_samples_per_second(10, Duration::from_secs_f64(f64::EPSILON / 2.0)),
             0.0
         );
+    }
+
+    #[test]
+    fn emit_probe_start_progress_supports_train_and_validation_requests() {
+        let train_request = ProbeRequest {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 64,
+            warmup_steps: 2,
+            measure_steps: 3,
+        };
+        let validation_request = ProbeRequest {
+            kind: ProbeKind::Validation,
+            candidate_microbatch: 32,
+            warmup_steps: 1,
+            measure_steps: 4,
+        };
+
+        assert!(emit_probe_start_progress(train_request, 64).is_ok());
+        assert!(emit_probe_start_progress(validation_request, 32).is_ok());
+    }
+
+    #[test]
+    fn advance_probe_loop_transitions_from_warmup_to_measurement() {
+        let request = ProbeRequest {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 64,
+            warmup_steps: 2,
+            measure_steps: 3,
+        };
+        let mut state = ProbeLoopState::new();
+
+        let first = advance_probe_loop(&mut state, request, 64, 256)
+            .expect("first warmup step should succeed");
+        assert!(first.is_none());
+        assert_eq!(state.completed_steps, 1);
+        assert!(state.measure_start.is_none());
+
+        let second = advance_probe_loop(&mut state, request, 64, 256)
+            .expect("second warmup step should start measurement");
+        assert!(second.is_none());
+        assert_eq!(state.completed_steps, 2);
+        assert!(state.measure_start.is_some());
+    }
+
+    #[test]
+    fn advance_probe_loop_returns_throughput_once_target_steps_complete() {
+        let request = ProbeRequest {
+            kind: ProbeKind::Validation,
+            candidate_microbatch: 32,
+            warmup_steps: 1,
+            measure_steps: 1,
+        };
+        let mut state = ProbeLoopState {
+            completed_steps: 1,
+            measure_start: Some(Instant::now()),
+        };
+
+        let throughput = advance_probe_loop(&mut state, request, 32, 32)
+            .expect("final measurement step should succeed")
+            .expect("target steps should produce throughput");
+        assert!(throughput >= 0.0);
+        assert_eq!(state.completed_steps, 2);
+        assert!(state.measure_start.is_some());
     }
 
     fn probe_result_with_runtime(
@@ -4606,7 +4607,7 @@ mod tests {
                 .all(|result| result.status == ProbeStatus::Success)
         );
 
-        let persisted = super::super::probe_process::read_probe_batch_artifact(&results_path)
+        let persisted = super::super::probe_transport::read_probe_batch_artifact(&results_path)
             .expect("persisted child batch artifact should parse");
         assert_eq!(persisted.is_finished(), artifact.is_finished());
         assert_eq!(persisted.results.len(), artifact.results.len());
