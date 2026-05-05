@@ -13,6 +13,14 @@ __pycache__/
 *.pyc
 .tmp_archive_claims/
 
+# Generated graphify artifacts are local-only navigation/cache outputs.
+/graphify-out/
+/.graphify_*
+/graph.html
+/graph.svg
+/graph.graphml
+/cypher.txt
+
 # Local funding / outreach drafts
 /email_draft_*.txt
 /email_draft_*.md
