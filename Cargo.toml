@@ -2,6 +2,14 @@
 resolver = "2"
 members = ["crates/hydra-core", "crates/hydra-engine", "crates/hydra-train"]
 
+[profile.dev]
+debug = 1
+incremental = true
+codegen-units = 256
+
+[profile.test]
+inherits = "dev"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

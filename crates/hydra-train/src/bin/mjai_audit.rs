@@ -8,10 +8,11 @@ use std::time::Instant;
 
 use hydra_train::data::archive_helpers::is_mjai_archive_entry;
 use hydra_train::data::mjai_loader::{load_game_from_path, load_game_from_stream};
-use hydra_train::data::pipeline::{DataSource, scan_data_sources};
+use hydra_train::data::parsed_sample_cache::is_parsed_sample_cache_file;
+use hydra_train::data::pipeline::{scan_data_sources, DataSource};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 
 const MJAI_AUDIT_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -223,6 +224,12 @@ fn collect_sources(data_dir: &Path) -> Result<Vec<DataSource>, String> {
             .map_err(|err| format!("failed to scan data dir {}: {err}", data_dir.display()));
     }
     if data_dir.is_file() {
+        if is_parsed_sample_cache_file(data_dir) {
+            return Err(format!(
+                "parsed-sample cache input is not supported by mjai_audit yet: {}",
+                data_dir.display()
+            ));
+        }
         return Ok(vec![if is_archive_file(data_dir) {
             DataSource::Archive(data_dir.to_path_buf())
         } else {
@@ -488,6 +495,10 @@ fn audit_source(
         DataSource::LooseFile(path) => {
             audit_loose_source(path, config, state, &mut inventory_writer)
         }
+        DataSource::ParsedSampleCache { path, .. } => Err(format!(
+            "parsed-sample cache input is not supported by mjai_audit yet: {}",
+            path.display()
+        )),
     };
     audit_result.as_ref()?;
     finalize_failure_inventory(inventory_writer)
@@ -634,7 +645,11 @@ fn run() -> Result<(), String> {
 }
 
 fn exit_code_for_run_result(result: &Result<(), String>) -> i32 {
-    if result.is_ok() { 0 } else { 1 }
+    if result.is_ok() {
+        0
+    } else {
+        1
+    }
 }
 
 fn main() {
@@ -1107,12 +1122,10 @@ mod tests {
         let lines = failure_report_lines(&sort_error_buckets(error_buckets), &failure_examples);
         assert!(lines.iter().any(|line| line == "Top failure buckets:"));
         assert!(lines.iter().any(|line| line == "Failure examples:"));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("dataset.tar.zst/bad1.json")
-                    || line.contains("dataset.tar.zst/bad2.json"))
-        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("dataset.tar.zst/bad1.json")
+                || line.contains("dataset.tar.zst/bad2.json")));
 
         cleanup_dir(&dir);
     }

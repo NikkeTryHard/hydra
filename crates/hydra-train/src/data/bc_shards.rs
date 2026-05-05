@@ -956,6 +956,12 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
                 &mut skipped_games,
                 &mut empty_games,
             )?,
+            DataSource::ParsedSampleCache { path, .. } => {
+                return Err(invalid_data(format!(
+                    "parsed-sample cache input is not supported by build_bc_shards yet: {}",
+                    path.display()
+                )));
+            }
         }
     }
 

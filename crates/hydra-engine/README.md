@@ -1,41 +1,41 @@
 # hydra-engine
 
-Internal game engine for the Hydra Riichi Mahjong AI. Vendored from [smly/RiichiEnv](https://github.com/smly/RiichiEnv) (`riichienv-core` v0.4.7, Apache-2.0).
+Internal game engine for Hydra Riichi Mahjong AI. Vendored from [smly/RiichiEnv](https://github.com/smly/RiichiEnv) (`riichienv-core` v0.4.7, Apache-2.0).
 
 ## Overview
 
-`hydra-engine` provides the complete Riichi Mahjong simulation that Hydra's training pipeline runs on: game state management, hand evaluation, score calculation, and legal action generation for both 4-player and 3-player (sanma) variants.
+`hydra-engine` gives full Riichi Mahjong sim Hydra training pipeline runs on: game state mgmt, hand eval, score calc, legal action gen for 4p + 3p (sanma).
 
-The crate is vendored rather than used as an external dependency. Vendoring lets us make performance-critical modifications (zero-copy observations, stack-allocated actions, validation bypass for self-play) without waiting on upstream or maintaining a patch set. The lib name remains `riichienv_core` so that `hydra-core` imports don't need renaming.
+Crate vendored, not external dep. Why: perf-critical mods (zero-copy obs, stack-alloc actions, validation bypass for self-play) without waiting upstream or carrying patch set. Lib name stays `riichienv_core` so `hydra-core` imports need no rename.
 
-This is a workspace-internal crate. It isn't published to crates.io.
+Workspace-internal crate. Not published to crates.io.
 
 ## Origin and License
 
 - Vendored from `riichienv-core` v0.4.7 by [smly](https://github.com/smly) (Apache-2.0).
-- Correctness verified upstream against 1M+ hanchan using Mortal as a black-box MJAI player, zero errors ([source](https://github.com/smly/RiichiEnv)).
-- The lib name stays `riichienv_core` for backward compatibility with `hydra-core` imports.
-- Original license preserved (Apache-2.0). Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) are BSL-1.1-licensed (same as `hydra-core`).
+- Correctness verified upstream against 1M+ hanchan using Mortal as black-box MJAI player, zero errors ([source](https://github.com/smly/RiichiEnv)).
+- Lib name stays `riichienv_core` for backward compat with `hydra-core` imports.
+- Original license preserved (Apache-2.0). Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) use BSL-1.1 (same as `hydra-core`).
 
 ## Hydra Modifications
 
-Changes from upstream `riichienv-core`, all targeting training throughput:
+Changes from upstream `riichienv-core`, all for training throughput:
 
 | Area | Change | Rationale |
 |------|--------|-----------|
-| Action type | `consume_tiles`: `Vec<u8>` -> `[u8; 4]` | `Action` is now `Copy`, zero heap allocation |
-| HandEvaluator | `new()` takes `&[u8]` + `&[Meld]` (borrows) | Eliminates 30+ `clone()` calls per step |
+| Action type | `consume_tiles`: `Vec<u8>` -> `[u8; 4]` | `Action` now `Copy`, zero heap alloc |
+| HandEvaluator | `new()` takes `&[u8]` + `&[Meld]` (borrows) | Removes 30+ `clone()` calls per step |
 | GameState | `step_unchecked()` | Skips redundant validation in self-play loops |
 | GameState | `_execute_step` deleted | Single step impl via `_execute_step_array`, -905 lines |
 | GameState | Extracted handler methods | `_handle_discard/riichi/ankan/kakan/tsumo/wait_response` |
-| GameState | `observe()` -> `ObservationRef` | Zero-copy state access, no `Vec` allocations |
+| GameState | `observe()` -> `ObservationRef` | Zero-copy state access, no `Vec` allocs |
 | GameState | `get_legal_actions_into()` | Buffer-reuse legal actions, zero alloc per step |
-| GameState | `_get_claim_actions_into_claims()` | Zero-alloc claim resolution, writes directly to array |
-| Hand maintenance | `sorted_insert_arr()` | Fixed-array sorted insert for stack-allocated hands |
+| GameState | `_get_claim_actions_into_claims()` | Zero-alloc claim resolution, writes direct to array |
+| Hand maintenance | `sorted_insert_arr()` | Fixed-array sorted insert for stack-alloc hands |
 | Player data | All fields stack-allocated | hand/melds/discards/pao/forbidden as fixed arrays |
 | Wall data | `[u8; 136]` + cursor | Fixed array wall, O(1) draw via cursor index |
-| Meld type | `[u8; 4]` + `tile_count` | Meld is Copy, zero heap allocation |
-| Action type | `[u8; 4]` + `consume_count` | Action is Copy, zero heap allocation |
+| Meld type | `[u8; 4]` + `tile_count` | Meld is Copy, zero heap alloc |
+| Action type | `[u8; 4]` + `consume_count` | Action is Copy, zero heap alloc |
 | HandEvaluator | `[Meld; 4]` + `get_waits_u8_into()` | Stack melds, buffer-reuse waits |
 | Safety tracking | `u64` bitfields | Genbutsu/kabe/one-chance as bitsets, not bool arrays |
 | MJAI logging | Gated by `skip_mjai_logging` | Zero-cost when disabled |
@@ -45,32 +45,32 @@ Changes from upstream `riichienv-core`, all targeting training throughput:
 
 | Module | Description |
 |--------|-------------|
-| `action` | Action types (`Discard`, `Chi`, `Pon`, `Kan`, `Riichi`, `Ron`, `Tsumo`, `Kita`, etc.) and game phase tracking |
-| `state` | Full game state management, wall handling, legal action validation, `step_unchecked()` (4-player) |
-| `state_3p` | Game state management for 3-player games with Kita/BaBei support |
-| `game_variant` | `GameStateVariant` enum dispatching between 4-player and 3-player game states |
-| `observation` | Player-facing game state views with legal actions and MJAI event history (4-player) |
-| `observation_3p` | Player-facing game state views for 3-player games |
+| `action` | Action types (`Discard`, `Chi`, `Pon`, `Kan`, `Riichi`, `Ron`, `Tsumo`, `Kita`, etc.) + game phase tracking |
+| `state` | Full game state mgmt, wall handling, legal action validation, `step_unchecked()` (4p) |
+| `state_3p` | Game state mgmt for 3p games with Kita/BaBei support |
+| `game_variant` | `GameStateVariant` enum dispatch between 4p and 3p game states |
+| `observation` | Player-facing game state views with legal actions + MJAI event history (4p) |
+| `observation_3p` | Player-facing game state views for 3p games |
 | `observation_ref` | `ObservationRef`: zero-copy, borrow-based state access (Hydra addition) |
-| `hand_evaluator` | Agari detection, tenpai checking, wait calculation, riichi candidate analysis (4-player) |
-| `hand_evaluator_3p` | Hand evaluation for 3-player games |
-| `shanten` | Shanten number calculation with pub tables for external caching |
-| `score` | Han/fu-based score calculation |
-| `rule` | Game rule configuration with Tenhou/MJSoul presets (4-player and sanma) |
+| `hand_evaluator` | Agari detect, tenpai check, wait calc, riichi candidate analysis (4p) |
+| `hand_evaluator_3p` | Hand eval for 3p games |
+| `shanten` | Shanten calc with pub tables for external caching |
+| `score` | Han/fu-based score calc |
+| `rule` | Game rule config with Tenhou/MJSoul presets (4p + sanma) |
 | `types` | Core data types: `Hand`, `Wind`, `Meld`, `MeldType`, `Conditions`, `WinResult` |
-| `parser` | MPSZ notation parsing for tiles and hands |
-| `mjai_event` | `MjaiEvent` typed enum and `mjai_event!` macro for zero-cost logging (Hydra addition) |
-| `yaku` | Yaku (winning hand pattern) definitions and detection (4-player) |
+| `parser` | MPSZ notation parsing for tiles + hands |
+| `mjai_event` | `MjaiEvent` typed enum + `mjai_event!` macro for zero-cost logging (Hydra addition) |
+| `yaku` | Yaku (winning hand pattern) defs + detection (4p) |
 | `agari` | Agari (winning hand) table lookups |
-| `replay` | MJAI and MJSoul replay parsing with step-by-step iteration |
-| `errors` | Error types (`RiichiError`) and result alias (`RiichiResult`) |
+| `replay` | MJAI + MJSoul replay parsing with step-by-step iteration |
+| `errors` | Error types (`RiichiError`) + result alias (`RiichiResult`) |
 
 ## Tile Representation
 
-- **136-format**: Each of 34 tile types x 4 copies (indices 0-135), used for actual game state.
-- **34-format**: Normalized tile type indices (0-33), used for calculations.
+- **136-format**: Each of 34 tile types x 4 copies (indices 0-135), used for real game state.
+- **34-format**: Normalized tile type indices (0-33), used for calc.
 - **MPSZ notation**: `1m`-`9m` (man), `1p`-`9p` (pin), `1s`-`9s` (sou), `1z`-`7z` (honors).
-- Red fives (aka-dora) are at indices 16, 52, 88 in 136-format.
+- Red fives (aka-dora) at indices 16, 52, 88 in 136-format.
 
 ## Benchmarks
 
@@ -98,5 +98,5 @@ Cross-engine comparison (single-threaded, first-action agent unless noted):
 
 ## License
 
-Apache-2.0 (original `riichienv-core` license). See the LICENSE file.
-Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) are BSL-1.1-licensed (same as `hydra-core`).
+Apache-2.0 (original `riichienv-core` license). See `LICENSE` file.
+Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) use BSL-1.1 (same as `hydra-core`).

@@ -1,25 +1,25 @@
 # Hydra Current Status
 
-Current shipped/staged status for Hydra's already-built surfaces.
+Current shipped/staged snapshot for Hydra built surfaces.
 
-This file is Hydra's promoted current-status snapshot for things that already exist in code or are partially implemented in code. Use it to answer questions like "what is shipped today?", "what is implemented but still staged?", and "what is implemented but not default-on yet?"
+Use file for: what shipped today, what implemented but staged, what implemented but not default-on.
 
-This file reports shipped/staged status only.
+File reports shipped/staged status only.
 
-- For the roadmap to Hydra v1, read `research/design/HYDRA_RECONCILIATION.md`.
+- For roadmap to Hydra v1, read `research/design/HYDRA_RECONCILIATION.md`.
 - For runtime semantics and compatibility truth, read `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, and current code.
 
-When this file and current code disagree, current code wins. When this file and `HYDRA_RECONCILIATION.md` disagree on active vs reserve vs staged priority, refresh reconciliation and then refresh this file. When reconciliation or current status drift from the archive root, refresh the promoted docs rather than demoting the canonical archive source ledger.
+If file and current code disagree, current code wins. If file and `HYDRA_RECONCILIATION.md` disagree on active vs reserve vs staged priority, refresh reconciliation, then refresh file. If reconciliation or current status drift from archive root, refresh promoted docs, not demote canonical archive source ledger.
 
 ## Status vocabulary
 
-This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILIATION.md`.
+File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 
 | Term | Meaning |
 |---|---|
-| `shipped baseline` | implemented and part of the current live baseline |
-| `implemented but not default-on` | implemented and validated enough to exist in-code, but intentionally not the default runtime/training path |
-| `implemented but staged` | core code path exists, but promotion/activation is still intentionally deferred |
+| `shipped baseline` | implemented, part of current live baseline |
+| `implemented but not default-on` | implemented, validated enough to exist in-code, intentionally not default runtime/training path |
+| `implemented but staged` | core code path exists, promotion/activation intentionally deferred |
 | `reserve shelf` | documented later-work direction, not current mainline priority |
 | `historical` | preserved context only; not current governing truth |
 
@@ -27,19 +27,19 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 
 ### Shipped baseline
 
-- `hydra-core` is a real first-party runtime/encoder/simulator crate.
-- The live encoder/model contract is `192x34`; the old `85x34` view is baseline-prefix only.
-- The fixed runtime action space is 46 actions with two-phase riichi and kan handling.
-- BC training now supports **epoch-boundary-only** reuse of matching preflight-selected runtime for the selected-runtime tuple (`train_microbatch_size`, `validation_microbatch_size`, derived `accum_steps`), while fresh runs remain config-derived, partial-epoch resumes still require identical runtime, and loader-runtime stays config-derived.
-- The stronger public-teacher belief-semantics tranche is shipped as part of the current training baseline.
-- The current Hand-EV realism upgrade is shipped as part of the live baseline surface.
-- Replay-derived `safety_residual` is shipped as a narrow supervised lane.
-- ExIt now has an end-to-end carrier across the live self-play lane and the replay/sample sidecar-first lane.
+- `hydra-core` = real first-party runtime/encoder/simulator crate.
+- Live encoder/model contract = `192x34`; old `85x34` view = baseline-prefix only.
+- Fixed runtime action space = 46 actions with two-phase riichi and kan handling.
+- BC training supports **epoch-boundary-only** reuse of matching preflight-selected runtime for selected-runtime tuple (`train_microbatch_size`, `validation_microbatch_size`, derived `accum_steps`); fresh runs stay config-derived, partial-epoch resumes still require identical runtime, loader-runtime stays config-derived.
+- Stronger public-teacher belief-semantics tranche shipped in current training baseline.
+- Current Hand-EV realism upgrade shipped in live baseline surface.
+- Replay-derived `safety_residual` shipped as narrow supervised lane.
+- ExIt has end-to-end carrier across live self-play lane and replay/sample sidecar-first lane.
 
 ### Implemented but not default-on
 
-- The narrow DeltaQ supervision lane is implemented in code and promotion-gated through an arena-confirmation path.
-- DeltaQ promotion artifacts now persist explicit `arena_decision` plus `arena_report`, but the lane is still **not** default-on.
+- Narrow DeltaQ supervision lane implemented in code, promotion-gated through arena-confirmation path.
+- DeltaQ promotion artifacts now persist explicit `arena_decision` plus `arena_report`, but lane still **not** default-on.
 
 ### Implemented but staged
 
@@ -59,10 +59,10 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 | Area | Current status | Notes |
 |---|---|---|
 | Runtime encoder / action semantics | shipped baseline | See `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` |
-| Hand-EV baseline surface | shipped baseline | Stronger local evaluator is live; representative-world CT-SMC Hand-EV remains staged |
-| Belief semantics baseline | shipped baseline | Stronger public-teacher belief tranche is in the live baseline |
-| BC runtime authority | shipped baseline | Fresh runs are config-derived; epoch-boundary resumes may reuse matching preflight-selected runtime for selected-runtime only; partial-epoch resumes still require identical runtime; loader-runtime remains config-derived |
-| BF16/AMP precision | shipped baseline (BC); staged (RL, DeltaQ) | BC training, preflight, probe, autotune, and stage-2 benchmark all dispatch by precision. RL training and DeltaQ promotion are explicitly gated with hard errors. |
+| Hand-EV baseline surface | shipped baseline | Stronger local evaluator live; representative-world CT-SMC Hand-EV still staged |
+| Belief semantics baseline | shipped baseline | Stronger public-teacher belief tranche in live baseline |
+| BC runtime authority | shipped baseline | Fresh runs config-derived; epoch-boundary resumes may reuse matching preflight-selected runtime for selected-runtime only; partial-epoch resumes still require identical runtime; loader-runtime remains config-derived |
+| BF16/AMP precision | shipped baseline (BC); staged (RL, DeltaQ) | BC training, preflight, probe, autotune, stage-2 benchmark all dispatch by precision. RL training and DeltaQ promotion explicitly gated with hard errors. |
 | Preflight cache system | shipped baseline | Fingerprint v4 key covers hardware, workload, preflight config, explicit microbatch overrides. Identical-run fast path skips probing on cache hit. BC and RL bootstrap read cache under documented authority rules. |
 | NVTX profiling | shipped baseline | Orchestration-level fully instrumented (epoch, step, validation, checkpoint, logging, self-play, stage-2 benchmark). BC microbatch sub-stages (collation, forward, loss, backward, optimizer_step) instrumented. Library internals not yet instrumented. Gated by `HYDRA_NVTX` env var via dlopen. |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |
@@ -74,6 +74,6 @@ This file uses the status vocabulary defined in `research/design/HYDRA_RECONCILI
 
 ## Where to read next
 
-- Need the current runtime contract? Read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
-- Need the roadmap to Hydra v1 or the active-path / staged-vs-reserve decision? Read `research/design/HYDRA_RECONCILIATION.md`.
-- Need the north-star architecture rather than current shipped status? Read `research/design/HYDRA_FINAL.md`.
+- Need current runtime contract? Read `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md`.
+- Need roadmap to Hydra v1 or active-path / staged-vs-reserve decision? Read `research/design/HYDRA_RECONCILIATION.md`.
+- Need north-star architecture, not current shipped status? Read `research/design/HYDRA_FINAL.md`.

@@ -1194,6 +1194,10 @@ mod tests {
             .collect();
         sources.sort_by(|a, b| match (a, b) {
             (DataSource::LooseFile(lhs), DataSource::LooseFile(rhs)) => lhs.cmp(rhs),
+            (
+                DataSource::ParsedSampleCache { path: lhs, .. },
+                DataSource::ParsedSampleCache { path: rhs, .. },
+            ) => lhs.cmp(rhs),
             _ => std::cmp::Ordering::Equal,
         });
         let manifest = DataManifest {

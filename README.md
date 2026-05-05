@@ -1,45 +1,45 @@
 # Hydra
 
-Open-source Riichi Mahjong AI. The goal is to build an AI that rivals [LuckyJ](https://haobofu.github.io/) (Tencent, 10.68 stable dan on Tenhou) with open weights.
+Open-source Riichi Mahjong AI. Goal: rival [LuckyJ](https://haobofu.github.io/) (Tencent, 10.68 stable dan on Tenhou) with open weights.
 
 > ## Compute support
-> This research used the Delta advanced computing and data resource, which is supported by the National Science Foundation (award OAC 2005572) and the State of Illinois. Delta is a joint effort of the University of Illinois Urbana-Champaign and its National Center for Supercomputing Applications.
+> This research used Delta advanced computing/data resource, supported by National Science Foundation (award OAC 2005572) and State of Illinois. Delta = joint effort of University of Illinois Urbana-Champaign and National Center for Supercomputing Applications.
 
 ## Goal
 
-Train a mahjong AI that:
-- Surpasses [Mortal](https://github.com/Equim-chan/Mortal) (~7-dan) and approaches LuckyJ-level play (10+ dan) in head-to-head evaluation
-- Releases weights under a permissive license
-- Adds opponent modeling and inference-time search — the two capabilities that separate LuckyJ from all other mahjong AIs
+Train mahjong AI that:
+- Beats [Mortal](https://github.com/Equim-chan/Mortal) (~7-dan), nears LuckyJ-level play (10+ dan) in head-to-head eval
+- Releases weights under permissive license
+- Adds opponent modeling and inference-time search — two capabilities separating LuckyJ from other mahjong AIs
 
 ## Architecture
 
-Hydra uses a layered authority flow built from the archive handoff canon upward:
+Hydra uses layered authority flow, built upward from archive handoff canon:
 
 1. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — epistemic root / canonical archive SSOT for upstream research conclusions
-2. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) and [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) — derived archive views over that canonical source ledger
-3. [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — promoted architecture doctrine built from archive canon plus repo validation
-4. [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted operational doctrine and roadmap to Hydra v1 built from archive canon plus repo validation
-5. [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — promoted current-status snapshot for already-built repo surfaces
-6. [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md) — runtime semantics and compatibility surfaces; current code wins when docs drift
+2. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) and [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) — derived archive views over canonical source ledger
+3. [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — promoted architecture doctrine from archive canon + repo validation
+4. [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted operational doctrine and Hydra v1 roadmap from archive canon + repo validation
+5. [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — promoted current-status snapshot for shipped repo surfaces
+6. [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md) — runtime semantics and compatibility surfaces; current code wins if docs drift
 
-Hydra's documentation split is simple:
+Hydra doc split:
 
-- `HYDRA_FINAL.md` describes the max-ceiling destination
-- `HYDRA_RECONCILIATION.md` is the roadmap to Hydra v1
-- `docs/CURRENT_STATUS.md` says what is already shipped or still staged today
+- `HYDRA_FINAL.md` = max-ceiling destination
+- `HYDRA_RECONCILIATION.md` = roadmap to Hydra v1
+- `docs/CURRENT_STATUS.md` = what shipped or remains staged now
 
 Raw `answer_*_combined.md` files in `research/agent_handoffs/combined_all_variants/` remain raw archive corpus, not promoted doctrine.
 
 ## Fresh-agent routing
 
-If you are entering Hydra with zero prior memory, use this order and stop when you have enough truth for the task:
+If entering Hydra with zero prior memory, use this order and stop when truth is enough for task:
 
 1. `README.md` for repo routing
 2. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` for canonical archive intake
 3. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` for derived archive triage
-4. `research/design/HYDRA_RECONCILIATION.md` for the roadmap to Hydra v1
-5. `research/design/HYDRA_FINAL.md` for the long-term ceiling
+4. `research/design/HYDRA_RECONCILIATION.md` for Hydra v1 roadmap
+5. `research/design/HYDRA_FINAL.md` for long-term ceiling
 6. `docs/CURRENT_STATUS.md` for shipped/staged truth
 7. `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` for runtime truth
 
@@ -47,20 +47,20 @@ If you are entering Hydra with zero prior memory, use this order and stop when y
 
 ## Status vocabulary
 
-For implementation work, choose the next lane from
-`research/design/HYDRA_RECONCILIATION.md`, confirm whether it already exists in
-`docs/CURRENT_STATUS.md`, and confirm exact runtime contracts in
+For implementation work, choose next lane from
+`research/design/HYDRA_RECONCILIATION.md`, confirm shipped/staged status in
+`docs/CURRENT_STATUS.md`, then confirm exact runtime contracts in
 `docs/GAME_ENGINE.md` plus current code.
 
 | Term | Meaning |
 |---|---|
 | `active path` | what Hydra should optimize/build now |
-| `shipped baseline` | implemented and part of the current live baseline |
-| `implemented but not default-on` | implemented in code, intentionally not the default path |
-| `implemented but staged` | implemented enough to exist, but activation/promotion is intentionally deferred |
+| `shipped baseline` | implemented, part of current live baseline |
+| `implemented but not default-on` | implemented in code, intentionally not default path |
+| `implemented but staged` | implemented enough to exist, activation/promotion intentionally deferred |
 | `reserve shelf` | preserved later-work direction, not current mainline |
-| `blocked` | not ready because a real dependency or semantic gap remains |
-| `rejected` | not part of the current plan |
+| `blocked` | not ready because real dependency or semantic gap remains |
+| `rejected` | not part of current plan |
 | `historical` | preserved context only; not governing truth |
 
 ## Crate ownership
@@ -71,7 +71,7 @@ For implementation work, choose the next lane from
 | `crates/hydra-core` | runtime bridge, encoder, simulator, seeding, search/runtime feature plumbing | Burn training logic or vendored rules ownership |
 | `crates/hydra-train` | model, targets, losses, BC/RL/self-play orchestration, train binary | low-level rules engine behavior |
 
-If you are deciding what to build next, follow the Fresh-agent routing order above.
+If deciding what to build next, follow Fresh-agent routing order above.
 `research/design/HYDRA_SPEC.md` remains historical context only.
 
 ## Research
@@ -80,17 +80,17 @@ If you are deciding what to build next, follow the Fresh-agent routing order abo
 |------|-------------|
 | [ARCHIVE_CANONICAL_CLAIMS.jsonl](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) | Epistemic root / canonical archive SSOT for upstream research intake |
 | [ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) | Derived archive prioritization view over canonical archive claims |
-| [ARCHIVE_CANONICAL_CLAIMS_RENDERED.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) | Generated human-readable mirror of the canonical archive ledger |
+| [ARCHIVE_CANONICAL_CLAIMS_RENDERED.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) | Generated human-readable mirror of canonical archive ledger |
 | [HYDRA_FINAL.md](research/design/HYDRA_FINAL.md) | Promoted architecture doctrine summary |
-| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Promoted operational doctrine summary and roadmap to Hydra v1 |
+| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Promoted operational doctrine summary and Hydra v1 roadmap |
 | [HYDRA_ARCHIVE.md](research/design/HYDRA_ARCHIVE.md) | Reserve-only design/archive planning surfaces |
 | [HYDRA_SPEC.md](research/design/HYDRA_SPEC.md) | Historical architecture spec only |
-| [MORTAL_ANALYSIS.md](research/intel/MORTAL_ANALYSIS.md) | Mortal's architecture, training details, confirmed weaknesses |
-| [OPPONENT_MODELING.md](research/design/OPPONENT_MODELING.md) | Opponent-modeling rationale; includes both active ideas and reserve/future extensions |
+| [MORTAL_ANALYSIS.md](research/intel/MORTAL_ANALYSIS.md) | Mortal architecture, training details, confirmed weaknesses |
+| [OPPONENT_MODELING.md](research/design/OPPONENT_MODELING.md) | Opponent-modeling rationale; includes active ideas and reserve/future extensions |
 | [INFRASTRUCTURE.md](research/infrastructure/INFRASTRUCTURE.md) | Rust stack, data pipeline, training infra, hardware, deployment |
 | [SEEDING.md](research/design/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
 | [CHECKPOINTING.md](research/infrastructure/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
-| [ECOSYSTEM.md](research/intel/ECOSYSTEM.md) | Useful repos, tooling, and framework references |
+| [ECOSYSTEM.md](research/intel/ECOSYSTEM.md) | Useful repos, tooling, framework references |
 | [REWARD_DESIGN.md](research/design/REWARD_DESIGN.md) | Reward design and RVR notes |
 | [COMMUNITY_INSIGHTS.md](research/intel/COMMUNITY_INSIGHTS.md) | Community observations and external signals |
 | [REFERENCES.md](research/intel/REFERENCES.md) | Citation index |
@@ -99,23 +99,23 @@ If you are deciding what to build next, follow the Fresh-agent routing order abo
 
 ## Status
 
-Hydra is in active implementation. For the current shipped/staged repo snapshot, read [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). For runtime semantics and compatibility-sensitive invariants, read [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md).
+Hydra is in active implementation. For current shipped/staged repo snapshot, read [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). For runtime semantics and compatibility-sensitive invariants, read [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md).
 
 ## Operator docs
 
-If you need to run or debug the training stack rather than read the architecture docs first, start here:
+If you need to run/debug training stack rather than read architecture docs first, start here:
 
-- [`docs/TRAINING_WORKFLOWS.md`](docs/TRAINING_WORKFLOWS.md) — training entry modes, YAML contract, BC/RL shape, and sidecar-enabled training
-- [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, selected-runtime authority, probe flows, and runtime reuse rules
+- [`docs/TRAINING_WORKFLOWS.md`](docs/TRAINING_WORKFLOWS.md) — training entry modes, YAML contract, BC/RL shape, sidecar-enabled training
+- [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, selected-runtime authority, probe flows, runtime reuse rules
 - [`docs/REPLAY_SIDECARS.md`](docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time hydration contracts
-- [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus validation, failure inventories, and triage tooling
-- [`docs/BC_SHARDS.md`](docs/BC_SHARDS.md) — BC shard production, manifest interpretation, and training consumption
-- [`docs/DELTAQ_PROMOTION.md`](docs/DELTAQ_PROMOTION.md) — DeltaQ promotion gates, arena confirmation, and artifact interpretation
+- [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus validation, failure inventories, triage tooling
+- [`docs/BC_SHARDS.md`](docs/BC_SHARDS.md) — BC shard production, manifest interpretation, training consumption
+- [`docs/DELTAQ_PROMOTION.md`](docs/DELTAQ_PROMOTION.md) — DeltaQ promotion gates, arena confirmation, artifact interpretation
 - [`docker/train/README.md`](docker/train/README.md) — container execution contract
 
 ## Testing and Coverage
 
-Hydra uses `cargo nextest run --release` as the default workspace test path and `cargo-llvm-cov` for workspace-wide coverage reporting. For local coverage generation details, read [`docs/COVERAGE.md`](docs/COVERAGE.md).
+Hydra uses `cargo nextest run --release` as default workspace test path and `cargo-llvm-cov` for workspace-wide coverage reporting. For local coverage generation details, read [`docs/COVERAGE.md`](docs/COVERAGE.md).
 
 ## License
 

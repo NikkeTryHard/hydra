@@ -1,31 +1,24 @@
 # Kaggle-compatible Hydra train artifact
 
-This path exists for one specific problem: when Kaggle cannot compile Hydra locally and
-cannot run a host-built `train` binary because of newer `glibc` / `libstdc++` ABI
-requirements.
+Path exists for one problem: Kaggle may fail local Hydra compile and may not run host-built `train` due newer `glibc` / `libstdc++` ABI reqs.
 
 ## Strategy
 
-Build `train` in an older Ubuntu 22.04 / glibc 2.35 userspace while still sourcing
-libtorch from Python PyTorch via `LIBTORCH_USE_PYTORCH=1`.
+Build `train` in older Ubuntu 22.04 / glibc 2.35 userspace while still sourcing libtorch from Python PyTorch via `LIBTORCH_USE_PYTORCH=1`.
 
-This Kaggle-specific path intentionally targets Kaggle's older ABI floor, but it still
-has to stay compatible with Hydra's current `tch` / `torch-sys` stack. That means the
-builder keeps PyTorch `2.9.0+cu128`, because Hydra's current `tch 0.22.0` build expects
-that version family.
+This Kaggle-only path targets Kaggle older ABI floor, but must stay compatible with Hydra current `tch` / `torch-sys` stack. Therefore builder keeps PyTorch `2.9.0+cu128`, because Hydra current `tch 0.22.0` build expects that version family.
 
-This keeps the Hydra train/runtime contract the same, but lowers the ABI floor of the
-produced binary so it has a chance to run on Kaggle.
+This keeps Hydra train/runtime contract same, but lowers produced binary ABI floor so Kaggle may run it.
 
 ## Build
 
-From the repo root:
+From repo root:
 
 ```bash
 bash scripts/build-kaggle-compatible-artifact.sh
 ```
 
-This builds `docker/train/Dockerfile.kaggle-compat` and exports a runtime artifact under:
+This builds `docker/train/Dockerfile.kaggle-compat` and exports runtime artifact under:
 
 ```text
 dist/kaggle-compat/
@@ -36,28 +29,23 @@ dist/kaggle-compat/
 - `bin/train`
 - `bin/mjai_audit`
 - `bin/recompress`
-- `lib/` with only the exact shared-library closure that `bin/train` resolves from `ldd`
-- `runtime-manifest.json` as the producer-owned runtime contract for the exported train runtime
-- `lib-manifest.tsv` with per-library size and sha256 for the shipped `lib/` closure
-- `lib-summary.txt` with total runtime payload size and the builder search roots used to resolve it
+- `lib/` with only exact shared-library closure `bin/train` resolves from `ldd`
+- `runtime-manifest.json` as producer-owned runtime contract for exported train runtime
+- `lib-manifest.tsv` with per-library size and sha256 for shipped `lib/` closure
+- `lib-summary.txt` with total runtime payload size and builder search roots used to resolve it
 - `ldd-train.txt`
 - `ldd-train-summary.txt`
 - `abi-symbols.txt`
 
-The important bit is that `dist/kaggle-compat/lib/` is no longer a broad libtorch seed
-dump. The exported directory is required to match the actual `ldd` closure of the shipped
-`bin/train` binary. If `ldd` says a library is not used by `train`, it should not ride along
-in the final compat artifact unless that exception is documented and encoded by the producer.
+Key point: `dist/kaggle-compat/lib/` no longer broad libtorch seed dump. Exported dir must match actual `ldd` closure of shipped `bin/train` binary. If `ldd` says library unused by `train`, it should not ship in final compat artifact unless producer documents and encodes exception.
 
-The builder installs PyTorch with `uv` instead of plain `pip`, matching the repo's tool
-preference for Python package management on new workflows.
+Builder installs PyTorch with `uv`, not plain `pip`, matching repo Python package-manager preference for new workflows.
 
-It also installs `protobuf-compiler`, because current Hydra train dependencies include
-`tboard` build steps that require `protoc` during compilation.
+It also installs `protobuf-compiler`, because current Hydra train deps include `tboard` build steps needing `protoc` during compilation.
 
 ## Validation before Kaggle upload
 
-You should inspect:
+Inspect:
 
 - `dist/kaggle-compat/runtime-manifest.json`
 - `dist/kaggle-compat/lib-manifest.tsv`
@@ -65,17 +53,12 @@ You should inspect:
 - `dist/kaggle-compat/ldd-train-summary.txt`
 - `dist/kaggle-compat/abi-symbols.txt`
 
-The key goal is that the resulting `train` binary does **not** require a newer glibc or
-libstdc++ ABI than Kaggle exposes.
+Main goal: resulting `train` binary must **not** require newer glibc or libstdc++ ABI than Kaggle exposes.
 
-`runtime-manifest.json` is the source of truth the notebook/bundle flow should validate
-against before reusing persisted Kaggle working directories. That lets the producer decide
-exactly which runtime payload is valid instead of relying on shallow sentinel files.
+`runtime-manifest.json` = source of truth notebook/bundle flow should validate before reusing persisted Kaggle working dirs. This lets producer decide exact valid runtime payload instead of relying on shallow sentinel files.
 
-If the ABI floor is still too new, the builder image/toolchain must be moved even older.
+If ABI floor still too new, move builder image/toolchain older.
 
 ## Important note
 
-This is the artifact-production path only. It does **not** automatically update the
-Kaggle notebook bundle. If the artifact validates, wire `bin/train`, the matching exact
-`lib/` closure, and the manifest metadata into the Kaggle bundle/launcher path.
+This is artifact-production path only. It does **not** auto-update Kaggle notebook bundle. If artifact validates, wire `bin/train`, matching exact `lib/` closure, and manifest metadata into Kaggle bundle/launcher path.

@@ -1,13 +1,13 @@
 # Proposal A: Game-Theoretic Self-Play with Subgame Search for 4-Player Mahjong
 
-**Team**: Tencent AI Platform Department (5+ researchers)
-**Compute**: Estimated 10,000-50,000 GPU-hours
+**Team**: Tencent AI Platform Dept. (5+ researchers)
+**Compute**: Est. 10,000-50,000 GPU-hours
 
 ---
 
 ## Core Thesis
 
-Train a policy network entirely via self-play using a game-theoretic RL algorithm with Nash convergence properties, then augment at inference time with imperfect-information subgame solving. Use zero human data.
+Train policy net via pure self-play with game-theoretic RL having Nash-style convergence, then add imperfect-information subgame solving at inference. Zero human data.
 
 ---
 
@@ -15,23 +15,23 @@ Train a policy network entirely via self-play using a game-theoretic RL algorith
 
 **Paper**: ICLR 2022 -- "Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game"
 
-Merges deep RL (actor-critic) with Hedge algorithm (weighted CFR) for policy optimization in imperfect-information games.
+Merges deep RL (actor-critic) + Hedge (weighted CFR) for policy optimization in imperfect-information games.
 
 ### Algorithm
-- Maintains regret-weighted policy mixture (from Hedge/multiplicative weights)
-- Actor-critic provides advantage estimates from self-play trajectories
-- Policy update blends RL gradient with regret-minimization update
-- Pure self-play: trains entirely from scratch, zero human data
+- Keeps regret-weighted policy mixture (Hedge/multiplicative weights)
+- Actor-critic gives advantage estimates from self-play trajectories
+- Policy update blends RL gradient + regret-minimization update
+- Pure self-play: train from scratch, zero human data
 
 ### Theoretical Properties
-- Nash convergence at O(T^{-1/2}) rate in 2-player zero-sum games
-- Lower variance than previous sampled regret methods (Monte Carlo CFR)
-- No convergence guarantee in 4-player (empirical only)
+- Nash convergence at `O(T^{-1/2})` in 2-player zero-sum games
+- Lower variance than prior sampled regret methods (Monte Carlo CFR)
+- No convergence guarantee in 4-player; empirical only
 
 ### Training Paradigm
 - 100% self-play (no behavioral cloning, no human data, no oracle)
 - League-style training with frozen opponent pool
-- RVR (Reward Variance Reduction, IEEE CoG 2022) for training acceleration
+- RVR (Reward Variance Reduction, IEEE CoG 2022) for faster training
 
 ---
 
@@ -41,37 +41,37 @@ Merges deep RL (actor-critic) with Hedge algorithm (weighted CFR) for policy opt
 
 ### Algorithm
 At each decision point:
-1. Construct a subgame tree rooted at the current information set
-2. Limit the opponent strategy space (key innovation: prune unlikely opponent strategies)
-3. Solve the subgame via CFR to find an approximate Nash equilibrium
-4. Select the action prescribed by the subgame solution
+1. Build subgame tree rooted at current information set
+2. Limit opponent strategy space (key idea: prune unlikely opponent strategies)
+3. Solve subgame via CFR for approximate Nash equilibrium
+4. Pick action from subgame solution
 
 ### Theoretical Properties
-- Bounded exploitability: the subgame solution is epsilon-Nash in the restricted game
-- Orders of magnitude faster than common-knowledge subgame solving (Burch et al.)
+- Bounded exploitability: subgame solution is epsilon-Nash in restricted game
+- Orders faster than common-knowledge subgame solving (Burch et al.)
 - Formally tested on 2-player Mahjong
 
 ### Computational Requirements
-- Requires building and solving explicit game trees
-- Estimated: ~2400 CPUs + 8 V100 GPUs for real-time play
+- Must build + solve explicit game trees
+- Est.: ~2400 CPUs + 8 V100 GPUs for real-time play
 - Subgame solving is game-theoretically sound (minimax/Nash, not heuristic)
 
 ---
 
 ## Component 3: Search-as-Feature Integration (Unpublished)
 
-Search results (OLSS subgame solution values) are fed BACK into the policy neural network as input features. This is architecturally distinct from AlphaGo-style MCTS where search directly overrides the policy.
+Search results (OLSS subgame solution values) fed BACK into policy net as input features. Architecturally unlike AlphaGo-style MCTS, where search directly overrides policy.
 
 ### Mechanism
-- OLSS produces action values for the current decision
-- These values are encoded as additional input channels to the policy network
-- The network learns to integrate search information with its own trained representations
-- Enables learned arbitration between search and policy when they disagree
+- OLSS yields action values for current decision
+- Values encoded as extra input channels to policy net
+- Net learns to combine search info with learned representations
+- Enables learned arbitration when search and policy disagree
 
 ### Theoretical Motivation
-- The policy network can learn WHEN to trust search and when to trust its own features
-- Search-as-feature allows the network to contextualize search results
-- Avoids the "search override" problem where search can be worse than policy in some states
+- Policy net can learn WHEN to trust search vs own features
+- Search-as-feature lets net contextualize search results
+- Avoids "search override" problem where search worse than policy in some states
 
 ---
 
@@ -79,7 +79,7 @@ Search results (OLSS subgame solution values) are fed BACK into the policy neura
 
 **Paper**: IEEE CoG 2022 -- "Speedup Training AI for Mahjong via Reward Variance Reduction"
 
-Reduces variance in RL reward signal for Mahjong (which has inherently high stochastic variance due to tile draws and scoring structure). Standard technique from variance reduction literature, applied to the Mahjong domain.
+Reduces variance in RL reward signal for Mahjong, which has high stochastic variance from tile draws + scoring structure. Standard variance-reduction method applied to Mahjong domain.
 
 ---
 
@@ -87,32 +87,32 @@ Reduces variance in RL reward signal for Mahjong (which has inherently high stoc
 
 | Aspect | Known | Unknown |
 |--------|-------|---------|
-| Policy network | Neural network (type unspecified) | Exact architecture, layer count, dimensions |
+| Policy network | Neural net (type unspecified) | Exact architecture, layer count, dims |
 | Input encoding | Unspecified | Channel layout, tile representation |
-| Output | Policy (action distribution) | Number of heads, auxiliary objectives |
+| Output | Policy (action distribution) | Head count, auxiliary objectives |
 | Value network | Assumed separate or shared | Architecture details |
-| Opponent modeling | None explicit (implicit in self-play) | Whether any latent opponent representation exists |
-| Belief tracking | None explicit (implicit in network state) | Whether any structured belief is maintained |
-| Safety/defense | Observed strong defense empirically | How defense is encoded/trained |
+| Opponent modeling | None explicit (implicit in self-play) | Any latent opponent representation? |
+| Belief tracking | None explicit (implicit in net state) | Any structured belief maintained? |
+| Safety/defense | Strong defense observed empirically | How defense encoded/trained |
 
 ---
 
 ## Design Choices and Their Implications
 
 ### Strengths of This Proposal
-1. **Game-theoretic training**: ACH provides regret-minimization properties, preventing strategy cycling
-2. **Game-theoretic search**: OLSS provides formal safety guarantees on subgame solutions
-3. **Zero human data**: No ceiling from human play quality; can in principle exceed human strategies
-4. **Search-as-feature**: Novel integration that lets the network learn to use search contextually
+1. **Game-theoretic training**: ACH gives regret-minimization properties, reducing strategy cycling
+2. **Game-theoretic search**: OLSS gives formal safety guarantees on subgame solutions
+3. **Zero human data**: No ceiling from human play quality; can exceed human strategies in principle
+4. **Search-as-feature**: Novel integration lets net learn contextual search use
 
 ### Theoretical Limitations
-1. **No multiplayer convergence guarantee**: ACH converges to Nash only in 2-player. In 4-player, no formal guarantee exists. Training relies on empirical stability.
-2. **No explicit belief tracking**: Beliefs about opponent hands are implicit in network hidden state. Not verifiable, not incrementally updated, not constraint-consistent.
-3. **No exploitation of opponent tendencies**: Pure self-play converges toward Nash-like strategies. Does not specifically target human biases (over-folding, suji overreliance, damaten blindness).
-4. **Massive compute requirement**: OLSS requires thousands of CPUs for real-time play. Not accessible to most research teams.
-5. **No absent-evidence reasoning**: Does not explicitly model "the dog that didn't bark" (non-call evidence). Must learn this implicitly from self-play data.
-6. **No information-theoretic action selection**: Does not reason about information gain or concealment. Must learn these strategies implicitly.
-7. **Subgame solving assumes 2-player**: OLSS was formally tested on 2-player Mahjong. The 4-player adaptation is unpublished and its theoretical properties are unknown.
+1. **No multiplayer convergence guarantee**: ACH converges to Nash only in 2-player. In 4-player, no formal guarantee. Training depends on empirical stability.
+2. **No explicit belief tracking**: Beliefs about opponent hands stay implicit in hidden state. Not verifiable, not incrementally updated, not constraint-consistent.
+3. **No exploitation of opponent tendencies**: Pure self-play trends toward Nash-like strategies. Does not directly target human biases (over-folding, suji overreliance, damaten blindness).
+4. **Massive compute requirement**: OLSS needs thousands of CPUs for real-time play. Inaccessible for most teams.
+5. **No absent-evidence reasoning**: Does not explicitly model "dog that didn't bark" (non-call evidence). Must learn implicitly from self-play.
+6. **No information-theoretic action selection**: Does not explicitly reason about information gain or concealment. Must learn implicitly.
+7. **Subgame solving assumes 2-player**: OLSS formally tested on 2-player Mahjong. 4-player adaptation unpublished; theoretical properties unknown.
 
 ---
 

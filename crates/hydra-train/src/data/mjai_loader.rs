@@ -612,6 +612,13 @@ fn observation_for_replay_event(
     Ok(obs)
 }
 
+fn observation_for_implicit_pass(state: &mut GameState, actor: u8) -> io::Result<Observation> {
+    let t_obs = Instant::now();
+    let obs = state.get_observation(actor);
+    REPLAY_OBSERVATION_NS.fetch_add(t_obs.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    Ok(obs)
+}
+
 fn prepare_implicit_pass_decisions(
     next_event: &MjaiEvent,
     state: &mut GameState,
@@ -622,6 +629,22 @@ fn prepare_implicit_pass_decisions(
     let t_pass = Instant::now();
     let mut decisions = Vec::new();
     if state.phase != Phase::WaitResponse {
+        REPLAY_IMPLICIT_PASS_NS.fetch_add(t_pass.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        return Ok(decisions);
+    }
+
+    if !matches!(
+        next_event,
+        MjaiEvent::Dahai { .. }
+            | MjaiEvent::Pon { .. }
+            | MjaiEvent::Chi { .. }
+            | MjaiEvent::Kan { .. }
+            | MjaiEvent::Ankan { .. }
+            | MjaiEvent::Kakan { .. }
+            | MjaiEvent::Reach { .. }
+            | MjaiEvent::Hora { .. }
+    ) {
+        state.resolve_replay_all_passes();
         REPLAY_IMPLICIT_PASS_NS.fetch_add(t_pass.elapsed().as_nanos() as u64, Ordering::Relaxed);
         return Ok(decisions);
     }
@@ -637,9 +660,7 @@ fn prepare_implicit_pass_decisions(
         }
 
         let pass_action = EngineAction::new(ActionType::Pass, None, &[], Some(pid));
-        let obs = state
-            .get_observation_for_replay(pid, &pass_action, r#"{"type":"none"}"#)
-            .map_err(|err| invalid_data(format!("replay pass observation failed: {err}")))?;
+        let obs = observation_for_implicit_pass(state, pid)?;
         let legal = obs.legal_actions_method();
         let (_, _, _, had_ron) =
             analyze_replay_legal_actions(&legal, ActionPhase::Normal, hydra_core::action::PASS);
@@ -1029,18 +1050,26 @@ pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Resu
         match prepare_replay_decision(event, &mut state, &safety, &mut encoder) {
             Ok(_) => {}
             Err(err) => {
-                let actor = mjai_event_actor(event)
-                    .ok_or_else(|| invalid_data("failing sampled event missing actor"))?
-                    as u8;
-                let env_action = mjai_event_to_action(event)
-                    .map_err(|conv| {
-                        invalid_data(format!("replay action conversion failed: {conv}"))
-                    })?
-                    .ok_or_else(|| invalid_data("failing sampled event missing env action"))?;
-                state.get_legal_actions_into(actor, &mut legal_buf);
+                let actor = mjai_event_actor(event).map(|actor| actor as u8);
+                let env_action = mjai_event_to_action(event).map_err(|conv| {
+                    invalid_data(format!("replay action conversion failed: {conv}"))
+                })?;
+                let legal_actions = if let Some(actor) = actor {
+                    state.get_legal_actions_into(actor, &mut legal_buf);
+                    format!("{:?}", legal_buf)
+                } else {
+                    "<actor unavailable>".to_string()
+                };
                 return Ok(Some(format!(
-                    "EVENT_INDEX: {idx}\nEVENT: {:?}\nENV_ACTION: {:?}\nSTATE_PHASE: {:?}\nSTATE_DRAWN: {:?}\nLEGAL_ACTIONS: {:?}\nERROR: {}",
-                    event, env_action, state.phase, state.drawn_tile, legal_buf, err
+                    "EVENT_INDEX: {idx}\nEVENT: {:?}\nEVENT_ACTOR: {:?}\nENV_ACTION: {:?}\nSTATE_PHASE: {:?}\nSTATE_DRAWN: {:?}\nACTIVE_PLAYERS: {:?}\nLEGAL_ACTIONS: {}\nERROR: {}",
+                    event,
+                    actor,
+                    env_action,
+                    state.phase,
+                    state.drawn_tile,
+                    state.active_player_slice(),
+                    legal_actions,
+                    err
                 )));
             }
         }
@@ -2239,7 +2268,7 @@ mod tests {
         ))
         .expect("parse events");
         let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
-        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let safety = array::from_fn(|_| SafetyInfo::default());
         let mut encoder = ObservationEncoder::new();
 
         for event in events.iter().take(2) {
@@ -2255,5 +2284,80 @@ mod tests {
         assert_ne!(decision.action_id, hydra_core::action::RIICHI);
         assert!(decision.action_id <= hydra_core::action::DISCARD_END);
         assert!(decision.legal_mask[decision.action_id as usize]);
+    }
+
+    #[test]
+    fn prepare_replay_decision_resolves_wait_response_before_terminal_event() {
+        let events = read_mjai_events(Cursor::new(
+            [
+                r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+                r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["5m","5m","1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S"],["1p","2p","3p","4p","5p","6p","7p","8p","9p","1s","2s","3s","4s"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"]]}"#,
+                r#"{"type":"tsumo","actor":0,"pai":"5p"}"#,
+                r#"{"type":"dahai","actor":0,"pai":"5m","tsumogiri":false}"#,
+                r#"{"type":"end_kyoku"}"#,
+            ]
+            .join("\n"),
+        ))
+        .expect("parse events");
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+
+        for event in events.iter().take(4) {
+            update_safety(&mut safety, event).expect("update safety");
+            state.apply_mjai_event(event.clone());
+        }
+
+        assert_eq!(state.phase, riichienv_core::action::Phase::WaitResponse);
+        assert_eq!(state.active_player_slice(), &[1]);
+
+        let decisions = prepare_replay_decisions(&events[4], &mut state, &safety, &mut encoder)
+            .expect("prepare replay decisions should resolve terminal boundary");
+
+        assert!(decisions.is_empty());
+        assert_eq!(state.phase, riichienv_core::action::Phase::WaitAct);
+        assert!(state.active_player_slice().is_empty());
+    }
+
+    #[test]
+    fn prepare_replay_decision_allows_implicit_pass_alongside_hora_response() {
+        let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+        state.phase = riichienv_core::action::Phase::WaitResponse;
+        state.active_players = [0, 1, 0, 0];
+        state.active_player_count = 2;
+        state.current_claim_counts[0] = 1;
+        state.current_claims[0][0] =
+            EngineAction::new(ActionType::Ron, None, &[], Some(0));
+        state.current_claim_counts[1] = 1;
+        state.current_claims[1][0] =
+            EngineAction::new(ActionType::Ron, None, &[], Some(1));
+        state.last_discard = Some((3, 48));
+
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let mut encoder = ObservationEncoder::new();
+        let decisions = prepare_replay_decisions(
+            &MjaiEvent::Hora {
+                actor: 1,
+                target: 3,
+                pai: None,
+                uradora_markers: None,
+                yaku: None,
+                fu: None,
+                han: None,
+                scores: None,
+                delta: Some(vec![0, 2000, 0, -2000]),
+            },
+            &mut state,
+            &safety,
+            &mut encoder,
+        )
+        .expect("prepare replay decisions");
+
+        assert!(decisions.iter().any(|decision| {
+            decision.actor == 0 && decision.action_id == hydra_core::action::PASS
+        }));
+        assert!(state.players[0].missed_agari_doujun);
+        assert_eq!(state.phase, riichienv_core::action::Phase::WaitResponse);
+        assert_eq!(state.active_player_slice(), &[0, 1]);
     }
 }

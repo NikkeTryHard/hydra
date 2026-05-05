@@ -1,18 +1,18 @@
 # Hydra training container
 
-This image packages Hydra's training binaries for local and containerized GPU execution.
+Image package Hydra training binaries for local + container GPU run.
 
 ## What is inside
 
 - `train` -- training entrypoint from `crates/hydra-train/src/bin/train.rs`
 - `mjai_audit` -- MJAI replay auditor from `crates/hydra-train/src/bin/mjai_audit.rs`
-- Burn + `tch` / libtorch-compatible runtime via the CUDA base image
+- Burn + `tch` / libtorch-compatible runtime via CUDA base image
 
-This image does **not** add Jupyter, VS Code server, or RStudio.
+Image does **not** add Jupyter, VS Code server, or RStudio.
 
 ## Build locally
 
-From the repo root:
+From repo root:
 
 ```bash
 docker build -f docker/train/Dockerfile -t hydra:local .
@@ -20,7 +20,7 @@ docker build -f docker/train/Dockerfile -t hydra:local .
 
 ## Basic smoke check
 
-No arguments should print the binary usage contract:
+No args should print binary usage contract:
 
 ```bash
 docker run --rm hydra:local
@@ -28,20 +28,20 @@ docker run --rm hydra:local
 
 ## Runtime contract
 
-The container entrypoint is `train`, and it expects one YAML config argument:
+Container entrypoint = `train`; expects 1 YAML config arg:
 
 - `train <config.yaml>`
-- mounted config/data/output paths instead of baking datasets into the image
+- mount config/data/output paths instead of baking datasets into image
 
-Hydra's current behavioral-cloning loader supports either:
+Hydra current behavioral-cloning loader supports either:
 
-- a flat MJAI directory of `.json` / `.json.gz` files
-- a direct `.tar.zst` MJAI archive path
+- flat MJAI dir of `.json` / `.json.gz` files
+- direct `.tar.zst` MJAI archive path
 
-Keep mounted container paths aligned with the config:
+Keep mounted container paths aligned with config:
 
-- `data_dir: /data` for an extracted MJAI directory
-- `data_dir: /data/dataset.tar.zst` for a mounted archive file
+- `data_dir: /data` for extracted MJAI dir
+- `data_dir: /data/dataset.tar.zst` for mounted archive file
 - `output_dir: /output`
 
 ## Example run
@@ -56,7 +56,7 @@ docker run --rm \
   /config/train.yaml
 ```
 
-Your YAML config should point at the mounted container paths, for example:
+YAML config should point at mounted container paths, example:
 
 ```yaml
 data_dir: /data
@@ -65,13 +65,13 @@ num_epochs: 1
 batch_size: 32
 ```
 
-For an archive-backed run, mount the archive itself and point `data_dir` at that file path.
+For archive-backed run, mount archive itself and point `data_dir` at that file path.
 
-For the full training-mode and config contract, read [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md). For preflight/runtime-selection behavior, read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md).
+For full training-mode + config contract, read [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md). For preflight/runtime-selection behavior, read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md).
 
 ## Publish to GHCR
 
-Tag the image:
+Tag image:
 
 ```bash
 docker tag hydra:local ghcr.io/nikketryhard/hydra:latest
@@ -89,7 +89,7 @@ Push:
 docker push ghcr.io/nikketryhard/hydra:latest
 ```
 
-If you also want a versioned tag:
+If also want versioned tag:
 
 ```bash
 docker tag hydra:local ghcr.io/nikketryhard/hydra:0.1.0
@@ -98,4 +98,4 @@ docker push ghcr.io/nikketryhard/hydra:0.1.0
 
 ## Note on image publishing
 
-If you publish the image to GHCR or another registry, make sure the package visibility and pull path match the environment that will run training.
+If publishing image to GHCR or another registry, make sure package visibility + pull path match environment that will run training.

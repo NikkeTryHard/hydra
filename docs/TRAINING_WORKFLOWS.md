@@ -1,83 +1,83 @@
 # Hydra Training Workflows
 
-Operator-facing guide to Hydra's current training entrypoints, config surface, and mode selection.
+Operator guide: current Hydra train entrypoints, config surface, mode choice.
 
-This document is intentionally workflow-first. For shipped-vs-staged status, read [`docs/CURRENT_STATUS.md`](CURRENT_STATUS.md). For runtime and compatibility contracts, read [`docs/COMPATIBILITY_SURFACE.md`](COMPATIBILITY_SURFACE.md) and [`docs/GAME_ENGINE.md`](GAME_ENGINE.md). For container execution, read [`docker/train/README.md`](../docker/train/README.md).
+Workflow-first doc. Shipped vs staged: read [`docs/CURRENT_STATUS.md`](CURRENT_STATUS.md). Runtime/compat contracts: read [`docs/COMPATIBILITY_SURFACE.md`](COMPATIBILITY_SURFACE.md) and [`docs/GAME_ENGINE.md`](GAME_ENGINE.md). Container exec: read [`docker/train/README.md`](../docker/train/README.md).
 
 ## What owns training
 
-Hydra's main training entrypoint is:
+Main train entrypoint:
 
 - `crates/hydra-train/src/bin/train.rs`
 
-That binary routes into four top-level behaviors:
+Binary routes to 4 top behaviors:
 
 1. normal training
 2. preflight/runtime selection
 3. probe-only runtime measurement
 4. DeltaQ promotion evaluation
 
-The YAML contract for all of them is owned by:
+YAML contract owner:
 
 - `crates/hydra-train/src/bin/train/config.rs`
 
 ## CLI modes at a glance
 
-The binary always starts with a YAML config path:
+Binary always starts with YAML config path:
 
 ```bash
 train <config.yaml>
 ```
 
-Additional mode flags select specialized flows:
+Extra flags select special flows:
 
 | Mode | Invocation shape | Purpose |
 |---|---|---|
-| Normal training | `train config.yaml` | Runs BC or RL training from config |
-| Preflight | `train config.yaml --preflight` | Chooses runtime tuple and writes/reads preflight cache |
-| Probe-only | `train config.yaml --probe-kind <train\|validation> --probe-candidate-microbatch <N> ...` | Measures a candidate microbatch without running full training |
-| DeltaQ promotion | `train config.yaml --delta-q-promotion [--delta-q-baseline-checkpoint <path>]` | Evaluates a candidate checkpoint against a baseline using offline and arena-style gates |
+| Normal training | `train config.yaml` | Run BC or RL from config |
+| Preflight | `train config.yaml --preflight` | Pick runtime tuple; write/read preflight cache |
+| Probe-only | `train config.yaml --probe-kind <train\|validation> --probe-candidate-microbatch <N> ...` | Measure candidate microbatch; no full train |
+| DeltaQ promotion | `train config.yaml --delta-q-promotion [--delta-q-baseline-checkpoint <path>]` | Compare candidate checkpoint vs baseline with offline + arena-style gates |
 
-There is also an internal child-process probe path used by preflight/probe orchestration. That path is not the normal operator entrypoint and should be treated as implementation detail.
+Also internal child-process probe path for preflight/probe orchestration. Impl detail, not operator entrypoint.
 
 ## Choosing the right mode
 
-Use this rule of thumb:
+Rule of thumb:
 
-- Use normal training when you already trust the runtime tuple in config or resume state.
-- Use preflight when you want Hydra to measure and choose runtime settings safely for the current machine and workload.
-- Use probe-only when you are investigating runtime capacity or comparing a small set of candidate microbatches without paying full preflight/train cost.
-- Use DeltaQ promotion only when a candidate checkpoint already exists and you want to decide whether the narrow DeltaQ lane should be promoted.
+- Use normal training when runtime tuple in config/resume state already trusted.
+- Use preflight when Hydra should safely measure and choose runtime settings for current machine/workload.
+- Use probe-only when checking runtime capacity or comparing few microbatches without full preflight/train cost.
+- Use DeltaQ promotion only when candidate checkpoint already exists and narrow DeltaQ lane needs promote/no-promote decision.
 
 ## YAML contract overview
 
-`TrainConfig` is the real user-facing contract for Hydra training. The most important top-level fields are:
+`TrainConfig` = real user-facing training contract. Key top-level fields:
 
 | Field | Meaning |
 |---|---|
-| `data_dir` | Replay source root. Supports loose MJAI files or a `.tar.zst` archive path. |
-| `output_dir` | Training artifacts, checkpoints, logs, reports, and cache outputs. |
-| `num_epochs` | Epoch count for BC-style training flows. |
+| `data_dir` | Replay source root. Loose MJAI files or `.tar.zst` archive path. |
+| `output_dir` | Train artifacts, checkpoints, logs, reports, cache outputs. |
+| `num_epochs` | Epoch count for BC-style flows. |
 | `batch_size` | Logical batch size before microbatching/accumulation. |
-| `microbatch_size` | Optional explicit selected-runtime training microbatch override. |
+| `microbatch_size` | Optional explicit selected-runtime train microbatch override. |
 | `validation_microbatch_size` | Optional explicit selected-runtime validation microbatch override. |
 | `train_fraction` | Deterministic train/validation split fraction for replay sources. |
-| `source_filters` | Include/exclude filtering for replay identities. |
-| `augment` | Suit-permutation augmentation toggle for replay data. |
-| `resume_checkpoint` | Resume from a previous checkpoint base. |
-| `advanced_loss` | Optional activation/weights for auxiliary supervised lanes. |
-| `rl` | Enables RL/self-play training path with RL-specific knobs. |
-| `bc` | Behavioral-cloning optimizer hyperparameters. |
-| `device` | Device label used to pick the train backend. |
+| `source_filters` | Include/exclude replay identity filters. |
+| `augment` | Suit-permutation augmentation toggle. |
+| `resume_checkpoint` | Resume from prior checkpoint base. |
+| `advanced_loss` | Optional aux supervised lane activation/weights. |
+| `rl` | Enable RL/self-play path with RL knobs. |
+| `bc` | BC optimizer hyperparams. |
+| `device` | Device label for train backend pick. |
 | `precision_mode` | Precision dispatch, currently `fp32` or `bf16_autocast`. |
-| `preflight` | Runtime-selection and autotuning knobs. |
+| `preflight` | Runtime-selection + autotuning knobs. |
 | `exit_sidecar_path` | Optional replay ExIt sidecar index for replay-side supervision joins. |
 | `delta_q_sidecar_path` | Optional replay DeltaQ sidecar index for replay-side supervision joins. |
 | `bc_shards_manifest_path` | Optional prebuilt BC shard manifest input. |
 
 ## Minimal BC config
 
-This is the smallest useful baseline shape for replay-driven BC training:
+Smallest useful baseline shape for replay-driven BC training:
 
 ```yaml
 data_dir: /data
@@ -93,7 +93,7 @@ bc:
   warmup_steps: 1000
 ```
 
-Useful optional additions for normal BC runs:
+Useful optional adds for normal BC runs:
 
 ```yaml
 microbatch_size: 256
@@ -106,7 +106,7 @@ tensorboard: true
 
 ## Minimal RL config
 
-RL is configured by adding an `rl` block. The current RL phase enum is defined in `config.rs` as:
+Add `rl` block for RL. Current RL phase enum in `config.rs`:
 
 - `drda_ach_self_play`
 - `exit_pondering`
@@ -127,54 +127,54 @@ rl:
 
 Important current constraint:
 
-- BF16/AMP is shipped for BC flows, but RL and DeltaQ promotion remain explicitly gated as staged surfaces rather than baseline-on defaults.
+- BF16/AMP shipped for BC. RL and DeltaQ promotion still staged, not baseline-on defaults.
 
 ## Sidecar-enabled replay training
 
-Hydra can join replay-side supervision lanes during replay loading when sidecar paths are configured.
+Hydra can join replay-side supervision lanes during replay load when sidecar paths set.
 
 Relevant config fields:
 
 - `exit_sidecar_path`
 - `delta_q_sidecar_path`
 
-What those do:
+What they do:
 
 - ExIt sidecars hydrate replay-time search-derived labels when provenance, source identity, source version, source net hash, and legal-mask digest all match.
-- DeltaQ sidecars hydrate replay-time delta-Q labels under a stricter contract that also validates the action-mask/target shape.
+- DeltaQ sidecars hydrate replay-time delta-Q labels under stricter contract that also validates action-mask/target shape.
 
-One identity detail is easy to miss but operationally important:
+One easy-miss but ops-important identity detail:
 
 - loose replay files join by replay file name
 - archive-backed replay entries join by full archive-entry identity
 
-So a sidecar keyed to `game.json` is not automatically valid for an archive entry identified as `replays.tar.zst/path/inside/game.json`.
+So sidecar keyed to `game.json` not automatically valid for archive entry `replays.tar.zst/path/inside/game.json`.
 
-For how to generate and validate those sidecars, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
+For generation/validation, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 
 ## BC shards
 
-If `bc_shards_manifest_path` is set, Hydra can consume prebuilt BC shard metadata rather than scanning loose replay sources directly.
+If `bc_shards_manifest_path` set, Hydra can use prebuilt BC shard metadata instead of scanning loose replay sources.
 
-Use this when:
+Use when:
 
-- you have already materialized a shard dataset for repeated BC runs
-- you want training input layout to be driven by a precomputed shard manifest rather than raw replay discovery
+- shard dataset already materialized for repeated BC runs
+- training input layout should come from precomputed shard manifest, not raw replay discovery
 
-What changes operationally when shard mode is enabled:
+Operational changes when shard mode enabled:
 
-- the train path reads prebuilt shard rows instead of rescanning replay archives on each run
-- the validation path also switches to shard readers instead of the loose-replay validation stream
-- validation-sample materialization is disabled in this mode, so the run does not build a cached in-memory validation microbatch set up front even when `max_validation_samples` is set
-- shard-backed validation becomes a sequential shard-row scan with a small host-batch prefetch queue rather than replay-stream microbatch iteration
+- train path reads prebuilt shard rows, not rescanning replay archives each run
+- validation path also switches to shard readers, not loose-replay validation stream
+- validation-sample materialization disabled, so run does not build cached in-memory validation microbatch set up front even when `max_validation_samples` set
+- shard-backed validation becomes sequential shard-row scan with small host-batch prefetch queue, not replay-stream microbatch iteration
 
-That means shard-backed runs change both startup behavior and validation transport. If you are comparing runtime or memory behavior against a loose-replay run, treat shard mode as a different data path rather than just a faster input source.
+So shard-backed runs change startup behavior and validation transport. For runtime/memory comparison vs loose-replay run, treat shard mode as different data path, not only faster input source.
 
-For the build/inspect/consume workflow and manifest interpretation, read [`docs/BC_SHARDS.md`](BC_SHARDS.md).
+For build/inspect/consume workflow and manifest meaning, read [`docs/BC_SHARDS.md`](BC_SHARDS.md).
 
 ## Precision mode
 
-Current precision modes in the training config:
+Current precision modes in training config:
 
 - `fp32`
 - `bf16_autocast`
@@ -182,50 +182,50 @@ Current precision modes in the training config:
 Current repo status:
 
 - BC training, preflight, probe flows, and stage-2 benchmark dispatch by precision mode.
-- RL and DeltaQ promotion are not yet baseline BF16 surfaces.
+- RL and DeltaQ promotion not yet baseline BF16 surfaces.
 
 ## Training flow shape
 
-At a high level, normal training does four things:
+High level, normal training does 4 things:
 
 1. parse config and choose training mode
 2. build loader/runtime settings
 3. load replay or self-play data and collate targets
 4. run training, validation, checkpointing, and reporting
 
-The highest-signal boundary for operators is:
+Highest-signal operator boundary:
 
-- runtime selection decides how large and fast training batches are allowed to be on this machine
-- data pipeline decides what examples and sidecars actually get loaded
+- runtime selection decides batch size/speed limits on current machine
+- data pipeline decides which examples and sidecars actually load
 - training phase decides which optimization loop and target surfaces are active
 
 ## When to run preflight first
 
-Run preflight before a new training run when:
+Run preflight before new training run when:
 
-- you are on a new machine or GPU layout
-- you changed precision mode
-- you changed microbatch assumptions or replay workload materially
-- you do not trust old runtime selections to match the current hardware/workload pair
+- new machine or GPU layout
+- precision mode changed
+- microbatch assumptions or replay workload changed materially
+- old runtime selections no longer trusted for current hardware/workload pair
 
-For the detailed cache and authority rules, read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](PREFLIGHT_AND_RUNTIME_SELECTION.md).
+Detailed cache + authority rules: read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](PREFLIGHT_AND_RUNTIME_SELECTION.md).
 
 ## Container workflow
 
 For container execution:
 
-- mount config, data, and output paths explicitly
-- keep `data_dir` and `output_dir` aligned with the mounted container paths
-- keep the image entrypoint argument as the config path only
+- mount config, data, output paths explicitly
+- keep `data_dir` and `output_dir` aligned with mounted container paths
+- keep image entrypoint argument as config path only
 
-The container README is intentionally short; it assumes this document owns the workflow explanation and the Docker README owns the container contract.
+Container README intentionally short; this doc owns workflow explanation, Docker README owns container contract.
 
 ## Where to read next
 
 - Need runtime-selection and cache authority details? Read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](PREFLIGHT_AND_RUNTIME_SELECTION.md).
 - Need replay sidecar generation and join semantics? Read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 - Need replay corpus validation and failure triage before training? Read [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](MJAI_AUDIT_AND_FAILURE_TRIAGE.md).
-- Need the shard build/manifest workflow? Read [`docs/BC_SHARDS.md`](BC_SHARDS.md).
-- Need the full DeltaQ promotion runbook and artifact interpretation? Read [`docs/DELTAQ_PROMOTION.md`](DELTAQ_PROMOTION.md).
+- Need shard build/manifest workflow? Read [`docs/BC_SHARDS.md`](BC_SHARDS.md).
+- Need full DeltaQ promotion runbook and artifact interpretation? Read [`docs/DELTAQ_PROMOTION.md`](DELTAQ_PROMOTION.md).
 - Need current shipped/staged truth? Read [`docs/CURRENT_STATUS.md`](CURRENT_STATUS.md).
 - Need runtime and compatibility constraints? Read [`docs/COMPATIBILITY_SURFACE.md`](COMPATIBILITY_SURFACE.md).

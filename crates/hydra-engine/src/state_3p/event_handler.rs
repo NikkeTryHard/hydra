@@ -260,9 +260,14 @@ impl GameState3PEventHandler for GameState3P {
                 self.players[actor].riichi_stage = true;
             }
             MjaiEvent::ReachAccepted { actor } => {
-                self.players[actor].riichi_declared = true;
-                self.riichi_sticks += 1;
-                self.players[actor].score -= 1000;
+                if self.riichi_pending_acceptance == Some(actor as u8)
+                    || !self.players[actor].riichi_declared
+                {
+                    self.players[actor].riichi_declared = true;
+                    self.riichi_sticks += 1;
+                    self.players[actor].score -= 1000;
+                    self.riichi_pending_acceptance = None;
+                }
             }
             MjaiEvent::Dora { dora_marker } => {
                 let tile = parse_mjai_tile(&dora_marker);
@@ -905,6 +910,34 @@ mod tests {
         assert!(state.players[1].riichi_declared);
         assert_eq!(state.players[1].score, 29_000);
         assert_eq!(state.riichi_sticks, 3);
+    }
+
+    #[test]
+    fn reach_accepted_is_idempotent_after_replay_pass_resolution() {
+        let rule = GameRule::default_tenhou();
+        let mut state = GameState3P::new(4, true, Some(9), 0, rule);
+        state.players[0].reset_round();
+        state.players[1].score = 25_000;
+        state.players[1].riichi_declared = true;
+        state.riichi_pending_acceptance = Some(1);
+
+        state.apply_log_action(&LogAction::DealTile {
+            seat: 0,
+            tile: 4,
+            doras: None,
+            left_tile_count: None,
+        });
+        assert!(state.players[1].riichi_declared);
+        assert_eq!(state.players[1].score, 24_000);
+        assert_eq!(state.riichi_sticks, 1);
+        assert_eq!(state.phase, Phase::WaitAct);
+        assert!(state.riichi_pending_acceptance.is_none());
+
+        state.apply_mjai_event(MjaiEvent::ReachAccepted { actor: 1 });
+        assert!(state.players[1].riichi_declared);
+        assert_eq!(state.players[1].score, 24_000);
+        assert_eq!(state.riichi_sticks, 1);
+        assert!(state.riichi_pending_acceptance.is_none());
     }
 
     #[test]

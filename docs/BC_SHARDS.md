@@ -1,26 +1,26 @@
 # BC Shards
 
-Operator guide for building, inspecting, and consuming precomputed BC shard datasets in Hydra.
+Operator guide: build, inspect, consume precomputed BC shard datasets in Hydra.
 
-This document explains the `build_bc_shards` workflow, the manifest it emits, how optional replay sidecars affect the artifact contract, and how training consumes `bc_shards_manifest_path`. For the top-level training entrypoint, read [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). For replay-side supervision artifacts, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
+Doc covers `build_bc_shards` flow, emitted manifest, optional replay sidecar effect on artifact contract, how training consumes `bc_shards_manifest_path`. Top-level training entrypoint: [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). Replay-side supervision artifacts: [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 
 ## What BC shards are for
 
-BC shards are precomputed training artifacts for replay-driven behavioral cloning.
+BC shards = precomputed training artifacts for replay-driven behavioral cloning.
 
-Instead of scanning and loading raw replay files on every run, Hydra can:
+Instead of rescanning/loading raw replay files every run, Hydra can:
 
-1. scan a replay corpus once
+1. scan replay corpus once
 2. convert accepted samples into shard files
-3. write a manifest describing those shard files
-4. point training at the manifest with `bc_shards_manifest_path`
+3. write manifest describing shard files
+4. point training at manifest with `bc_shards_manifest_path`
 
 Use BC shards when:
 
-- you want repeated BC runs to reuse a stable dataset layout
-- you want train/validation splits fixed by a generated manifest rather than by repeated replay scanning
-- you want replay-side supervision from ExIt or DeltaQ sidecars baked into the shard artifact
-- you want the training path to consume a known-good prebuilt dataset rather than raw replay discovery every time
+- want repeated BC runs reuse stable dataset layout
+- want train/validation splits fixed by generated manifest, not repeated replay scanning
+- want replay-side supervision from ExIt or DeltaQ sidecars baked into shard artifact
+- want training path consume known-good prebuilt dataset, not raw replay discovery every time
 
 ## Owning surfaces
 
@@ -40,7 +40,7 @@ Training consumption points:
 
 ## CLI shape
 
-The builder is a standalone binary:
+Builder = standalone binary:
 
 ```bash
 build_bc_shards \
@@ -65,24 +65,24 @@ build_bc_shards \
 
 | Flag | Meaning |
 |---|---|
-| `--manifest-name` | Name of the emitted JSON manifest file. Defaults to `bc_shards_manifest.json`. |
-| `--shard-samples` | Target number of samples per shard file. Defaults to `10000`. Must be greater than 0. |
-| `--train-fraction` | Deterministic train/validation split fraction for replay identities. Defaults to `0.9`. |
-| `--split train|val|both` | Which split(s) to emit. Defaults to `both`. |
+| `--manifest-name` | Name of emitted JSON manifest file. Default `bc_shards_manifest.json`. |
+| `--shard-samples` | Target samples per shard file. Default `10000`. Must be > 0. |
+| `--train-fraction` | Deterministic train/validation split fraction for replay identities. Default `0.9`. |
+| `--split train|val|both` | Which split(s) to emit. Default `both`. |
 
 ## Input types
 
-The builder accepts the same broad replay-source shapes Hydra training already understands:
+Builder accepts same broad replay-source shapes Hydra training already understands:
 
-- a directory containing loose replay files
-- a direct loose replay file path
-- a direct archive path such as `.tar.zst`
+- directory containing loose replay files
+- direct loose replay file path
+- direct archive path such as `.tar.zst`
 
-Internally, the builder scans sources with `scan_data_sources_with_progress(...)` before building shards, so the operator experience is “scan first, then materialize.”
+Internally, builder scans sources with `scan_data_sources_with_progress(...)` before shard build, so operator flow = scan first, then materialize.
 
 ## Minimal example
 
-Build both train and validation shards from a replay directory:
+Build both train and validation shards from replay directory:
 
 ```bash
 cargo run -p hydra-train --bin build_bc_shards -- \
@@ -90,14 +90,14 @@ cargo run -p hydra-train --bin build_bc_shards -- \
   --output-dir /output/bc-shards
 ```
 
-That emits:
+Emits:
 
 - shard files inside `/output/bc-shards`
-- a manifest at `/output/bc-shards/bc_shards_manifest.json`
+- manifest at `/output/bc-shards/bc_shards_manifest.json`
 
 ## Split control
 
-The split policy is deterministic and identity-driven.
+Split policy = deterministic, identity-driven.
 
 Relevant knobs:
 
@@ -106,8 +106,8 @@ Relevant knobs:
 
 Interpretation:
 
-- `train_fraction` decides which identities map to the train or validation split
-- `split` decides whether the builder emits both splits or only one side
+- `train_fraction` decides which identities map to train or validation
+- `split` decides whether builder emits both splits or only one side
 
 Examples:
 
@@ -140,37 +140,37 @@ cargo run -p hydra-train --bin build_bc_shards -- \
 
 ## Sidecar-backed shard generation
 
-BC shard production can incorporate replay-side supervision lanes at build time.
+BC shard production can bake replay-side supervision lanes at build time.
 
 Supported optional inputs:
 
 - ExIt sidecar index
 - DeltaQ sidecar index
 
-Each sidecar requires three pieces of information together:
+Each sidecar needs 3 pieces together:
 
 - sidecar path
 - `source_net_hash`
 - `source_version`
 
-Hydra rejects partial provenance input. A sidecar is either fully specified or absent.
+Hydra rejects partial provenance input. Sidecar = fully specified or absent.
 
 ### Why the provenance requirement matters
 
-The builder is not blindly attaching labels from any JSONL file. It is preserving the same provenance-sensitive contract used by replay-side supervision in the loader path.
+Builder not blindly attaching labels from random JSONL. It preserves same provenance-sensitive contract used by replay-side supervision in loader path.
 
-That means the shard manifest records sidecar provenance so later consumers can understand what optional supervision was baked into the artifact.
+So shard manifest records sidecar provenance, and later consumers can see what optional supervision got baked into artifact.
 
 ### Identity rules are preserved when shards are built
 
-BC shard production does not flatten replay identity semantics when it joins sidecars before writing shard rows.
+BC shard production does not flatten replay identity semantics when joining sidecars before writing shard rows.
 
-- Loose replay inputs use the replay file name as the sidecar identity key.
-- Archive-backed replay inputs use the full archive-entry identity string.
+- Loose replay inputs use replay file name as sidecar identity key.
+- Archive-backed replay inputs use full archive-entry identity string.
 
-In practice, that means a sidecar record keyed to `game.json` can hydrate a loose replay named `game.json`, but it will not hydrate an archive entry identified as `replays.tar.zst/path/inside/game.json`.
+In practice: sidecar record keyed to `game.json` can hydrate loose replay `game.json`, but not archive entry identified as `replays.tar.zst/path/inside/game.json`.
 
-This is deliberate. The shard builder preserves the same sidecar join contract Hydra uses in the normal replay loader so that shard-backed BC runs and loose-replay BC runs do not silently disagree about which labels belong to which replay decisions.
+Deliberate. Builder preserves same sidecar join contract Hydra uses in normal replay loader, so shard-backed BC runs and loose-replay BC runs do not silently disagree on which labels belong to which replay decisions.
 
 ### Example: ExIt-backed shard build
 
@@ -197,26 +197,26 @@ cargo run -p hydra-train --bin build_bc_shards -- \
   --delta-q-source-version 1
 ```
 
-For how those sidecar indices are generated and what the provenance fields mean, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
+For sidecar index generation and provenance field meaning, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 
 ## What gets written
 
-The builder prints a summary like:
+Builder prints summary like:
 
 ```text
 Wrote <shard_count> shard(s), <sample_count> sample(s) to <output_dir> (manifest: <manifest_path>)
 ```
 
-It also includes source scan context in the final line:
+Final line also includes source scan context:
 
 - `sources=<N>`
 - `total_hint=<N>`
 
-Treat the summary as a quick sanity check, not the authoritative record. The manifest is the durable contract.
+Use summary as quick sanity check, not authoritative record. Manifest = durable contract.
 
 ## Manifest fields that matter most
 
-The emitted `BcShardManifest` includes:
+Emitted `BcShardManifest` includes:
 
 - format/version fields
 - action/observation dimensions
@@ -227,19 +227,19 @@ The emitted `BcShardManifest` includes:
 - aggregate totals
 - one descriptor list per split
 
-The most operator-relevant fields are:
+Most operator-relevant fields:
 
 | Field | Meaning |
 |---|---|
-| `manifest_version` / `shard_version` | Format versioning for the manifest and shard files |
+| `manifest_version` / `shard_version` | Format versioning for manifest and shard files |
 | `train_fraction` | Split fraction used when building |
 | `shard_samples` | Target sample count per shard |
 | `input` | Original replay input root/path |
 | `output_dir` | Output root holding shard files |
 | `source_count` | Number of scanned replay sources |
 | `source_total_games_hint` | Scan-derived game-count hint from replay discovery |
-| `exit_sidecar` | Optional ExIt sidecar provenance baked into the dataset |
-| `delta_q_sidecar` | Optional DeltaQ sidecar provenance baked into the dataset |
+| `exit_sidecar` | Optional ExIt sidecar provenance baked into dataset |
+| `delta_q_sidecar` | Optional DeltaQ sidecar provenance baked into dataset |
 | `totals.sample_count` | Total samples successfully written |
 | `totals.skipped_games` | Replay games skipped during shard production |
 | `totals.empty_games` | Games that loaded but produced no training samples |
@@ -266,49 +266,49 @@ Each shard descriptor carries:
 - feature flags
 - record size
 
-This is enough to answer the two most common operator questions:
+Enough to answer 2 common operator questions:
 
-- Did I actually build the split I intended?
-- How many samples and shard files did that split produce?
+- Did I build split I intended?
+- How many samples and shard files did split produce?
 
 ## How training consumes BC shards
 
-Hydra training consumes the artifact through config:
+Hydra training consumes artifact through config:
 
 ```yaml
 bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json
 ```
 
-When this field is set, Hydra uses prebuilt shard metadata instead of scanning raw replay files for normal BC data ingestion.
+When field set, Hydra uses prebuilt shard metadata instead of scanning raw replay files for normal BC data ingestion.
 
-Use this when:
+Use when:
 
-- the replay corpus has already been validated
-- you want reproducible repeated BC runs on the same dataset layout
-- startup/scanning cost on raw replay inputs is no longer worth paying each run
+- replay corpus already validated
+- want reproducible repeated BC runs on same dataset layout
+- startup/scanning cost on raw replay inputs no longer worth paying each run
 
-Training does not only switch the train loader in this mode. Validation also runs against shard readers, which means:
+Training does not only switch train loader here. Validation also runs against shard readers, meaning:
 
 - validation no longer streams loose replay files from `data_dir`
-- the validation helper that normally pre-materializes a bounded in-memory validation cache is bypassed
-- validation sample limits still apply, but they are enforced over shard rows rather than over replay-stream microbatches
+- validation helper that normally pre-materializes bounded in-memory validation cache is bypassed
+- validation sample limits still apply, but over shard rows rather than replay-stream microbatches
 
-This is important when you compare shard-backed and loose-replay runs. A shard manifest changes the full BC data path, including validation transport and the memory/runtime shape of validation.
+Important when comparing shard-backed vs loose-replay runs. Shard manifest changes full BC data path, including validation transport and validation memory/runtime shape.
 
-The current training docs already cover that field at a high level; this document is the missing production-side runbook explaining how to create the artifact it points to.
+Current training docs already cover field at high level; this doc is missing production-side runbook for creating artifact that field points to.
 
 ## Recommended operator workflow
 
-1. Validate a new replay corpus first with [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](MJAI_AUDIT_AND_FAILURE_TRIAGE.md).
-2. Decide whether you need raw replay loading every run or a prebuilt shard dataset.
+1. Validate new replay corpus first with [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](MJAI_AUDIT_AND_FAILURE_TRIAGE.md).
+2. Decide whether need raw replay loading every run or prebuilt shard dataset.
 3. Build shards with `build_bc_shards`.
-4. Inspect the manifest for split counts, sample totals, and sidecar provenance.
+4. Inspect manifest for split counts, sample totals, sidecar provenance.
 5. Point training at `bc_shards_manifest_path`.
 6. Rebuild shards if replay inputs or sidecar provenance change materially.
 
 ## When to rebuild shards
 
-Rebuild when any of these change in a way you want reflected in the dataset:
+Rebuild when any of these change and you want dataset reflect it:
 
 - replay corpus contents
 - split policy (`train_fraction`, `split`)
@@ -317,36 +317,36 @@ Rebuild when any of these change in a way you want reflected in the dataset:
 - DeltaQ sidecar provenance or path
 - encoder geometry or shard layout compatibility (`obs_size`, base record size, feature-flag-driven row layout)
 
-Do not assume old shards automatically reflect a new sidecar index or a new replay corpus snapshot.
+Do not assume old shards auto-reflect new sidecar index or new replay corpus snapshot.
 
-Hydra also rejects shard artifacts at load time when the current binary and the manifest/header contract no longer agree. The important operator-visible cases are:
+Hydra also rejects shard artifacts at load time when current binary and manifest/header contract no longer agree. Important operator-visible cases:
 
-- the manifest `obs_size` no longer matches the current encoder geometry
-- the manifest `base_record_size` no longer matches the current binary
-- the requested `train` or `validation` split is missing from the manifest
-- an individual shard header disagrees with the manifest about split, feature flags, record size, or shard version
+- manifest `obs_size` no longer matches current encoder geometry
+- manifest `base_record_size` no longer matches current binary
+- requested `train` or `validation` split missing from manifest
+- individual shard header disagrees with manifest about split, feature flags, record size, or shard version
 
-Treat those failures as a rebuild signal, not as something to work around with manual manifest edits.
+Treat failures as rebuild signal, not something to patch with manual manifest edits.
 
-One more artifact detail matters operationally: shard files are resolved relative to the manifest file's parent directory, not relative to the current shell working directory. Moving a manifest without moving its shard files breaks the artifact.
+One more artifact detail matters operationally: shard files resolve relative to manifest file parent directory, not current shell working directory. Move manifest without shard files -> artifact breaks.
 
 ## Common mistakes
 
-- Supplying only part of the sidecar provenance tuple; Hydra requires all sidecar provenance fields together.
-- Treating the manifest path as a magical cache key instead of a concrete dataset artifact.
-- Forgetting that shard production bakes in whether ExIt or DeltaQ supervision was available at build time.
-- Assuming a manifest with only one split can still satisfy both train and validation consumers.
-- Moving the manifest file independently from the shard files it references.
-- Skipping corpus validation and then debugging shard failures downstream instead of fixing the replay input first.
+- Supplying only part of sidecar provenance tuple; Hydra requires all sidecar provenance fields together.
+- Treating manifest path as magical cache key instead of concrete dataset artifact.
+- Forgetting shard production bakes in whether ExIt or DeltaQ supervision was available at build time.
+- Assuming manifest with only one split can still satisfy both train and validation consumers.
+- Moving manifest file independently from shard files it references.
+- Skipping corpus validation, then debugging shard failures downstream instead of fixing replay input first.
 
 ## Relationship to other docs
 
 - `docs/TRAINING_WORKFLOWS.md` explains when to set `bc_shards_manifest_path`.
 - `docs/REPLAY_SIDECARS.md` explains how sidecar JSONL artifacts are generated and what their provenance means.
-- `docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md` explains how to validate and debug the replay corpus before shard production.
+- `docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md` explains how to validate and debug replay corpus before shard production.
 
 ## Where to read next
 
-- Need the main training flow? Read [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md).
+- Need main training flow? Read [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md).
 - Need replay sidecar generation? Read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 - Need replay corpus validation before shard production? Read [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](MJAI_AUDIT_AND_FAILURE_TRIAGE.md).

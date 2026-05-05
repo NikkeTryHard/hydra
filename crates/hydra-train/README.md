@@ -1,47 +1,47 @@
 # hydra-train
 
-Training crate for the Hydra Riichi Mahjong AI. It owns the model stack, replay/self-play data plumbing, target construction, evaluation harnesses, and the training/data utility binaries that turn `hydra-core` encoder/runtime signals into checkpoints or replay-side artifacts.
+Training crate for Hydra Riichi Mahjong AI. Owns model stack, replay/self-play data plumbing, target build, eval harnesses, training/data bins turning `hydra-core` encoder/runtime signals into checkpoints or replay artifacts.
 
 ## Overview
 
-`hydra-train` is the workspace layer that sits above `hydra-core` and `hydra-engine`.
+`hydra-train` = workspace layer above `hydra-core` and `hydra-engine`.
 
 - `hydra-engine` owns low-level Riichi rules and replay parsing
-- `hydra-core` owns runtime bridging, encoding, simulation, seeding, and search/runtime feature plumbing
-- `hydra-train` owns model definition, losses, the active BC/RL/self-play orchestration surface, sidecar generation, and training/evaluation utilities
+- `hydra-core` owns runtime bridge, encoding, simulation, seeding, and search/runtime feature plumbing
+- `hydra-train` owns model defs, losses, active BC/RL/self-play orchestration, sidecar gen, and training/eval utils
 
-The crate is built around Burn and the current Hydra training baseline. The shipped baseline already includes the live `192x34` encoder/model contract, replay-derived `safety_residual`, the stronger public-teacher belief semantics tranche, and the ExIt carrier across both live self-play and replay/sample sidecar-first lanes. Promotion-gated DeltaQ tooling also lives here, but it is not the default-on training lane. Some internal modules remain preserved for staged or reserve work, so treat the module table below as the supported crate surface rather than a list of every file in the crate.
+Crate built around Burn and current Hydra training baseline. Shipped baseline already has live `192x34` encoder/model contract, replay-derived `safety_residual`, stronger public-teacher belief semantics tranche, and ExIt carrier across live self-play plus replay/sample sidecar-first lanes. Promotion-gated DeltaQ tooling also lives here, but not default-on training lane. Some internal modules stay for staged/reserve work, so use module table below as supported crate surface, not every file list.
 
 For current shipped-vs-staged status, read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md).
 For active-path sequencing, read [`research/design/HYDRA_RECONCILIATION.md`](../../research/design/HYDRA_RECONCILIATION.md).
 
 ## What this crate owns
 
-`hydra-train` is responsible for:
+`hydra-train` responsible for:
 
-- model/backbone/head definitions
-- BC and RL optimization loops
+- model/backbone/head defs
+- BC and RL optimize loops
 - replay data loading and sample collation
-- self-play batch generation and evaluation harnesses
-- preflight/runtime autotuning and resume compatibility checks
-- replay sidecar generation for ExIt and DeltaQ-style lanes
-- workspace binaries and utilities like `train`, `mjai_audit`, `recompress`, `repack_tar`, replay sidecar builders, and replay failure inspection tools
+- self-play batch gen and eval harnesses
+- preflight/runtime autotune and resume-compat checks
+- replay sidecar gen for ExIt and DeltaQ-style lanes
+- workspace bins and utils like `train`, `mjai_audit`, `recompress`, `repack_tar`, replay sidecar builders, and replay failure inspection tools
 
-It does **not** own the Riichi rules engine itself. When rule semantics drift, `hydra-engine` and `docs/GAME_ENGINE.md` are the runtime authority.
+It does **not** own Riichi rules engine itself. If rule semantics drift, `hydra-engine` and `docs/GAME_ENGINE.md` are runtime authority.
 
 ## Module Reference
 
 | Module | Description |
 |--------|-------------|
 | `amp` | AMP/BF16 runtime helpers shared by training flows |
-| `backbone` | Backbone building blocks for Hydra's network stack |
+| `backbone` | Backbone blocks for Hydra network stack |
 | `config` | Shared training/runtime config types and parsing helpers |
 | `data` | Replay loading, data-source scanning, augmentation, and batch/sample plumbing |
-| `eval` | Arena/evaluation helpers and training/eval metric summaries |
-| `heads` | Policy / value / auxiliary head definitions |
+| `eval` | Arena/eval helpers and training/eval metric summaries |
+| `heads` | Policy / value / aux head defs |
 | `inference` | Train-side model inference helpers |
 | `model` | Top-level `HydraModel` assembly and config surface |
-| `preflight` | Probe/preflight configuration for runtime selection and autotune flows |
+| `preflight` | Probe/preflight config for runtime selection and autotune flows |
 | `saf` | SAF-related train-side helpers |
 | `selfplay` | Self-play orchestration and mixed-policy game execution |
 | `selfplay_batch` | Batched self-play data plumbing |
@@ -50,68 +50,68 @@ It does **not** own the Riichi rules engine itself. When rule semantics drift, `
 
 ## Workspace binaries
 
-The crate currently exposes these workspace binaries:
+Crate currently exposes these workspace binaries:
 
 | Binary | Purpose |
 |--------|---------|
 | `train` | Main training entrypoint; supports normal training, preflight, probe, and DeltaQ-promotion modes |
 | `mjai_audit` | Audits replay datasets and archives, including failure bucketing and optional failure inventories |
-| `recompress` | Recompression utility for replay/data artifacts |
-| `repack_tar` | Repack utility for tar-based replay corpora |
+| `recompress` | Recompression util for replay/data artifacts |
+| `repack_tar` | Repack util for tar-based replay corpora |
 | `build_replay_delta_q_sidecar` | Builds replay-side DeltaQ sidecars |
 | `build_replay_exit_sidecar` | Builds replay-side ExIt sidecars |
 | `mjai_debug_failure` | Debug helper for replay failures |
-| `mjai_first_failure` | Finds/inspects the first replay failure in a dataset |
+| `mjai_first_failure` | Finds/inspects first replay failure in dataset |
 | `build_bc_shards` | Builds BC shard datasets and manifests from replay corpora |
 
-The main training entrypoint lives at [`src/bin/train.rs`](src/bin/train.rs). It is split into focused `src/bin/train/*` submodules for runtime/preflight selection, probe transport, autotune, resume/state persistence, and test support.
+Main training entrypoint lives at [`src/bin/train.rs`](src/bin/train.rs). Split into focused `src/bin/train/*` submodules for runtime/preflight selection, probe transport, autotune, resume/state persistence, and test support.
 
 ## Operator workflow docs
 
-For concrete runbook-style documentation rather than crate ownership summaries, read:
+For concrete runbook-style docs, not crate ownership summary, read:
 
 - [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md) — training modes, YAML contract, BC/RL shape, and sidecar-enabled runs
 - [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, probe flows, runtime authority, and resume rules
-- [`docs/REPLAY_SIDECARS.md`](../../docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time joins
+- [`docs/REPLAY_SIDECARS.md`](../../docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar gen and replay-time joins
 - [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](../../docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus audit, failure inventories, and replay-debug workflow
 - [`docs/BC_SHARDS.md`](../../docs/BC_SHARDS.md) — BC shard production, manifest fields, and shard-backed training
 - [`docs/DELTAQ_PROMOTION.md`](../../docs/DELTAQ_PROMOTION.md) — DeltaQ promotion mode, gates, and persisted artifact fields
 
 ## Runtime and data contract
 
-The training crate consumes the same live runtime surface as the rest of Hydra:
+Training crate consumes same live runtime surface as rest of Hydra:
 
 - encoder/model contract: `192x34`
 - action space: 46 actions
-- replay input support: flat MJAI directories plus `.tar.zst` archives
+- replay input support: flat MJAI dirs plus `.tar.zst` archives
 - default workspace test path: `cargo nextest run --release`
 
-The Docker/container-facing training contract is documented in [`docker/train/README.md`](../../docker/train/README.md).
+Docker/container-facing training contract documented in [`docker/train/README.md`](../../docker/train/README.md).
 
 ## Training flow at a glance
 
-At a high level, `hydra-train` does four things:
+At high level, `hydra-train` does four things:
 
-1. reads config and chooses runtime/preflight behavior
+1. reads config and picks runtime/preflight behavior
 2. loads replay or self-play data through `data::*`
 3. builds targets/losses and runs BC/RL/update loops through `training::*`
-4. evaluates, checkpoints, and reports metrics through the train binary and eval helpers
+4. evaluates, checkpoints, and reports metrics through train bin and eval helpers
 
-That split is intentional: runtime semantics stay below this crate, while optimization policy and target construction stay here.
+That split intentional: runtime semantics stay below this crate, while optimize policy and target construction stay here.
 
 ## Where to read next
 
 - Need runtime truth? Read [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
 - Need current shipped/staged status? Read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md).
-- Need the active Hydra v1 roadmap? Read [`research/design/HYDRA_RECONCILIATION.md`](../../research/design/HYDRA_RECONCILIATION.md).
+- Need active Hydra v1 roadmap? Read [`research/design/HYDRA_RECONCILIATION.md`](../../research/design/HYDRA_RECONCILIATION.md).
 - Need container execution details? Read [`docker/train/README.md`](../../docker/train/README.md).
 
 ## License
 
-Business Source License 1.1 (BSL). See the repo-root [LICENSE](../../LICENSE).
+Business Source License 1.1 (BSL). See repo-root [LICENSE](../../LICENSE).
 
 - Free for personal, non-commercial, and academic use
-- Commercial mahjong AI services require a paid license from the Licensor
+- Commercial mahjong AI services require paid license from Licensor
 - Converts to Apache-2.0 on 2031-03-02
 
 For commercial licensing inquiries, contact Sho Kaneko.

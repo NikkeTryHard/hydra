@@ -1,12 +1,13 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 
-use crate::data::sample::{MjaiBatch, MjaiBcBatch, one_hot_action};
+use crate::data::sample::{one_hot_action, MjaiBatch, MjaiBcBatch};
 use crate::training::losses::HydraTargets;
 
 fn policy_target_from_actions<B: Backend>(
     actions: Tensor<B, 1, Int>,
     batch_size: usize,
+    device: &B::Device,
 ) -> Tensor<B, 2> {
     let actions = actions.into_data().convert::<i64>();
     let actions = actions
@@ -16,8 +17,7 @@ fn policy_target_from_actions<B: Backend>(
         .iter()
         .flat_map(|&action| one_hot_action(action as u8, HYDRA_ACTION_SPACE))
         .collect();
-    Tensor::<B, 1>::from_floats(flat.as_slice(), &B::Device::default())
-        .reshape([batch_size, HYDRA_ACTION_SPACE])
+    Tensor::<B, 1>::from_floats(flat.as_slice(), device).reshape([batch_size, HYDRA_ACTION_SPACE])
 }
 
 pub(crate) fn into_bc_batch_and_hydra_targets_inner<B: Backend>(
@@ -50,7 +50,7 @@ pub(crate) fn into_bc_batch_and_hydra_targets_inner<B: Backend>(
         target_presence,
     } = batch;
     let batch_size = actions.dims()[0];
-    let policy_target = policy_target_from_actions(actions.clone(), batch_size);
+    let policy_target = policy_target_from_actions(actions.clone(), batch_size, &obs.device());
 
     (
         obs,
@@ -93,7 +93,8 @@ pub(crate) fn into_hydra_targets_inner<B: Backend>(batch: MjaiBatch<B>) -> Hydra
 
 pub(crate) fn cloned_hydra_targets<B: Backend>(batch: &MjaiBatch<B>) -> HydraTargets<B> {
     let batch_size = batch.actions.dims()[0];
-    let policy_target = policy_target_from_actions(batch.actions.clone(), batch_size);
+    let policy_target =
+        policy_target_from_actions(batch.actions.clone(), batch_size, &batch.obs.device());
 
     HydraTargets {
         policy_target,

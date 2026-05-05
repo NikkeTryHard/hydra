@@ -29,6 +29,10 @@ path = "src/bin/repack_tar.rs"
 name = "build_bc_shards"
 path = "src/bin/build_bc_shards.rs"
 
+[[bin]]
+name = "build_parsed_sample_cache"
+path = "src/bin/build_parsed_sample_cache.rs"
+
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 burn = { version = "0.20", features = ["train", "tch"] }

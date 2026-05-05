@@ -1,29 +1,29 @@
 # hydra-core
 
-Core game/runtime crate for the Hydra Riichi Mahjong AI. It sits on top of `hydra-engine` / `riichienv-core` and provides the engine-side pieces used by both training and inference: observation encoding, safety analysis, search/belief feature bridging, deterministic seeding, and batch simulation.
+Core game/runtime crate for Hydra Riichi Mahjong AI. Sits atop `hydra-engine` / `riichienv-core`. Provides engine-side pieces for training + inference: observation encoding, safety analysis, search/belief feature bridge, deterministic seeding, batch simulation.
 
 ## Overview
 
-`hydra-core` transforms raw game states into neural network inputs. The current live encoder is a **fixed-superset 192x34 observation tensor**:
+`hydra-core` transforms raw game states into neural net inputs. Current live encoder = **fixed-superset 192x34 observation tensor**:
 
 - channels `0..84`: baseline public + safety planes
 - channels `85..149`: Group C search/belief context + presence masks + reserved slots
 - channels `150..191`: Group D Hand-EV context + presence mask
 
-The old `85x34` view is still useful as the baseline prefix, but it is no longer the full current encoder reality.
+Old `85x34` view still useful as baseline prefix, but no longer full current encoder reality.
 
-This crate also provides the batch simulation pipeline: run thousands of games in parallel via rayon, encode observations on the fly, and feed them directly into the training loop.
+This crate also provides batch simulation pipeline: run thousands games in parallel via rayon, encode observations on fly, feed direct into training loop.
 
-For the full live runtime/channel contract, read [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md).
+For full live runtime/channel contract, read [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md).
 For compatibility-sensitive shape/runtime facts, read [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
 
 ## Module Reference
 
 | Module | Description |
 |--------|-------------|
-| `encoder` | 192x34 fixed-superset observation encoder; first 85 channels preserve the baseline public+safety planes |
+| `encoder` | 192x34 fixed-superset observation encoder; first 85 channels preserve baseline public+safety planes |
 | `bridge` | Converts `hydra-engine` `Observation`/`ObservationRef` into encoder input types |
-| `safety` | Genbutsu, suji, kabe, one-chance safety calculations for the 23 safety channels (62-84) |
+| `safety` | Genbutsu, suji, kabe, one-chance safety calcs for 23 safety channels (62-84) |
 | `game_loop` | `GameRunner` with proper phase handling, `ActionSelector` trait, `FirstActionSelector` |
 | `simulator` | Batch game simulation with rayon parallelism and configurable thread pools |
 | `batch_encoder` | Pre-allocated contiguous buffer for encoding N observations without per-obs allocation |
@@ -34,13 +34,13 @@ For compatibility-sensitive shape/runtime facts, read [`docs/COMPATIBILITY_SURFA
 
 ## Observation Tensor (192x34 fixed superset)
 
-The encoder produces an `[f32; 192 * 34]` flat array (row-major) with three high-level regions:
+Encoder produces `[f32; 192 * 34]` flat array (row-major) with three high-level regions:
 
 - `0..84`: baseline public + safety prefix
 - `85..149`: Group C search/belief context plus presence masks and reserved slots
 - `150..191`: Group D Hand-EV context plus presence mask
 
-For the channel-by-channel breakdown and live runtime semantics, defer to `docs/GAME_ENGINE.md`.
+For channel-by-channel breakdown and live runtime semantics, defer to `docs/GAME_ENGINE.md`.
 
 ## Benchmarks
 
@@ -57,8 +57,8 @@ Full methodology in [research/infrastructure/ENGINE_BENCHMARKS.md](../../researc
 
 Business Source License 1.1 (BSL). See [LICENSE](LICENSE) for full terms.
 
-- Free for personal, non-commercial, and academic use
-- Commercial mahjong AI services require a paid license from the Licensor
+- Free for personal, non-commercial, academic use
+- Commercial mahjong AI services require paid license from Licensor
 - Converts to Apache-2.0 on 2031-03-02
 
 For commercial licensing inquiries, contact Sho Kaneko.

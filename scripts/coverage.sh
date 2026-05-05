@@ -26,12 +26,12 @@ declare -a STAGE_NAMES=()
 declare -a STAGE_DURATIONS=()
 
 if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
-  printf 'error: cargo-llvm-cov is required. Install it with `cargo install cargo-llvm-cov --locked`.\n' >&2
+  printf 'error: cargo-llvm-cov is required. Install system package first (`pacman -S cargo-llvm-cov` on CachyOS/Arch), fallback = `cargo install cargo-llvm-cov --locked`.\n' >&2
   exit 1
 fi
 
-if ! rustup component list --installed 2>/dev/null | grep -Eq '^llvm-tools($|-)|^llvm-tools-preview($|-)'; then
-  printf 'error: LLVM tools are required. Install them with `rustup component add llvm-tools-preview`.\n' >&2
+if ! command -v llvm-cov >/dev/null 2>&1 || ! command -v llvm-profdata >/dev/null 2>&1; then
+  printf 'error: LLVM coverage tools are required. Install system `llvm` package first; rustup llvm-tools-preview only needed for explicit rustup toolchains.\n' >&2
   exit 1
 fi
 

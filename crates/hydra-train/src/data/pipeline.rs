@@ -22,6 +22,10 @@ use crate::data::mjai_loader::{
     load_game_from_path, load_game_from_path_with_policy, load_game_from_stream_with_policy,
     normalized_train_fraction,
 };
+use crate::data::parsed_sample_cache::{
+    ParsedSampleCacheMetadata, is_parsed_sample_cache_file, load_parsed_sample_cache,
+    read_parsed_sample_cache_metadata,
+};
 use crate::data::sample::{MjaiSample, collate_sample_refs};
 
 type CollatedTrainBatch<B> = Vec<(Tensor<B, 3>, HydraTargets<B>)>;
@@ -131,6 +135,11 @@ pub struct DataManifest {
 pub enum DataSource {
     Archive(PathBuf),
     LooseFile(PathBuf),
+    ParsedSampleCache {
+        path: PathBuf,
+        original_identity: String,
+        original_source_path: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +160,7 @@ enum SourceCursor {
 enum PendingSourceOpen {
     Archive(PathBuf),
     LooseBatch(Vec<PathBuf>),
+    ParsedSampleCacheBatch(Vec<(PathBuf, String)>),
 }
 
 pub struct StreamEpochIterator {
@@ -334,6 +344,10 @@ fn load_loose_game_with_policy(
     load_game_from_path_with_policy(path, Some(&policy))
 }
 
+fn load_parsed_sample_cache_game(path: &Path) -> io::Result<MjaiGame> {
+    load_parsed_sample_cache(path).map(|cache| cache.game)
+}
+
 fn forward_loose_game_result(
     path: &Path,
     result: io::Result<MjaiGame>,
@@ -354,6 +368,17 @@ fn forward_loose_game_result(
 
 struct LooseBatchStreamInput {
     paths: Vec<PathBuf>,
+    split: StreamSplit,
+    train_fraction: f32,
+    progress: Option<ProgressBar>,
+    queue_bound: usize,
+    num_threads: Option<usize>,
+    game_tx: mpsc::SyncSender<MjaiGame>,
+    worker: LooseBatchWorkerContext,
+}
+
+struct ParsedSampleCacheBatchStreamInput {
+    entries: Vec<(PathBuf, String)>,
     split: StreamSplit,
     train_fraction: f32,
     progress: Option<ProgressBar>,
@@ -422,6 +447,75 @@ fn run_loose_batch_stream(input: LooseBatchStreamInput) -> io::Result<()> {
     lister
         .join()
         .map_err(|_| io::Error::other("loose lister thread panicked"))?;
+    worker.skip_state.flush_summary();
+    Ok(())
+}
+
+fn run_parsed_sample_cache_batch_stream(input: ParsedSampleCacheBatchStreamInput) -> io::Result<()> {
+    let ParsedSampleCacheBatchStreamInput {
+        entries,
+        split,
+        train_fraction,
+        progress,
+        queue_bound,
+        num_threads,
+        game_tx,
+        worker,
+    } = input;
+    let mut pool_builder = ThreadPoolBuilder::new().stack_size(MJAI_LOAD_THREAD_STACK_SIZE);
+    if let Some(n) = num_threads {
+        pool_builder = pool_builder.num_threads(n);
+    }
+    let pool = pool_builder.build().map_err(|err| {
+        io::Error::other(format!("failed to build parsed-sample cache thread pool: {err}"))
+    })?;
+
+    let (entry_tx, entry_rx) = mpsc::sync_channel::<(PathBuf, String)>(queue_bound);
+
+    let lister = thread::Builder::new()
+        .name("parsed-sample-cache-lister".into())
+        .spawn(move || {
+            for (path, original_identity) in entries {
+                if should_include_identity(&original_identity, train_fraction, &split)
+                    && entry_tx.send((path, original_identity)).is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .map_err(|err| {
+            io::Error::other(format!("failed to spawn parsed-sample cache lister thread: {err}"))
+        })?;
+
+    let worker_for_pool = LooseBatchWorkerContext {
+        replay_target_profile: worker.replay_target_profile,
+        exit_sidecar: worker.exit_sidecar.clone(),
+        exit_provenance: worker.exit_provenance,
+        delta_q_sidecar: worker.delta_q_sidecar.clone(),
+        delta_q_provenance: worker.delta_q_provenance,
+        skip_state: Arc::clone(&worker.skip_state),
+    };
+
+    pool.install(|| {
+        entry_rx.into_iter().par_bridge().for_each(|(path, original_identity)| {
+            let result = load_parsed_sample_cache_game(&path);
+
+            if let Some(pb) = &progress {
+                pb.inc(1);
+            }
+
+            match result {
+                Ok(game) => {
+                    let _ = game_tx.send(game);
+                }
+                Err(err) => worker_for_pool.skip_state.log_skip(&original_identity, &err),
+            }
+        });
+    });
+
+    lister
+        .join()
+        .map_err(|_| io::Error::other("parsed-sample cache lister thread panicked"))?;
     worker.skip_state.flush_summary();
     Ok(())
 }
@@ -571,7 +665,12 @@ fn source_matches_filters(source: &DataSource, filters: &SourceFilterConfig) -> 
     if filters.is_empty() {
         return true;
     }
-    let path = data_source_path(source).to_string_lossy();
+    let path = match source {
+        DataSource::ParsedSampleCache {
+            original_source_path, ..
+        } => original_source_path.to_string_lossy(),
+        _ => data_source_path(source).to_string_lossy(),
+    };
     let included = filters.include_source_patterns.is_empty()
         || filters
             .include_source_patterns
@@ -603,11 +702,13 @@ fn scan_data_sources_with_fraction(
             vec![DataSource::Archive(data_dir.to_path_buf())]
         } else if is_mjai_file(data_dir) {
             vec![DataSource::LooseFile(data_dir.to_path_buf())]
+        } else if is_parsed_sample_cache_file(data_dir) {
+            vec![data_source_for_cache_path(data_dir)?]
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "expected directory, MJAI file, or .tar/.tar.zst archive, got {}",
+                    "expected directory, MJAI file, parsed-sample cache file, or .tar/.tar.zst archive, got {}",
                     data_dir.display()
                 ),
             ));
@@ -629,6 +730,14 @@ fn scan_data_sources_with_fraction(
                 total_games += 1;
                 let identity = identity_for_loose_file(path)?;
                 if is_train_game(&identity, train_fraction) {
+                    train_count += 1;
+                }
+            }
+            DataSource::ParsedSampleCache {
+                original_identity, ..
+            } => {
+                total_games += 1;
+                if is_train_game(original_identity, train_fraction) {
                     train_count += 1;
                 }
             }
@@ -667,6 +776,8 @@ fn scan_directory_sources_recursive(dir: &Path, sources: &mut Vec<DataSource>) -
         } else if file_type.is_file() {
             if is_mjai_file(&path) {
                 sources.push(DataSource::LooseFile(path));
+            } else if is_parsed_sample_cache_file(&path) {
+                sources.push(data_source_for_cache_path(&path)?);
             } else if is_tar_zst_file(&path) || is_tar_file(&path) {
                 sources.push(DataSource::Archive(path));
             }
@@ -678,7 +789,21 @@ fn scan_directory_sources_recursive(dir: &Path, sources: &mut Vec<DataSource>) -
 fn data_source_path(source: &DataSource) -> &Path {
     match source {
         DataSource::Archive(path) | DataSource::LooseFile(path) => path.as_path(),
+        DataSource::ParsedSampleCache { path, .. } => path.as_path(),
     }
+}
+
+fn data_source_for_cache_path(path: &Path) -> io::Result<DataSource> {
+    let ParsedSampleCacheMetadata {
+        original_identity,
+        original_source_path,
+        ..
+    } = read_parsed_sample_cache_metadata(path)?;
+    Ok(DataSource::ParsedSampleCache {
+        path: path.to_path_buf(),
+        original_identity,
+        original_source_path,
+    })
 }
 
 fn spawn_archive_stream(
@@ -898,6 +1023,68 @@ fn spawn_loose_batch_stream(
     })
 }
 
+fn spawn_parsed_sample_cache_batch_stream(
+    entries: Vec<(PathBuf, String)>,
+    split: StreamSplit,
+    train_fraction: f32,
+    progress: Option<ProgressBar>,
+    config: &StreamingLoaderConfig,
+) -> io::Result<SourceCursor> {
+    let producer = build_producer_load_context(config, "parsed-sample-cache-batch".to_string());
+    let ProducerLoadContext {
+        queue_bound,
+        num_threads,
+        replay_target_profile,
+        exit_sidecar,
+        exit_sidecar_source_net_hash,
+        exit_sidecar_source_version,
+        delta_q_sidecar,
+        delta_q_sidecar_source_net_hash,
+        delta_q_sidecar_source_version,
+        skip_state,
+    } = producer;
+    let (game_tx, game_rx) = mpsc::sync_channel::<MjaiGame>(queue_bound);
+    let worker = LooseBatchWorkerContext {
+        replay_target_profile,
+        exit_sidecar,
+        exit_provenance: SidecarProvenance::new(
+            exit_sidecar_source_net_hash,
+            exit_sidecar_source_version,
+        ),
+        delta_q_sidecar,
+        delta_q_provenance: SidecarProvenance::new(
+            delta_q_sidecar_source_net_hash,
+            delta_q_sidecar_source_version,
+        ),
+        skip_state,
+    };
+
+    let handle = thread::Builder::new()
+        .name("parsed-sample-cache-batch".into())
+        .stack_size(MJAI_LOAD_THREAD_STACK_SIZE)
+        .spawn(move || {
+            run_parsed_sample_cache_batch_stream(ParsedSampleCacheBatchStreamInput {
+                entries,
+                split,
+                train_fraction,
+                progress,
+                queue_bound,
+                num_threads,
+                game_tx,
+                worker,
+            })
+        })
+        .map_err(|err| {
+            io::Error::other(format!("failed to spawn parsed-sample cache batch stream: {err}"))
+        })?;
+
+    Ok(SourceCursor::Archive {
+        path: PathBuf::from("<parsed-sample-cache-batch>"),
+        rx: game_rx,
+        handle: Some(handle),
+    })
+}
+
 impl StreamEpochIterator {
     fn new(
         manifest: &DataManifest,
@@ -953,6 +1140,27 @@ impl StreamEpochIterator {
                 }
                 PendingSourceOpen::LooseBatch(paths)
             }
+            DataSource::ParsedSampleCache {
+                path,
+                original_identity,
+                ..
+            } => {
+                let mut entries = vec![(path, original_identity)];
+                while self.next_source_index < self.sources.len() {
+                    if let DataSource::ParsedSampleCache {
+                        path,
+                        original_identity,
+                        ..
+                    } = &self.sources[self.next_source_index]
+                    {
+                        entries.push((path.clone(), original_identity.clone()));
+                        self.next_source_index += 1;
+                    } else {
+                        break;
+                    }
+                }
+                PendingSourceOpen::ParsedSampleCacheBatch(entries)
+            }
         })
     }
 
@@ -980,6 +1188,15 @@ impl StreamEpochIterator {
                     self.progress.clone(),
                     &self.config,
                 )?,
+                PendingSourceOpen::ParsedSampleCacheBatch(entries) => {
+                    spawn_parsed_sample_cache_batch_stream(
+                        entries,
+                        self.split,
+                        self.config.train_fraction,
+                        self.progress.clone(),
+                        &self.config,
+                    )?
+                }
             },
         );
         Ok(())
@@ -1206,7 +1423,7 @@ fn is_mjai_file(path: &Path) -> bool {
     )
 }
 
-fn is_tar_file(path: &Path) -> bool {
+    fn is_tar_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(name) if name.ends_with(".tar")
@@ -1312,20 +1529,28 @@ pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDa
         if is_tar_zst_file(dir) || is_tar_file(dir) {
             return load_mjai_archive(dir, train_fraction, None);
         }
+        if is_parsed_sample_cache_file(dir) {
+            let cache = load_parsed_sample_cache(dir)?;
+            let mut dataset = MjaiDataset::new(train_fraction);
+            dataset.add_game(cache.game);
+            return Ok(dataset);
+        }
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "expected directory or .tar/.tar.zst archive, got {}",
+                "expected directory, parsed-sample cache file, or .tar/.tar.zst archive, got {}",
                 dir.display()
             ),
         ));
     }
 
     let mut paths = Vec::new();
+    let mut cache_paths = Vec::new();
     let mut archives = Vec::new();
     for source in scan_directory_sources(dir)? {
         match source {
             DataSource::LooseFile(path) => paths.push(path),
+            DataSource::ParsedSampleCache { path, .. } => cache_paths.push(path),
             DataSource::Archive(path) => archives.push(path),
         }
     }
@@ -1360,13 +1585,10 @@ pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDa
         }
     }
 
-    println!(
-        "Loaded {} MJAI games ({} samples, {} skipped) from {}",
-        dataset.num_games(),
-        dataset.num_samples(),
-        skipped,
-        dir.display()
-    );
+    for cache_path in cache_paths {
+        let cache = load_parsed_sample_cache(&cache_path)?;
+        dataset.add_game(cache.game);
+    }
 
     for archive in archives {
         let archive_dataset = load_mjai_archive(&archive, train_fraction, None)?;
@@ -1374,6 +1596,14 @@ pub fn load_mjai_directory(dir: &Path, train_fraction: f32) -> io::Result<MjaiDa
             dataset.add_game(game);
         }
     }
+
+    println!(
+        "Loaded {} MJAI games ({} samples, {} skipped) from {}",
+        dataset.num_games(),
+        dataset.num_samples(),
+        skipped,
+        dir.display()
+    );
 
     Ok(dataset)
 }
@@ -1631,7 +1861,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        PathBuf::from("/home/nikketryhard/tmp")
+        PathBuf::from("/home/cachybtw/tmp")
             .join(format!("hydra_pipeline_{label}_{unique}{suffix}"))
     }
 
@@ -1642,6 +1872,20 @@ mod tests {
             train_count: 0,
             val_count: 1,
             counts_exact: false,
+        }
+    }
+
+    fn single_cache_manifest(path: PathBuf, identity: &str) -> DataManifest {
+        DataManifest {
+            sources: vec![DataSource::ParsedSampleCache {
+                path,
+                original_identity: identity.to_string(),
+                original_source_path: PathBuf::from(format!("/raw/{identity}")),
+            }],
+            total_games: 1,
+            train_count: 0,
+            val_count: 1,
+            counts_exact: true,
         }
     }
 
@@ -1752,6 +1996,131 @@ mod tests {
 
         assert_eq!(fnv1a_hash(b"hydra"), fnv1a_hash(b"hydra"));
         assert_ne!(fnv1a_hash(b"hydra"), fnv1a_hash(b"hydrb"));
+    }
+
+    #[test]
+    fn scan_data_sources_uses_cache_metadata_for_split_counts() {
+        let dir = unique_temp_path("cache_scan_dir", "");
+        fs::create_dir_all(&dir).expect("create cache dir");
+
+        let train_identity = "league/train_game.mjai.json";
+        let val_identity = "league/val_game.mjai.json";
+        let train_path = dir.join("train_game.mjai.samples.cache");
+        let val_path = dir.join("val_game.mjai.samples.cache");
+
+        let train_is_train = is_train_game(train_identity, 0.5);
+        let (train_identity, val_identity) = if train_is_train == is_train_game(val_identity, 0.5) {
+            (train_identity, "other/val_game.mjai.json")
+        } else {
+            (train_identity, val_identity)
+        };
+
+        crate::data::parsed_sample_cache::write_parsed_sample_cache(
+            &train_path,
+            Path::new("/raw/train_game.mjai.json"),
+            train_identity,
+            &MjaiGame {
+                samples: vec![dummy_sample(1)],
+                final_scores: [25_000; 4],
+            },
+        )
+        .expect("write train cache");
+        crate::data::parsed_sample_cache::write_parsed_sample_cache(
+            &val_path,
+            Path::new("/raw/val_game.mjai.json"),
+            val_identity,
+            &MjaiGame {
+                samples: vec![dummy_sample(2)],
+                final_scores: [25_000; 4],
+            },
+        )
+        .expect("write val cache");
+
+        let manifest = scan_data_sources_with_progress(&dir, 0.5, &SourceFilterConfig::default(), None)
+            .expect("cache scan should succeed");
+        assert_eq!(manifest.total_games, 2);
+        assert!(manifest.counts_exact);
+        assert_eq!(manifest.train_count + manifest.val_count, 2);
+        assert!(manifest.sources.iter().all(|source| matches!(
+            source,
+            DataSource::ParsedSampleCache { .. }
+        )));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn scan_data_sources_filters_cache_using_original_source_path() {
+        let dir = unique_temp_path("cache_filter_dir", "");
+        fs::create_dir_all(&dir).expect("create cache dir");
+        let cache_path = dir.join("filtered_game.mjai.samples.cache");
+
+        crate::data::parsed_sample_cache::write_parsed_sample_cache(
+            &cache_path,
+            Path::new("/raw/jade/season_1/filtered_game.mjai.json"),
+            "season_1/filtered_game.mjai.json",
+            &MjaiGame {
+                samples: vec![dummy_sample(4)],
+                final_scores: [25_000; 4],
+            },
+        )
+        .expect("write cache file");
+
+        let filters = SourceFilterConfig {
+            include_source_patterns: vec!["jade/season_1".to_string()],
+            exclude_source_patterns: Vec::new(),
+        };
+        let manifest = scan_data_sources_with_progress(&dir, 0.5, &filters, None)
+            .expect("cache scan with filters should succeed");
+        assert_eq!(manifest.sources.len(), 1);
+
+        let exclude_filters = SourceFilterConfig {
+            include_source_patterns: Vec::new(),
+            exclude_source_patterns: vec!["jade/season_1".to_string()],
+        };
+        let excluded_manifest =
+            scan_data_sources_with_progress(&dir, 0.5, &exclude_filters, None)
+                .expect("cache scan with exclude filters should succeed");
+        assert!(excluded_manifest.sources.is_empty());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn stream_val_pass_loads_parsed_sample_cache_using_original_identity_split() {
+        let cache_path = unique_temp_path("stream_cache", ".samples.cache");
+        let base_identity = "league/cache_stream_game.mjai.json";
+        let alt_identity = "league/cache_stream_game_alt.mjai.json";
+        let identity = if is_train_game(base_identity, 0.0) {
+            alt_identity
+        } else {
+            base_identity
+        };
+        crate::data::parsed_sample_cache::write_parsed_sample_cache(
+            &cache_path,
+            Path::new("/raw/cache_stream_game.mjai.json"),
+            identity,
+            &MjaiGame {
+                samples: vec![dummy_sample(7), dummy_sample(9)],
+                final_scores: [28_000, 26_000, 24_000, 22_000],
+            },
+        )
+        .expect("write parsed-sample cache");
+
+        let manifest = single_cache_manifest(cache_path.clone(), identity);
+        let config = StreamingLoaderConfig {
+            buffer_games: 1,
+            buffer_samples: 32,
+            train_fraction: 0.0,
+            ..StreamingLoaderConfig::default()
+        };
+
+        let samples = collect_streamed_samples(&manifest, &config);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].action, 7);
+        assert_eq!(samples[1].action, 9);
+
+        fs::remove_file(cache_path).ok();
     }
 
     #[test]
@@ -2029,10 +2398,10 @@ mod tests {
 
     #[test]
     fn take_next_source_plan_batches_adjacent_loose_files_until_archive_boundary() {
-        let loose_a = PathBuf::from("/home/nikketryhard/tmp/loose_a.mjai.json");
-        let loose_b = PathBuf::from("/home/nikketryhard/tmp/loose_b.mjai.json");
-        let archive = PathBuf::from("/home/nikketryhard/tmp/archive.tar.zst");
-        let loose_c = PathBuf::from("/home/nikketryhard/tmp/loose_c.mjai.json");
+        let loose_a = PathBuf::from("/home/cachybtw/tmp/loose_a.mjai.json");
+        let loose_b = PathBuf::from("/home/cachybtw/tmp/loose_b.mjai.json");
+        let archive = PathBuf::from("/home/cachybtw/tmp/archive.tar.zst");
+        let loose_c = PathBuf::from("/home/cachybtw/tmp/loose_c.mjai.json");
         let mut iter = StreamEpochIterator {
             sources: vec![
                 DataSource::LooseFile(loose_a.clone()),

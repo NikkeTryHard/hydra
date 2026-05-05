@@ -140,17 +140,31 @@ ok "libtorch registered at ${TORCH_LIB_DIR}"
 # --------------------------------------------------------------------------- #
 #  Step 4: Rust toolchain                                                      #
 # --------------------------------------------------------------------------- #
+RUSTUP_FALLBACK_USED=0
+
 if command -v rustc >/dev/null 2>&1; then
     info "Rust already installed: $(rustc --version)"
 else
-    info "Installing Rust toolchain..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+    info "Installing system Rust toolchain first..."
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update
+        apt-get install -y cargo rustc rustfmt clang mold pkg-config
+    fi
+
+    if command -v rustc >/dev/null 2>&1; then
+        info "System Rust installed: $(rustc --version)"
+    else
+        info "System Rust unavailable. Falling back to rustup..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+        RUSTUP_FALLBACK_USED=1
+    fi
 fi
 
-# Source cargo env for this session
-export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
-export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-export PATH="${CARGO_HOME}/bin:${PATH}"
+if [[ "$RUSTUP_FALLBACK_USED" == "1" ]]; then
+    export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+    export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+    export PATH="${PATH}:${CARGO_HOME}/bin"
+fi
 
 # Verify
 need_cmd rustc
@@ -161,8 +175,14 @@ info "Rust: $(rustc --version)"
 if command -v cargo-nextest >/dev/null 2>&1; then
     info "cargo-nextest already installed."
 else
-    info "Installing cargo-nextest..."
-    cargo install cargo-nextest --locked
+    if command -v apt-cache >/dev/null 2>&1 && apt-cache show cargo-nextest >/dev/null 2>&1; then
+        info "Installing cargo-nextest from system packages..."
+        apt-get install -y cargo-nextest
+    else
+        info "Installing cargo-nextest via cargo fallback..."
+        cargo install cargo-nextest --locked
+        export PATH="${PATH}:$HOME/.cargo/bin"
+    fi
 fi
 
 ok "Rust toolchain ready."
