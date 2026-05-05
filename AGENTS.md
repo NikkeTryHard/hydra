@@ -111,7 +111,8 @@ Graphify = primary navigation layer for codebase structure and repo discovery.
 Current repo graph:
 - Built with `graphifyy 0.7.7` from the uv tool install at `~/.local/share/uv/tools/graphifyy/bin/python`.
 - Latest observed graph report: `graphify-out/GRAPH_REPORT.md` from 2026-05-05, 5,738 nodes, 11,737 edges, 269 communities.
-- `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, and `graphify-out/manifest.json` are the durable graph artifacts. `.graphify_*` root scratch files are legacy/transient.
+- Agent-crawlable wiki exists at `graphify-out/wiki/index.md` (194 markdown files generated with `graphify.wiki.to_wiki`).
+- `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, `graphify-out/manifest.json`, and `graphify-out/wiki/` are the durable graph artifacts. `.graphify_*` root scratch files are legacy/transient.
 
 Rules:
 - Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md` for god nodes and community structure.
