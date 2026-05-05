@@ -4415,10 +4415,10 @@ mod tests {
         ]);
 
         assert_eq!(state.players[1].score_delta, result.ron_agari as i32 + 1000);
-        assert_eq!(state.players[2].score_delta, -(expected_pao_amt as i32));
+        assert_eq!(state.players[2].score_delta, -expected_pao_amt);
         assert_eq!(
             state.players[0].score_delta,
-            -(result.ron_agari as i32 - expected_pao_amt as i32)
+            -(result.ron_agari as i32 - expected_pao_amt)
         );
         assert_eq!(state.riichi_sticks, 0);
         assert_eq!(

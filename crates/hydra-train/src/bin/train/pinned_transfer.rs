@@ -284,9 +284,9 @@ pub(crate) fn materialize_staged_reuse<B>(
 ) -> BcShardBatch<B>
 where
     B: AutodiffBackend<
-        Device = LibTorchDevice,
-        InnerBackend: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
-    >,
+            Device = LibTorchDevice,
+            InnerBackend: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+        >,
 {
     let batch = host.batch_size;
 
@@ -325,10 +325,10 @@ pub(crate) fn materialize_staged_reuse_inner<B>(
 ) -> BcShardBatch<B>
 where
     B: Backend<
-        Device = LibTorchDevice,
-        FloatTensorPrimitive = TchTensor,
-        IntTensorPrimitive = TchTensor,
-    >,
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     let batch = host.batch_size;
 
@@ -376,9 +376,9 @@ unsafe fn materialize_reuse_from_pinned<B>(
 ) -> BcShardBatch<B>
 where
     B: AutodiffBackend<
-        Device = LibTorchDevice,
-        InnerBackend: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
-    >,
+            Device = LibTorchDevice,
+            InnerBackend: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+        >,
 {
     unsafe {
         let f = |pinned: &PinnedBuffer, count: usize, dst: &mut tch::Tensor| -> Tensor<B, 1> {
@@ -564,10 +564,10 @@ pub(crate) unsafe fn materialize_reuse_from_pinned_inner<B>(
 ) -> BcShardBatch<B>
 where
     B: Backend<
-        Device = LibTorchDevice,
-        FloatTensorPrimitive = TchTensor,
-        IntTensorPrimitive = TchTensor,
-    >,
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
 {
     unsafe {
         let f = |pinned: &PinnedBuffer, count: usize, dst: &mut tch::Tensor| -> Tensor<B, 1> {
@@ -798,9 +798,9 @@ unsafe fn copy_pinned_i64_to_gpu(
 fn burn_tensor_from_tch_f32<B, const D: usize>(t: tch::Tensor) -> Tensor<B, D>
 where
     B: AutodiffBackend<
-        Device = LibTorchDevice,
-        InnerBackend: Backend<FloatTensorPrimitive = TchTensor>,
-    >,
+            Device = LibTorchDevice,
+            InnerBackend: Backend<FloatTensorPrimitive = TchTensor>,
+        >,
 {
     let tch_tensor = TchTensor::new(t);
     Tensor::from_primitive(burn::tensor::TensorPrimitive::Float(B::from_inner(
@@ -819,9 +819,9 @@ where
 fn burn_int_tensor_from_tch<B>(t: tch::Tensor) -> Tensor<B, 1, Int>
 where
     B: AutodiffBackend<
-        Device = LibTorchDevice,
-        InnerBackend: Backend<IntTensorPrimitive = TchTensor>,
-    >,
+            Device = LibTorchDevice,
+            InnerBackend: Backend<IntTensorPrimitive = TchTensor>,
+        >,
 {
     let tch_tensor = TchTensor::new(t);
     Tensor::from_primitive(B::int_from_inner(tch_tensor))

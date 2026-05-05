@@ -21,7 +21,10 @@ struct AgariCase {
     dora_indicators: Vec<u8>,
     ura_indicators: Vec<u8>,
     conditions: BenchConditions,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "benchmark fixtures deserialize expected results for parity checks"
+    )]
     expected: BenchExpected,
 }
 
@@ -60,7 +63,10 @@ fn default_num_players() -> u8 {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "benchmark fixtures deserialize expected results for parity checks"
+)]
 struct BenchExpected {
     is_win: bool,
     han: u32,

@@ -837,13 +837,8 @@ mod tests {
         let shanten_fn = |counts: &[u8; NUM_TILE_TYPES]| -> i8 {
             let total: u8 = counts.iter().sum();
             match total {
-                1 => {
-                    if counts[2] == 1 || counts[3] == 1 {
-                        0
-                    } else {
-                        1
-                    }
-                }
+                1 if counts[2] == 1 || counts[3] == 1 => 0,
+                1 => 1,
                 2 => {
                     if counts[2] == 1 && counts[4] == 1 {
                         -1

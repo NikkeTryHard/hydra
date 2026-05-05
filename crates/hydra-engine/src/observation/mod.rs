@@ -54,7 +54,10 @@ pub struct Observation {
 /// Pure Rust methods (no PyO3 dependency).
 impl Observation {
     /// Create a new observation from raw game state components.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the raw MJAI state payload"
+    )]
     pub fn new(
         player_id: u8,
         hands: [Vec<u8>; 4],

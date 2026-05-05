@@ -1,4 +1,7 @@
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "CUDA graph bindings are exercised through FFI and runtime feature gates"
+)]
 
 use std::ffi::{c_int, c_void};
 use std::ptr::NonNull;

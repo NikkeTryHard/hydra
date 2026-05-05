@@ -1,4 +1,7 @@
-#![allow(clippy::useless_conversion)]
+#![allow(
+    clippy::useless_conversion,
+    reason = "matches upstream parse and scoring conversions"
+)]
 use crate::agari;
 use crate::errors::RiichiResult;
 use crate::score;

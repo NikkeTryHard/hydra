@@ -34,7 +34,10 @@ pub struct Observation3P {
 
 /// Pure Rust methods (no PyO3 dependency).
 impl Observation3P {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the raw MJAI state payload"
+    )]
     pub fn new(
         player_id: u8,
         hands: [Vec<u8>; 3],

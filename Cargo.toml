@@ -2,6 +2,19 @@
 resolver = "2"
 members = ["crates/hydra-core", "crates/hydra-engine", "crates/hydra-train"]
 
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+manual_assert = "deny"
+todo = "deny"
+dbg_macro = "deny"
+unimplemented = "deny"
+allow_attributes_without_reason = "deny"
+blanket_clippy_restriction_lints = "allow"
+
 [profile.dev]
 debug = 1
 incremental = true

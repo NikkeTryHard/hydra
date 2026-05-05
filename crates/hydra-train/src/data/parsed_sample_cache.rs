@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use crate::data::mjai_loader::{invalid_data, MjaiGame};
+use crate::data::mjai_loader::{MjaiGame, invalid_data};
 use crate::data::sample::MjaiSample;
 
 #[cfg(test)]

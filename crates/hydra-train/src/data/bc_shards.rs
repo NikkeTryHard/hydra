@@ -1272,7 +1272,10 @@ impl BcShardReader {
                         }
                     }
 
-                    #[allow(clippy::redundant_closure_call)]
+                    #[allow(
+                        clippy::redundant_closure_call,
+                        reason = "macro keeps the row writer generic"
+                    )]
                     ($write_row)(shard, offset, row, sample_index, scratch)?;
 
                     offset += 1;
@@ -2372,7 +2375,13 @@ fn read_f32_le(bytes: &[u8]) -> f32 {
     f32::from_le_bytes(bytes[0..4].try_into().expect("f32 slice"))
 }
 
-#[cfg_attr(target_endian = "little", allow(dead_code))]
+#[cfg_attr(
+    target_endian = "little",
+    allow(
+        dead_code,
+        reason = "big-endian fallback helper is unused on little-endian targets"
+    )
+)]
 fn read_f32_array<const N: usize>(bytes: &[u8]) -> [f32; N] {
     debug_assert_eq!(bytes.len(), N * std::mem::size_of::<f32>());
     #[cfg(target_endian = "little")]

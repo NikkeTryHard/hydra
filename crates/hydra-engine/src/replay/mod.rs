@@ -1,7 +1,10 @@
 /*
  * replay/mod.rs: Utilities for replaying games to verify the agari calculator.
  */
-#![allow(clippy::useless_conversion)]
+#![allow(
+    clippy::useless_conversion,
+    reason = "matches upstream replay conversion behavior"
+)]
 
 use std::sync::Arc;
 
@@ -90,7 +93,10 @@ pub struct LogKyoku {
     pub end_scores: Vec<i32>,
     pub wliqi: Vec<bool>,
     pub paishan: Option<String>,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "replay fixtures keep parsed actions for later inspection"
+    )]
     pub(crate) actions: Arc<[Action]>,
     pub rule: crate::rule::GameRule,
     pub game_end_scores: Option<Vec<i32>>,

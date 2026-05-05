@@ -464,7 +464,14 @@ pub(super) fn execute_probe_request(
     config_path: &Path,
     request: ProbeRequest,
     result_path: &Path,
-    #[cfg_attr(test, allow(unused_variables))] classify_probe_detail: impl Fn(&str) -> ProbeStatus,
+    #[cfg_attr(
+        test,
+        allow(
+            unused_variables,
+            reason = "test path uses the in-process probe runner instead of stderr classification"
+        )
+    )]
+    classify_probe_detail: impl Fn(&str) -> ProbeStatus,
 ) -> Result<ProbeResult, String> {
     #[cfg(test)]
     {
@@ -558,7 +565,14 @@ pub(super) fn execute_probe_request_batch(
     config_path: &Path,
     batch: ProbeBatchRequest,
     results_path: &Path,
-    #[cfg_attr(test, allow(unused_variables))] classify_probe_detail: impl Fn(&str) -> ProbeStatus,
+    #[cfg_attr(
+        test,
+        allow(
+            unused_variables,
+            reason = "test path uses the in-process probe runner instead of stderr classification"
+        )
+    )]
+    classify_probe_detail: impl Fn(&str) -> ProbeStatus,
 ) -> Result<Vec<ProbeResult>, String> {
     #[cfg(test)]
     {

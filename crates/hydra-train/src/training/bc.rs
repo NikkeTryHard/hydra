@@ -487,7 +487,10 @@ impl BCTrainerConfig {
 ///
 /// For backwards compatibility: set `accum_steps = 1` and `microbatch_size =
 /// batch_size` to get the original behavior.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "training loop needs explicit config, device, and telemetry context"
+)]
 pub fn train_epoch<B: AutodiffBackend>(
     model: HydraModel<B>,
     samples: &[&MjaiSample],

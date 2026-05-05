@@ -163,7 +163,10 @@ fn search_context_has_runtime_planes(context: &SearchContext<'_>) -> bool {
 }
 
 #[inline]
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "encoder API mirrors the fixed observation layout"
+)]
 fn encode_extracted_observation_with_profile(
     encoder: &mut ObservationEncoder,
     hand: &[u8; NUM_TILE_TYPES],
@@ -212,7 +215,10 @@ fn encode_extracted_observation_with_profile(
 }
 
 #[inline]
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "encoder API mirrors the fixed observation layout"
+)]
 fn encode_extracted_observation(
     encoder: &mut ObservationEncoder,
     hand: &[u8; NUM_TILE_TYPES],

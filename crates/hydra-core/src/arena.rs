@@ -301,7 +301,7 @@ impl Arena {
                 .enumerate()
                 .map(|(i, &s)| (s, i as u8))
                 .collect();
-            scores_indexed.sort_by(|a, b| b.0.cmp(&a.0));
+            scores_indexed.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
             for (rank, (_, idx)) in scores_indexed.iter().enumerate() {
                 if *idx == player_id && rank < 4 {
                     counts[rank] += 1;

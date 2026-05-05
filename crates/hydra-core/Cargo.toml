@@ -6,6 +6,9 @@ license-file = "LICENSE"
 description = "Hydra Riichi Mahjong game engine - simulator, encoder, and batch runner"
 repository = "https://github.com/hydra-mahjong/hydra"
 
+
+[lints]
+workspace = true
 [lib]
 crate-type = ["rlib"]
 

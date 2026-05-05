@@ -118,7 +118,10 @@ impl<B: Backend> RlBatch<B> {
             && self.targets.legal_mask.dims()[0] == b
     }
 
-    #[allow(clippy::single_range_in_vec_init)]
+    #[allow(
+        clippy::single_range_in_vec_init,
+        reason = "Burn slice API expects a one-element range slice"
+    )]
     /// Slice all batch tensors along dim 0 to produce `[start..end)`.
     pub fn slice(&self, start: usize, end: usize) -> Self {
         let r1 = [start..end];
@@ -327,7 +330,10 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
     while start < total_samples {
         let end = (start + mb_size).min(total_samples);
         let mb_batch = request.batch.slice(start, end);
-        #[allow(clippy::single_range_in_vec_init)]
+        #[allow(
+            clippy::single_range_in_vec_init,
+            reason = "Burn slice API expects a one-element range slice"
+        )]
         let mb_adv = advantages_normed.clone().slice([start..end]);
 
         let output = m.forward_active(mb_batch.obs.clone(), &active_loss_fn.config);
@@ -1005,7 +1011,10 @@ mod tests {
             let end =
                 (start + cfg.microbatch_size.expect("microbatch size")).min(batch.batch_size());
             let mb_batch = batch.slice(start, end);
-            #[allow(clippy::single_range_in_vec_init)]
+            #[allow(
+                clippy::single_range_in_vec_init,
+                reason = "Burn slice API expects a one-element range slice"
+            )]
             let mb_adv = advantages_normed.clone().slice([start..end]);
             let output = expected_model.forward_active(mb_batch.obs.clone(), &loss_fn.config);
             let combined = drda::combined_logits(

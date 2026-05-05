@@ -259,15 +259,14 @@ impl GameState3PEventHandler for GameState3P {
             MjaiEvent::Reach { actor } => {
                 self.players[actor].riichi_stage = true;
             }
-            MjaiEvent::ReachAccepted { actor } => {
+            MjaiEvent::ReachAccepted { actor }
                 if self.riichi_pending_acceptance == Some(actor as u8)
-                    || !self.players[actor].riichi_declared
-                {
-                    self.players[actor].riichi_declared = true;
-                    self.riichi_sticks += 1;
-                    self.players[actor].score -= 1000;
-                    self.riichi_pending_acceptance = None;
-                }
+                    || !self.players[actor].riichi_declared =>
+            {
+                self.players[actor].riichi_declared = true;
+                self.riichi_sticks += 1;
+                self.players[actor].score -= 1000;
+                self.riichi_pending_acceptance = None;
             }
             MjaiEvent::Dora { dora_marker } => {
                 let tile = parse_mjai_tile(&dora_marker);

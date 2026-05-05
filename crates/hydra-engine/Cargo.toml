@@ -15,6 +15,9 @@ categories = ["game-engines", "simulation"]
 license = "Apache-2.0"
 repository = "https://github.com/smly/RiichiEnv"
 
+
+[lints]
+workspace = true
 [lib]
 name = "riichienv_core"
 crate-type = ["rlib"]

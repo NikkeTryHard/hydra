@@ -1,7 +1,7 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 
-use crate::data::sample::{one_hot_action, MjaiBatch, MjaiBcBatch};
+use crate::data::sample::{MjaiBatch, MjaiBcBatch, one_hot_action};
 use crate::training::losses::HydraTargets;
 
 fn policy_target_from_actions<B: Backend>(

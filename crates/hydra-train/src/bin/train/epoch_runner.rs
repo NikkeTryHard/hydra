@@ -2081,7 +2081,10 @@ where
         for start in (0..batch_size).step_by(effective_microbatch) {
             let end = (start + effective_microbatch).min(batch_size);
             let chunk_len = end - start;
-            #[allow(clippy::single_range_in_vec_init)]
+            #[allow(
+                clippy::single_range_in_vec_init,
+                reason = "Burn slice API expects a one-element range slice"
+            )]
             let r = [start..end];
             let obs_chunk = obs.clone().slice(r.clone());
             let batch_chunk = MjaiBcBatch {

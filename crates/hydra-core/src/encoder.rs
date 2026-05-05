@@ -416,7 +416,10 @@ impl PlayerDiscards {
 
 /// Precomputed `exp(-DISCARD_DECAY * i)` for `i` in `0..=30`.
 /// DISCARD_DECAY is 0.2, so entry `i` = `exp(-0.2 * i)`.
-#[allow(clippy::excessive_precision)]
+#[allow(
+    clippy::excessive_precision,
+    reason = "table entries preserve the measured decay curve"
+)]
 const DISCARD_EXP_TABLE: [f32; 31] = [
     1.0,           // exp(0.0)
     0.818_730_8,   // exp(-0.2)
@@ -900,7 +903,10 @@ impl ObservationEncoder {
     }
 
     /// Encode a complete observation plus optional Group C / Group D context.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "encoder API mirrors the fixed observation layout"
+    )]
     pub fn encode_with_context(
         &mut self,
         hand: &[u8; NUM_TILES],
@@ -933,7 +939,10 @@ impl ObservationEncoder {
         self.as_slice()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "encoder API mirrors the fixed observation layout"
+    )]
     pub fn encode_with_context_and_shanten_batch(
         &mut self,
         hand: &[u8; NUM_TILES],
@@ -1063,7 +1072,10 @@ impl ObservationEncoder {
     ///
     /// Clears the buffer, then calls each sub-encoder in order.
     /// Returns a reference to the filled observation buffer.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "encoder API mirrors the fixed observation layout"
+    )]
     pub fn encode(
         &mut self,
         hand: &[u8; NUM_TILES],
@@ -1099,7 +1111,10 @@ impl ObservationEncoder {
     /// `AFTER_CALL`) for common game events.
     ///
     /// For a new round or first encode, use `DirtyFlags::ALL` or [`encode`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "encoder API mirrors the fixed observation layout"
+    )]
     pub fn encode_incremental(
         &mut self,
         dirty: DirtyFlags,
@@ -1153,7 +1168,10 @@ impl ObservationEncoder {
     }
 
     /// Incrementally re-encode baseline plus optional Group C / Group D context.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "encoder API mirrors the fixed observation layout"
+    )]
     pub fn encode_incremental_with_context(
         &mut self,
         dirty: DirtyFlags,

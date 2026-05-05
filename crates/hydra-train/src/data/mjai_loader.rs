@@ -543,7 +543,10 @@ fn analyze_replay_legal_actions(
     (legal_mask, legal_mask_f32, chosen_is_legal, had_ron)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "replay decision finalization needs the full state context"
+)]
 fn finalize_prepared_replay_decision(
     actor: usize,
     env_action: EngineAction,
@@ -2268,7 +2271,7 @@ mod tests {
         ))
         .expect("parse events");
         let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
-        let safety = array::from_fn(|_| SafetyInfo::default());
+        let mut safety = array::from_fn(|_| SafetyInfo::default());
         let mut encoder = ObservationEncoder::new();
 
         for event in events.iter().take(2) {
@@ -2326,14 +2329,12 @@ mod tests {
         state.active_players = [0, 1, 0, 0];
         state.active_player_count = 2;
         state.current_claim_counts[0] = 1;
-        state.current_claims[0][0] =
-            EngineAction::new(ActionType::Ron, None, &[], Some(0));
+        state.current_claims[0][0] = EngineAction::new(ActionType::Ron, None, &[], Some(0));
         state.current_claim_counts[1] = 1;
-        state.current_claims[1][0] =
-            EngineAction::new(ActionType::Ron, None, &[], Some(1));
+        state.current_claims[1][0] = EngineAction::new(ActionType::Ron, None, &[], Some(1));
         state.last_discard = Some((3, 48));
 
-        let mut safety = array::from_fn(|_| SafetyInfo::default());
+        let safety = array::from_fn(|_| SafetyInfo::default());
         let mut encoder = ObservationEncoder::new();
         let decisions = prepare_replay_decisions(
             &MjaiEvent::Hora {

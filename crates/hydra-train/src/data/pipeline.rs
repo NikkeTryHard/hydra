@@ -451,7 +451,9 @@ fn run_loose_batch_stream(input: LooseBatchStreamInput) -> io::Result<()> {
     Ok(())
 }
 
-fn run_parsed_sample_cache_batch_stream(input: ParsedSampleCacheBatchStreamInput) -> io::Result<()> {
+fn run_parsed_sample_cache_batch_stream(
+    input: ParsedSampleCacheBatchStreamInput,
+) -> io::Result<()> {
     let ParsedSampleCacheBatchStreamInput {
         entries,
         split,
@@ -467,7 +469,9 @@ fn run_parsed_sample_cache_batch_stream(input: ParsedSampleCacheBatchStreamInput
         pool_builder = pool_builder.num_threads(n);
     }
     let pool = pool_builder.build().map_err(|err| {
-        io::Error::other(format!("failed to build parsed-sample cache thread pool: {err}"))
+        io::Error::other(format!(
+            "failed to build parsed-sample cache thread pool: {err}"
+        ))
     })?;
 
     let (entry_tx, entry_rx) = mpsc::sync_channel::<(PathBuf, String)>(queue_bound);
@@ -484,7 +488,9 @@ fn run_parsed_sample_cache_batch_stream(input: ParsedSampleCacheBatchStreamInput
             }
         })
         .map_err(|err| {
-            io::Error::other(format!("failed to spawn parsed-sample cache lister thread: {err}"))
+            io::Error::other(format!(
+                "failed to spawn parsed-sample cache lister thread: {err}"
+            ))
         })?;
 
     let worker_for_pool = LooseBatchWorkerContext {
@@ -497,20 +503,25 @@ fn run_parsed_sample_cache_batch_stream(input: ParsedSampleCacheBatchStreamInput
     };
 
     pool.install(|| {
-        entry_rx.into_iter().par_bridge().for_each(|(path, original_identity)| {
-            let result = load_parsed_sample_cache_game(&path);
+        entry_rx
+            .into_iter()
+            .par_bridge()
+            .for_each(|(path, original_identity)| {
+                let result = load_parsed_sample_cache_game(&path);
 
-            if let Some(pb) = &progress {
-                pb.inc(1);
-            }
-
-            match result {
-                Ok(game) => {
-                    let _ = game_tx.send(game);
+                if let Some(pb) = &progress {
+                    pb.inc(1);
                 }
-                Err(err) => worker_for_pool.skip_state.log_skip(&original_identity, &err),
-            }
-        });
+
+                match result {
+                    Ok(game) => {
+                        let _ = game_tx.send(game);
+                    }
+                    Err(err) => worker_for_pool
+                        .skip_state
+                        .log_skip(&original_identity, &err),
+                }
+            });
     });
 
     lister
@@ -667,7 +678,8 @@ fn source_matches_filters(source: &DataSource, filters: &SourceFilterConfig) -> 
     }
     let path = match source {
         DataSource::ParsedSampleCache {
-            original_source_path, ..
+            original_source_path,
+            ..
         } => original_source_path.to_string_lossy(),
         _ => data_source_path(source).to_string_lossy(),
     };
@@ -1075,7 +1087,9 @@ fn spawn_parsed_sample_cache_batch_stream(
             })
         })
         .map_err(|err| {
-            io::Error::other(format!("failed to spawn parsed-sample cache batch stream: {err}"))
+            io::Error::other(format!(
+                "failed to spawn parsed-sample cache batch stream: {err}"
+            ))
         })?;
 
     Ok(SourceCursor::Archive {
@@ -1423,7 +1437,7 @@ fn is_mjai_file(path: &Path) -> bool {
     )
 }
 
-    fn is_tar_file(path: &Path) -> bool {
+fn is_tar_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(name) if name.ends_with(".tar")
@@ -1861,8 +1875,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        PathBuf::from("/home/cachybtw/tmp")
-            .join(format!("hydra_pipeline_{label}_{unique}{suffix}"))
+        PathBuf::from("/home/cachybtw/tmp").join(format!("hydra_pipeline_{label}_{unique}{suffix}"))
     }
 
     fn single_archive_manifest(path: PathBuf) -> DataManifest {
@@ -2036,15 +2049,18 @@ mod tests {
         )
         .expect("write val cache");
 
-        let manifest = scan_data_sources_with_progress(&dir, 0.5, &SourceFilterConfig::default(), None)
-            .expect("cache scan should succeed");
+        let manifest =
+            scan_data_sources_with_progress(&dir, 0.5, &SourceFilterConfig::default(), None)
+                .expect("cache scan should succeed");
         assert_eq!(manifest.total_games, 2);
         assert!(manifest.counts_exact);
         assert_eq!(manifest.train_count + manifest.val_count, 2);
-        assert!(manifest.sources.iter().all(|source| matches!(
-            source,
-            DataSource::ParsedSampleCache { .. }
-        )));
+        assert!(
+            manifest
+                .sources
+                .iter()
+                .all(|source| matches!(source, DataSource::ParsedSampleCache { .. }))
+        );
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2078,9 +2094,8 @@ mod tests {
             include_source_patterns: Vec::new(),
             exclude_source_patterns: vec!["jade/season_1".to_string()],
         };
-        let excluded_manifest =
-            scan_data_sources_with_progress(&dir, 0.5, &exclude_filters, None)
-                .expect("cache scan with exclude filters should succeed");
+        let excluded_manifest = scan_data_sources_with_progress(&dir, 0.5, &exclude_filters, None)
+            .expect("cache scan with exclude filters should succeed");
         assert!(excluded_manifest.sources.is_empty());
 
         fs::remove_dir_all(dir).ok();

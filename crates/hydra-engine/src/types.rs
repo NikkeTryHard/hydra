@@ -258,7 +258,10 @@ pub struct WinResult {
 
 impl WinResult {
     /// Creates a new win result from all scoring components.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the full scoring tuple"
+    )]
     pub fn new(
         is_win: bool,
         yakuman: bool,

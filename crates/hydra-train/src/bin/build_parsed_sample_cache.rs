@@ -7,8 +7,8 @@ use hydra_train::data::mjai_loader::load_game_from_path;
 use hydra_train::data::parsed_sample_cache::{
     parsed_sample_cache_file_name, write_parsed_sample_cache,
 };
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 
 #[derive(Debug)]
 struct Cli {
