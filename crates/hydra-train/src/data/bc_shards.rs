@@ -1025,10 +1025,7 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
     })
 }
 
-pub fn load_bc_shard_reader(
-    manifest_path: &Path,
-    split: BcShardSplit,
-) -> Result<BcShardReader, String> {
+pub fn read_bc_shard_manifest(manifest_path: &Path) -> Result<BcShardManifest, String> {
     let raw = fs::read_to_string(manifest_path).map_err(|err| {
         format!(
             "failed to read BC shard manifest {}: {err}",
@@ -1041,10 +1038,11 @@ pub fn load_bc_shard_reader(
             manifest_path.display()
         )
     })?;
-    // Reject shards built with a different encoder geometry. Without this
-    // check a stale manifest silently passes header verification (which only
-    // compares header-vs-manifest) and the reader panics deep inside
-    // parse_compact_sample when OBS_F32_BYTES exceeds the on-disk record.
+    validate_bc_shard_manifest_contract(&manifest)?;
+    Ok(manifest)
+}
+
+fn validate_bc_shard_manifest_contract(manifest: &BcShardManifest) -> Result<(), String> {
     if manifest.obs_size != OBS_SIZE {
         return Err(format!(
             "BC shard manifest obs_size {} does not match current OBS_SIZE {} \
@@ -1060,6 +1058,21 @@ pub fn load_bc_shard_reader(
             manifest.base_record_size, BC_BASE_RECORD_SIZE,
         ));
     }
+    if manifest.action_space != HYDRA_ACTION_SPACE {
+        return Err(format!(
+            "BC shard manifest action_space {} does not match current HYDRA_ACTION_SPACE {}. \
+             Shards must be rebuilt with the current action contract.",
+            manifest.action_space, HYDRA_ACTION_SPACE,
+        ));
+    }
+    Ok(())
+}
+
+pub fn load_bc_shard_reader(
+    manifest_path: &Path,
+    split: BcShardSplit,
+) -> Result<BcShardReader, String> {
+    let manifest = read_bc_shard_manifest(manifest_path)?;
 
     let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let split_manifest = manifest
@@ -2723,7 +2736,7 @@ mod tests {
     }
 
     fn unique_bc_shard_temp_dir(label: &str) -> PathBuf {
-        let root = PathBuf::from("/home/nikketryhard/tmp");
+        let root = std::env::temp_dir();
         fs::create_dir_all(&root).expect("create bc_shard temp root");
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

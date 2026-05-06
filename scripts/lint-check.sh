@@ -9,6 +9,7 @@ usage() {
 Usage: scripts/lint-check.sh [--install-hook] [--anti-game-only]
 
 Strict Hydra quality gate:
+  - caveman-compress staged Markdown
   - anti-game pattern scan
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -90,6 +91,7 @@ install_hook() {
 #!/usr/bin/env sh
 set -eu
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+"$ROOT/scripts/caveman-compress-hook.sh"
 exec "$ROOT/scripts/lint-check.sh"
 HOOK
   chmod +x "$hook"
@@ -98,6 +100,10 @@ HOOK
 
 if [[ "$INSTALL_HOOK" == "1" ]]; then
   install_hook
+fi
+
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  run_step 'caveman-compress staged markdown' scripts/caveman-compress-hook.sh
 fi
 
 anti_game_scan

@@ -1,12 +1,12 @@
 # Coverage Reporting
 
-Hydra uses `cargo-llvm-cov` for workspace-wide Rust coverage reporting. Report strengthens regression review, not replace correctness testing. For day-to-day regression checks, keep using `cargo nextest run --release` as default fast path.
+Hydra use `cargo-llvm-cov` for workspace-wide Rust coverage reporting. Report strengthen regression review, not replace correctness testing. Day-to-day regression checks: keep `cargo nextest run --release` as default fast path.
 
 ## Why Hydra Tracks Coverage
 
-Hydra has failure modes that can silently poison training, not crash loud: encoder drift, replay mismatches, state-transition bugs, training-pipeline shape mismatches. Coverage answers simple question after change: did tests actually execute risky code paths we think they did?
+Hydra has failure modes can silently poison training, not crash loud: encoder drift, replay mismatches, state-transition bugs, training-pipeline shape mismatches. Coverage answer simple question after change: did tests hit risky code paths we think they did?
 
-That matters most for:
+Matter most for:
 
 - `crates/hydra-core` encoder, simulator, seeding, replay surfaces
 - `crates/hydra-engine` legal-action, scoring, state-machine logic
@@ -86,7 +86,7 @@ Local coverage run writes three outputs under `target/coverage/`:
 Coverage useful only when treated like engineering safety signal, not vanity number.
 
 - High total coverage does not prove engine correctness.
-- Low coverage in critical paths is real regression risk even if total percentage looks fine.
+- Low coverage in critical paths = real regression risk even if total percentage looks fine.
 - Review per-crate and per-module gaps first, especially around encoder channels, replay roundtrip behavior, scoring, legal action generation, and training-label gating.
 - Treat coverage changes as suspicious when they coincide with changes to `hydra-core` encoder/runtime logic or `hydra-engine` state transitions.
 

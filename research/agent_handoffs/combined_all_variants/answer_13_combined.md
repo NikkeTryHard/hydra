@@ -1,33 +1,33 @@
-<combined_run_record run_id="answer_13" variant_id="prompt_and_agent_pair" schema_version="1">
-  <metadata>
-    <notes>Combined record for Prompt 13 and its returned agent answer.</notes>
-    <layout>single_markdown_file_prompt_then_answer</layout>
-  </metadata>
+Read rest file. Need full body before compress.<combined_run_record run_id="answer_13" variant_id="prompt_and_agent_pair" schema_version="1">
+<metadata>
+<notes>Combined record: Prompt 13 + returned agent answer.</notes>
+<layout>single_markdown_file_prompt_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="PROMPT_13_AUDIT_HYDRA_LONG_RUN_TRAINING_RISKS.md">
-  <![CDATA[# Prompt 13 — long-run training risk audit blueprint
+<prompt_section>
+<prompt_text status="preserved" source_path="PROMPT_13_AUDIT_HYDRA_LONG_RUN_TRAINING_RISKS.md">
+<![CDATA[# Prompt 13 — long-run training risk audit blueprint
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
+Produce impl-ready blueprint.
+Not memo.
+Answer itself = blueprint.
 </role>
 
 <direction>
-Work toward the strongest exact audit of long-run training risks in Hydra.
+Work toward strongest exact audit of long-run training risks in Hydra.
 
-We want a detailed answer that makes clear:
-- what the current active training posture really is
-- which fears are real versus overstated
-- where rollout distillation could reduce search quality
-- where the learner/actor split could lose too much signal
-- where the parameter budget and target surface may be overloaded
-- where sequencing protects Hydra versus where it only hides risk
-- what the narrowest safe long-run path really is if the goal remains beating LuckyJ
-- whether an adjacent-field or cross-field formulation solves the same problem better without breaking the artifact constraints
+Need detailed answer showing:
+- current active training posture
+- which fears real vs overstated
+- where rollout distillation may reduce search quality
+- where learner/actor split may lose too much signal
+- where parameter budget and target surface may overload
+- where sequencing protects Hydra vs only hides risk
+- narrowest safe long-run path if goal stays beating LuckyJ
+- whether adjacent-field or cross-field formulation solves same problem better without breaking artifact constraints
 
-Use the artifacts below to derive your conclusions.
+Use artifacts below to derive conclusions.
 </direction>
 
 <style>
@@ -37,29 +37,29 @@ Use the artifacts below to derive your conclusions.
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
-- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-- distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- after grounding in the artifacts, actively search adjacent fields for stronger alternative formulations of the same problem; keep them only if they survive validation against the artifacts
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- include enough detail for self-validation (pdfs, sources, links, similar projects)
+- separate direct artifact support from your inference
+- use search/browse to find original paper, then inspect full PDF with skill; use abstracts/summaries only for discovery, not final evidence
+- after grounding in artifacts, actively search adjacent fields for stronger alternative formulations of same problem; keep only if they survive validation against artifacts
+- use bash tool to run Python for calculations, math checks, validation when rigor matters
+- do not stop early; keep looping through discovery, thinking, testing, validation until info saturates or blocks, and not before at least 20+ loops (as much loops as possible tho)
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs and prior handoffs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+Artifacts below reflect what current codebase/docs and prior handoffs seem to say now. They may be wrong. Treat as evidence to inspect and critique, not truth. High chance some are incomplete, misleading, stale, or semantically wrong, so validate all.
 </artifact_note>
 
 <artifacts>
-Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+Embedded artifact/context dump intentionally omitted during normalization. Use paired answer body plus repository source files for audit and follow-up.
 </artifacts>
 
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_13.md">
-  <![CDATA[# Hydra long-run training risk audit blueprint
+<answer_section>
+<answer_text status="preserved" source_path="agent_13.md">
+<![CDATA[# Hydra long-run training risk audit blueprint
 
 ```text
 - rollout-net distillation reducing search quality
@@ -1026,25 +1026,25 @@ fn all_outputs_finite_for_random_input() {
 
 **Evidence labels**
 
-* **Artifact** = directly supported by the supplied Hydra artifacts.
-* **Paper** = supported by external primary sources.
+* **Artifact** = direct support from supplied Hydra artifacts.
+* **Paper** = support from external primary sources.
 * **Inference** = conclusion from Artifact + Paper.
 
 ## 1. Operational truth: what Hydra is right now
 
-**Artifact.** Hydra today is a **two-tier single-family model**, not a family of separately scoped networks. `ActorNet` and `LearnerNet` are both `HydraModel`; actor = 12 blocks, learner = 24 blocks; both emit the full output surface, including policy, value, score PDF/CDF, tenpai, GRP, opp-next-discard, danger, oracle, belief, mixture, delta-Q, and safety residual. The intended identity is continuous `Learner -> Actor` distillation, with the actor also serving as rollout-sized inference.
+**Artifact.** Hydra now = **two-tier single-family model**, not separate scoped nets. `ActorNet` and `LearnerNet` both alias `HydraModel`; actor = 12 blocks, learner = 24 blocks; both emit full output surface: policy, value, score PDF/CDF, tenpai, GRP, opp-next-discard, danger, oracle, belief, mixture, delta-Q, safety residual. Intended identity = continuous `Learner -> Actor` distillation, with actor also serving as rollout-sized inference.
 
-**Artifact.** The *active training posture* is much narrower than the forward signature suggests. Advanced heads exist, but the normal batch path mostly does **not** feed them, and the advanced loss weights default to `0.0`. The repo is therefore closer to an **advanced baseline with partially inactive loops** than to a fully active maximal Hydra.
+**Artifact.** *Active training posture* much narrower than forward signature. Advanced heads exist, but normal batch path mostly does **not** feed them, and advanced loss weights default to `0.0`. Repo therefore closer to **advanced baseline with partially inactive loops** than fully active maximal Hydra.
 
-| Area              | Live posture now                                                             | Audit consequence                                                |
-| ----------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Core model        | Full multi-head forward exists for both actor and learner                    | Capacity split exists, but target surface is shared              |
-| Mainline training | Baseline dense targets dominate; advanced weights default to zero            | Hydra is not currently training “maximal Hydra”                  |
-| Search runtime    | AFBS/search exists as a shell; specialist and hard-state gated               | Search is a support mechanism, not the mainline identity         |
+| Area              | Live posture now                                                   | Audit consequence                                                |
+| ----------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| Core model        | Full multi-head forward exists for both actor and learner          | Capacity split exists, but target surface shared                 |
+| Mainline training | Baseline dense targets dominate; advanced weights default to zero  | Hydra not training “maximal Hydra”                     |
+| Search runtime    | AFBS/search exists as shell; specialist and hard-state gated       | Search = support mechanism, not mainline identity                |
 | Inference         | 12-block actor under 150 ms on-turn / 50 ms reaction budget with agari guard | Any real gain must transfer to actor or stay explicitly off-loop |
-| Distillation      | Continuous learner-to-actor distillation is mandatory, not optional          | Distillation quality is a first-class risk                       |
+| Distillation      | Continuous learner-to-actor distillation mandatory, not optional   | Distillation quality = first-class risk                          |
 
-**Artifact.** The current hard-state/search gating is already explicit: deep search / pondering is for states with low top-2 policy gap, high defensive risk, or low particle ESS. Search-as-feature is present, and SaF-dropout already exists to reduce dependence on those derived features.
+**Artifact.** Current hard-state/search gating already explicit: deep search / pondering for low top-2 policy gap, high defensive risk, or low particle ESS. Search-as-feature present; SaF-dropout already exists to reduce dependence on derived features.
 
 **Blueprint rule.** Treat Hydra as:
 
@@ -1052,13 +1052,13 @@ fn all_outputs_finite_for_random_input() {
 \text{Hydra today} = \text{dense baseline trunk} + \text{specialist hard-state search} + \text{mostly dormant advanced supervision}.
 ]
 
-Do **not** plan or evaluate it as if all heads are already learning.
+Do **not** plan/evaluate it as if all heads already learn.
 
 ---
 
 ## 2. Phase map under the existing 2000 GPU-hour budget
 
-**Artifact.** Use the current budget split as the control surface, not a new roadmap:
+**Artifact.** Use current budget split as control surface, not new roadmap:
 
 * **Phase -1 (150 GPUh):** instrumentation, correctness, latency, throughput, distillation sanity
 * **Phase 0 (50 GPUh):** baseline BC
@@ -1076,20 +1076,20 @@ Do **not** plan or evaluate it as if all heads are already learning.
 
 **Verdict:** **real**
 
-**Artifact.** Hydra makes distillation structural: rollout/actor is learner-sized? No; rollout is actor-sized, continuously distilled from the learner. The code already has `soft_target_from_exit(...)` and a KL drift benchmark, but that only checks distributional closeness, not whether distillation harms the search loop that later consumes the actor prior.
+**Artifact.** Hydra makes distillation structural: rollout/actor learner-sized? No; rollout = actor-sized, continuously distilled from learner. Code already has `soft_target_from_exit(...)` and KL drift benchmark, but that only checks distributional closeness, not whether distillation harms search loop that later consumes actor prior.
 
-**Paper.** ExIt works because search is the local expert and the network is the global generalizer; but ExIt also says search-generated datasets dominate runtime, and online aggregation of all datasets is the practical improvement over restarting from scratch. GKD/DAgger-style results make the core distillation failure mode explicit: fixed expert-labeled data creates train-inference mismatch, while relabeling **student-generated** states reduces that mismatch. In imperfect-information games, ReBeL and DeepStack both show that policy/value quality depends on belief/public-state context; compressing search-conditioned decisions into a smaller student without respecting that context is exactly where fidelity is lost. ([NeurIPS Papers][1])
+**Paper.** ExIt works because search = local expert, network = global generalizer; ExIt also says search-generated datasets dominate runtime, and online aggregation of all datasets improves over restarting from scratch. GKD/DAgger-style results make core failure mode explicit: fixed expert-labeled data creates train-inference mismatch, while relabeling **student-generated** states reduces mismatch. In imperfect-information games, ReBeL and DeepStack both show policy/value quality depends on belief/public-state context; compressing search-conditioned decisions into smaller student without respecting that context is where fidelity is lost. ([NeurIPS Papers][1])
 
-**Inference.** Hydra’s failure channels are:
+**Inference.** Hydra failure channels:
 
-1. **Hard-state dilution.** Search is only invoked on rare hard states, but plain KL is dominated by easy states.
-2. **Unavailable-feature leakage.** Search-derived features may be present during training and absent during actor-only inference.
+1. **Hard-state dilution.** Search invoked only on rare hard states, but plain KL dominated by easy states.
+2. **Unavailable-feature leakage.** Search-derived features may exist in training and be absent in actor-only inference.
 3. **Top-k collapse.** Small KL can still hide critical top-1 / top-2 swaps on dangerous actions.
-4. **Search-prior regression.** A distilled actor can weaken future search if that actor is later used as the prior/value source inside the search loop.
+4. **Search-prior regression.** Distilled actor can weaken future search if later used as prior/value source inside search loop.
 
-**Gate that validates or kills the fear**
+**Gate that validates or kills fear**
 
-Create a fixed hard-state corpus (H) from **actor-generated** states, not learner-generated states.
+Create fixed hard-state corpus (H) from **actor-generated** states, not learner-generated.
 
 [
 H={s:\ \text{gap}(s)<0.10 \ \lor\ \text{risk}(s)>r_0 \ \lor\ \text{ESS}(s)<e_0 \ \lor\ a_A(s)\neq a_T(s)}
@@ -1099,7 +1099,7 @@ Then require:
 
 * hard-set masked KL (\le 0.10)
 * hard-set top-2 recall (\ge 0.90)
-* hard-set teacher-regret reduced by at least 25% versus the undistilled actor
+* hard-set teacher-regret reduced by at least 25% vs undistilled actor
 * **search-prior regression** non-negative at fixed node/time budget
 
 Define teacher-regret on searched states as:
@@ -1108,9 +1108,9 @@ Define teacher-regret on searched states as:
 R_{\text{distill}}=\mathbb{E}_{s\in H}\left[Q_T(s,a_T)-Q_T(s,a_A)\right].
 ]
 
-**Implementation**
+**impl**
 
-Use the existing hard-state score, then make the distillation mix state-dependent instead of global:
+Use existing hard-state score, then make distillation mix state-dependent, not global:
 
 ```rust
 fn hard_score(gap: f32, risk: f32, ess: f32) -> f32 {
@@ -1125,7 +1125,7 @@ fn distill_mix(gap: f32, risk: f32, ess: f32) -> f32 {
 }
 ```
 
-And replace “KL everywhere” with “teacher-heavy only where search matters”:
+Replace “KL everywhere” with “teacher-heavy only where search matters”:
 
 ```rust
 if is_hard_state(snapshot) || actor_action != teacher_action {
@@ -1137,7 +1137,7 @@ if is_hard_state(snapshot) || actor_action != teacher_action {
 
 **Search-prior regression test**
 
-Freeze a 10k-state hard corpus (P). Run search with old actor prior and new actor prior at the same budget.
+Freeze 10k-state hard corpus (P). Run search with old actor prior and new actor prior at same budget.
 
 [
 \Delta_{\text{prior}} = EV_{\text{search}}(\pi_{A,new}) - EV_{\text{search}}(\pi_{A,old})
@@ -1145,28 +1145,28 @@ Freeze a 10k-state hard corpus (P). Run search with old actor prior and new acto
 
 Continue only if (\Delta_{\text{prior}} \ge 0) within confidence intervals.
 
-**Conclusion.** Distillation is not the problem. **Broad fixed-distribution distillation** is the problem. The narrow fix is **actor-induced hard-state relabeling with aggregated buffers**.
+**Conclusion.** Distillation itself not problem. **Broad fixed-distribution distillation** is. Narrow fix = **actor-induced hard-state relabeling with aggregated buffers**.
 
 ---
 
 ### 3.2 Learner/actor split being too lossy
 
-**Verdict:** **real, but overstated as an architecture objection**
+**Verdict:** **real, but overstated as architecture objection**
 
-**Artifact.** The split is already a deliberate defense against the “40-block hard-state teacher gets ~7 samples/param” starvation problem. The actor exists to satisfy latency and self-play throughput; the learner exists to absorb slower supervision and deeper search.
+**Artifact.** Split already deliberate defense against “40-block hard-state teacher gets ~7 samples/param” starvation. Actor exists for latency and self-play throughput; learner exists to absorb slower supervision and deeper search.
 
-**Paper.** IMPALA makes the general point cleanly: decoupled actor/learner systems are powerful, but policy lag is real and needs explicit correction. Suphx also decoupled inference/self-play from parameter updates and repeatedly refreshed policies to keep acting close to the latest learner. So the split itself is not suspect; **unmeasured lag and transfer loss** are suspect. ([Proceedings of Machine Learning Research][2])
+**Paper.** IMPALA makes point cleanly: decoupled actor/learner systems powerful, but policy lag real and needs explicit correction. Suphx also decoupled inference/self-play from parameter updates and repeatedly refreshed policies to keep acting close to latest learner. So split itself not suspect; **unmeasured lag and transfer loss** are. ([Proceedings of Machine Learning Research][2])
 
-**Inference.** Signal loss will concentrate in exactly the places where Hydra cannot afford it:
+**Inference.** Signal loss will concentrate where Hydra least can afford it:
 
 * low-gap decisions
 * defensive reactions under short budgets
 * sparse search-derived corrections
-* any head that depends on search/belief context rather than raw observation
+* any head depending on search/belief context rather than raw observation
 
-Average policy agreement is not enough.
+Average policy agreement not enough.
 
-**Gate that validates or kills the fear**
+**Gate that validates or kills fear**
 
 Do not credit teacher-only gains. Define:
 
@@ -1180,11 +1180,11 @@ Do not credit teacher-only gains. Define:
 \text{creditable gain}=\min(\Delta_L,\Delta_A)
 ]
 
-If (\Delta_L>0) but (\Delta_A\le 0), the learner/actor split is **hiding risk**, not reducing it.
+If (\Delta_L>0) but (\Delta_A\le 0), learner/actor split **hides risk**, not reduces it.
 
-Require the actor to preserve at least 70% of learner-side lift on the hard-state corpus before expanding the learner-only target surface.
+Require actor to preserve at least 70% of learner-side lift on hard-state corpus before expanding learner-only target surface.
 
-**Implementation**
+**impl**
 
 Add versioned distill samples:
 
@@ -1213,27 +1213,27 @@ pub struct TransferMetrics {
 }
 ```
 
-**Conclusion.** Keep the split. But from now on, **teacher-only improvement does not count**.
+**Conclusion.** Keep split. But from now, **teacher-only improvement does not count**.
 
 ---
 
 ### 3.3 Too many advanced heads / targets for the available parameter budget
 
-**Verdict:** **overstated as a raw-parameter fear; real as a supervision-density and interference fear**
+**Verdict:** **overstated as raw-parameter fear; real as supervision-density and interference fear**
 
-**Artifact.** Known output dimensionality already exceeds **1050 outputs excluding `opponent_hand_type`**. The dormant optional surfaces alone contribute **640 dims** before counting `opponent_hand_type` and before treating oracle separately. But the head parameter formula is linear in hidden width:
+**Artifact.** Known output dimensionality already exceeds **1050 outputs excluding `opponent_hand_type`**. Dormant optional surfaces alone contribute **640 dims** before counting `opponent_hand_type` and before treating oracle separately. But head parameter formula linear in hidden width:
 
 [
 P_{\text{heads}} \approx h \cdot (1050 + k_{\text{handtype}}) + O(1).
 ]
 
-That means the output heads are unlikely to be the dominant parameter consumer in a 5M/10M model. The dominant problem is not “too many linear heads”; it is **too many weakly supervised surfaces trying to shape one trunk**.
+This means output heads likely not dominant parameter consumer in 5M/10M model. Dominant problem not “too many linear heads”; it is **too many weakly supervised surfaces trying to shape one trunk**.
 
-**Artifact.** The strongest evidence is current target density, not head count: the main batch path still emits mostly baseline targets; `delta_q_target` and `opponent_hand_type_target` are absent; belief/mixture/safety have hooks but are mostly not live end-to-end.
+**Artifact.** Strongest evidence = current target density, not head count: main batch path still emits mostly baseline targets; `delta_q_target` and `opponent_hand_type_target` absent; belief/mixture/safety have hooks but mostly not live end-to-end.
 
-**Paper.** Deep-AMTFL’s point is exactly Hydra’s risk: reliable/easy tasks should shape shared features more than inaccurate/hard tasks, because noisy hard tasks can drag the shared representation backward through negative transfer. ([Proceedings of Machine Learning Research][3])
+**Paper.** Deep-AMTFL point matches Hydra risk: reliable/easy tasks should shape shared features more than inaccurate/hard tasks, because noisy hard tasks can drag shared representation backward through negative transfer. ([Proceedings of Machine Learning Research][3])
 
-**Implementation rule**
+**impl rule**
 
 For each head (h), log:
 
@@ -1244,21 +1244,21 @@ For each head (h), log:
 and, for sparse search-derived heads,
 
 [
-\text{spp}*h = \frac{N_h}{P*{\text{learner}}}
+\text{spp}_h = \frac{N_h}{P_{\text{learner}}}
 ]
 
-where (N_h) is the number of labeled states for that head and (P_{\text{learner}}) is learner params.
+where (N_h) = number of labeled states for that head and (P_{\text{learner}}) = learner params.
 
-Activate a head only if:
+Activate head only if:
 
 * label audit passes
 * dense head: (\rho_h \ge 0.8)
 * sparse search head: (\text{spp}_h \ge 5)
-* negative gradient cosine against policy/value is not persistent
+* negative gradient cosine against policy/value not persistent
 
 **Important artifact correction**
 
-Do **not** use `grad_norm_approx(...)` for this gate. In the artifact it is a loss-magnitude proxy, not a true parameter-gradient norm.
+Do **not** use `grad_norm_approx(...)` for this gate. In artifact it is loss-magnitude proxy, not true parameter-gradient norm.
 
 Use real shared-trunk gradient cosine instead:
 
@@ -1276,11 +1276,11 @@ fn grad_cosine(loss_a: Tensor<B, 1>, loss_b: Tensor<B, 1>, shared: &[Param]) -> 
 }
 ```
 
-Keep a head off if shared-trunk cosine with `policy+value` is negative on more than 30% of batches after warmup.
+Keep head off if shared-trunk cosine with `policy+value` is negative on more than 30% of batches after warmup.
 
 **Worked sample-per-parameter check**
 
-Take the current gate literally:
+Take current gate literally:
 
 * self-play floor: **20 games/s**
 * GPUs: **4**
@@ -1297,10 +1297,10 @@ N_{\text{positions}} = 20 \cdot 3600 \cdot (1600/4) \cdot 60 = 1.728\times 10^9
 So:
 
 [
-\text{spp}*{\text{hard}} = 172.8 \cdot f*{\text{hard}}
+\text{spp}_{\text{hard}} = 172.8 \cdot f_{\text{hard}}
 ]
 
-where (f_{\text{hard}}) is the fraction of positions that actually get search labels.
+where (f_{\text{hard}}) = fraction of positions that get search labels.
 
 That gives:
 
@@ -1308,51 +1308,51 @@ That gives:
 * (f_{\text{hard}}=2%\Rightarrow 3.46)
 * (f_{\text{hard}}=5%\Rightarrow 8.64)
 
-**Inference.** Any search-derived head trained on only **1–2%** of positions is probably undertrained on the current budget. `delta_q` is the clearest casualty.
+**Inference.** Any search-derived head trained on only **1–2%** of positions likely undertrained on current budget. `delta_q` clearest casualty.
 
-**Conclusion.** The current risk is not “too many params for too many heads.” The real risk is **lighting up sparse noisy heads before density and transfer exist**.
+**Conclusion.** Current risk not “too many params for too many heads.” Real risk = **lighting up sparse noisy heads before density and transfer exist**.
 
 ---
 
 ### 3.4 Too much hidden-state/search information baked into one shared representation
 
-**Verdict:** **real, but currently latent**
+**Verdict:** **real, but latent**
 
-**Artifact.** Search features already include mixture entropy/ESS, AFBS-root delta-Q summaries, and safety/opponent-cache signals. SaF-dropout exists, which is the correct direction.
+**Artifact.** Search features already include mixture entropy/ESS, AFBS-root delta-Q summaries, and safety/opponent-cache signals. SaF-dropout exists, which is correct direction.
 
-**Paper.** Deep-AMTFL supports asymmetric transfer from reliable tasks into shared features, not the reverse. DeepStack/ReBeL support the deeper warning: in imperfect-information games, the correct local action depends on belief/public-state quantities that are not just “the visible board encoded harder.” ([Proceedings of Machine Learning Research][3])
+**Paper.** Deep-AMTFL supports asymmetric transfer from reliable tasks into shared features, not reverse. DeepStack/ReBeL support deeper warning: in imperfect-information games, correct local action depends on belief/public-state quantities not “visible board encoded harder.” ([Proceedings of Machine Learning Research][3])
 
-**Inference.** The representation risk is dormant now because those heads are mostly off. It becomes real when belief, safety, and search heads all backprop into the same trunk together.
+**Inference.** Representation risk dormant now because heads mostly off. It becomes real when belief, safety, and search heads all backprop into same trunk together.
 
-**Gate that validates or kills the fear**
+**Gate that validates or kills fear**
 
-For any model trained with search-derived features or belief targets, run a **feature-ablation evaluation**:
+For any model trained with search-derived features or belief targets, run **feature-ablation evaluation**:
 
 [
 \Delta_{\text{SaF-off}} = EV(\text{features on}) - EV(\text{features zeroed})
 ]
 
-Continue only if the actor remains usable with features zeroed:
+Continue only if actor remains usable with features zeroed:
 
 * stable-dan drop < 0.1
 * hard-state teacher-regret increase < 10%
 
-**Implementation**
+**impl**
 
 When turning on any sparse head, do it in two steps:
 
 1. **head-only warmup** with trunk frozen for 10k-20k updates
 2. unfreeze trunk only if feature-ablation and gradient-conflict gates pass
 
-That is the narrowest safe anti-entanglement move that does **not** require a new architecture.
+That is narrowest safe anti-entanglement move that does **not** require new architecture.
 
 ---
 
 ### 3.5 2000 GPU-hours being enough only for conservative Hydra, not maximal Hydra
 
-**Verdict:** **very real**
+**Verdict:** real**
 
-**Artifact + arithmetic.** With the existing gate of **20 self-play games/s** and 4 GPUs:
+**Artifact + arithmetic.** With existing gate of **20 self-play games/s** and 4 GPUs:
 
 [
 \text{wall hours} = 2000/4 = 500
@@ -1361,16 +1361,16 @@ That is the narrowest safe anti-entanglement move that does **not** require a ne
 N_{\text{games}} = 20 \cdot 3600 \cdot 500 = 36{,}000{,}000
 ]
 
-That is an upper bound, not a promise. If you use a worked 60 decisions/game, that is about **2.16B state-action positions** across the full budget. Phase 3 alone is **14.4M games** and about **864M positions** at that same worked density.
+That is upper bound, not promise. If you use worked 60 decisions/game, that is about **2.16B state-action positions** across full budget. Phase 3 alone = **14.4M games** and about **864M positions** at same worked density.
 
-That sounds large until you remember two things:
+That sounds large until two facts:
 
-1. search-labeled states are only a fraction of those positions
-2. the budget must cover BC, oracle/value work, ACH, ExIt, pondering, and distillation—not one narrow training objective
+1. search-labeled states only fraction of those positions
+2. budget must cover BC, oracle/value work, ACH, ExIt, pondering, distillation, not one narrow training objective
 
-**Paper.** The scale comparisons all point the same way. Suphx reports one RL agent run at **1.5M games**, costing **44 GPUs for two days** (~2112 GPU-hours). ACH’s published 1v1 Mahjong platform used **800 CPUs, 3200 GB memory, and 8 M40 GPUs**. ReBeL explicitly says data generation is the bottleneck and used up to **128 machines with 8 GPUs each** for generation. Tencent’s OLSS paper is even more telling for Mahjong-adjacent search: the two-player Mahjong setup used **8 V100s + 1200 CPUs** for blueprint training, **8 V100s + 2400 CPUs** for the environment model, then simplified online search to **discard-only**, **8-step** pUCT rollouts because richer search was too expensive. Hardware differs, so these are directional comparisons, not apples-to-apples throughput conversions—but directionally they all reject “maximal Hydra under 2000 GPUh.” ([arXiv][4])
+**Paper.** Scale comparisons point same way. Suphx reports one RL agent run at **1.5M games**, costing **44 GPUs for two days** (~2112 GPU-hours). ACH’s published 1v1 Mahjong platform used **800 CPUs, 3200 GB memory, and 8 M40 GPUs**. ReBeL explicitly says data generation bottlenecked and used up to **128 machines with 8 GPUs each** for generation. Tencent’s OLSS paper even more telling for Mahjong-adjacent search: two-player Mahjong setup used **8 V100s + 1200 CPUs** for blueprint training, **8 V100s + 2400 CPUs** for environment model, then simplified online search to **discard-only**, **8-step** pUCT rollouts because richer search too expensive. Hardware differs, so these are directional, not apples-to-apples throughput conversions, but directionally all reject “maximal Hydra under 2000 GPUh.” ([arXiv][4])
 
-**Conclusion.** The current budget fits **conservative staged Hydra**. It does **not** fit “turn on every advanced head, broaden AFBS, and search-distill everything.”
+**Conclusion.** Current budget fits **conservative staged Hydra**. It does **not** fit “turn on every advanced head, broaden AFBS, and search-distill everything.”
 
 ---
 
@@ -1378,19 +1378,19 @@ That sounds large until you remember two things:
 
 ### Sequencing protects Hydra here
 
-* **Zero default weights** keep bad sparse heads from poisoning the trunk too early.
-* **Selective hard-state search** matches ExIt’s economics: search is expensive; use it where it adds local information, not everywhere. ([NeurIPS Papers][1])
-* **Two-tier learner/actor** avoids the teacher-data-starvation paradox while preserving inference latency.
-* **Hand-EV/value realism before AFBS breadth** matches the external pattern from Suphx: global reward prediction and oracle guiding added gains before runtime adaptation became the story. ([arXiv][4])
+* **Zero default weights** keep bad sparse heads from poisoning trunk too early.
+* **Selective hard-state search** matches ExIt economics: search expensive; use where it adds local information, not everywhere. ([NeurIPS Papers][1])
+* **Two-tier learner/actor** avoids teacher-data-starvation paradox while preserving inference latency.
+* **Hand-EV/value realism before AFBS breadth** matches external pattern from Suphx: global reward prediction and oracle guiding added gains before runtime adaptation became story. ([arXiv][4])
 
 ### Sequencing hides risk here
 
-* A dormant head can look “implemented” while still being completely untrained.
-* A learner-side gain can look “real” while never transferring to the actor.
-* A global KL metric can look “stable” while hard-state regret stays bad.
-* SaF-dropout can look “present” while the actor still quietly depends on search context.
+* Dormant head can look “implemented” while still fully untrained.
+* Learner-side gain can look “real” while never transferring to actor.
+* Global KL metric can look “stable” while hard-state regret stays bad.
+* SaF-dropout can look “present” while actor still quietly depends on search context.
 
-**Blueprint rule:** a gain is real only if it survives the actor loop or remains explicitly inside the deployed search loop within budget.
+**Blueprint rule:** gain real only if it survives actor loop or remains explicitly inside deployed search loop within budget.
 
 ---
 
@@ -1406,24 +1406,24 @@ That sounds large until you remember two things:
 6. **opp_next_discard**
 7. **danger**
 
-These are the dense, immediate, low-ambiguity surfaces.
+These are dense, immediate, low-ambiguity surfaces.
 
 ### First advanced candidate
 
-**`oracle_critic`**, but only after a density audit. The artifacts are inconsistent: oracle targets can be populated from final scores, but one batch test shows them absent in a standard fixture. So the correct move is **measure `ρ_oracle` first**, then activate at low weight if dense enough.
+**`oracle_critic`**, but only after density audit. Artifacts inconsistent: oracle targets can be populated from final scores, but one batch test shows them absent in standard fixture. Correct move = **measure `ρ_oracle` first**, then activate at low weight if dense enough.
 
 ### Learn next, one at a time
 
 1. **`safety_residual`**
-   Reason: action-local, masked, directly relevant to defense, and the builder exists.
+Reason: action-local, masked, directly relevant to defense, and builder exists.
 
 2. **`belief_fields` + `mixture_weight_logits`**
-   Reason: stage-A targets and masks already exist in the data structures, so the loop can be closed without new heads. But they need calibration, not faith.
+Reason: stage-A targets and masks already exist in data structures, so loop can close without new heads. But they need calibration, not faith.
 
 ### Defer
 
 **`delta_q`**
-This is the one active-looking component that should be deferred. It is sparse, search-derived, teacher-limited, currently absent in the mainline target path, and it is exactly the head most likely to be data-starved under the current budget.
+This is active-looking component that should be deferred. It is sparse, search-derived, teacher-limited, absent in mainline target path, and exactly head most likely data-starved under current budget.
 
 ### Drop shelf for now
 
@@ -1433,7 +1433,7 @@ No current mainline target path. Stop spending attention on it until labels exis
 ### Not a head, but move earlier
 
 **Hand-EV realism**
-Move this earlier than deeper AFBS expansion. Suphx’s strongest jumps came from better value/reward shaping and oracle guidance; its Tenhou edge also showed up as strong defense and low deal-in / low 4th-place rates, which is much closer to Hydra’s value/safety stack than to a broad search rewrite. ([arXiv][4])
+Move this earlier than deeper AFBS expansion. Suphx’s strongest jumps came from better value/reward shaping and oracle guidance; its Tenhou edge also showed up as strong defense and low deal-in / low 4th-place rates, much closer to Hydra’s value/safety stack than to broad search rewrite. ([arXiv][4])
 
 ---
 
@@ -1473,7 +1473,7 @@ Activation rule:
 
 ### Gate 3 — hard-state distillation
 
-Use a 50k-state actor-induced hard corpus.
+Use 50k-state actor-induced hard corpus.
 
 Pass only if:
 
@@ -1483,9 +1483,9 @@ Pass only if:
 
 ### Gate 4 — search-prior regression
 
-Use a fixed 10k-state hard corpus.
+Use fixed 10k-state hard corpus.
 
-Pass only if a newly distilled actor does **not** reduce search EV at a fixed node/time budget.
+Pass only if newly distilled actor does **not** reduce search EV at fixed node/time budget.
 
 ### Gate 5 — no-SaF dependence
 
@@ -1498,19 +1498,19 @@ Pass only if:
 
 ### Gate 6 — belief calibration
 
-Use a reveal-state corpus of at least 100k states.
+Use reveal-state corpus of at least 100k states.
 
-Pass only if belief/mixture beats a marginal-frequency baseline on calibration metrics (Brier/ECE) by at least 10%.
+Pass only if belief/mixture beats marginal-frequency baseline on calibration metrics (Brier/ECE) by at least 10%.
 
 ### Gate 7 — safety usefulness
 
-Use a high-risk defensive arena slice.
+Use high-risk defensive arena slice.
 
 Pass only if adding `safety_residual` reduces deal-in rate without reducing stable-dan.
 
 ### Gate 8 — compute
 
-Keep the current artifact gates, and add “throughput regression after activation”:
+Keep current artifact gates, and add “throughput regression after activation”:
 
 * `afbs_on_turn_ms < 150`
 * `ct_smc_dp_ms < 1`
@@ -1519,7 +1519,7 @@ Keep the current artifact gates, and add “throughput regression after activati
 * `distill_kl_drift < 0.1`
 * post-activation throughput drop < 10%
 
-If Gate 8 fails, follow the artifact doctrine exactly: **shrink AFBS/teacher usage and reallocate to self-play**.
+If Gate 8 fails, follow artifact doctrine exactly: **shrink AFBS/teacher usage and reallocate to self-play**.
 
 ---
 
@@ -1527,37 +1527,37 @@ If Gate 8 fails, follow the artifact doctrine exactly: **shrink AFBS/teacher usa
 
 ### Keep: hard-state on-policy distillation
 
-This is the strongest adjacent formulation that survives the artifact constraints.
+This is strongest adjacent formulation that survives artifact constraints.
 
-It is a hybrid of:
+It is hybrid of:
 
 * ExIt’s expert/apprentice split
 * DAgger/GKD’s actor-induced relabeling
 * Hydra’s existing hard-state gating
 
-It solves the right problem: **distribution-mismatched distillation on the rare states that matter most**. ([NeurIPS Papers][1])
+It solves right problem: **distribution-mismatched distillation on rare states that matter most**. ([NeurIPS Papers][1])
 
 ### Keep: asymmetric multi-head activation
 
-This is the strongest cross-field answer to “too many heads on one trunk” without changing the artifact constraints.
+This is strongest cross-field answer to “too many heads on one trunk” without changing artifact constraints.
 
-Implement it as:
+Implement as:
 
 * reliable dense heads first
-* sparse/noisy heads one at a time
+* sparse/noisy heads one at time
 * head-only warmup
 * gradient-conflict monitoring
 * density and calibration gates
 
-That is the Deep-AMTFL lesson translated into Hydra’s existing architecture, not a new architecture. ([Proceedings of Machine Learning Research][3])
+That is Deep-AMTFL lesson translated into Hydra’s existing architecture, not new architecture. ([Proceedings of Machine Learning Research][3])
 
 ### Reserve shelf: OLSS-style opponent-limited search
 
-Tencent’s OLSS result is the most relevant search-adjacent alternative to Hydra’s selective AFBS doctrine. It shows that limiting opponent strategy space can be **orders of magnitude faster** than larger common-knowledge subgame-solving methods, and that in 2-player Mahjong one or two opponent strategies can already improve online performance. But the same paper also states that OLSS-II becomes **unsafe when the number of opponent strategies is limited**, and its Mahjong experiments had to simplify search heavily to discard-only, eight-step pUCT rollouts. That makes OLSS a **reserve-shelf search restriction**, not a mainline safety-certified Hydra identity. ([Proceedings of Machine Learning Research][5])
+Tencent’s OLSS result is most relevant search-adjacent alternative to Hydra’s selective AFBS doctrine. It shows limiting opponent strategy space can be **orders of magnitude faster** than larger common-knowledge subgame-solving methods, and that in 2-player Mahjong one or two opponent strategies can already improve online performance. But same paper also states OLSS-II becomes **unsafe when number of opponent strategies is limited**, and its Mahjong experiments had to simplify search heavily to discard-only, eight-step pUCT rollouts. That makes OLSS **reserve-shelf search restriction**, not mainline safety-certified Hydra identity. ([Proceedings of Machine Learning Research][5])
 
 ### Reserve shelf only: ReBeL / full public-belief RL+Search
 
-The theory is cleaner than Hydra’s current partial search shell: ReBeL is explicit that AlphaZero-style RL+Search is not sound in imperfect-information games without public-belief state, and it fixes the state definition. But it is also a bigger architecture reset, with heavy data-generation cost. Under current artifact constraints and current budget, this is a reserve-shelf north star, not the next coding tranche. ([NeurIPS Proceedings][6])
+Theory cleaner than Hydra’s current partial search shell: ReBeL explicit that AlphaZero-style RL+Search is not sound in imperfect-information games without public-belief state, and it fixes state definition. But it is also bigger architecture reset, with heavy data-generation cost. Under current artifact constraints and budget, this is reserve-shelf north star, not next coding tranche. ([NeurIPS Proceedings][6])
 
 ### Reject now
 
@@ -1587,7 +1587,7 @@ Use three fixed corpora plus paired-seed arena matches.
 
 ### Arena protocol
 
-Use paired-seed / duplicate-style evaluation wherever possible so variance does not swamp small improvements. OLSS’s Mahjong evaluation explicitly used many games and paired deck/seat swaps to reduce variance; Hydra should adopt the same spirit for go/no-go decisions. ([Proceedings of Machine Learning Research][5])
+Use paired-seed / duplicate-style evaluation wherever possible so variance does not swamp small improvements. OLSS’s Mahjong evaluation explicitly used many games and paired deck/seat swaps to reduce variance; Hydra should adopt same spirit for go/no-go decisions. ([Proceedings of Machine Learning Research][5])
 
 ---
 
@@ -1595,8 +1595,8 @@ Use paired-seed / duplicate-style evaluation wherever possible so variance does 
 
 ### Mainline now
 
-* keep the **conservative staged Hydra**
-* keep the **two-tier learner/actor split**
+* keep **conservative staged Hydra**
+* keep **two-tier learner/actor split**
 * close **advanced target generation + collation loops**
 * activate only:
 
@@ -1613,7 +1613,7 @@ Use paired-seed / duplicate-style evaluation wherever possible so variance does 
 * robust-opponent search backups
 * selective exactification
 * side adapters for sparse heads only if gradient conflict forces it
-* ReBeL/public-belief formulations as long-run theory, not near-term implementation
+* ReBeL/public-belief formulations as long-run theory, not near-term impl
 
 ### Defer
 
@@ -1632,29 +1632,29 @@ Use paired-seed / duplicate-style evaluation wherever possible so variance does 
 
 ## 10. Narrowest safe long-run path to beating LuckyJ
 
-**Target context.** Tencent’s published claim is that LuckyJ reached Tenhou 10 dan with a stable rank of **10.68** and did so from scratch in under 1500 matches. That is the bar Hydra is implicitly chasing. ([Haobo Fu @ Tencent][7])
+**Target context.** Tencent’s published claim: LuckyJ reached Tenhou 10 dan with stable rank **10.68** and did so from scratch in under 1500 matches. That is bar Hydra implicitly chases. ([Haobo Fu @ Tencent][7])
 
-**The narrowest safe path is not maximal Hydra.** It is:
+**Narrowest safe path is not maximal Hydra.** It is:
 
 1. **Dense baseline first**
-   policy/value/score/defense heads reliable under 192x34 and current latency limits
+policy/value/score/defense heads reliable under 192x34 and current latency limits
 
 2. **Value realism next**
-   oracle/Hand-EV before broader search
+oracle/Hand-EV before broader search
 
 3. **Hard-state search only**
-   keep AFBS specialist and gated
+keep AFBS specialist and gated
 
 4. **Actor-induced distillation only**
-   distill on the states the actor actually creates
+distill on states actor creates
 
 5. **Sparse heads only after density + transfer**
-   safety, then belief/mixture, then maybe delta-Q
+safety, then belief/mixture, then maybe delta-Q
 
-That path is the highest-probability way to close on a LuckyJ-class target without breaking the current artifact constraints, because it pushes exactly where prior successful Mahjong systems and imperfect-information search systems got leverage: **value realism, defensive reliability, selective online search, and careful compression of search into fast policies**—not by training every auxiliary target equally early. ([arXiv][4])
+That path is highest-probability way to close on LuckyJ-class target without breaking current artifact constraints, because it pushes exactly where prior successful Mahjong systems and imperfect-information search systems got leverage: **value realism, defensive reliability, selective online search, and careful compression of search into fast policies**; not by training every auxiliary target equally early. ([arXiv][4])
 
 **Single most important deferral:** `delta_q` activation.
-**Single most important immediate action:** close the existing supervision loops and instrument density/transfer so dormant complexity stops masquerading as trained capability.
+**Single most important immediate action:** close existing supervision loops and instrument density/transfer so dormant complexity stops masquerading as trained capability.
 
 [1]: https://papers.nips.cc/paper_files/paper/2017/file/d8e1344e27a5b08cdfd5d027d9b8d6de-Paper.pdf "https://papers.nips.cc/paper_files/paper/2017/file/d8e1344e27a5b08cdfd5d027d9b8d6de-Paper.pdf"
 [2]: https://proceedings.mlr.press/v80/espeholt18a/espeholt18a.pdf "https://proceedings.mlr.press/v80/espeholt18a/espeholt18a.pdf"
@@ -1664,6 +1664,6 @@ That path is the highest-probability way to close on a LuckyJ-class target witho
 [6]: https://proceedings.neurips.cc/paper_files/paper/2020/file/c61f571dbd2fb949d3fe5ae1608dd48b-Paper.pdf "https://proceedings.neurips.cc/paper_files/paper/2020/file/c61f571dbd2fb949d3fe5ae1608dd48b-Paper.pdf"
 [7]: https://haobofu.github.io/ "Haobo Fu @ Tencent"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

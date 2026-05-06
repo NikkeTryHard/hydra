@@ -1,12 +1,12 @@
 # Hydra hidden-world pass-two — external design-closure artifact bank
 
-File intentionally small, pass-two-specific. First hidden-world packet already carried broad cross-field discovery bank. This follow-up bank narrower. Purpose: help genie choose winning design stack, training recipe, evaluation gates, kill criteria, not rerun general discovery.
+File intentionally small, pass-two-specific. First hidden-world packet already carried broad cross-field discovery bank. Follow-up bank narrower. Purpose: help genie choose winning design stack, training recipe, evaluation gates, kill criteria. Not rerun general discovery.
 
 Selection rule strict:
 
-- include only outside artifacts that sharpen concrete pass-two decision
+- include only outside artifacts sharpening concrete pass-two decision
 - especially algorithm choice, teacher/student distillation, calibration-gate design, offline-to-online policy improvement
-- avoid broad survey artifacts that only repeat pass-one context
+- avoid broad survey artifacts only repeating pass-one context
 
 ## Artifact F01 — Estimating Expected Calibration Errors
 
@@ -17,7 +17,7 @@ Selection rule strict:
 
 Why pass two care:
 
-Pass one already proved calibration matters. Pass two needs stricter point: calibration **evaluation** itself can mislead if metric chosen badly or estimated badly. Paper sharpens pass-two job of defining promotion gates and kill criteria for belief-adjacent confidence outputs, danger outputs, tenpai probability, trust scores, search-deferral triggers.
+Pass one already proved calibration matters. Pass two needs stricter point: calibration **evaluation** itself can mislead if metric chosen badly or estimated badly. Paper sharpens pass-two job defining promotion gates and kill criteria for belief-adjacent confidence outputs, danger outputs, tenpai probability, trust scores, search-deferral triggers.
 
 Exact pass-two use:
 
@@ -63,7 +63,7 @@ What should influence:
 
 Why pass two care:
 
-Pass one already allowed privileged or oracle objects as teacher-only tools. Pass two must decide how that becomes legal student. Paper useful because not only “teacher distillation good”; gives clearer pass-two precedent for privileged teacher, unconditioned student, training process that keeps teacher/student split explicit instead of hoping transfer happens magically.
+Pass one already allowed privileged or oracle objects as teacher-only tools. Pass two must decide how that becomes legal student. Paper useful because not only “teacher distillation good”; gives clearer pass-two precedent for privileged teacher, unconditioned student, training process keeping teacher/student split explicit instead of hoping transfer happens magically.
 
 Exact pass-two use:
 
@@ -83,7 +83,7 @@ What should influence:
 
 Rationale:
 
-Pass two may want selective-classification / abstention paper if genie strongly recommends confidence-gated search deferral or abstain-to-search behavior. But do not force this into generated packet unless exact paper chosen and actually sharpens design. First three artifacts already add value without dragging packet back into broad-search mode.
+Pass two may want selective-classification / abstention paper if genie strongly recommends confidence-gated search deferral or abstain-to-search behavior. But do not force this into generated packet unless exact paper chosen and sharpens design. First three artifacts already add value without dragging packet back into broad-search mode.
 
 ## Minimal inclusion rule
 
@@ -93,4 +93,4 @@ If generated pass-two packet must stay focused, include only:
 2. `ext_pass2_offline_to_online_cpr`
 3. `ext_pass2_privileged_distillation`
 
-Enough external pressure for pass two. Everything else add only if generated packet still lacks evidence needed to decide winning design, training loop, or gate structure.
+Enough external pressure for pass two. Add anything else only if generated packet still lacks evidence needed to decide winning design, training loop, or gate structure.

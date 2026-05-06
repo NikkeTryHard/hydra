@@ -1,7 +1,7 @@
 # ACH (Actor-Critic Hedge) -- Research Report for Hydra
 
 **Date**: 2026-03-02
-**Paper**: "Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game" (ICLR 2022)
+**Paper**: "Actor-Critic Policy Optimization in Large-Scale Imperfect-Information Game" (ICLR 2022)
 **Authors**: Tencent AI Lab (Weiming Liu et al.)
 **OpenReview**: https://openreview.net/forum?id=DTXZqTNV5nW
 **arXiv**: https://arxiv.org/abs/2201.12113
@@ -10,30 +10,30 @@
 
 ## TL;DR
 
-ACH is a **drop-in replacement for the PPO policy gradient loss** (~20 lines of code).
-The training infrastructure (actors, learners, GAE, value function, entropy) stays identical.
-It provides CFR-style Nash convergence guarantees for 2-player zero-sum games.
+ACH = **drop-in replacement for PPO policy gradient loss** (~20 lines code).
+Training infra (actors, learners, GAE, value fn, entropy) same.
+Gives CFR-style Nash convergence guarantees for 2-player zero-sum games.
 
 ---
 
 ## 1. What is ACH?
 
-ACH is a practical implementation of **NW-CFR (Neural-based Weighted CFR)**.
-It bridges deep RL (actor-critic) and game theory (Counterfactual Regret Minimization).
+ACH = practical impl of **NW-CFR (Neural-based Weighted CFR)**.
+Bridges deep RL (actor-critic) + game theory (Counterfactual Regret Minimization).
 
-**Core idea**: Instead of training a network to maximize returns (PPO),
-train it to track **cumulative counterfactual regret**, then derive the
-policy via the **Hedge algorithm** (softmax over regrets).
+**Core idea**: instead of training network to maximize returns (PPO),
+train it to track **cumulative counterfactual regret**, then derive
+policy via **Hedge algorithm** (softmax over regrets).
 
-The Hedge algorithm (Multiplicative Weights Update) converts cumulative regrets
-into a policy:
+Hedge algorithm (Multiplicative Weights Update) converts cumulative regrets
+into policy:
 
 ```
 pi_{t+1}(a|s) = exp(eta * R_t(s,a)) / sum_a' exp(eta * R_t(s,a'))
 ```
 
-This is literally softmax with learning rate eta. The network y(a|s;theta)
-approximates R_t(s,a) -- the cumulative advantage sum across iterations.
+This = softmax with learning rate eta. Network `y(a|s;theta)`
+approximates `R_t(s,a)` -- cumulative advantage sum across iterations.
 
 ---
 
@@ -42,16 +42,16 @@ approximates R_t(s,a) -- the cumulative advantage sum across iterations.
 | Aspect | PPO | ACH |
 |--------|-----|-----|
 | **Objective** | Maximize discounted returns | Minimize weighted cumulative counterfactual regret |
-| **Network output** | Log-probability of actions | Cumulative regret y(a\|s;theta) |
-| **Policy derivation** | Direct softmax of logits | Hedge: pi(a\|s) = softmax(eta * y(a\|s;theta)) |
-| **Loss gradient term** | -log_prob * advantage (or ratio-clipped) | -c * eta * y(a\|s) / pi_old(a\|s) * advantage |
+| **Network output** | Log-probability of actions | Cumulative regret `y(a\|s;theta)` |
+| **Policy derivation** | Direct softmax of logits | Hedge: `pi(a\|s) = softmax(eta * y(a\|s;theta))` |
+| **Loss gradient term** | `-log_prob * advantage` (or ratio-clipped) | `-c * eta * y(a\|s) / pi_old(a\|s) * advantage` |
 | **Clipping** | Ratio clipping only | Ratio clipping AND logit threshold clipping |
 | **Convergence** | No Nash guarantee in multiplayer | Nash Equilibrium (2p zero-sum, O(T^-1/2)) |
-| **Infrastructure** | Actor-critic + GAE | Identical actor-critic + GAE |
-| **Entropy** | Optional regularization | Mandatory (required for convergence) |
+| **Infrastructure** | Actor-critic + GAE | Same actor-critic + GAE |
+| **Entropy** | Optional regularization | Mandatory (needed for convergence) |
 
-The key structural difference: PPO uses `log_prob(a)` in its loss,
-ACH uses the raw **centered logit** `y(a) - mean(y)` divided by `pi_old(a)`.
+Key structural diff: PPO uses `log_prob(a)` in loss,
+ACH uses raw **centered logit** `y(a) - mean(y)` divided by `pi_old(a)`.
 
 ---
 
@@ -74,9 +74,9 @@ if A(s,a) < 0:
     c = 1{ratio > 1-eps} * 1{y(a|s) - mean(y) > -logit_threshold}
 ```
 
-The clipping mask combines TWO safety mechanisms:
-1. **Ratio clipping** (same as PPO, prevents too-large policy updates)
-2. **Logit thresholding** (NEW -- prevents any single regret/logit from dominating)
+Clipping mask combines TWO safety mechanisms:
+1. **Ratio clipping** (same as PPO, blocks oversized policy updates)
+2. **Logit thresholding** (NEW -- blocks single regret/logit domination)
 
 ### Rust Pseudocode for Hydra
 
@@ -161,8 +161,8 @@ LEARNERS:
         Update theta, omega with gradient of L_sum
 ```
 
-This is structurally identical to PPO/IMPALA actor-learner loops.
-The ONLY difference is the loss function in the learner.
+This is structurally same as PPO/IMPALA actor-learner loops.
+ONLY diff = learner loss fn.
 
 ---
 
@@ -170,8 +170,8 @@ The ONLY difference is the loss function in the learner.
 
 **No special infrastructure beyond standard PPO/IMPALA.**
 
-Evidence from ygo-agent (cleanba.py L837-864):
-The entire training loop is standard PPO. ACH is activated by a single flag:
+Evidence from ygo-agent (`cleanba.py L837-864`):
+Whole training loop = standard PPO. ACH activated by one flag:
 
 ```python
 if args.logits_threshold is not None:    # ACH mode
@@ -183,17 +183,17 @@ elif args.ppo_clip:                      # PPO mode
 
 Source: https://github.com/sbl1996/ygo-agent/blob/dbf5142/scripts/cleanba.py#L837-L839
 
-What stays identical:
+What stays same:
 - Actor-learner architecture (IMPALA/cleanba)
-- GAE advantage estimation (lambda=0.95)
+- GAE advantage estimation (`lambda=0.95`)
 - Value function training (MSE loss)
 - Entropy bonus computation
 - Trajectory collection / replay buffers
 - Self-play framework
 
 What changes:
-- Policy gradient loss function (~20 lines)
-- One new hyperparameter: logits_threshold
+- Policy gradient loss fn (~20 lines)
+- One new hyperparameter: `logits_threshold`
 
 ---
 
@@ -207,41 +207,41 @@ For 2-player zero-sum games, with appropriate eta:
 eta(s) = sqrt(8 * ln|A(s)| / (w_h^2 * Delta^2 * T))
 ```
 
-The average policy has exploitability epsilon after T iterations:
+Average policy has exploitability epsilon after T iterations:
 
 ```
 epsilon <= |S| * Delta * sqrt(ln|A| / (2T))
            + Delta * sum_s (w_h(s) - w_l(s)) / w_h(s)
 ```
 
-- **First term**: Converges at O(T^{-1/2}) -- standard CFR rate
-- **Second term**: Constant error from weight (reach probability) variation
+- **First term**: converges at O(T^{-1/2}) -- standard CFR rate
+- **Second term**: constant error from weight (reach probability) variation
 
 ### Caveats for 4-Player Mahjong
 
-The convergence proof is for **2-player zero-sum** only.
+Convergence proof = **2-player zero-sum** only.
 4-player Riichi Mahjong is NOT 2-player zero-sum.
 
 LuckyJ likely handles this by:
-1. Training in a 1v3 framework (treating 3 opponents as "the environment")
-2. Or accepting the theoretical gap and relying on empirical convergence
-3. The paper's own experiments were on 1-on-1 Mahjong (2-player reduction)
+1. Training in 1v3 framework (treat 3 opponents as "environment")
+2. Or accepting theoretical gap, relying on empirical convergence
+3. Paper experiments were on 1-on-1 Mahjong (2-player reduction)
 
-For Hydra: this means ACH gives you the same theoretical standing as LuckyJ
-(converges in 2p zero-sum, empirically strong in 4p), which is strictly
-better than PPO (no convergence guarantee at all in multi-agent settings).
+For Hydra: ACH gives same theoretical standing as LuckyJ
+(converges in 2p zero-sum, empirically strong in 4p), strictly
+better than PPO (no convergence guarantee in multi-agent settings).
 
 ---
 
 ## 7. Hyperparameters (from Paper's Mahjong Experiments)
 
-Table 5, Page 26 of the paper:
+Table 5, Page 26 of paper:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| eta (Hedge LR) | 1.0 | Can be absorbed into logit scale |
+| eta (Hedge LR) | 1.0 | Can absorb into logit scale |
 | logit_threshold | 6.0 | Prevents logit explosion |
-| clip_coef (epsilon) | 0.5 | Wider than PPO's typical 0.2 |
+| clip_coef (epsilon) | 0.5 | Wider than PPO typical 0.2 |
 | entropy_coef (beta) | 0.01 | Mandatory, not optional |
 | value_coef (alpha) | 0.5 | Same as PPO |
 | GAE lambda | 0.95 | Same as PPO |
@@ -249,7 +249,7 @@ Table 5, Page 26 of the paper:
 | batch_size | 8192 | Same range as PPO |
 | gamma | 0.995 | Slightly higher than typical 0.99 |
 
-From the official poker implementation (ach.sh):
+From official poker impl (`ach.sh`):
 
 | Parameter | Value |
 |-----------|-------|
@@ -266,22 +266,22 @@ Source: https://github.com/Liuweiming/ACH_poker/blob/2f8613f/ach.sh
 
 ### Official (Tencent)
 - **ACH_poker** (C++/OpenSpiel): https://github.com/Liuweiming/ACH_poker
-  - Commit: 2f8613f73749117ee2156aa549773e2fbffca98e
+  - Commit: `2f8613f73749117ee2156aa549773e2fbffca98e`
   - Full external-sampling MCCFR solver with neural function approximation
   - Uses TensorFlow 1.x, OpenSpiel framework
 
 ### Third-Party
 - **ygo-agent** (JAX/Python): https://github.com/sbl1996/ygo-agent
-  - Commit: dbf5142d49aab2e6beb4150788d4fffec39ae3e5
-  - Clean ~20-line ACH loss implementation in JAX
+  - Commit: `dbf5142d49aab2e6beb4150788d4fffec39ae3e5`
+  - Clean ~20-line ACH loss impl in JAX
   - Used for Yu-Gi-Oh! card game AI (another imperfect-info game)
   - Shows ACH works as drop-in loss swap in standard PPO loop
-  - **Best reference for Hydra's implementation**
+  - **Best reference for Hydra's impl**
 
 - **CR-PPO** (hnsqdtt, deleted/private)
-  - Was described as "Counterfactual Regret-Weighted PPO"
-  - Adapted ACH for personal computing resources
-  - Confirms the PPO-modification approach works
+  - Described as "Counterfactual Regret-Weighted PPO"
+  - Adapted ACH for personal compute limits
+  - Confirms PPO-modification approach works
 
 ---
 
@@ -289,8 +289,8 @@ Source: https://github.com/Liuweiming/ACH_poker/blob/2f8613f/ach.sh
 
 ### What to Change
 
-In Hydra's training pipeline (hydra-train), the ONLY change needed is
-replacing the PPO clipped surrogate loss with the ACH loss.
+In Hydra's training pipeline (`hydra-train`), ONLY change needed =
+replace PPO clipped surrogate loss with ACH loss.
 
 ```
 // BEFORE (PPO):
@@ -319,17 +319,17 @@ loss = -c * centered_logit / old_prob[a] * adv
 
 ### Recommended Approach
 
-1. Implement ACH loss as an **alternative** to PPO loss (flag-switchable)
-2. Use ygo-agent's implementation as reference (cleanest code)
-3. Start with paper's mahjong hyperparameters (eta=1, threshold=6, clip=0.5)
-4. Entropy coefficient is MANDATORY -- ensure it's never set to 0
+1. Implement ACH loss as **alternative** to PPO loss (flag-switchable)
+2. Use ygo-agent impl as reference (cleanest code)
+3. Start with paper mahjong hyperparameters (`eta=1`, `threshold=6`, `clip=0.5`)
+4. Entropy coefficient is MANDATORY -- ensure never set to `0`
 5. Can A/B test ACH vs PPO with identical infrastructure
 
 ### Risk Assessment
 
-- **Low risk**: ACH is well-understood (ICLR 2022, multiple implementations)
-- **Low effort**: ~20 lines of loss function code
-- **High reward**: Closes the "PPO lacks Nash convergence" criticism
+- **Low risk**: ACH well-understood (ICLR 2022, multiple impls)
+- **Low effort**: ~20 lines loss fn code
+- **High reward**: closes "PPO lacks Nash convergence" criticism
 - **Caveat**: 4-player convergence is empirical, not proven (same as LuckyJ)
 
 ---

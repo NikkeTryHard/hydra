@@ -1,14 +1,14 @@
 # Kaggle-compatible Hydra train artifact
 
-Path exists for one problem: Kaggle may fail local Hydra compile and may not run host-built `train` due newer `glibc` / `libstdc++` ABI reqs.
+Path exist for one problem: Kaggle may fail local Hydra compile; may not run host-built `train` due newer `glibc` / `libstdc++` ABI reqs.
 
 ## Strategy
 
 Build `train` in older Ubuntu 22.04 / glibc 2.35 userspace while still sourcing libtorch from Python PyTorch via `LIBTORCH_USE_PYTORCH=1`.
 
-This Kaggle-only path targets Kaggle older ABI floor, but must stay compatible with Hydra current `tch` / `torch-sys` stack. Therefore builder keeps PyTorch `2.9.0+cu128`, because Hydra current `tch 0.22.0` build expects that version family.
+This Kaggle-only path target Kaggle older ABI floor, but must stay compatible with Hydra current `tch` / `torch-sys` stack. Therefore builder keep PyTorch `2.9.0+cu128`, because Hydra current `tch 0.22.0` build expect that version family.
 
-This keeps Hydra train/runtime contract same, but lowers produced binary ABI floor so Kaggle may run it.
+This keep Hydra train/runtime contract same, but lower produced binary ABI floor so Kaggle may run it.
 
 ## Build
 
@@ -37,7 +37,7 @@ dist/kaggle-compat/
 - `ldd-train-summary.txt`
 - `abi-symbols.txt`
 
-Key point: `dist/kaggle-compat/lib/` no longer broad libtorch seed dump. Exported dir must match actual `ldd` closure of shipped `bin/train` binary. If `ldd` says library unused by `train`, it should not ship in final compat artifact unless producer documents and encodes exception.
+Key point: `dist/kaggle-compat/lib/` no longer broad libtorch seed dump. Exported dir must match actual `ldd` closure of shipped `bin/train` binary. If `ldd` says library unused by `train`, should not ship in final compat artifact unless producer document and encode exception.
 
 Builder installs PyTorch with `uv`, not plain `pip`, matching repo Python package-manager preference for new workflows.
 
@@ -61,4 +61,4 @@ If ABI floor still too new, move builder image/toolchain older.
 
 ## Important note
 
-This is artifact-production path only. It does **not** auto-update Kaggle notebook bundle. If artifact validates, wire `bin/train`, matching exact `lib/` closure, and manifest metadata into Kaggle bundle/launcher path.
+This artifact-production path only. It does **not** auto-update Kaggle notebook bundle. If artifact validates, wire `bin/train`, matching exact `lib/` closure, and manifest metadata into Kaggle bundle/launcher path.

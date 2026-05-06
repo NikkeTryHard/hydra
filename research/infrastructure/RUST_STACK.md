@@ -1,42 +1,42 @@
 # RUST_STACK.md -- 100% Rust Training Stack Decision
 
-> Decision Record: Hydra will use a 100% Rust stack for training, inference,
-> and self-play. No Python dependency at any point in the pipeline.
+> Decision Record: Hydra use 100% Rust stack for training, inference,
+> self-play. No Python anywhere in pipeline.
 >
-> **Status note:** this is primarily a decision-record / rationale doc, not the current implementation authority. For current implementation priority, use `research/design/HYDRA_RECONCILIATION.md`. For runtime reality, use `docs/GAME_ENGINE.md` and current code.
+> **Status note:** this mostly decision-record / rationale doc, not current impl authority. For current impl priority, use `research/design/HYDRA_RECONCILIATION.md`. For runtime reality, use `docs/GAME_ENGINE.md` and current code.
 >
-> Keep the Rust-stack rationale here. Treat older `85x34`, monolithic-40-block, and PPO-loop-first language as legacy planning unless the active doctrine explicitly promotes it.
+> Keep Rust-stack rationale here. Treat older `85x34`, monolithic-40-block, and PPO-loop-first language as legacy planning unless active doctrine promotes it.
 
 ## 1. Executive Summary
 
-Hydra adopts **Burn** (tracel-ai/burn) as its deep learning framework with
-the **`burn-tch` backend** (libtorch/cuDNN) for production training, and
-**`burn-cuda`** (CubeCL JIT) as a future upgrade path.
+Hydra adopts **Burn** (tracel-ai/burn) as deep learning framework with
+**`burn-tch` backend** (libtorch/cuDNN) for production training, and
+**`burn-cuda`** (CubeCL JIT) as future upgrade path.
 
-This eliminates Python entirely. The game engine (riichienv-core), observation
-encoder (hydra-core), training loop, self-play arena, and inference all run
-in a single Rust binary with zero IPC, zero GIL, and zero interpreter overhead.
+This removes Python entirely. Game engine (riichienv-core), observation
+encoder (hydra-core), training loop, self-play arena, inference all run
+in single Rust binary with zero IPC, zero GIL, zero interpreter overhead.
 
 ### Why 100% Rust
 
-- **Same GPU performance**: `burn-tch` wraps libtorch, which calls the same
-  cuDNN/cuBLAS CUDA kernels as Python PyTorch. Identical GPU compute.
+- **Same GPU performance**: `burn-tch` wraps libtorch, which calls same
+cuDNN/cuBLAS CUDA kernels as Python PyTorch. Identical GPU compute.
 - **3.5-4x less CPU overhead**: Benchmarked: C++ LibTorch trains ResNet18
-  3.56x faster than Python PyTorch (same model, same GPU).
-  Python's `torch.compile` exists to claw back this overhead. Rust never has it.
-- **Self-play integration**: any future self-play stage can run in the same Rust process as simulation and training, without Python IPC overhead.
-  In Python, this requires subprocess/IPC. In Rust, same process, same memory.
+3.56x faster than Python PyTorch (same model, same GPU).
+Python's `torch.compile` exists to claw back this overhead. Rust never had it.
+- **Self-play integration**: future self-play stage can run in same Rust process as simulation and training, no Python IPC overhead.
+In Python, needs subprocess/IPC. In Rust, same process, same memory.
 - **Single binary**: No pip, no conda, no virtualenv, no dependency hell.
-  `cargo build --release` produces one artifact.
+`cargo build --release` yields one artifact.
 
 ### Why Burn over raw tch-rs
 
-- Built-in training infrastructure (Learner, DataLoader, metrics, checkpointing)
+- Built-in training infra (Learner, DataLoader, metrics, checkpointing)
 - Built-in DDP with NCCL for multi-GPU
 - Built-in LR schedulers (cosine annealing, linear warmup, exponential, noam, step, composed)
 - Built-in gradient clipping (by value and by norm)
 - Backend-generic code: swap `burn-tch` to `burn-cuda` by changing one type parameter
-- CubeCL JIT fusion as future upgrade (Burn's answer to torch.compile)
+- CubeCL JIT fusion as future upgrade (Burn answer to torch.compile)
 
 ## 2. Framework Comparison
 
@@ -52,29 +52,29 @@ in a single Rust binary with zero IPC, zero GIL, and zero interpreter overhead.
 ### Why Burn Wins
 
 1. **Backend abstraction**: Same model code runs on `burn-tch` (cuDNN) or `burn-cuda` (CubeCL).
-   Swap one generic parameter, zero code changes.
-2. **Training infrastructure**: `burn-train` crate provides Learner, DataLoader (multi-threaded),
-   metric tracking, and checkpointing out of the box.
+Swap one generic parameter, zero code changes.
+2. **Training infrastructure**: `burn-train` crate gives Learner, DataLoader (multi-threaded),
+metric tracking, checkpointing out of box.
 3. **DDP built-in**: `burn-collective` with NCCL for CUDA, AllReduce/AllGather/Broadcast.
-   Multi-node via WebSocket. Feature flag: `collective`.
-4. **CubeCL JIT fusion**: Burn's answer to torch.compile. Serializes tensor ops into symbolic
-   graph, fuses elementwise ops, auto-tunes kernels for hardware. Works for training + inference.
+Multi-node via WebSocket. Feature flag: `collective`.
+4. **CubeCL JIT fusion**: Burn answer to torch.compile. Serializes tensor ops into symbolic
+graph, fuses elementwise ops, auto-tunes kernels for hardware. Works for training + inference.
 5. **All required layers exist**: GroupNorm, Mish, AdaptiveAvgPool2d, Conv2d, Linear, residual
-   connections, SE blocks (compose from primitives). Verified in source.
+connections, SE blocks (compose from primitives). Verified in source.
 
 ### burn-tch Backend (Production Config)
 
-The `burn-tch` backend wraps tch-rs which wraps libtorch. This gives us:
+`burn-tch` backend wraps tch-rs which wraps libtorch. This gives:
 - cuDNN conv2d (same algorithms as Python PyTorch)
 - cuBLAS matmul (identical performance)
-- libtorch autograd (battle-tested by millions of users)
+- libtorch autograd (battle-tested by millions)
 - libtorch CUDA caching allocator (proven memory management)
 - `tch::autocast` for bf16 mixed precision
 - `cudnn_benchmark` for convolution algorithm autotuning
 
 ### burn-cuda Backend (Future Upgrade)
 
-The `burn-cuda` backend uses CubeCL to JIT-generate CUDA kernels:
+`burn-cuda` backend uses CubeCL to JIT-generate CUDA kernels:
 - Implicit GEMM conv2d with tensor cores (CMMA + MMA) and autotuning
 - Operator fusion (fuse-on-read, fuse-on-write) for elementwise chains
 - 3-tier memory pool (SlicedPool, ExclusivePool, PersistentPool)
@@ -85,21 +85,21 @@ The `burn-cuda` backend uses CubeCL to JIT-generate CUDA kernels:
 
 ### Architecture: Delegation vs Monolith
 
-hydra-core delegates game logic to riichienv-core. libriichi is fully self-contained.
+hydra-core delegates game logic to riichienv-core. libriichi fully self-contained.
 
 | Area | hydra-core | libriichi |
 |---|---|---|
 | Game state | Delegates to riichienv-core | Own PlayerState (10 files) |
 | Shanten | Delegates to riichienv-core | Own solver with lookup tables |
 | Scoring | Delegates to riichienv-core | Own agari + point calculation |
-| Encoder | **192x34 fixed-superset tensor** (own; first 85 channels preserve the old baseline prefix) | **1012x34** tensor (own) |
+| Encoder | **192x34 fixed-superset tensor** (own; first 85 channels preserve old baseline prefix) | **1012x34** tensor (own) |
 | Safety | **Dedicated module** (23 channels) | Embedded in state |
 | Action space | 46 actions (Mortal-compatible) | 46 actions |
 | Tile encoding | TileType(0-33) + suit permutation | Tile(0-37) incl aka+unknown |
 | Augmentation | **6-way suit permutation** | m/p swap only |
 | Encoding | **Incremental with DirtyFlags** | Full re-encode per turn |
 | Seeding | **SHA-256 KDF + vendored Fisher-Yates** | Standard RNG |
-| Arena | Partial training/runtime scaffolding exists; broad self-play mainline is not the current active tranche | Built-in self-play |
+| Arena | Partial training/runtime scaffolding exists; broad self-play mainline not current active tranche | Built-in self-play |
 | Dataset | MJAI log reader + batch pipeline scaffold exists | mjai log reader + batch pipeline |
 | Inference | Burn/runtime path exists; see `docs/GAME_ENGINE.md` and `hydra-train/src/inference.rs` | tch (libtorch) |
 | LoC | ~3,500 | ~15,000+ |
@@ -107,7 +107,7 @@ hydra-core delegates game logic to riichienv-core. libriichi is fully self-conta
 
 ### What hydra-core Owns (unique to Hydra)
 
-- 192x34 fixed-superset observation encoding, with the old 85-channel public+safety view preserved as the baseline prefix
+- 192x34 fixed-superset observation encoding, with old 85-channel public+safety view preserved as baseline prefix
 - Incremental encoding with DirtyFlags (skip unchanged channels)
 - 6-way suit permutation for data augmentation
 - SHA-256 KDF wall generation for cross-version determinism
@@ -121,7 +121,7 @@ hydra-core delegates game logic to riichienv-core. libriichi is fully self-conta
 | Optimization | img/s | Gain | Share of Total |
 |---|---:|---:|---:|
 | Baseline (eager Python) | 994 | -- | -- |
-| Fix .item() sync | 1,049 | +5.5% | 2.5% |
+| Fix.item() sync | 1,049 | +5.5% | 2.5% |
 | pin_memory + non_blocking | 1,063 | +1.3% | 0.6% |
 | cudnn.benchmark = True | 1,093 | +2.9% | 1.4% |
 | torch.compile() default | 1,290 | +18.1% | 9.0% |
@@ -129,10 +129,10 @@ hydra-core delegates game logic to riichienv-core. libriichi is fully self-conta
 | Inductor exhaustive search | 1,427 | +2.4% | 1.6% |
 | **AMP (mixed precision)** | **3,026** | **+112%** | **73.2%** |
 | Channels-last memory | 3,178 | +5.0% | 7.0% |
-| **Total** | **3,178** | | **3.2x** |
+| **Total** | **3,178** |                                                                                                                                | **3.2x** |
 
 Key insight: **73% of all gains come from bf16 tensor cores.** This is
-hardware-level, not Python-specific. Rust gets it identically.
+hardware-level, not Python-specific. Rust gets same gain.
 
 ### C++ LibTorch vs Python PyTorch (no torch.compile)
 
@@ -143,7 +143,7 @@ hardware-level, not Python-specific. Rust gets it identically.
 
 C++/Rust is 3.5-4x faster than Python for training **before any
 optimizations**. torch.compile exists to close this gap for Python.
-Rust starts where torch.compile tries to get to.
+Rust starts where torch.compile tries to reach.
 
 ### Head-to-Head: Max Python vs Max Rust
 
@@ -161,23 +161,23 @@ Rust starts where torch.compile tries to get to.
 
 **Verdict: Max Rust >= Max Python.** Same CUDA kernels, zero Python tax,
 zero IPC for self-play. For RL workloads where self-play dominates wall
-clock time, Rust wins by a significant margin.
+clock time, Rust wins by significant margin.
 
 ## 5. All Concerns Raised and Resolutions
 
 ### Resolved: "Just Write Rust" (17 concerns)
 
-These were removed because they require only Rust code, not framework features.
+These removed because they need only Rust code, not framework features.
 
 | # | Concern | Resolution |
 |---|---|---|
 | 1 | No ONNX export | Use Burn directly for inference. Or save via burn-tch as TorchScript. |
 | 2 | No param groups | Multiple optimizers on different param subsets. |
-| 3 | Legacy RL-loop design gap | Keep as reserve context only; current active work is not “write PPO loop first.” |
+| 3 | Legacy RL-loop design gap | Keep as reserve context only; current active work not “write PPO loop first.” |
 | 4 | Compile times | Pin to stable Burn version. Incremental builds mitigate. |
 | 5 | DDP is new | burn-tch backend's DDP tested. Manual NCCL via cudarc as fallback. |
 | 6 | No W&B | Hit W&B REST API via reqwest. Or use tensorboard-rs. |
-| 7 | Debugging grads | Write our own gradcheck (finite difference vs analytical). |
+| 7 | Debugging grads | Write own gradcheck (finite difference vs analytical). |
 | 8 | CUDA profiling | Nsight Systems/Compute work on any CUDA calls. |
 | 9 | ONNX import limited | Training from scratch. Not importing. |
 | 10 | bf16 not autocast | Whole model bf16 via device policy. bf16 has fp32 range. |
@@ -186,12 +186,12 @@ These were removed because they require only Rust code, not framework features.
 | 13 | API stability | Pin Burn version. Upgrade deliberately. |
 | 14 | Ecosystem lock-in | Accepted. Committed to Rust. |
 | 15 | Data pipeline | Burn's MultiThreadDataLoader. Custom Dataset for mjai logs. |
-| 16 | Legacy self-play loop plan | Keep as reserve context only; do not treat manual PPO loop work as the current default tranche. |
+| 16 | Legacy self-play loop plan | Keep as reserve context only; do not treat manual PPO loop work as current default tranche. |
 | 17 | No no_grad scope | Use non-Autodiff backend for inference during rollout. |
 
 ### Bridged: Framework-Level Concerns (6 concerns)
 
-These required research to confirm Rust solutions exist.
+These needed research to confirm Rust solutions exist.
 
 | # | Concern | Bridge | Effort |
 |---|---|---|---|
@@ -200,7 +200,7 @@ These required research to confirm Rust solutions exist.
 | 3 | Kernel fusion bugs | Cross-backend tensor comparison for our architecture. Burn's test suite runs across all backends. | ~200 lines Rust |
 | 4 | GPU memory allocator | CubeCL has 3-tier memory pool (Sliced + Exclusive ring buffer + Persistent). burn-tch uses libtorch caching allocator. | Profile at first run |
 | 5 | Numerical divergence | Accepted. Tolerance-based assertions (1e-5 fp32, 1e-3 bf16). Different kernels = different FP rounding. | None needed |
-| 6 | Small community | burn-tch fallback. Contribute fixes upstream (Rust is readable). Pin versions. Dual-backend CI. | Ongoing |
+| 6 | Small community | burn-tch fallback. Contribute fixes upstream (Rust readable). Pin versions. Dual-backend CI. | Ongoing |
 
 ### New Concerns from Research (7 concerns)
 
@@ -216,8 +216,8 @@ These required research to confirm Rust solutions exist.
 
 ### Hard Blockers Found: Zero
 
-No concern was identified that cannot be solved in Rust. Every PyTorch
-capability needed for Hydra has a Rust equivalent or can be built.
+No concern found that cannot be solved in Rust. Every PyTorch
+capability Hydra needs has Rust equivalent or can be built.
 
 ## 6. Migration Strategy and Remaining Risks
 
@@ -228,7 +228,7 @@ Start with `burn-tch` backend for all training:
 - libtorch autograd (battle-tested)
 - libtorch CUDA caching allocator (proven memory management)
 - `tch::autocast` for bf16
-- Full Burn training infrastructure (Learner, DDP, schedulers)
+- Full Burn training infra (Learner, DDP, schedulers)
 
 ### Phase 2: Benchmark burn-cuda
 
@@ -324,8 +324,8 @@ serde = "1.0"    # checkpoint serialization
 
 ## 9. Conflicts with Existing Docs
 
-Every existing spec assumes Python+PyTorch. The following sections conflict
-with the 100% Rust decision and must be updated.
+Every existing spec assumes Python+PyTorch. Following sections conflict
+with 100% Rust decision and must be updated.
 
 ### INFRASTRUCTURE.md (heaviest -- almost every section)
 
@@ -396,7 +396,7 @@ with the 100% Rust decision and must be updated.
 
 ## 10. Implementation References
 
-Concrete crate versions, APIs, and code patterns for starting immediately.
+Concrete crate versions, APIs, code patterns for immediate start.
 
 ### Cargo.toml (hydra-train crate)
 
@@ -492,3 +492,5 @@ let optim = burn::optim::AdamWConfig::new()
 | `wandb.log({"loss": loss})` | `reqwest::Client::post("https://api.wandb.ai/...")` |
 | `torch.nn.functional.cross_entropy` | `burn::tensor::loss::cross_entropy_with_logits` |
 | `CosineAnnealingLR` | `CosineAnnealingLrSchedulerConfig::new(...)` |
+
+(End of file - total 494 lines)

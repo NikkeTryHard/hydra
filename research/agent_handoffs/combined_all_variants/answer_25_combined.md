@@ -1,18 +1,18 @@
 <combined_run_record run_id="answer_25" variant_id="prompt_config_answer_compact" schema_version="1">
-  <metadata>
-    <notes>Compact self-contained combined record for Agent 25 RL-only delta_q validation-and-enable research. It preserves the compact prompt shell and artifact manifest reconstructed from the authoritative generator config, plus the preserved Agent 25 answer.</notes>
-    <notes>Historical notice: Agent 25 explicitly treats the inspected artifact tranche as newer than the public GitHub snapshot. Preserve that as historical answer context only; archive evidence does not outrank current Hydra doctrine.</notes>
-    <layout>single_markdown_file_prompt_shell_manifest_then_answer</layout>
-  </metadata>
+<metadata>
+<notes>Compact combined record for Agent 25 RL-only delta_q validation-enable research. Keeps compact prompt shell, artifact manifest rebuilt from authoritative generator config, preserved Agent 25 answer.</notes>
+<notes>Historical note: Agent 25 treats inspected artifact tranche as newer than public GitHub snapshot. Keep as answer context only; archive evidence not above current Hydra doctrine.</notes>
+<layout>single_markdown_file_prompt_shell_manifest_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="embedded_prompt_shell_and_manifest">
-  <![CDATA[# Hydra prompt — RL-only delta_q validation-and-enable contract
+<prompt_section>
+<prompt_text status="preserved" source_path="embedded_prompt_shell_and_manifest">
+<![CDATA[# Hydra prompt — RL-only delta_q validation-and-enable contract
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
+Produce impl-ready blueprint.
+No memo.
+Answer itself = blueprint.
 </role>
 
 <style>
@@ -21,36 +21,36 @@ Your answer itself must be the blueprint.
 - include reasoning
 - include formulas when needed
 - include code-like detail when helpful (Rust preferred)
-- include enough detail that we can validate it ourselves
-- distinguish direct artifact support from your own inference
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked
+- include enough detail so we can validate ourselves
+- separate direct artifact support from your inference
+- do not stop early; keep looping through discovery, thinking, testing, validation until info saturated or blocked
 - confidence must be justified, not asserted
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now.
-They are not guaranteed to be fully correct.
-Treat them as evidence to inspect and critique, not truth to inherit.
-Archive and handoff artifacts are evidence only and must not be promoted over current Hydra doctrine.
+Artifacts below reflect what current codebase/docs seem to say now.
+Not guaranteed fully correct.
+Treat as evidence to inspect/critique, not truth to inherit.
+Archive/handoff artifacts = evidence only, not above current Hydra doctrine.
 </artifact_note>
 
 <direction>
-Work toward the strongest exact blueprint for Hydra's RL-only `delta_q` validation-and-enable tranche.
-We want a detailed answer that makes clear:
-- the narrowest doctrine-consistent RL-only `delta_q` validation contract
-- exact metrics and thresholds that should govern whether RL-side `delta_q` is trusted enough to enable
+Aim for strongest exact blueprint for Hydra's RL-only `delta_q` validation-and-enable tranche.
+Need detailed answer showing:
+- narrowest doctrine-consistent RL-only `delta_q` validation contract
+- exact metrics/thresholds for trusting RL-side `delta_q` enough to enable
 - fail behavior and keep-off behavior
-- the exact controller/orchestrator hookup path
+- exact controller/orchestrator hookup path
 - what must stay narrow / deferred / rejected
-- how to implement and validate the surviving path with minimal guesswork
+- how to implement and validate surviving path with minimal guesswork
 - what is directly supported vs inferred vs still blocked
-Use the artifacts below to derive your conclusions.
-Do not broaden scope into replay/offline `delta_q` or BC/train-bin activation unless an artifact forces it.
+Use artifacts below to derive conclusions.
+Do not broaden into replay/offline `delta_q` or BC/train-bin activation unless artifact forces it.
 </direction>
 
 <scope_note>
-This is not a broad `delta_q` design prompt.
-The semantics of the current narrow lane are already mostly settled:
+Not broad `delta_q` design prompt.
+Current narrow-lane semantics mostly settled:
 - learner-only
 - root-only
 - search-derived
@@ -60,21 +60,21 @@ The semantics of the current narrow lane are already mostly settled:
 - RL/self-play lane only
 - replay/offline absent
 - BC/train-bin activation blocked
-The question is narrower:
-What is the strongest repo-grounded RL-only validation-and-enable contract for this lane?
+Question narrower:
+What strongest repo-grounded RL-only validation-enable contract for this lane?
 </scope_note>
 
 <deliverable>
-Give a blueprint, not a memo.
+Give blueprint, not memo.
 
-Your answer must include:
+Answer must include:
 1. direct support / inference / proposal / blocked buckets
 2. surviving RL-only `delta_q` validation contract
-3. minimal implementation plan
+3. minimal impl plan
 4. hookup design
 5. validation plan
 6. confidence justification
-7. final decision: either 'repo-backed enough to implement now' or 'still blocked, and here is the smallest unresolved fact'
+7. final decision: either 'repo-backed enough to implement now' or 'still blocked, and here is smallest unresolved fact'
 </deliverable>
 
 <artifacts_manifest>
@@ -84,280 +84,280 @@ Artifact id: `readme-status`
 Source label: README
 Type: `file_range`
 Source: `README.md:60-62`
-Why it matters: Grounds the current staged status: narrow live self-play RL lane exists, while replay/offline production and train-bin activation remain blocked.
+Why it matters: Grounds current staged status: narrow live self-play RL lane exists; replay/offline production and train-bin activation stay blocked.
 
 ## Artifact 02 — Hydra north-star note on delta_q family
 Artifact id: `final-current-note`
 Source label: FINAL
 Type: `file_range`
 Source: `research/design/HYDRA_FINAL.md:119-121`
-Why it matters: Shows that delta_q remains part of the search-distillation family but is not equally closed today.
+Why it matters: Shows delta_q still in search-distillation family but not equally closed today.
 
 ## Artifact 03 — Reconciliation tranche rules for delta_q, RL, and BC
 Artifact id: `recon-deltaq-tranche`
 Source label: RECON
 Type: `file_range`
 Source: `research/design/HYDRA_RECONCILIATION.md:448-489`
-Why it matters: This is the strongest current doctrine for delta_q staging, masked loss semantics, RL presence, and continued BC/train-bin blocking.
+Why it matters: Strongest current doctrine for delta_q staging, masked loss semantics, RL presence, continued BC/train-bin blocking.
 
 ## Artifact 04 — Current ExIt validation harness and refreshed roadmap note
 Artifact id: `roadmap-exit-validation`
 Source label: ROADMAP
 Type: `file_range`
 Source: `research/design/IMPLEMENTATION_ROADMAP.md:775-783`
-Why it matters: Provides the reusable in-repo validation pattern and current note that delta_q now exists only as a narrow RL lane while broader activation stays deferred.
+Why it matters: Gives reusable in-repo validation pattern and note that delta_q exists now only as narrow RL lane while broader activation stays deferred.
 
 ## Artifact 05 — delta_q target builder and collation code
 Artifact id: `exit-deltaq-builder`
 Source label: EXIT
 Type: `file_range`
 Source: `crates/hydra-train/src/training/exit.rs:263-357`
-Why it matters: Defines the current narrow object contract: masked discard-compatible root-child q-delta and batch collation into the [46] head space.
+Why it matters: Defines current narrow object contract: masked discard-compatible root-child q-delta and batch collation into `[46]` head space.
 
 ## Artifact 06 — Shared live search producer for ExIt and delta_q
 Artifact id: `live-shared-search-labels`
 Source label: LIVE
 Type: `file_range`
 Source: `crates/hydra-train/src/training/live_exit.rs:240-363`
-Why it matters: Shows that delta_q is emitted by the same root-only live search envelope as ExIt, including upstream compatibility checks and shared provenance.
+Why it matters: Shows delta_q emitted by same root-only live search envelope as ExIt, with upstream compatibility checks and shared provenance.
 
 ## Artifact 07 — delta_q live-producer test
 Artifact id: `live-deltaq-tests`
 Source label: LIVE
 Type: `file_range`
 Source: `crates/hydra-train/src/training/live_exit.rs:758-778`
-Why it matters: Proves that good compatible input produces a real delta_q label with expected monotonic ordering over supported discard actions.
+Why it matters: Proves compatible input produces real delta_q label with expected monotonic ordering over supported discard actions.
 
 ## Artifact 08 — Trajectory delta_q carrier validation
 Artifact id: `arena-deltaq-validation`
 Source label: ARENA
 Type: `file_range`
 Source: `crates/hydra-core/src/arena.rs:559-599`
-Why it matters: Shows strict structural invariants already enforced for carried delta_q labels: legal-only, discard-only, binary mask, zero outside support, and non-empty support.
+Why it matters: Shows strict structural invariants already enforced for carried delta_q labels: legal-only, discard-only, binary mask, zero outside support, non-empty support.
 
 ## Artifact 09 — Self-play to RL batch delta_q carrier path
 Artifact id: `selfplay-rl-deltaq-carrier`
 Source label: SELFPLAY
 Type: `file_range`
 Source: `crates/hydra-train/src/selfplay.rs:379-480`
-Why it matters: Shows the real live lane from trajectory labels into RlBatch.targets.delta_q_target and delta_q_mask.
+Why it matters: Shows real live lane from trajectory labels into `RlBatch.targets.delta_q_target` and `delta_q_mask`.
 
 ## Artifact 10 — Masked delta_q loss semantics
 Artifact id: `losses-deltaq-masked`
 Source label: LOSS
 Type: `file_range`
 Source: `crates/hydra-train/src/training/losses.rs:550-595`
-Why it matters: Shows that delta_q only contributes loss when both target and mask exist, and that unsupported actions do not silently train through dense zeros.
+Why it matters: Shows delta_q contributes loss only when target and mask both exist, and unsupported actions do not silently train through dense zeros.
 
 ## Artifact 11 — Loss tests for missing targets and activated optional losses
 Artifact id: `losses-optional-and-activation-tests`
 Source label: LOSS
 Type: `file_range`
 Source: `crates/hydra-train/src/training/losses.rs:782-899`
-Why it matters: Shows current repo expectations around zero loss when optional targets are absent and finite aux loss when optional targets are present, including delta_q in the mixed optional-target tests.
+Why it matters: Shows current repo expectations: zero loss when optional targets absent and finite aux loss when optional targets present, including delta_q in mixed optional-target tests.
 
 ## Artifact 12 — HeadActivationController config and sparse-search thresholds
 Artifact id: `head-gates-core`
 Source label: GATES
 Type: `file_range`
 Source: `crates/hydra-train/src/training/head_gates.rs:1-90`
-Why it matters: Contains the generic sparse-head activation thresholds that would apply to DeltaQ if the controller were used live.
+Why it matters: Contains generic sparse-head activation thresholds that would apply to DeltaQ if controller used live.
 
 ## Artifact 13 — DeltaQ classification, target presence, coverage, and conflict tracking
 Artifact id: `head-gates-presence-and-coverage`
 Source label: GATES
 Type: `file_range`
 Source: `crates/hydra-train/src/training/head_gates.rs:90-509`
-Why it matters: Shows how DeltaQ is classified as SparseSearch, how target presence is counted, and how coverage/conflict statistics are accumulated before any head can be approved.
+Why it matters: Shows how DeltaQ classified as SparseSearch, how target presence counted, and how coverage/conflict stats accumulate before head approval.
 
 ## Artifact 14 — HeadActivationController core evaluation and approved loss config logic
 Artifact id: `head-gates-controller-core`
 Source label: GATES
 Type: `file_range`
 Source: `crates/hydra-train/src/training/head_gates.rs:510-786`
-Why it matters: Contains the actual controller state machine, per-head reports, activation attempts, and weight gating logic that a future delta_q enablement path would have to call.
+Why it matters: Contains actual controller state machine, per-head reports, activation attempts, weight gating logic that future delta_q enablement path must call.
 
 ## Artifact 15 — DeltaQ sparse-head gate tests and approved weight behavior
 Artifact id: `head-gates-deltaq-tests`
 Source label: GATES
 Type: `file_range`
 Source: `crates/hydra-train/src/training/head_gates.rs:1053-1208`
-Why it matters: Shows concrete tested controller behavior for DeltaQ: sparse SPP rejection and approved_loss_config zeroing when the head remains off.
+Why it matters: Shows concrete tested controller behavior for DeltaQ: sparse SPP rejection and `approved_loss_config` zeroing when head stays off.
 
 ## Artifact 16 — Maintenance plan and live ExIt enablement
 Artifact id: `orchestrator-live-exit-plan`
 Source label: ORCH
 Type: `file_range`
 Source: `crates/hydra-train/src/training/orchestrator.rs:161-208`
-Why it matters: Shows the existing validation-to-enable style for live ExIt producer phase gating, which may or may not transfer to delta_q without new doctrine.
+Why it matters: Shows existing validation-to-enable style for live ExIt producer phase gating, which may or may not transfer to delta_q without new doctrine.
 
 ## Artifact 17 — Existing ExIt validation harness
 Artifact id: `exit-validation-harness`
 Source label: EVAL
 Type: `file_range`
 Source: `crates/hydra-train/src/training/exit_validation.rs:1-220`
-Why it matters: This is the strongest live validation blueprint in repo; use it to judge what a delta_q-specific validation harness would need and what is currently missing.
+Why it matters: Strongest live validation blueprint in repo; use to judge what delta_q-specific validation harness would need and what still missing.
 
 ## Artifact 18 — ExIt thresholds, report evaluation, and observational runner
 Artifact id: `exit-validation-thresholds-and-report`
 Source label: EVAL
 Type: `file_range`
 Source: `crates/hydra-train/src/training/exit_validation.rs:220-475`
-Why it matters: Provides the concrete in-repo metric pack, pass/fail evaluator, and shadow validation runner that a delta_q-specific validator would most naturally mirror.
+Why it matters: Gives concrete in-repo metric pack, pass/fail evaluator, shadow validation runner that delta_q-specific validator would most naturally mirror.
 
 ## Artifact 19 — ExIt validation harness tests
 Artifact id: `exit-validation-tests`
 Source label: EVAL
 Type: `file_range`
 Source: `crates/hydra-train/src/training/exit_validation.rs:560-811`
-Why it matters: Shows the exact kinds of report-default, pass/fail, merge, and observational-run tests the repo already considers sufficient for a live validation harness.
+Why it matters: Shows exact report-default, pass/fail, merge, observational-run tests repo already treats as sufficient for live validation harness.
 
 ## Artifact 20 — RL tests with advanced aux targets including delta_q
 Artifact id: `rl-deltaq-tests`
 Source label: RL
 Type: `file_range`
 Source: `crates/hydra-train/src/training/rl.rs:260-389`
-Why it matters: Shows that RL-side delta_q consumption already exists in library code and remains numerically stable in combined auxiliary-loss scenarios.
+Why it matters: Shows RL-side delta_q consumption already exists in library code and stays numerically stable in combined auxiliary-loss scenarios.
 
 ## Artifact 21 — Integration proof that trajectory delta_q labels survive into RL batches
 Artifact id: `integration-deltaq-batch-proof`
 Source label: INTEG
 Type: `file_range`
 Source: `crates/hydra-train/tests/integration_pipeline.rs:149-250`
-Why it matters: End-to-end evidence that the live lane is real: trajectory labels persist into RlBatch.targets with the expected values and masks.
+Why it matters: End-to-end evidence live lane is real: trajectory labels persist into `RlBatch.targets` with expected values and masks.
 
 ## Artifact 22 — Replay loader keeps delta_q absent
 Artifact id: `replay-absence-guard`
 Source label: LOADER
 Type: `file_range`
 Source: `crates/hydra-train/src/data/mjai_loader.rs:437-459`
-Why it matters: Shows replay/offline delta_q remains intentionally absent in the normal loader path.
+Why it matters: Shows replay/offline delta_q intentionally absent in normal loader path.
 
 ## Artifact 23 — Replay absence regression test
 Artifact id: `replay-absence-test`
 Source label: LOADER
 Type: `file_range`
 Source: `crates/hydra-train/src/data/mjai_loader.rs:784-792`
-Why it matters: Proves replay samples must not quietly grow delta_q targets or masks.
+Why it matters: Proves replay samples must not quietly gain delta_q targets or masks.
 
 ## Artifact 24 — Train-bin blocked advanced-loss policy
 Artifact id: `train-loss-policy-block`
 Source label: TRAIN
 Type: `file_range`
 Source: `crates/hydra-train/src/bin/train/loss_policy.rs:1-33`
-Why it matters: Shows BC/train-bin activation for delta_q remains intentionally rejected by policy.
+Why it matters: Shows BC/train-bin activation for delta_q intentionally rejected by policy.
 
 ## Artifact 25 — delta_q rejection tests in train binary
 Artifact id: `train-deltaq-reject-tests`
 Source label: TRAIN
 Type: `file_range`
 Source: `crates/hydra-train/src/bin/train.rs:1042-1060`
-Why it matters: Confirms train-bin rejection is intentional even when delta_q is present at zero weight.
+Why it matters: Confirms train-bin rejection intentional even when delta_q present at zero weight.
 
 ## Artifact 26 — Canonical archive status update for advanced head activation discipline
 Artifact id: `archive-canonical-status-update-head-gates`
 Source label: CLAIMS
 Type: `file_range`
 Source: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl:4-4`
-Why it matters: Evidence-only row showing the archive's preserved understanding of the head-gate controller, density thresholds, gradient conflict tracking, and warmup protocol now implemented in repo.
+Why it matters: Evidence-only row preserving archive understanding of head-gate controller, density thresholds, gradient conflict tracking, warmup protocol now implemented in repo.
 
 ## Artifact 27 — Canonical archive rows for open delta_q lane and surviving honest closure
 Artifact id: `archive-canonical-deltaq-open-lane`
 Source label: CLAIMS
 Type: `file_range`
 Source: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl:14-15`
-Why it matters: Evidence-only rows that sharply separate what the current repo already closes from what still remains blocked for delta_q activation.
+Why it matters: Evidence-only rows sharply separating what current repo already closes from what still blocked for delta_q activation.
 
 ## Artifact 28 — Canonical archive roadmap narrowing for delta_q
 Artifact id: `archive-roadmap-deltaq`
 Source label: ARCHIVE
 Type: `file_range`
 Source: `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md:108-113`
-Why it matters: Evidence-only summary of the surviving masked root-child q-delta lane and the requirement for validation-backed activation before broader use.
+Why it matters: Evidence-only summary of surviving masked root-child q-delta lane and requirement for validation-backed activation before broader use.
 
 ## Artifact 29 — Archive evidence for activation rule and validation blueprint
 Artifact id: `answer23-activation-blueprint`
 Source label: A23
 Type: `file_range`
 Source: `research/agent_handoffs/combined_all_variants/answer_23_combined.md:1064-1147`
-Why it matters: Evidence-only packet with the strongest prior blueprint for missing-target behavior, activation rule, and validation structure.
+Why it matters: Evidence-only packet with strongest prior blueprint for missing-target behavior, activation rule, validation structure.
 
 ## Artifact 30 — Archive evidence for audit window and enablement discipline
 Artifact id: `answer23-enable-audit`
 Source label: A23
 Type: `file_range`
 Source: `research/agent_handoffs/combined_all_variants/answer_23_combined.md:1148-1235`
-Why it matters: Evidence-only support for the narrowest audit and enablement sequence, including support metrics and explicit keep-off rules.
+Why it matters: Evidence-only support for narrowest audit and enablement sequence, including support metrics and explicit keep-off rules.
 </artifacts_manifest>]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_25.md">
-  <![CDATA[Use the artifact tranche as the branch authority for this work. The public GitHub snapshot still looks pre-tranche: its README still says `delta_q` closure is an immediate need, public `live_exit.rs` is ExIt-only, public `selfplay.rs` still writes `delta_q_target: None`, and public `losses.rs` still shows dense unmasked `delta_q` regression, while the sparse-head controller and the train-bin `advanced_loss.delta_q` rejection are already present there. Treat the artifacts as a newer working tree or branch under review, not as what web indexing currently sees. ([GitHub][1])
+<answer_section>
+<answer_text status="preserved" source_path="agent_25.md">
+<![CDATA[Use artifact tranche as branch authority for this work. Public GitHub snapshot still looks pre-tranche: README still says `delta_q` closure immediate need, public `live_exit.rs` is ExIt-only, public `selfplay.rs` still writes `delta_q_target: None`, public `losses.rs` still shows dense unmasked `delta_q` regression, while sparse-head controller and train-bin `advanced_loss.delta_q` rejection already present there. Treat artifacts as newer working tree or branch under review, not as what web indexing sees. ([GitHub][1])
 
 ## 1. Buckets
 
 ### 1.1 Direct support
 
-* `delta_q` survives only in the narrow live self-play RL lane. Replay/offline production stays absent, and BC / `train.rs` activation stays blocked. That is explicit in Artifacts 1, 2, 3, 22, 23, 24, 25.
-* The surviving object is exactly a masked `[46]` target over the training head space, but only canonical discard-compatible actions may be supported. For each supported child:
-  [
-  \delta q(a) = Q(\text{child}_a) - Q(\text{root})
-  ]
-  and unsupported actions are zero-target / zero-mask. Root and supported children must have finite `node_q_value`, and children must have `visit_count > 0`. If no supported child survives, the whole label is `None`. That is direct from Artifacts 5 and 8.
-* The producer is root-only, learner-only, and shared with ExIt. The same root-search envelope gates both labels: compatible discard state, at least 2 legal discards, raw-logit base policy, hard-state gate, root-only AFBS, cached child values, then shared label construction. That is direct from Artifact 6.
-* The carrier path is real end-to-end in the artifact tranche:
-  `TrajectoryStep.delta_q_label`
-  → `collate_delta_q_targets`
-  → `RlBatch.targets.{delta_q_target, delta_q_mask}`
-  → masked delta-q loss. That is direct from Artifacts 8, 9, 10, 21.
-* The activation controller already exists and already classifies `DeltaQ` as a sparse search head with exact thresholds:
+* `delta_q` survives only in narrow live self-play RL lane. Replay/offline production absent; BC / `train.rs` activation blocked. Explicit in Artifacts 1, 2, 3, 22, 23, 24, 25.
+* Surviving object = exactly masked `[46]` target over training head space, but only canonical discard-compatible actions may be supported. For each supported child:
+[
+\delta q(a) = Q(\text{child}_a) - Q(\text{root})
+]
+Unsupported actions = zero-target / zero-mask. Root and supported children must have finite `node_q_value`, and children must have `visit_count > 0`. If no supported child survives, whole label = `None`. Direct from Artifacts 5 and 8.
+* Producer = root-only, learner-only, shared with ExIt. Same root-search envelope gates both labels: compatible discard state, at least 2 legal discards, raw-logit base policy, hard-state gate, root-only AFBS, cached child values, then shared label construction. Direct from Artifact 6.
+* Carrier path real end-to-end in artifact tranche:
+`TrajectoryStep.delta_q_label`
+→ `collate_delta_q_targets`
+→ `RlBatch.targets.{delta_q_target, delta_q_mask}`
+→ masked delta-q loss. Direct from Artifacts 8, 9, 10, 21.
+* Activation controller already exists and already classifies `DeltaQ` as sparse search head with exact thresholds:
 
   * `min_sparse_spp = 5.0`
   * `max_negative_frac = 0.3`
   * `warmup_steps = 10_000`
   * `min_eval_samples = 1000`
   * `min_conflict_checks = 10`
-    and `approved_loss_config()` already zeroes `w_delta_q` while the head is `Off`. That is direct from Artifacts 12, 13, 14, 15.
-* The current orchestrator only phase-gates the shared live search producer through the ExIt maintenance plan; controller integration and trunk detachment are still not wired. That is direct from Artifacts 16 and 26.
+and `approved_loss_config()` already zeroes `w_delta_q` while head is `Off`. Direct from Artifacts 12, 13, 14, 15.
+* Current orchestrator only phase-gates shared live search producer through ExIt maintenance plan; controller integration and trunk detachment still not wired. Direct from Artifacts 16 and 26.
 
 ### 1.2 Inference
 
-* **Critical fix before trusting any controller statistic:** `extract_target_presence()` as shown in Artifact 13 is wrong for mixed `delta_q` batches if it counts `batch_size` whenever `delta_q_target.is_some()`. Artifact 5’s collation returns `Some(target_tensor), Some(mask_tensor)` for the whole batch whenever *any* row is present, while absent rows are encoded as all-zero masks. Therefore the correct per-batch count is
-  [
-  examples_present = \sum_{i=1}^{B} \mathbf{1}!\left[\sum_{a=0}^{45} m_{i,a} > 0\right],
-  ]
-  not `batch_size`. Without this fix, `spp_h` is inflated and `DeltaQ` can be approved too early.
-* The valid pair states for RL training must be:
+* **Critical fix before trusting any controller statistic:** `extract_target_presence()` as shown in Artifact 13 is wrong for mixed `delta_q` batches if it counts `batch_size` whenever `delta_q_target.is_some()`. Artifact 5’s collation returns `Some(target_tensor), Some(mask_tensor)` for whole batch whenever *any* row is present, while absent rows encode as all-zero masks. So correct per-batch count is
+[
+examples_present = \sum_{i=1}^{B} \mathbf{1}!\left[\sum_{a=0}^{45} m_{i,a} > 0\right],
+]
+not `batch_size`. Without this fix, `spp_h` inflates and `DeltaQ` can approve too early.
+* Valid pair states for RL training must be:
 
   * `(None, None)` → absent, no delta-q loss.
   * `(Some(target), Some(mask))` → present, masked delta-q loss.
-    The invalid pair states
+Invalid pair states
   * `(Some(_), None)`
   * `(None, Some(_))`
-    must be treated as plumbing failure, not silently as zero loss. That follows from Artifact 3’s rule that target presence must control whether an advanced loss exists at all, plus Artifact 10’s intended masked semantics.
-* The support audit should reuse ExIt’s structural support thresholds, because the shared producer envelope is the same and the same coverage notion exists here, but **must not** reuse ExIt’s KL or base-policy top-1 agreement gates. `delta_q` is not a policy teacher; its fidelity has to be checked against a deeper `delta_q` reference, not against the base policy. This is the strongest doctrine-consistent reuse of Artifacts 4, 17, 18, 29, 30.
-* In the current branch state, “enable `delta_q`” should mean **allow nonzero RL loss through the controller**, not “invent a second producer.” The producer/carrier lane already exists in the artifact tranche.
+must be treated as plumbing failure, not silently as zero loss. Follows from Artifact 3’s rule that target presence must control whether advanced loss exists at all, plus Artifact 10’s intended masked semantics.
+* Support audit should reuse ExIt’s structural support thresholds, because shared producer envelope same and same coverage notion exists here, but **must not** reuse ExIt’s KL or base-policy top-1 agreement gates. `delta_q` is not policy teacher; fidelity must be checked against deeper `delta_q` reference, not base policy. Strongest doctrine-consistent reuse of Artifacts 4, 17, 18, 29, 30.
+* In current branch state, “enable `delta_q`” should mean **allow nonzero RL loss through controller**, not “invent second producer.” Producer/carrier lane already exists in artifact tranche.
 
 ### 1.3 Proposal
 
-* Add a dedicated `delta_q_validation.rs` shadow harness instead of overloading `exit_validation.rs`.
-* Keep the producer shadow-on in search-enabled RL phases even while the head is `Off`, so validation data keeps accumulating.
-* Add a small `OptionalTargetStats`/`DeltaQBatchStats` logging helper rather than mutating `LossBreakdown` into a giant metrics bag.
-* Add a model forward option to detach trunk features for `DeltaQ` during controller warmup.
+* Add dedicated `delta_q_validation.rs` shadow harness instead of overloading `exit_validation.rs`.
+* Keep producer shadow-on in search-enabled RL phases even while head is `Off`, so validation data keeps accumulating.
+* Add small `OptionalTargetStats`/`DeltaQBatchStats` logging helper rather than mutating `LossBreakdown` into giant metrics bag.
+* Add model forward option to detach trunk features for `DeltaQ` during controller warmup.
 
 ### 1.4 Blocked
 
-* No repo-backed exact numeric promotion threshold exists yet for the deeper-reference `delta_q` metrics:
+* No repo-backed exact numeric promotion threshold exists yet for deeper-reference `delta_q` metrics:
 
   * sign agreement
   * best-discard agreement
   * masked-entry MAE
-    Current doctrine requires the benchmark to be run and reviewed, but does not canonize auto-pass numbers. That is the smallest unresolved fact.
-* No canonized RL `w_delta_q` magnitude is provided by the artifacts. Default stays `0.0`. Candidate nonzero weight remains a config choice gated by the controller.
+Current doctrine requires benchmark run and review, but does not canonize auto-pass numbers. Smallest unresolved fact.
+* No canonized RL `w_delta_q` magnitude provided by artifacts. Default stays `0.0`. Candidate nonzero weight remains config choice gated by controller.
 * Do **not** broaden this tranche into replay/offline `delta_q`, BC consumption, or `train.rs` acceptance.
-* Do **not** change the canonical object from `visit_count > 0` support to `visit_count >= 4`. `>= 4` is validation-tuned experimentation only, not the object contract.
+* Do **not** change canonical object from `visit_count > 0` support to `visit_count >= 4`. `>= 4` is validation-tuned experimentation only, not object contract.
 
 ---
 
@@ -367,13 +367,13 @@ Why it matters: Evidence-only support for the narrowest audit and enablement seq
 
 For one decision state (s), let:
 
-* (A = 46) be the training head action space.
-* (D(s) = {a \mid a \le \texttt{DISCARD_END},\ \texttt{legal}[a]=1}) be legal canonical discard slots.
-* (m_a \in {0,1}) be the support mask.
+* = 46) be training head action space.
+* (D(s) = \mid \le \texttt{DISCARD_END},\ \texttt{legal}[a]=1}) be legal canonical discard slots.
+* (m_a \in {0,1}) be support mask.
 * (q_r = Q(\text{root})).
-* (q_a = Q(\text{child}_a)) for a root child action (a).
+* (q_a = Q(\text{child}_a)) for root child action
 
-Emit a `delta_q` label iff all of these hold:
+Emit `delta_q` label iff all hold:
 
 1. `compatible_discard_state(legal_mask)` is true.
 2. `|D(s)| >= 2`.
@@ -388,11 +388,11 @@ Emit a `delta_q` label iff all of these hold:
    * `child.visit_count > 0`
    * `q_a` is finite.
 
-Then define, for each action (a \in {0,\dots,45}),
+Then define, for each action \in {0,\dots,45}),
 [
 m_a =
 \begin{cases}
-1 & \text{if supported child for } a \text{ survives}\
+1 & \text{if supported child for } \text{ survives}\
 0 & \text{otherwise}
 \end{cases}
 ]
@@ -407,11 +407,11 @@ q_a - q_r & \text{if } m_a = 1\
 
 If no action survives, emit `None`.
 
-Keep this exact. Do not normalize, do not temperature-softmax it, do not densify unsupported actions, and do not map the runtime `[34]` plane into training supervision.
+Keep exact. No normalize, no temperature-softmax, no densify unsupported actions, no map runtime `[34]` plane into training supervision.
 
 ### 2.2 Carrier contract
 
-Keep the carrier narrow:
+Keep carrier narrow:
 
 * producer source: shared root-search producer only
 * provenance basis: same in-memory search run, same legality basis, same step
@@ -455,28 +455,28 @@ Use controller state exactly as follows.
 * delta-q labels may still be present in RL batches
 * `approved_loss_config()` forces `w_delta_q = 0`
 * support statistics still accumulate
-* this is the default state
+* this is default state
 
 #### `HeadState::Warmup`
 
-Enter only when all external prereqs are true:
+Enter only when all external prereqs true:
 
 1. producer/carrier exists in RL self-play (already true in this tranche)
-2. object/collation/loss/integration tests are green
+2. object/collation/loss/integration tests green
 3. support audit passes
-4. deeper-reference benchmark has been run and reviewed as acceptable
+4. deeper-reference benchmark run and reviewed acceptable
 5. unchanged global benchmark gates pass
 6. controller density gate passes:
-   [
-   total_samples \ge 1000,\qquad
-   spp_{\Delta Q} = \frac{labeled_samples_{\Delta Q}}{learner_params} \ge 5.0
-   ]
+[
+total_samples \ge 1000,\qquad
+spp_{\Delta Q} = \frac{labeled_samples_{\Delta Q}}{learner_params} \ge 5.0
+]
 
 During warmup:
 
 * delta-q loss weight may be nonzero after controller gating
-* trunk features for the `DeltaQ` head must be detached
-* warmup length is exactly `10_000` updates
+* trunk features for `DeltaQ` head must be detached
+* warmup length exactly `10_000` updates
 * collect real shared-trunk gradient cosine checks for delta-q vs policy+value
 
 #### `HeadState::Active`
@@ -484,25 +484,25 @@ During warmup:
 Promote from `Warmup` only when:
 
 * warmup countdown reached zero
-* at least `10` cosine checks have been recorded
-* negative cosine fraction is at most `0.30`:
-  [
-  neg_frac_{\Delta Q}
-  ===================
+* at least `10` cosine checks recorded
+* negative cosine fraction at most `0.30`:
+[
+neg_frac_{\Delta Q}
+===================
 
-  \frac{1}{K}
-  \sum_{k=1}^{K}
-  \mathbf{1}!\left[\cos(g_k^{\Delta Q}, g_k^{PV}) < 0\right]
-  \le 0.30
-  ]
+\frac{1}{K}
+\sum_{k=1}^{K}
+\mathbf{1}!\left[\cos(g_k^{\Delta Q}, g_k^{PV}) < 0\right]
+\le 0.30
+]
 
-If the conflict gate fails, revert to `Off`.
+If conflict gate fails, revert to `Off`.
 
 ### 2.5 Keep-off behavior
 
-Keep `DeltaQ` loss **off** when any of these holds:
+Keep `DeltaQ` loss **off** when any hold:
 
-* current phase does not have the shared live search producer enabled
+* current phase does not have shared live search producer enabled
 * support audit fails
 * deeper-reference benchmark not run
 * deeper-reference benchmark run but not yet manually reviewed pass
@@ -562,7 +562,7 @@ Add tests:
 * `extract_target_presence_delta_q_invalid_pair_counts_zero`
 * keep existing sparse SPP tests, but make them mask-row based
 
-Reason: the current collation semantics can create mixed batches with some absent rows even when the batch tensors are `Some(...)`.
+Reason: current collation semantics can create mixed batches with some absent rows even when batch tensors are `Some(...)`.
 
 ### 3.2 `crates/hydra-train/src/training/losses.rs`
 
@@ -624,13 +624,13 @@ Add tests:
 * `delta_q_masked_loss_ignores_unmasked_positions`
 * `delta_q_all_zero_mask_zeroes_loss`
 
-Also add one explicit regression test for the artifact tension:
+Also add one explicit regression test for artifact tension:
 
 * `delta_q_target_without_mask_is_invalid_even_if_other_aux_targets_are_present`
 
 ### 3.3 `crates/hydra-train/src/training/delta_q_validation.rs` (new)
 
-Add a dedicated RL-only shadow validator.
+Add dedicated RL-only shadow validator.
 
 Core report:
 
@@ -716,18 +716,18 @@ pub struct DeltaQValidationThresholds {
 }
 ```
 
-Use the exact defaults above. The first four are the strongest narrow reuse of the in-repo ExIt harness because the producer envelope and support geometry are shared; the fifth is direct doctrine from Artifact 30.
+Use exact defaults above. First four = strongest narrow reuse of in-repo ExIt harness because producer envelope and support geometry shared; fifth = direct doctrine from Artifact 30.
 
 **Important:** do not create KL or base-policy top-1 thresholds for delta-q.
 
 ### 3.4 Deeper-reference comparison
 
-Implement reference comparison only in the validation runner, not in the live producer.
+Implement reference comparison only in validation runner, not live producer.
 
-Keep the live label untouched. For validation only, compute a second label on the same decision with a strictly deeper learner-only AFBS run. Compare on the mask intersection:
+Keep live label untouched. For validation only, compute second label on same decision with strictly deeper learner-only AFBS run. Compare on mask intersection:
 
 [
-I_i = {a \mid m^{live}*{i,a}=1 \land m^{ref}*{i,a}=1}
+I_i = \mid m^{live}*{i,a}=1 \land m^{ref}*{i,a}=1}
 ]
 
 Then:
@@ -747,7 +747,7 @@ best(i) =
 mae(i,a) = |\delta q^{live}*{i,a} - \delta q^{ref}*{i,a}|
 ]
 
-Do **not** auto-pass/fail on these numbers yet. Store them, print them, and require explicit review.
+Do **not** auto-pass/fail on these numbers yet. Store, print, require explicit review.
 
 ### 3.5 `crates/hydra-train/src/training/rl.rs`
 
@@ -760,7 +760,7 @@ Per RL step:
 3. compute effective loss config through `approved_loss_config`
 4. detach trunk for warmup heads
 5. compute and log `DeltaQBatchStats`
-6. if `DeltaQ` is in warmup, collect real gradient cosine checks and `tick_warmup()`
+6. if `DeltaQ` in warmup, collect real gradient cosine checks and `tick_warmup()`
 
 Skeleton:
 
@@ -814,16 +814,16 @@ Do **not** add BC delta-q consumption tests.
 
 ### 3.6 `crates/hydra-train/src/training/orchestrator.rs`
 
-Do not invent a separate delta-q search phase. Piggyback on the existing shared search-enabled phases.
+Do not invent separate delta-q search phase. Piggyback on existing shared search-enabled phases.
 
-Use the existing plan:
+Use existing plan:
 
 * `DrdaAchSelfPlay` after `phase_progress > 0.5`
-* `ExitPondering` always
+* `ExitPondering`
 
-as the only phases where delta-q shadow carriage is allowed, because those are already the phases where the shared live search producer is enabled.
+as only phases where delta-q shadow carriage allowed, because those already phases where shared live search producer enabled.
 
-Add a narrow validation/approval state:
+Add narrow validation/approval state:
 
 ```rust
 pub struct DeltaQValidationState {
@@ -853,11 +853,11 @@ fn maybe_try_activate_delta_q(
 }
 ```
 
-This is the exact orchestrator rule. No BC path. No replay path. No train-bin path.
+This = exact orchestrator rule. No BC path. No replay path. No train-bin path.
 
 ### 3.7 `crates/hydra-train/src/model.rs` or equivalent forward path
 
-Add only the minimal warmup detachment hook.
+Add only minimal warmup detachment hook.
 
 ```rust
 pub struct ForwardOptions {
@@ -934,13 +934,13 @@ shadow validation run
 
 Do not add:
 
-* a replay/search sidecar builder
-* a delta-q-only search call
-* a second legality basis
-* a runtime `[34]` → training `[46]` densifier
+* replay/search sidecar builder
+* delta-q-only search call
+* second legality basis
+* runtime `[34]` → training `[46]` densifier
 * BC/train-bin acceptance
 
-The shared search producer is the provenance contract for this tranche.
+Shared search producer = provenance contract for this tranche.
 
 ---
 
@@ -982,27 +982,27 @@ Keep existing regressions:
 
 ### 5.4 Shadow validation thresholds
 
-Use these exact gates for the support audit:
+Use exact gates for support audit:
 
 * `sample_size >= 1000`
 * `emission_rate >= 0.01`
 * `mean_coverage >= 0.70`
 * `mean_supported_actions >= 3.0`
 
-Use these exact structural conditions:
+Use exact structural conditions:
 
-* hard-state slice is `top2_policy_gap < 0.10`
+* hard-state slice = `top2_policy_gap < 0.10`
 * producer remains root-only, learner-only, shared with ExIt
 * support contract remains `visit_count > 0`, not `>= 4`
 
-Use these exact controller gates:
+Use exact controller gates:
 
 * `spp_delta_q >= 5.0`
 * `warmup_steps = 10_000`
 * `min_conflict_checks = 10`
 * `negative_frac <= 0.30`
 
-Use the unchanged global benchmark gates:
+Use unchanged global benchmark gates:
 
 * `afbs_on_turn_ms < 150`
 * `ct_smc_dp_ms < 1`
@@ -1012,7 +1012,7 @@ Use the unchanged global benchmark gates:
 
 ### 5.5 Reference benchmark
 
-Require it, report it, review it.
+Require, report, review.
 
 At minimum report:
 
@@ -1034,24 +1034,24 @@ Do **not** auto-enable on numeric thresholds for these yet. Current doctrine doe
 
 ## 6. Confidence justification
 
-High confidence on the narrow object, carrier, and keep-off boundaries:
+High confidence on narrow object, carrier, keep-off boundaries:
 
-* multiple artifacts agree on RL-only scope, shared search provenance, masked `[46]` semantics, replay absence, and train-bin rejection
-* the controller thresholds are exact and already implemented
-* the key file surfaces are localized
+* multiple artifacts agree on RL-only scope, shared search provenance, masked `[46]` semantics, replay absence, train-bin rejection
+* controller thresholds exact and already implemented
+* key file surfaces localized
 
-Medium confidence on the support-audit thresholds:
+Medium confidence on support-audit thresholds:
 
-* the `1% / 0.70 / 3 / 1000` pack is the strongest narrow reuse of the in-repo ExIt validator, but it is still reuse, not a delta-q-specific SSOT line
+* `1% / 0.70 / 3 / 1000` pack = strongest narrow reuse of in-repo ExIt validator, but still reuse, not delta-q-specific SSOT line
 
-High confidence that the `extract_target_presence` fix is necessary:
+High confidence that `extract_target_presence` fix necessary:
 
-* it follows mechanically from the artifact collation semantics and the controller’s current counting rule
+* follows mechanically from artifact collation semantics and controller’s current counting rule
 
 Lower confidence on fully automatic final promotion:
 
-* the artifacts preserve the *metrics* for deeper-reference comparison, but not exact numeric pass thresholds
-* a few artifact snippets showing mixed aux tests do not visibly show `delta_q_mask`, so explicit pair-validation tests should be treated as mandatory closure work, not optional cleanup
+* artifacts preserve *metrics* for deeper-reference comparison, but not exact numeric pass thresholds
+* few artifact snippets showing mixed aux tests do not visibly show `delta_q_mask`, so explicit pair-validation tests should be treated as mandatory closure work, not optional cleanup
 
 ---
 
@@ -1059,15 +1059,15 @@ Lower confidence on fully automatic final promotion:
 
 **repo-backed enough to implement now**
 
-Implement the RL-only validation tranche now, with this exact boundary:
+Implement RL-only validation tranche now, with exact boundary:
 
 * carrier/shadow lane stays narrow and RL-only
 * replay/BC/train-bin stay blocked
-* controller math is fixed first
+* controller math fixed first
 * support audit + unchanged benchmark gates are exact pass/fail
-* deeper-reference comparison is mandatory but remains manual-review-gated until numeric promotion thresholds are canonized
+* deeper-reference comparison mandatory but stays manual-review-gated until numeric promotion thresholds canonized
 
 [1]: https://raw.githubusercontent.com/NikkeTryHard/hydra/master/README.md "https://raw.githubusercontent.com/NikkeTryHard/hydra/master/README.md"]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

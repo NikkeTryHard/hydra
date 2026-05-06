@@ -2,9 +2,9 @@
 
 ## Executive Summary
 
-**Bottom line: about 2000 Delta GPU A100-hours on a 1-GPU shared `gpuA100x4` job is likely sufficient for reaching strong amateur/low-dan play through a disciplined BC-heavy path, but still fundamentally insufficient for LuckyJ-level (10+ dan) play without radical efficiency innovations. The budget is enough for one serious Hydra v1 push, not an open-ended search project.**
+**Bottom line: about 2000 Delta GPU A100-hours on 1-GPU shared `gpuA100x4` job likely enough for strong amateur/low-dan via disciplined BC-heavy path, but fundamentally not enough for LuckyJ-level (10+ dan) absent radical efficiency gains. Budget buys one serious Hydra v1 push, not open-ended search project.**
 
-**Recommendation: Option (b) -- pursue radically more efficient approach. BC-heavy pipeline with targeted RL fine-tuning is the only viable path at this budget.**
+**rec: Option (b) -- pursue radically more efficient approach. BC-heavy pipeline + targeted RL fine-tuning = only viable path at this budget.**
 
 ---
 
@@ -26,13 +26,13 @@
 | Result | **10 dan** (Tenhou, somewhat unstable) |
 
 **Compute comparison caution:**
-- Suphx and later Mahjong systems were trained on very different hardware mixes and runtime assumptions.
-- Hydra's current planning target is about 2000 Delta GPU A100-hours on a shared `gpuA100x4` job using 1 reserved A100.
-- Do not treat old RTX 5000 FLOPS-normalization math as the current planning baseline.
+- Suphx, later Mahjong systems trained on different hardware mixes, runtime assumptions.
+- Hydra current planning target = about 2000 Delta GPU A100-hours on shared `gpuA100x4` job using 1 reserved A100.
+- Do not use old RTX 5000 FLOPS-normalization math as current planning baseline.
 
 ### 1.2 LuckyJ / JueJong (Tencent AI Lab, 2022-2023)
 
-**No public training compute data exists for LuckyJ itself.** However, we have data from the two published papers underlying its techniques:
+**No public training compute data for LuckyJ itself.** But public data exists for two papers under its techniques:
 
 **ACH / JueJong (ICLR 2022)** -- predecessor, 1-on-1 Mahjong only:
 
@@ -54,20 +54,20 @@
 | Key innovation | 100x faster than common-knowledge subgame solving |
 | Search at inference | pUCT (much cheaper than CFR) |
 
-**Estimated LuckyJ total**: Given Tencent AI Lab's resources, likely **10,000-50,000+ GPU-hours** (V100/A100 class) across multiple training phases, hyperparameter sweeps, and iterative self-play leagues. The OLSS paper alone needed ~768 V100-hours for two model components, and LuckyJ would have required many iterations plus the league training described in their NeurIPS 2023 StarCraft work.
+**Estimated LuckyJ total**: Given Tencent AI Lab resources, likely **10,000-50,000+ GPU-hours** (V100/A100 class) across multiple training phases, hyperparameter sweeps, iterative self-play leagues. OLSS alone needed ~768 V100-hours for two model components; LuckyJ likely needed many iterations plus league training from their NeurIPS 2023 StarCraft work.
 
 ### 1.3 Mortal (Individual Developer, Open Source)
 
-**No published total compute budget.** Key data points:
+**No published total compute budget.** Key data:
 
 | Metric | Value |
 |--------|-------|
 | Self-play throughput | 40K hanchans/hour on RTX 4090 + Ryzen 9 7950X |
 | Default config | 192 channels, 40 res blocks (~our Hydra spec) |
 | Batch size | 512 |
-| Developer note | "cost me far more time and money than I anticipated for a hobby" |
+| Developer note | "cost me far more time and money than I anticipated for hobby" |
 
-**Estimated compute**: Based on architecture similarity (192ch/40 blocks is close to our 256ch/40 blocks) and the developer running on consumer hardware for months, likely **500-2,000 GPU-hours equivalent** on a 4090 over the full training run. Mortal achieves strong play but not 10-dan level.
+**Estimated compute**: Based on architecture similarity (192ch/40 blocks close to our 256ch/40 blocks) and developer running consumer hardware for months, likely **500-2,000 GPU-hours equivalent** on 4090 across full run. Mortal reaches strong play, not 10-dan level.
 
 ### 1.4 LsAc*-MJ (Low-Resource Mahjong, 2024)
 
@@ -80,7 +80,7 @@
 | Key technique | Knowledge-guided pretraining + A2C self-play |
 | Result | Beats DQN/NFSP/Dueling baselines (not competitive with Suphx/Mortal) |
 
-This is the only paper explicitly targeting **low-resource Mahjong training**. Their two-stage approach (knowledge-guided + self-play) is conceptually similar to our BC + RL pipeline.
+Only paper explicitly targeting **low-resource Mahjong training**. Two-stage approach (knowledge-guided + self-play) conceptually close to our BC + RL pipeline.
 
 ---
 
@@ -100,19 +100,19 @@ This is the only paper explicitly targeting **low-resource Mahjong training**. T
 
 **Source**: [arXiv:2301.13442](https://arxiv.org/abs/2301.13442) -- "Scaling Laws for Single-Agent RL"
 
-Key findings relevant to us:
+Key findings for us:
 
-1. **RL performance follows power laws** in both model size (N) and environment interactions (E): `I^(-beta) = (Nc/N)^alpha_N + (Ec/E)^alpha_E`
+1. **RL performance follows power laws** in model size (N) and environment interactions (E): `I^(-beta) = (Nc/N)^alpha_N + (Ec/E)^alpha_E`
 
-2. **Optimal model size scales with compute budget**: The exponent ranges from 0.40-0.80 depending on domain. For Dota 2: ~0.76. This means as compute doubles, optimal model size should increase by ~70%.
+2. **Optimal model size scales with compute budget**: exponent ranges 0.40-0.80 by domain. For Dota 2: ~0.76. Meaning: compute doubles -> optimal model size rises by ~70%.
 
-3. **Environment cost dominates**: "It is usually inefficient to use a model that is much cheaper to run than the environment." For Mahjong, our engine is fast (Rust), so we can afford a bigger model.
+3. **Environment cost dominates**: "It is usually inefficient to use model that is much cheaper to run than environment." For Mahjong, engine fast (Rust), so bigger model affordable.
 
-4. **Dota 2 vs MNIST**: Same model needs ~2000x more training on Dota 2 than MNIST. Game complexity matters enormously.
+4. **Dota 2 vs MNIST**: Same model needs ~2000x more training on Dota 2 than MNIST. Game complexity matters greatly.
 
-5. **Sample efficiency vs humans**: RL needs 100-10,000x more interactions than humans to reach the same level.
+5. **Sample efficiency vs humans**: RL needs 100-10,000x more interactions than humans for same level.
 
-**No Mahjong-specific scaling laws exist.** But Mahjong complexity is between poker (simpler) and StarCraft/Dota (much more complex). The hidden information aspect adds sample complexity beyond what game-tree size alone would suggest.
+**No Mahjong-specific scaling laws.** But Mahjong complexity sits between poker (simpler) and StarCraft/Dota (much harder). Hidden information adds sample complexity beyond game-tree size alone.
 
 ---
 
@@ -121,44 +121,44 @@ Key findings relevant to us:
 Ranked by expected impact:
 
 ### 4.1 Oracle Guiding (Suphx, highest impact)
-Train with perfect information first, then distill to imperfect-information agent. Suphx showed this dramatically accelerates early RL training. **Estimated 3-10x speedup** in early phases.
+Train with perfect information first, then distill to imperfect-information agent. Suphx showed major early RL acceleration. **Estimated 3-10x speedup** in early phases.
 
 ### 4.2 Behavioral Cloning Pretraining (our Phase 1)
-BC from expert games gives a strong initialization. Instead of learning from scratch via RL, start from a competent policy. **Estimated 5-20x speedup** vs pure RL from random.
+BC from expert games gives strong init. Instead of RL from scratch, start from competent policy. **Estimated 5-20x speedup** vs pure RL from random.
 
 ### 4.3 Global Reward Prediction (Suphx)
-Predict final game outcome from intermediate states. Reduces credit assignment problem in long-horizon games. **Estimated 2-5x improvement** in value estimation quality.
+Predict final game outcome from intermediate states. Reduces credit assignment in long-horizon games. **Estimated 2-5x improvement** in value estimation quality.
 
 ### 4.4 CQL (Conservative Q-Learning) -- Mortal's approach
-Mortal uses offline RL (CQL) which is dramatically more sample-efficient than online RL because it reuses logged data. **This is our biggest efficiency lever** -- no wasted self-play games, every sample is reused.
+Mortal uses offline RL (CQL), far more sample-efficient than online RL because it reuses logged data. **Biggest efficiency lever** -- no wasted self-play games, every sample reused.
 
 ### 4.5 Knowledge Distillation
-Train a small "fast" model for self-play generation, distill into the large model. Reduces self-play GPU cost by 4-8x.
+Train small "fast" model for self-play generation, distill into large model. Reduces self-play GPU cost by 4-8x.
 
 ### 4.6 Prioritized Experience Replay
-Re-weight training samples by TD error or novelty. Standard 1.5-2x improvement.
+Re-weight training samples by TD error or novelty. Standard 1.5-2x gain.
 
 ---
 
 ## 5. BC Data Scaling Saturation
 
-No Mahjong-specific study exists, but from the general imitation learning literature and the Suphx data:
+No Mahjong-specific study, but general imitation-learning literature + Suphx data suggest:
 
-- **Suphx SL data**: 15M discard samples, 5M riichi, 10M each for chow/pong, 4M kong = ~44M total samples
-- **Mortal**: Trained on years of Tenhou log data (millions of games available)
-- **General pattern**: BC performance follows a log-linear curve -- each 10x increase in data gives a roughly constant improvement. Saturation typically occurs when the policy captures ~95% of expert behavior variance.
+- **Suphx SL data**: 15M discard samples, 5M riichi, 10M each chow/pong, 4M kong = ~44M total samples
+- **Mortal**: trained on years of Tenhou log data (millions of games available)
+- **General pattern**: BC performance follows log-linear curve -- each 10x data increase gives roughly constant gain. Saturation usually when policy captures ~95% of expert behavior variance.
 
-**Estimated saturation point for Mahjong BC**: ~500K-2M expert games (10-40M decision samples). Beyond this, additional data yields diminishing returns on action prediction accuracy. The remaining gap must be closed by RL.
+**Estimated saturation point for Mahjong BC**: ~500K-2M expert games (10-40M decision samples). Beyond this, extra data gives diminishing returns on action-prediction accuracy. Remaining gap must come from RL.
 
-**Key insight**: BC gets you to ~dan level cheaply. The jump from dan to 10-dan requires RL, which is where compute really matters.
+**Key insight**: BC gets to ~dan cheaply. Jump from dan to 10-dan needs RL, where compute matters most.
 
 ## 6. Optimal BC/RL Compute Split (the "Chinchilla" for Game AI)
 
-No formal equivalent exists, but we can derive estimates from what worked:
+No formal equivalent, but workable estimate from what succeeded:
 
-**Suphx approach**: ~20% SL, ~80% RL (SL was a pretraining step, bulk of compute in RL self-play)
+**Suphx approach**: ~20% SL, ~80% RL (SL = pretraining; bulk compute in RL self-play)
 
-**Mortal approach**: Primarily offline RL on logged data (CQL). Essentially 100% data-reuse, minimal fresh self-play. This is massively more compute-efficient.
+**Mortal approach**: mostly offline RL on logged data (CQL). Effectively 100% data reuse, minimal fresh self-play. Massively more compute-efficient.
 
 **AlphaStar**: ~5% imitation learning (from replays), ~95% RL (league self-play)
 
@@ -175,12 +175,12 @@ No formal equivalent exists, but we can derive estimates from what worked:
 
 ## 7. Minimum Viable Compute for Superhuman Mahjong
 
-Nobody has studied this directly. But we can triangulate:
+Nobody studied this directly. But triangulation:
 
-- **Pluribus** (poker, simpler): $144 on CPUs. Poker is *much* simpler than Mahjong.
+- **Pluribus** (poker, simpler): $144 on CPUs. Poker *much* simpler than Mahjong.
 - **Suphx** (Mahjong, 2020): ~2,100 GPU-hours on old hardware per agent, reached 10 dan (unstable). Multiple agents trained iteratively.
-- **Mortal** (Mahjong, ongoing): Hundreds to low-thousands of GPU-hours on modern consumer hardware, reached strong amateur.
-- **LuckyJ** (Mahjong, 2023): Unknown but almost certainly >>10K GPU-hours, reached stable 10.68 dan.
+- **Mortal** (Mahjong, ongoing): hundreds to low-thousands of GPU-hours on modern consumer hardware, reached strong amateur.
+- **LuckyJ** (Mahjong, 2023): unknown but almost certainly >>10K GPU-hours, reached stable 10.68 dan.
 
 **Estimated minimum for 10+ dan Mahjong AI**:
 - With state-of-the-art techniques (OLSS, oracle guiding, CQL): **5,000-15,000 modern-GPU-equivalent hours**
@@ -195,36 +195,36 @@ Nobody has studied this directly. But we can triangulate:
 - Full BC pretraining to expert-level prediction accuracy
 - Substantial offline RL (CQL) fine-tuning
 - Limited online self-play (~10-20M games at our engine speed)
-- A model that plays at strong amateur / low-dan level
+- Model at strong amateur / low-dan level
 - Probably 70-80% agreement with expert play
 
 ### What about 2000 Delta GPU A100-hours CANNOT achieve:
 - LuckyJ-level (10+ dan) performance
 - Extensive hyperparameter search
 - League-based training with multiple agents
-- Many iterations of the train->evaluate->iterate cycle
+- Many iterations of train->evaluate->iterate cycle
 
 ### Hardware context:
-- Delta GPU `gpuA100x4` is a shared-node quad-A100 system.
-- Hydra's current planning target is 1 shared A100, not an exclusive full node.
-- Official Delta accounting treats 1 SU on Quad A100 as equivalent to 1 A100, 16 reserved CPU cores, or 62.5 GB reserved host memory for 1 hour.
-- Official Delta accounting notes that 1 GB here means 1e9 bytes (1,000,000,000), not 2^30 bytes.
+- Delta GPU `gpuA100x4` = shared-node quad-A100 system.
+- Hydra current planning target = 1 shared A100, not exclusive full node.
+- Official Delta accounting: 1 SU on Quad A100 = 1 A100, 16 reserved CPU cores, or 62.5 GB reserved host memory for 1 hour.
+- Official Delta accounting: 1 GB here means 1e9 bytes (1,000,000,000), not 2^30 bytes.
 
 ### The verdict:
 
-**Option (b) is the answer: pursue radically more efficient approach.**
+**Option (b) is answer: pursue radically more efficient approach.**
 
 Specifically:
-1. **Maximize BC phase**: Use ALL available Tenhou expert data. This is the cheapest path to competence.
-2. **CQL over PPO**: Mortal's offline RL approach is dramatically more sample-efficient than online self-play. Reuse logged data.
+1. **Maximize BC phase**: Use ALL available Tenhou expert data. Cheapest path to competence.
+2. **CQL over PPO**: Mortal's offline RL approach far more sample-efficient than online self-play. Reuse logged data.
 3. **Oracle guiding**: Train with perfect-information oracle first, distill to imperfect-information policy.
-4. **Single focused RL run**: No hyperparameter sweeps. Pick proven hyperparameters from Mortal/Suphx.
-5. **Accept 80% as ceiling**: 80% agreement with expert play is achievable. 90%+ (10 dan) is not at this budget.
-6. **Future compute**: If initial results are promising, apply for additional Delta GPU hours or later larger-node budgets.
+4. **Single focused RL run**: No hyperparameter sweeps. Use proven hyperparameters from Mortal/Suphx.
+5. **Accept 80% as ceiling**: 80% agreement with expert play achievable. 90%+ (10 dan) is not at this budget.
+6. **Future compute**: If initial results promising, apply for more Delta GPU hours or later larger-node budgets.
 
 ### Risk assessment:
 - **High confidence** (>90%): BC phase succeeds, model predicts expert moves at ~65-70% top-1 accuracy
-- **Medium confidence** (50-70%): RL phase lifts performance to ~75-80% agreement  
+- **Medium confidence** (50-70%): RL phase lifts performance to ~75-80% agreement
 - **Low confidence** (<20%): Reaching 10+ dan with about 2000 GPU-hours alone
 - **Negligible confidence** (<5%): Matching LuckyJ's stable 10.68 dan at this budget
 
@@ -233,12 +233,12 @@ Specifically:
 ## Sources
 
 1. Li et al. "Suphx: Mastering Mahjong with Deep Reinforcement Learning." arXiv:2003.13590, 2020.
-2. Fu et al. "Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game." ICLR 2022.
+2. Fu et al. "Actor-Critic Policy Optimization in Large-Scale Imperfect-Information Game." ICLR 2022.
 3. Liu et al. "Opponent-Limited Online Search for Imperfect Information Games." ICML 2023.
 4. Brown & Sandholm. "Superhuman AI for Multiplayer Poker." Science, 2019.
 5. Vinyals et al. "Grandmaster Level in StarCraft II Using Multi-Agent RL." Nature, 2019.
 6. Hilton et al. "Scaling Laws for Single-Agent Reinforcement Learning." arXiv:2301.13442, 2023.
-7. Li et al. "LsAc*-MJ: A Low-Resource Consumption RL Model for Mahjong." IJIS, 2024.
-8. Mortal Documentation: mortal.ekyu.moe
+7. Li et al. "LsAc*-MJ: Low-Resource Consumption RL Model for Mahjong." IJIS, 2024.
+8. Mortal docs: mortal.ekyu.moe
 9. Haobo Fu personal page: haobofu.github.io
-10. Delta / ACCESS planning evidence: Quad A100 accounting docs plus ACCESS GPU-hour exchange guidance.
+10. Delta / ACCESS planning evidence: Quad A100 accounting docs + ACCESS GPU-hour exchange guidance.

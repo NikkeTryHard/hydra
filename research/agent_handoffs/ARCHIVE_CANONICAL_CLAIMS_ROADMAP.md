@@ -42,7 +42,7 @@ Helper should:
 - read `ARCHIVE_CANONICAL_CLAIMS.jsonl` first
 - check whether promoted doctrine and runtime docs refreshed after
 - bias toward safest highest-impact next step
-- report whether noisy archive surfaces actually checked
+- report whether noisy archive surfaces checked
 
 It does **not** turn derived archive view into self-executing doctrine, and does **not** outrank JSONL source ledger.
 
@@ -66,9 +66,9 @@ Primary evidence base:
 
 Interpretation rules:
 
-1. Canonical archive claims = upstream research truth, not automatic proof of code/runtime reality.
+1. Canonical archive claims = upstream research truth, not auto proof of code/runtime reality.
 2. Raw combined answers are **not** same as canonical archive claims.
-3. Surviving archive claim is **not** automatic already-implemented active-path commitment.
+3. Surviving archive claim is **not** auto already-implemented active-path commitment.
 4. Proposal-level rows must stay visibly proposal-level.
 5. Reject/block rows must stay visibly rejected or blocked.
 
@@ -76,10 +76,10 @@ Interpretation rules:
 
 | Bucket | Meaning |
 |---|---|
-| `Do now` | Fits current reconciliation doctrine, has strongest current leverage or closure value |
-| `Phase-next` | Promising, relevant, but still needs explicit semantic, provenance, benchmark, or parity closure |
+| `Do now` | Fits current reconciliation doctrine, highest current leverage or closure value |
+| `Phase-next` | Promising, relevant, still needs explicit semantic, provenance, benchmark, or parity closure |
 | `Reserve shelf` | Worth preserving, should not steer current mainline |
-| `Blocked / reject / not active` | Practical grouping for lanes structurally blocked, explicitly demoted, rejected as currently scoped, or otherwise should not consume current implementation attention |
+| `Blocked / reject / not active` | Practical group for lanes structurally blocked, explicitly demoted, rejected as scoped, or otherwise should not consume current impl attention |
 
 ## Ranked roadmap
 
@@ -99,8 +99,8 @@ Interpretation rules:
 
 | Rank | Lane | Doctrine status | Repo status | Why now | Refs |
 |---|---|---|---|---|---|
-| 1 | Narrow `safety_residual` / BC activation sublane | Active-path doctrine | Completed | Reconciliation says immediate need = supervision-loop closure, not broader search expansion. Completed part = replay-derived `safety_residual` BC lane plus hardware-agnostic BC microbatch accumulation, and current BC runtime authority now keeps fresh runs config-derived while allowing epoch-boundary-only reuse of matching preflight-selected runtime for selected-runtime tuple. Broader Recommendation 1 closure still open. | `HYDRA_RECONCILIATION.md` Recommendation 1; canonical rows 24, 34, 35, 55 |
-| 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end, with BC-path staged activation and microbatch accumulation available for learner training | Builder, mask, batch carrier, head, loss now aligned on signed residual semantics; train binary can enable only narrow advanced loss while keeping weaker lanes blocked, and BC no longer assumes one machine's VRAM shape. Keep lane replay-derived and narrow. | canonical rows 22, 23, 24; `answer_18_combined.md` |
+| 1 | Narrow `safety_residual` / BC activation sublane | Active-path doctrine | Completed | Reconciliation says immediate need = supervision-loop closure, not broader search expansion. Completed part = replay-derived `safety_residual` BC lane plus hardware-agnostic BC microbatch accumulation, and current BC runtime authority now keeps fresh runs config-derived while allowing epoch-boundary-only reuse of matching preflight-selected runtime for selected-runtime tuple. Broader rec 1 closure still open. | `HYDRA_RECONCILIATION.md` rec 1; canonical rows 24, 34, 35, 55 |
+| 2 | `safety_residual` semantic repair + narrow activation | Completed in code | Signed replay-derived residual live end-to-end, with BC-path staged activation and microbatch accumulation available for learner training | Builder, mask, batch carrier, head, loss now align on signed residual semantics; train binary can enable only narrow advanced loss while keeping weaker lanes blocked, and BC no longer assumes one machine's VRAM shape. Keep lane replay-derived and narrow. | canonical rows 22, 23, 24; `answer_18_combined.md` |
 | 3 | ExIt carrier closure across live self-play and replay/sample sidecar lane | Completed in code | Live self-play loop, replay/sample sidecar producer/join, BC consumption, default-on live producer | ExIt now has bridge helpers, consumer mask support, live self-play loop (`generate_self_play_rl_batch`) with search-derived labels via `SelfPlayExitAdapter`, plus replay/sample sidecar-first lane that generates replay-indexed search-derived labels, joins back into replay samples with provenance/version checks, and feeds BC as separate optional ExIt loss. | canonical rows 34, 35, 51, 52; `answer_9_combined.md`, `answer_15_combined.md`, `answer_24_combined.md` |
 | 4 | Advanced-head activation discipline | Completed in code | Gate pack implemented: density, conflict, warmup | `HeadActivationController` with density gates (`rho >= 0.8` dense, `spp >= 5` sparse), gradient conflict tracking (cosine < 30% negative), warmup protocol (Off->Warmup->Active), and `approved_loss_config` integration. 36 tests pass. | canonical row 55; `answer_13_combined.md`, `answer_3-1_combined.md` |
 | 5 | Runtime ponder/cache provenance hardening | Completed in code | Provenance fields, generation tracking, trust gating implemented | `PonderResult` carries `source_net_hash`, `source_version`, `TrustLevel`, `CacheNamespace`, `generation`. `PonderCache` enforces generation freshness. `InferenceServer` gates runtime cache hits behind `Authoritative` trust (nothing qualifies, so all stays learner-only). 10 new tests. | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
@@ -109,7 +109,7 @@ Interpretation rules:
 
 | Rank | Lane | Doctrine status | Repo status | Promotion gate | Refs |
 |---|---|---|---|---|---|
-| 6 | Public-posterior belief teacher closure | Stronger baseline tranche shipped; fuller closure still later | Current Stage-A path still semantically weaker than archive final public-posterior target object, but stronger baseline belief tranche now shipped in code | Keep belief-before-mixture discipline, preserve staged `mixture_weight`, promote fuller public-posterior / row-conditional closure only when narrower target object actually lands. | canonical rows 25, 26, 27, 28, 61, 62; `answer_15_combined.md`, `answer_18_combined.md`, `answer_27_combined.md`, `answer_28_combined.md`, `answer_3-1_combined.md` |
+| 6 | Public-posterior belief teacher closure | Stronger baseline tranche shipped; fuller closure still later | Current Stage-A path still semantically weaker than archive final public-posterior target object, but stronger baseline belief tranche now shipped in code | Keep belief-before-mixture discipline, preserve staged `mixture_weight`, promote fuller public-posterior / row-conditional closure only when narrower target object lands. | canonical rows 25, 26, 27, 28, 61, 62; `answer_15_combined.md`, `answer_18_combined.md`, `answer_27_combined.md`, `answer_28_combined.md`, `answer_3-1_combined.md` |
 | 7 | H1a Hand-EV semantic repair on current 42-plane surface | Stronger realism baseline shipped; fuller H1a benchmark/promotion still later | Strong live seam with materially stronger shipped local evaluation already in repo | Use exact-one-step oracle benchmarking only for remaining H1a promotion question, not as evidence baseline tranche still missing. | canonical rows 36, 37, 38; `answer_14_combined.md`, `answer_17_combined.md` |
 | 8 | Tile-aware spatial/global head routing correction | Strong archive architecture survivor; not current doctrine | Narrow problem visible in repo now | Route tile-indexed outputs from spatial features first; do not auto-promote whole history-sidecar package. | canonical row 56; `answer_21.md` |
 | 9 | World-aware CT-SMC Hand-EV (H1b) | Later selective lane only | Runtime seam exists; train/infer parity blocked | H1a must win first, CT-SMC quality gates must pass, and training-time matching search-context observations must exist. | canonical rows 39, 40, 41; `answer_14_combined.md`, `answer_1-1_combined.md` |
@@ -121,7 +121,7 @@ These survive as preserved options, but should not steer current active path.
 
 | Rank | Lane | Why preserved | Why not mainline now | Refs |
 |---|---|---|---|---|
-| 12 | Tiny learned scorer for the next ponder quantum | Narrow compute-allocation seam exists, current heuristic replaceable | Should come after cache/provenance cleanup and stay tiny, not grow into runtime router | canonical rows 44, 45; `answer_19_combined.md`, `answer_10_combined.md`, `answer_5-1_combined.md` |
+| 12 | Tiny learned scorer for next ponder quantum | Narrow compute-allocation seam exists, current heuristic replaceable | Should come after cache/provenance cleanup and stay tiny, not grow into runtime router | canonical rows 44, 45; `answer_19_combined.md`, `answer_10_combined.md`, `answer_5-1_combined.md` |
 | 13 | Dedicated public-history path / asymmetric actor-learner package | Strongest surviving architecture challenger | Exact GRU-actor / transformer-learner package remains proposal-level; history path must earn promotion via collision/order tests | canonical row 56; `answer_21.md` |
 | 14 | Action-sufficient CT-SMC world compression | Narrow benchmark-first survivor | Worth testing only as runtime-only equal-budget falsification project | canonical row 51; `answer_11_combined.md`, `answer_8-2_combined.md`, `answer_6-1_combined.md` |
 | 15 | Stronger endgame exactification | Reserve-shelf technique explicitly preserved in current archive doctrine | Narrower and later than supervision closure and Hand-EV realism | `HYDRA_ARCHIVE.md`; canonical rows 42, 43; `answer_14_combined.md` |
@@ -139,8 +139,8 @@ These survive as preserved options, but should not steer current active path.
 | Broad multi-arm learned router | Blocked | Current runtime too narrow to justify real multi-arm routing regime | canonical row 46; `answer_10_combined.md` |
 | Current rollout authority as live decisive truth | Off (provenance hardened) | Cache provenance now exists; runtime gated behind Authoritative trust (nothing qualifies) | canonical rows 47, 48; `answer_20_combined.md`, `answer_16-1_combined.md` |
 | Exact rollout gates beyond `top2_policy_gap < 0.10` | Rejected | Earlier `risk_score` / `particle_ess` exact cutoffs explicitly demoted | canonical rows 49, 50; `answer_16-1_combined.md`, `answer_16_combined.md` |
-| Posterior-consensus ExIt as currently scoped | Reject | Missing public world-conditioned action-teacher object | canonical row 52; `answer_12_combined.md`, `answer_8-1_combined.md` |
-| Regime-coupled opponent filtering as currently scoped | Reject | Missing emission model, regime state, downstream consumer chain | canonical row 53; `answer_12_combined.md` |
+| Posterior-consensus ExIt as scoped | Reject | Missing public world-conditioned action-teacher object | canonical row 52; `answer_12_combined.md`, `answer_8-1_combined.md` |
+| Regime-coupled opponent filtering as scoped | Reject | Missing emission model, regime state, downstream consumer chain | canonical row 53; `answer_12_combined.md` |
 | Broad “search everywhere” AFBS identity | Not active path | Reconciliation and archive doctrine both keep AFBS selective and specialist | `HYDRA_RECONCILIATION.md`; `HYDRA_ARCHIVE.md` |
 
 ## Dependency closure table
@@ -190,7 +190,7 @@ These notes preserve high-signal archive narrowing and post-roadmap truth alignm
 
 - Additional narrowing from `answer_25_combined.md`: RL-only validation follow-up survives as correctness requirement on now-implemented lane. Sparse-head activation accounting must count only rows whose `[46]` `delta_q_mask` has nonzero support, and invalid `(Some, None)` / `(None, Some)` target-mask pairs stay explicit plumbing failures rather than silently degrading into zero-loss behavior. Those pair-safety constraints now reflected in code and should be treated as completed narrowing, not future doctrine.
 
-- Additional narrowing from `answer_26_combined.md`: replay/offline `delta_q` did correctly close through replay-indexed search-derived sidecar pattern rather than replay-built loader path, and separate BC/train activation-hook blocker now also closed in code through caller-side `HeadActivationController` integration plus warmup-time trunk detachment for `DeltaQ`. Keep archive split as historical explanation for implementation order, not current blocker.
+- Additional narrowing from `answer_26_combined.md`: replay/offline `delta_q` did correctly close through replay-indexed search-derived sidecar pattern rather than replay-built loader path, and separate BC/train activation-hook blocker now also closed in code through caller-side `HeadActivationController` integration plus warmup-time trunk detachment for `DeltaQ`. Keep archive split as historical explanation for impl order, not current blocker.
 
 - Additional narrowing from `answer_27_combined.md` and `answer_28_combined.md`: sharper surviving belief reading is narrower than older generic “Stage-A is weak” shorthand. Current Stage-A belief is one duplicated aggregate projection object cloned across four component blocks rather than real multimodal teacher, so first honest closure is belief-before-mixture: repair teacher object to public-posterior expected hidden allocation, repair loss/object pairing to row-conditional belief supervision, and keep `mixture_weight` off until canonical component identity exists.
 
@@ -205,7 +205,7 @@ High-signal archive answers behind roadmap:
 - `answer_14_combined.md` — H1a first, H1b later, endgame as later specialist lane
 - `answer_13_combined.md` — density/interference risk and conservative staged-budget reading
 - `answer_16-1_combined.md` — stricter rollout trust boundary and threshold cleanup
-- `answer_20_combined.md` — cache/provenance authority critique and learner-only safe-policy recommendation
+- `answer_20_combined.md` — cache/provenance authority critique and learner-only safe-policy rec
 - `answer_19_combined.md` — narrow learned ponder-scorer seam
 - `answer_21.md` — strongest surviving architecture lane: static compatibility path + head-routing correction + later history path
 - `answer_22.md` — narrow live-AFBS ExIt evaluator verdict: visits stay teacher object; public value head is only surviving narrow evaluator; producer now default-on after infrastructure validation (older default-off wording is historical)

@@ -2,91 +2,69 @@
 
 > **Promoted operational doctrine and roadmap to Hydra v1.**
 >
-> This file owns Hydra's active-path sequencing, roadmap to Hydra v1, and
-> active-vs-staged-vs-reserve decisions after reconciling the canonical archive
-> SSOT with current repository state.
+> This file owns Hydra active-path sequencing, Hydra v1 roadmap, active-vs-staged-vs-reserve calls after reconciling canonical archive SSOT with current repo state.
 >
-> If a downstream implementation or reference doc conflicts with this file on
-> sequencing, promotion order, or active-vs-staged-vs-reserve status, this file
-> wins.
+> If downstream impl or ref doc conflicts with this file on sequencing, promotion order, or active-vs-staged-vs-reserve status, this file wins.
 >
 > If this file drifts from
 > `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` or current
-> code/runtime, refresh this file instead of treating the drift as a demotion of
-> the upstream source or of runtime truth.
+> code/runtime, refresh this file; do not treat drift as demotion of upstream source or runtime truth.
 
-This file is Hydra's promoted operational doctrine.
+This file = Hydra promoted operational doctrine.
 
-It has one job:
+One job:
 
-- keep **Max Hydra** as the long-term destination from `HYDRA_FINAL.md`
-- define **Hydra v1** as the active path to ship and train first
-- make Hydra v1 the most efficient path to start training soon without
-  collapsing every advanced idea into the first training promise
+- keep **Max Hydra** = long-term destination from `HYDRA_FINAL.md`
+- define **Hydra v1** = active path to ship/train first
+- make Hydra v1 fastest honest path to start training soon without forcing every advanced idea into first training promise
 
-In plain English:
+Plain English:
 
 - Hydra should not restart from zero
 - Hydra should not wait for every north-star mechanism before training starts
-- Hydra should train first on the strongest credible baseline already supported
-  by the repo
-- Hydra should promote harder lanes only when they clear real evidence gates
+- Hydra should train first on strongest credible baseline repo already supports
+- Hydra should promote harder lanes only after real evidence gates clear
 
 Relationship to adjacent surfaces:
 
-- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` is the epistemic
-  root / canonical archive source ledger that powers downstream promoted
-  doctrine.
-- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` is the derived
-  archive prioritization view over that same root.
-- `research/agent_handoffs/` preserves archive evidence, provenance, and claim
-  trust; it does **not** replace this file as the owner of current active-path
-  status.
-- `research/design/HYDRA_FINAL.md` owns Hydra's architecture north star and max
-  ceiling.
-- `docs/CURRENT_STATUS.md` owns the promoted already-built shipped/staged repo
-  snapshot derived from this file plus code/runtime validation.
-- `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` own runtime
-  semantics and compatibility-sensitive invariants.
+- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` = epistemic root / canonical archive source ledger powering downstream promoted doctrine
+- `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` = derived archive prioritization view over same root
+- `research/agent_handoffs/` preserves archive evidence, provenance, claim trust; does **not** replace this file as owner of current active-path status
+- `research/design/HYDRA_FINAL.md` owns Hydra architecture north star and max ceiling
+- `docs/CURRENT_STATUS.md` owns promoted already-built shipped/staged repo snapshot derived from this file plus code/runtime validation
+- `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` own runtime semantics and compatibility-sensitive invariants
 
 Scope:
 
 - Canonical archive SSOT:
-  `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`
+`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`
 - Target architecture summary: `research/design/HYDRA_FINAL.md`
 - Current shipped/staged status snapshot: `docs/CURRENT_STATUS.md`
 - Verified runtime reality: current code plus runtime docs
-- Operational question answered here: what Hydra should train and promote next,
-  in what order, and what explicitly remains later
+- Operational question answered here: what Hydra should train/promote next, in what order, what stays later
 
 ## 1. Roadmap thesis
 
-Hydra has two valid horizons, and they should not be confused.
+Hydra has two valid horizons. Do not confuse them.
 
-1. **Max Hydra** is the destination.
-   - Hydra's north star remains the maximum-ceiling system described in
-     `HYDRA_FINAL.md`: ExIt-centered training, richer belief/search machinery,
-     selective search amplification, stronger opponent modeling, and later
-     endgame precision.
-2. **Hydra v1** is the immediate target.
-   - Hydra v1 is the strongest version Hydra can train soon with credible
-     labels, closed enough loops, and controlled complexity.
+1. **Max Hydra** = destination.
+   - Hydra north star stays maximum-ceiling system from
+`HYDRA_FINAL.md`: ExIt-centered training, richer belief/search machinery,
+selective search amplification, stronger opponent modeling, later
+endgame precision.
+2. **Hydra v1** = immediate target.
+   - Hydra v1 = strongest Hydra trainable soon with credible labels,
+closed-enough loops, controlled complexity.
 
-This roadmap chooses Hydra v1 as the active path because it is the most
-efficient route to long-run strength.
+This roadmap picks Hydra v1 as active path because it is fastest route to long-run strength.
 
 That means:
 
-- **trainable beats theoretically fuller** when the fuller system still depends
-  on weak labels, open promotion questions, or broad compute-heavy integration
-- **close loops before expanding architecture** because the repo already has a
-  lot of advanced surface area
-- **promote by evidence, not by excitement** because code existence alone is not
-  proof that a lane should become default-on
+- **trainable beats theoretically fuller** when fuller system still depends on weak labels, open promotion questions, or broad compute-heavy integration
+- **close loops before expanding architecture** because repo already has much advanced surface area
+- **promote by evidence, not excitement** because code existence alone does not prove lane should become default-on
 
-Hydra v1 is not a retreat from Max Hydra. It is the shortest honest path
-from today's repo state to sustained training and later ceiling-raising
-promotion.
+Hydra v1 not retreat from Max Hydra. It is shortest honest path from current repo state to sustained training, then later ceiling-raising promotion.
 
 ## 2. Status and roadmap vocabulary
 
@@ -97,56 +75,51 @@ These terms are shared with `docs/CURRENT_STATUS.md`.
 | Term | Meaning |
 |---|---|
 | `active path` | current mainline direction to optimize/build now |
-| `shipped baseline` | implemented and part of the current live Hydra baseline |
-| `implemented but not default-on` | implemented and intentionally not the default runtime/training path |
-| `implemented but staged` | implemented in core form, but activation/promotion remains intentionally deferred |
+| `shipped baseline` | implemented and part of current live Hydra baseline |
+| `implemented but not default-on` | implemented and intentionally not default runtime/training path |
+| `implemented but staged` | implemented in core form, but activation/promotion intentionally deferred |
 | `reserve shelf` | preserved later-work direction; not current mainline |
-| `blocked` | not ready because a real dependency, semantic gap, or promotion requirement remains |
-| `rejected` | not part of the current plan |
+| `blocked` | not ready because real dependency, semantic gap, or promotion requirement remains |
+| `rejected` | not part of current plan |
 | `historical` | preserved context only; not current governing truth |
 
 ### 2.2 Roadmap vocabulary
 
 | Term | Meaning |
 |---|---|
-| `Hydra v1` | the immediate, training-first active path |
-| `Max Hydra` | the long-term destination owned by `HYDRA_FINAL.md` |
-| `baseline first` | start training from the shipped baseline before broadening the active surface |
-| `staged lane` | a capability kept off the default path until evidence supports promotion |
-| `promotion gate` | an explicit pass/fail condition required before a staged lane moves upward |
-| `training start condition` | the minimum baseline health required before the next training cycle should begin |
-| `anti-chaos principle` | a rule that prevents Hydra from broadening too many uncertain fronts at once |
+| `Hydra v1` | immediate, training-first active path |
+| `Max Hydra` | long-term destination owned by `HYDRA_FINAL.md` |
+| `baseline first` | start training from shipped baseline before broadening active surface |
+| `staged lane` | capability kept off default path until evidence supports promotion |
+| `promotion gate` | explicit pass/fail condition before staged lane moves up |
+| `training start condition` | minimum baseline health before next training cycle starts |
+| `anti-chaos principle` | rule preventing Hydra from broadening too many uncertain fronts at once |
 
 ## 3. Starting baseline for the next version
 
-Hydra v1 does not start from a blank slate. It starts from the strongest
-repo surface already promoted as baseline or near-baseline truth.
+Hydra v1 does not start blank. It starts from strongest repo surface already promoted as baseline or near-baseline truth.
 
 ### 3.1 Shipped baseline
 
-The current shipped baseline includes:
+Current shipped baseline includes:
 
-- `hydra-core` as a real first-party runtime/encoder/simulator crate
-- the live encoder/model contract at `192x34`, with the old `85x34` view treated
-  as baseline-prefix only
-- the fixed 46-action runtime with two-phase riichi and kan handling
-- the stronger public-teacher belief-semantics tranche as part of the current
-  training baseline
-- the current Hand-EV realism upgrade as part of the live baseline surface
-- replay-derived `safety_residual` as a narrow supervised lane
-- an end-to-end ExIt carrier across the live self-play lane and the
-  replay/sample sidecar-first lane
+- `hydra-core` as real first-party runtime/encoder/simulator crate
+- live encoder/model contract at `192x34`, with old `85x34` view treated as baseline-prefix only
+- fixed 46-action runtime with two-phase riichi and kan handling
+- stronger public-teacher belief-semantics tranche as part of current training baseline
+- current Hand-EV realism upgrade as part of live baseline surface
+- replay-derived `safety_residual` as narrow supervised lane
+- end-to-end ExIt carrier across live self-play lane and replay/sample sidecar-first lane
 
 ### 3.2 Implemented but not default-on
 
-The current challenger lane is:
+Current challenger lane:
 
-- the narrow DeltaQ supervision lane, which is implemented in code and remains
-  promotion-gated through an arena-confirmation path
+- narrow DeltaQ supervision lane, implemented in code and still promotion-gated through arena-confirmation path
 
 ### 3.3 Implemented but staged
 
-The current staged lanes are:
+Current staged lanes:
 
 - `mixture_weight` promotion
 - richer opponent-target closure
@@ -155,129 +128,112 @@ The current staged lanes are:
 
 ### 3.4 Reserve shelf
 
-The current reserve shelf includes:
+Current reserve shelf includes:
 
 - broader public-belief search as project identity
 - deeper robust-opponent search backups
-- larger latent-opponent / richer auxiliary-head expansion until existing target
-  closure improves
+- larger latent-opponent / richer auxiliary-head expansion until existing target closure improves
 
-This baseline is already strong enough to justify a Hydra v1 training plan.
-The roadmap should not keep talking about shipped baseline work as if it were
-still hypothetical future work.
+This baseline already strong enough to justify Hydra v1 training plan. Roadmap should not keep describing shipped baseline work as hypothetical future work.
 
 ## 4. Hydra v1, the active path
 
 ### 4.1 What Hydra v1 is
 
-Hydra v1 is the strongest trainable Hydra that can be pursued now without
-turning the first version into a chaos pile of half-closed lanes.
+Hydra v1 = strongest trainable Hydra pursuable now without turning first version into chaos pile of half-closed lanes.
 
 Hydra v1 is:
 
-- a **strong learned policy/value baseline first**
-- a **supervision-first, search-second** training path
-- an **ExIt-aware** training path that keeps the live carrier in scope
-- a baseline that already includes the shipped belief-semantics tranche and the
-  shipped Hand-EV realism tranche
-- a path that keeps selective search where it clearly pays instead of making it
-  the project identity too early
-- a promotion-based roadmap where staged lanes move only when they clear proof
+- **strong learned policy/value baseline first**
+- **supervision-first, search-second** training path
+- **ExIt-aware** training path keeping live carrier in scope
+- baseline already including shipped belief-semantics tranche and shipped Hand-EV realism tranche
+- path keeping selective search where it clearly pays instead of making it project identity too early
+- promotion-based roadmap where staged lanes move only after proof clears
 
 ### 4.2 What Hydra v1 is not
 
 Hydra v1 is not:
 
-- a broad “search everywhere” AFBS project
-- a freeze-until-Max-Hydra project
-- a fork away from the architecture in `HYDRA_FINAL.md`
-- a head-count expansion phase
-- a promise that every advanced surface in the repo becomes default-on in the
-  first training cycle
+- broad “search everywhere” AFBS project
+- freeze-until-Max-Hydra project
+- fork away from architecture in `HYDRA_FINAL.md`
+- head-count expansion phase
+- promise that every advanced repo surface becomes default-on in first training cycle
 
 ### 4.3 Why this is the active path now
 
-Hydra v1 is the active path now because:
+Hydra v1 active now because:
 
-- the repo already contains a partially built advanced baseline
-- the strongest near-term leverage is better training loop closure, not broader
-  search identity
-- the shipped belief and Hand-EV tranches already raise the baseline without
-  demanding that every harder lane be promoted first
-- broad search-first Hydra remains more compute-heavy, more integration-heavy,
-  and less likely to accelerate the first honest training campaign
+- repo already contains partially built advanced baseline
+- strongest near-term leverage = better training loop closure, not broader search identity
+- shipped belief and Hand-EV tranches already raise baseline without requiring every harder lane first
+- broad search-first Hydra remains more compute-heavy, more integration-heavy, less likely to accelerate first honest training campaign
 
 ## 5. Staged lanes and promotion order
 
-Hydra v1 should grow through a narrow promotion order.
+Hydra v1 should grow through narrow promotion order.
 
 ### Lane A. Baseline training launch
 
-This is the immediate roadmap target.
+Immediate roadmap target.
 
 What is in:
 
-- the shipped baseline surface from Section 3.1
-- training on the live `192x34` / 46-action contract
-- the shipped belief baseline
-- the shipped Hand-EV realism baseline
-- the replay-derived `safety_residual` lane
-- the live ExIt carrier as part of the training story
+- shipped baseline surface from Section 3.1
+- training on live `192x34` / 46-action contract
+- shipped belief baseline
+- shipped Hand-EV realism baseline
+- replay-derived `safety_residual` lane
+- live ExIt carrier as part of training story
 
-What stays out of the first baseline promise:
+What stays out of first baseline promise:
 
 - default-on DeltaQ
 - promoted `mixture_weight`
 - richer opponent-target closure
 - representative-world CT-SMC Hand-EV
-- selective AFBS / endgame deepening as a required launch condition
+- selective AFBS / endgame deepening as required launch condition
 
 Immediate objective:
 
-- start the next honest Hydra training cycle from the strongest already-promoted
-  baseline instead of delaying for full Max-Hydra closure
+- start next honest Hydra training cycle from strongest already-promoted baseline instead of delaying for full Max-Hydra closure
 
 ### Lane B. Controlled promotion lanes
 
-These lanes are the first candidates for measured promotion after baseline
-training is healthy.
+These lanes = first candidates for measured promotion after baseline training is healthy.
 
 Current priority order:
 
-1. **DeltaQ as a challenger lane**
-   - implemented, measurable, and explicitly promotion-gated
-   - remains non-default until its promotion evidence clears
+1. **DeltaQ as challenger lane**
+   - implemented, measurable, explicitly promotion-gated
+   - stays non-default until promotion evidence clears
 2. **Belief-adjacent staged semantics**
-   - preserve `mixture_weight` as staged until the teacher object is stronger
-     than the current staged reading
+   - preserve `mixture_weight` as staged until teacher object is stronger than current staged reading
 3. **Richer opponent-target closure**
    - keep staged until labels and ontology are more credible
 
 Principle:
 
-- promotion lanes should be narrow, measurable, and one-fight-at-a-time
+- promotion lanes should be narrow, measurable, one-fight-at-a-time
 
 ### Lane C. Selective search-strength lanes
 
-These are real strength multipliers, but they are not the first training start
-condition.
+These are real strength multipliers, but not first training start condition.
 
 They include:
 
 - representative-world / per-particle CT-SMC Hand-EV
 - selective AFBS / endgame deepening
-- later search-grade integration improvements that build on a healthier training
-  loop
+- later search-grade integration improvements building on healthier training loop
 
 Principle:
 
-- search should stay selective and specialist until the baseline training path
-  is alive and promotion evidence says the broader cost is worth paying
+- search should stay selective and specialist until baseline training path is alive and promotion evidence says broader cost is worth paying
 
 ### Lane D. Destination-facing Max Hydra lanes
 
-These remain aligned with `HYDRA_FINAL.md`, but they are not Hydra v1
-blockers.
+These remain aligned with `HYDRA_FINAL.md`, but are not Hydra v1 blockers.
 
 They include:
 
@@ -285,34 +241,29 @@ They include:
 - broader public-belief-search identity
 - richer latent-opponent / more unified opponent modeling
 - deeper endgame exactification and later hard-state expansion policies
-- optimizer/game-theory escalations that depend on a healthier training loop
+- optimizer/game-theory escalations depending on healthier training loop
 
 Principle:
 
-- preserve these lanes, but do not let them outrank a working Hydra v1
-  training loop
+- preserve these lanes, but do not let them outrank working Hydra v1 training loop
 
 ## 6. Training start conditions
 
-Hydra v1 is ready to begin the next training cycle when the following are
-true.
+Hydra v1 ready to begin next training cycle when following are true.
 
 ### 6.1 Required to start
 
-- the shipped baseline is the declared default training surface
-- this roadmap and `docs/CURRENT_STATUS.md` agree on what is baseline versus
-  staged versus reserve
-- shipped belief semantics and shipped Hand-EV realism are treated as current
-  baseline truth, not as future work
-- ExIt remains part of the baseline training story through its live carrier
-- staged lanes that are not part of the baseline remain explicitly off by
-  default
+- shipped baseline is declared default training surface
+- this roadmap and `docs/CURRENT_STATUS.md` agree on what is baseline versus staged versus reserve
+- shipped belief semantics and shipped Hand-EV realism are treated as current baseline truth, not future work
+- ExIt remains part of baseline training story through live carrier
+- staged lanes not part of baseline remain explicitly off by default
 
 ### 6.2 Not required to start
 
-The next training cycle does **not** require:
+Next training cycle does **not** require:
 
-- broad public-belief search as the main runtime identity
+- broad public-belief search as main runtime identity
 - default-on AFBS everywhere
 - default-on DeltaQ
 - promoted `mixture_weight`
@@ -322,75 +273,65 @@ The next training cycle does **not** require:
 - richer opponent-target closure
 - full Max-Hydra search stack closure
 
-This section exists to stop Hydra from delaying training in the name of features
-that are explicitly later.
+This section exists to stop Hydra from delaying training for features explicitly marked later.
 
 ## 7. Promotion gates
 
-Implemented code is not enough to earn default-on status. Promotion follows
-gates.
+Implemented code not enough for default-on status. Promotion follows gates.
 
 ### 7.1 Baseline gate
 
-Baseline work is ready when:
+Baseline work ready when:
 
-- the capability is already promoted as shipped baseline truth
-- its semantics are honest in docs and in runtime/training surfaces
+- capability already promoted as shipped baseline truth
+- semantics are honest in docs and runtime/training surfaces
 - it does not depend on still-staged lanes to justify training start
 
 ### 7.2 Challenger lane gates
 
-An implemented-but-not-default-on or implemented-but-staged lane moves upward
-only when:
+Implemented-but-not-default-on or implemented-but-staged lane moves upward only when:
 
-- its labels or targets are semantically credible
-- its activation behavior is explicit rather than accidental
-- its contribution is measurable in training/eval rather than inferred from
-  theory alone
-- promoting it does not blur the distinction between baseline and experiment
+- labels or targets are semantically credible
+- activation behavior is explicit, not accidental
+- contribution is measurable in training/eval, not inferred from theory alone
+- promoting it does not blur baseline vs experiment distinction
 
 Explicit example:
 
-- DeltaQ remains implemented but not default-on because its promotion is tied to
-  an arena-confirmation path rather than mere structural existence
+- DeltaQ remains implemented but not default-on because promotion ties to arena-confirmation path, not mere structural existence
 
 ### 7.3 Search-strength gates
 
-A search-strength lane moves upward only when:
+Search-strength lane moves upward only when:
 
-- the baseline training loop is already alive
-- the lane has a clear insertion point and a narrow scope
-- the lane improves real strength-per-complexity instead of reopening project
-  identity debates
+- baseline training loop already alive
+- lane has clear insertion point and narrow scope
+- lane improves real strength-per-complexity instead of reopening project identity debates
 
 ### 7.4 Max-Hydra-only gates
 
-Destination-facing lanes should only become active-path work when:
+Destination-facing lanes should become active-path work only when:
 
-- Hydra v1 has already proved too weak or too capped
-- the simpler promotion lanes have been fairly tested first
-- the extra complexity is justified by evidence instead of north-star gravity
+- Hydra v1 already proved too weak or too capped
+- simpler promotion lanes were fairly tested first
+- extra complexity is justified by evidence, not north-star gravity
 
 ## 8. Anti-chaos principles
 
 These principles are mandatory for Hydra v1.
 
 1. **Baseline before breadth**
-   - do not broaden multiple uncertain lanes before the baseline training path is
-     live
-2. **One promotion fight at a time**
+   - do not broaden multiple uncertain lanes before baseline training path is live
+2. **One promotion fight at time**
    - do not try to promote several staged lanes at once
 3. **No architecture identity flip midstream**
-   - the next version is training-first, not search-first by surprise later
+   - next version is training-first, not search-first by surprise later
 4. **Shipped means baseline, staged means staged**
-   - do not keep talking about shipped baseline work as if it were still future
-     work
+   - do not keep describing shipped baseline work as future work
 5. **North star is destination, not checklist**
-   - `HYDRA_FINAL.md` remains the target architecture, but it does not force all
-     destination-facing machinery into the first training promise
+   - `HYDRA_FINAL.md` remains target architecture, but does not force all destination-facing machinery into first training promise
 6. **Preserve reserve ideas without letting them steer**
-   - reserve shelf exists to keep good ideas alive, not to dominate current
-     sequencing
+   - reserve shelf exists to keep good ideas alive, not dominate current sequencing
 
 ## 9. Destination-facing reserve shelf
 
@@ -404,26 +345,25 @@ These lanes remain consistent with Max Hydra and should stay documented.
 - deeper AFBS semantics and hard-state expansion policies
 - selective exactification and stronger endgame resolvers
 - deeper belief-network experiments
-- optimizer/game-theory escalations that depend on a healthier training loop
+- optimizer/game-theory escalations depending on healthier training loop
 
 ### 9.2 Not active for the next version
 
-These are not rejected forever. They are simply not allowed to steer Hydra v1.
+These are not rejected forever. They must not steer Hydra v1.
 
 - broad “search everywhere” AFBS rollout
 - full public-belief search as immediate project identity
 - adding more heads before existing advanced surfaces are properly promoted
-- large optimizer-theory detours ahead of the first honest training campaign
-- speculative novelty that lacks a strong repo insertion point
+- large optimizer-theory detours ahead of first honest training campaign
+- speculative novelty lacking strong repo insertion point
 
 ## 10. Hydra v1 roadmap summary
 
-Hydra's roadmap to v1 is straightforward.
+Hydra roadmap to v1 is straightforward.
 
 ### Immediate objective
 
-Start training soon on Hydra v1: the strongest credible baseline already
-supported by promoted doctrine and current shipped surfaces.
+Start training soon on Hydra v1: strongest credible baseline already supported by promoted doctrine and current shipped surfaces.
 
 ### First version scope
 
@@ -438,17 +378,12 @@ Hydra v1 means:
 
 ### First promotions after launch
 
-After baseline training is healthy, Hydra should evaluate narrow challenger lanes
-in order, starting with DeltaQ and only then considering later staged belief,
-opponent-target, and search-strength promotions.
+After baseline training is healthy, Hydra should evaluate narrow challenger lanes in order, starting with DeltaQ and only then considering later staged belief, opponent-target, and search-strength promotions.
 
 ### Long-term destination
 
-Max Hydra from `HYDRA_FINAL.md` remains the long-term destination. Hydra v1
-exists to reach that destination efficiently, not to replace it.
+Max Hydra from `HYDRA_FINAL.md` remains long-term destination. Hydra v1 exists to reach that destination efficiently, not replace it.
 
 ### Final doctrine sentence
 
-Hydra should begin with the strongest trainable baseline it can honestly defend,
-then grow toward its full ceiling through narrow, evidence-gated promotion. That
-is the active path most likely to produce a strong Hydra over time.
+Hydra should begin with strongest trainable baseline it can honestly defend, then grow toward full ceiling through narrow, evidence-gated promotion. That is active path most likely to produce strong Hydra over time.

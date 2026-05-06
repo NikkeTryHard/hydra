@@ -13,8 +13,10 @@ use colored::Colorize;
 use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
-use hydra_train::data::bc_shards::{BcShardReader, BcShardSplit, load_bc_shard_reader};
-use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
+use hydra_train::data::bc_shards::{
+    BcShardManifest, BcShardReader, BcShardSplit, load_bc_shard_reader,
+};
+use hydra_train::data::pipeline::{DataManifest, DataSource, StreamingLoaderConfig};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 #[cfg(test)]
 use hydra_train::preflight::ManifestCacheEntry;
@@ -55,6 +57,31 @@ use super::schedule::schedule_total_steps;
 type JsonlAppender = super::artifacts::JsonlAppender;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
+
+fn data_manifest_from_bc_shard_manifest(manifest: &BcShardManifest) -> DataManifest {
+    let train_count = manifest
+        .splits
+        .iter()
+        .find(|split| split.split == BcShardSplit::Train)
+        .map(|split| split.sample_count as usize)
+        .unwrap_or(0);
+    let val_count = manifest
+        .splits
+        .iter()
+        .find(|split| split.split == BcShardSplit::Validation)
+        .map(|split| split.sample_count as usize)
+        .unwrap_or(0);
+
+    DataManifest {
+        sources: vec![DataSource::LooseFile(
+            Path::new(&manifest.input).to_path_buf(),
+        )],
+        total_games: manifest.source_total_games_hint,
+        train_count,
+        val_count,
+        counts_exact: true,
+    }
+}
 
 fn apply_cached_bc_runtime_if_matching(
     config: &mut TrainConfig,
@@ -257,7 +284,8 @@ where
         delta_q_sidecar_source_version: None,
         num_threads: config.num_threads,
     };
-    let scan_sources_len = if config.data_dir.is_file() {
+    let scan_sources_len = if config.bc_shards_manifest_path.is_some() || config.data_dir.is_file()
+    {
         1
     } else {
         fs::read_dir(&config.data_dir)
@@ -276,32 +304,54 @@ where
         "[scan] [{bar:40.cyan/blue}] {pos}/{len} sources {msg}",
     )?;
     scan_pb.set_message("Scanning archives...".to_string());
-    let preflight_paths = crate::artifacts::PreflightPaths::new(&artifacts);
-    let manifest = load_or_scan_manifest_cache(
-        &preflight_paths.manifest_cache_path,
-        &config.data_dir,
-        config.train_fraction,
-        &config.source_filters,
-        Some(&scan_pb),
-        "MJAI data",
-        |cached| {
-            scan_pb.finish_with_message(format!(
-                "reused manifest: {} train / {} val games",
-                cached.manifest.train_count, cached.manifest.val_count
-            ));
-        },
-    )?;
-    if !scan_pb.is_finished() && manifest.counts_exact {
+    let manifest = if let Some(shard_manifest_path) = config.bc_shards_manifest_path.as_ref() {
+        let shard_manifest =
+            hydra_train::data::bc_shards::read_bc_shard_manifest(shard_manifest_path)?;
         scan_pb.finish_with_message(format!(
-            "found {} train / {} val games",
-            manifest.train_count, manifest.val_count
+            "using BC shard manifest: {} train / {} val samples",
+            shard_manifest
+                .splits
+                .iter()
+                .find(|split| split.split == BcShardSplit::Train)
+                .map(|split| split.sample_count)
+                .unwrap_or(0),
+            shard_manifest
+                .splits
+                .iter()
+                .find(|split| split.split == BcShardSplit::Validation)
+                .map(|split| split.sample_count)
+                .unwrap_or(0)
         ));
+        data_manifest_from_bc_shard_manifest(&shard_manifest)
     } else {
-        scan_pb.finish_with_message(format!(
-            "found {} sources; exact game counts deferred to streaming load",
-            manifest.sources.len()
-        ));
-    }
+        let preflight_paths = crate::artifacts::PreflightPaths::new(&artifacts);
+        let manifest = load_or_scan_manifest_cache(
+            &preflight_paths.manifest_cache_path,
+            &config.data_dir,
+            config.train_fraction,
+            &config.source_filters,
+            Some(&scan_pb),
+            "MJAI data",
+            |cached| {
+                scan_pb.finish_with_message(format!(
+                    "reused manifest: {} train / {} val games",
+                    cached.manifest.train_count, cached.manifest.val_count
+                ));
+            },
+        )?;
+        if !scan_pb.is_finished() && manifest.counts_exact {
+            scan_pb.finish_with_message(format!(
+                "found {} train / {} val games",
+                manifest.train_count, manifest.val_count
+            ));
+        } else {
+            scan_pb.finish_with_message(format!(
+                "found {} sources; exact game counts deferred to streaming load",
+                manifest.sources.len()
+            ));
+        }
+        manifest
+    };
 
     let train_cfg = trainer_config_from_train_config(&config);
     train_cfg
@@ -667,7 +717,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn unique_temp_dir(label: &str) -> PathBuf {
-        let base_dir = PathBuf::from("/home/nikketryhard/tmp");
+        let base_dir = std::env::temp_dir();
         fs::create_dir_all(&base_dir).expect("create test temp root");
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

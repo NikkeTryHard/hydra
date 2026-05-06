@@ -1,31 +1,31 @@
-<combined_run_record run_id="answer_9" variant_id="prompt_and_agent_pair" schema_version="1">
-  <metadata>
-    <notes>Combined record for Prompt 9 and its returned agent answer.</notes>
-    <layout>single_markdown_file_prompt_then_answer</layout>
-  </metadata>
+Comparing original vs compressed. Need exact code-block restores only.Checking exact fenced-block diffs only.Restoring exact mismatched fenced blocks.Verifying no fenced-block mismatches remain.<combined_run_record run_id="answer_9" variant_id="prompt_and_agent_pair" schema_version="1">
+<metadata>
+<notes>Combined record for Prompt 9 + returned agent answer.</notes>
+<layout>single_markdown_file_prompt_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="PROMPT_9_VALIDATE_CONSERVATIVE_EXIT_AND_DELTA_Q.md">
-  <![CDATA[# Prompt 9 — conservative exit and delta-q blueprint
+<prompt_section>
+<prompt_text status="preserved" source_path="PROMPT_9_VALIDATE_CONSERVATIVE_EXIT_AND_DELTA_Q.md">
+<![CDATA[# Prompt 9 — conservative exit and delta-q blueprint
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
+Produce impl-ready blueprint.
+No memo.
+Answer itself = blueprint.
 </role>
 
 <direction>
-Work toward the strongest exact blueprint for conservative exit-policy supervision and delta-q supervision.
+Push toward strongest exact blueprint for conservative exit-policy supervision + delta-q supervision.
 
-We want a detailed answer that makes clear:
-- what the current codebase surfaces already support
-- what is still missing or semantically unclosed
-- whether conservative ExIt and delta-q are truly strong next moves or just neat-looking ideas
-- what exact target objects, masks, teacher rules, and trust gates would make them credible
-- what should stay narrow, what should stay deferred, and what should be rejected
-- how to implement the surviving path with minimal guesswork
+Make clear:
+- what current codebase surfaces already support
+- what still missing or semantically unclosed
+- whether conservative ExIt + delta-q are truly strong next moves or only neat-looking ideas
+- what exact target objects, masks, teacher rules, and trust gates make them credible
+- what stays narrow, deferred, rejected
+- how to implement surviving path with minimal guesswork
 
-Use the artifacts below to derive your conclusions.
+Use artifacts below to derive conclusions.
 </direction>
 
 <style>
@@ -35,28 +35,28 @@ Use the artifacts below to derive your conclusions.
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
-- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
+- include enough detail so we can validate ourselves (pdfs, sources, links, similar projects)
 - distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- use search/browse to find original paper, then inspect full PDF with skill; use abstracts/summaries only for discovery, not final evidence base
+- use bash tool to run Python for calculations, math checks, and validation when rigor matters
+- do not finish early; keep looping through discovery, thinking, testing, validation until info saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs and prior handoffs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+Artifacts below reflect what current codebase/docs and prior handoffs seem to say now. They may be incomplete, misleading, stale, or semantically wrong. Treat as evidence to inspect/critique, not truth to inherit.
 </artifact_note>
 
 <artifacts>
-Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+Embedded artifact/context dump intentionally omitted during normalization. Use paired answer body + repo source files for audit and follow-up.
 </artifacts>
 
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_9.md">
-  <![CDATA[# Conservative ExIt + delta-q supervision blueprint
+<answer_section>
+<answer_text status="preserved" source_path="agent_9.md">
+<![CDATA[# Conservative ExIt + delta-q supervision blueprint
 
 ```rust
 //! Full HydraModel combining backbone and all output heads.
@@ -379,7 +379,7 @@ mod tests {
 }
 ```
 
-Artifact B — loss surface, optional targets, and target-dependent activation behavior:
+Artifact B — loss surface, optional targets, target-dependent activation behavior:
 
 ```rust
 //! Loss functions for all 9 heads + total weighted loss.
@@ -635,7 +635,7 @@ pub mod tests {
 }
 ```
 
-Artifact C — sample/batch surfaces and current advanced-target presence behavior:
+Artifact C — sample/batch surfaces + current advanced-target presence behavior:
 
 ```rust
 //! MjaiSample struct, GRP label construction, and batch collation.
@@ -745,7 +745,7 @@ mod tests {
 }
 ```
 
-Artifact D — loader-built targets and provenance-producing paths:
+Artifact D — loader-built targets + provenance-producing paths:
 
 ```rust
 fn build_safety_residual_targets(
@@ -840,7 +840,7 @@ fn load_game_from_reader_can_emit_stage_a_belief_targets() {
 }
 ```
 
-Artifact E — AFBS root outputs, pondering seam, and bridge-side search features:
+Artifact E — AFBS root outputs, pondering seam, bridge-side search features:
 
 ```rust
 pub struct AfbsNode {
@@ -920,7 +920,7 @@ pub fn build_search_features(
 }
 ```
 
-Artifact F — combined-handoff and doctrine excerpts directly relevant to conservative ExIt and delta-q:
+Artifact F — combined-handoff + doctrine excerpts most relevant to conservative ExIt + delta-q:
 
 ```text
 The best immediate tranche is not a broader AFBS push, not Hand-EV realism, and not a belief-teacher program. It is a narrow advanced-target generation + activation tranche centered on sample.rs, mjai_loader.rs, losses.rs, bc.rs, and rl.rs, with only minimal support from existing AFBS/bridge outputs.
@@ -962,7 +962,7 @@ Preferred order:
 - later in same tranche if credible: belief_fields_target, mixture_weight_target, opponent_hand_type_target
 ```
 
-Artifact G — more AFBS tests and PonderResult artifacts:
+Artifact G — more AFBS tests + `PonderResult` artifacts:
 
 ```rust
 #[test]
@@ -1021,7 +1021,7 @@ fn exit_policy_with_zero_tau_becomes_argmax() {
 }
 ```
 
-Artifact H — more sample/target and loader artifacts:
+Artifact H — more sample/target + loader artifacts:
 
 ```rust
 #[test]
@@ -1092,55 +1092,55 @@ The smallest credible tranche is one optional advanced-target carrier, one activ
 
 ## 0. Commit this lane, and keep it narrow
 
-Ship exactly three live advanced targets:
+Ship exactly 3 live advanced targets:
 
-* `exit_target` as **conservative policy distillation into the existing policy head**
-* `delta_q_target` as **masked auxiliary regression into the existing `delta_q` head**
-* `safety_residual_target` as **the already-produced masked auxiliary regression into the existing `safety_residual` head**
+* `exit_target` as **conservative policy distillation into existing policy head**
+* `delta_q_target` as **masked auxiliary regression into existing `delta_q` head**
+* `safety_residual_target` as **already-produced masked auxiliary regression into existing `safety_residual` head**
 
 Do **not** add heads. Do **not** broaden AFBS. Do **not** turn on belief fields, mixture weights, opponent hand type, or oracle critic in this tranche.
 
 Why this survives review:
 
-ExIt’s original paper supports soft tree-policy imitation and explicitly argues that softer, cost-sensitive targets are better than chosen-action one-hots; in their Hex setup, tree-policy targets beat chosen-action targets by about 50 Elo even with similar move-prediction error. AlphaZero likewise trains the policy to match search probabilities rather than hard best-action labels. But later work on Gumbel policy improvement shows that plain visit-count policy updates can fail to improve the policy when search covers only a small subset of actions or when the simulation budget is small, which is exactly why the ExIt path here must be conservative and masked rather than global. AWR, AWAC, and CPI-style results point the same way: advantage-like signals are useful, but only when updates are constrained and semantically well-defined. ([NeurIPS Papers][1])
+ExIt original paper supports soft tree-policy imitation and argues softer, cost-sensitive targets beat chosen-action one-hots; in Hex, tree-policy targets beat chosen-action targets by about 50 Elo even with similar move-prediction error. AlphaZero likewise trains policy to match search probabilities, not hard best-action labels. But later Gumbel policy-improvement work shows plain visit-count policy updates can fail when search covers only small action subset or sim budget is small; that is why ExIt path here must be conservative + masked, not global. AWR, AWAC, and CPI-style results point same way: advantage-like signals help only when updates stay constrained + semantically well-defined. ([NeurIPS Papers][1])
 
 ## 1. What the current surfaces already support
 
 ### Direct artifact support
 
-From the artifacts alone:
+From artifacts alone:
 
-* The model already has `policy_logits`, `delta_q`, and `safety_residual` outputs in the same backbone pass.
-* No new parameterized object is needed for ExIt: it reuses `policy_logits`.
-* `delta_q` and `safety_residual` heads already exist in both actor and learner configs.
-* `soft_target_from_exit(...)` already exists in `losses.rs`.
-* `safety_residual_target` is already produced by the loader, batched, carried into `HydraTargets`, masked to discard actions, and has tests.
+* model already has `policy_logits`, `delta_q`, `safety_residual` outputs in same backbone pass
+* no new parameterized object needed for ExIt: reuse `policy_logits`
+* `delta_q` + `safety_residual` heads already exist in actor + learner configs
+* `soft_target_from_exit(...)` already exists in `losses.rs`
+* `safety_residual_target` already produced by loader, batched, carried into `HydraTargets`, masked to discard actions, and has tests
 * AFBS already surfaces enough raw ingredients to build search-derived targets narrowly:
 
   * root visit count
   * node q values
   * child lookup by action
   * `PonderResult.exit_policy`
-* Bridge-side search features already derive a discard-level `delta_q` summary from AFBS root children.
+* bridge-side search features already derive discard-level `delta_q` summary from AFBS root children
 
 ### Parameter budget reality
 
-Using Artifact A’s default sizes (`hidden_channels=256`, `action_space=46`):
+Using Artifact default sizes (`hidden_channels=256`, `action_space=46`):
 
 * policy head params: `256*46 + 46 = 11,822`
 * delta_q head params: `11,822`
 * safety_residual head params: `11,822`
 
-So the two already-present auxiliary heads together are only about `23,644` params:
+So already-present auxiliary heads together are only about `23,644` params:
 
-* about `0.44%` of the default actor
-* about `0.23%` of the default learner
+* about `0.44%` of default actor
+* about `0.23%` of default learner
 
-ExIt adds **zero** params because it uses the existing policy head.
+ExIt adds **zero** params because it uses existing policy head.
 
 ## 2. What is missing or semantically unclosed
 
-These are the blockers that must be closed before the new supervision is credible.
+These blockers must close before new supervision is credible.
 
 ### 2.1 `exit_target` is not actually carried anywhere
 
@@ -1149,20 +1149,20 @@ Artifacts B/C/D show:
 * no `exit_target` in `MjaiSample`
 * no `exit_target` in `MjaiBatch`
 * no `exit_target` in `HydraTargets`
-* no policy loss path that consumes an exit target
+* no policy loss path consuming exit target
 
-So ExIt is only structurally hinted at by `soft_target_from_exit`, not closed end-to-end.
+So ExIt is only structurally hinted by `soft_target_from_exit`, not closed end-to-end.
 
-### 2.2 `delta_q_target` exists as a head/loss placeholder but not as a real masked target
+### 2.2 `delta_q_target` exists as head/loss placeholder but not as real masked target
 
 Artifacts B/C show:
 
 * `HydraTargets.delta_q_target: Option<Tensor<B,2>>` exists
 * but `MjaiBatch::into_hydra_targets()` sets it to `None`
 * there is **no `delta_q_mask`**
-* the current loss uses dense MSE, which would be wrong for sparse AFBS-derived support
+* current loss uses dense MSE, wrong for sparse AFBS-derived support
 
-That means the present `delta_q` path is not credible yet.
+So present `delta_q` path is not credible yet.
 
 ### 2.3 AFBS action semantics are narrower than Hydra action semantics
 
@@ -1171,10 +1171,10 @@ That means the present `delta_q` path is not credible yet.
 That implies, at minimum:
 
 * no full 46-action closure
-* no proof that riichi/kan/tsumo/call actions are covered
+* no proof riichi/kan/tsumo/call actions are covered
 * likely no closure for red-five discard identity either
 
-Therefore both ExIt and delta-q must stay **discard-only** in this tranche.
+Therefore both ExIt + delta-q must stay **discard-only** in this tranche.
 
 ### 2.4 Q-value perspective is not semantically closed
 
@@ -1184,42 +1184,42 @@ Artifact E exposes:
 * `q_value()` = `total_value / visit_count`
 * `build_search_features()` uses `child_q - root_q` directly
 
-But the artifacts do **not** prove whether `q_value()` is already in root-player perspective or node-to-move perspective. Because `is_opponent` exists and `q_value()` ignores it, this semantic contract is unclosed.
+But artifacts do **not** prove whether `q_value()` is already in root-player perspective or node-to-move perspective. Because `is_opponent` exists and `q_value()` ignores it, this semantic contract is unclosed.
 
-Do not train `delta_q` until AFBS exposes an explicit “q from root-player perspective” API or an explicit test proves the current contract.
+Do not train `delta_q` until AFBS exposes explicit “q from root-player perspective” API or explicit test proves current contract.
 
-### 2.5 `root_exit_policy()` is not proven to be the exact teacher you want
+### 2.5 `root_exit_policy()` is not proven to be exact teacher wanted
 
-The tests prove:
+Tests prove:
 
 * it sums to 1
-* `tau=0` becomes argmax on the best child
+* `tau=0` becomes argmax on best child
 
-They do **not** prove whether `tau=1` equals normalized visit counts, q-softmax, or something mixed.
+They do **not** prove whether `tau=1` equals normalized visit counts, q-softmax, or mixed form.
 
-So do not blindly inherit `root_exit_policy()` as the ExIt teacher. Build the teacher explicitly from child visit counts unless and until a test closes that contract.
+So do not blindly inherit `root_exit_policy()` as ExIt teacher. Build teacher explicitly from child visit counts unless/until test closes that contract.
 
 ### 2.6 The loss artifact is internally inconsistent
 
-Artifact B advertises a full Hydra loss surface, but the shown `total_loss()` only accumulates optional advanced losses and returns zero for the base policy/value/etc. That excerpt may be partial, stale, or wrong.
+Artifact B advertises full Hydra loss surface, but shown `total_loss()` only accumulates optional advanced losses and returns zero for base policy/value/etc. That excerpt may be partial, stale, or wrong.
 
-Before enabling any advanced supervision, add a hard test proving the active branch still produces non-zero base policy loss.
+Before enabling advanced supervision, add hard test proving active branch still produces non-zero base policy loss.
 
-### 2.7 Possible target leakage audit is required
+### 2.7 Possible target leakage audit required
 
-Artifact E shows bridge-side search features already include discard-level `delta_q`. If those same planes are present in learner observations for the same examples, then supervising `delta_q` would be partially teaching the head to copy its input.
+Artifact E shows bridge-side search features already include discard-level `delta_q`. If same planes are present in learner observations for same examples, then supervising `delta_q` may partly teach head to copy input.
 
 Audit `OBS_SIZE` / channel packing before activation:
 
-* if `delta_q` planes are already in the learner input for those samples, either zero those planes when `delta_q_target` is present, or do not train the `delta_q` head on those samples.
+* if `delta_q` planes already in learner input for those samples, either zero those planes when `delta_q_target` is present, or do not train `delta_q` head on those samples
 
 ## 3. Final decision on the three ideas
 
 ### `safety_residual`: **strong next move now**
 
-Keep it. It is already replay-credible, already masked, already produced, and already tested.
+Keep it. Already replay-credible, already masked, already produced, already tested.
 
-### `delta_q`: **strong next move only as a masked auxiliary head**
+### `delta_q`: **strong next move only as masked auxiliary head**
 
 Keep it, but only after:
 
@@ -1227,13 +1227,13 @@ Keep it, but only after:
 * sparse mask support is added
 * action-family scope is narrowed to compatible discard states
 
-Do **not** use it yet as a policy-improvement weight, action reranker, or decision override.
+Do **not** use it yet as policy-improvement weight, action reranker, or decision override.
 
 ### conservative ExIt: **strong next move only as masked, partial-policy distillation**
 
-Keep it, but only on states where the search teacher is compatible with the action family and has enough coverage.
+Keep it, but only on states where search teacher is compatible with action family and has enough coverage.
 
-Do **not** replace the base BC policy loss with ExIt.
+Do **not** replace base BC policy loss with ExIt.
 Do **not** apply ExIt on all legal actions.
 Do **not** use dense search zeros to suppress unsearched legal actions.
 
@@ -1241,7 +1241,7 @@ Do **not** use dense search zeros to suppress unsearched legal actions.
 
 ## 4.1 Search-compatible state definition
 
-Use search-derived `exit_target` and `delta_q_target` **only** on states satisfying:
+Use search-derived `exit_target` + `delta_q_target` **only** on states satisfying:
 
 ```text
 compatible_discard_state(s) :=
@@ -1273,9 +1273,9 @@ fn compatible_discard_state(legal_mask: &[f32; HYDRA_ACTION_SPACE]) -> bool {
 }
 ```
 
-Reason for the aka skip: safety residual can map aka to base tile risk because post-discard danger depends on the tile class. ExIt and delta-q cannot safely do that, because discarding red vs non-red five can change future value.
+Reason for aka skip: safety residual can map aka to base tile risk because post-discard danger depends on tile class. ExIt + delta-q cannot safely do that, because discarding red vs non-red five can change future value.
 
-This is intentionally narrow. Relax it only after AFBS can surface full 46-action child stats.
+This is intentionally narrow. Relax only after AFBS can surface full 46-action child stats.
 
 ## 4.2 `exit_target`
 
@@ -1284,7 +1284,7 @@ Teacher object:
 [
 t_{\text{exit}}(a \mid s) =
 \begin{cases}
-\frac{N(s,a)}{\sum_{b \in C(s)} N(s,b)} & a \in C(s) \
+\frac{N(s,a)}{\sum_{b \in C(s)} N(s,b)} & \in C(s) \
 0 & \text{otherwise}
 \end{cases}
 ]
@@ -1292,7 +1292,7 @@ t_{\text{exit}}(a \mid s) =
 Where:
 
 * (N(s,a)) is AFBS root child visit count
-* (C(s)) is the set of compatible discard actions with a root child and `child_visits >= 2`
+* (C(s)) is set of compatible discard actions with root child and `child_visits >= 2`
 
 Gate:
 
@@ -1315,13 +1315,13 @@ Mask:
 m_{\text{exit}}(a \mid s) = \mathbf{1}[a \in C(s)]
 ]
 
-Important: `exit_target` is normalized **only over the masked subset**, not over all legal actions.
+Important: `exit_target` is normalized **only over masked subset**, not over all legal actions.
 
 Why this exact target:
 
 * ExIt’s tree-policy targets are normalized root visit distributions and were empirically stronger than hard chosen-action targets.
 * AlphaZero also distills search probabilities rather than hard actions.
-* But Gumbel planning shows that ungated visit-count imitation can fail when many actions are unvisited or simulation counts are small, so this target must stay subset-masked and coverage-gated here. ([NeurIPS Papers][1])
+* But Gumbel planning shows ungated visit-count imitation can fail when many actions are unvisited or sim counts are small, so this target must stay subset-masked + coverage-gated here. ([NeurIPS Papers][1])
 
 ## 4.3 `delta_q_target`
 
@@ -1334,11 +1334,11 @@ Teacher object:
 Where:
 
 * (Q_{\text{root-persp}}(s)) is root q in **root-player perspective**
-* (Q_{\text{root-persp}}(s,a)) is child q in the **same perspective**
+* (Q_{\text{root-persp}}(s,a)) is child q in **same perspective**
 
 Support set:
 
-* compatible discard actions with a root child and `child_visits >= 4`
+* compatible discard actions with root child and `child_visits >= 4`
 
 Mask / weight:
 
@@ -1361,12 +1361,12 @@ delta_support_count >= 1
 Why this exact object:
 
 * ExIt explicitly identifies action-value targets as cost-sensitive.
-* AWR/AWAC show advantage-like supervision can be powerful, but only in constrained forms; they do not justify an unconstrained direct actor rewrite from sparse, search-budget-dependent q-deltas.
-* Therefore delta-q belongs here as a **masked auxiliary prediction task**, not as a policy weight yet. ([NeurIPS Papers][1])
+* AWR/AWAC show advantage-like supervision can be powerful, but only in constrained forms; they do not justify unconstrained direct actor rewrite from sparse, search-budget-dependent q-deltas.
+* Therefore delta-q belongs here as **masked auxiliary prediction task**, not as policy weight yet. ([NeurIPS Papers][1])
 
 ## 4.4 `safety_residual_target`
 
-Keep the existing loader rule exactly as-is:
+Keep existing loader rule exactly as-is:
 
 [
 t_{\text{safety}}(a) = \mathrm{clip}\big(\text{public_safety}(a) - \text{exact_dealin_risk}(a), 0, 1\big)
@@ -1378,7 +1378,7 @@ No broadening needed in this tranche.
 
 ## 5. Data model changes
 
-Use a single optional search-derived carrier for the new narrow search supervision.
+Use one optional search-derived carrier for new narrow search supervision.
 
 ```rust
 pub struct SearchSupervision {
@@ -1436,11 +1436,11 @@ pub struct HydraTargets<B: Backend> {
 }
 ```
 
-Do not add gates as separate tensors unless later logging proves you need them. Hard gates plus masks are enough for the first credible merge.
+Do not add gates as separate tensors unless later logging proves need. Hard gates + masks are enough for first credible merge.
 
 ## 6. AFBS API changes required before target generation
 
-Add an explicit child-stats API that closes both visit-count access and q perspective.
+Add explicit child-stats API that closes both visit-count access + q perspective.
 
 ```rust
 pub struct ChildStats {
@@ -1462,10 +1462,10 @@ impl AfbsTree {
 
 Rules:
 
-* `q_root_perspective` must be documented and tested.
-* If the current AFBS backup already stores root-oriented values, return them unchanged.
-* If values are node-to-move oriented, apply the sign conversion here.
-* Do not guess in the loader.
+* `q_root_perspective` must be documented + tested
+* if current AFBS backup already stores root-oriented values, return unchanged
+* if values are node-to-move oriented, apply sign conversion here
+* do not guess in loader
 
 Also add one semantic test:
 
@@ -1610,10 +1610,10 @@ samples.push(MjaiSample {
 
 In `collate_batch`:
 
-* if no sample has `search_supervision`, keep all four search tensors `None`
+* if no sample has `search_supervision`, keep all 4 search tensors `None`
 * otherwise allocate dense zero tensors `[batch, 46]` for `exit_target`, `exit_mask`, `delta_q_target`, `delta_q_mask`
 * fill present rows
-* absent rows remain all-zero
+* absent rows stay all-zero
 
 Then pass through `into_hydra_targets()` unchanged.
 
@@ -1640,11 +1640,11 @@ pub struct HydraLossConfig {
 }
 ```
 
-Update `total_weight()` and `validate()`.
+Update `total_weight()` + `validate()`.
 
 ### 9.2 Conservative ExIt loss
 
-Use the existing helper, but **detach the model logits before mixing**.
+Use existing helper, but **detach model logits before mixing**.
 
 ```rust
 pub fn exit_policy_ce_per_sample<B: Backend>(
@@ -1665,15 +1665,15 @@ pub fn exit_policy_ce_per_sample<B: Backend>(
 }
 ```
 
-Why the detach matters:
+Why detach matters:
 
-If (q=\text{softmax}(z)), (t) is the exit teacher, and (\tilde t=(1-\alpha),\text{stopgrad}(q)+\alpha t), then
+If (q=\text{softmax}(z)), (t) is exit teacher, and (\tilde t=(1-\alpha),\text{stopgrad}(q)+\alpha t), then
 
 [
 \nabla_z \mathrm{CE}(\tilde t, q) = q - \tilde t = \alpha (q - t)
 ]
 
-on the masked subset. That is exactly the conservative behavior wanted: same direction as full search imitation, smaller step.
+on masked subset. That is exact conservative behavior wanted: same direction as full search imitation, smaller step.
 
 Numerical toy check confirms it:
 
@@ -1709,7 +1709,7 @@ pub fn masked_action_huber<B: Backend>(
 
 ### 9.4 Total loss shape
 
-Keep the base policy/value/etc path intact. Add the new terms, do not replace base BC.
+Keep base policy/value/etc path intact. Add new terms; do not replace base BC.
 
 ```rust
 let l_exit = match (&targets.exit_target, &targets.exit_mask) {
@@ -1764,9 +1764,9 @@ Implement all plumbing in one pass, but activate in this order:
 
 Reason:
 
-* safety residual is already semantically closed
+* safety residual already semantically closed
 * delta-q needs only AFBS q-perspective + mask closure
-* exit needs the most trust-gating and the most careful loss wiring
+* exit needs most trust-gating + most careful loss wiring
 
 ### 10.2 Initial weights
 
@@ -1781,19 +1781,19 @@ delta_q_huber_beta = 0.25
 w_safety_residual = 0.1
 ```
 
-Because `exit_mix=0.25` already scales the ExIt gradient down by 4x, `w_exit=1.0` is conservative enough.
+Because `exit_mix=0.25` already scales ExIt gradient down by 4x, `w_exit=1.0` is conservative enough.
 
 ### 10.3 Refuse activation if these audits fail
 
-Keep `w_exit = 0` if either of these is false:
+Keep `w_exit = 0` if either false:
 
-* `root_exit_policy` semantics are not closed by test, and the explicit child-visit builder was not implemented
+* `root_exit_policy` semantics are not closed by test, and explicit child-visit builder was not implemented
 * median `exit_coverage` over compatible states is below `0.60`
 
-Keep `w_delta_q = 0` if either of these is false:
+Keep `w_delta_q = 0` if either false:
 
 * q perspective is not closed by test
-* delta-q target is present in the learner input planes for those same samples and has not been zeroed out
+* delta-q target is present in learner input planes for those same samples and has not been zeroed out
 
 ## 11. Worked example
 
@@ -1824,7 +1824,7 @@ exit_coverage = 6 / 10 = 0.60
 
 So `exit_target` is active.
 
-Normalized `exit_target` on the masked subset:
+Normalized `exit_target` on masked subset:
 
 ```text
 sum = 32 + 24 + 16 + 8 + 4 + 4 = 88
@@ -1871,11 +1871,11 @@ mask[9]  = 0.25
 mask[11] = 0.25
 ```
 
-This is the exact kind of state you want:
+This is exact kind of state wanted:
 
-* ExIt gets a soft, cost-sensitive policy teacher over searched discard actions.
-* Delta-q learns action ordering and margins without pretending all 46 actions were searched.
-* Non-discard actions remain untouched.
+* ExIt gets soft, cost-sensitive policy teacher over searched discard actions.
+* Delta-q learns action ordering + margins without pretending all 46 actions were searched.
+* Non-discard actions stay untouched.
 
 ## 12. Tests to add before merge
 
@@ -1915,7 +1915,7 @@ Add all of these.
 #[test] fn base_policy_loss_nonzero_when_behavior_target_present()
 ```
 
-That last test is mandatory because Artifact B’s shown `total_loss()` is not trustworthy enough.
+That last test is mandatory because Artifact B shown `total_loss()` is not trustworthy enough.
 
 ## 13. Keep narrow, defer, reject
 
@@ -1924,7 +1924,7 @@ That last test is mandatory because Artifact B’s shown `total_loss()` is not t
 * discard-only states
 * no aka ambiguity
 * auxiliary losses only
-* base BC policy loss remains the anchor
+* base BC policy loss remains anchor
 * ExIt masked to searched subset only
 * delta-q masked to visited subset only
 
@@ -1937,39 +1937,39 @@ That last test is mandatory because Artifact B’s shown `total_loss()` is not t
 * completed-Q / Gumbel-style policy improvement
 * belief fields / mixture weights / opponent hand type / oracle critic
 
-Why defer the Gumbel-style path:
+Why defer Gumbel-style path:
 
-It is real, not decorative: the Gumbel paper explicitly shows that plain visit-count policy updates can fail to improve the policy when not all actions are visited, and its fix uses completed q-values and a more substantial planning change. That is a legitimate future lane, especially if AFBS keeps operating under very low simulation budgets, but it is not the smallest credible tranche here. ([OpenReview][2])
+It is real, not decorative: Gumbel paper explicitly shows plain visit-count policy updates can fail to improve policy when not all actions are visited, and its fix uses completed q-values + more substantial planning change. That is legitimate future lane, especially if AFBS keeps operating under low simulation budgets, but not smallest credible tranche here. ([OpenReview][2])
 
 ### Reject in this tranche
 
 * dense unmasked `delta_q` regression on zero-filled vectors
-* dense ExIt CE over full legal mask when search covered only a subset
-* using `node_q_value()` without a perspective contract
-* using `root_exit_policy()` as a teacher without a semantics test
-* turning on belief targets because the loader can already emit them
+* dense ExIt CE over full legal mask when search covered only subset
+* using `node_q_value()` without perspective contract
+* using `root_exit_policy()` as teacher without semantics test
+* turning on belief targets because loader can already emit them
 
-The belief/mixture lane is structurally present, but the current teacher is stage-A public-remaining-count logic, not a closed oracle or search-backed posterior. Leave it off.
+Belief/mixture lane is structurally present, but current teacher is stage-A public-remaining-count logic, not closed oracle or search-backed posterior. Leave it off.
 
 ## 14. The exact merge sequence
 
 1. Add `SearchSupervision` carrier to `MjaiSample`.
 2. Add AFBS `ChildStats` API with explicit root-perspective q semantics.
-3. Implement `build_search_supervision()` in loader with the discard-only + no-aka gate.
-4. Plumb `exit_target`, `exit_mask`, `delta_q_target`, `delta_q_mask` through batch and `HydraTargets`.
+3. Implement `build_search_supervision()` in loader with discard-only + no-aka gate.
+4. Plumb `exit_target`, `exit_mask`, `delta_q_target`, `delta_q_mask` through batch + `HydraTargets`.
 5. Add `w_exit`, `exit_mix`, `delta_q_huber_beta` to loss config.
 6. Implement `exit_policy_ce_per_sample()` using `soft_target_from_exit(outputs.policy_logits.detach(), ..., exit_mask, exit_mix)`.
 7. Replace dense `delta_q` MSE with masked Huber.
-8. Add the tests above.
+8. Add tests above.
 9. Turn on `w_safety_residual=0.1`.
 10. Turn on `w_delta_q=0.1` only after q-perspective + leakage audit passes.
-11. Turn on `w_exit=1.0, exit_mix=0.25` only after coverage stats show the gate is actually producing a useful supervised subset.
+11. Turn on `w_exit=1.0, exit_mix=0.25` only after coverage stats show gate is producing useful supervised subset.
 
-That is the surviving path.
+That is surviving path.
 
 [1]: https://papers.neurips.cc/paper/7120-thinking-fast-and-slow-with-deep-learning-and-tree-search.pdf "https://papers.neurips.cc/paper/7120-thinking-fast-and-slow-with-deep-learning-and-tree-search.pdf"
 [2]: https://openreview.net/pdf?id=bERaNdoegnO "https://openreview.net/pdf?id=bERaNdoegnO"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

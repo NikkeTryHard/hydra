@@ -11,13 +11,13 @@ This file keeps weaker, older, broader, or reserve-only Hydra planning surfaces 
 - Use this file only when you intentionally want:
   - historical context,
   - reserve-shelf ideas,
-  - or archived plan surfaces that should not drive current implementation by default.
+  - archived plan surfaces that should not drive current impl by default.
 
 ## Archived / demoted categories
 
 ### 1. Legacy architecture and stale interfaces
 
-These are not current defaults:
+Not current defaults:
 - old `85x34` full-tensor assumptions (current reality = 192x34 fixed superset)
 - broad 40-block / PPO-era planning language
 - old full-stack build ordering that ignores reconciled active path
@@ -30,7 +30,7 @@ Primary homes:
 
 ### 2. Reserve-shelf techniques worth preserving
 
-These may matter later, but are not default active path now:
+May matter later; not default active path now:
 - stronger endgame exactification
 - robust-opponent search backups
 - confidence-gated safe exploitation
@@ -41,7 +41,7 @@ These may matter later, but are not default active path now:
 
 ### 3. Demoted complexity that should not quietly return to the mainline
 
-These are not banned forever, but should not re-enter current implementation by accident:
+Not banned forever, but should not re-enter current impl by accident:
 - broad “search everywhere” AFBS
 - duplicated belief stacks
 - adding more heads before existing advanced targets are credible and alive
@@ -50,7 +50,7 @@ These are not banned forever, but should not re-enter current implementation by 
 
 ## Why this archive exists
 
-Hydra has enough strong ideas that deleting older or reserve-only material would waste signal.
+Hydra has many strong ideas; deleting older or reserve-only material wastes signal.
 But mixing all of it into active docs creates doctrine drift.
 
 This archive keeps strong-but-not-current material visible **without** letting it compete with Hydra's canonical archive SSOT, promoted doctrine summaries, or current code/runtime reality.

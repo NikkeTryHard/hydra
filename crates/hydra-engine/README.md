@@ -4,7 +4,7 @@ Internal game engine for Hydra Riichi Mahjong AI. Vendored from [smly/RiichiEnv]
 
 ## Overview
 
-`hydra-engine` gives full Riichi Mahjong sim Hydra training pipeline runs on: game state mgmt, hand eval, score calc, legal action gen for 4p + 3p (sanma).
+`hydra-engine` = full Riichi Mahjong sim Hydra training uses: state mgmt, hand eval, score calc, legal action gen for 4p + 3p (sanma).
 
 Crate vendored, not external dep. Why: perf-critical mods (zero-copy obs, stack-alloc actions, validation bypass for self-play) without waiting upstream or carrying patch set. Lib name stays `riichienv_core` so `hydra-core` imports need no rename.
 
@@ -13,7 +13,7 @@ Workspace-internal crate. Not published to crates.io.
 ## Origin and License
 
 - Vendored from `riichienv-core` v0.4.7 by [smly](https://github.com/smly) (Apache-2.0).
-- Correctness verified upstream against 1M+ hanchan using Mortal as black-box MJAI player, zero errors ([source](https://github.com/smly/RiichiEnv)).
+- Upstream correctness checked against 1M+ hanchan using Mortal as black-box MJAI player, zero errors ([source](https://github.com/smly/RiichiEnv)).
 - Lib name stays `riichienv_core` for backward compat with `hydra-core` imports.
 - Original license preserved (Apache-2.0). Hydra-specific additions (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) use BSL-1.1 (same as `hydra-core`).
 
@@ -24,7 +24,7 @@ Changes from upstream `riichienv-core`, all for training throughput:
 | Area | Change | Rationale |
 |------|--------|-----------|
 | Action type | `consume_tiles`: `Vec<u8>` -> `[u8; 4]` | `Action` now `Copy`, zero heap alloc |
-| HandEvaluator | `new()` takes `&[u8]` + `&[Meld]` (borrows) | Removes 30+ `clone()` calls per step |
+| HandEvaluator | `new()` takes `&[u8]` + `&[Meld]` (borrows) | Removes 30+ `clone()` per step |
 | GameState | `step_unchecked()` | Skips redundant validation in self-play loops |
 | GameState | `_execute_step` deleted | Single step impl via `_execute_step_array`, -905 lines |
 | GameState | Extracted handler methods | `_handle_discard/riichi/ankan/kakan/tsumo/wait_response` |
@@ -60,8 +60,8 @@ Changes from upstream `riichienv-core`, all for training throughput:
 | `types` | Core data types: `Hand`, `Wind`, `Meld`, `MeldType`, `Conditions`, `WinResult` |
 | `parser` | MPSZ notation parsing for tiles + hands |
 | `mjai_event` | `MjaiEvent` typed enum + `mjai_event!` macro for zero-cost logging (Hydra addition) |
-| `yaku` | Yaku (winning hand pattern) defs + detection (4p) |
-| `agari` | Agari (winning hand) table lookups |
+| `yaku` | Yaku defs + detection (4p) |
+| `agari` | Agari table lookups |
 | `replay` | MJAI + MJSoul replay parsing with step-by-step iteration |
 | `errors` | Error types (`RiichiError`) + result alias (`RiichiResult`) |
 
@@ -75,7 +75,7 @@ Changes from upstream `riichienv-core`, all for training throughput:
 ## Benchmarks
 
 Measured on Intel Core Ultra 7 265KF, 20 cores, `RAYON_NUM_THREADS=4`.
-Trivial agent (first legal action), Criterion median. Full methodology
+Trivial agent (first legal action), Criterion median. Full method
 in [research/infrastructure/ENGINE_BENCHMARKS.md](../../research/infrastructure/ENGINE_BENCHMARKS.md).
 
 | Benchmark | hydra-engine | riichienv-core 0.4.7 | Delta |

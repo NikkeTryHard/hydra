@@ -2,7 +2,7 @@
 
 Current shipped/staged snapshot for Hydra built surfaces.
 
-Use file for: what shipped today, what implemented but staged, what implemented but not default-on.
+Use file for: what shipped today, what impl but staged, what impl but not default-on.
 
 File reports shipped/staged status only.
 
@@ -17,8 +17,8 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 
 | Term | Meaning |
 |---|---|
-| `shipped baseline` | implemented, part of current live baseline |
-| `implemented but not default-on` | implemented, validated enough to exist in-code, intentionally not default runtime/training path |
+| `shipped baseline` | impl, part of current live baseline |
+| `implemented but not default-on` | impl, validated enough to exist in-code, intentionally not default runtime/training path |
 | `implemented but staged` | core code path exists, promotion/activation intentionally deferred |
 | `reserve shelf` | documented later-work direction, not current mainline priority |
 | `historical` | preserved context only; not current governing truth |
@@ -38,7 +38,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 
 ### Implemented but not default-on
 
-- Narrow DeltaQ supervision lane implemented in code, promotion-gated through arena-confirmation path.
+- Narrow DeltaQ supervision lane impl in code, promotion-gated through arena-confirmation path.
 - DeltaQ promotion artifacts now persist explicit `arena_decision` plus `arena_report`, but lane still **not** default-on.
 
 ### Implemented but staged
@@ -67,7 +67,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 | NVTX profiling | shipped baseline | Orchestration-level fully instrumented (epoch, step, validation, checkpoint, logging, self-play, stage-2 benchmark). BC microbatch sub-stages (collation, forward, loss, backward, optimizer_step) instrumented. Library internals not yet instrumented. Gated by `HYDRA_NVTX` env var via dlopen. |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |
 | ExIt carrier | shipped baseline | Live self-play lane + replay/sample sidecar-first lane |
-| DeltaQ lane | implemented but not default-on | Arena-confirmation path implemented; promotion artifact now records pre-arena recommendation plus final `arena_decision`/`arena_report` |
+| DeltaQ lane | implemented but not default-on | Arena-confirmation path impl; promotion artifact now records pre-arena rec plus final `arena_decision`/`arena_report` |
 | `mixture_weight` activation | implemented but staged | Surface exists, promotion remains deferred |
 | `opponent_hand_type` activation | implemented but staged | Surface exists, target closure remains incomplete |
 | AFBS broad default runtime | reserve shelf | Specialist / hard-state gated direction only |

@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-**The judges are right about DRDA -- it has ZERO neural-scale experiments.** But you can pivot this into a strength: R-NaD (the algorithm family DRDA extends) IS proven at neural scale via DeepNash. The gap is specifically in DRDA's paper, not in the regularized dynamics approach itself.
+**Judges right on DRDA -- it has ZERO neural-scale experiments.** But this gap can become strength: R-NaD (algo family DRDA extends) IS proven at neural scale via DeepNash. Gap sits in DRDA paper, not in regularized dynamics approach itself.
 
 | Algorithm | Neural-Scale Proof? | Largest Game | Compute | Open-Source? |
 |-----------|-------------------|--------------|---------|--------------|
@@ -18,19 +18,19 @@
 
 ### Architecture
 
-DeepNash uses a **U-Net / Pyramid convolutional network** with residual blocks and skip connections:
+DeepNash uses **U-Net / Pyramid convolutional network** with residual blocks + skip connections:
 
 - **Input**: 10x10x82 tensor (82 stacked frames encoding private info, public info, move history)
 - **Torso**: Pyramid Module with N=2 outer blocks, M=2 inner blocks
   - Outer channels: **256**
   - Inner channels: **320**
-  - Uses Conv ResBlocks (3x3 kernels, bottleneck at C//2) and Deconv ResBlocks with symmetric skip connections
+  - Uses Conv ResBlocks (3x3 kernels, bottleneck at C//2) + Deconv ResBlocks with symmetric skip connections
 - **4 Output Heads**:
   1. **Value head** (Pyramid N=0, M=0) -> scalar
   2. **Deployment policy** (Pyramid N=1, M=0) -> 10x10 distribution
   3. **Piece-selection policy** (Pyramid N=1, M=0) -> 10x10 distribution
   4. **Piece-displacement policy** (Pyramid N=1, M=0) -> 10x10 distribution
-- **Parameter count**: Not explicitly stated, but based on the architecture (256/320 channel U-Net with ~14 ResBlocks across torso + 4 heads), estimated in the **low millions** range
+- **Parameter count**: Not stated explicitly, but from architecture (256/320 channel U-Net with ~14 ResBlocks across torso + 4 heads), likely **low millions** range
 
 ### Training Infrastructure
 
@@ -39,7 +39,7 @@ DeepNash uses a **U-Net / Pyramid convolutional network** with residual blocks a
   - Actors: C++ environment loop with OpenSpiel interfaces
   - Replay buffer: Full-game replay, variable-length trajectories
   - Learner: JAX distributed synchronous training via `pmap`
-- **Total compute**: Not explicitly quantified in TPU-hours, but 1,024 TPU nodes is ~DeepMind scale
+- **Total compute**: Not stated in TPU-hours, but 1,024 TPU nodes = DeepMind scale
 
 ### Training Hyperparameters (Table 2 of paper)
 
@@ -58,17 +58,17 @@ DeepNash uses a **U-Net / Pyramid convolutional network** with residual blocks a
 
 ### R-NaD Iteration Schedule
 
-The R-NaD outer loop went through **165+ iterations** with this schedule:
+R-NaD outer loop ran **165+ iterations** with this schedule:
 - m <= 100: delta_m = 10,000 steps per iteration
 - 100 < m <= 165: delta_m = 100,000 steps per iteration
 - m > 165: delta_m = 35,000 steps per iteration
 
-The regularization target network is updated at each iteration boundary, with a smooth alpha interpolation between old and new regularization targets.
+Regularization target network updates at each iteration boundary, with smooth alpha interpolation between old + new regularization targets.
 
 ### Training Stability
 
 Key stability mechanisms:
-1. **Lyapunov function**: R-NaD defines dynamics with a provably decreasing Lyapunov function
+1. **Lyapunov function**: R-NaD defines dynamics with provably decreasing Lyapunov function
 2. **Exponential target averaging**: gamma=0.001 for soft target network updates
 3. **V-trace**: Adapted for two-player imperfect-info (off-policy correction)
 4. **NeuRD update**: Neural Replicator Dynamics for policy gradient
@@ -83,11 +83,11 @@ Key stability mechanisms:
 
 ### Critical Finding: NO Neural Experiments
 
-DRDA is **purely tabular**. The paper explicitly uses dynamic programming for value computation:
+DRDA is **purely tabular**. Paper explicitly uses dynamic programming for value computation:
 
-> "Since the per-iteration time complexity of discrete-time DRDA (SDRDA; see Algorithm 1) is a standard O(|H|) when we use **dynamic programming** to compute the advantage value..." (Section 5, page 8)
+> "Since per-iteration time complexity of discrete-time DRDA (SDRDA; see Algorithm 1) is standard O(|H|) when we use **dynamic programming** to compute advantage value..." (Section 5, page 8)
 
-> "Since the evaluation of value functions requires repeated dynamic programming in each iteration, we only run a total of 100 iterations..." (Section 5.2, page 10)
+> "Since evaluation of value functions requires repeated dynamic programming in each iteration, we only run total of 100 iterations..." (Section 5.2, page 10)
 
 Algorithm 1 (page 29), step 3 explicitly says: "Compute all Pr(h|pi_m) and A^i_{pi_m}(h, a^i) for all i in N (**using dynamic programming**)."
 
@@ -106,13 +106,13 @@ Algorithm 1 (page 29), step 3 explicitly says: "Compute all Pr(h|pi_m) and A^i_{
 
 ### R-NaD IS a baseline in the paper
 
-DRDA compares against R-NaD in EFG experiments. The paper notes:
-> "R-NaD has a multi-round learning pattern close to DRDA, but the process is much slower and suffers from an oscillation in the 4-player scenario." (page 10)
+DRDA compares against R-NaD in EFG experiments. Paper notes:
+> "R-NaD has multi-round learning pattern close to DRDA, but process is much slower and suffers from oscillation in 4-player scenario." (page 10)
 
 ### Neural Scaling Mentioned Only as Future Work
 
-The paper's motivation acknowledges neural scaling:
-> "Last-iterate convergence... is an **ideal property for further extension to deep reinforcement learning (DRL)**, as it is intractable to time-average function approximators like neural networks." (page 2)
+Paper motivation acknowledges neural scaling:
+> "Last-iterate convergence... is **ideal property for further extension to deep reinforcement learning (DRL)**, as it is intractable to time-average function approximators like neural networks." (page 2)
 
 But **no neural experiments were conducted**.
 
@@ -122,14 +122,14 @@ But **no neural experiments were conducted**.
 
 ### R-NaD Implementations
 
-**a) baskuit/R-NaD** (50 stars, PyTorch)
+baskuit/R-NaD** (50 stars, PyTorch)
 - **URL**: https://github.com/baskuit/R-NaD
 - **Permalink (rnad.py)**: https://github.com/baskuit/R-NaD/blob/0d163921bc597405040c33c89e151b18da68fa6e/learn/rnad.py
 - **Permalink (net.py)**: https://github.com/baskuit/R-NaD/blob/0d163921bc597405040c33c89e151b18da68fa6e/nn/net.py
 - **What it is**: R-NaD on abstract stochastic matrix trees (GPU-accelerated)
-- **Neural nets**: MLP (2-layer) and ConvNet (ResBlock tower) implementations
+- **Neural nets**: MLP (2-layer) + ConvNet (ResBlock tower) implementations
 - **Uses**: Full R-NaD loop with v-trace, NeuRD, entropy scheduling, identical hyperparams to DeepNash paper
-- **Scale**: Consumer hardware -- designed for accessible experimentation, NOT game-scale
+- **Scale**: Consumer hardware -- built for accessible experimentation, NOT game-scale
 
 **b) AbhinavPeri/DeepNash** (7 stars, PyTorch)
 - **URL**: https://github.com/AbhinavPeri/DeepNash
@@ -147,24 +147,24 @@ But **no neural experiments were conducted**.
 
 ### OpenSpiel Status
 
-**OpenSpiel does NOT have an official R-NaD implementation.**
+**OpenSpiel does NOT have official R-NaD impl.**
 
 Searched exhaustively:
 - `open_spiel/python/algorithms/` -- no rnad directory or file
 - `open_spiel/python/jax/` -- has NFSP but no R-NaD
 - GitHub code search across all google-deepmind repos -- zero R-NaD results
 
-OpenSpiel has NFSP (`open_spiel/python/jax/nfsp.py`) and various CFR variants, but R-NaD was kept internal to DeepMind's DeepNash project.
+OpenSpiel has NFSP (`open_spiel/python/jax/nfsp.py`) + various CFR variants, but R-NaD stayed internal to DeepMind's DeepNash project.
 
 ### DRDA Implementations
 
-**No open-source implementation of DRDA exists.** GitHub search returned zero results for DRDA in the game-theory context.
+**No open-source impl of DRDA exists.** GitHub search returned zero results for DRDA in game-theory context.
 
 ---
 
 ## 4. R-NaD vs NFSP at Neural Scale
 
-No direct published comparison exists between R-NaD and NFSP at neural scale. However:
+No direct published comparison exists between R-NaD and NFSP at neural scale. But:
 
 | Dimension | NFSP (Heinrich & Silver, 2016) | R-NaD (DeepNash, 2022) |
 |-----------|-------------------------------|------------------------|
@@ -175,15 +175,15 @@ No direct published comparison exists between R-NaD and NFSP at neural scale. Ho
 | Open-source | YES (OpenSpiel) | NO |
 | Key advantage | Simple, well-understood | No cycling, last-iterate convergence |
 
-The R-NaD/DRDA family's key theoretical advantage is **last-iterate convergence** -- you don't need to average policies across training, which is impractical with neural nets. NFSP works around this with a separate supervised network tracking the average policy, but this is an approximation.
+R-NaD/DRDA family's key theoretical advantage is **last-iterate convergence** -- no need to average policies across training, which is impractical with neural nets. NFSP works around this with separate supervised network tracking average policy, but this is approximation.
 
 ---
 
 ## 5. Follow-Up Work After DeepNash
 
-No published work has applied R-NaD to another game at DeepNash-scale. The community implementations (baskuit, AbhinavPeri, etc.) are all smaller-scale experiments. DeepMind themselves noted R-NaD "can be directly applied to other two-player zero-sum games" but haven't published such follow-ups.
+No published work has applied R-NaD to another game at DeepNash-scale. Community implementations (baskuit, AbhinavPeri, etc.) are all smaller-scale experiments. DeepMind itself noted R-NaD "can be directly applied to other two-player zero-sum games" but has not published such follow-ups.
 
-DRDA (ICLR 2025) is the primary theoretical follow-up, extending R-NaD's regularized dynamics to multiplayer POSGs, but stays purely tabular.
+DRDA (ICLR 2025) is main theoretical follow-up, extending R-NaD's regularized dynamics to multiplayer POSGs, but stays purely tabular.
 
 ---
 
@@ -191,17 +191,17 @@ DRDA (ICLR 2025) is the primary theoretical follow-up, extending R-NaD's regular
 
 ### The judges' critique is valid but addressable:
 
-1. **DRDA itself is unproven at neural scale** -- this is factually correct. The DRDA paper has zero neural experiments.
+1. **DRDA itself is unproven at neural scale** -- factually correct. DRDA paper has zero neural experiments.
 
-2. **BUT R-NaD (the parent algorithm) IS proven at neural scale** -- DeepNash is the proof. 1,024 TPUs, Stratego (10^535 states), published in Science.
+2. **BUT R-NaD (parent algorithm) IS proven at neural scale** -- DeepNash is proof. 1,024 TPUs, Stratego (10^535 states), published in Science.
 
-3. **DRDA's key contribution is theoretical** -- it provides last-iterate convergence guarantees and extends to multiplayer, which R-NaD alone doesn't formally provide for the general POSG case.
+3. **DRDA's key contribution is theoretical** -- it provides last-iterate convergence guarantees + extends to multiplayer, which R-NaD alone does not formally provide for general POSG case.
 
 ### Suggested response to reviewers:
 
-> "While DRDA itself has only been validated in tabular settings (Lu et al., ICLR 2025), the closely related R-NaD algorithm -- which DRDA directly extends -- has been validated at unprecedented neural scale in DeepNash (Perolat et al., Science 2022), using a U-Net pyramid architecture trained on 1,024 TPU nodes for 7.21M steps on Stratego (10^535 states). DRDA's theoretical extensions (last-iterate convergence, multiplayer POSG support) are algorithmically lightweight modifications to R-NaD's reward transformation scheme, and the neural-scale infrastructure (v-trace, NeuRD updates, entropy scheduling) transfers directly. Our approach specifically leverages these proven neural-scale components while incorporating DRDA's improved convergence properties."
+> "While DRDA itself has only been validated in tabular settings (Lu et al., ICLR 2025), closely related R-NaD algorithm -- which DRDA directly extends -- has been validated at unprecedented neural scale in DeepNash (Perolat et al., Science 2022), using U-Net pyramid architecture trained on 1,024 TPU nodes for 7.21M steps on Stratego (10^535 states). DRDA's theoretical extensions (last-iterate convergence, multiplayer POSG support) are algorithmically lightweight modifications to R-NaD's reward transformation scheme, and neural-scale infrastructure (v-trace, NeuRD updates, entropy scheduling) transfers directly. Our approach specifically leverages these proven neural-scale components while incorporating DRDA's improved convergence properties."
 
 ### What you could also do:
-- Reference baskuit/R-NaD as evidence the algorithm is implementable outside DeepMind
-- Note that OpenSpiel lacks R-NaD, making community implementations even more valuable
-- Emphasize that YOUR contribution would be one of the first neural-scale DRDA implementations -- this is a FEATURE, not a bug
+- Reference baskuit/R-NaD as evidence algorithm is implementable outside DeepMind
+- Note OpenSpiel lacks R-NaD, making community implementations even more valuable
+- Emphasize that YOUR contribution would be one of first neural-scale DRDA implementations -- this is FEATURE, not bug

@@ -1,28 +1,33 @@
-<combined_run_record run_id="answer_18" variant_id="prompt_and_agent_pair" schema_version="1">
-  <metadata>
-    <notes>Combined record for Prompt 18 and its returned agent answer.</notes>
-    <layout>single_markdown_file_prompt_then_answer</layout>
-  </metadata>
+Read rest. Then compress natural language only.<combined_run_record run_id="answer_18" variant_id="prompt_and_agent_pair" schema_version="1">
+<metadata>
+<notes>Combined record: Prompt 18 + agent answer.</notes>
+<layout>single_markdown_file_prompt_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="PROMPT_18_IMPLEMENT_TARGET_PROVENANCE_AND_SAFETY_RESIDUAL.md">
-  <![CDATA[# Prompt 18 — target provenance and safety-residual blueprint
+<prompt_section>
+<prompt_text status="preserved" source_path="PROMPT_18_IMPLEMENT_TARGET_PROVENANCE_AND_SAFETY_RESIDUAL.md">
+<![CDATA[# Prompt 18 — target provenance and safety-residual blueprint
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
+Produce impl-ready blueprint.
+Not memo.
+Answer itself = blueprint.
 </role>
 
 <direction>
-Work toward the strongest exact blueprint for advanced target provenance in this training stack.
+Push toward strongest exact blueprint for advanced target provenance in this training stack.
 
-The answer should help us decide what is truly ready now, what is semantically wrong, what is only a typed hole, what should remain privileged-only, and what should stay off until the target object and provenance are defensible.
+Answer should help decide:
+- what truly ready now
+- what semantically wrong
+- what only typed hole
+- what stay privileged-only
+- what stay off until target object + provenance defensible
 
-We want an answer that is implementation-usable, detailed, and easy to audit.
-Do not be vague.
-Do not hide behind broad taxonomies.
-Use the artifacts below to derive your conclusions.
+Need impl-usable, detailed, easy audit.
+Not vague.
+No broad taxonomy hiding.
+Use artifacts below to derive conclusions.
 </direction>
 
 <style>
@@ -34,26 +39,26 @@ Use the artifacts below to derive your conclusions.
 - include worked examples when helpful
 - include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
 - distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- use search/browse to find original paper, then inspect full PDF with skill; use abstracts or summaries only for discovery, not final evidence base
+- use bash tool to run Python for calculations, math checks, and validation when rigor matters
+- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until information saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+Artifacts below reflect what current codebase/docs seem say now. Not guaranteed fully correct. Treat as evidence to inspect + critique, not truth to inherit. High chance some incomplete, misleading, stale, semantically wrong, so validate all.
 </artifact_note>
 
 <artifacts>
-Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+Embedded artifact/context dump intentionally omitted during normalization. Use paired answer body + repository source files for audit and follow-up.
 </artifacts>
 
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_18.md">
-  <![CDATA[# Blueprint: advanced target provenance closure for the current tranche
+<answer_section>
+<answer_text status="preserved" source_path="agent_18.md">
+<![CDATA[# Blueprint: advanced target provenance closure for current tranche
 
 ```rust
 //! Loss functions for all 9 heads + total weighted loss.
@@ -308,7 +313,7 @@ impl<B: Backend> HydraLoss<B> {
 }
 ```
 
-Artifact B — batch/sample and collation surface:
+Artifact B — batch/sample + collation surface:
 
 ```rust
 pub struct MjaiBatch<B: Backend> {
@@ -474,7 +479,7 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
 }
 ```
 
-Artifact C — real target builders and provenance-producing logic:
+Artifact C — real target builders + provenance-producing logic:
 
 ```rust
 fn public_safety_score(safety: &SafetyInfo, tile: u8) -> f32 {
@@ -586,7 +591,7 @@ samples.push(MjaiSample {
 });
 ```
 
-Artifact D — belief teacher object and tests:
+Artifact D — belief teacher object + tests:
 
 ```rust
 //! Generates Stage A projected belief teacher targets.
@@ -735,7 +740,7 @@ mod tests {
 }
 ```
 
-Artifact E — model output surface and selected tests:
+Artifact E — model output surface + selected tests:
 
 ```rust
 pub struct HydraOutput<B: Backend> {
@@ -875,7 +880,7 @@ Key rule:
 target presence should control whether an advanced loss exists at all; weight alone should not hide broken plumbing.
 ```
 
-Artifact H — additional target tests and edge behavior:
+Artifact H — additional target tests + edge behavior:
 
 ```rust
 #[test]
@@ -972,7 +977,7 @@ fn learner_net_all_output_shapes() {
 }
 ```
 
-Artifact J — additional tranche guidance excerpts:
+Artifact J — more tranche guidance excerpts:
 
 ```text
 Concrete coding objectives:
@@ -998,7 +1003,7 @@ Minimal tranche acceptance checklist:
 - no duplicated belief stack
 ```
 
-Artifact K — more optional-target and mask behavior tests:
+Artifact K — more optional-target + mask behavior tests:
 
 ```rust
 #[test]
@@ -1083,24 +1088,24 @@ fn test_optional_belief_losses_activate_when_targets_present() {
 ```
 
 
-Implement this blueprint exactly for the existing model surface. Do not add heads. Do not widen search. Do not turn on any advanced loss until the head is classified as `Ready` by the registry below.
+Implement this blueprint exactly for existing model surface. No new heads. No wider search. Do not turn on any advanced loss until head classified `Ready` by registry below.
 
-Train-time privileged supervision is allowed only when it is explicitly marked train-only and the target genuinely contains information unavailable to the actor at inference. That is the LUPI/distillation regime: privileged information is available during training but not at test time, and teacher targets are useful when they add information the student does not already have; dense soft targets can accelerate learning, especially in RL-like low-data regimes. ([JMLR][1])
+Train-time privileged supervision allowed only when explicitly marked train-only and target truly contains info unavailable to actor at inference. That is LUPI/distillation regime: privileged info available during training but not test time, and teacher targets useful when they add info student does not already have; dense soft targets can speed learning, especially in RL-like low-data regimes. ([JMLR][1])
 
 ---
 
 ## 0. Hard gate before any advanced rollout
 
-Treat these as stop-ship checks.
+Treat as stop-ship checks.
 
 ### 0.1 Verify `HydraLoss::total_loss` is not the literal code in Artifact A
 
-**Artifact support.** The shown `total_loss` computes only advanced heads, sets all baseline heads to zero in the breakdown, and forms `total` from only advanced terms. Default advanced weights are all zero in `HydraLossConfig`.
+**Artifact support.** Shown `total_loss` computes only advanced heads, sets all baseline heads zero in breakdown, forms `total` from only advanced terms. Default advanced weights all zero in `HydraLossConfig`.
 
-**Inference.** If Artifact A is literal current code, default training loss is identically zero.
+**Inference.** If Artifact literal current code, default training loss = identically zero.
 
 **Required action.**
-Run a repo check immediately. If confirmed, patch before any provenance work:
+Run repo check now. If confirmed, patch before provenance work:
 
 ```rust
 let total =
@@ -1136,12 +1141,12 @@ fn real_train_path_default_total_loss_is_nonzero() {
 
 ### 0.2 Verify `collate_batch` is not the literal zero-fill baseline path in Artifact B
 
-**Artifact support.** The shown `collate_batch` writes zeros for `obs`, `actions`, `legal_mask`, and all baseline targets.
+**Artifact support.** Shown `collate_batch` writes zeros for `obs`, `actions`, `legal_mask`, all baseline targets.
 
-**Inference.** If literal, the batch path is not just incomplete; it destroys baseline supervision and policy labels.
+**Inference.** If literal, batch path not incomplete; it destroys baseline supervision + policy labels.
 
 **Required action.**
-Add this integration test against a real sample source:
+Add this integration test against real sample source:
 
 ```rust
 #[test]
@@ -1166,7 +1171,7 @@ If both gates pass, continue.
 
 ## 1. Install a target provenance registry now
 
-The current code has typed surfaces but no auditable statement of what each target *is*. Add one registry and make all enablement flow through it.
+Current code has typed surfaces but no auditable statement of what each target *is*. Add one registry. Make all enablement flow through it.
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1270,30 +1275,30 @@ pub fn validate_enabled_head(
 }
 ```
 
-This enforces the doctrine rule: **target presence controls whether a loss can exist; weight does not hide broken plumbing.**
+This enforces doctrine rule: **target presence controls whether loss can exist; weight does not hide broken plumbing.**
 
 ---
 
-## 2. Head ledger: what is ready, what is wrong, what is a hole
+## 2. Head ledger: what ready, what wrong, what hole
 
 | head                 | provenance now             | semantic status now | visibility            | train decision      |
 | -------------------- | -------------------------- | ------------------: | --------------------- | ------------------- |
-| `safety_residual`    | replay + hidden wait sets  |        wrong object | train-only privileged | patch, then enable  |
-| `delta_q`            | none                       |          typed hole | undecidable           | keep off            |
-| `belief_fields`      | public projection          |  semantically wrong | public-at-inference   | keep off            |
-| `mixture_weight`     | public projection          |  semantically wrong | public-at-inference   | keep off            |
-| `opponent_hand_type` | none                       |          typed hole | train-only privileged | keep off            |
-| `oracle_critic`      | optional privileged branch |     diagnostic-only | train-only privileged | keep off by default |
+| `safety_residual` | replay + hidden wait sets | wrong object | train-only privileged | patch, then enable |
+| `delta_q` | none | typed hole | undecidable | keep off |
+| `belief_fields` | public projection | semantically wrong | public-at-inference | keep off |
+| `mixture_weight` | public projection | semantically wrong | public-at-inference | keep off |
+| `opponent_hand_type` | none | typed hole | train-only privileged | keep off |
+| `oracle_critic` | optional privileged branch | diagnostic-only | train-only privileged | keep off by default |
 
-**Ready now:** no advanced head is train-ready exactly as shown.
+**Ready now:** no advanced head train-ready exactly as shown.
 
 **Ready after one bounded patch:** only `safety_residual`.
 
 ---
 
-## 3. Patch `safety_residual` and make it the only advanced head enabled in this tranche
+## 3. Patch `safety_residual` and make it only advanced head enabled in this tranche
 
-### 3.1 Why the current object is semantically wrong
+### 3.1 Why current object semantically wrong
 
 **Artifact support.**
 Current code defines:
@@ -1302,7 +1307,7 @@ Current code defines:
 * `exact_risk = exact_dealin_risk_from_waits(...) ∈ {0,1}`
 * `target = clamp(public_score - exact_risk, 0, 1)`
 
-Since `exact_risk` is binary, the target collapses to:
+Since `exact_risk` binary, target collapses to:
 
 [
 t(a)=
@@ -1312,34 +1317,34 @@ s_{\text{pub}}(a) & \text{if no deal-in}\
 \end{cases}
 ]
 
-That is not a residual. It is either the unchanged public score or zero.
+That not residual. It is either unchanged public score or zero.
 
-Worked examples from the current algebra:
+Worked examples from current algebra:
 
-* `public=0.9`, actual deal-in = 1  → current target `0.0`
-* `public=0.2`, actual safe = 1      → current target `0.2`
+* `public=0.9`, actual deal-in = 1 → current target `0.0`
+* `public=0.2`, actual safe = 1 → current target `0.2`
 
-The head never learns the magnitude of a negative correction and never teaches the model that a weak public score can still be exactly safe.
+Head never learns magnitude of negative correction, never teaches model that weak public score can still be exactly safe.
 
-Residual learning is additive: a zero residual should leave the base unchanged, and the learned term should represent a correction to that base. That is the right semantic template here. ([ar5iv][2])
+Residual learning is additive: zero residual should leave base unchanged, learned term should represent correction to base. That right semantic template here. ([ar5iv][2])
 
-### 3.2 Replace the target object with a signed correction
+### 3.2 Replace target object with signed correction
 
 Define:
 
-* (a): action index over discard actions only
+* action index over discard actions only
 * (s_{\text{pub}}(a)\in[0,1]): deterministic public heuristic score
 * (y_{\text{deal}}(a)\in{0,1}): exact replay-time deal-in event from hidden waits
 * (s_{\text{exact}}(a)=1-y_{\text{deal}}(a)\in{0,1}): exact safety label
 * (\Delta_s(a)=s_{\text{exact}}(a)-s_{\text{pub}}(a)\in[-1,1])
 
-Use (\Delta_s(a)) as the supervised target.
+Use (\Delta_s(a)) as supervised target.
 
-This is the only advanced head in the supplied artifacts that already uses genuinely train-only information (`wait_sets`) and therefore actually fits a privileged-information/distillation story. The target is also dense, which is desirable because soft teacher signals carry more information than hard labels, but only if the teacher adds information the student does not already have. Here it does; the current `belief` teacher does not. ([JMLR][1])
+This only advanced head in supplied artifacts that already uses genuinely train-only info (`wait_sets`) and therefore fits privileged-information/distillation story. Target also dense, desirable because soft teacher signals carry more info than hard labels, but only if teacher adds info student lacks. Here it does; current `belief` teacher does not. ([JMLR][1])
 
-### 3.3 Patch the builder exactly
+### 3.3 Patch builder exactly
 
-Rename the helper because it returns an event, not a probability.
+Rename helper because it returns event, not probability.
 
 ```rust
 fn exact_dealin_event_from_waits(wait_sets: &[[f32; 34]; 3], tile: u8) -> f32 {
@@ -1384,7 +1389,7 @@ fn build_safety_residual_targets(
 }
 ```
 
-Keep the existing masked action MSE for now:
+Keep existing masked action MSE for now:
 
 [
 L_{\text{sr}}
@@ -1394,11 +1399,11 @@ L_{\text{sr}}
 \sum_a m_a \cdot \frac{1}{2}\left(\hat{\Delta}_s(a)-\Delta_s(a)\right)^2
 ]
 
-No new head is needed. Only the target object changes.
+No new head needed. Only target object changes.
 
-### 3.4 Bump the provenance entry after the patch
+### 3.4 Bump provenance entry after patch
 
-After the above lands, change the registry entry to:
+After above lands, change registry entry to:
 
 ```rust
 HeadSpec {
@@ -1466,13 +1471,13 @@ pub fn tranche_stage1() -> HydraLossConfig {
 }
 ```
 
-Enable only this head after a dataset audit confirms nonzero coverage.
+Enable only this head after dataset audit confirms nonzero coverage.
 
 ---
 
-## 4. Keep `belief_fields` off; reclassify it as a heuristic projection, not a belief posterior
+## 4. Keep `belief_fields` off; reclassify it as heuristic projection, not belief posterior
 
-### 4.1 Why it is semantically wrong
+### 4.1 Why semantically wrong
 
 **Artifact support.**
 
@@ -1482,33 +1487,33 @@ Enable only this head after a dataset audit confirms nonzero coverage.
 * `remaining = extract_public_remaining_counts(...)`
 * `hidden_tiles = sum(other hand_len) + wall.remaining()`
 
-Then `build_stage_a_teacher` does all of the following:
+Then `build_stage_a_teacher` does all:
 
 * `row_sums = remaining`
 * `col_sums = [hidden_tiles / 4; 4]`
 * `kernel = [1.0; 34 * 4]`
 * runs `MixtureSib`
 * emits `belief_fields`
-* emits `mixture_weights` only if entropy is low enough
+* emits `mixture_weights` only if entropy low enough
 
 **Inference.**
-This target is not a posterior over hidden state. It is a projection from public marginals using a uniform kernel and equalized zone totals.
+This target not posterior over hidden state. It is projection from public marginals using uniform kernel + equalized zone totals.
 
-That violates the basic standard used in strong imperfect-information systems. ReBeL defines a public belief state as a belief distribution determined by public observations and the policies of all agents. DeepStack similarly conditions ranges and counterfactual values on the public state and strategies. The current teacher does neither; it ignores policy conditioning and overwrites actual zone totals with equal columns. ([NeurIPS Papers][3])
+That violates basic standard used in strong imperfect-information systems. ReBeL defines public belief state as belief distribution determined by public observations + policies of all agents. DeepStack similarly conditions ranges + counterfactual values on public state + strategies. Current teacher does neither; it ignores policy conditioning and overwrites actual zone totals with equal columns. ([NeurIPS Papers][3])
 
-### 4.2 Concrete proof of semantic failure from the supplied code
+### 4.2 Concrete proof of semantic failure from supplied code
 
-Let the four zones be the only plausible ones implied by the code path: opponent 1 hand, opponent 2 hand, opponent 3 hand, wall.
+Let four zones be only plausible ones implied by code path: opponent 1 hand, opponent 2 hand, opponent 3 hand, wall.
 
-If actual hidden counts are `[13, 13, 7, 40]`, the current code projects:
+If actual hidden counts are `[13, 13, 7, 40]`, current code projects:
 
 [
 [13,13,7,40] \rightarrow [18.25,18.25,18.25,18.25]
 ]
 
-That is not a “soft uncertainty” version of the truth. It destroys known structural information.
+That not “soft uncertainty” version of truth. It destroys known structural info.
 
-### 4.3 The trust gate is internally inconsistent
+### 4.3 Trust gate internally inconsistent
 
 Current trust is:
 
@@ -1520,25 +1525,25 @@ Current trust is:
 0.7 \cdot \frac{\text{ESS}}{K}
 
 * 0.3 \cdot \left(1-\frac{H}{1.3863}\right),
-  0,1\right)
-  ]
+0,1\right)
+]
 
 For (K=4):
 
 * uniform weights `[0.25,0.25,0.25,0.25]` give `ESS=4`, `H≈ln 4`, `trust≈0.70`
 * one-hot weights `[1,0,0,0]` give `ESS=1`, `H=0`, `trust=0.475`
 
-So the current gate trusts an uninformative uniform mixture more than a concentrated one. That is enough by itself to keep the target off.
+So current gate trusts uninformative uniform mixture more than concentrated one. That alone enough to keep target off.
 
-### 4.4 BCE is not justified by the current object
+### 4.4 BCE not justified by current object
 
-`belief_fields_bce_per_sample` assumes Bernoulli-style probabilities/logits. The shown teacher tests only enforce “finite and nonnegative,” not “bounded in [0,1]” and not any explicit probability semantics. If the tensor means expected counts or projected masses, BCE is the wrong loss.
+`belief_fields_bce_per_sample` assumes Bernoulli-style probabilities/logits. Shown teacher tests enforce only “finite and nonnegative,” not “bounded in [0,1]” and not explicit probability semantics. If tensor means expected counts or projected masses, BCE wrong loss.
 
 ### 4.5 Required decision
 
 Do not train this head in this tranche.
 
-Keep the output surface if you want, but relabel the target internally and in audits:
+Keep output surface if wanted, but relabel target internally + in audits:
 
 * audit name: `stage_a_public_projection_fields`
 * semantic state: `SemanticallyWrong`
@@ -1547,45 +1552,45 @@ Keep the output surface if you want, but relabel the target internally and in au
 
 ### 4.6 Future bar for revival
 
-Do not revisit until the target object is explicitly one of the following:
+Do not revisit until target object explicitly one of:
 
 1. **Posterior occupancy**
-   [
-   c_{z,t} = \mathbb{E}[\text{count of tile } t \text{ in zone } z \mid h_{\text{public}}, \pi]
-   ]
-   with exact zone-count constraints
-   [
-   \sum_t c_{z,t} = N_z,\quad
-   \sum_z c_{z,t} = \text{remaining}_t
-   ]
+[
+c_{z,t} = \mathbb{E}[\text{count of tile } t \text{ in zone } z \mid h_{\text{public}}, \pi]
+]
+with exact zone-count constraints
+[
+\sum_t c_{z,t} = N_z,\quad
+\sum_z c_{z,t} = \text{remaining}_t
+]
 
 2. **Zone-normalized probabilities**
-   [
-   p_{z,t} = \frac{c_{z,t}}{N_z}
-   ]
-   if and only if the loss is changed to match that semantics.
+[
+p_{z,t} = \frac{c_{z,t}}{N_z}
+]
+iff loss changed to match that semantics.
 
-And if mixture components remain, component order must be canonicalized. Otherwise label switching makes component-specific summaries unstable or meaningless. ([Duke University Statistical Science][4])
+And if mixture components remain, component order must be canonicalized. Else label switching makes component-specific summaries unstable or meaningless. ([Duke University Statistical Science][4])
 
 ---
 
-## 5. Keep `mixture_weight` off; it inherits the belief failure and adds label-switching risk
+## 5. Keep `mixture_weight` off; it inherits belief failure and adds label-switching risk
 
-### 5.1 Why it is semantically wrong
+### 5.1 Why semantically wrong
 
-**Artifact support.** `mixture_weight_target` comes from the same Stage A teacher as `belief_fields`, under a separate entropy gate.
+**Artifact support.** `mixture_weight_target` comes from same Stage teacher as `belief_fields`, under separate entropy gate.
 
 **Inference.**
 
-* Because the underlying teacher is a public projection, the weights are not privileged teacher labels.
-* Because the components are mixture components with no shown canonical ordering, they are vulnerable to label switching.
-* Because `belief_fields` can be present when `mixture_weights` are absent, the code can train component-indexed fields while withholding the only component-level signal that might partially stabilize identity.
+* Underlying teacher is public projection, so weights are not privileged teacher labels.
+* Components are mixture components with no shown canonical ordering, so vulnerable to label switching.
+* `belief_fields` can be present when `mixture_weights` absent, so code can train component-indexed fields while withholding only component-level signal that might partially stabilize identity.
 
 Mixture models with symmetric likelihoods are exactly where label switching makes component-specific summaries nonsensical unless relabelled. ([Duke University Statistical Science][4])
 
 ### 5.2 Required decision
 
-Keep `w_mixture_weight = 0.0`. Mark the head:
+Keep `w_mixture_weight = 0.0`. Mark head:
 
 ```rust
 HeadSpec {
@@ -1597,31 +1602,31 @@ HeadSpec {
 }
 ```
 
-Do not count this as a privileged head. It is not.
+Do not count this as privileged head. It is not.
 
 ---
 
-## 6. Keep `delta_q` off; it is a typed hole in the current dense form
+## 6. Keep `delta_q` off; it is a typed hole in current dense form
 
-### 6.1 Why it is a typed hole
+### 6.1 Why typed hole
 
 **Artifact support.**
 
 * output surface exists: `[batch, 46]`
-* tests can manually inject a dummy target
+* tests can manually inject dummy target
 * real batch path sets `delta_q_target: None`
-* there is no target builder and no mask
+* no target builder and no mask
 
 **Inference.**
-A dense 46-action `delta_q` target is not replay-credible from the supplied machinery. In imperfect-information settings, the value of an action depends on policy and belief state; strong systems use public-belief states, ranges, and counterfactual values, not replay-only dense all-action labels. Without search or counterfactual reconstruction, dense `delta_q[a]` is not defensible. ([NeurIPS Papers][3])
+Dense 46-action `delta_q` target not replay-credible from supplied machinery. In imperfect-information settings, value of action depends on policy + belief state; strong systems use public-belief states, ranges, counterfactual values, not replay-only dense all-action labels. Without search or counterfactual reconstruction, dense `delta_q[a]` not defensible. ([NeurIPS Papers][3])
 
-### 6.2 Additional implementation problem in the current loss helper
+### 6.2 Additional implementation problem in current loss helper
 
-`dense_regression_mse` averages over the whole tensor. It is not a per-sample or masked action loss. Even if a target builder existed, the current helper is the wrong shape for sparse availability.
+`dense_regression_mse` averages over whole tensor. It is not per-sample or masked action loss. Even if target builder existed, current helper wrong shape for sparse availability.
 
 ### 6.3 Required decision
 
-Keep `w_delta_q = 0.0`. Mark the head:
+Keep `w_delta_q = 0.0`. Mark head:
 
 ```rust
 HeadSpec {
@@ -1635,20 +1640,20 @@ HeadSpec {
 
 ### 6.4 One acceptable future narrow variant
 
-If a replay-credible target is needed before search integration, the only acceptable interim variant is **sparse chosen-action-only** with an explicit mask and an explicit semantic rename, for example:
+If replay-credible target needed before search integration, only acceptable interim variant is **sparse chosen-action-only** with explicit mask + explicit semantic rename, e.g.:
 
 * `delta_q_v1_taken_only`
-* mask only the executed action
+* mask only executed action
 * provenance: `ReplayObserved` or `ReplayDerivedPublic`, depending on builder
 * do **not** pretend it is dense counterfactual `ΔQ(s,a)` for all actions
 
-That still does **not** make the current dense head ready. It simply defines a future honest variant.
+That still does **not** make current dense head ready. It only defines future honest variant.
 
 ---
 
 ## 7. Keep `opponent_hand_type` off; it is a typed hole and would be train-only privileged when it exists
 
-### 7.1 Why it is a typed hole
+### 7.1 Why typed hole
 
 **Artifact support.**
 
@@ -1656,7 +1661,7 @@ That still does **not** make the current dense head ready. It simply defines a f
 * no batch builder populates it
 * `into_hydra_targets` hardcodes `None`
 
-There is no taxonomy, no mapping from hidden hands to the 24 classes, and no provenance definition.
+No taxonomy, no mapping from hidden hands to 24 classes, no provenance definition.
 
 ### 7.2 Required decision
 
@@ -1672,24 +1677,24 @@ HeadSpec {
 }
 ```
 
-Do not populate it until a class ontology and mapping spec exist.
+Do not populate until class ontology + mapping spec exist.
 
 ---
 
 ## 8. Keep `oracle_critic` privileged-only and diagnostic
 
-### 8.1 What is supported
+### 8.1 What supported
 
 **Artifact support.**
 
 * target surface exists
-* optional target and mask plumbing exist
-* default weight is zero
+* optional target + mask plumbing exist
+* default weight zero
 * selected test says `oracle_head_does_not_backprop_to_backbone_input`
 
 ### 8.2 Inference and decision
 
-Treat this as a privileged-only diagnostic head, not as mainline supervision closure for this tranche. If the no-backprop test reflects actual detach from the shared representation, then training this head does not provide the student-style transfer that distillation is normally meant to provide. Keep it off by default and do not count it as tranche acceptance.
+Treat as privileged-only diagnostic head, not mainline supervision closure for this tranche. If no-backprop test reflects actual detach from shared representation, then training this head does not provide student-style transfer that distillation normally meant provide. Keep off by default. Do not count as tranche acceptance.
 
 Registry entry stays:
 
@@ -1707,7 +1712,7 @@ HeadSpec {
 
 ## 9. Replace loose optional fields with structured target slots
 
-The current `Option<T> + present bool + mask Option<T>` surface can silently fabricate false zero targets.
+Current `Option<T> + present bool + mask Option<T>` surface can silently fabricate false zero targets.
 
 **Artifact support.**
 
@@ -1716,11 +1721,11 @@ The current `Option<T> + present bool + mask Option<T>` surface can silently fab
 * `safety_residual` and `safety_residual_mask` are separate `Option`s
 
 **Inference.**
-If any sample sets a present bit without values, collation creates zero-filled targets with positive sample masks.
+If any sample sets present bit without values, collation creates zero-filled targets with positive sample masks.
 
 ### 9.1 Minimum patch
 
-Add hard assertions in the sample builder and collation:
+Add hard assertions in sample builder + collation:
 
 ```rust
 debug_assert_eq!(s.belief_fields_present, s.belief_fields.is_some());
@@ -1728,7 +1733,7 @@ debug_assert_eq!(s.mixture_weights_present, s.mixture_weights.is_some());
 debug_assert_eq!(s.safety_residual.is_some(), s.safety_residual_mask.is_some());
 ```
 
-Turn them into `Result`-returning validation in non-test builds.
+Turn into `Result`-returning validation in non-test builds.
 
 ### 9.2 Preferred patch
 
@@ -1771,13 +1776,13 @@ pub struct SampleAdvancedTargets {
 }
 ```
 
-This makes it impossible to have “present” without values.
+This makes “present without values” impossible.
 
 ---
 
 ## 10. Add a dataset audit pass and make it part of trainer startup
 
-Before training, scan a bounded audit window, for example the first 50k samples or 512 batches.
+Before training, scan bounded audit window, e.g. first 50k samples or 512 batches.
 
 Emit this per head:
 
@@ -1804,7 +1809,7 @@ For `safety_residual`, require:
 * `frac_negative > 0.0`
 * `frac_positive > 0.0`
 
-The sign check is critical. It proves the target is no longer collapsing to `{public_score, 0}`.
+Sign check critical. It proves target no longer collapsing to `{public_score, 0}`.
 
 Startup validation:
 
@@ -1836,28 +1841,28 @@ pub fn validate_advanced_head_enablement(
 
 Do not let names launder semantics.
 
-In audit logs and dashboards, rename:
+In audit logs + dashboards, rename:
 
 * `belief_fields` → `stage_a_public_projection_fields`
 * `mixture_weight` → `stage_a_public_projection_weights`
 
-Keep the tensor fields if changing struct names is too invasive, but do **not** report them as “belief” in training reports until the target object is real.
+Keep tensor fields if changing struct names too invasive, but do **not** report them as “belief” in training reports until target object real.
 
 ---
 
 ## 12. Acceptance checklist for this tranche
 
-The tranche is accepted only if all of the following are true:
+Tranche accepted only if all true:
 
-1. Baseline total loss is nonzero on a real train batch.
+1. Baseline total loss nonzero on real train batch.
 2. No advanced head with `semantic != Ready` can be enabled by config.
-3. `safety_residual` is patched to version 2 signed residual semantics.
+3. `safety_residual` patched to version 2 signed residual semantics.
 4. `safety_residual` audit shows both positive and negative targets.
-5. At least one train path with `w_safety_residual > 0` produces a nonzero auxiliary contribution in tests.
-6. `belief_fields`, `mixture_weight`, `delta_q`, and `opponent_hand_type` remain weight-zero and fail validation if manually enabled.
-7. `oracle_critic` remains explicitly train-only privileged and is not counted as mainline supervision closure.
-8. No new heads are added.
-9. No AFBS/search rewrite is added.
+5. At least one train path with `w_safety_residual > 0` produces nonzero auxiliary contribution in tests.
+6. `belief_fields`, `mixture_weight`, `delta_q`, `opponent_hand_type` remain weight-zero and fail validation if manually enabled.
+7. `oracle_critic` remains explicitly train-only privileged and not counted as mainline supervision closure.
+8. No new heads added.
+9. No AFBS/search rewrite added.
 
 ---
 
@@ -1869,14 +1874,14 @@ The tranche is accepted only if all of the following are true:
 * verify/fix real `collate_batch`
 * add `HeadSpec`, `SemanticState`, `ProvenanceKind`, `Visibility`
 * add startup dataset audit
-* add config validation against the registry
+* add config validation against registry
 
 ### PR 2 — safety residual closure
 
 * patch `build_safety_residual_targets`
 * rename `exact_dealin_risk_from_waits` to `exact_dealin_event_from_waits`
 * bump `safety_residual` registry version to `2`
-* add the round-trip/sign tests
+* add round-trip/sign tests
 * add one staged config with `w_safety_residual = 0.05`
 
 ### PR 3 — quarantine semantically wrong and hole heads
@@ -1900,13 +1905,13 @@ Use this exact classification going forward.
 * `opponent_hand_type`: **typed hole**, **train-only privileged when it eventually exists**, **off**
 * `oracle_critic`: **privileged-only diagnostic**, **off by default**
 
-That is the strongest defensible rollout supported by the supplied artifacts and by the standard teacher/student and imperfect-information precedents. ReBeL and DeepStack show what a real hidden-state/value target looks like in imperfect-information systems: policy-conditioned public beliefs, ranges, and counterfactual values. Vapnik/Hinton/Lopez-Paz show when privileged or distilled targets are justified: when they are train-only if necessary and actually add information the student lacks. The current Stage A belief path does not meet that bar; the patched safety residual does. ([JMLR][1])
+That is strongest defensible rollout supported by supplied artifacts + standard teacher/student and imperfect-information precedents. ReBeL and DeepStack show what real hidden-state/value target looks like in imperfect-information systems: policy-conditioned public beliefs, ranges, counterfactual values. Vapnik/Hinton/Lopez-Paz show when privileged or distilled targets justified: when train-only if needed and add info student lacks. Current Stage belief path does not meet that bar; patched safety residual does. ([JMLR][1])
 
 [1]: https://jmlr.csail.mit.edu/papers/volume16/vapnik15b/vapnik15b.pdf "https://jmlr.csail.mit.edu/papers/volume16/vapnik15b/vapnik15b.pdf"
 [2]: https://ar5iv.org/pdf/1812.06298 "https://ar5iv.org/pdf/1812.06298"
 [3]: https://papers.nips.cc/paper_files/paper/2020/file/c61f571dbd2fb949d3fe5ae1608dd48b-Paper.pdf "https://papers.nips.cc/paper_files/paper/2020/file/c61f571dbd2fb949d3fe5ae1608dd48b-Paper.pdf"
 [4]: https://www2.stat.duke.edu/~scs/Courses/Stat376/Papers/Mixtures/LabelSwitchingStephensJRSSB.pdf "https://www2.stat.duke.edu/~scs/Courses/Stat376/Papers/Mixtures/LabelSwitchingStephensJRSSB.pdf"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

@@ -7,18 +7,18 @@
 
 ## Core Thesis
 
-Train policy net via pure self-play with game-theoretic RL having Nash-style convergence, then add imperfect-information subgame solving at inference. Zero human data.
+Train policy net by pure self-play with game-theoretic RL aiming Nash-like convergence; add imperfect-information subgame solving at inference. Zero human data.
 
 ---
 
 ## Component 1: Training -- ACH (Actor-Critic Hedge)
 
-**Paper**: ICLR 2022 -- "Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game"
+**Paper**: ICLR 2022 -- "Actor-Critic Policy Optimization in Large-Scale Imperfect-Information Game"
 
-Merges deep RL (actor-critic) + Hedge (weighted CFR) for policy optimization in imperfect-information games.
+Fuse deep RL (actor-critic) + Hedge (weighted CFR) for policy optimization in imperfect-information games.
 
 ### Algorithm
-- Keeps regret-weighted policy mixture (Hedge/multiplicative weights)
+- Keep regret-weighted policy mixture (Hedge/multiplicative weights)
 - Actor-critic gives advantage estimates from self-play trajectories
 - Policy update blends RL gradient + regret-minimization update
 - Pure self-play: train from scratch, zero human data
@@ -79,7 +79,7 @@ Search results (OLSS subgame solution values) fed BACK into policy net as input 
 
 **Paper**: IEEE CoG 2022 -- "Speedup Training AI for Mahjong via Reward Variance Reduction"
 
-Reduces variance in RL reward signal for Mahjong, which has high stochastic variance from tile draws + scoring structure. Standard variance-reduction method applied to Mahjong domain.
+Reduce variance in RL reward signal for Mahjong, which has high stochastic variance from tile draws + scoring structure. Standard variance-reduction method applied to Mahjong domain.
 
 ---
 
@@ -118,7 +118,7 @@ Reduces variance in RL reward signal for Mahjong, which has high stochastic vari
 
 ## Published Papers
 
-1. ACH: Fu et al. "Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game." ICLR 2022.
+1. ACH: Fu et al. "Actor-Critic Policy Optimization in Large-Scale Imperfect-Information Game." ICLR 2022.
 2. OLSS: Liu, Fu, Fu, Wei. "Opponent-Limited Online Search for Imperfect Information Games." ICML 2023.
 3. RVR: Li, Wu, Fu, Fu, Zhao, Xing. "Speedup Training AI for Mahjong via Reward Variance Reduction." IEEE CoG 2022.
 4. DDCFR: Xu, Li, Fu et al. "Dynamic Discounted CFR." ICLR 2024 (Spotlight). (Same team, meta-learned CFR discounting.)

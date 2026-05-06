@@ -1,14 +1,14 @@
 # DeltaQ Promotion
 
-Op guide for Hydra DeltaQ promotion path, read resulting promotion artifact.
+Op guide Hydra DeltaQ promotion path, read resulting promotion artifact.
 
-Doc explains current CLI contract, offline + policy-transfer gates, optional arena confirmation, shape of persisted `delta_q_promotion.json` artifact. Main training entrypoint: [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). Current shipped-vs-staged truth: [`docs/CURRENT_STATUS.md`](CURRENT_STATUS.md).
+Doc explains current CLI contract, offline + policy-transfer gates, optional arena confirmation, shape persisted `delta_q_promotion.json` artifact. Main training entrypoint: [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). Current shipped-vs-staged truth: [`docs/CURRENT_STATUS.md`](CURRENT_STATUS.md).
 
 ## What DeltaQ promotion is for
 
 Hydra DeltaQ lane implemented, intentionally not default-on. Promotion answers narrow question:
 
-> Is this candidate checkpoint good enough on the DeltaQ-specific validation surfaces to justify further confirmation and possible adoption?
+> Candidate checkpoint good enough on DeltaQ-specific validation surfaces to justify more confirmation + possible adoption?
 
 Not normal training. Gated eval workflow. Compares candidate vs baseline checkpoint, records structured decision artifact.
 
@@ -32,7 +32,7 @@ CLI shape:
 train <config.yaml> --delta-q-promotion --delta-q-baseline-checkpoint <path>
 ```
 
-Baseline checkpoint required because promotion is comparative. Hydra loads baseline checkpoint, evaluates candidate relative to it.
+Baseline checkpoint required because promotion comparative. Hydra loads baseline checkpoint, evaluates candidate relative to it.
 
 ### Example
 
@@ -47,7 +47,7 @@ cargo run -p hydra-train --bin train -- \
 
 ### BF16 is rejected
 
-DeltaQ promotion mode currently rejects:
+DeltaQ promotion mode rejects:
 
 ```yaml
 precision_mode: bf16_autocast
@@ -57,7 +57,7 @@ Runtime error explicit: BF16/autocast not supported for DeltaQ promotion yet.
 
 ### Baseline checkpoint is mandatory
 
-If `--delta-q-baseline-checkpoint` missing, Hydra fails promotion run. Not optional because arena confirmation and offline comparison both depend on baseline model.
+If `--delta-q-baseline-checkpoint` missing, Hydra fails promotion run. Not optional because arena confirmation + offline comparison both depend on baseline model.
 
 ## High-level decision flow
 
@@ -85,7 +85,7 @@ Important metrics in report:
 
 Report answers narrow question:
 
-- does candidate look better than baseline on replay-derived DeltaQ decision quality?
+- candidate better than baseline on replay-derived DeltaQ decision quality?
 
 ### 2) Policy-transfer gate
 
@@ -108,9 +108,9 @@ Operational meaning:
 
 ### 3) Arena confirmation
 
-If pre-arena recommendation says candidate promising enough, Hydra creates arena-confirmation request and runs paired arena confirmation.
+If pre-arena rec says candidate promising enough, Hydra creates arena-confirmation request and runs paired arena confirmation.
 
-Arena step exists because offline replay-derived signals are not final authority for promotion.
+Arena step exists because offline replay-derived signals not final authority for promotion.
 
 Resulting arena report captures:
 
@@ -123,7 +123,7 @@ Resulting arena report captures:
 
 ## Recommendation states you will see
 
-Hydra exposes small recommendation vocabulary through promotion result and artifact.
+Hydra exposes small rec vocabulary through promotion result and artifact.
 
 Two operator-critical states:
 
@@ -145,7 +145,7 @@ Promotion writes pretty-printed JSON artifact at:
 <output_dir>/delta_q_promotion.json
 ```
 
-Persisted artifact currently includes:
+Persisted artifact includes:
 
 - `scope`
 - `step_or_epoch`
@@ -165,7 +165,7 @@ Artifact = operator-facing truth for what happened during promotion run.
 
 #### `recommendation`
 
-Pre-arena recommendation computed from offline and policy-transfer gates.
+Pre-arena rec computed from offline + policy-transfer gates.
 
 #### `stage`
 
@@ -178,7 +178,7 @@ Fastest way to tell whether run stopped before arena confirmation or continued t
 
 #### `arena_confirmation`
 
-If present, records arena configuration request Hydra constructed for paired confirmation.
+If present, records arena config request Hydra constructed for paired confirmation.
 
 #### `arena_decision`
 
@@ -203,7 +203,7 @@ Hydra prints few specific promotion phases:
 - optional policy-transfer holdout summary
 - policy-transfer gate summary
 
-Operationally: console output = fast human read. `delta_q_promotion.json` = durable artifact for archive and later comparison.
+Operationally: console output = fast human read. `delta_q_promotion.json` = durable artifact for archive + later comparison.
 
 ## Recommended operator workflow
 
@@ -212,19 +212,19 @@ Operationally: console output = fast human read. `delta_q_promotion.json` = dura
 3. Run `train config.yaml --delta-q-promotion --delta-q-baseline-checkpoint <baseline>`.
 4. Read console summaries for quick decision path.
 5. Inspect `delta_q_promotion.json` for durable structured result.
-6. Do not treat `RequiresArenaConfirmation` as acceptance; it means candidate earned arena step, not that it already won it.
+6. Do not treat `RequiresArenaConfirmation` as acceptance; means candidate earned arena step, not already won it.
 
 ## Common failure modes and interpretation mistakes
 
 - Missing baseline checkpoint is hard invocation error, not soft warning.
-- BF16/autocast currently unsupported here even though BC preflight and BC training support BF16 paths.
+- BF16/autocast unsupported here even though BC preflight and BC training support BF16 paths.
 - Passing offline gate does not guarantee final promotion if policy transfer or arena confirmation disagrees.
-- Persisted `recommendation` not same thing as final arena-backed promotion decision.
+- Persisted `recommendation` not same as final arena-backed promotion decision.
 - DeltaQ lane implemented, but still intentionally not default-on.
 
 ## Relationship to the main training docs
 
-`docs/TRAINING_WORKFLOWS.md` already lists DeltaQ promotion as one training mode. This doc explains operational meaning of that mode and emitted artifact; it does not replace top-level mode overview.
+`docs/TRAINING_WORKFLOWS.md` already lists DeltaQ promotion as one training mode. This doc explains operational meaning of that mode + emitted artifact; it does not replace top-level mode overview.
 
 ## Where to read next
 

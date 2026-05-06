@@ -1,32 +1,32 @@
-<combined_run_record run_id="answer_20" variant_id="prompt_and_agent_pair" schema_version="1">
-  <metadata>
-    <notes>Combined record for Prompt 20 and its returned agent answer.</notes>
-    <layout>single_markdown_file_prompt_then_answer</layout>
-  </metadata>
+Read rest. Then patch exact code blocks only.Need exact diffs in code blocks. Loading compress skill, then compare blocks.Restoring exact fenced blocks from original.Verify blocks exact.<combined_run_record run_id="answer_20" variant_id="prompt_and_agent_pair" schema_version="1">
+<metadata>
+<notes>Combined record for Prompt 20 + returned agent answer.</notes>
+<layout>single_markdown_file_prompt_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="PROMPT_20_IMPLEMENT_ROLLOUT_PROVENANCE_AND_DISABLE_POLICY.md">
-  <![CDATA[# Prompt 20 — rollout provenance and disable-policy blueprint
+<prompt_section>
+<prompt_text status="preserved" source_path="PROMPT_20_IMPLEMENT_ROLLOUT_PROVENANCE_AND_DISABLE_POLICY.md">
+<![CDATA[# Prompt 20 — rollout provenance and disable-policy blueprint
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Do not tell us to write a separate spec.
-Your answer itself must be the blueprint.
+Produce impl-ready blueprint.
+Do not give memo.
+Do not tell us write separate spec.
+Answer itself must be blueprint.
 </role>
 
 <direction>
-Work toward the strongest blueprint for rollout provenance, cache provenance, trust boundaries, and the current safe rollout policy.
+Work toward strongest blueprint for rollout provenance, cache provenance, trust boundaries, current safe rollout policy.
 
-We want an answer that tells us:
-- what the current trust problem really is
-- what provenance fields are missing
-- what the cache rules should be
+Want answer tell us:
+- what current trust problem is
+- what provenance fields missing
+- what cache rules should be
 - what should remain learner-only
 - what safe current policy makes sense
-- what future evidence would be needed before narrow rollout re-entry
+- what future evidence needed before narrow rollout re-entry
 
-Use the artifacts below to derive your conclusions.
+Use artifacts below to derive conclusions.
 </direction>
 
 <style>
@@ -36,28 +36,28 @@ Use the artifacts below to derive your conclusions.
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
-- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-- distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- include enough detail that we can validate ourselves (pdfs, sources, links, similar projects)
+- distinguish direct artifact support from own inference
+- use search/browse to find original paper, then inspect full PDF with skill; use abstracts or summaries only for discovery, not final evidence base
+- use bash tool to run Python for calculations, math checks, validation when rigor matters
+- do not finish early; keep looping through discovery, thinking, testing, validation until info saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+Artifacts below reflect what current codebase/docs seem say now. Not guaranteed fully correct. Treat as evidence to inspect + critique, not truth to inherit. High chance some incomplete, misleading, stale, semantically wrong, so validate all.
 </artifact_note>
 
 <artifacts>
-Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+Embedded artifact/context dump intentionally omitted during normalization. Use paired answer body + repository source files for audit and follow-up.
 </artifacts>
 
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_20.md">
-  <![CDATA[## 0. Set these defaults now
+<answer_section>
+<answer_text status="preserved" source_path="agent_20.md">
+<![CDATA[## 0. Set these defaults now
 
 ```rust
 //! Anytime Factored-Belief Search (AFBS) with PUCT selection.
@@ -310,7 +310,7 @@ impl PonderManager {
 }
 ```
 
-Artifact B — live inference authority path and tests:
+Artifact B — live inference authority path + tests:
 
 ```rust
 //! Inference server: fast path (network + SaF) and slow path (pondered AFBS).
@@ -489,7 +489,7 @@ mod tests {
 }
 ```
 
-Artifact C — model roles and benchmark gates:
+Artifact C — model roles + benchmark gates:
 
 ```rust
 pub type ActorNet<B> = HydraModel<B>;
@@ -533,7 +533,7 @@ impl BenchmarkGates {
 }
 ```
 
-Artifact D — doctrinal excerpts:
+Artifact D — doctrine excerpts:
 
 ```text
 If a mechanism raises ceiling but is too slow at inference, it belongs in pondering, deep search, offline solvers, or distillation targets -- not in the critical inference loop.
@@ -555,7 +555,7 @@ RolloutNet (ActorNet-sized, 12 blocks): policy + value for fast AFBS rollouts. D
 Hard positions only: top-2 policy gap < 10%, high-risk defense, low particle ESS.
 ```
 
-Artifact E — additional AFBS cache/search tests:
+Artifact E — extra AFBS cache/search tests:
 
 ```rust
 #[test]
@@ -612,7 +612,7 @@ fn ponder_result_from_tree_reflects_root_stats() {
 }
 ```
 
-Artifact F — benchmark/evaluation and model role context:
+Artifact F — benchmark/eval + model role context:
 
 ```rust
 pub struct EvalResult {
@@ -655,7 +655,7 @@ impl HydraModelConfig {
 }
 ```
 
-Artifact G — extra doctrine and limits:
+Artifact G — extra doctrine + limits:
 
 ```text
 Main consensus:
@@ -793,7 +793,7 @@ pub fn policy_top2_gap(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
 }
 ```
 
-Artifact J — additional AFBS and cache tests:
+Artifact J — additional AFBS + cache tests:
 
 ```rust
 #[test]
@@ -826,7 +826,7 @@ fn exit_policy_with_zero_tau_becomes_argmax() {
 }
 ```
 
-Artifact K — additional doctrine and planning excerpts:
+Artifact K — more doctrine + planning excerpts:
 
 ```text
 Working principle:
@@ -880,7 +880,7 @@ impl TrainingMetrics {
 }
 ```
 
-Artifact M — more runtime helper and test excerpts:
+Artifact M — more runtime helper + test excerpts:
 
 ```rust
 pub fn legal_mask_to_tensor<B: Backend>(
@@ -930,7 +930,7 @@ fn inference_server_reuses_cached_ponder_policy() {
 }
 ```
 
-Artifact N — more doctrine and deployment excerpts:
+Artifact N — more doctrine + deployment excerpts:
 
 ```text
 Fast path: network forward + SaF adaptor. Slow path: reuse pondered AFBS subtree. On-turn: 80-150ms. Call reactions: 20-50ms. Pondering: use all idle time.
@@ -950,7 +950,7 @@ What is only partially true:
 - advanced supervision hooks exist, but the normal batch collation path still mostly emits baseline targets
 ```
 
-Artifact O — more benchmark and limitation excerpts:
+Artifact O — more benchmark + limitation excerpts:
 
 ```text
 Hard reality benchmarks unlock before committing the full budget:
@@ -969,7 +969,7 @@ Limitations:
 4. Strategy fusion / determinization pitfalls are mitigated but not eliminated.
 ```
 
-Artifact P — additional runtime, evaluation, and planning excerpts:
+Artifact P — additional runtime, evaluation, + planning excerpts:
 
 ```text
 Fast path vs ponder hooks already exist; broad default expensive search is not the intended current runtime identity.
@@ -1021,9 +1021,9 @@ const ENABLE_PONDER_FOR_LEARNER_TARGETS: bool = true;
 const ENABLE_HARD_STATE_IDLE_SEARCH: bool = true;
 ```
 
-That is the right current policy.
+That right current policy.
 
-The reason is simple: the current implementation does **not** safely reuse a pondered AFBS subtree. It replays a summarized root policy/value from a cache entry that is keyed by a bare `u64` observation hash, or worse, by a speculative `predicted_child_hash(parent, action)`. In imperfect-information search, that is below the trust threshold for live action authority. ReBeL, Student of Games, and POMCP all anchor search/value reuse on richer semantics—public-belief states or history-belief nodes—not on a flat observation hash divorced from policy/belief provenance. Safe subgame solving and depth-limited solving papers make the same point from another angle: values in imperfect-information games are not generally well-defined from a local state alone, and subgames cannot be trusted in isolation without the right surrounding context. ([NeurIPS Proceedings][1])
+Reason simple: current impl does **not** safely reuse pondered AFBS subtree. It replays summarized root policy/value from cache entry keyed by bare `u64` observation hash, or worse, by speculative `predicted_child_hash(parent, action)`. In imperfect-information search, that below trust threshold for live action authority. ReBeL, Student of Games, POMCP anchor search/value reuse on richer semantics—public-belief states or history-belief nodes—not flat observation hash divorced from policy/belief provenance. Safe subgame solving + depth-limited solving papers make same point from another angle: values in imperfect-information games not well-defined from local state alone, and subgames cannot be trusted in isolation without right surrounding context. ([NeurIPS Proceedings][1])
 
 ---
 
@@ -1033,7 +1033,7 @@ The reason is simple: the current implementation does **not** safely reuse a pon
 
 From Artifacts A/B/E/M/P:
 
-* `InferenceServer::infer_with_budget` does an early return on any `lookup_ponder(info_state_hash)` hit.
+* `InferenceServer::infer_with_budget` does early return on any `lookup_ponder(info_state_hash)` hit.
 * `PonderResult` stores only:
 
   * `exit_policy`
@@ -1041,19 +1041,19 @@ From Artifacts A/B/E/M/P:
   * `search_depth`
   * `visit_count`
   * `timestamp`
-* `PonderCache` and `PonderManager` use `DashMap<u64, PonderResult>`.
-* `predicted_child_hash(parent_hash, action)` is used as another cache key in the same key space.
+* `PonderCache` + `PonderManager` use `DashMap<u64, PonderResult>`.
+* `predicted_child_hash(parent_hash, action)` used as another cache key in same key space.
 * `GameStateSnapshot` carries only `{info_state_hash, top2_policy_gap, risk_score, particle_ess}`.
-* current benchmark gates are global/coarse, not provenance-aware.
-* doctrine says “slow path: reuse pondered AFBS subtree,” but the stored object is only a root summary, not a subtree.
+* current benchmark gates coarse/global, not provenance-aware.
+* doctrine says “slow path: reuse pondered AFBS subtree,” but stored object only root summary, not subtree.
 
-There is another artifact-level issue: `ChildList` is capped at `TOP_K = 5`, and `root_exit_policy()` only assigns mass over `root.children`. Unless legal branching is always `<= 5` at runtime, the cached exit policy is a **partial policy summary**, not a complete root policy.
+Another artifact-level issue: `ChildList` capped at `TOP_K = 5`, and `root_exit_policy()` only assigns mass over `root.children`. Unless legal branching `<= 5` at runtime, cached exit policy is **partial policy summary**, not complete root policy.
 
 ### Inference
 
-The main bug is **not** “64-bit hashes might collide.”
+Main bug **not** “64-bit hashes might collide.”
 
-The main bug is that the system treats:
+Main bug = system treats:
 
 ```text
 same observation hash
@@ -1073,17 +1073,17 @@ same admissible trust class
 
 It does not.
 
-In imperfect-information games, a decision point’s value depends on belief context and on continuation policies, not just on a local observation encoding. ReBeL is explicit that naive RL+search is not theoretically sound in imperfect-information games, and introduces public belief state (PBS) precisely because the “state” has to include a common-knowledge belief distribution induced by public observations **and the policies of all agents**. Student of Games makes the same move with `β = (s_pub, r)` and requires search consistency along the trajectory for sound self-play. POMCP likewise uses history nodes and belief updates, not flat state hashes. Safe/Nested Subgame Solving and OOS show why: non-locality and strategy fusion break the assumptions that make local subgame reuse safe in perfect-information settings. ([NeurIPS Proceedings][1])
+In imperfect-information games, decision point value depends on belief context + continuation policies, not only local observation encoding. ReBeL explicit that naive RL+search not theoretically sound in imperfect-information games, and introduces public belief state (PBS) precisely because “state” must include common-knowledge belief distribution induced by public observations **and policies of all agents**. Student of Games makes same move with `β = (s_pub, r)` and requires search consistency along trajectory for sound self-play. POMCP likewise uses history nodes + belief updates, not flat state hashes. Safe/Nested Subgame Solving and OOS show why: non-locality + strategy fusion break assumptions that make local subgame reuse safe in perfect-information settings. ([NeurIPS Proceedings][1])
 
-A quick birthday-bound check confirms that raw 64-bit hash collision is secondary. Using
+Quick birthday-bound check confirms raw 64-bit hash collision secondary. Using
 
 [
 p_{\text{coll}} \approx 1 - \exp\left(-\frac{n(n-1)}{2\cdot 2^{64}}\right),
 ]
 
-the collision probability is about (2.7\times 10^{-8}) at (n=10^6) entries and (2.7\times 10^{-4}) at (n=10^8). Move to 128/256-bit digests anyway, but today’s problem is semantic aliasing and speculative reuse, not birthday collisions.
+collision probability about (2.7\times 10^{-8}) at (n=10^6) entries and (2.7\times 10^{-4}) at (n=10^8). Move to 128/256-bit digests anyway, but today’s problem semantic aliasing + speculative reuse, not birthday collisions.
 
-There is also a “too weak / too brittle” problem. The current `info_state_hash(obs)` is too weak because it omits model/solver/lineage provenance, and too brittle because it hashes raw float bits, so numerically equivalent states can miss due to tiny representation drift.
+Also “too weak / too brittle” problem. Current `info_state_hash(obs)` too weak because omits model/solver/lineage provenance, and too brittle because hashes raw float bits, so numerically equivalent states can miss due to tiny representation drift.
 
 ---
 
@@ -1091,41 +1091,41 @@ There is also a “too weak / too brittle” problem. The current `info_state_ha
 
 ### Boundary A — observation proxy vs. search root semantics
 
-Current code has an `obs -> u64` identity. That is a **hint**, not a trusted root identity.
+Current code has `obs -> u64` identity. That hint, not trusted root identity.
 
 Trusted root identity in this domain must be one of:
 
 * `HistoryBelief`: actual observed public history + current belief/range digest
 * `PublicBelief`: explicit PBS-style root
-* never just `ObservationProxy` for authority
+* never `ObservationProxy` for authority
 
-ReBeL and SoG both make public-belief context the relevant “state.” POMCP uses history nodes for the same reason in POMDP planning. ([NeurIPS Proceedings][1])
+ReBeL + SoG both make public-belief context relevant “state.” POMCP uses history nodes for same reason in POMDP planning. ([NeurIPS Proceedings][1])
 
 ### Boundary B — belief state vs. policy assumptions
 
-A PBS is determined by public observations **and the policies of all agents**. That means a cache hit is not trustworthy unless the policy bundle used to build/update beliefs matches. If the actor, rollout net, SaF adaptor, or opponent-policy assumptions changed, the belief context changed. ([NeurIPS Proceedings][1])
+PBS determined by public observations **and policies of all agents**. That means cache hit not trustworthy unless policy bundle used to build/update beliefs matches. If actor, rollout net, SaF adaptor, or opponent-policy assumptions changed, belief context changed. ([NeurIPS Proceedings][1])
 
 ### Boundary C — producer vs. consumer
 
-A background ponder worker is a different trust domain from live action selection. Crossing that boundary requires explicit provenance and admission logic. Raw `DashMap<u64, PonderResult>` access inside `InferenceServer` is the wrong abstraction because it makes bypasses trivial.
+Background ponder worker different trust domain from live action selection. Crossing boundary requires explicit provenance + admission logic. Raw `DashMap<u64, PonderResult>` access inside `InferenceServer` wrong abstraction because makes bypasses trivial.
 
 ### Boundary D — observed successor vs. speculative successor
 
-`predicted_child_hash(parent, action)` crosses an even harder boundary: it uses a **hypothesized** successor identity before the environment confirms the actual successor observation/belief update. In a stochastic, multi-agent, imperfect-information game, that can only be a hint. It must never be authoritative. OOS’s strategy-fusion/non-locality warnings are exactly about this family of mistake: you cannot pretend that hidden distinctions and off-path effects do not matter. ([IFAAMAS][2])
+`predicted_child_hash(parent, action)` crosses even harder boundary: it uses **hypothesized** successor identity before environment confirms actual successor observation/belief update. In stochastic, multi-agent, imperfect-information game, that only hint. Must never be authoritative. OOS strategy-fusion/non-locality warnings exact about this mistake family: cannot pretend hidden distinctions + off-path effects do not matter. ([IFAAMAS][2])
 
 ### Boundary E — learner/teacher artifacts vs. actor authority
 
-Artifacts C/D/F/P make actor and learner roles explicit, and doctrine says rollout/teacher mechanisms belong in pondering, deep search, offline solvers, or distillation if too slow for the critical path. So teacher outputs and rollout summaries should default to learner-only unless a separate online admission gate says otherwise. That is also how SoG is structured: search outputs become query-buffer/replay targets and are solved/trained asynchronously. ([PMC][3])
+Artifacts C/D/F/P make actor + learner roles explicit, and doctrine says rollout/teacher mechanisms belong in pondering, deep search, offline solvers, or distillation if too slow for critical path. So teacher outputs + rollout summaries should default learner-only unless separate online admission gate says otherwise. That also how SoG structured: search outputs become query-buffer/replay targets and are solved/trained asynchronously. ([PMC][3])
 
 ### Boundary F — global benchmarks vs. local admission
 
-Current `BenchmarkGates` are necessary capacity gates. They are not local trust proofs. A global pass on latency, throughput, and KL drift does not imply that a particular cache hit is semantically valid.
+Current `BenchmarkGates` necessary capacity gates. Not local trust proofs. Global pass on latency, throughput, KL drift does not imply particular cache hit semantically valid.
 
 ---
 
 ## 3. The provenance fields that are missing
 
-Split them into **key fields** and **metadata fields**.
+Split into **key fields** + **metadata fields**.
 
 ### 3.1 Required key fields
 
@@ -1215,7 +1215,7 @@ pub struct PonderMeta {
 
 ### 3.3 Required payload changes
 
-Current `PonderResult` is insufficient for safe subtree reuse.
+Current `PonderResult` insufficient for safe subtree reuse.
 
 ```rust
 pub struct PonderEntry {
@@ -1232,7 +1232,7 @@ pub struct PonderEntry {
 
 ### 3.4 Canonical belief digest
 
-For particle-based beliefs, make the digest order-invariant and numerically stable.
+For particle-based beliefs, make digest order-invariant + numerically stable.
 
 ```rust
 fn q16(p: f32) -> u16 {
@@ -1257,13 +1257,13 @@ fn belief_digest(particles: &[Particle], schema_version: u32) -> [u8; 32] {
 }
 ```
 
-`info_state_hash(obs)` can remain, but only as `obs_hint_digest`, never as the authority key.
+`info_state_hash(obs)` can remain, but only as `obs_hint_digest`, never authority key.
 
 ---
 
 ## 4. Cache rules
 
-### 4.1 Separate the stores
+### 4.1 Separate stores
 
 Do not keep one raw map.
 
@@ -1276,13 +1276,13 @@ pub struct RuntimePonderCache {
 }
 ```
 
-The namespace separation matters. An observed root and a predicted child must not share a key space.
+Namespace separation matters. Observed root + predicted child must not share key space.
 
 ### 4.2 Insert rules
 
 1. **ObservedRoot runtime store**
 
-   * insert only after the root was actually observed
+   * insert only after root observed
    * require full key + meta
    * require `root_kind in {HistoryBelief, PublicBelief}`
    * require `lineage == Observed`
@@ -1297,12 +1297,12 @@ The namespace separation matters. An observed root and a predicted child must no
 3. **LearnerTarget store**
 
    * may accept observed roots, speculative children, recursive queries, off-main-line solver outputs
-   * must carry source tags and full provenance
+   * must carry source tags + full provenance
    * never read by actor inference
 
 ### 4.3 Lookup / admission rules
 
-Use hard gates, not a fuzzy scalar trust score.
+Use hard gates, not fuzzy scalar trust score.
 
 ```rust
 fn classify_runtime_use(e: &PonderEntry, q: &ProvenanceKey) -> TrustLevel {
@@ -1366,7 +1366,7 @@ Research-only advisory blend:
 \qquad 0 \le \lambda \le 0.15
 ]
 
-Use only when provenance matches exactly except for the trust class, and log every decision.
+Use only when provenance matches exactly except trust class, and log every decision.
 
 ### 4.5 Invalidation rules
 
@@ -1381,7 +1381,7 @@ Invalidate runtime stores on any of:
 * ruleset/action-space change
 * episode end
 
-Global generation invalidation is cheap:
+Global generation invalidation cheap:
 
 ```rust
 fn rotate_generation(&self) {
@@ -1416,11 +1416,11 @@ That includes:
 2. every `predicted_child_hash` entry
 3. every entry with `particle_ess < 0.70`
 4. every cross-generation entry
-5. every entry whose root policy is truncated by `TOP_K` coverage
-6. every scalar `value` coming from depth-limited or rollout-style search unless its semantics are explicitly versioned and empirically validated
-7. every recursive/off-main-line search output not tied to a validated runtime cohort
+5. every entry whose root policy truncated by `TOP_K` coverage
+6. every scalar `value` from depth-limited or rollout-style search unless semantics explicitly versioned + empirically validated
+7. every recursive/off-main-line search output not tied to validated runtime cohort
 
-This is not wasted work. It is exactly how systems like Student of Games get value from expensive search: searches produce queries/targets keyed by a semantically meaningful state `β`, those are solved more deeply, and the results go to replay/training buffers. That is the right home for your current AFBS shell and rollout outputs. ([PMC][3])
+This not wasted work. Exactly how systems like Student of Games get value from expensive search: searches produce queries/targets keyed by semantically meaningful state `β`, those are solved more deeply, and results go to replay/training buffers. That right home for current AFBS shell + rollout outputs. ([PMC][3])
 
 ---
 
@@ -1432,21 +1432,21 @@ This is not wasted work. It is exactly how systems like Student of Games get val
 * **Call reactions**: `ActorNet + SaF` only
 * **Pondering**: AFBS allowed on idle time, hard-state gated
 * **Rollout nets / AFBS values**: search-internal or learner-target only
-* **Cached ponder hits**: not on the live authority path
-* **Predicted child cache**: not on the live authority path
+* **Cached ponder hits**: not on live authority path
+* **Predicted child cache**: not on live authority path
 
-This matches your doctrine better than the current code does. Your own text says:
+This matches doctrine better than current code. Own text says:
 
 * fast path is network + SaF
 * expensive mechanisms belong in pondering/deep search/distillation when too slow
 * AFBS should be specialist / hard-state gated, not default runtime
-* the current repo is not a fully integrated public-belief search runtime
+* current repo not fully integrated public-belief search runtime
 
-The literature points the same way. The strongest soundness results in this area are tied to explicit public-belief / history-based search semantics, mostly in two-player zero-sum settings. ReBeL says that directly; its theoretical results are in 2p0s, and it assumes common-knowledge policies in the formal setup. Your repo also explicitly admits “4-player general-sum has no clean exploitability target.” That means the safe policy today has to be empirical and conservative. ([NeurIPS Proceedings][1])
+Literature points same way. Strongest soundness results here tied to explicit public-belief / history-based search semantics, mostly in two-player zero-sum settings. ReBeL says that directly; its theoretical results in 2p0s, and it assumes common-knowledge policies in formal setup. Repo also explicitly admits “4-player general-sum has no clean exploitability target.” That means safe policy today must be empirical + conservative. ([NeurIPS Proceedings][1])
 
-### Keep the hard-state scheduler, but decouple it from trust
+### Keep hard-state scheduler, but decouple from trust
 
-Keep your existing ponder-priority formula:
+Keep existing ponder-priority formula:
 
 [
 \text{priority} =
@@ -1454,53 +1454,53 @@ Keep your existing ponder-priority formula:
 
 * \max(0,\text{risk_score})
 * \max(0,1 - \text{particle_ess})
-  ]
+]
 
-That is a scheduling rule.
+That scheduling rule.
 
-It is **not** an admission rule.
+It **not** admission rule.
 
-Low ESS means “spend more idle compute here,” not “trust cached search here more.” In fact, by the imperfect-information literature, low ESS is a reason to distrust replay authority, because the optimal policy is more sensitive to the belief distribution. ([NeurIPS Papers][4])
+Low ESS means “spend more idle compute here,” not “trust cached search here more.” In fact, by imperfect-information literature, low ESS reason to distrust replay authority, because optimal policy more sensitive to belief distribution. ([NeurIPS Papers][4])
 
 ---
 
 ## 7. Future evidence required before narrow rollout re-entry
 
-Use the artifact names `G0..G3`, but make them local and measurable.
+Use artifact names `G0..G3`, but make local + measurable.
 
 ### G0 — positive decision improvement
 
 Target cohort: hard states only.
 
-Require a paired comparison against `ActorNet + SaF` baseline on a frozen evaluation suite and arena:
+Require paired comparison against `ActorNet + SaF` baseline on frozen evaluation suite + arena:
 
 * `Δ mean_placement < 0` with 95% CI excluding 0
 * `Δ deal_in_rate <= 0`
 * no regression on stable-dan / win-rate summary metrics
 
-This must be measured on the exact cohort where runtime reuse would be allowed, not globally.
+Measure on exact cohort where runtime reuse would be allowed, not globally.
 
 ### G1 — robustness calibration
 
-For the **exact-match observed-root cohort**:
+For **exact-match observed-root cohort**:
 
 * top-1 agreement with fresh recomputed search: `>= 0.98`
 * policy divergence to fresh recompute:
-  [
-  JS(\pi_{\text{cache}}, \pi_{\text{fresh}})_{p95} \le 0.05
-  ]
+[
+JS(\pi_{\text{cache}}, \pi_{\text{fresh}})_{p95} \le 0.05
+]
 * no admission when `ESS < 0.70`
 
-For the **belief perturbation test**:
+For **belief perturbation test**:
 
-* perturb the belief within the same quantization bucket
-* verify low action-flip rate and bounded policy divergence
+* perturb belief within same quantization bucket
+* verify low action-flip rate + bounded policy divergence
 
-If the policy is highly unstable under tiny belief perturbations, the cache class stays learner-only.
+If policy highly unstable under tiny belief perturbations, cache class stays learner-only.
 
 ### G2 — safety-bound usefulness
 
-The provenance gate must separate good hits from bad hits.
+Provenance gate must separate good hits from bad hits.
 
 Require:
 
@@ -1509,11 +1509,11 @@ Require:
 * `missing_provenance_authority_hits == 0`
 * `low_ess_authority_hits == 0`
 
-Also require that the “authoritative-eligible” cohort has materially lower disagreement/error than the rejected cohort. If the gate does not stratify risk, it is not useful.
+Also require “authoritative-eligible” cohort has materially lower disagreement/error than rejected cohort. If gate does not stratify risk, not useful.
 
 ### G3 — SaF amortization / strength-per-effort
 
-Show that expensive AFBS/rollout supervision is actually buying enough signal to justify any runtime complexity:
+Show expensive AFBS/rollout supervision buys enough signal to justify runtime complexity:
 
 * current global gates still pass:
 
@@ -1522,9 +1522,9 @@ Show that expensive AFBS/rollout supervision is actually buying enough signal to
   * `endgame_ms < 100`
   * `self_play_games_per_sec > 20`
   * `distill_kl_drift < 0.1`
-* plus a provenance-aware gate:
+* plus provenance-aware gate:
 
-  * on the exact-match hard-state cohort, distilled actor behavior stays close enough that runtime cache use adds net value rather than papering over a student/teacher mismatch
+  * on exact-match hard-state cohort, distilled actor behavior stays close enough that runtime cache use adds net value rather than papering over student/teacher mismatch
 
 ### Re-entry stages
 
@@ -1536,23 +1536,23 @@ Show that expensive AFBS/rollout supervision is actually buying enough signal to
 * exact provenance match
 * subtree warm-start only
 * at least some fresh search work before action selection
-* no direct replay of a stale root summary
+* no direct replay of stale root summary
 
 **Stage 2 — later**
 
-* cross-episode reuse only after explicit PBS runtime exists and the same gates pass on cross-episode exact-PBS cohorts
+* cross-episode reuse only after explicit PBS runtime exists and same gates pass on cross-episode exact-PBS cohorts
 
-**Stage 3 — not a planned goal**
+**Stage 3 — not planned goal**
 
 * direct authoritative replay of cached `exit_policy` without continuing search
 
-I would not make Stage 3 a roadmap goal. The safer end state is exact-root warm-start plus distillation, not “cache hit = answer.”
+Would not make Stage 3 roadmap goal. Safer end state = exact-root warm-start + distillation, not “cache hit = answer.”
 
 ---
 
 ## 8. Immediate code and test changes
 
-### 8.1 Remove the unsafe live-authority path
+### 8.1 Remove unsafe live-authority path
 
 Replace this pattern in `InferenceServer::infer_with_budget`:
 
@@ -1583,11 +1583,11 @@ live
 pub fn obs_hint_hash(obs: &[f32; OBS_FLAT_SIZE]) -> u64
 ```
 
-Keep it only for candidate retrieval/debugging.
+Keep only for candidate retrieval/debugging.
 
-### 8.3 Fix the producer side
+### 8.3 Fix producer side
 
-`PonderTask` must hold a reconstructable root, not just summary scalars.
+`PonderTask` must hold reconstructable root, not summary scalars.
 
 ```rust
 pub struct PonderRootSnapshot {
@@ -1606,14 +1606,14 @@ pub struct PonderRootSnapshot {
 }
 ```
 
-Current `GameStateSnapshot` is not enough.
+Current `GameStateSnapshot` not enough.
 
-### 8.4 Replace the tests that encode the wrong policy
+### 8.4 Replace tests that encode wrong policy
 
 Delete or rewrite:
 
 * `inference_server_reuses_cached_ponder_policy`
-* any test whose success condition is “cache hit directly chooses action”
+* any test whose success condition “cache hit directly chooses action”
 
 Add:
 
@@ -1646,13 +1646,13 @@ Current priority formula gives:
 = 2.28
 ]
 
-That is a great candidate for idle-time pondering.
+That great candidate for idle-time pondering.
 
-It is a bad candidate for runtime authority because `ESS = 0.22` means the decision is highly belief-sensitive.
+Bad candidate for runtime authority because `ESS = 0.22` means decision highly belief-sensitive.
 
 ### Example B — `TOP_K` truncation blocks authority
 
-Suppose a root has 9 legal actions but `ChildList` stores only 5 expanded children.
+Suppose root has 9 legal actions but `ChildList` stores only 5 expanded children.
 
 Then:
 
@@ -1660,7 +1660,7 @@ Then:
 \text{expanded_legal_fraction} = 5/9 \approx 0.56
 ]
 
-Even if the cached policy sums to 1 over those 5 children, it is still only a partial root summary. Authority is forbidden. At most, it is a learner target or an advisory prior in research mode.
+Even if cached policy sums to 1 over those 5 children, still only partial root summary. Authority forbidden. At most, learner target or advisory prior in research mode.
 
 ### Example C — predicted child is speculation, not identity
 
@@ -1670,28 +1670,28 @@ Current code can store:
 predicted_child_key = parent_hash ^ f(action)
 ```
 
-before observing the successor.
+before observing successor.
 
-That key contains no actual successor observation, no belief update, no legal mask, no model bundle, and no solver bundle. It must live in `SpeculativeChildHint`, never in the runtime authority path.
+That key contains no actual successor observation, no belief update, no legal mask, no model bundle, no solver bundle. It must live in `SpeculativeChildHint`, never in runtime authority path.
 
 ---
 
-This is the blueprint:
+This blueprint:
 
 * disable current runtime rollout/ponder authority
-* keep AFBS/rollouts active for learner targets and diagnostics
-* add explicit provenance keys and trust levels
-* split observed runtime reuse from speculative hints and learner buffers
+* keep AFBS/rollouts active for learner targets + diagnostics
+* add explicit provenance keys + trust levels
+* split observed runtime reuse from speculative hints + learner buffers
 * require exact semantic identity before any future warm-start
-* do not plan to re-enter broad direct replay of cached policies
+* do not plan re-enter broad direct replay of cached policies
 
-Until those gates pass, rollout output is a **learner signal**, not a **live authority**.
+Until those gates pass, rollout output **learner signal**, not **live authority**.
 
 [1]: https://proceedings.neurips.cc/paper/2020/file/c61f571dbd2fb949d3fe5ae1608dd48b-Paper.pdf "https://proceedings.neurips.cc/paper/2020/file/c61f571dbd2fb949d3fe5ae1608dd48b-Paper.pdf"
 [2]: https://aamas.csc.liv.ac.uk/Proceedings/aamas2015/aamas/p27.pdf "https://aamas.csc.liv.ac.uk/Proceedings/aamas2015/aamas/p27.pdf"
 [3]: https://pmc.ncbi.nlm.nih.gov/articles/PMC10651118/ "https://pmc.ncbi.nlm.nih.gov/articles/PMC10651118/"
 [4]: https://papers.neurips.cc/paper/7993-depth-limited-solving-for-imperfect-information-games.pdf "https://papers.neurips.cc/paper/7993-depth-limited-solving-for-imperfect-information-games.pdf"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

@@ -1,10 +1,10 @@
 # Hydra training container
 
-Image package Hydra training binaries for local + container GPU run.
+Image package Hydra train bins for local + container GPU run.
 
 ## What is inside
 
-- `train` -- training entrypoint from `crates/hydra-train/src/bin/train.rs`
+- `train` -- train entrypoint from `crates/hydra-train/src/bin/train.rs`
 - `mjai_audit` -- MJAI replay auditor from `crates/hydra-train/src/bin/mjai_audit.rs`
 - Burn + `tch` / libtorch-compatible runtime via CUDA base image
 
@@ -31,7 +31,7 @@ docker run --rm hydra:local
 Container entrypoint = `train`; expects 1 YAML config arg:
 
 - `train <config.yaml>`
-- mount config/data/output paths instead of baking datasets into image
+- mount config/data/output paths, not datasets in image
 
 Hydra current behavioral-cloning loader supports either:
 
@@ -65,7 +65,7 @@ num_epochs: 1
 batch_size: 32
 ```
 
-For archive-backed run, mount archive itself and point `data_dir` at that file path.
+For archive-backed run, mount archive itself; point `data_dir` at that file path.
 
 For full training-mode + config contract, read [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md). For preflight/runtime-selection behavior, read [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md).
 
@@ -98,4 +98,4 @@ docker push ghcr.io/nikketryhard/hydra:0.1.0
 
 ## Note on image publishing
 
-If publishing image to GHCR or another registry, make sure package visibility + pull path match environment that will run training.
+If publishing image to GHCR or another registry, ensure package visibility + pull path match runtime env.

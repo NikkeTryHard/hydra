@@ -2,19 +2,19 @@
 
 ## Executive Summary
 
-There is strong quantitative evidence that even top-level Tenhou Houou room players (7-dan+, R2000+) exhibit systematic, measurable deviations from AI-optimal play. These biases cluster in three areas: **defensive over-folding**, **suboptimal riichi/dama decisions**, and **imprecise push/fold boundaries**. The evidence below, drawn from ~893,000 Houou hanchan logs and Naga AI analysis, supports the claim that exploiting these population-level tendencies adds measurable EV.
+Strong quantitative evidence: even top Tenhou Houou players (7-dan+, R2000+) show systematic, measurable deviations from AI-optimal play. Bias clusters in 3 areas: **defensive over-folding**, **suboptimal riichi/dama decisions**, **imprecise push/fold boundaries**. Evidence below, from ~893,000 Houou hanchan logs + Naga AI analysis, supports claim: exploiting these population tendencies adds measurable EV.
 
 ---
 
 ## 1. Naga AI vs Human Agreement Rate by Dan Level
 
-KillerDucky's analysis ([killerducky.com/mahjong/naga_stats](https://killerducky.com/mahjong/naga_stats)) used Naga Nishiki v2.2 to grade human play across Tenhou dan levels. Three metrics are tracked:
+KillerDucky analysis ([killerducky.com/mahjong/naga_stats](https://killerducky.com/mahjong/naga_stats)) used Naga Nishiki v2.2 to grade human play across Tenhou dan levels. Three metrics tracked:
 
-- **Match %**: how often the human discard matches Naga's top choice
-- **Score**: partial credit based on probability gap (100 = perfect)
+- **Match %**: human discard matches Naga top choice rate
+- **Score**: partial credit by probability gap (100 = perfect)
 - **Bad Move %**: discards below 5% Naga probability threshold
 
-**Source**: [killerducky/mahjong_stats](https://github.com/killerducky/mahjong_stats/blob/b143c1617dd1c926a9ac7970e9300046866a1808/naga-log-parser.py#L270-L297) - defines these metrics precisely.
+**Source**: [killerducky/mahjong_stats](https://github.com/killerducky/mahjong_stats/blob/b143c1617dd1c926a9ac7970e9300046866a1808/naga-log-parser.py#L270-L297) - defines metrics precisely.
 
 ### Naga Nishiki Score by Tenhou Dan (chart-extracted, R^2=0.989):
 
@@ -26,7 +26,7 @@ KillerDucky's analysis ([killerducky.com/mahjong/naga_stats](https://killerducky
 | 7-dan (Houou entry) | ~87.9 | ~6.5%   |
 | 8-dan     | ~89.7         | ~3.9%        |
 
-**Key finding**: Even at 7-dan (Houou floor), players make "bad moves" (Naga probability <5%) on **6.5% of all discards**. At 8-dan, this drops to ~3.9%. A perfect Naga score would be 100 with 0% bad moves. The gap from 87.9 to 100 represents 12.1 points of exploitable inefficiency at the Houou entry level.
+**Key finding**: Even at 7-dan (Houou floor), players make "bad moves" (Naga probability <5%) on **6.5% of all discards**. At 8-dan, ~3.9%. Perfect Naga = 100 score, 0% bad moves. Gap from 87.9 to 100 = 12.1 points exploitable inefficiency at Houou entry.
 
 ### Cross-platform equivalences:
 | Nishiki Score | MJS Rank | Tenhou Dan | Tenhou Rating |
@@ -75,7 +75,7 @@ KillerDucky's analysis ([killerducky.com/mahjong/naga_stats](https://killerducky
 | Win rate | 20.87% | ~21.3% | -0.4% | Humans slightly lower |
 | Deal-in rate | 12.86% | ~12.3% | +0.6% | Humans deal in more |
 
-**Interpretation**: Houou players call ~4.4 percentage points more than Mortal and riichi ~1.5 percentage points less. This suggests a systematic bias toward open hands (naki) over closed riichi, which sacrifices hand value for perceived speed. The win rate gap is small (0.4%), but the deal-in gap (0.6%) and the massive call rate gap (4.4%) point to efficiency loss in hand construction.
+**Interpretation**: Houou players call ~4.4 pp more than Mortal, riichi ~1.5 pp less. Suggests systematic bias toward open hands (naki) over closed riichi, sacrificing value for perceived speed. Win-rate gap small (0.4%), but deal-in gap (0.6%) + huge call-rate gap (4.4%) point to efficiency loss in hand construction.
 
 ---
 
@@ -83,7 +83,7 @@ KillerDucky's analysis ([killerducky.com/mahjong/naga_stats](https://killerducky
 
 ### 3a. Push/Fold Decision Errors
 
-From the houou-statistics Cheat Sheet (compiled from 893,440 Houou logs):
+From houou-statistics Cheat Sheet (compiled from 893,440 Houou logs):
 
 **Betaori (fold) cost when NOT tenpai** ([houou-statistics BetaoirCost.csv](https://github.com/chienshyong/houou-statistics/blob/80dc535dc7eab1a0faf18a2fbcfe72db2067976a/results/BetaoirCost.csv)):
 
@@ -96,13 +96,13 @@ From the houou-statistics Cheat Sheet (compiled from 893,440 Houou logs):
 | 14 | -1,473 pts | -1,195 pts |
 | 16 | -1,339 pts | -1,246 pts |
 
-**Key bias**: Folding is NOT free. Even in Houou, players lose 1,000-1,600 points per round when folding (opponent tsumo, noten penalties). Many intermediate-level players (and even some Houou players) treat folding as zero-cost. An AI that correctly weighs fold cost against push EV gains 100-300+ points per decision at the margin.
+**Key bias**: Folding NOT free. Even in Houou, players lose 1,000-1,600 points per round when folding (opponent tsumo, noten penalties). Many intermediate players, and some Houou players, treat folding as zero-cost. AI that correctly weighs fold cost vs push EV gains 100-300+ points per margin decision.
 
 **Push/fold breakpoints from houou-statistics Cheat Sheet**:
 - Push musuji (no-suji) tile in 1-shanten:
-  - Dealer vs Non-dealer riichi: Profitable at 1 han, good shape, early game
-  - ND vs ND riichi: Need 4 han, good shape, mid-game
-  - ND vs Dealer riichi: Need 4 han, good shape, early game
+  - Dealer vs Non-dealer riichi: profitable at 1 han, good shape, early game
+  - ND vs ND riichi: need 4 han, good shape, mid-game
+  - ND vs Dealer riichi: need 4 han, good shape, early game
 
 ### 3b. Oikake (Chase) Riichi Inefficiency
 
@@ -125,7 +125,7 @@ From [houou-statistics OikakeWinrate.csv](https://github.com/chienshyong/houou-s
 | 12 | 41.9% | 22.5% | 10.4% |
 | 14 | 33.6% | 32.7% | 9.2% |
 
-**Exploitable bias**: Players in Houou systematically under-chase with good waits early (turns 5-8) where the win rate is 55-66% with only 7-10% deal-in risk, and over-chase late (turns 12+) where winrate drops below 42%. An AI modeling this tendency can predict when opponents will fold versus push and adjust accordingly.
+**Exploitable bias**: Players in Houou systematically under-chase with good waits early (turn 5-8), where win rate = 55-66% with only 7-10% deal-in risk, and over-chase late (turn 12+), where win rate drops below 42%. AI modeling this tendency can predict when opponents fold vs push, then adjust.
 
 ### 3c. Tile Danger Assessment Biases
 
@@ -145,10 +145,10 @@ From [killerducky.com reference stats](https://www.killerducky.com/mahjong/refer
 | Suji 19 | 1.8% | 3.0% | +1.2% |
 | Honor 2 seen | 0.3% | 0.8% | +0.5% |
 
-**Exploitable insight**: The danger curve is NOT linear. Non-suji 456 tiles jump from 12.9% to 20.0% danger between turns 9-15, while suji tiles barely move. Human players who use simple "suji = safe" heuristics systematically **underestimate danger of non-suji middle tiles late** and **overestimate danger of suji tiles early**. An AI can exploit this by:
+**Exploitable insight**: Danger curve NOT linear. Non-suji 456 jumps from 12.9% to 20.0% danger between turns 9-15, while suji tiles barely move. Humans using simple "suji = safe" heuristics systematically **underestimate danger of non-suji middle tiles late** and **overestimate danger of suji tiles early**. AI can exploit by:
 1. Reading that humans over-rely on suji reasoning
 2. Trapping with half-suji waits (7.5% deal-in at T9 despite appearing "safe")
-3. Predicting fold patterns based on visible suji information
+3. Predicting fold patterns from visible suji info
 
 ### 3d. Dora Proximity Danger Bias
 
@@ -157,7 +157,7 @@ From houou-statistics Cheat Sheet:
 - **Dorasoba (adjacent to dora)**: +30% vs riichi, +50% vs open
 - **Dora +/- 2**: +10% more dangerous
 
-**Exploitable bias**: Human players at all levels (including Houou) show a measurable tendency to **hold dora too long** and **under-fold dorasoba tiles**. The +50-80% danger modifier on dora means that in late-game push/fold situations, the EV of pushing with dora in hand is significantly worse than players estimate.
+**Exploitable bias**: Human players at all levels, including Houou, measurably **hold dora too long** and **under-fold dorasoba tiles**. +50-80% danger modifier on dora means: in late-game push/fold spots, EV of pushing with dora in hand is much worse than players estimate.
 
 ### 3e. Riichi vs Dama Decision Errors
 
@@ -166,11 +166,11 @@ From houou-statistics Cheat Sheet, **positive EV damaten breakpoints**:
 |-----------|----------------------------|-----------------|
 | Ryanmen | 3 han / 40 fu | After turn 12 only |
 | Ryanmen | 4 han / 30 fu+ | After turn 8 |
-| Ryanmen | 6+ han | Always profitable dama |
+| Ryanmen | 6+ han | profitable dama |
 | Kanchan | 3 han / 40 fu+ | After turn 8 |
-| Honor tanki | 6+ han | Always profitable dama |
+| Honor tanki | 6+ han | profitable dama |
 
-**Key bias**: Houou players riichi at 16.93% vs Mortal's 18.43% -- a 1.5 percentage point gap. This means Houou players choose dama when they should riichi roughly 8% of the time (1.5/18.4). Given that riichi adds 1+ han and ippatsu/uradora potential, the EV loss from under-riichi-ing is significant. Conversely, some players riichi weak hands where dama has higher EV (e.g., ryanmen pinfu-only before turn 12).
+**Key bias**: Houou players riichi at 16.93% vs Mortal's 18.43% -> 1.5 pp gap. Means Houou players choose dama when they should riichi roughly 8% of time (1.5/18.4). Since riichi adds 1+ han and ippatsu/uradora potential, EV loss from under-riichi is significant. Converse error also exists: some players riichi weak hands where dama has higher EV (example: ryanmen pinfu-only before turn 12).
 
 ### 3f. Riichi Winrate Decay Curve (Exploitable Timing Bias)
 
@@ -198,9 +198,9 @@ From [houou-statistics RiichiWinrate.csv](https://github.com/chienshyong/houou-s
 | 10 | 50.6% |
 | 12 | 50.8% |
 
-**Exploitable bias**: The winrate drops by ~4.5 percentage points per turn. Houou players who riichi late (turn 12+) with mediocre waits are making -EV decisions because their fold cost is lower than the push risk. An AI that models the population's riichi timing can predict:
-- Early riichi (turns 0-5): likely strong wait, fold is correct unless you have a big hand
-- Late riichi (turns 10+): likely weak hand that just reached tenpai, pushing back is more viable
+**Exploitable bias**: Win rate drops ~4.5 pp per turn. Houou players who riichi late (turn 12+) with mediocre waits make -EV decisions because fold cost is lower than push risk. AI modeling population riichi timing can predict:
+- Early riichi (turn 0-5): likely strong wait; fold correct unless you have big hand
+- Late riichi (turn 10+): likely weak hand that reached tenpai; pushback more viable
 
 ---
 
@@ -227,7 +227,7 @@ From [houou-statistics RiichiWinrate.csv](https://github.com/chienshyong/houou-s
 
 **Source**: [riichi.wiki/Tenhou.net_ranking](https://riichi.wiki/Tenhou.net_ranking)
 
-This means at Houou, a single 4th-place finish costs 1.5x a 1st-place gain. This asymmetry amplifies the value of avoiding deal-ins and makes defensive accuracy disproportionately important.
+This means at Houou, one 4th-place finish costs 1.5x one 1st-place gain. This asymmetry amplifies value of avoiding deal-ins and makes defensive accuracy disproportionately important.
 
 ---
 
@@ -237,7 +237,7 @@ This means at Houou, a single 4th-place finish costs 1.5x a 1st-place gain. This
 
 | Bias Category | Frequency | EV Impact per Instance | Source |
 |--------------|-----------|----------------------|--------|
-| Bad moves (Naga <5% prob) at 7-dan | 6.5% of discards | Variable, but these are the bottom-5% choices | Naga chart data |
+| Bad moves (Naga <5% prob) at 7-dan | 6.5% of discards | Variable, but these are bottom-5% choices | Naga chart data |
 | Over-calling (+4.4% call rate vs optimal) | ~4.4% of hands | Reduced hand value (no riichi, no ippatsu/uradora) ~500-1000 pts | Houou avg vs Mortal |
 | Under-riichi (-1.5% riichi rate) | ~8% of tenpai decisions | Lost 1 han + ippatsu + uradora = ~1500-3000 pts when it matters | Houou avg vs Mortal |
 | Suji over-reliance (half-suji 456 = 7.5% danger at T9) | Frequent in defense | Players fold safe-looking tiles that are 7.5% dangerous instead of actually-safer alternatives | killerducky reference |
@@ -246,12 +246,12 @@ This means at Houou, a single 4th-place finish costs 1.5x a 1st-place gain. This
 
 ### Estimated dan improvement from population modeling:
 
-The gap between a 7-dan Houou player (Naga score ~87.9) and a top 8-dan (Naga score ~89.7) is only ~1.8 Naga score points. Given that:
-1. Each Naga score point roughly corresponds to a measurable shift in rank stability
-2. The Naga score-to-dan trendline has R^2 = 0.989 (near-perfect correlation)
-3. 1 dan roughly corresponds to ~2 Naga score points (82.2 at 4d to 89.7 at 8d = 7.5 points over 4 dan levels)
+Gap between 7-dan Houou player (Naga ~87.9) and top 8-dan (Naga ~89.7) is only ~1.8 Naga points. Given:
+1. Each Naga point roughly corresponds to measurable rank-stability shift
+2. Naga score-to-dan trendline has R^2 = 0.989 (near-perfect correlation)
+3. 1 dan roughly corresponds to ~2 Naga points (82.2 at 4d to 89.7 at 8d = 7.5 points over 4 dan levels)
 
-An AI that corrects for the population biases above could gain ~1-4 Naga score points, which translates to approximately **+0.5-2.0 dan equivalent** improvement, bracketing the **+0.3-0.8 dan** claim within the lower end of what the evidence supports.
+AI correcting for population biases above could gain ~1-4 Naga points, translating to ~ **+0.5-2.0 dan equivalent** improvement, bracketing **+0.3-0.8 dan** claim within lower end of what evidence supports.
 
 ---
 

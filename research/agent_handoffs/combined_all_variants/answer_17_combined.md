@@ -1,30 +1,29 @@
-<combined_run_record run_id="answer_17" variant_id="prompt_and_agent_pair" schema_version="1">
-  <metadata>
-    <notes>Combined record for Prompt 17 and its returned agent answer.</notes>
-    <layout>single_markdown_file_prompt_then_answer</layout>
-  </metadata>
+Reading remaining sections. Need restore exact code blocks only.Comparing fenced blocks vs original. Then patch only mismatched blocks.Checking fenced-block exactness only.Restoring exact mismatched fenced blocks from original.Verifying all fenced code blocks exact now.Read rest. Then compress only prose.<combined_run_record run_id="answer_17" variant_id="prompt_and_agent_pair" schema_version="1">
+<metadata>
+<notes>Combined record: Prompt 17 + returned agent answer.</notes>
+<layout>single_markdown_file_prompt_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="PROMPT_17_IMPLEMENT_HAND_EV_SEMANTIC_REPAIR.md">
-  <![CDATA[# Prompt 17 — Hand-EV semantic repair blueprint
+<prompt_section>
+<prompt_text status="preserved" source_path="PROMPT_17_IMPLEMENT_HAND_EV_SEMANTIC_REPAIR.md">
+<![CDATA[# Prompt 17 — Hand-EV semantic repair blueprint
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Your answer itself must be the blueprint.
+Produce impl-ready blueprint.
+Not memo.
+Answer itself = blueprint.
 </role>
 
 <direction>
-Work toward the strongest exact blueprint for repairing the semantics of Hand-EV.
+Target strongest exact blueprint for Hand-EV semantic repair.
 
-We want a detailed answer that makes clear:
-- what the current quantities really mean
-- what is semantically broken or misleading
-- what the clean repaired meanings should be
-- what should stay exact, what should stay approximate, and what should be dropped or demoted
-- how to implement the repair with minimal guesswork
-
-Use the artifacts below to derive your conclusions.
+Make clear:
+- current quantity meanings
+- broken/misleading semantics
+- clean repaired meanings
+- what stays exact, approximate, dropped, demoted
+- minimal-guesswork repair impl
+Use artifacts below to derive conclusions.
 </direction>
 
 <style>
@@ -34,28 +33,28 @@ Use the artifacts below to derive your conclusions.
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
-- include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
-- distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- include enough detail for self-validation (pdfs, sources, links, similar projects)
+- distinguish direct artifact support vs your inference
+- use search/browse to find original paper, then inspect full PDF with skill; use abstracts/summaries only for discovery, not final evidence
+- use bash tool to run Python for calculations, math checks, validation when rigor matters
+- do not finish early; keep looping through discovery, thinking, testing, validation until saturated or blocked, at least 20+ loops if possible
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+Artifacts below reflect what current codebase/docs seem to say now. Not guaranteed correct. Treat as evidence to inspect/critique, not truth. High chance some incomplete, misleading, stale, semantically wrong. Validate all.
 </artifact_note>
 
 <artifacts>
-Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+Embedded artifact/context dump intentionally omitted during normalization. Use paired answer body + repo source files for audit and follow-up.
 </artifacts>
 
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_17.md">
-  <![CDATA[# Hand-EV semantic repair blueprint
+<answer_section>
+<answer_text status="preserved" source_path="agent_17.md">
+<![CDATA[# Hand-EV semantic repair blueprint
 
 ```rust
 //! Hand-EV oracle features: per-discard tenpai/win probability and ukeire.
@@ -901,7 +900,7 @@ impl DirtyFlags {
 }
 ```
 
-Artifact F — engine documentation excerpts:
+Artifact F — engine docs excerpts:
 
 ```text
 Canonical SSOT note: the original 85 x 34 tensor now describes the baseline prefix of the live encoder, not the full live encoder. The current implementation is already a fixed-shape 192 x 34 superset with Groups C/D plus presence-mask channels.
@@ -962,7 +961,7 @@ golden_encoder.rs: regression tests for the encoder. Compares encoder output aga
 Property-based tests verify encoder channel bounds and tile count conservation.
 ```
 
-Artifact H — additional encoder/runtime documentation excerpts:
+Artifact H — additional encoder/runtime docs excerpts:
 
 ```text
 Observation Encoder tensor shape: 192 x 34 float tensor (6,528 values). The first 85 channels retain the baseline public+safety encoding; the remaining channels provide fixed-shape search/belief and Hand-EV context with zero-fill plus explicit presence masks when dynamic features are unavailable.
@@ -1003,7 +1002,7 @@ Best combined reading:
 - Hand-EV is worth moving earlier than deeper AFBS expansion
 ```
 
-Artifact J — additional engine/runtime documentation excerpts:
+Artifact J — additional engine/runtime docs excerpts:
 
 ```text
 Observation Encoder baseline prefix channel layout includes 23 safety channels in channels 62-84, and the current implementation extends beyond the old baseline with fixed-shape search/belief and Hand-EV context.
@@ -1079,12 +1078,12 @@ Hand-EV realism improvements are a cheaper, higher-ROI upgrade than broader sear
 
 ## 0. Rename the thing before changing any math
 
-**Replace the module-level label `oracle features` with `local self-draw hand-progress features`.**
+**Replace module-level label `oracle features` with `local self-draw hand-progress features`.**
 
 Reason:
 
-* The current module is **not** an oracle module in the usual RL / imperfect-information sense. In the oracle-guiding literature, *oracle observation* means information unavailable at execution time and available only in training or hindsight. The VLOG paper describes Suphx’s oracle-guiding method as a heuristic use of oracle observation during training, not as an online runtime feature family. ([OpenReview][1])
-* The original Suphx paper’s look-ahead features are also **not** the current repo’s `P_tenpai / P_win / E[score|win] + ukeire` summary. Suphx describes **100+** look-ahead vectors built by DFS, keyed by winning-score/replacement-depth conditions, under explicit simplifications. It is a broader feature family than the current module. ([arXiv][2])
+* current module **not** oracle module in usual RL / imperfect-info sense. In oracle-guiding literature, *oracle observation* = info unavailable at execution, available only in training/hindsight. VLOG paper describes Suphx oracle-guiding as heuristic use of oracle observation during training, not online runtime feature family. ([OpenReview][1])
+* original Suphx paper look-ahead features also **not** current repo `P_tenpai / P_win / E[score|win] + ukeire` summary. Suphx describes **100+** look-ahead vectors built by DFS, keyed by winning-score/replacement-depth conditions, under explicit simplifications. Broader family than current module. ([arXiv][2])
 
 **New top-level sentence:**
 
@@ -1094,24 +1093,24 @@ Reason:
 //! multi-draw local projection.
 ```
 
-Do **not** call the live module `oracle` again unless it actually consumes perfect hidden information at runtime.
+Do **not** call live module `oracle` again unless it truly consumes perfect hidden info at runtime.
 
 ---
 
 ## 1. What the current quantities really mean
 
-Everything below is directly supported by Artifact A/B/E/K unless explicitly marked as inference.
+Everything below directly supported by Artifact A/B/E/K unless marked inference.
 
 ### 1.1 Core state used by the current module
 
-For a discard candidate `a`:
+For discard candidate `a`:
 
 * `after_a = hand - e_a`
 * `s_a = shanten(after_a)`
 * `R_t = remaining[t]`
 * `R = sum_t R_t`
 
-The current code treats `remaining` as a nonnegative tile-weight vector. It may be integer public unseen-copy counts or fractional CT-SMC weighted counts.
+Current code treats `remaining` as nonnegative tile-weight vector. It may be integer public unseen-copy counts or fractional CT-SMC weighted counts.
 
 ### 1.2 `ukeire[discard][draw_tile]` — current meaning
 
@@ -1123,19 +1122,19 @@ U_a(t) = R_t \cdot \mathbf{1}\big[\operatorname{shanten}(after_a + e_t) < s_a\bi
 
 This is **exact**, conditional on:
 
-* the supplied `shanten_fn`
-* the supplied `remaining` vector
+* supplied `shanten_fn`
+* supplied `remaining` vector
 
-So the current `ukeire` is **not** “general hand improvement,” **not** “effective tiles” in the broad Mortal/Akochan sense, and **not** a probability vector. It is:
+So current `ukeire` is **not** “general hand improvement,” **not** “effective tiles” in broad Mortal/Akochan sense, **not** probability vector. It is:
 
 > **one-self-draw shanten-lowering live-copy mass by tile type**
 
-That meaning is good and should be kept.
+Meaning good. Keep.
 
 Immediate corollaries:
 
-* `sum_t U_a(t)` is the mass of draws that lower shanten by at least 1.
-* If `remaining` is normalized into a draw distribution, `sum_t U_a(t) / R` is the exact probability that the next self-draw lowers shanten.
+* `sum_t U_a(t)` = mass of draws lowering shanten by at least 1
+* if `remaining` normalized into draw distribution, `sum_t U_a(t) / R` = exact probability next self-draw lowers shanten
 
 ### 1.3 `acceptance = sum(ukeire)` — current meaning
 
@@ -1147,9 +1146,9 @@ A_a = \sum_t U_a(t)
 p^\downarrow_a = A_a / R
 ]
 
-`acceptance_ratio` is therefore:
+`acceptance_ratio` therefore =
 
-> **probability that the next self-draw lowers shanten by at least 1**, under the supplied draw-mass model.
+> **probability next self-draw lowers shanten by at least 1**, under supplied draw-mass model.
 
 That is exact.
 
@@ -1183,11 +1182,11 @@ c^{tenpai}_{a,h} = \texttt{continuation_boost}(h, s_a, A_a/R)
 1 - (1-q_a)^{h+1}(1-c^{tenpai}_{a,h})
 ]
 
-This is **not** semantically “probability of reaching tenpai within `h+1` self-draws” except in the trivial already-tenpai case.
+This is **not** semantically “probability of reaching tenpai within `h+1` self-draws” except trivial already-tenpai case.
 
 Useful special cases:
 
-* If `s_a = 1`, then `A_a / R` is the **exact one-draw tenpai probability**, but current horizon-0 output is
+* If `s_a = 1`, then `A_a / R` = **exact one-draw tenpai probability**, but current horizon-0 output =
 
 [
 1 - (1-p)(1-0.65p) = 1.65p - 0.65p^2
@@ -1195,13 +1194,13 @@ Useful special cases:
 
 not `p`.
 
-* If `s_a \ge 2`, then `A_a / R` is only the probability of moving from `s_a` to a lower shanten. Current horizon-0 output becomes
+* If `s_a \ge 2`, then `A_a / R` only = probability of moving from `s_a` to lower shanten. Current horizon-0 output becomes
 
 [
 1 - (1-p)(1-0.45p) = 1.45p - 0.45p^2
 ]
 
-which is not a tenpai probability at all.
+not tenpai probability at all.
 
 ### 1.5 `win_prob[discard][h]` — current meaning
 
@@ -1212,11 +1211,11 @@ w_a =
 \frac{\sum_t R_t \cdot \mathbf{1}[\operatorname{shanten}(after_a + e_t) < 0]}{R}
 ]
 
-That is an exact **one-draw structural completion probability** conditional on:
+That is exact **one-draw structural completion probability** conditional on:
 
 * `after_a` being tenpai
-* `remaining` being a valid next-draw mass model
-* “`shanten < 0`” being accepted as the win predicate
+* `remaining` being valid next-draw mass model
+* “`shanten < 0`” accepted as win predicate
 
 Then current code replaces this with
 
@@ -1224,7 +1223,7 @@ Then current code replaces this with
 b_a = \max(w_a,\ 0.35 A_a/R)
 ]
 
-and then applies the same continuation transform:
+then applies same continuation transform:
 
 [
 \texttt{win_prob}[a][h]
@@ -1233,15 +1232,15 @@ and then applies the same continuation transform:
 1 - (1-b_a)^{h+1}(1-c^{win}_{a,h})
 ]
 
-So current `win_prob` is:
+So current `win_prob` =
 
-> a heuristic monotone offensive proxy derived from either exact one-draw structural wait mass (only in tenpai) or a `0.35 * acceptance_ratio` fallback
+> heuristic monotone offensive proxy derived from either exact one-draw structural wait mass (only in tenpai) or `0.35 * acceptance_ratio` fallback
 
-It is **not** a clean probability of winning.
+It is **not** clean win probability.
 
 Special case:
 
-* If `s_a = 0` and `w_a = p`, then current horizon-0 output is
+* If `s_a = 0` and `w_a = p`, then current horizon-0 output =
 
 [
 1 - (1-p)^2 = 2p - p^2
@@ -1249,7 +1248,7 @@ Special case:
 
 not `p`.
 
-Also, current code is only modeling **self-draw** addition of one tile. So even if the field were exact, it would still be **tsumo-only local win probability**, not generic “win probability.”
+Also current code models only **self-draw** addition of one tile. So even if exact, still **tsumo-only local win probability**, not generic “win probability.”
 
 ### 1.6 `expected_score[discard]` — current meaning
 
@@ -1259,30 +1258,30 @@ Current code computes:
 \texttt{expected_score}[a]
 ==========================
 
-\texttt{win_prob}[a][2] \cdot \texttt{conditional_score_estimate}(hand, a, A_a, s_a)
+\texttt{win_prob}[a][2] \cdot \texttt{conditional_score_estimate}(hand, A_a, s_a)
 ]
 
-This field is currently:
+This field =
 
-> **a 3-draw offensive utility heuristic in score-like units**
+> **3-draw offensive utility heuristic in score-like units**
 
-It is **not** any of these:
+It is **not**:
 
-* not (E[\text{score} \mid \text{win}, a])
-* not (E[\text{score} \cdot \mathbf{1}{\text{win}} \mid a]) under any exact model
+* not \(E[\text{score} \mid \text{win},
+* not \(E[\text{score} \cdot \mathbf{1}{\text{win}} \mid under any exact model
 * not conditional on actual winning hands
 * not computed from `after_discard`
-* not computed from a legal scoring engine
+* not computed from legal scoring engine
 
-It is especially broken because `conditional_score_estimate(...)`:
+Especially broken because `conditional_score_estimate(...)`:
 
-* uses the **original hand**, not `after_discard`
-* uses raw `acceptance` count, not a probability
+* uses **original hand**, not `after_discard`
+* uses raw `acceptance` count, not probability
 * includes arbitrary hand-shape bonuses
-* adds a hardcoded bonus for `discard >= 27` (honor discard)
+* adds hardcoded bonus for `discard >= 27` (honor discard)
 * never evaluates actual winning hand distributions
 
-This field should not be kept live under the current name.
+This field should not stay live under current name.
 
 ### 1.7 Upstream `remaining` sources — current meaning
 
@@ -1291,9 +1290,9 @@ Observed:
 * public path: starts from `4.0` and subtracts visible hand, discards, meld tiles, dora indicators
 * CT-SMC path: sums `weighted_mean_tile_count(tile, col)` over all four columns and passes that as `remaining`
 
-So the current module is being fed **a generic hidden-tile mass vector**, not a clearly named “wall posterior.”
+So current module fed **generic hidden-tile mass vector**, not clearly named “wall posterior.”
 
-That is fine as an input, but the input name must stop implying “exact remaining wall counts.”
+That is fine as input, but input name must stop implying “exact remaining wall counts.”
 
 ---
 
@@ -1306,34 +1305,34 @@ Broken labels:
 * `oracle`
 * `win_prob`
 * `expected_score`
-* `P_tenpai^(d)` for `d in {1,2,3}` as if all are exact local probabilities
+* `P_tenpai^(d)` for `d in {1,2,3}` as if all exact local probabilities
 * `E[score | win, a]`
 
-### 2.2 Multi-draw semantics are unspecified because follow-up policy is unspecified
+### 2.2 Multi-draw semantics unspecified because follow-up policy unspecified
 
-For any exact `d > 1` projection, you must specify:
+For any exact `d > 1` projection, must specify:
 
 * what happens on later self-draws
-* which discard policy is used after each later draw
-* whether the objective is tenpai probability, tsumo probability, conditional score, or EV
-* whether riichi/dama choices are part of the policy
+* which discard policy used after each later draw
+* whether objective is tenpai probability, tsumo probability, conditional score, or EV
+* whether riichi/dama choices part of policy
 
-Current code avoids this by using `continuation_boost`. That makes the outputs heuristic, not probabilistic.
+Current code avoids this via `continuation_boost`. So outputs heuristic, not probabilistic.
 
 ### 2.3 The “win” field is really “self-draw structural completion under one specific simplification”
 
-The current `immediate_win_probability` only tests adding one self-drawn tile. It ignores:
+Current `immediate_win_probability` only tests adding one self-drawn tile. It ignores:
 
 * ron
 * calls
 * opponent actions
 * explicit yaku legality unless `shanten < 0` happens to coincide with legal agari
 
-So even the exact anchor inside the current module is narrower than the field name.
+So even exact anchor inside current module narrower than field name.
 
-### 2.4 The score field is unsalvageable as a live semantic claim
+### 2.4 The score field is unsalvageable as live semantic claim
 
-Do not rename it to “approximate EV” and keep it in the main path. It is too contaminated:
+Do not rename it to “approximate EV” and keep live. Too contaminated:
 
 * heuristic win probability
 * heuristic score proxy
@@ -1342,32 +1341,30 @@ Do not rename it to “approximate EV” and keep it in the main path. It is too
 * no scoring context
 * no explicit riichi policy
 
-Move it off the live path.
+Move off live path.
 
 ### 2.5 The upstream count sources are being mixed with stronger wording than they support
 
-Keep this distinction:
+Keep distinction:
 
-* **exact given the supplied draw-mass vector**
-* **approximate because the draw-mass vector itself is approximate**
+* **exact given supplied draw-mass vector**
+* **approximate because draw-mass vector itself approximate**
 
-Public unseen counts and CT-SMC hidden-tile weighted counts can be valid **draw-mass models**. They are not automatically exact live-wall counts.
+Public unseen counts and CT-SMC hidden-tile weighted counts can be valid **draw-mass models**. Not automatically exact live-wall counts.
 
-### 2.6 Concrete distortions from the current code
+### 2.6 Concrete distortions from current code
 
-Using Artifact A formulas:
+Using Artifact formulas:
 
-* Example A: 2-shanten after discard, `20/70` hidden mass lowers shanten by 1.
-
+* Example 2-shanten after discard, `20/70` hidden mass lowers shanten by 1.
   * current `tenpai_prob[0] = 0.377551`
   * exact repaired one-draw tenpai probability = `0.0`
 
 * Example B: tenpai after discard, `8/70` are winning waits.
-
   * current `win_prob[0] = 0.215510`
   * exact one-draw tsumo probability = `8/70 = 0.114286`
 
-Those are not calibration errors. They are semantic errors.
+These not calibration errors. Semantic errors.
 
 ---
 
@@ -1375,9 +1372,9 @@ Those are not calibration errors. They are semantic errors.
 
 ## 3.1 Live semantic contract
 
-The repaired live module should mean exactly this:
+Repaired live module should mean exactly:
 
-> For each discard candidate `a`, compute exact one-step local self-draw anchors under an explicit draw-mass model. Anything beyond that is either reserved or moved to a separate exact local projection module.
+> For each discard candidate `a`, compute exact one-step local self-draw anchors under explicit draw-mass model. Anything beyond that either reserved or moved to separate exact local projection module.
 
 ### Keep exact
 
@@ -1389,7 +1386,7 @@ Keep current meaning exactly:
 U_a(t) = m_t \cdot \mathbf{1}\big[\operatorname{shanten}(after_a + e_t) < \operatorname{shanten}(after_a)\big]
 ]
 
-where `m_t` is the supplied draw mass.
+where `m_t` = supplied draw mass.
 
 Name in docs:
 
@@ -1411,9 +1408,9 @@ P^{(1)}_{\text{tenpai}}(a)
 
 Meaning:
 
-> exact probability of being in tenpai within one further self-draw, under the supplied draw-mass model
+> exact probability of being in tenpai within one further self-draw, under supplied draw-mass model
 
-This is stronger and cleaner than current semantics.
+This stronger and cleaner than current semantics.
 
 #### C. `win_prob[a][0]`
 
@@ -1428,9 +1425,9 @@ P^{(1)}_{\text{tsumo}}(a)
 
 Meaning:
 
-> exact probability of tsumo within one further self-draw, under the supplied draw-mass model and a legal-win evaluator
+> exact probability of tsumo within one further self-draw, under supplied draw-mass model and legal-win evaluator
 
-Call it **tsumo probability** in docs, even if the Rust field name stays `win_prob` for compatibility.
+Call it **tsumo probability** in docs, even if Rust field name stays `win_prob` for compatibility.
 
 ### Keep approximate, but say so explicitly
 
@@ -1439,49 +1436,49 @@ Call it **tsumo probability** in docs, even if the Rust field name stays `win_pr
 Two acceptable approximate upstream models:
 
 * **Public unseen exchangeable model**
-  Use public unseen-copy counts and normalize them. This is an approximation to next-draw probability, not an observed wall posterior.
+Use public unseen-copy counts and normalize them. Approximation to next-draw probability, not observed wall posterior.
 
 * **CT-SMC hidden-mass model**
-  If you only have total hidden-copy expectations, normalize those and say so.
-  If CT-SMC can expose **wall marginals**, prefer that instead.
+If only total hidden-copy expectations available, normalize those and say so.
+If CT-SMC can expose **wall marginals**, prefer that.
 
-The exactness claim for `ukeire`, `tenpai_prob[...,0]`, and `win_prob[...,0]` is always:
+Exactness claim for `ukeire`, `tenpai_prob[...,0]`, `win_prob[...,0]`
 
-> exact **given the supplied draw-mass model**
+> exact **given supplied draw-mass model**
 
-### Drop / demote from the live path
+### Drop / demote from live path
 
 #### E. `tenpai_prob[a][1]`, `tenpai_prob[a][2]`
 
 #### F. `win_prob[a][1]`, `win_prob[a][2]`
 
-Do not populate them with heuristics.
+Do not populate with heuristics.
 
-Set them to `0.0` and mark them **reserved** until an exact local multi-draw projection exists with an explicit follow-up policy.
+Set to `0.0`; mark **reserved** until exact local multi-draw projection exists with explicit follow-up policy.
 
 #### G. `expected_score[a]`
 
-Immediate recommendation:
+Immediate rec:
 
 * set to `0.0`
 * mark **reserved**
 
-Reason: exact score semantics require all of the following to be specified:
+Reason: exact score semantics require all:
 
 * legal tsumo predicate
 * scoring context
 * whether value means raw hand value, round gain, or total delta
-* whether honba / kyotaku are included
+* whether honba / kyotaku included
 * explicit riichi/dama policy
-* if riichi is allowed, how ura expectation is treated
+* if riichi allowed, how ura expectation treated
 
-Until that policy exists, the score slot must not carry live meaning.
+Until policy exists, score slot must not carry live meaning.
 
 ---
 
 ## 4. The exact shape-preserving implementation
 
-Do **not** change the tensor shape now. Change the semantics and zero-fill reserved slots.
+Do **not** change tensor shape now. Change semantics; zero-fill reserved slots.
 
 ## 4.1 Keep the existing struct, rewrite its comments
 
@@ -1520,11 +1517,11 @@ pub struct DrawMass {
 }
 ```
 
-Reason: stop pretending every `[f32; 34]` is “remaining counts.”
+Reason: stop pretending every `[f32; 34]` = “remaining counts.”
 
 ## 4.3 Add a win evaluator trait instead of hardcoding scoring logic in Hand-EV
 
-`riichienv-core` already exposes agari detection, hand evaluation, yaku, and score calculation under Apache-2.0, so the core Hand-EV module should call into a narrow callback/trait rather than grow its own scoring semantics. ([Docs.rs][3])
+`riichienv-core` already exposes agari detection, hand evaluation, yaku, score calculation under Apache-2.0, so core Hand-EV module should call narrow callback/trait rather than grow its own scoring semantics. ([Docs.rs][3])
 
 ```rust
 pub trait TsumoEvaluator {
@@ -1537,21 +1534,21 @@ pub trait TsumoEvaluator {
 }
 ```
 
-Phase 1 keeps score reserved, so `point_gain(...)` is not needed yet.
+Phase 1 keeps score reserved, so `point_gain(...)` not needed yet.
 
 ---
 
 ## 5. Core computation patch
 
-Delete these functions from the live path:
+Delete these functions from live path:
 
 * `conditional_score_estimate`
 * `immediate_win_probability`
 * `continuation_boost`
 
-Keep them only in a legacy shelf if you want offline ablations.
+Keep only in legacy shelf if desired for offline ablations.
 
-### 5.1 Replace `compute_hand_ev_with_shanten_fn` with an exact one-step implementation
+### 5.1 Replace `compute_hand_ev_with_shanten_fn` with exact one-step implementation
 
 ```rust
 pub fn compute_hand_ev_exact_1step(
@@ -1640,21 +1637,21 @@ Use
 M_a = \sum_t m_t \cdot \mathbf{1}[after_a[t] < 4]
 ]
 
-not blindly `sum(draw_mass)`.
+not blind `sum(draw_mass)`.
 
-Reason: once `draw_mass` becomes a model object, you want robust behavior even if the upstream model is slightly inconsistent.
+Reason: once `draw_mass` becomes model object, want robust behavior even if upstream model slightly inconsistent.
 
-### 5.3 Keep `compute_ukeire` or fold it into the same loop
+### 5.3 Keep `compute_ukeire` or fold it into same loop
 
-Either is fine.
+Either fine.
 
-Recommendation: **fold it into the same loop** to avoid duplicated shanten calls.
+rec: **fold into same loop** to avoid duplicate shanten calls.
 
 ---
 
 ## 6. Bridge patch
 
-## 6.1 Rename extractors to stop overstating their meaning
+## 6.1 Rename extractors to stop overstating meaning
 
 Rename:
 
@@ -1663,7 +1660,7 @@ Rename:
 
 ### Public path
 
-Current implementation is acceptable as a **public unseen exchangeable** draw-mass model:
+Current impl acceptable as **public unseen exchangeable** draw-mass model:
 
 ```rust
 pub fn extract_public_draw_mass(...) -> DrawMass {
@@ -1676,9 +1673,9 @@ pub fn extract_public_draw_mass(...) -> DrawMass {
 
 ### CT-SMC path
 
-Current implementation should be renamed to reflect what it actually produces.
+Current impl should be renamed to reflect actual output.
 
-If the four CT-SMC columns do **not** mean “live wall only,” then current code is not extracting wall counts; it is extracting **total hidden mass**.
+If four CT-SMC columns do **not** mean “live wall only,” current code not extracting wall counts; extracting **total hidden mass**.
 
 So:
 
@@ -1706,15 +1703,15 @@ and prefer that path.
 
 ## 6.2 Bridge scoring / win legality
 
-If you wire exact one-step `win_prob[...,0]`, do it in the bridge, where rule context already exists.
+If wiring exact one-step `win_prob[...,0]`, do it in bridge, where rule context already exists.
 
-The dependency stack already contains the primitives for agari detection and scoring. Use those there; keep Hand-EV core generic. ([Docs.rs][3])
+Dependency stack already contains primitives for agari detection and scoring. Use there; keep Hand-EV core generic. ([Docs.rs][3])
 
 ---
 
 ## 7. Encoder mapping
 
-Keep the channel layout. Change only the semantic contract.
+Keep channel layout. Change semantic contract only.
 
 ### New Group D meaning
 
@@ -1726,7 +1723,7 @@ Keep the channel layout. Change only the semantic contract.
 * `CH_HAND_EV_WIN + 2` = reserved zero
 * `CH_HAND_EV_SCORE` = reserved zero
 * `CH_HAND_EV_UKEIRE + draw_tile` = exact one-step shanten-lowering draw mass by tile type
-* `CH_HAND_EV_MASK` = `1.0` when Group D is present
+* `CH_HAND_EV_MASK` = `1.0` when Group D present
 
 ### Add explicit version constants
 
@@ -1737,13 +1734,13 @@ pub const HAND_EV_VALID_WIN_HORIZONS: usize = 1;
 pub const HAND_EV_SCORE_VALID: bool = false;
 ```
 
-This is the cheapest way to stop future readers from inferring false semantics from legacy slot count.
+Cheapest way to stop future readers from inferring false semantics from legacy slot count.
 
 ---
 
 ## 8. Documentation patch
 
-Replace every documentation bullet that currently says:
+Replace every docs bullet saying:
 
 * `P_tenpai^(d)(a): probability ... within d in {1,2,3}`
 * `P_win^(d)(a): probability ... within d draws`
@@ -1755,23 +1752,23 @@ with:
 > Hand-EV local self-draw features:
 >
 > * exact `P_tenpai^(1)(a)` in slot 0
-> * exact `P_tsumo^(1)(a)` in slot 0 when a legal-win evaluator is provided
+> * exact `P_tsumo^(1)(a)` in slot 0 when legal-win evaluator provided
 > * exact one-step shanten-lowering draw-mass vector (`ukeire`)
-> * additional legacy horizon slots reserved for future exact local projection and currently zero-filled
+> * additional legacy horizon slots reserved for future exact local projection and zero-filled
 
 Also add one sentence:
 
-> The public and CT-SMC bridge paths provide approximate draw-mass models; Hand-EV values are exact **conditional on the supplied draw-mass model**.
+> Public and CT-SMC bridge paths provide approximate draw-mass models; Hand-EV values exact **conditional on supplied draw-mass model**.
 
 ---
 
 ## 9. Validation gates
 
-These are required. No “should probably work” language.
+Required. No “should probably work.”
 
 ## 9.1 Exactness gate for one-step semantics
 
-For a brute-force enumerator over valid draw tiles, sampled over random states:
+For brute-force enumerator over valid draw tiles, sampled over random states:
 
 [
 \max | \text{computed} - \text{enumerated} | \le 10^{-6}
@@ -1781,11 +1778,11 @@ Apply to:
 
 * `ukeire[a][t]`
 * `tenpai_prob[a][0]`
-* `win_prob[a][0]` when `TsumoEvaluator` is wired
+* `win_prob[a][0]` when `TsumoEvaluator` wired
 
 ## 9.2 Required unit tests
 
-Add or replace tests with these exact semantic checks:
+Add/replace tests with these exact semantic checks:
 
 1. `ukeire_is_exact_shanten_lowering_mass`
 2. `one_step_tenpai_prob_zero_for_two_shanten_without_direct_tenpai_draws`
@@ -1810,9 +1807,9 @@ For random valid states:
 
 ## 9.4 Golden encoder gate
 
-Because the channel semantics change, all golden encoder snapshots must be regenerated.
+Because channel semantics change, all golden encoder snapshots must be regenerated.
 
-This is **intentional high-impact drift**, not a silent drift.
+This **intentional high-impact drift**, not silent drift.
 
 ## 9.5 Model compatibility gate
 
@@ -1822,15 +1819,15 @@ Bump model metadata / checkpoint naming with `HAND_EV_SEMANTICS_VERSION=2`.
 
 ## 9.6 Runtime gate
 
-Use the existing Criterion bench and fail the change if median `encode_observation` latency regresses by more than **25%** in the no-score, one-step-only version.
+Use existing Criterion bench; fail change if median `encode_observation` latency regresses by more than **25%** in no-score, one-step-only version.
 
-That threshold is explicit and cheap to enforce.
+Threshold explicit, cheap to enforce.
 
 ---
 
 ## 10. Reserve shelf: what to keep, but not live
 
-Move the current heuristic ideas into `hand_ev_legacy.rs` or a feature flag:
+Move current heuristic ideas into `hand_ev_legacy.rs` or feature flag:
 
 * `continuation_boost`
 * `conditional_score_estimate`
@@ -1841,30 +1838,30 @@ Mark them:
 
 > legacy offensive heuristics, not semantically exact probabilities or EV
 
-This preserves the old ideas without contaminating the live encoder contract.
+This preserves old ideas without contaminating live encoder contract.
 
 ---
 
 ## 11. Phase 2, only if you want the 2/3-draw slots to mean something exact
 
-Do **not** fill those slots heuristically.
+Do **not** fill slots heuristically.
 
-Build a separate exact local projection module with an explicit follow-up policy.
+Build separate exact local projection module with explicit follow-up policy.
 
 ### State
 
-For exact local self-draw projection, the recursive state must include at least:
+For exact local self-draw projection, recursive state must include at least:
 
-* 13-tile hand after a discard
+* 13-tile hand after discard
 * draw-mass / wall state
 * remaining self-draw budget `d`
 * menzen / open state
 * legal-win context
-* explicit riichi policy if score is involved
+* explicit riichi policy if score involved
 
 ### Recurrence
 
-For a chosen follow-up policy `π`:
+For chosen follow-up policy `π`:
 
 [
 V^\pi_d(h, m)
@@ -1876,7 +1873,7 @@ V^\pi_d(h, m)
 where `G` either:
 
 * records immediate tsumo if legal, or
-* applies the next discard chosen by `π` and recurses with `d-1`
+* applies next discard chosen by `π` and recurses with `d-1`
 
 You may optimize different objectives with different policies:
 
@@ -1884,7 +1881,7 @@ You may optimize different objectives with different policies:
 * maximize tsumo probability
 * maximize expected point gain
 
-Those are **not the same policy** in general. That is exactly why current multi-draw semantics are underspecified.
+These **not same policy** in general. Exactly why current multi-draw semantics underspecified.
 
 ### If you implement Phase 2
 
@@ -1892,13 +1889,13 @@ Then and only then:
 
 * populate horizon-2 / horizon-3 slots
 * define whether they are “under policy π_EV”, “under policy π_tsumo”, or “under current policy net”
-* reintroduce a score slot with an exact definition such as:
+* reintroduce score slot with exact definition such as:
 
 [
-E[\Delta\text{score} \mid \text{tsumo within horizon}, a, \pi]
+E[\Delta\text{score} \mid \text{tsumo within horizon}, \pi]
 ]
 
-Do not ship a score channel until that definition is written down first.
+Do not ship score channel until definition written first.
 
 ---
 
@@ -1906,19 +1903,19 @@ Do not ship a score channel until that definition is written down first.
 
 ### Original Suphx paper
 
-Use it for **provenance and scope only**:
+Use for **provenance and scope only**:
 
-* Suphx look-ahead features are a much broader family than the current repo summary.
-* They are built with DFS under explicit simplifications.
-* They include score/depth-conditioned feature vectors, not just a small scalar summary. ([arXiv][2])
+* Suphx look-ahead features much broader family than current repo summary.
+* Built with DFS under explicit simplifications.
+* Include score/depth-conditioned feature vectors, not only small scalar summary. ([arXiv][2])
 
 ### Oracle-guiding clarification
 
-Use it to justify removing the word `oracle` from the live runtime feature label unless you truly mean hidden-information training-time guidance. ([OpenReview][1])
+Use to justify removing word `oracle` from live runtime feature label unless you truly mean hidden-info training-time guidance. ([OpenReview][1])
 
 ### riichienv-core
 
-Use it as the implementation substrate for exact one-step legal tsumo checks if you wire them now:
+Use as impl substrate for exact one-step legal tsumo checks if wiring now:
 
 * hand evaluation
 * agari detection
@@ -1928,10 +1925,10 @@ Use it as the implementation substrate for exact one-step legal tsumo checks if 
 
 ### Mortal
 
-Use it as a **design reference only**, not source to copy blindly:
+Use as **design reference only**, not source to copy blindly:
 
-* official docs say the project started as a Suphx reproduction
-* official repo is AGPL-3.0 licensed ([Mortal][4])
+* official docs say project started as Suphx reproduction
+* official repo AGPL-3.0 licensed ([Mortal][4])
 
 ---
 
@@ -1939,24 +1936,24 @@ Use it as a **design reference only**, not source to copy blindly:
 
 Implement **this** and stop:
 
-1. Rename the feature family to **local self-draw hand-progress features**.
+1. Rename feature family to **local self-draw hand-progress features**.
 2. Rename `remaining` semantics to **draw mass**.
 3. Keep `ukeire` exact as one-step shanten-lowering draw mass.
 4. Set `tenpai_prob[...,0]` to exact one-step tenpai probability.
-5. Set `win_prob[...,0]` to exact one-step tsumo probability if a legal-win evaluator is provided; otherwise `0.0`.
+5. Set `win_prob[...,0]` to exact one-step tsumo probability if legal-win evaluator provided; else `0.0`.
 6. Set `tenpai_prob[...,1..] = 0.0`.
 7. Set `win_prob[...,1..] = 0.0`.
 8. Set `expected_score[...] = 0.0`.
-9. Move all current continuation / score heuristics to a legacy shelf.
+9. Move all current continuation / score heuristics to legacy shelf.
 10. Regenerate goldens, bump semantic version, retrain downstream models.
 
-That is the strongest exact repair with the least guesswork.
+That strongest exact repair with least guesswork.
 
 [1]: https://openreview.net/pdf?id=pjqqxepwoMy "https://openreview.net/pdf?id=pjqqxepwoMy"
 [2]: https://arxiv.org/pdf/2003.13590.pdf "https://arxiv.org/pdf/2003.13590.pdf"
 [3]: https://docs.rs/riichienv-core/latest/riichienv_core/all.html "https://docs.rs/riichienv-core/latest/riichienv_core/all.html"
 [4]: https://mortal.ekyu.moe/ref/meta.html "https://mortal.ekyu.moe/ref/meta.html"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

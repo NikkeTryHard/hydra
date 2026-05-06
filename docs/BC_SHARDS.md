@@ -1,26 +1,32 @@
 # BC Shards
 
-Operator guide: build, inspect, consume precomputed BC shard datasets in Hydra.
+Op guide: build, inspect, consume precomputed BC shard datasets in Hydra.
 
-Doc covers `build_bc_shards` flow, emitted manifest, optional replay sidecar effect on artifact contract, how training consumes `bc_shards_manifest_path`. Top-level training entrypoint: [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). Replay-side supervision artifacts: [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
+Doc covers `build_bc_shards` flow, emitted manifest, optional replay sidecar impact on artifact contract, how training consumes `bc_shards_manifest_path`. Top-level training entrypoint: [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). Replay-side supervision artifacts: [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 
 ## What BC shards are for
 
-BC shards = precomputed training artifacts for replay-driven behavioral cloning.
+BC shards = prod steady-state input for replay-driven behavioral cloning.
 
 Instead of rescanning/loading raw replay files every run, Hydra can:
 
-1. scan replay corpus once
-2. convert accepted samples into shard files
-3. write manifest describing shard files
-4. point training at manifest with `bc_shards_manifest_path`
+1. scan + audit replay corpus once
+2. replay games, generate legal masks/targets, join sidecar labels once
+3. convert accepted samples into shard files
+4. write manifest describing shard files + provenance
+5. point preflight, training, validation at manifest with `bc_shards_manifest_path`
 
 Use BC shards when:
 
-- want repeated BC runs reuse stable dataset layout
-- want train/validation splits fixed by generated manifest, not repeated replay scanning
-- want replay-side supervision from ExIt or DeltaQ sidecars baked into shard artifact
-- want training path consume known-good prebuilt dataset, not raw replay discovery every time
+|- repeated BC preflight/training/validation runs
+|- GPU training should not wait on replay parsing/decompression/engine replay
+|- train/validation splits should stay fixed by generated manifest, not repeated replay scanning
+|- replay-side supervision from ExIt or DeltaQ sidecars should bake into validated artifact
+|- training path should consume known-good prebuilt dataset, not raw replay discovery each run
+
+Raw loose/archive replay loading stays slow offline path for audit, shard production, debugging, intentional transport comparison.
+
+GPU transfer note: shard train/probe/validation paths use pinned host staging + async H2D + preallocated GPU tensors only when Hydra is built with `--features cuda-graph` and run on CUDA. Otherwise shard rows still mmap/prefetch on CPU, but device materialization uses normal pageable tensor construction.
 
 ## Owning surfaces
 
@@ -59,26 +65,40 @@ build_bc_shards \
 | Flag | Meaning |
 |---|---|
 | `--input` | Replay source root or direct replay/archive input |
-| `--output-dir` | Directory where shard files and the manifest will be written |
+| `--output-dir` | Dir where shard files + manifest get written |
 
 ### Important optional flags
 
 | Flag | Meaning |
 |---|---|
-| `--manifest-name` | Name of emitted JSON manifest file. Default `bc_shards_manifest.json`. |
+| `--manifest-name` | Emitted JSON manifest file name. Default `bc_shards_manifest.json`. |
 | `--shard-samples` | Target samples per shard file. Default `10000`. Must be > 0. |
 | `--train-fraction` | Deterministic train/validation split fraction for replay identities. Default `0.9`. |
 | `--split train|val|both` | Which split(s) to emit. Default `both`. |
 
 ## Input types
 
-Builder accepts same broad replay-source shapes Hydra training already understands:
+Builder accepts same replay-source shapes Hydra training already understands:
 
 - directory containing loose replay files
 - direct loose replay file path
 - direct archive path such as `.tar.zst`
 
-Internally, builder scans sources with `scan_data_sources_with_progress(...)` before shard build, so operator flow = scan first, then materialize.
+Internally, builder scans sources with `scan_data_sources_with_progress(...)` before shard build, so op flow = scan first, then materialize.
+
+## Production consume workflow
+
+For normal BC runs, cut over like this:
+
+1. Audit replay corpus + sidecar artifacts.
+2. Build train+validation shards with same train fraction + sidecar provenance intended for training.
+3. Configure training with `bc_shards_manifest_path` pointing at emitted manifest.
+4. Run preflight + training from that config.
+5. Keep same manifest for validation so train/validation transport stays shard-backed.
+
+Rebuild shards when dataset contract changes: replay corpus, source filters, train fraction, ExIt/DeltaQ sidecar inputs, sidecar provenance, encoder shape, action space, shard version, or record layout.
+
+Configured shard manifests are strict. If manifest does not match current binary's observation/action/record contract, Hydra errors and requires rebuild rather than falling back to loose replay.
 
 ## Minimal example
 
@@ -157,7 +177,7 @@ Hydra rejects partial provenance input. Sidecar = fully specified or absent.
 
 ### Why the provenance requirement matters
 
-Builder not blindly attaching labels from random JSONL. It preserves same provenance-sensitive contract used by replay-side supervision in loader path.
+Builder does not blindly attach labels from random JSONL. It preserves same provenance-sensitive contract used by replay-side supervision in loader path.
 
 So shard manifest records sidecar provenance, and later consumers can see what optional supervision got baked into artifact.
 
@@ -232,7 +252,7 @@ Most operator-relevant fields:
 | Field | Meaning |
 |---|---|
 | `manifest_version` / `shard_version` | Format versioning for manifest and shard files |
-| `train_fraction` | Split fraction used when building |
+| `train_fraction` | Split fraction used at build |
 | `shard_samples` | Target sample count per shard |
 | `input` | Original replay input root/path |
 | `output_dir` | Output root holding shard files |
@@ -240,10 +260,12 @@ Most operator-relevant fields:
 | `source_total_games_hint` | Scan-derived game-count hint from replay discovery |
 | `exit_sidecar` | Optional ExIt sidecar provenance baked into dataset |
 | `delta_q_sidecar` | Optional DeltaQ sidecar provenance baked into dataset |
-| `totals.sample_count` | Total samples successfully written |
+| `totals.sample_count` | Total samples written |
 | `totals.skipped_games` | Replay games skipped during shard production |
 | `totals.empty_games` | Games that loaded but produced no training samples |
-| `splits` | Per-split shard descriptors and sample counts |
+| `splits` | Per-split shard descriptors + sample counts |
+
+Consumer-side checks reject incompatible observation size, channel count context, action space, and base record size before shard files are used. Header checks then verify each shard's split, flags, and record size against manifest.
 
 ### Per-split information
 
@@ -295,7 +317,7 @@ Training does not only switch train loader here. Validation also runs against sh
 
 Important when comparing shard-backed vs loose-replay runs. Shard manifest changes full BC data path, including validation transport and validation memory/runtime shape.
 
-Current training docs already cover field at high level; this doc is missing production-side runbook for creating artifact that field points to.
+Current training docs already cover field at high level; this doc fills production-side runbook for creating artifact that field points to.
 
 ## Recommended operator workflow
 
@@ -319,7 +341,7 @@ Rebuild when any of these change and you want dataset reflect it:
 
 Do not assume old shards auto-reflect new sidecar index or new replay corpus snapshot.
 
-Hydra also rejects shard artifacts at load time when current binary and manifest/header contract no longer agree. Important operator-visible cases:
+Hydra also rejects shard artifacts at load time when current binary and manifest/header contract no longer agree. Important op-visible cases:
 
 - manifest `obs_size` no longer matches current encoder geometry
 - manifest `base_record_size` no longer matches current binary

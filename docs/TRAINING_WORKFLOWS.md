@@ -1,6 +1,6 @@
 # Hydra Training Workflows
 
-Operator guide: current Hydra train entrypoints, config surface, mode choice.
+Ops guide: current Hydra train entrypoints, config surface, mode choice.
 
 Workflow-first doc. Shipped vs staged: read [`docs/CURRENT_STATUS.md`](CURRENT_STATUS.md). Runtime/compat contracts: read [`docs/COMPATIBILITY_SURFACE.md`](COMPATIBILITY_SURFACE.md) and [`docs/GAME_ENGINE.md`](GAME_ENGINE.md). Container exec: read [`docker/train/README.md`](../docker/train/README.md).
 
@@ -10,7 +10,7 @@ Main train entrypoint:
 
 - `crates/hydra-train/src/bin/train.rs`
 
-Binary routes to 4 top behaviors:
+Binary routes to 4 behaviors:
 
 1. normal training
 2. preflight/runtime selection
@@ -23,7 +23,7 @@ YAML contract owner:
 
 ## CLI modes at a glance
 
-Binary always starts with YAML config path:
+Binary starts with YAML config path:
 
 ```bash
 train <config.yaml>
@@ -45,7 +45,7 @@ Also internal child-process probe path for preflight/probe orchestration. Impl d
 Rule of thumb:
 
 - Use normal training when runtime tuple in config/resume state already trusted.
-- Use preflight when Hydra should safely measure and choose runtime settings for current machine/workload.
+- Use preflight when Hydra must safely measure and choose runtime settings for current machine/workload.
 - Use probe-only when checking runtime capacity or comparing few microbatches without full preflight/train cost.
 - Use DeltaQ promotion only when candidate checkpoint already exists and narrow DeltaQ lane needs promote/no-promote decision.
 
@@ -69,7 +69,7 @@ Rule of thumb:
 | `rl` | Enable RL/self-play path with RL knobs. |
 | `bc` | BC optimizer hyperparams. |
 | `device` | Device label for train backend pick. |
-| `precision_mode` | Precision dispatch, currently `fp32` or `bf16_autocast`. |
+| `precision_mode` | Precision dispatch, `fp32` or `bf16_autocast`. |
 | `preflight` | Runtime-selection + autotuning knobs. |
 | `exit_sidecar_path` | Optional replay ExIt sidecar index for replay-side supervision joins. |
 | `delta_q_sidecar_path` | Optional replay DeltaQ sidecar index for replay-side supervision joins. |
@@ -127,7 +127,7 @@ rl:
 
 Important current constraint:
 
-- BF16/AMP shipped for BC. RL and DeltaQ promotion still staged, not baseline-on defaults.
+- BF16/AMP shipped for BC. RL and DeltaQ promotion still staged, not baseline defaults.
 
 ## Sidecar-enabled replay training
 
@@ -154,19 +154,27 @@ For generation/validation, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 
 ## BC shards
 
-If `bc_shards_manifest_path` set, Hydra can use prebuilt BC shard metadata instead of scanning loose replay sources.
+`bc_shards_manifest_path` = production BC input for repeated training and preflight runs. Build shards once from replay corpus, then point both train and validation at that manifest instead of making every run parse archives, replay game state, rebuild legal masks, and regenerate labels.
 
-Use when:
+Use raw loose/archive replay loading as slow offline path for audit, debugging, one-off comparison, and shard building. Do not use as steady-state hot training path unless intentionally comparing transports.
 
-- shard dataset already materialized for repeated BC runs
-- training input layout should come from precomputed shard manifest, not raw replay discovery
+Recommended operator workflow:
+
+1. Audit replay corpus and sidecar inputs.
+2. Build train+validation BC shards with `build_bc_shards`.
+3. Set `bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json` in BC config.
+4. Run preflight and training against same manifest.
+5. Rebuild shards only when replay corpus, sidecar inputs/provenance, train fraction/filtering, encoder/action contract, or shard format changes.
 
 Operational changes when shard mode enabled:
 
-- train path reads prebuilt shard rows, not rescanning replay archives each run
-- validation path also switches to shard readers, not loose-replay validation stream
-- validation-sample materialization disabled, so run does not build cached in-memory validation microbatch set up front even when `max_validation_samples` set
-- shard-backed validation becomes sequential shard-row scan with small host-batch prefetch queue, not replay-stream microbatch iteration
+|- train path reads prebuilt shard rows, not rescanning replay archives each run
+|- validation path also switches to shard readers, not loose-replay validation stream
+|- validation-sample materialization disabled, so run does not build cached in-memory validation microbatch set up front even when `max_validation_samples` set
+|- shard-backed validation becomes sequential shard-row scan with small host-batch prefetch queue, not replay-stream microbatch iteration
+|- startup banner uses manifest sample counts from shard artifact, not raw replay scan counts
+
+Hydra rejects stale shard manifests whose encoder/action/record contract does not match current binary. It does not silently fall back to raw replay when configured shard manifest is invalid.
 
 So shard-backed runs change startup behavior and validation transport. For runtime/memory comparison vs loose-replay run, treat shard mode as different data path, not only faster input source.
 
@@ -184,6 +192,25 @@ Current repo status:
 - BC training, preflight, probe flows, and stage-2 benchmark dispatch by precision mode.
 - RL and DeltaQ promotion not yet baseline BF16 surfaces.
 
+## CUDA shard transfer path
+
+Shard-backed BC can use pinned host staging, dedicated async H2D copy stream, and preallocated GPU tensors when all true:
+
+|- build enables Cargo feature `cuda-graph`
+|- runtime device is CUDA
+|- BC config sets `bc_shards_manifest_path`
+
+This applies to shard train epochs, shard train probes, and shard validation. Without `cuda-graph`, or on CPU, Hydra still uses shard mmap + host prefetch but materializes from pageable host memory through normal tensor construction.
+
+Operator build forms:
+
+```bash
+cargo run --release -p hydra-train --features cuda-graph --bin train -- /path/to/config.yaml
+cargo build --release -p hydra-train --features cuda-graph
+```
+
+Pinned memory footprint is batch-size bounded and queue depth stays small. Increase `batch_size` only with host RAM and pinned-memory pressure in mind.
+
 ## Training flow shape
 
 High level, normal training does 4 things:
@@ -196,7 +223,7 @@ High level, normal training does 4 things:
 Highest-signal operator boundary:
 
 - runtime selection decides batch size/speed limits on current machine
-- data pipeline decides which examples and sidecars actually load
+- data pipeline decides which examples and sidecars load
 - training phase decides which optimization loop and target surfaces are active
 
 ## When to run preflight first

@@ -1,16 +1,16 @@
 # hydra-core
 
-Core game/runtime crate for Hydra Riichi Mahjong AI. Sits atop `hydra-engine` / `riichienv-core`. Provides engine-side pieces for training + inference: observation encoding, safety analysis, search/belief feature bridge, deterministic seeding, batch simulation.
+Core game/runtime crate for Hydra Riichi Mahjong AI. Sits atop `hydra-engine` / `riichienv-core`. Provides engine-side parts for training + inference: observation encoding, safety analysis, search/belief feature bridge, deterministic seeding, batch simulation.
 
 ## Overview
 
-`hydra-core` transforms raw game states into neural net inputs. Current live encoder = **fixed-superset 192x34 observation tensor**:
+`hydra-core` turns raw game states into neural net inputs. Current live encoder = **fixed-superset 192x34 observation tensor**:
 
 - channels `0..84`: baseline public + safety planes
 - channels `85..149`: Group C search/belief context + presence masks + reserved slots
 - channels `150..191`: Group D Hand-EV context + presence mask
 
-Old `85x34` view still useful as baseline prefix, but no longer full current encoder reality.
+Old `85x34` view still useful as baseline prefix, but not full current encoder.
 
 This crate also provides batch simulation pipeline: run thousands games in parallel via rayon, encode observations on fly, feed direct into training loop.
 

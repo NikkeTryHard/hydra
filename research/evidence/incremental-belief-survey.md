@@ -7,17 +7,17 @@
 
 ## Executive Summary
 
-**Your idea of NNUE-style incrementally-updatable belief networks for imperfect-information games appears genuinely novel.** No prior work directly combines NNUE's accumulator-based incremental feature updates with belief state tracking for hidden-information games. The closest related work falls into 7 distinct research threads documented below.
+**Idea of NNUE-style incrementally-updatable belief nets for imperfect-info games looks genuinely novel.** No prior work found that directly combines NNUE accumulator-style incremental feature updates with belief-state tracking for hidden-info games. Closest prior work falls into 7 distinct threads below.
 
 ---
 
 ## 1. NNUE: The Incremental Update Foundation (Perfect Information Only)
 
-**Key insight**: NNUE achieves 10-15x speedup by incrementally updating only changed features.
+**Key insight**: NNUE gets 10-15x speedup by incrementally updating only changed features.
 
 ### Architecture
 - Overparameterized input layer (e.g., 40,960 inputs for HalfKP in chess)
-- Only ~30 features active at any position
+- Only ~30 features active per position
 - Accumulator stores first-layer output as persistent state
 
 ### Core Equations
@@ -32,7 +32,7 @@ accumulator = bias + SUM(weight_column[i] for i in active_features)
 accumulator_new = accumulator_old - SUM(W[:, r] for r in R) + SUM(W[:, a] for a in S)
 ```
 
-Between consecutive positions, typically only 2-4 features change, so this is O(changed_features * hidden_dim) instead of O(total_features * hidden_dim).
+Between consecutive positions, usually only 2-4 features change, so cost becomes O(changed_features * hidden_dim) not O(total_features * hidden_dim).
 
 **Sources**:
 - [Stockfish NNUE docs](https://official-stockfish.github.io/docs/nnue-pytorch-wiki/docs/nnue.html)
@@ -40,13 +40,13 @@ Between consecutive positions, typically only 2-4 features change, so this is O(
 - [HalfKP/NNUE GitHub](https://github.com/HalfKP/NNUE)
 - [NNUE Wikipedia](https://en.wikipedia.org/wiki/Efficiently_updatable_neural_network)
 
-**Gap**: NNUE has NEVER been applied to imperfect-information games. It operates on fully-observable board states only (chess, shogi). Your proposed extension to belief states is novel.
+**Gap**: NNUE has NEVER been applied to imperfect-information games. It works on fully observable board states only (chess, shogi). Proposed extension to belief states looks novel.
 
 ---
 
 ## 2. ReBeL: Recursive Belief-Based Learning (Meta AI, 2020)
 
-**The foundational paper for neural belief-state game AI.**
+**Foundational paper for neural belief-state game AI.**
 
 ### Paper
 Brown, Noam et al. "Combining Deep Reinforcement Learning and Search for Imperfect-Information Games." NeurIPS 2020.
@@ -56,17 +56,17 @@ Brown, Noam et al. "Combining Deep Reinforcement Learning and Search for Imperfe
 
 ### Key Concept: Public Belief State (PBS)
 
-A PBS is a probability distribution over hidden information sets, conditioned on public history:
+PBS = probability distribution over hidden information sets, conditioned on public history:
 
 ```
 PBS_t = b_t = Pr(hidden_infosets | public_history, common_knowledge_policy)
 ```
 
-This transforms an imperfect-information game into a continuous-state perfect-information game over beliefs.
+This turns imperfect-information game into continuous-state perfect-information game over beliefs.
 
 ### Belief Update (Bayes Rule)
 
-Given weights w(s) over hidden states s, and observed public action a:
+Given weights w(s) over hidden states s, and observed public action
 
 ```
 P(a) = SUM_s P(a|s) * w(s) / SUM_s w(s)
@@ -74,7 +74,7 @@ P(a) = SUM_s P(a|s) * w(s) / SUM_s w(s)
 w'(s) = w(s) * P(a|s) / SUM_s' w(s') * P(a|s')
 ```
 
-This is standard Bayesian filtering, but the key innovation is that P(a|s) comes from the CURRENT policy (which changes during training), making this a moving target.
+This is standard Bayesian filtering. Key innovation: `P(a|s)` comes from CURRENT policy, which changes during training, so target moves too.
 
 ### Search: CFR in Belief Space
 
@@ -83,8 +83,7 @@ This is standard Bayesian filtering, but the key innovation is that P(a|s) comes
 - At each decision: build subgame at current PBS, run K iterations of CFR, sample action, update PBS
 
 ### Value Network
-
-- Trained on terminal game values of self-play trajectories
+- Trained on terminal game values from self-play trajectories
 - Input: PBS (belief distribution)
 - Output: expected value for each player
 
@@ -92,24 +91,24 @@ This is standard Bayesian filtering, but the key innovation is that P(a|s) comes
 
 Provably converges to epsilon-Nash equilibrium in two-player zero-sum games.
 
-**Relevance to your idea**: ReBeL's Bayesian belief update is the "what" to update, but it's computed externally (not learned). An NNUE-style network could LEARN the belief update as an incremental weight adjustment.
+**Relevance to idea**: ReBeL Bayesian belief update gives "what" to update, but computes it externally, not learned. NNUE-style net could LEARN belief update as incremental weight adjustment.
 
 ---
 
 ## 3. Student of Games (DeepMind/Amii, 2023)
 
-**Unifies perfect and imperfect-information game AI.**
+**Unifies perfect- and imperfect-information game AI.**
 
 ### Paper
-Schmid et al. "Student of Games: A unified learning algorithm for both perfect and imperfect information games." Science Advances, 2023.
+Schmid et al. "Student of Games: unified learning algorithm for both perfect and imperfect information games." Science Advances, 2023.
 - [Science](https://www.science.org/doi/10.1126/sciadv.adg3256)
 - [arXiv](https://arxiv.org/abs/2112.03178)
 
 ### Key Innovation: GT-CFR + CVPN
 
-- **Growing-Tree CFR (GT-CFR)**: Incrementally grows the search tree (instead of fixed-depth subgames like ReBeL)
-- **Counterfactual Value-and-Policy Network (CVPN)**: Neural network that takes a PBS as input and outputs both counterfactual values AND action policies for each information state
-- Self-play generates two types of training data:
+- **Growing-Tree CFR (GT-CFR)**: incrementally grows search tree instead of fixed-depth subgames like ReBeL
+- **Counterfactual Value-and-Policy Network (CVPN)**: neural net takes PBS input, outputs both counterfactual values and action policies for each information state
+- Self-play generates two training-data types:
   1. Search queries (PBS nodes queried during GT-CFR regret updates)
   2. Full-game trajectories
 
@@ -117,13 +116,13 @@ Schmid et al. "Student of Games: A unified learning algorithm for both perfect a
 - CVPN: belief -> (values_per_infostate, policy_per_infostate)
 - Sound for both perfect-info (chess, Go) and imperfect-info (poker, Scotland Yard)
 
-**Relevance**: SoG's CVPN is the closest existing architecture to what you're proposing -- it processes belief states through a neural network. But it does NOT use incremental updates; it recomputes from scratch each time.
+**Relevance**: SoG CVPN is closest existing architecture to proposal; it processes belief states through neural net. But it does NOT use incremental updates; it recomputes from scratch each time.
 
 ---
 
 ## 4. DreamerV3 RSSM: World Models for Partial Observability
 
-**The state-of-the-art for learned latent dynamics under partial observability.**
+**State of art for learned latent dynamics under partial observability.**
 
 ### Paper
 Hafner et al. "Mastering Diverse Domains through World Models." Nature, 2025.
@@ -132,7 +131,7 @@ Hafner et al. "Mastering Diverse Domains through World Models." Nature, 2025.
 
 ### Recurrent State-Space Model (RSSM)
 
-The latent state is hybrid: s_t = (d_t, z_t) where:
+Latent state is hybrid: s_t = (d_t, z_t) where:
 - d_t in R^8192: deterministic recurrent component (GRU-like)
 - z_t in {0,1}^(32x64): stochastic discrete component (categorical)
 
@@ -155,15 +154,15 @@ f_t = concat(d_t, flatten(z_t)) in R^10240
 
 ### How It Handles Partial Observability
 
-- The deterministic recurrent state d_t summarizes ALL past observations/actions
-- This IS a learned belief state -- it's a sufficient statistic of history
-- The stochastic z_t captures remaining uncertainty
+- Deterministic recurrent state d_t summarizes ALL past observations/actions
+- This IS learned belief state, sufficient statistic of history
+- Stochastic z_t captures remaining uncertainty
 - Training uses KL divergence between prior (dynamics-predicted) and posterior (observation-informed) z_t
 
-**Relevance**: The RSSM is probably the closest existing architecture to an "incremental belief update network." Each step updates d_t incrementally through a GRU. However:
-1. It's designed for single-agent POMDPs, not multi-agent games
-2. The update is implicit (learned GRU weights), not sparse/efficient like NNUE
-3. It doesn't exploit the structure of card games (sparse, discrete changes)
+**Relevance**: RSSM is probably closest existing architecture to "incremental belief update net." Each step updates d_t incrementally through GRU. But:
+1. Built for single-agent POMDPs, not multi-agent games
+2. Update is implicit (learned GRU weights), not sparse/efficient like NNUE
+3. Does not exploit card-game structure (sparse, discrete changes)
 
 ---
 
@@ -174,17 +173,17 @@ Brown et al. "Deep Counterfactual Regret Minimization." ICML 2019.
 - [arXiv](https://arxiv.org/abs/1811.00164)
 - [Meta AI](https://ai.meta.com/research/publications/deep-counterfactual-regret-minimization/)
 
-Replaces tabular CFR with neural networks that approximate cumulative regrets.
-- At each CFR iteration, a neural network V_theta predicts counterfactual values
-- Advantage network stores regrets as training targets in a reservoir buffer
-- Strategy network averages over time
+Replaces tabular CFR with neural nets that approximate cumulative regrets.
+- At each CFR iteration, neural net V_theta predicts counterfactual values
+- Advantage net stores regrets as training targets in reservoir buffer
+- Strategy net averages over time
 
 ### DREAM (Deep Regret minimization with Advantage baselines and Model-free learning)
 - [GitHub](https://github.com/EricSteinberger/DREAM)
-- Scalable implementation of Deep CFR variants
-- Includes SD-CFR, Deep CFR, and NFSP implementations in the PokerRL framework
+- Scalable impl of Deep CFR variants
+- Includes SD-CFR, Deep CFR, and NFSP implementations in PokerRL framework
 
-**Relevance**: Deep CFR's advantage network could potentially benefit from NNUE-style incremental updates -- regrets change incrementally between CFR iterations.
+**Relevance**: Deep CFR advantage net could benefit from NNUE-style incremental updates; regrets change incrementally between CFR iterations.
 
 ---
 
@@ -196,7 +195,7 @@ Replaces tabular CFR with neural networks that approximate cumulative regrets.
 
 ### Core Idea: Weighted Virtual Observations
 
-Compress past posterior into a small set of weighted "virtual observations" that approximately preserve the posterior:
+Compress past posterior into small set of weighted "virtual observations" that ~ preserve posterior:
 
 ```
 min_w KL(p(x|y*) || p(x|y_hat, w))
@@ -209,14 +208,15 @@ Where y* is original data, y_hat are virtual observations, w are learned weights
 p(w|x) = exp(log h(w) + SUM_i w_i * log p(y_hat_i | x))
 ```
 
-**Incremental update**: Instead of re-running inference on ALL historical observations, condition on:
+**Incremental update**: Instead of rerunning inference on ALL historical observations, condition on:
+
 ```
 new_posterior = inference(compressed_past_belief + new_observations)
 ```
 
-This is the most mathematically rigorous incremental belief update framework found, but it's for general probabilistic programming, not game AI.
+This is strongest mathematical incremental-belief-update framework found, but for general probabilistic programming, not game AI.
 
-**Relevance**: Direct mathematical foundation for your approach. Could be combined with NNUE-style accumulator: the "accumulator" stores a compressed belief state, and new observations trigger incremental weight adjustments.
+**Relevance**: Direct mathematical base for approach. Could combine with NNUE-style accumulator: "accumulator" stores compressed belief state, new observations trigger incremental weight adjustments.
 
 ---
 
@@ -228,8 +228,8 @@ Moss et al. "BetaZero: Belief-State Planning for Long-Horizon POMDPs using Learn
 - [GitHub](https://github.com/sisl/BetaZero.jl)
 
 ### Architecture
-- AlphaZero-style self-play + MCTS, but over BELIEF states instead of world states
-- Neural network approximates value and policy given a BELIEF REPRESENTATION
+- AlphaZero-style self-play + MCTS, but over BELIEF states not world states
+- Neural net approximates value and policy given BELIEF REPRESENTATION
 - User defines `input_representation(belief)` -- e.g., mean and std of particle filter
 - Uses PUCT search in belief space
 
@@ -241,9 +241,9 @@ function BetaZero.input_representation(b::ParticleCollection)
 end
 ```
 
-The belief is compressed into sufficient statistics (mean, variance) before being fed to the neural network.
+Belief is compressed into sufficient statistics (mean, variance) before feed into neural net.
 
-**Relevance**: BetaZero shows that MCTS can work over belief states if you have good sufficient statistics. Your NNUE-style network could LEARN these sufficient statistics incrementally.
+**Relevance**: BetaZero shows MCTS can work over belief states if sufficient statistics are good. NNUE-style net could LEARN these sufficient statistics incrementally.
 
 ---
 
@@ -256,10 +256,10 @@ The belief is compressed into sufficient statistics (mean, variance) before bein
 
 ### Key Claims
 - Learns network belief representations that converge to ground-truth belief representations in discrete POMDPs
-- Provides better information than just observations + EnKF in continuous POMDPs
-- Model-formulation agnostic (works without knowing the POMDP dynamics)
+- Gives better information than observations + EnKF in continuous POMDPs
+- Model-formulation agnostic (works without knowing POMDP dynamics)
 
-**Relevance**: If DBMM can learn belief representations that converge to true beliefs, it validates the idea that neural networks CAN learn compact belief states. Your NNUE extension would add the incremental update efficiency on top.
+**Relevance**: If DBMM can learn belief representations that converge to true beliefs, that supports claim neural nets CAN learn compact belief states. NNUE extension would add incremental-update efficiency on top.
 
 ---
 
@@ -278,24 +278,24 @@ The belief is compressed into sufficient statistics (mean, variance) before bein
 - Global reward prediction for long-horizon credit assignment
 - Oracle guiding: train with perfect info, then transfer to imperfect info
 - Run-time policy adaptation (parametric Monte Carlo)
-- **Does NOT use belief tracking** in the NNUE sense -- uses observation history directly
+- **Does NOT use belief tracking** in NNUE sense -- uses observation history directly
 
 ---
 
 ## 10. Cicero/Diplomacy: Multiplayer Imperfect-Info with Language
 
 ### Paper
-Meta FAIR. "Human-level play in the game of Diplomacy." Science, 2022.
+Meta FAIR. "Human-level play in game of Diplomacy." Science, 2022.
 - [Science](https://www.science.org/doi/10.1126/science.ade9097)
 - [GitHub](https://github.com/facebookresearch/diplomacy_cicero)
 
 ### Belief Tracking
-- Uses bilateral search (bqre1p_agent.py) for opponent modeling
-- piKL (policy-anchored KL): regularizes search policy toward a learned "anchor" policy
+- Uses bilateral search (`bqre1p_agent.py`) for opponent modeling
+- piKL (policy-anchored KL): regularizes search policy toward learned "anchor" policy
 - Searches over opponent action distributions, not explicit belief states
-- Combines language model predictions with strategic planning
+- Combines language-model predictions with strategic planning
 
-**Relevance**: Cicero shows that in multiplayer games, you need opponent modeling beyond just Bayes updates. Mahjong (4-player) faces similar challenges.
+**Relevance**: Cicero shows multiplayer games need opponent modeling beyond Bayes updates. Mahjong (4-player) faces same challenge.
 
 ---
 
@@ -305,7 +305,7 @@ Meta FAIR. "Human-level play in the game of Diplomacy." Science, 2022.
 - [arXiv](https://arxiv.org/abs/2403.00564)
 - General framework for sample-efficient model-based RL
 - Handles discrete/continuous actions, visual/low-dimensional inputs
-- Still fundamentally MDP-focused (not designed for hidden information games)
+- Still MDP-focused at core, not built for hidden-information games
 
 ### Model-Based RL for Imperfect Info (Earlier Work)
 - [IEEE 2014](https://ieeexplore.ieee.org/document/6797023): Model-based RL for Hearts (card game)
@@ -327,17 +327,17 @@ Meta FAIR. "Human-level play in the game of Diplomacy." Science, 2022.
 | Deep CFR | NO | PARTIAL | YES | YES |
 | **Your Proposal** | **YES** | **YES** | **YES** | **YES** |
 
-**No existing system combines all four properties.** Your NNUE-inspired incremental belief network for mahjong would be the first to:
+**No existing system combines all four properties.** Proposed NNUE-inspired incremental belief net for mahjong would be first to:
 1. Use sparse, incrementally-updatable feature representations (like NNUE)
 2. Track belief states over hidden information (like ReBeL/BetaZero)
 3. Target imperfect-information game AI (like ReBeL/SoG/Deep CFR)
-4. Learn the belief update function neurally (like DreamerV3's RSSM)
+4. Learn belief update function neurally (like DreamerV3 RSSM)
 
 ---
 
 ## Proposed Architecture Sketch (Based on Prior Art)
 
-Drawing from the above, a hypothetical "Incremental Belief NNUE" for mahjong could work like:
+Drawing from above, hypothetical "Incremental Belief NNUE" for mahjong could work like:
 
 ### Accumulator = Belief State
 
@@ -362,17 +362,17 @@ belief_accumulator = belief_accumulator + delta_bayes(event, belief_accumulator)
 
 ### Why this could work for Mahjong specifically:
 
-1. **Sparse changes**: Each event changes very few tiles (1 discard = 1 tile revealed out of ~136)
-2. **Structured hidden info**: Unknown tiles form a finite, trackable set
-3. **Incremental Bayes**: When player X discards tile Y, your belief about their hand updates sparsely
-4. **Speed**: Mahjong AI needs fast inference for real-time play; incremental updates avoid redundant computation
+1. **Sparse changes**: Each event changes few tiles (1 discard = 1 tile revealed out of ~136)
+2. **Structured hidden info**: Unknown tiles form finite, trackable set
+3. **Incremental Bayes**: When player X discards tile Y, belief about their hand updates sparsely
+4. **Speed**: Mahjong AI needs fast inference for real-time play; incremental updates avoid redundant compute
 
 ### Open Questions:
 
-1. Can the Bayesian correction term delta_bayes be learned end-to-end?
-2. How to handle "king moves" (equivalent: large state changes like a kan declaration)?
+1. Can Bayesian correction term delta_bayes be learned end-to-end?
+2. How handle "king moves" (equivalent: large state changes like kan declaration)?
 3. Training: self-play with incremental updates vs. full-recompute baseline?
-4. Does the accumulator maintain enough information for multi-step lookahead?
+4. Does accumulator retain enough information for multi-step lookahead?
 
 ---
 
@@ -388,5 +388,5 @@ belief_accumulator = belief_accumulator + delta_bayes(event, belief_accumulator)
 8. **DBMM** - arXiv 2025 - [arXiv:2503.13438](https://arxiv.org/abs/2503.13438)
 9. **Mortal** - Equim-chan - [GitHub](https://github.com/Equim-chan/Mortal)
 10. **Suphx** - Li et al., 2020 - [arXiv:2003.13590](https://arxiv.org/abs/2003.13590)
-11. **Cicero** - Meta FAIR, Science 2022 - [DOI](https://www.science.org/doi/10.1126/science.ade9097)
+11. **Cicero** - Meta FAIR, Science 2022 - [DOI](https://www.science.org/doi/10.1126/sciadv.adg3256)
 12. **DREAM** - Steinberger et al. - [GitHub](https://github.com/EricSteinberger/DREAM)

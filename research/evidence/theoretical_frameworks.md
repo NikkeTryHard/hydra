@@ -2,8 +2,7 @@
 
 ## Compilation of Mathematical Foundations for Imperfect-Information Game Play
 
-**Context**: 4-player imperfect information, stochastic draws, simultaneous
-exploitation/defense, hidden tiles, partial observability.
+**Context**: 4-player imperfect-info, stochastic draws, simultaneous offense/defense, hidden tiles, partial observability.
 
 ---
 
@@ -24,9 +23,7 @@ exploitation/defense, hidden tiles, partial observability.
 ## 1. Information-Theoretic Decision Making
 
 ### Core Idea
-Instead of maximizing expected reward directly, choose actions that optimize the
-*information ratio* -- the tradeoff between immediate regret and information
-gained about the hidden game state.
+Do not maximize expected reward directly. Choose actions by *information ratio*: immediate regret vs information gained about hidden state.
 
 ### Source
 Russo & Van Roy, "Learning to Optimize via Information-Directed Sampling" (2018).
@@ -41,35 +38,35 @@ Russo & Van Roy, "Learning to Optimize via Information-Directed Sampling" (2018)
 Delta_t(a) := E[R_{t,A*} - R_{t,a} | F_t]
 ```
 
-For a sampling distribution pi over actions:
+For sampling distribution pi over actions:
 
 ```
 Delta_t(pi) = sum_a pi(a) * Delta_t(a)
 ```
 
 **Information gain** from taking action `a` (mutual information between
-optimal action A* and observation Y_{t,a}):
+optimal action and observation Y_{t,a}):
 
 ```
 g_t(a) := I_t(A*; Y_{t,a})
         = D_KL( P((A*,Y_{t,a}) in . | F_t) || P(A* in . | F_t) * P(Y_{t,a} in . | F_t) )
 ```
 
-Entropy interpretation -- how much uncertainty about A* we expect to resolve:
+Entropy view: expected uncertainty reduction about
 
 ```
 g_t(a) = E[ H(alpha_t) - H(alpha_{t+1}) | F_t, A_t = a ]
 ```
 
-where `alpha_t(a) = P(A* = a | F_t)` is the posterior belief.
+where `alpha_t(a) = P(A* = a | F_t)` is posterior belief.
 
-**The Information Ratio** (the key concept):
+Information Ratio** (key concept):
 
 ```
 Psi_t(pi) := Delta_t(pi)^2 / g_t(pi)
 ```
 
-This is "squared expected regret per unit of information gained."
+Meaning: squared expected regret per unit information.
 
 **IDS Objective** -- at each step, solve:
 
@@ -86,27 +83,22 @@ If Psi_t(pi_t) <= lambda a.s. for all t, then:
 
 ### Application to Mahjong
 
-In Mahjong, the "information gain" of a discard is dual-purpose:
-- **Forward info**: what does this discard reveal about my hand to opponents?
-- **Backward info**: what does an opponent's discard tell me about their tiles?
+In Mahjong, discard information is dual-use:
+- **Forward info**: what discard reveals about my hand
+- **Backward info**: what opponent discard reveals about theirs
 
-The IDS framework suggests choosing discards that minimize `Psi_t`:
-- Low Delta (not too costly in expected value)
-- High g (maximally informative about opponent states)
+IDS suggests discards minimizing `Psi_t`:
+- Low Delta: low expected-value cost
+- High g: high opponent-state information
 
-This naturally balances exploitation (play for points) vs. exploration
-(learn what opponents hold). Defensive play emerges when `g_t` is high
-for safe tiles -- you learn opponent intent cheaply.
-
+This balances exploitation vs exploration. Defense emerges when `g_t` is high for safe tiles: cheap info, low cost.
 
 ---
 
 ## 2. Bayesian Opponent Modeling via Particle Filters
 
 ### Core Idea
-Represent beliefs about each opponent's hidden state (their hand, their
-strategy) as a cloud of weighted particles. Update beliefs in real-time
-using Bayesian filtering as you observe their discards and claims.
+Represent belief over each opponent's hidden state as weighted particles. Update online from discards and calls via Bayesian filtering.
 
 ### Source
 Southey et al., "Particle Filtering for Dynamic Agent Modelling in
@@ -125,8 +117,7 @@ Imperfect-Information Games" (2022).
 P(x_t | z_{1:t})
 ```
 
-where `x_t` = opponent's hidden state at time t, `z_{1:t}` = all
-observations up to time t.
+where `x_t` = opponent hidden state at time t, `z_{1:t}` = observations through time t.
 
 **Recursive Bayesian filter**:
 
@@ -134,7 +125,7 @@ observations up to time t.
 P(x_t | z_{1:t}) = eta * P(z_t | x_t) * integral[ P(x_t | x_{t-1}) * P(x_{t-1} | z_{1:t-1}) dx_{t-1} ]
 ```
 
-where eta is a normalization constant.
+where eta is normalization constant.
 
 **Particle filter algorithm**:
 
@@ -143,7 +134,7 @@ where eta is a normalization constant.
    x_tilde^(i) ~ P(x_t | x^(i)_{t-1})
    ```
 
-2. **Importance weighting** (likelihood of observation given particle):
+2. **Importance weighting** (observation likelihood under particle):
    ```
    w_t^(i) proportional_to P(z_t | x_tilde^(i)_t)
    ```
@@ -155,7 +146,7 @@ where eta is a normalization constant.
 
 **Motion models for opponent dynamics**:
 
-*Switching model* (opponent may suddenly change strategy):
+*Switching model* (opponent may abruptly change strategy):
 ```
 x_t = {
     Uniform random strategy,   with prob rho
@@ -176,7 +167,7 @@ x_t ~ {
 }
 ```
 
-**Rao-Blackwellized extension** (estimate dynamics parameters too):
+**Rao-Blackwellized extension** (estimate dynamics params too):
 ```
 theta_tilde ~ P(theta | s^(i)_{t-1})
 x_tilde^(i) ~ P(x_t | x^(i)_{t-1}, theta_tilde)
@@ -199,29 +190,24 @@ v <- v + d/2
 
 ### Application to Mahjong
 
-Each opponent's state `x_t` could encode:
-- Estimated hand composition (probability over tile sets)
-- Current strategy parameters (aggression level, tenpai probability, etc.)
-- Estimated shanten count
+Each opponent state `x_t` may encode:
+- Hand-composition distribution
+- Strategy params: aggression, tenpai probability, etc.
+- Estimated shanten
 
-The observation `z_t` at each step includes:
-- Which tile was discarded
+Observation `z_t` may include:
+- Discarded tile
 - Whether they called pon/chi/kan
-- Timing of their decisions (riichi declaration, etc.)
+- Decision timing, riichi, etc.
 
-The likelihood `P(z_t | x_t)` asks: "Given that opponent has hand state x,
-how likely is this observed discard?" -- this is exactly the kind of
-forward model Hydra's encoder already captures.
-
+Likelihood `P(z_t | x_t)` asks: given hidden state x, how likely was this observed action? This matches Hydra's forward-modeling need.
 
 ---
 
 ## 3. Online Learning & Regret Minimization (CFR)
 
 ### Core Idea
-Instead of computing an equilibrium directly, iteratively minimize
-*counterfactual regret* -- the amount you would have gained by playing
-differently at each decision point. Converges to Nash equilibrium.
+Rather than solve equilibrium directly, iteratively minimize *counterfactual regret*: gain missed by choosing differently at each decision point. Converges to Nash equilibrium.
 
 ### Sources
 Zinkevich et al., "Regret Minimization in Games with Incomplete Information"
@@ -231,19 +217,18 @@ Zinkevich et al., "Regret Minimization in Games with Incomplete Information"
 
 ### Key Formulations
 
-**Information set**: partition of game histories where player i cannot
-distinguish states:
+**Information set**: partition of game histories player i cannot distinguish:
 ```
 I_i is a partition of { h in H : P(h) = i }
 such that A(h) = A(h') whenever h,h' are in the same info set.
 ```
 
-**Behavioral strategy**: probability distribution over actions at each info set:
+**Behavioral strategy**: action distribution at each info set:
 ```
 sigma_i(I, a) = Pr(a | I),   a in A(I),  I in I_i
 ```
 
-**Reach probability** (product of all players' action probabilities to reach h):
+**Reach probability** (product of action probs reaching h):
 ```
 pi^sigma(h) = pi^sigma_i(h) * pi^sigma_{-i}(h)
 ```
@@ -258,10 +243,9 @@ u_i(sigma) = sum_{h in Z} u_i(h) * pi^sigma(h)
 v_i(sigma, I) = sum_{z in Z_I} pi^sigma_{-i}(z[I]) * pi^sigma(z[I], z) * u_i(z)
 ```
 
-Key insight: this weights terminal states by *opponent* reach probability,
-factoring out player i's own contribution.
+Key insight: weight terminal states by opponent reach, factoring out player i's own contribution.
 
-**Instantaneous counterfactual regret** for action a at info set I:
+**Instantaneous counterfactual regret** for action at info set I:
 ```
 r_i^t(I, a) = v_i(sigma^t |_{I->a}, I) - v_i(sigma^t, I)
 ```
@@ -271,7 +255,7 @@ r_i^t(I, a) = v_i(sigma^t |_{I->a}, I) - v_i(sigma^t, I)
 R_i^T(I, a) = (1/T) * sum_{t=1}^{T} r_i^t(I, a)
 ```
 
-**Regret matching** (the strategy update rule):
+**Regret matching** (strategy update rule):
 ```
 R_i^{T,+}(I,a) = max(R_i^T(I,a), 0)
 
@@ -288,7 +272,7 @@ sigma_bar_i^T(I)(a) = sum_{t=1}^T pi_i^{sigma^t}(I) * sigma^t(I)(a)
 ```
 
 **Nash equilibrium convergence**: If R_i^T < epsilon for all players,
-then sigma_bar^T is a 2*epsilon-Nash equilibrium.
+then sigma_bar^T is 2*epsilon-Nash equilibrium.
 
 **Best response and exploitability**:
 ```
@@ -298,32 +282,27 @@ exploitability = b_1(sigma_2) + b_2(sigma_1)
 
 ### Application to Mahjong
 
-CFR is the backbone of poker AI (Libratus, Pluribus). For Mahjong:
-- Information sets are much larger (136 tiles vs 52 cards)
-- 4-player means Nash equilibrium is not unique and may not be exploitable
-- But *counterfactual regret* is still a valid training signal
-- Deep CFR (neural network function approximation) could scale
+CFR powers poker AI like Libratus, Pluribus. For Mahjong:
+- Information sets much larger
+- 4-player equilibrium non-unique, less cleanly exploitable
+- But counterfactual regret still valid training signal
+- Deep CFR may scale with function approximation
 
-The key challenge: Mahjong's information sets are enormous. Abstraction
-is mandatory -- grouping similar hands into equivalence classes.
-
+Main problem: state space enormous. Need abstraction: group similar hands into equivalence classes.
 
 ---
 
 ## 4. Differential Game Theory
 
 ### Core Idea
-Model the game as a continuous-time dynamical system where players'
-strategies are controls, and the game state evolves according to a
-differential equation. The value function satisfies a PDE (the
-Hamilton-Jacobi-Isaacs equation).
+Model game as continuous-time dynamics. Player strategies are controls; state evolves by differential equation. Value function satisfies PDE: Hamilton-Jacobi-Isaacs equation.
 
 ### Sources
 - Evans & Souganidis, "Differential Games and Representation Formulas
-  for Solutions of Hamilton-Jacobi-Isaacs Equations" (1984).
-  [JSTOR](https://www.jstor.org/stable/45010271)
-- "Stochastic Differential Games: A Sampling Approach"
-  [PDF](https://dcsl.gatech.edu/papers/dgaa17%20(Printed).pdf)
+for Solutions of Hamilton-Jacobi-Isaacs Equations" (1984).
+[JSTOR](https://www.jstor.org/stable/45010271)
+- "Stochastic Differential Games: Sampling Approach"
+[PDF](https://dcsl.gatech.edu/papers/dgaa17%20(Printed).pdf)
 
 ### Key Formulations
 
@@ -332,7 +311,7 @@ Hamilton-Jacobi-Isaacs equation).
 dX_t = f(X_t, u_1, ..., u_N) dt + sigma(X_t) dW_t
 ```
 
-where X_t is the game state, u_i is player i's control, W_t is Brownian motion.
+where X_t is game state, u_i player i control, W_t Brownian motion.
 
 **Hamilton-Jacobi-Isaacs (HJI) equation** (2-player zero-sum):
 ```
@@ -343,7 +322,7 @@ dV/dt + min_{u_2} max_{u_1} [ f(x,u_1,u_2) . grad_x V
 
 with terminal condition V(T, x) = g(x).
 
-**N-player generalization** (each player has their own value function V_i):
+**N-player generalization** (each player has own value function V_i):
 ```
 dV_i/dt + H_i(x, grad V_1, ..., grad V_N) = 0
 ```
@@ -353,50 +332,38 @@ where H_i is player i's Hamiltonian:
 H_i(x, p_1,...,p_N) = opt_{u_i} [ f(x,u) . p_i + L_i(x,u) ]
 ```
 
-subject to other players also optimizing (coupled system of PDEs).
+subject to others also optimizing; yields coupled PDEs.
 
-**Isaacs condition** (sufficient for value to exist):
+**Isaacs condition** (sufficient for value existence):
 ```
 min_{u_2} max_{u_1} H(x, p, u_1, u_2) = max_{u_1} min_{u_2} H(x, p, u_1, u_2)
 ```
 
-**Viscosity solution** concept handles non-smooth value functions --
-the correct notion of "solution" for these PDEs in practice.
+**Viscosity solution** handles non-smooth value functions; practical notion of solution.
 
 ### Application to Mahjong
 
-Think of the "game clock" as turns progressing continuously. The state
-X includes:
-- Wall depletion rate (tiles remaining)
-- Each player's "threat level" (how close to tenpai)
+Treat turns as continuous progression. State X may include:
+- Wall depletion
+- Each player's threat level / distance to tenpai
 - Point differentials
 
-The HJI perspective says: there exists a value surface V(state) such that
-optimal play is the gradient of V. This is exactly what a neural network
-value head approximates! The differential game formulation gives us:
+HJI view says value surface V(state) exists; optimal play follows its gradient. This justifies value-head approximation and gives:
+1. Theoretical grounding for value approximation
+2. Structure for attack/defense switching surfaces
+3. Stochastic-control view where tile draws are noise `sigma*dW`
 
-1. **Theoretical justification** for value function approximation
-2. **Structure of optimal switching** -- when to switch from attack to defense
-   (the "switching surfaces" in the value function)
-3. **Stochastic control** interpretation -- tile draws are the noise term sigma*dW
-
-The multi-player HJI system shows why 4-player Mahjong is fundamentally
-harder: you need 4 coupled PDEs, not one.
-
+4-player Mahjong harder because system needs 4 coupled PDEs, not 1.
 
 ---
 
 ## 5. Causal Inference in Games
 
 ### Core Idea
-Replace standard game-theoretic reasoning (which assumes rational utility
-maximization) with *causal* reasoning using structural causal models. This
-lets you ask counterfactual questions: "If opponent had a different hand,
-would they still have made that discard?" -- and use the answers for
-stronger opponent modeling.
+Replace purely utility-max reasoning with *causal* reasoning via structural causal models. Enables counterfactual questions: "If opponent had different hand, would discard stay same?" Useful for stronger opponent modeling.
 
 ### Source
-Bareinboim, Forney, Pearl, "Counterfactual Rationality: A Causal Approach
+Bareinboim, Forney, Pearl, "Counterfactual Rationality: Causal Approach
 to Game Theory" (Causal AI Lab).
 [PDF](https://causalai.net/r125.pdf)
 
@@ -409,13 +376,13 @@ Also: Ibeling et al., "Reasoning about causality in games" (AIJ 2023).
 ```
 M = <U, V, F, P(U)>
 ```
-- U: exogenous (hidden) variables
-- V: endogenous (observed) variables
+- U: exogenous hidden vars
+- V: endogenous observed vars
 - F: structural functions V <- f_V(Pa(V), U_V)
-- P(U): distribution over exogenous variables
+- P(U): distribution over exogenous vars
 
-**Intervention (do-operator)**: `do(X = x)` replaces the structural equation
-for X with the constant X <- x. Produces interventional distribution:
+**Intervention (do-operator)**: `do(X = x)` replaces structural equation
+for X with constant X <- x. Produces interventional distribution:
 ```
 P_x(Y) = P(Y_x) = sum_{u: Y_x(u)=y} P(u)
 ```
@@ -424,70 +391,59 @@ P_x(Y) = P(Y_x) = sum_{u: Y_x(u)=y} P(u)
 ```
 <M, N, X, Y>
 ```
-- N: set of agents
-- X = (X_1, ..., X_n): disjoint action nodes (each player controls theirs)
-- Y = (Y_1, ..., Y_n): reward nodes
+- N: agents
+- X = (X_1,..., X_n): disjoint action nodes
+- Y = (Y_1,..., Y_n): reward nodes
 - R_i: D(Y_i) -> R is reward function
 
 **Three layers of causal reasoning in games**:
 
 L1 (Observational): Follow natural mechanism f_{X_i}.
-   Action space A_1 = {a_0} (singleton -- just "be yourself")
+Action space A_1 = {a_0} (singleton -- "be yourself")
 
 L2 (Interventional): Hard intervention do(x_i).
-   This is standard game theory -- choose actions deliberately.
-   Action space A_2 = D(X_i)
+Standard game theory -- deliberate action choice.
+Action space A_2 = D(X_i)
 
 L3 (Counterfactual): Function h: D(X_i) -> D(X_i).
-   "What would I naturally do, and how should I deviate from that?"
-   Natural tendency X_i^-> = f_{X_i}(U_i), executed as X_i <- h(X_i^->)
-   Special cases: h(x) = x is L1, constant h is L2.
+"What would I naturally do, how should I deviate?"
+Natural tendency X_i^-> = f_{X_i}(U_i), executed as X_i <- h(X_i^->)
+Special cases: h(x) = x is L1, constant h is L2.
 
-**Causal Nash Equilibrium (CNE)**: A two-stage concept:
+**Causal Nash Equilibrium (CNE)**: Two-stage concept:
 
-1. Layer Selection Game L^up: Each player chooses which *layer* to reason at.
+1. Layer Selection Game L^up: Each player chooses reasoning *layer*.
    ```
    u(A) = NE(Game(A_1, ..., A_n))
    ```
 
-2. CNE: Let s^up be the NE of L^up, and A_i^up = union of supports.
-   Then omega^up is CNE if it's a Nash equilibrium of Game(A^up).
+2. CNE: Let s^up be NE of L^up, and A_i^up = union of supports.
+Then omega^up is CNE if it's Nash equilibrium of Game(A^up).
 
-**Key theorem**: CNE always exists, and CNE payoff weakly dominates
-unilateral layer-switch alternatives.
+**Key theorem**: CNE exists; payoff weakly dominates unilateral layer-switch alternatives.
 
 ### Application to Mahjong
 
-The L3 (counterfactual) layer is *precisely* what Mahjong defense needs:
+L3 counterfactual layer fits Mahjong defense exactly:
 
-- **L1 thinking**: "My natural play (greedy offense) would discard 3m"
-- **L2 thinking**: "I deliberately choose to discard 7z instead" (standard)
-- **L3 thinking**: "My natural play *would be* 3m, but given what I know
-  about opponent's state, I *transform* my natural choice into 7z"
+- **L1 thinking**: natural greedy offense discards 3m
+- **L2 thinking**: deliberate switch to 7z
+- **L3 thinking**: natural move would be 3m, but transform it into 7z given opponent model
 
-The counterfactual structure captures:
-- **Reading opponents**: "If they had tiles X, would they have discarded Y?"
-  This is literally P(Y_x) -- the interventional/counterfactual distribution.
-- **Signaling awareness**: "My discard of 3m would *signal* that I don't
-  need it -- does that change opponent behavior?" (causal chain)
-- **Defense as causal intervention**: Switching to defense is a do-operation
-  on your own strategy node.
+This captures:
+- **Reading opponents**: if they had X, would they discard Y? This is `P(Y_x)`
+- **Signaling awareness**: my discard may change opponent behavior
+- **Defense as causal intervention**: switching strategy is do-operation on my node
 
-The SCM framework can model the *entire game* as a causal graph:
-Wall -> Draws -> Hands -> Discards -> Melds -> Outcomes, with hidden
-confounders (the wall order, opponents' hands).
-
+SCM can model full game causally:
+Wall -> Draws -> Hands -> Discards -> Melds -> Outcomes, with hidden confounders like wall order and opponent hands.
 
 ---
 
 ## 6. Information Geometry of Games
 
 ### Core Idea
-Strategy spaces in games are probability simplices. The *natural* geometry
-on these spaces is not Euclidean -- it's the Fisher information metric
-(a.k.a. Shahshahani metric). Under this geometry, the replicator equation
-(evolution of strategies) is a *gradient flow* of fitness, and KL divergence
-is the natural Lyapunov function.
+Game strategy spaces are probability simplices. Natural geometry is Fisher information, not Euclidean. Under this geometry, replicator dynamics become gradient flow of fitness; KL divergence becomes natural Lyapunov function.
 
 ### Source
 Harper, "Information Geometry and Evolutionary Game Theory" (2009).
@@ -508,15 +464,14 @@ Delta^n = { x in R^n : sum_i x_i = 1, x_i >= 0 }
 g_{ij}(x) = (1/x_i) * delta_{ij}
 ```
 
-This is the *unique* (up to scale) Riemannian metric that is invariant
-under sufficient statistics.
+This is unique up to scale among metrics invariant under sufficient statistics.
 
 **Shahshahani metric** (on R_+^n, restricts to Fisher on simplex):
 ```
 g_{ij}(x) = (||x|| / x_i) * delta_{ij},   ||x|| = sum_i x_i
 ```
 
-**Replicator equation** (fundamental dynamics of strategy evolution):
+**Replicator equation** (fundamental strategy-evolution dynamics):
 ```
 x_dot_i = x_i * (f_i(x) - f_bar(x))
 f_bar(x) = sum_i x_i * f_i(x)   [mean fitness]
@@ -524,8 +479,8 @@ f_bar(x) = sum_i x_i * f_i(x)   [mean fitness]
 
 **KEY THEOREM: Replicator = Shahshahani gradient ascent of fitness**
 
-If f_i = dV/dx_i for some potential V, then the replicator dynamics are
-the gradient flow of V with respect to the Shahshahani/Fisher metric:
+If f_i = dV/dx_i for some potential V, then replicator dynamics are
+gradient flow of V under Shahshahani/Fisher metric:
 ```
 x_hat_i(x) = x_i * (f_i(x) - f_bar(x))   [Shahshahani gradient]
 ```
@@ -537,7 +492,7 @@ v_dot_i = f_i(x)
 G_dot = f_bar(x)
 ```
 
-This yields the replicator equation. The `v_i` are "log-odds" coordinates.
+This yields replicator dynamics. `v_i` are log-odds coordinates.
 
 **KL divergence as Lyapunov function**:
 ```
@@ -549,17 +504,14 @@ Time derivative along replicator flow:
 V_dot(x) = -(x_hat . f(x) - x . f(x))
 ```
 
-If x_hat is an ESS (evolutionarily stable strategy), then V_dot < 0,
-meaning KL divergence to the equilibrium monotonically decreases.
+If x_hat is ESS, then V_dot < 0, so KL to equilibrium shrinks monotonically.
 
 **Fisher information variance identity**:
 ```
 Var_p[g] = || (dE[g])_p ||_p^2 = || (grad E[g])_p ||_p^2
 ```
 
-The variance of fitness equals the squared norm of the fitness gradient
-in Fisher geometry. This is the *fundamental theorem of natural selection*
-restated in information-geometric language.
+Fitness variance equals squared norm of fitness gradient in Fisher geometry. This is natural selection's fundamental theorem in info-geometric form.
 
 **Two-population dynamics** (attacker vs defender):
 ```
@@ -576,57 +528,44 @@ G_{ij}(p,q) = {
 }
 ```
 
-**KL divergence induced metric** (proving Fisher = KL Hessian):
+**KL divergence induced metric** (showing Fisher = KL Hessian):
 ```
 g_{ij}^(D) = d^2 D / (dx_i dy_j) |_{x=y}
 
 For KL: d^2 D_KL(x||y) / (dx_i dy_j) |_{x=y} = (1/x_i) * delta_{ij}
 ```
 
-This proves Fisher metric is the *infinitesimal* version of KL divergence.
+Thus Fisher metric is infinitesimal KL divergence.
 
 ### Application to Mahjong
 
-The information-geometric perspective gives us:
+This view gives:
 
-1. **Natural gradient for policy learning**: Instead of vanilla SGD on
-   the policy network, use the Fisher information matrix (natural gradient).
-   This is parameterization-invariant and converges faster.
+1. **Natural gradient for policy learning**: use Fisher metric instead of vanilla SGD.
    ```
    theta_{t+1} = theta_t - alpha * F^{-1}(theta) * grad L(theta)
    ```
-   where F is the Fisher information matrix of the policy.
+where F is policy Fisher matrix.
 
-2. **KL regularization is geometrically natural**: Penalizing KL divergence
-   from a reference policy (as in PPO) is not arbitrary -- it's the natural
-   distance measure on strategy manifolds.
+2. **KL regularization is natural**: KL penalty, as in PPO, matches strategy-manifold geometry.
 
-3. **Strategy dynamics interpretation**: The evolution of Mahjong meta
-   (how strategies shift over time in a population) follows replicator
-   dynamics on the Fisher manifold. Convergence to equilibrium is measured
-   by KL divergence.
+3. **Strategy dynamics interpretation**: Mahjong meta evolution follows replicator dynamics on Fisher manifold. Convergence measured by KL.
 
-4. **Fitness landscape**: The "fitness" of a Mahjong strategy is its
-   expected score against the population. The replicator equation predicts
-   how strategy frequencies evolve -- useful for training curriculum design.
-
+4. **Fitness landscape**: strategy fitness = expected score vs population. Replicator dynamics predict frequency shifts; useful for curriculum design.
 
 ---
 
 ## 7. Free Energy Principle & Active Inference
 
 ### Core Idea
-Model the Mahjong agent as a system that minimizes *free energy* -- a
-quantity that bounds surprise. The agent maintains a generative model of the
-game, and both perception (belief updating) and action (tile selection) arise
-from a single objective: minimize the divergence between predictions and reality.
+Model Mahjong agent as minimizing *free energy*, upper-bounding surprise. Agent keeps generative model of game; both belief update and action selection come from one objective: reduce mismatch between prediction and reality.
 
 ### Sources
 - Parr & Friston, "Generalised free energy and active inference" (2019).
-  [PMC6848054](https://pmc.ncbi.nlm.nih.gov/articles/PMC6848054/)
+[PMC6848054](https://pmc.ncbi.nlm.nih.gov/articles/PMC6848054/)
 - Da Costa et al., "Distributionally robust free energy principle for
-  decision-making" (Nature Comms, 2025).
-  [Nature](https://www.nature.com/articles/s41467-025-67348-6)
+decision-making" (Nature Comms, 2025).
+[Nature](https://www.nature.com/articles/s41467-025-67348-6)
 
 ### Key Formulations
 
@@ -635,8 +574,7 @@ from a single objective: minimize the divergence between predictions and reality
 F = E_Q[ ln Q - ln P(o, s, pi) ] >= -ln P(o)
 ```
 
-Free energy is an upper bound on "surprise" = -ln P(observations).
-Minimizing F is equivalent to approximate Bayesian inference.
+Free energy upper-bounds surprise `-ln P(observations)`. Minimizing F performs approximate Bayesian inference.
 
 **Mean-field factorization**:
 ```
@@ -648,7 +586,7 @@ Q(s_tilde, pi) approx Q(pi) * prod_tau Q(s_tau | pi)
 F = E_{Q(pi)}[F_pi] + D_KL(Q(pi) || P(pi))
 ```
 
-where F_pi is the free energy conditioned on policy pi.
+where F_pi is free energy conditioned on policy pi.
 
 **Policy belief update** (softmax of negative free energy):
 ```
@@ -656,9 +594,9 @@ Q(pi) proportional_to exp(ln P(pi) - F_pi)
 Q(pi) = softmax(ln P(pi) - F_pi)
 ```
 
-Policies that predict observations well (low F_pi) get higher probability.
+Policies predicting observations well (low F_pi) get higher probability.
 
-**Expected Free Energy (EFE)** -- the key quantity for *future* decisions:
+**Expected Free Energy (EFE)** -- key quantity for future decisions:
 ```
 G_pi = E_{Q(o,s|pi)}[ ln Q(s|pi) - ln P(o,s|pi) ]
 ```
@@ -669,32 +607,29 @@ G_pi = D_KL(Q(o|pi) || P(o))     [risk / pragmatic value]
      + E_{Q(s|pi)}[ H(P(o|s)) ]  [ambiguity / epistemic value]
 ```
 
-- **Risk**: KL divergence between predicted outcomes and preferred outcomes.
-  "Am I likely to get outcomes I want?"
-- **Ambiguity**: Expected entropy of observations given states.
-  "How uncertain will I be about the state after observing?"
+- **Risk**: predicted outcomes vs preferred outcomes
+- **Ambiguity**: expected observation uncertainty after action
 
 **Combined policy selection** (with expected free energy as prior):
 ```
 Q(pi) = softmax( ln E(pi) - F_pi - G_pi )
 ```
 
-where E(pi) encodes habitual preferences.
+where E(pi) encodes habits/preferences.
 
-**DR-FREE: Distributionally Robust Free Energy** (handles model uncertainty):
-
+**DR-FREE: Distributionally Robust Free Energy** (model uncertainty):
 Joint trajectory distribution:
 ```
 p_{0:N} = p_0(x_0) * prod_{k=1}^{N} p_k(x_k | x_{k-1}, u_k) * pi_k(u_k | x_{k-1})
 ```
 
-The robust objective (minimax over model uncertainty):
+robust objective (minimax over model uncertainty):
 ```
 min_{pi_k} max_{p_k in B_eta(p_bar_k)}
     [ D_KL(p_{0:N} || q_{0:N}) + E_{p_{0:N}}[ sum_k (c_k^x(X_k) + c_k^u(U_k)) ] ]
 ```
 
-where B_eta is the ambiguity set (KL ball around trained model):
+where B_eta is ambiguity set (KL ball around trained model):
 ```
 B_eta(p_bar_k) = { p_k : D_KL(p_k || p_bar_k) <= eta_k }
 ```
@@ -707,38 +642,25 @@ pi_k*(u_k | x_{k-1}) proportional_to
 
 ### Application to Mahjong
 
-Active inference is *shockingly* well-suited to Mahjong:
+Active inference fits Mahjong unusually well:
 
-1. **Generative model = game engine**: The agent's generative model predicts
-   what tiles will appear, what opponents will discard, what outcomes will
-   occur. This is exactly what hydra-core simulates.
+1. **Generative model = game engine**: predicts draws, opponent discards, outcomes. This is what hydra-core simulates.
 
-2. **EFE naturally balances offense and defense**:
-   - Risk term: "Does this action lead to preferred outcomes (winning)?"
-   - Ambiguity term: "Does this action reduce my uncertainty about
-     opponents' hands?"
-   - A safe discard might have low risk (opponents unlikely to win from it)
-     AND low ambiguity (doesn't reveal much about game state).
+2. **EFE balances offense and defense**:
+   - Risk: does action lead toward preferred outcomes?
+   - Ambiguity: does action reduce uncertainty about opponents?
+   - Safe discard may be low risk and low ambiguity.
 
-3. **Robustness**: DR-FREE handles the fact that the agent's model of
-   opponents is *wrong*. The ambiguity set eta controls how paranoid
-   the agent is about model misspecification -- larger eta = more defensive.
+3. **Robustness**: DR-FREE handles wrong opponent models. Larger eta = more paranoia = more defense.
 
-4. **Unified perception-action loop**: Belief updating (what tiles do
-   opponents have?) and action selection (what should I discard?) are
-   the SAME optimization: minimize free energy.
-
+4. **Unified perception-action loop**: belief update and action choice become same optimization.
 
 ---
 
 ## 8. Algebraic / Compositional Game Theory
 
 ### Core Idea
-Instead of defining games monolithically, build them *compositionally*
-from small pieces using categorical algebra. Games are morphisms in a
-symmetric monoidal category; sequential play is composition, simultaneous
-play is tensor product. This lets you decompose a complex game like
-Mahjong into reusable building blocks.
+Build games compositionally from small pieces using categorical algebra, not monolithically. Games are morphisms in symmetric monoidal category; sequence = composition, simultaneity = tensor product. Good fit for decomposing Mahjong into reusable parts.
 
 ### Source
 Ghani, Hedges, Winschel, Zahn, "Compositional Game Theory" (LICS 2018).
@@ -749,18 +671,18 @@ Hedges, "Towards Compositional Game Theory" (PhD thesis, Oxford 2016).
 
 ### Key Formulations
 
-**Open game** (type signature): An open game G has type:
+**Open game** (type signature): open game G has type:
 ```
 G : X (x) S* -> Y (x) R*
 ```
 
 where:
-- X: input (information flowing in from environment)
-- Y: output (information/actions flowing out)
+- X: input from environment
+- Y: output/actions to environment
 - R: utility flowing back from environment
-- S: utility passed back to earlier stages
+- S: utility passed backward to earlier stages
 
-An open game is specified by 4 components:
+open game is specified by 4 components:
 
 1. **Strategy set**: Sigma_G
 
@@ -779,13 +701,12 @@ An open game is specified by 4 components:
    B_G : Hom(I, X) x Hom(Y, R) -> Sigma_G -> P(Sigma_G)
    ```
 
-**Lens/optic structure**: For fixed strategy sigma, the (play, coplay) pair
-forms a lens:
+**Lens/optic structure**: For fixed strategy sigma, pair (play, coplay) forms lens:
 ```
 (P_G(sigma), C_G(sigma))  :  (X, S) <-> (Y, R)
 ```
 
-Play goes forward (X -> Y), coplay goes backward (X x R -> S).
+Play goes forward (X -> Y), coplay backward (X x R -> S).
 
 **Sequential composition** (G then H):
 ```
@@ -808,28 +729,27 @@ Given context (h, k) with h: I -> X (history), k: Y -> R (continuation):
 sigma is equilibrium  iff  sigma in B_G(h, k)(sigma)
 ```
 
-Strategy sigma is an equilibrium when it's a fixed point of the best
-response: no player can improve by unilateral deviation.
+Strategy sigma is equilibrium when it is fixed point of best response.
 
-**Coutility**: The backward-flowing value:
+**Coutility**: backward-flowing value:
 ```
 C_G(sigma) : X (x) R -> S
 ```
-Takes current state/history plus future utility R, returns utility S
-passed back to earlier game stages.
+
+Takes current state/history plus future utility R, returns utility S passed back to earlier stages.
 
 ### Application to Mahjong
 
-Compositional game theory decomposes Mahjong into modular subgames:
+Compositional game theory breaks Mahjong into modular subgames:
 
-**A Mahjong round as composition**:
+Mahjong round as composition**:
 ```
 Round = Deal ; (Turn_1 (x) Turn_2 (x) Turn_3 (x) Turn_4)^{*n} ; Score
 ```
 
 Where:
 - Deal: I -> HandState (x) WallState
-- Turn_i: GameState -> GameState (one player's draw-discard cycle)
+- Turn_i: GameState -> GameState
 - Score: GameState -> Points (x) Points (x) Points (x) Points
 
 Each Turn is itself composed:
@@ -839,21 +759,13 @@ Turn = Draw ; Evaluate ; (Discard | Call | Win)
 
 **Why this matters**:
 
-1. **Modularity**: You can reason about Turn_i in isolation, then compose.
-   A defensive strategy for Turn_i composes seamlessly with an aggressive
-   strategy for Turn_j.
+1. **Modularity**: reason about `Turn_i` alone, then compose. Defensive and aggressive subpolicies combine cleanly.
 
-2. **Coutility = downstream impact**: The coplay function C propagates
-   "how much did this discard cost future-me?" backward through the
-   composition. This is analogous to backpropagation!
+2. **Coutility = downstream impact**: coplay function C propagates future cost backward through composition, analogous to backprop.
 
-3. **Equilibrium preservation**: If each sub-game has a Nash equilibrium,
-   the composition preserves equilibrium properties (by the main theorem).
+3. **Equilibrium preservation**: if each subgame has equilibrium, composition preserves equilibrium properties.
 
-4. **Formal verification**: The categorical structure allows proving
-   properties about the full game from properties of its parts --
-   potentially useful for verifying that an AI respects game rules.
-
+4. **Formal verification**: categorical structure may prove whole-game properties from subparts, useful for rule-respecting AI.
 
 ---
 
@@ -861,7 +773,7 @@ Turn = Draw ; Evaluate ; (Discard | Call | Win)
 
 ### The Big Picture
 
-These 8 frameworks are not independent -- they form a coherent stack:
+These 8 frameworks form one stack, not 8 isolated ideas:
 
 ```
 Layer 4: ALGEBRAIC STRUCTURE (Compositional Game Theory)
@@ -886,7 +798,7 @@ Layer 1: GEOMETRY & DYNAMICS
 
 ### Concrete Proposal: Information-Theoretic Active Inference for Mahjong
 
-Combine the most promising elements into a single framework:
+Combine strongest parts into one framework:
 
 **State**: At each decision point, maintain:
 ```
@@ -904,15 +816,14 @@ a* = argmin_a [ G(a) / (1 + lambda * g(a)) ]
 ```
 
 where:
-- G(a) = risk(a) + ambiguity(a) is the expected free energy
-- g(a) = mutual information gain about opponents from action a
+- G(a) = risk(a) + ambiguity(a) is expected free energy
+- g(a) = mutual information gain about opponents from action
 - lambda controls exploration-exploitation balance
 
 This reduces to:
 - Pure active inference when lambda = 0
 - Pure information-directed when risk is constant
-- A hybrid that naturally balances offense (minimize risk) with
-  intelligence gathering (maximize info gain)
+- Hybrid balancing offense and intelligence gathering
 
 **Belief update**: After each observation (opponent discard, call, etc.):
 ```
@@ -924,11 +835,11 @@ For each opponent i:
 ```
 
 **Policy learning** (training time): Use natural gradient (Fisher geometry)
-on the policy network, with:
+on policy network, with:
 - CFR-style counterfactual regret as training signal
-- KL regularization (geometrically natural) against reference policy
-- Causal reasoning for opponent modeling: "given opponent discarded X,
-  what interventional distribution over their hand is implied?"
+- KL regularization against reference policy
+- Causal opponent reasoning: "given opponent discarded X,
+what interventional distribution over their hand follows?"
 
 **Strategy update rule** (combines information geometry + regret matching):
 ```
@@ -943,72 +854,62 @@ where:
 
 ### What's Genuinely Novel Here
 
-The existing Mahjong AI landscape (Suphx, Mortal) uses:
+Current Mahjong AI landscape (Suphx, Mortal) mainly uses:
 - Standard RL (PPO, actor-critic)
-- Neural network function approximation
+- Neural function approximation
 - Hand-crafted features or self-play
 
-What the frameworks above add:
+Framework additions here:
 
-1. **Information-theoretic action selection**: No existing Mahjong AI
-   explicitly optimizes the information ratio. Discards are chosen for
-   value, not for their information content.
+1. **Information-theoretic action selection**: optimize information ratio, not only value.
 
-2. **Particle filter opponent tracking**: Current AIs use fixed neural
-   networks for opponent modeling. Particle filters adapt in real-time
-   to THIS specific opponent's tendencies.
+2. **Particle filter opponent tracking**: adapt online to specific opponent tendencies.
 
-3. **Causal counterfactual reasoning**: "If opponent X had tiles Y,
-   would they have discarded Z?" -- no current AI asks this question
-   formally. The SCM framework makes it rigorous.
+3. **Causal counterfactual reasoning**: formalize "if opponent had Y, would they discard Z?"
 
-4. **Free energy as unified objective**: Rather than separate value/policy
-   heads with ad-hoc loss weighting, free energy minimization gives a
-   principled single objective that handles both perception and action.
+4. **Free energy as unified objective**: one principled objective for perception and action, not ad-hoc head/loss mixing.
 
-5. **Natural gradient on strategy manifold**: PPO uses clipping as a
-   crude trust region. Natural gradient is the *geometrically correct*
-   way to update on probability simplices.
+5. **Natural gradient on strategy manifold**: geometrically correct updates on probability simplices, unlike crude trust-region approximations.
 
 ---
 
 ## References
 
 1. Russo & Van Roy. "Learning to Optimize via Information-Directed Sampling."
-   NeurIPS 2018. https://web.stanford.edu/~bvr/pubs/IDS.pdf
+NeurIPS 2018. https://web.stanford.edu/~bvr/pubs/IDS.pdf
 
 2. Southey et al. "Particle Filtering for Dynamic Agent Modelling."
-   AAAI 2007. https://webdocs.cs.ualberta.ca/~mbowling/papers/07aaai-om.pdf
+AAAI 2007. https://webdocs.cs.ualberta.ca/~mbowling/papers/07aaai-om.pdf
 
 3. Ganzfried & Sandholm. "Bayesian Opponent Modeling in Multiplayer
-   Imperfect-Information Games." 2022. https://arxiv.org/abs/2212.06027
+Imperfect-Information Games." 2022. https://arxiv.org/abs/2212.06027
 
 4. Zinkevich et al. "Regret Minimization in Games with Incomplete
-   Information." NeurIPS 2007.
-   Formulations: https://nn.labml.ai/cfr/index.html
+Information." NeurIPS 2007.
+Formulations: https://nn.labml.ai/cfr/index.html
 
 5. Evans & Souganidis. "Differential Games and HJI Equations." 1984.
-   https://www.jstor.org/stable/45010271
+https://www.jstor.org/stable/45010271
 
-6. Bareinboim et al. "Counterfactual Rationality: A Causal Approach to
-   Game Theory." https://causalai.net/r125.pdf
+6. Bareinboim et al. "Counterfactual Rationality: Causal Approach to
+Game Theory." https://causalai.net/r125.pdf
 
 7. Harper. "Information Geometry and Evolutionary Game Theory." 2009.
-   https://ar5iv.labs.arxiv.org/html/0911.1383
+https://ar5iv.labs.arxiv.org/html/0911.1383
 
 8. Parr & Friston. "Generalised Free Energy and Active Inference." 2019.
-   https://pmc.ncbi.nlm.nih.gov/articles/PMC6848054/
+https://pmc.ncbi.nlm.nih.gov/articles/PMC6848054/
 
 9. Da Costa et al. "Distributionally Robust Free Energy Principle for
-   Decision-Making." Nature Comms 2025.
-   https://www.nature.com/articles/s41467-025-67348-6
+Decision-Making." Nature Comms 2025.
+https://www.nature.com/articles/s41467-025-67348-6
 
 10. Ghani, Hedges et al. "Compositional Game Theory." LICS 2018.
-    https://arxiv.org/abs/1603.04641
+https://arxiv.org/abs/1603.04641
 
 11. Hedges. "Towards Compositional Game Theory." Oxford PhD thesis 2016.
-    https://www.cs.ox.ac.uk/people/julian.hedges/papers/Thesis.pdf
+https://www.cs.ox.ac.uk/people/julian.hedges/papers/Thesis.pdf
 
 12. Farina. "Game-Theoretic Decision Making in Imperfect-Information Games."
-    MIT PhD thesis 2023.
-    https://www.mit.edu/~gfarina/2023/phd_thesis/FARINA-Thesis-2023.pdf
+MIT PhD thesis 2023.
+https://www.mit.edu/~gfarina/2023/phd_thesis/FARINA-Thesis-2023.pdf

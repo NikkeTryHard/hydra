@@ -8,6 +8,10 @@ pub fn default_allow_override_explicit_microbatch() -> bool {
     false
 }
 
+pub fn default_fast_repeated_run_profile() -> bool {
+    false
+}
+
 pub fn default_warmup_steps() -> usize {
     2
 }
@@ -24,6 +28,10 @@ pub fn default_candidate_microbatches() -> Vec<usize> {
     vec![
         512, 384, 320, 288, 256, 224, 192, 160, 144, 128, 112, 104, 96, 80, 72, 64, 48, 32, 24, 16,
     ]
+}
+
+pub fn default_fast_repeated_run_candidate_window() -> usize {
+    1
 }
 
 pub fn default_min_microbatch_size() -> usize {
@@ -161,6 +169,8 @@ pub fn default_rl_probe_growth_safety_factor() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightConfig {
+    #[serde(default = "default_fast_repeated_run_profile")]
+    pub fast_repeated_run_profile: bool,
     #[serde(default = "default_allow_override_explicit_microbatch")]
     pub allow_override_explicit_microbatch: bool,
     #[serde(default = "default_warmup_steps")]
@@ -173,6 +183,8 @@ pub struct PreflightConfig {
     pub min_microbatch_size: usize,
     #[serde(default = "default_candidate_microbatches")]
     pub candidate_microbatches: Vec<usize>,
+    #[serde(default = "default_fast_repeated_run_candidate_window")]
+    pub fast_repeated_run_candidate_window: usize,
     #[serde(default = "default_validation_growth_patience")]
     pub validation_growth_patience: usize,
     #[serde(default = "default_validation_growth_max_steps")]
@@ -243,11 +255,13 @@ impl Default for PreflightConfig {
     fn default() -> Self {
         Self {
             allow_override_explicit_microbatch: default_allow_override_explicit_microbatch(),
+            fast_repeated_run_profile: default_fast_repeated_run_profile(),
             warmup_steps: default_warmup_steps(),
             measure_steps: default_measure_steps(),
             required_successes: default_required_successes(),
             min_microbatch_size: default_min_microbatch_size(),
             candidate_microbatches: default_candidate_microbatches(),
+            fast_repeated_run_candidate_window: default_fast_repeated_run_candidate_window(),
             validation_growth_patience: default_validation_growth_patience(),
             validation_growth_max_steps: default_validation_growth_max_steps(),
             measure_noise_tolerance_ratio: default_measure_noise_tolerance_ratio(),

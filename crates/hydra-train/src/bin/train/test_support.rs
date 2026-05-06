@@ -13,8 +13,8 @@ use hydra_train::preflight::PreflightConfig;
 #[cfg(test)]
 pub(crate) fn dummy_train_config() -> TrainConfig {
     TrainConfig {
-        data_dir: PathBuf::from("/home/nikketryhard/tmp/hydra-test-data"),
-        output_dir: PathBuf::from("/home/nikketryhard/tmp/hydra-test-out"),
+        data_dir: std::env::temp_dir().join("hydra-test-data"),
+        output_dir: std::env::temp_dir().join("hydra-test-out"),
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -51,7 +51,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
 
 #[cfg(test)]
 pub(crate) fn unique_test_path(prefix: &str, label: &str) -> PathBuf {
-    let base = PathBuf::from("/home/nikketryhard/tmp");
+    let base = std::env::temp_dir();
     fs::create_dir_all(&base).expect("test temp root should be creatable");
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

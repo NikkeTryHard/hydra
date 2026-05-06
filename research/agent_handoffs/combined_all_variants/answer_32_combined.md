@@ -1,71 +1,71 @@
 <combined_run_record run_id="answer_32" variant_id="safetyresidual-promotion-standard" schema_version="1">
-  <metadata>
-    <notes>Self-contained combined record for Agent 32. It preserves the compact prompt shell and artifact manifest generated from the authoritative prompt config, plus the preserved answer text.</notes>
-    <layout>single_markdown_file_prompt_shell_manifest_then_answer</layout>
-  </metadata>
+<metadata>
+<notes>Self-contained combined record for Agent 32. Preserves compact prompt shell, artifact manifest from authoritative prompt config, plus preserved answer text.</notes>
+<layout>single_markdown_file_prompt_shell_manifest_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="embedded_prompt_shell_and_manifest">
-  <![CDATA[# Hydra prompt — elevate SafetyResidual to DeltaQ-grade promotion discipline
+<prompt_section>
+<prompt_text status="preserved" source_path="embedded_prompt_shell_and_manifest">
+<![CDATA[# Hydra prompt — elevate SafetyResidual to DeltaQ-grade promotion discipline
 
 <role>
 Example role placeholder.
-Replace this with the role that fits your actual prompt.
-Keep it short and task-specific.
-You are designing a narrow promotion/validation blueprint for an already-admitted auxiliary lane.
+Replace with role fitting actual prompt.
+Keep short, task-specific.
+You design narrow promotion/validation blueprint for already-admitted auxiliary lane.
 </role>
 
 <task>
 Example task placeholder.
-Replace this with the actual job the agent should do.
+Replace with actual job agent should do.
 
-An example task block might ask for:
-- what the artifacts directly support
-- what is only inference
-- what confidence level each major conclusion deserves
-- what simpler or stronger local alternatives exist inside the same lane
-- what should be kept, narrowed, or removed
-- why the confident parts of the answer are actually justified
-- how to implement or validate the surviving path with minimal guesswork
+Example task block may ask:
+- what artifacts directly support
+- what is inference only
+- what confidence each major conclusion deserves
+- what simpler/stronger local alternatives exist inside same lane
+- what keep, narrow, remove
+- why confident answer parts are justified
+- how implement or validate surviving path with minimal guesswork
 
-Use the artifacts below to derive your conclusions.
-Determine the strongest exact blueprint for bringing SafetyResidual up to the same measured promotion discipline as DeltaQ.
+Use artifacts below. Derive conclusions.
+Determine strongest exact blueprint to raise SafetyResidual to same measured promotion discipline as DeltaQ.
 
-We want a detailed answer that makes clear:
-- what SafetyResidual already has today (labels, loss wiring, admission, routing)
-- what it still lacks compared with DeltaQ (validation harness, runner logging, promotion criteria, or semantics)
-- whether the right next move is to clone DeltaQ-style structure, reuse ExIt-style behavioral criteria, or define a narrower SafetyResidual-specific gate
-- what exact files and tests should change first
-- what should remain deliberately narrower than DeltaQ, if anything
+Need detailed answer making clear:
+- what SafetyResidual already has now (labels, loss wiring, admission, routing)
+- what still missing vs DeltaQ (validation harness, runner logging, promotion criteria, semantics)
+- whether next move is clone DeltaQ-style structure, reuse ExIt-style behavioral criteria, or define narrower SafetyResidual-specific gate
+- what exact files and tests change first
+- what should stay deliberately narrower than DeltaQ, if anything
 
-Do not widen into belief or opponent-target work. Use the artifacts below to derive a validation-ready blueprint.
+Do not widen into belief or opponent-target work. Use artifacts below. Derive validation-ready blueprint.
 </task>
 
 <rules>
-- treat `role` and `task` as task-specific shell sections you may customize when the prompt needs it
-- distinguish direct artifact support from your own inference
-- use search/browse aggressively when it can strengthen the answer: find the original paper, adjacent papers, official docs, repos, and other primary sources; use abstracts or summaries mainly for discovery, not as the final evidence base
-- use the bash tool to run Python for lightweight research support work when helpful: calculations, math checks, parsers, data inspection, sanity checks, quick experiments, and validation
-- do not dump logic; every important mechanism, threshold, or recommendation should be inferable from evidence or made explicit in the blueprint so it can be validated and reproduced
-- if you claim a path works, survives, or is implementation-ready, show why that confidence is justified and how the claim can be validated or falsified later
-- inspect your own draft before finishing: if a confident claim is not objectively justified by visible evidence, downgrade it to inference, proposal, or blocked
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated, falsified, or truly blocked, and do not stop just because the first pass produced a plausible answer
+- treat `role` and `task` as task-specific shell sections; customize when prompt needs
+- separate direct artifact support from inference
+- search/browse aggressively when it strengthens answer: find original paper, adjacent papers, official docs, repos, primary sources; use abstracts/summaries mainly for discovery, not final evidence base
+- use bash tool to run Python for light research support when useful: calculations, math checks, parsers, data inspection, sanity checks, quick experiments, validation
+- do not dump logic; every important mechanism, threshold, rec should be inferable from evidence or explicit in blueprint so it can be validated/reproduced
+- if you claim path works, survives, or is impl-ready, show why confidence justified and how claim can later be validated/falsified
+- inspect draft before finishing: if confident claim lacks objective visible evidence, downgrade to inference, proposal, or blocked
+- do not finish early; keep looping through discovery, thinking, testing, validation until info saturated, falsified, or truly blocked; do not stop because first pass looks plausible
 </rules>
 
 <style>
 - no high-level survey
 - no vague answer
 - include reasoning
-- when you sound confident, show the justification for that confidence level
-- for every important claim, make the validation path visible enough that a reviewer can test it later
+- when sounding confident, show confidence justification
+- for every important claim, make validation path visible enough that reviewer can test later
 - include formulas when needed
 - include code-like detail when helpful (python or rust)
 - include worked examples when helpful
-- include enough detail that we can validate, reproduce, or falsify it ourselves (pdfs, sources, links, similar projects, concrete checks)
+- include enough detail so we can validate, reproduce, or falsify ourselves (pdfs, sources, links, similar projects, concrete checks)
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+Artifacts below reflect what current codebase/docs seem to say now. Not guaranteed fully correct. Treat as evidence to inspect and critique, not truth to inherit. High chance some are incomplete, misleading, stale, or semantically wrong, so validate all.
 </artifact_note>
 
 <artifacts_manifest>
@@ -73,28 +73,28 @@ The artifacts below reflect what the current codebase/docs appear to say right n
 ## Artifact 01 — Prompt-packing reminder
 Artifact id: `prompt-packing-reminder`
 Type: `literal`
-Why it matters: Task-specific reminder consistent with the prompt style guide.
+Why it matters: Task-specific reminder matching prompt style guide.
 
 ## Artifact 02 — Repo status snapshot
 Artifact id: `repo-status`
 Source label: README
 Type: `file_range`
 Source: `README.md:70-72`
-Why it matters: Current repo truth on which lanes are already shipped versus still selective or staged.
+Why it matters: Current repo truth for lanes already shipped vs still selective/staged.
 
 ## Artifact 03 — Promoted doctrine: file-by-file first tranche coding spec
 Artifact id: `recon-first-tranche-spec`
 Source label: RECON
 Type: `file_range`
 Source: `research/design/HYDRA_RECONCILIATION.md:420-544`
-Why it matters: Concrete promoted coding spec showing the live DeltaQ and SafetyResidual closure context, acceptance checklist, and no-new-heads rule.
+Why it matters: Concrete promoted coding spec showing live DeltaQ and SafetyResidual closure context, acceptance checklist, no-new-heads rule.
 
 ## Artifact 04 — Promoted doctrine: SafetyResidual semantics and staging
 Artifact id: `safetyresidual-doctrine`
 Source label: RECON
 Type: `file_range`
 Source: `research/design/HYDRA_RECONCILIATION.md:434-453`
-Why it matters: Promoted doctrine for signed replay-derived SafetyResidual semantics and the rule against drifting it into search-derived semantics.
+Why it matters: Promoted doctrine for signed replay-derived SafetyResidual semantics and rule against drifting into search-derived semantics.
 
 ## Artifact 05 — Implementation roadmap live snapshot note
 Artifact id: `impl-roadmap-live-snapshot`
@@ -115,42 +115,42 @@ Artifact id: `loss-policy-allowed-heads`
 Source label: LOSSPOL
 Type: `file_range`
 Source: `crates/hydra-train/src/bin/train/loss_policy.rs:1-61`
-Why it matters: Shows DeltaQ and SafetyResidual are admitted while belief/mixture/opponent-hand-type remain blocked.
+Why it matters: Shows DeltaQ and SafetyResidual admitted while belief/mixture/opponent-hand-type stay blocked.
 
 ## Artifact 08 — Live code: DeltaQ and SafetyResidual loss terms
 Artifact id: `losses-deltaq-safety`
 Source label: LOSSES
 Type: `file_range`
 Source: `crates/hydra-train/src/training/losses.rs:620-679`
-Why it matters: Current masked regression wiring for DeltaQ and SafetyResidual inside the shared loss breakdown.
+Why it matters: Current masked regression wiring for DeltaQ and SafetyResidual inside shared loss breakdown.
 
 ## Artifact 09 — Loss breakdown and optional-head contribution surface
 Artifact id: `loss-breakdown-surface`
 Source label: LBD
 Type: `file_range`
 Source: `crates/hydra-train/src/training/losses.rs:520-679`
-Why it matters: Shared loss breakdown surface showing how optional advanced targets contribute and remain zero when absent.
+Why it matters: Shared loss breakdown surface showing how optional advanced targets contribute and stay zero when absent.
 
 ## Artifact 10 — Optional-head and SafetyResidual loss tests
 Artifact id: `loss-optional-and-safety-tests`
 Source label: LOPT
 Type: `file_range`
 Source: `crates/hydra-train/src/training/losses.rs:947-1096`
-Why it matters: Dense unit-test surface covering missing-target zeroing, optional-head activation, and SafetyResidual-specific mask semantics.
+Why it matters: Dense unit-test surface covering missing-target zeroing, optional-head activation, SafetyResidual-specific mask semantics.
 
 ## Artifact 11 — Live code: pooled-vs-spatial head routing
 Artifact id: `model-routing-live`
 Source label: MODEL
 Type: `file_range`
 Source: `crates/hydra-train/src/model.rs:419-438`
-Why it matters: Current forward path showing pooled routing for policy, DeltaQ, and SafetyResidual versus spatial routing for tile-structured heads.
+Why it matters: Current forward path showing pooled routing for policy, DeltaQ, SafetyResidual vs spatial routing for tile-structured heads.
 
 ## Artifact 12 — Live code: sample carriers and batch collation for ExIt and DeltaQ
 Artifact id: `sample-carriers-deltaq-exit`
 Source label: SAMPLE
 Type: `file_range`
 Source: `crates/hydra-train/src/data/sample.rs:260-419`
-Why it matters: Shows action-vector augmentation, target/mask pair safety, and batch collation for ExIt, DeltaQ, and adjacent advanced targets.
+Why it matters: Shows action-vector augmentation, target/mask pair safety, batch collation for ExIt, DeltaQ, adjacent advanced targets.
 
 ## Artifact 13 — Sample tests for SafetyResidual and DeltaQ carriage
 Artifact id: `safetyresidual-sample-tests`
@@ -164,14 +164,14 @@ Artifact id: `bootstrap-sidecar-loading`
 Source label: BOOT
 Type: `file_range`
 Source: `crates/hydra-train/src/bin/train/bootstrap.rs:120-158`
-Why it matters: Train bootstrap path that loads replay ExIt and DeltaQ sidecars into the streaming loader configuration.
+Why it matters: Train bootstrap path loading replay ExIt and DeltaQ sidecars into streaming loader config.
 
 ## Artifact 15 — Borrowed vs owned collation parity for SafetyResidual and DeltaQ
 Artifact id: `borrowed-collate-tests`
 Source label: BORROW
 Type: `file_range`
 Source: `crates/hydra-train/src/data/sample.rs:1236-1319`
-Why it matters: Additional collation-parity test surface proving SafetyResidual and DeltaQ survive both borrowed and owned batch collation paths consistently.
+Why it matters: Additional collation-parity test surface proving SafetyResidual and DeltaQ survive borrowed and owned batch collation paths consistently.
 
 ## Artifact 16 — SafetyResidual target builder and replay-loader context
 Artifact id: `safetyresidual-target-builder`
@@ -192,35 +192,35 @@ Artifact id: `safetyresidual-loss-tests`
 Source label: SRLOSS
 Type: `file_range`
 Source: `crates/hydra-train/src/training/losses.rs:1000-1093`
-Why it matters: Unit tests proving SafetyResidual loss is nonzero when enabled and present, and zero when mask semantics are broken.
+Why it matters: Unit tests proving SafetyResidual loss nonzero when enabled/present, zero when mask semantics broken.
 
 ## Artifact 19 — BC test: advanced auxiliary targets change loss
 Artifact id: `bc-advanced-loss-test`
 Source label: BCTEST
 Type: `file_range`
 Source: `crates/hydra-train/src/training/bc.rs:857-944`
-Why it matters: Behavior-level BC test showing advanced auxiliary targets materially change the loss surface.
+Why it matters: Behavior-level BC test showing advanced auxiliary targets materially change loss surface.
 
 ## Artifact 20 — Target presence extraction for DeltaQ and SafetyResidual
 Artifact id: `head-presence-extraction`
 Source label: PRES
 Type: `file_range`
 Source: `crates/hydra-train/src/training/head_gates.rs:243-359`
-Why it matters: Exact presence-counting logic used by the head activation controller for sparse and dense advanced lanes.
+Why it matters: Exact presence-counting logic used by head activation controller for sparse and dense advanced lanes.
 
 ## Artifact 21 — Head activation controller state machine
 Artifact id: `head-gates-state-machine`
 Source label: GATES
 Type: `file_range`
 Source: `crates/hydra-train/src/training/head_gates.rs:556-735`
-Why it matters: Core gating logic for coverage, sparse density, warmup, and deferred conflict checks across advanced heads.
+Why it matters: Core gating logic for coverage, sparse density, warmup, deferred conflict checks across advanced heads.
 
 ## Artifact 22 — Coverage/conflict/controller tests for DeltaQ and SafetyResidual
 Artifact id: `head-coverage-tests`
 Source label: COVTEST
 Type: `file_range`
 Source: `crates/hydra-train/src/training/head_gates.rs:886-1099`
-Why it matters: Dense test surface for label density, sparse SPP, dense rho, conflict tracking, and activation behavior.
+Why it matters: Dense test surface for label density, sparse SPP, dense rho, conflict tracking, activation behavior.
 
 ## Artifact 23 — Head-gate tests for SafetyResidual presence and gating
 Artifact id: `safetyresidual-presence-gates`
@@ -234,137 +234,137 @@ Artifact id: `train-safetyresidual-config-tests`
 Source label: TRAINTEST
 Type: `file_range`
 Source: `crates/hydra-train/src/bin/train.rs:1018-1059`
-Why it matters: Train-binary tests showing SafetyResidual is admitted while belief remains blocked.
+Why it matters: Train-binary tests showing SafetyResidual admitted while belief stays blocked.
 
 ## Artifact 25 — Advanced loss config surface
 Artifact id: `advanced-loss-config-surface`
 Source label: ADVCFG
 Type: `file_range`
 Source: `crates/hydra-train/src/bin/train/config.rs:173-182`
-Why it matters: Exact config surface for the advanced loss knobs that runtime/train validation admits or blocks.
+Why it matters: Exact config surface for advanced loss knobs runtime/train validation admits or blocks.
 
 ## Artifact 26 — Live code: current DeltaQ validation harness
 Artifact id: `deltaq-validation-current`
 Source label: DQV
 Type: `file_range`
 Source: `crates/hydra-train/src/training/delta_q_validation.rs:174-396`
-Why it matters: Shows that current DeltaQ validation is structural (sample size, emission, coverage, support) rather than direct decision-quality proof.
+Why it matters: Shows current DeltaQ validation is structural (sample size, emission, coverage, support) not direct decision-quality proof.
 
 ## Artifact 27 — Live code: ExIt validation contrast
 Artifact id: `exit-validation-contrast`
 Source label: EXITV
 Type: `file_range`
 Source: `crates/hydra-train/src/training/exit_validation.rs:218-358`
-Why it matters: ExIt already has top-1 agreement and KL-style criteria, which makes it the right comparison point for what DeltaQ promotion still lacks.
+Why it matters: ExIt already has top-1 agreement and KL-style criteria, so it is right comparison point for what DeltaQ promotion still lacks.
 
 ## Artifact 28 — Train binary validation runner
 Artifact id: `validation-runner-current`
 Source label: VALRUN
 Type: `file_range`
 Source: `crates/hydra-train/src/bin/train/validation.rs:1-142`
-Why it matters: Current validation pass and scoring surface in the train binary; useful for seeing what already exists versus what a DeltaQ promotion gate would still need.
+Why it matters: Current validation pass and scoring surface in train binary; useful to see what already exists vs what DeltaQ promotion gate still needs.
 
 </artifacts_manifest>
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_32.md">
-  <![CDATA[## Recommendation
+<answer_section>
+<answer_text status="preserved" source_path="agent_32.md">
+<![CDATA[## rec
 
-Use **DeltaQ’s promotion scaffolding**, **not** DeltaQ’s semantics. SafetyResidual already has real label semantics and real train-time plumbing; what it lacks is a **lane-specific validation/report gate**. The right shape is:
+Use **DeltaQ’s promotion scaffolding**, **not** DeltaQ’s semantics. SafetyResidual already has real label semantics and train-time plumbing; missing piece is **lane-specific validation/report gate**. Right shape:
 
-1. make SafetyResidual’s target/mask discipline as strict as DeltaQ’s,
-2. add a **DeltaQ-style structural validator** for SafetyResidual,
-3. then add one **narrow SafetyResidual-specific behavioral check** based on the **recomposed safety score** `public_score + residual`.
+1. make SafetyResidual target/mask discipline as strict as DeltaQ’s,
+2. add **DeltaQ-style structural validator** for SafetyResidual,
+3. add one **narrow SafetyResidual-specific behavioral check** on recomposed safety score `public_score + residual`.
 
-Do **not** turn SafetyResidual into a search-sidecar or live-RL lane. Do **not** reuse ExIt’s KL gate on the raw residual vector.
+Do **not** turn SafetyResidual into search-sidecar or live-RL lane. Do **not** reuse ExIt’s KL gate on raw residual vector.
 
-That recommendation is justified by the semantics of the lane. Expert Iteration is explicitly a tree-search-to-policy imitation setup, so KL and top-1 agreement are natural when the target is an improved policy distribution. AlphaZero-style work also distinguishes policy-improvement targets from value-like targets. Meanwhile, multi-task literature is very clear that mixed regression/classification objectives are sensitive to loss scaling, and negative gradient cosine is a standard signal of interference; that supports keeping Hydra’s existing density/conflict head-gate machinery instead of replacing it with “just tune the weight.” ([arXiv][1])
+Why: lane semantics. Expert Iteration is explicitly tree-search-to-policy imitation, so KL and top-1 agreement fit improved policy distribution. AlphaZero-style work also separates policy-improvement targets from value-like targets. Multi-task literature also shows mixed regression/classification objectives are sensitive to loss scaling, and negative gradient cosine is standard interference signal; that supports keeping Hydra’s existing density/conflict head-gate machinery instead of replacing it with tune weight.” ([arXiv][1])
 
-By analogy, adjacent search-learning work also shows that a strong outer system can hide defects in an internal learned component. That is a good reason not to stop at “labels exist” or “aux loss is nonzero”: once the structural gate exists, SafetyResidual should eventually be checked at the **decision object it induces**. 
+By analogy, adjacent search-learning work also shows strong outer system can hide defects in internal learned component. Good reason not to stop at “labels exist” or “aux loss nonzero”: once structural gate exists, SafetyResidual should eventually be checked at **decision object it induces**.
 
 ## What SafetyResidual already has today
 
 **Direct artifact support, high confidence:**
 
-SafetyResidual is already a real replay-derived lane, not a placeholder. The loader computes a signed target on legal discard actions only:
+SafetyResidual already real replay-derived lane, not placeholder. Loader computes signed target on legal discard actions only:
 
 [
 r(a) = \text{exact_safety}(a) - \text{public_score}(a)
 ]
 
-with `exact_safety = 1 - exact_dealin`, and masks only legal discards. Red fives are normalized before scoring. That is explicit in `build_safety_residual_targets` (Artifact 16, SRBUILD L0283-L0307). Loader tests confirm discard-only masking, finite masked values, bounded masked residuals in `[-1, 1]`, and the existence of positive/nonzero replay residuals (Artifact 17, SRLOAD L0838-L0896).
+with `exact_safety = 1 - exact_dealin`, and masks only legal discards. Red fives normalized before scoring. Explicit in `build_safety_residual_targets` (Artifact 16, SRBUILD L0283-L0307). Loader tests confirm discard-only masking, finite masked values, bounded masked residuals in `[-1, 1]`, and presence of positive/nonzero replay residuals (Artifact 17, SRLOAD L0838-L0896).
 
-The carriage path is also real. `MjaiSample`/`MjaiBatch` carry `safety_residual_target` and `safety_residual_mask`; augmentation permutes the action-vector target under suit symmetry; borrowed and owned collation agree; and `HydraTargets` receives the tensors (Artifacts 12, 13, 15).
+Carriage path also real. `MjaiSample`/`MjaiBatch` carry `safety_residual_target` and `safety_residual_mask`; augmentation permutes action-vector target under suit symmetry; borrowed and owned collation agree; `HydraTargets` receives tensors (Artifacts 12, 13, 15).
 
-Loss wiring is closed. `losses.rs` applies `masked_action_mse(outputs.safety_residual, target, mask)` and returns zero when target/mask are absent (Artifacts 08-10, 18). Tests show the loss is nonzero when enabled and present, and zero when the mask is absent or all-zero (Artifacts 10 and 18).
+Loss wiring closed. `losses.rs` applies `masked_action_mse(outputs.safety_residual, target, mask)` and returns zero when target/mask absent (Artifacts 08-10, 18). Tests show loss nonzero when enabled/present, zero when mask absent or all-zero (Artifacts 10 and 18).
 
-Admission is closed in the train entrypoint. `advanced_loss.safety_residual` is allowed in `build_loss_config()` and `build_rl_loss_config()`, while belief, mixture, and opponent-hand-type remain blocked (Artifact 07). Train-binary tests explicitly allow SafetyResidual-only activation (Artifact 24). The config surface includes `safety_residual` as a first-class knob (Artifact 25).
+Admission closed in train entrypoint. `advanced_loss.safety_residual` allowed in `build_loss_config()` and `build_rl_loss_config()`, while belief, mixture, opponent-hand-type stay blocked (Artifact 07). Train-binary tests explicitly allow SafetyResidual-only activation (Artifact 24). Config surface includes `safety_residual` as first-class knob (Artifact 25).
 
-Routing is also real. The model sends `safety_residual` through a pooled 46-way head, alongside policy and delta_q, not through a spatial tile head (Artifact 11). Generic head-gate extraction counts SafetyResidual presence from nonzero mask rows, and controller tests show full dense-head warmup/active lifecycle for SafetyResidual (Artifacts 20, 22, 23).
+Routing also real. Model sends `safety_residual` through pooled 46-way head, alongside policy and delta_q, not spatial tile head (Artifact 11). Generic head-gate extraction counts SafetyResidual presence from nonzero mask rows, and controller tests show full dense-head warmup/active lifecycle for SafetyResidual (Artifacts 20, 22, 23).
 
-One important limit is also explicit: the **shipped closure is the narrow replay/supervised BC lane**, not a live-RL SafetyResidual producer. The doctrine repeatedly calls SafetyResidual “replay-derived and narrow,” while DeltaQ is the lane explicitly described as closed across live RL and replay/offline BC (Artifacts 02-04). `build_rl_loss_config()` admits a weight, but I do **not** see direct artifact evidence of a live RL SafetyResidual label producer analogous to DeltaQ’s root-search path. That gap is real.
+One important limit also explicit: **shipped closure is narrow replay/supervised BC lane**, not live-RL SafetyResidual producer. Doctrine repeatedly calls SafetyResidual “replay-derived and narrow,” while DeltaQ is lane explicitly described as closed across live RL and replay/offline BC (Artifacts 02-04). `build_rl_loss_config()` admits weight, but I do **not** see direct artifact evidence of live RL SafetyResidual label producer analogous to DeltaQ’s root-search path. Gap real.
 
 ## What SafetyResidual still lacks compared with DeltaQ
 
 **Direct artifact support, high confidence:**
 
-DeltaQ already has a dedicated validation module with thresholds, result objects, and a pass/fail evaluator over structural metrics like sample size, emission rate, coverage, and supported actions (Artifact 26). ExIt likewise has a dedicated validator with KL and top-1 agreement criteria (Artifact 27).
+DeltaQ already has dedicated validation module with thresholds, result objects, and pass/fail evaluator over structural metrics like sample size, emission rate, coverage, supported actions (Artifact 26). ExIt likewise has dedicated validator with KL and top-1 agreement criteria (Artifact 27).
 
-There is **no analogous SafetyResidual validator** in the artifact set.
+There is **no analogous SafetyResidual validator** in artifact set.
 
-The generic train validation runner only exposes `total_loss`, `policy_loss`, `agreement`, and `samples` in its returned summary (Artifact 28). So even if SafetyResidual is active and training, there is no evidenced lane-specific validation output or promotion report for it.
+Generic train validation runner only exposes `total_loss`, `policy_loss`, `agreement`, and `samples` in returned summary (Artifact 28). So even if SafetyResidual active and training, no evidenced lane-specific validation output or promotion report for it.
 
-There is also a subtle plumbing asymmetry: DeltaQ and ExIt collation enforce target/mask pairing with a panic on mismatch, but SafetyResidual collation currently copies target and mask independently and only sets `any_safety_residual = true` if either exists (Artifact 12, SAMPLE L0295-L0305 vs. L0306-L0315). That means a future mismatch can silently degrade into an all-zero mask instead of failing fast. DeltaQ already has stronger pair discipline here.
+Also subtle plumbing asymmetry: DeltaQ and ExIt collation enforce target/mask pairing with panic on mismatch, but SafetyResidual collation copies target and mask independently and only sets `any_safety_residual = true` if either exists (Artifact 12, SAMPLE L0295-L0305 vs. L0306-L0315). That means future mismatch can silently degrade into all-zero mask instead of failing fast. DeltaQ already has stronger pair discipline here.
 
-So the missing pieces are:
+So missing pieces:
 
 1. **Dedicated validator/report/thresholds** for SafetyResidual.
 2. **Fail-fast target/mask parity** in sample collation.
-3. **Runner-visible output** for the lane.
-4. **Semantics-aware promotion criteria** beyond the generic density/conflict gate.
+3. **Runner-visible output** for lane.
+4. **Semantics-aware promotion criteria** beyond generic density/conflict gate.
 
 ## Why the right next move is not “clone DeltaQ semantics” or “reuse ExIt wholesale”
 
 Clone **DeltaQ’s structure**. Do **not** clone DeltaQ’s search semantics.
 
-RECON is explicit: SafetyResidual should stay replay-derived and narrow; it should not drift into search-derived semantics (Artifact 04, RECON L0442-L0449). So no sidecar, no search-root producer, no live-RL broadening.
+RECON explicit: SafetyResidual should stay replay-derived and narrow; should not drift into search-derived semantics (Artifact 04, RECON L0442-L0449). So no sidecar, no search-root producer, no live-RL broadening.
 
-Also do **not** reuse ExIt’s behavioral criteria wholesale. ExIt KL/top-1 is meaningful because ExIt’s target is an improved policy. SafetyResidual’s target is a signed correction term, and raw residuals are not a probability distribution.
+Also do **not** reuse ExIt’s behavioral criteria wholesale. ExIt KL/top-1 meaningful because ExIt target is improved policy. SafetyResidual target is signed correction term, and raw residuals are not probability distribution.
 
-A tiny worked example shows why KL/top-1 on the residual itself is the wrong object:
+Tiny worked example shows why KL/top-1 on residual itself is wrong object:
 
 [
 p = [0.95, 0.50], \quad e = [0.80, 0.75], \quad r = e-p = [-0.15, +0.25]
 ]
 
-If you look only at residuals, action 2 “wins” because `+0.25 > -0.15`. But the actual safest discard is still action 1 because `0.80 > 0.75`. So the right behavioral object is **not** `r`; it is
+If you look only at residuals, action 2 “wins” because `+0.25 > -0.15`. But actual safest discard still action 1 because `0.80 > 0.75`. So right behavioral object is **not** `r`; it is
 
 [
 \hat e(a)=p(a)+\hat r(a)
 ]
 
-and any ExIt-like agreement criterion has to be applied **after recomposition**.
+and any ExIt-like agreement criterion must be applied **after recomposition**.
 
-So the best answer is:
+So best answer:
 
 * **DeltaQ-style validator/report/threshold plumbing**
 * **SafetyResidual-specific metrics**
-* **only one borrowed ExIt idea:** agreement on the induced decision object, not on the raw residual vector
+* **only one borrowed ExIt idea:** agreement on induced decision object, not raw residual vector
 
 ## Exact blueprint
 
 ### Phase 1: bring SafetyResidual up to literal DeltaQ-grade discipline
 
-This is the minimal, high-confidence tranche.
+Minimal, high-confidence tranche.
 
 ### 1) Tighten pair discipline first
 
 Change `crates/hydra-train/src/data/sample.rs` first.
 
-Today, SafetyResidual target and mask are copied independently. Make it match DeltaQ/ExIt:
+Today, SafetyResidual target and mask copied independently. Make match DeltaQ/ExIt:
 
 ```rust
 match (safety_residual, safety_residual_mask) {
@@ -380,9 +380,9 @@ match (safety_residual, safety_residual_mask) {
 }
 ```
 
-Why first: it closes the only obvious plumbing-discipline asymmetry versus DeltaQ, and it prevents future silent regressions.
+Why first: closes only obvious plumbing-discipline asymmetry vs DeltaQ, prevents future silent regressions.
 
-Tests to add immediately in the same file:
+Tests to add immediately in same file:
 
 * `batch_to_hydra_targets_rejects_safety_residual_when_pair_is_incomplete`
 * keep existing `batch_to_hydra_targets_carries_safety_residual`
@@ -392,7 +392,7 @@ Tests to add immediately in the same file:
 
 Create `crates/hydra-train/src/training/safety_residual_validation.rs`.
 
-Use the existing sample/target/mask carriers. Phase 1 does **not** need new model heads, new sample fields, or new loader semantics.
+Use existing sample/target/mask carriers. Phase 1 needs **no** new model heads, sample fields, or loader semantics.
 
 Suggested report:
 
@@ -440,11 +440,11 @@ Derived metrics:
 
 Collector rule:
 
-* a sample is “compatible discard” if it has at least one legal discard in `legal_mask[..=DISCARD_END]`
-* a label is “emitted” if the SafetyResidual mask row has any nonzero entry
-* coverage/support are computed on discard actions only
+* sample is “compatible discard” if it has at least one legal discard in `legal_mask[..=DISCARD_END]`
+* label is “emitted” if SafetyResidual mask row has any nonzero entry
+* coverage/support computed on discard actions only
 
-That denominator is important. SafetyResidual should be judged against **compatible discard samples**, not all replay events, because the lane is discard-only by doctrine.
+That denominator matters. SafetyResidual should be judged against **compatible discard samples**, not all replay events, because lane is discard-only by doctrine.
 
 Suggested hard thresholds for v1:
 
@@ -458,12 +458,12 @@ pub struct SafetyResidualValidationThresholds {
 }
 ```
 
-Why these are justified:
+Why justified:
 
-* `1000` matches the order of magnitude already used by DeltaQ/ExIt.
-* `0.99` emission/coverage are justified because the label is directly computable from replay for legal discards; this is not a sparse search lane.
-* `3.0` keeps parity with the existing DeltaQ/ExIt “supported actions” floor.
-* `0.0` out-of-range is an invariant: the label definition itself implies masked targets should stay within `[-1,1]`, and the loader tests already check boundedness on real replay data.
+* `1000` matches order of magnitude already used by DeltaQ/ExIt.
+* `0.99` emission/coverage justified because label directly computable from replay for legal discards; this is not sparse search lane.
+* `3.0` keeps parity with existing DeltaQ/ExIt “supported actions” floor.
+* `0.0` out-of-range is invariant: label definition itself implies masked targets stay within `[-1,1]`, and loader tests already check boundedness on real replay data.
 
 Also log, but do not hard-gate yet:
 
@@ -472,9 +472,9 @@ Also log, but do not hard-gate yet:
 * `negative_rate`
 * `mean_abs_residual`
 
-Those are useful for “is there signal here?” but I do not have artifact evidence to set universal hard thresholds for them.
+Useful for “is signal here?” but I do not have artifact evidence to set universal hard thresholds for them.
 
-Tests for the new module:
+Tests for new module:
 
 * `evaluate_report_passes_dense_replay_defaults`
 * `evaluate_report_fails_low_emission`
@@ -485,22 +485,22 @@ Tests for the new module:
 
 ### 3) Make the report runner-visible, but do not let it choose checkpoints
 
-The directly evidenced validation entrypoint is `crates/hydra-train/src/bin/train/validation.rs` (Artifact 28). That file already streams validation buffers and has access to `targets` batch-by-batch, so it is the safest first integration point.
+Directly evidenced validation entrypoint is `crates/hydra-train/src/bin/train/validation.rs` (Artifact 28). File already streams validation buffers and has access to `targets` batch-by-batch, so safest first integration point.
 
 Recommended change:
 
 * extend `ValidationSummary` with `safety_residual_validation: Option<SafetyResidualValidationResult>`
-* accumulate the report during the existing validation loop when `w_safety_residual > 0.0`
+* accumulate report during existing validation loop when `w_safety_residual > 0.0`
 * print/report it
 * **do not** change `is_better_validation()` yet
 
-That last part matters. Current best-checkpoint selection is still policy-loss/agreement-driven (Artifact 28). Keep it that way until SafetyResidual proves stable. The lane should become **visible and reviewable** before it becomes **checkpoint-authoritative**.
+Last part matters. Current best-checkpoint selection still policy-loss/agreement-driven (Artifact 28). Keep that until SafetyResidual proves stable. Lane should become **visible and reviewable** before becoming **checkpoint-authoritative**.
 
 ## Phase 2: the stronger SafetyResidual-specific promotion gate
 
-This is the part I recommend before calling the lane truly “promoted,” even though literal DeltaQ parity stops at Phase 1.
+This part I recommend before calling lane truly “promoted,” even if literal DeltaQ parity stops at Phase 1.
 
-For this phase, refactor `crates/hydra-train/src/data/mjai_loader.rs` so the label builder can expose not just the residual and mask, but also the two quantities it is defined from.
+For this phase, refactor `crates/hydra-train/src/data/mjai_loader.rs` so label builder can expose not only residual and mask, but also two quantities it is defined from.
 
 Suggested internal bundle:
 
@@ -513,7 +513,7 @@ pub struct SafetyResidualLabelBundle {
 }
 ```
 
-Then keep the training path narrow:
+Then keep training path narrow:
 
 ```rust
 fn build_safety_residual_targets(...) -> ([f32; 46], [f32; 46]) {
@@ -522,11 +522,11 @@ fn build_safety_residual_targets(...) -> ([f32; 46], [f32; 46]) {
 }
 ```
 
-No new head. No new broad carrier. Just shared semantics.
+No new head. No new broad carrier. Only shared semantics.
 
-Then add a **behavior report** in `training/safety_residual_validation.rs` or a sibling module.
+Then add **behavior report** in `training/safety_residual_validation.rs` or sibling module.
 
-For a model prediction (\hat r(a)), define:
+For model prediction (\hat r(a)), define:
 
 [
 \hat e_{\text{raw}}(a)=p(a)+\hat r(a)
@@ -544,22 +544,22 @@ Recommended metrics:
 * **sign accuracy** on nontrivial residuals: `sign(\hat r) == sign(r)` for `|r| > ε`
 * **pairwise rank agreement** across legal discards
 * **top1 exact agreement**:
-  [
-  \arg\max_a \hat e_{\text{raw}}(a) = \arg\max_a e(a)
-  ]
-* **flip recovery** on the hard subset where public score is wrong:
-  [
-  \arg\max_a p(a) \neq \arg\max_a e(a)
-  ]
-  and the corrected prediction fixes it
+[
+\arg\max_a \hat e_{\text{raw}}(a) = \arg\max_a e(a)
+]
+* **flip recovery** on hard subset where public score is wrong:
+[
+\arg\max_a p(a) \neq \arg\max_a e(a)
+]
+and corrected prediction fixes it
 * **overshoot rate**:
-  [
-  \hat e_{\text{raw}}(a)\notin[0,1]
-  ]
+[
+\hat e_{\text{raw}}(a)\notin[0,1]
+]
 
-This is the one place where borrowing an ExIt-like “agreement” idea is right: apply it to the **recomposed exact-safety ranking**, not to the raw residual vector.
+This is one place borrowing ExIt-like “agreement” idea is right: apply to **recomposed exact-safety ranking**, not raw residual vector.
 
-I would make these **log-only on the first landing**, then freeze thresholds after one or two representative held-out replay manifests. I do not have enough visible evidence to defend universal hard numbers here, so any fixed threshold I gave now would be a proposal, not a fact.
+I would make these **log-only on first landing**, then freeze thresholds after one or two representative held-out replay manifests. I do not have enough visible evidence to defend universal hard numbers here, so any fixed threshold given now would be proposal, not fact.
 
 ## What should remain deliberately narrower than DeltaQ
 
@@ -567,49 +567,49 @@ I would make these **log-only on the first landing**, then freeze thresholds aft
 
 Keep SafetyResidual narrower than DeltaQ in these ways:
 
-1. **Replay-derived only.** Do not add search-sidecar semantics or a live root-search producer. RECON explicitly says not to drift SafetyResidual into search-derived semantics (Artifact 04).
+1. **Replay-derived only.** Do not add search-sidecar semantics or live root-search producer. RECON explicitly says not to drift SafetyResidual into search-derived semantics (Artifact 04).
 2. **Discard-only.** Do not widen to call/kan/belief/opponent work.
-3. **Dense-head activation logic.** SafetyResidual already fits the dense `rho_h` path in `head_gates.rs`; do not reclassify it as a sparse-search head.
-4. **No checkpoint-selection authority yet.** Log/report it; do not let it override policy-loss/agreement model selection until the behavior report is stable.
+3. **Dense-head activation logic.** SafetyResidual already fits dense `rho_h` path in `head_gates.rs`; do not reclassify as sparse-search head.
+4. **No checkpoint-selection authority yet.** Log/report it; do not let it override policy-loss/agreement model selection until behavior report stable.
 
 ## Simpler and stronger local alternatives
 
-The **simpler** local path is:
+**Simpler** local path:
 
 * pair-discipline fix in `sample.rs`
 * structural validator only
 * runner-visible pass/fail report
 
-That gets you literal DeltaQ-grade discipline quickly.
+That gets literal DeltaQ-grade discipline quickly.
 
-The **stronger** local path, and the one I recommend, is:
+**Stronger** local path, and one I recommend:
 
-* the same structural validator
-* plus the recomposed behavior report
+* same structural validator
+* plus recomposed behavior report
 
-That second piece is what turns “labels exist” into “this correction head is actually aligned with the decision object it claims to improve.”
+That second piece turns “labels exist” into “this correction head aligns with decision object it claims to improve.”
 
 ## Confidence / blocked surfaces
 
 **High confidence**
 
-* SafetyResidual already has real labels, masks, loss wiring, train admission, pooled routing, and dense head-gate support.
-* It lacks a dedicated validator.
+* SafetyResidual already has real labels, masks, loss wiring, train admission, pooled routing, dense head-gate support.
+* It lacks dedicated validator.
 * It should stay replay-derived and narrow.
 
 **Medium confidence**
 
-* The exact runner integration file after `validation.rs` is not fully proven from the artifacts. `validation.rs` is the safest directly evidenced place to wire first. If there is already a lane-specific validator orchestration path elsewhere, the artifact set does not show it.
+* Exact runner integration file after `validation.rs` not fully proven from artifacts. `validation.rs` safest directly evidenced place to wire first. If lane-specific validator orchestration path already exists elsewhere, artifact set does not show it.
 
 **Blocked**
 
-* I cannot honestly claim that DeltaQ validation is already wired into a train/orchestrator log path, because the call site is not in the provided artifacts.
-* I cannot defend fixed hard thresholds for the Phase 2 behavior metrics without at least one held-out replay baseline run.
+* I cannot honestly claim DeltaQ validation already wired into train/orchestrator log path, because call site not in provided artifacts.
+* I cannot defend fixed hard thresholds for Phase 2 behavior metrics without at least one held-out replay baseline run.
 
-If you want the shortest action order: **`sample.rs` pair fix -> new `safety_residual_validation.rs` -> `bin/train/validation.rs` report wiring -> optional `mjai_loader.rs` bundle refactor for recomposed behavior metrics`.**
+If you want shortest action order: **`sample.rs` pair fix -> new `safety_residual_validation.rs` -> `bin/train/validation.rs` report wiring -> optional `mjai_loader.rs` bundle refactor for recomposed behavior metrics`.**
 
 [1]: https://arxiv.org/abs/1705.08439?utm_source=chatgpt.com "[1705.08439] Thinking Fast and Slow with Deep Learning and Tree Search"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

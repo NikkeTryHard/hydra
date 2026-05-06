@@ -1,37 +1,37 @@
-<combined_run_record run_id="answer_11" variant_id="prompt_and_agent_pair" schema_version="1">
-  <metadata>
-    <notes>Combined record for Prompt 11 and its returned agent answer.</notes>
-    <layout>single_markdown_file_prompt_then_answer</layout>
-  </metadata>
+Fixing single URL mismatch in compressed file.Patch missed exact line form. Reading target line, then applying minimal fix.<combined_run_record run_id="answer_11" variant_id="prompt_and_agent_pair" schema_version="1">
+<metadata>
+<notes>Combined record for Prompt 11 + returned agent answer.</notes>
+<layout>single_markdown_file_prompt_then_answer</layout>
+</metadata>
 
-  <warning_note status="historical_partially_stale" added="2026-03-15">
-    <![CDATA[
-Warning: this combined archive artifact is still useful for narrow CT-SMC / Hand-EV benchmark reasoning, but some train-side `delta_q` claims are stale against current code.
+<warning_note status="historical_partially_stale" added="2026-03-15">
+<![CDATA[
+Warning: combined archive artifact still useful for narrow CT-SMC / Hand-EV benchmark reasoning, but some train-side `delta_q` claims stale vs current code.
 
 Known stale area:
-- The file speaks like masked RL-side `delta_q` handling/export is still future-only. Current Hydra already has a narrow RL-only masked `delta_q` lane, including target/mask carriage and masked-loss handling.
+- File speaks like masked RL-side `delta_q` handling/export still future-only. Current Hydra already has narrow RL-only masked `delta_q` lane, including target/mask carriage + masked-loss handling.
 
 Still useful here:
-- the caution that replay/offline `delta_q` closure is not solved by that RL-only lane
-- the discard-centric runtime-vs-[46]-head mismatch discussion
+- caution that replay/offline `delta_q` closure not solved by RL-only lane
+- discard-centric runtime-vs-[46]-head mismatch discussion
 
-Do not use this file as current truth for:
+Do not use file as current truth for:
 - present-tense RL-side `delta_q` plumbing status
 
-Validate against the live authority chain before reuse:
+Validate against live authority chain before reuse:
 README.md -> research/design/HYDRA_FINAL.md -> research/design/HYDRA_RECONCILIATION.md -> docs/GAME_ENGINE.md
-    ]]>
-  </warning_note>
+]]>
+</warning_note>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="PROMPT_11_VALIDATE_ACTION_SUFFICIENT_WORLD_COMPRESSION.md">
-  <![CDATA[# Hydra prompt — validate action-sufficient CT-SMC world compression
+<prompt_section>
+<prompt_text status="preserved" source_path="PROMPT_11_VALIDATE_ACTION_SUFFICIENT_WORLD_COMPRESSION.md">
+<![CDATA[# Hydra prompt — validate action-sufficient CT-SMC world compression
 
-Primary source material lives in the raw GitHub links below.
+Primary source material in raw GitHub links below.
 
 ## Critical directive
 
-Read the core Hydra docs holistically before proposing any compression scheme. Do not jump straight from generic POMDP compression papers to Hydra recommendations.
+Read core Hydra docs holistically before proposing compression scheme. Do not jump from generic POMDP compression papers to Hydra recommendations.
 
 ## Reading order
 1. `research/design/HYDRA_RECONCILIATION.md`
@@ -54,54 +54,54 @@ Read the core Hydra docs holistically before proposing any compression scheme. D
 - `hydra-train/src/data/sample.rs` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/hydra-train/src/data/sample.rs
 - `hydra-train/src/data/mjai_loader.rs` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/hydra-train/src/data/mjai_loader.rs
 
-Relevant prior variant writeups and prompt references:
+Relevant prior variant writeups + prompt refs:
 - `research/agent_handoffs/combined_all_variants/006_followup_debc_ar.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/combined_all_variants/006_followup_debc_ar.md
 - `research/agent_handoffs/combined_all_variants/008_variant_agent_8new1.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/combined_all_variants/008_variant_agent_8new1.md
 - `research/agent_handoffs/combined_all_variants/reference_prompt_pack_006.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/combined_all_variants/reference_prompt_pack_006.md
 - `research/agent_handoffs/combined_all_variants/reference_prompt_template_004_outside_the_box_but_grounded.md` — https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/agent_handoffs/combined_all_variants/reference_prompt_template_004_outside_the_box_but_grounded.md
 
-You are validating whether action-sufficient world compression is a real long-run Hydra path.
+Validate whether action-sufficient world compression real long-run Hydra path.
 
 Focus on:
 - compressing CT-SMC worlds by decision relevance, not probability mass
 - using current Hand-EV / endgame evaluators as local regret geometry
-- whether this is a cheap and real seam before deeper AFBS expansion
+- whether this is cheap + real seam before deeper AFBS expansion
 
-Broad exploration has already been done in `research/agent_handoffs/combined_all_variants/`. Do not redo that broad work. Start from the prior DEBC-AR and 8-series materials and only search enough to validate, falsify, or tighten this specific compression lane.
+Broad exploration already done in `research/agent_handoffs/combined_all_variants/`. Do not redo broad work. Start from prior DEBC-AR + 8-series materials. Search only enough to validate, falsify, or tighten this specific compression lane.
 
 <output_contract>
-- Return exactly the requested sections, in the requested order.
-- Be as detailed and explicit as necessary; do not optimize for brevity.
-- Return a full technical treatment, not a compressed memo.
-- A short answer is usually a failure mode for this prompt.
+- Return exactly requested sections, in requested order.
+- Be as detailed + explicit as needed; do not optimize for brevity.
+- Return full technical treatment, not compressed memo.
+- Short answer usually failure mode for this prompt.
 </output_contract>
 
 <calculation_validation_rules>
-- Use Python in bash for compression-ratio arithmetic, evaluator-call accounting, and toy regret-clustering sanity checks.
+- Use Python in bash for compression-ratio arithmetic, evaluator-call accounting, + toy regret-clustering sanity checks.
 - Do not leave claims like “8 worlds replaces 50-100 worlds” uncomputed.
 </calculation_validation_rules>
 
 <tool_persistence_rules>
-- Do not restart a broad belief-compression survey.
+- Do not restart broad belief-compression survey.
 - New retrieval should only validate, falsify, or sharpen action-sufficient compression for Hydra's actual runtime seam.
 </tool_persistence_rules>
 
 <dependency_checks>
-- Verify what CT-SMC exposes today, what Hand-EV/endgame evaluators exist, and whether current runtime already supports the relevant insertion points.
-- Verify whether later `delta_q` export is real or still future-only.
+- Verify what CT-SMC exposes today, what Hand-EV/endgame evaluators exist, + whether current runtime already supports relevant insertion points.
+- Verify whether later `delta_q` export real or still future-only.
 </dependency_checks>
 
 <self_red_team_rules>
 - Ask explicitly:
   - Does this only preserve noisy evaluator mistakes more efficiently?
-  - Is posterior quality the actual bottleneck, not compression quality?
-  - Does this fail if Hand-EV realism is not improved first?
-  - Does the result reduce to top-mass particle pruning with fancier vocabulary?
+  - Is posterior quality actual bottleneck, not compression quality?
+  - Does this fail if Hand-EV realism not improved first?
+  - Does result reduce to top-mass particle pruning with fancier vocabulary?
 </self_red_team_rules>
 
 <minimum_falsification_rules>
-- Define the minimum offline benchmark that compares top-mass particle pruning against action-sufficient compression on decision regret at equal evaluator budget.
-- Reject the method if it cannot beat simple top-mass pruning offline.
+- Define minimum offline benchmark that compares top-mass particle pruning against action-sufficient compression on decision regret at equal evaluator budget.
+- Reject method if it cannot beat simple top-mass pruning offline.
 </minimum_falsification_rules>
 
 <anti_survey_rules>
@@ -111,80 +111,80 @@ Broad exploration has already been done in `research/agent_handoffs/combined_all
 
 ## What to do
 1. Reconstruct Hydra's current CT-SMC / Hand-EV / endgame posture.
-2. Validate whether action-sufficient compression is timely under reconciliation.
-3. Write down the exact objective, compression rule, tensor/interfaces, and pseudocode.
+2. Validate whether action-sufficient compression timely under reconciliation.
+3. Write exact objective, compression rule, tensor/interfaces, + pseudocode.
 4. Separate MVP runtime-only compression from later training export ideas.
-5. Decide if this is a serious second-wave investment or still too early.
+5. Decide if this serious second-wave investment or still too early.
 
 ## Deliverables
 1. Hydra posture reconstruction for CT-SMC / Hand-EV / endgame
-2. Existing repo surfaces and blockers
-3. Exact mathematical formulation of the compression criterion
+2. Existing repo surfaces + blockers
+3. Exact mathematical formulation of compression criterion
 4. Tensor shapes / runtime payloads
 5. Exact pseudocode
 6. Dependency closure table
 7. Offline falsification benchmark
-8. Failure modes and kill criteria
-9. Final recommendation: worth it now, later, or not worth it
+8. Failure modes + kill criteria
+9. Final rec: worth now, later, or not worth it
 
 ## Hard constraints
 - no broad AFBS rewrite
 - no new belief stack
 - no fake novelty by renaming belief compression
-- no training-first recommendation if runtime-only falsification has not been proven
+- no training-first rec if runtime-only falsification not proven
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_11.md">
-  <![CDATA[## 1. Hydra posture reconstruction for CT-SMC / Hand-EV / endgame
+<answer_section>
+<answer_text status="preserved" source_path="agent_11.md">
+<![CDATA[## 1. Hydra posture reconstruction for CT-SMC / Hand-EV / endgame
 
-Hydra’s reconciled doctrine is not “search first.” The active path is supervision-first, with Hand-EV realism ahead of deeper AFBS semantics, AFBS kept specialist / hard-state gated, and a unified belief story in which Mixture-SIB is the amortized belief object and CT-SMC is the search-grade posterior. `OPPONENT_MODELING.md` explicitly says to defer to `HYDRA_FINAL.md` and `HYDRA_RECONCILIATION.md` when active implementation shape differs, and to treat heavier posterior / deception extensions as reserve-shelf unless promoted by the reconciled doctrine. ([GitHub][1])
+Hydra reconciled doctrine not “search first.” Active path = supervision-first, with Hand-EV realism before deeper AFBS semantics, AFBS specialist / hard-state gated, unified belief story where Mixture-SIB = amortized belief object and CT-SMC = search-grade posterior. `OPPONENT_MODELING.md` says defer to `HYDRA_FINAL.md` and `HYDRA_RECONCILIATION.md` when active impl shape differs, and treat heavier posterior / deception extensions as reserve-shelf unless promoted by reconciled doctrine. ([GitHub][1])
 
-`HYDRA_FINAL.md` makes CT-SMC’s intended role precise: exact contingency-table sampling replaces the generic particle proposal; resampling happens when ESS falls below `0.4P`; posterior quality is supposed to be judged by Gate A (posterior log-likelihood) and Gate B (pairwise MI calibration); and late-game exactification is Pure PIMC over CT-SMC particles with a 95% top-mass reducer, typically leaving about 50–100 worlds in the wall-≤10 threat slice. That is already a probability-mass world compression policy, just not a decision-aware one. ([GitHub][2])
+`HYDRA_FINAL.md` makes CT-SMC role precise: exact contingency-table sampling replaces generic particle proposal; resampling when ESS below `0.4P`; posterior quality judged by Gate (posterior log-likelihood) and Gate B (pairwise MI calibration); late-game exactification = Pure PIMC over CT-SMC particles with 95% top-mass reducer, usually leaving about 50–100 worlds in wall-≤10 threat slice. That already probability-mass world compression policy, not decision-aware. ([GitHub][2])
 
-The live code mostly matches that posture. `ct_smc.rs` exposes exact DP sampling, default `num_particles = 128`, `ess_threshold = 0.4`, particle log-weights, `weighted_mean_tile_count`, and `ess_ratio`. The bridge already compresses CT-SMC into belief-weighted remaining counts and then runs `compute_hand_ev`, while AFBS-derived `delta_q` features are only populated for `0..NUM_TILE_TYPES` tile-type discard actions. `hand_ev.rs` defines per-discard tenpai / win / expected-score / ukeire features from `(hand, remaining)`. `endgame.rs` activates on `wall_remaining <= max_wall && has_threat`, and `pimc_endgame_q_topk` simply chooses selected particles, normalizes their weights, and averages the expensive `eval_fn(particle, action)` over legal actions. ([GitHub][3])
+Live code mostly matches posture. `ct_smc.rs` exposes exact DP sampling, default `num_particles = 128`, `ess_threshold = 0.4`, particle log-weights, `weighted_mean_tile_count`, and `ess_ratio`. Bridge already compresses CT-SMC into belief-weighted remaining counts then runs `compute_hand_ev`, while AFBS-derived `delta_q` features only populated for `0..NUM_TILE_TYPES` tile-type discard actions. `hand_ev.rs` defines per-discard tenpai / win / expected-score / ukeire features from `(hand, remaining)`. `endgame.rs` activates on `wall_remaining <= max_wall && has_threat`, and `pimc_endgame_q_topk` chooses selected particles, normalizes weights, and averages expensive `eval_fn(particle, action)` over legal actions. ([GitHub][3])
 
-So Hydra already has two probability-oriented compression moves in runtime reality: first-moment CT-SMC→Hand-EV in the bridge, and top-mass CT-SMC→PIMC in endgame. The missing object is not a new belief stack. It is a decision-relevant representative-world selector that can replace one of those existing compressions only if it preserves action quality better than weight-only pruning at the same expensive-evaluator budget. That is exactly the lane the prior DEBC-AR / 8-series writeups were circling, but reconciliation forces it to be much narrower than a general belief-compression program. (hydra-core/src/bridge.rs:263-299; hydra-core/src/endgame.rs:80-87,90-184; research/design/HYDRA_RECONCILIATION.md:149-160,221-243)
+So Hydra already has two probability-oriented compression moves in runtime reality: first-moment CT-SMC→Hand-EV in bridge, and top-mass CT-SMC→PIMC in endgame. Missing object not new belief stack. It decision-relevant representative-world selector that can replace one existing compression only if it preserves action quality better than weight-only pruning at same expensive-evaluator budget. That exactly lane prior DEBC-AR / 8-series writeups circled, but reconciliation forces it much narrower than general belief-compression program. (hydra-core/src/bridge.rs:263-299; hydra-core/src/endgame.rs:80-87,90-184; research/design/HYDRA_RECONCILIATION.md:149-160,221-243)
 
 ## 2. Existing repo surfaces and blockers
 
-There are real surfaces today. CT-SMC gives a weighted posterior over valid hidden worlds, not just marginals. The bridge already knows how to turn CT-SMC into hand-aware local features. The endgame helper already has a “select worlds, then aggregate expensive per-world action values” structure. AFBS / inference already expose hard-state signals such as top-2 policy gap and particle ESS that could later host a compression-escalation rule. Those are genuine seams; this is not a fantasy “invent a new belief system” proposal. (hydra-core/src/ct_smc.rs:228-258; hydra-core/src/bridge.rs:263-299; hydra-core/src/endgame.rs:80-87,90-184; hydra-core/src/afbs.rs:472-507)
+Real surfaces exist today. CT-SMC gives weighted posterior over valid hidden worlds, not marginals. Bridge already knows how to turn CT-SMC into hand-aware local features. Endgame helper already has “select worlds, then aggregate expensive per-world action values” structure. AFBS / inference already expose hard-state signals like top-2 policy gap and particle ESS that could later host compression-escalation rule. Genuine seams; not fantasy “invent new belief system” proposal. (hydra-core/src/ct_smc.rs:228-258; hydra-core/src/bridge.rs:263-299; hydra-core/src/endgame.rs:80-87,90-184; hydra-core/src/afbs.rs:472-507)
 
-The first blocker is interface shape. `solve_with_particles` in `endgame.rs` gets `(particles, legal_mask, eval_fn)`, but `compute_hand_ev` needs `(hand, remaining)`. So an action-sufficient selector based on current Hand-EV cannot be inserted as a literal one-line swap. At minimum, the selector needs the current hand threaded into the endgame seam. A stronger production version would also want a cheap safety-side vector because endgame activation is threat-gated. In the surfaced files, that hand/safety context is available around bridge / encoder code, but not yet in the endgame helper API. (hydra-core/src/endgame.rs:80-87; hydra-core/src/hand_ev.rs:253-309; hydra-core/src/bridge.rs:251-299)
+First blocker = interface shape. `solve_with_particles` in `endgame.rs` gets `(particles, legal_mask, eval_fn)`, but `compute_hand_ev` needs `(hand, remaining)`. So action-sufficient selector based on current Hand-EV cannot drop in as literal one-line swap. At minimum, selector needs current hand threaded into endgame seam. Stronger production version also wants cheap safety-side vector because endgame activation threat-gated. In surfaced files, hand/safety context available around bridge / encoder code, but not yet in endgame helper API. (hydra-core/src/endgame.rs:80-87; hydra-core/src/hand_ev.rs:253-309; hydra-core/src/bridge.rs:251-299)
 
-The second blocker is action-space realism. The cheap local geometry that Hydra exposes today is discard / tile-type centric, not full-action. `compute_hand_ev` is indexed by 34 tile types; the bridge fills `delta_q` only for `0..NUM_TILE_TYPES`; the encoder’s search `delta_q` plane is `[34]`; but the model’s `delta_q` head is `[46]`. That kills any honest claim that Hydra already has a cheap current local scorer for the full 46-action space, especially call-phase and declaration actions. The surviving scope is discard-phase world compression over tile-type discard classes, not full-action compression. (hydra-core/src/hand_ev.rs:6-10,253-309; hydra-core/src/bridge.rs:343-355; hydra-train/src/model.rs:22,98,241,269,297)
+Second blocker = action-space realism. Cheap local geometry Hydra exposes today discard / tile-type centric, not full-action. `compute_hand_ev` indexed by 34 tile types; bridge fills `delta_q` only for `0..NUM_TILE_TYPES`; encoder’s search `delta_q` plane = `[34]`; but model’s `delta_q` head = `[46]`. That kills any honest claim Hydra already has cheap current local scorer for full 46-action space, especially call-phase and declaration actions. Surviving scope = discard-phase world compression over tile-type discard classes, not full-action compression. (hydra-core/src/hand_ev.rs:6-10,253-309; hydra-core/src/bridge.rs:343-355; hydra-train/src/model.rs:22,98,241,269,297)
 
-There is also an action-identity mismatch around red fives. Current target-building code already collapses aka 5m / 5p / 5s to base tile types for safety residual targets. That is another sign that the practical current signature space is tile-type discard classes, not raw action IDs. For this lane, that is fine; it just means the exact MVP has to be explicit about collapse-to-tile-type semantics instead of pretending to preserve a full raw-action ontology it does not currently have. (hydra-train/src/data/mjai_loader.rs:283-299)
+There also action-identity mismatch around red fives. Current target-building code already collapses aka 5m / 5p / 5s to base tile types for safety residual targets. Another sign practical current signature space = tile-type discard classes, not raw action IDs. For this lane, fine; means exact MVP must state collapse-to-tile-type semantics instead of pretending to preserve full raw-action ontology it does not have. (hydra-train/src/data/mjai_loader.rs:283-299)
 
-The third blocker is evaluator realism. `compute_hand_ev` is offense-oriented: shanten improvement, ukeire, multi-horizon tenpai / win probabilities, and a conditional score estimate. Defensive information exists elsewhere (`danger_from_particles`, safety features in bridge / encoder), not in the Hand-EV scalar itself. Because the endgame helper is threat-gated, a pure Hand-EV-only production compressor would be using an offense-biased signature exactly where defensive tail misses matter most. This is where reconciliation matters: broad deployment should wait for better Hand-EV realism or a threaded safety side-channel. (hydra-core/src/hand_ev.rs:24-43,132-141,253-309; hydra-core/src/bridge.rs:301-360; research/design/HYDRA_RECONCILIATION.md:135-146,278-283)
+Third blocker = evaluator realism. `compute_hand_ev` offense-oriented: shanten improvement, ukeire, multi-horizon tenpai / win probabilities, and conditional score estimate. Defensive info exists elsewhere (`danger_from_particles`, safety features in bridge / encoder), not in Hand-EV scalar itself. Because endgame helper threat-gated, pure Hand-EV-only production compressor would use offense-biased signature exactly where defensive tail misses matter most. Here reconciliation matters: broad deployment should wait for better Hand-EV realism or threaded safety side-channel. (hydra-core/src/hand_ev.rs:24-43,132-141,253-309; hydra-core/src/bridge.rs:301-360; research/design/HYDRA_RECONCILIATION.md:135-146,278-283)
 
-The fourth blocker kills the full-tree version. AFBS has a `particle_handle`, but it is an `Option<u32>` placeholder initialized as `None`; the live hard-state machinery is root-exit policy, ponder reuse, and priority from top-2 gap, risk score, and particle ESS. That is enough to host a future escalation signal. It is not enough to justify node-level world compression or any broad AFBS rewrite. Under your hard constraints, that version does not survive. (hydra-core/src/afbs.rs:106-114,265-314,398-459,472-507)
+Fourth blocker kills full-tree version. AFBS has `particle_handle`, but it `Option<u32>` placeholder initialized as `None`; live hard-state machinery = root-exit policy, ponder reuse, and priority from top-2 gap, risk score, and particle ESS. Enough to host future escalation signal. Not enough to justify node-level world compression or broad AFBS rewrite. Under hard constraints, that version does not survive. (hydra-core/src/afbs.rs:106-114,265-314,398-459,472-507)
 
-The fifth blocker kills training-first versions. `sample.rs` still writes `opponent_hand_type_target: None` and `delta_q_target: None`. `HydraLoss` applies dense unmasked MSE to `delta_q` if a target ever appears, while only `safety_residual` has an action mask. Combined with the runtime `delta_q` payload being `[34]` tile-type discard-level while the model head is `[46]`, later `delta_q` export is still future-only. It is not a cheap current extension. (hydra-train/src/data/sample.rs:178-181,210-213; hydra-train/src/training/losses.rs:247-262; hydra-train/src/model.rs:22,98,241,269,297)
+Fifth blocker kills training-first versions. `sample.rs` still writes `opponent_hand_type_target: None` and `delta_q_target: None`. `HydraLoss` applies dense unmasked MSE to `delta_q` if target ever appears, while only `safety_residual` has action mask. Combined with runtime `delta_q` payload being `[34]` tile-type discard-level while model head `[46]`, later `delta_q` export still future-only. Not cheap current extension. (hydra-train/src/data/sample.rs:178-181,210-213; hydra-train/src/training/losses.rs:247-262; hydra-train/src/model.rs:22,98,241,269,297)
 
-After this stricter pass, four ideas are dead for now: full-tree AFBS compression, full 46-action compression, training-first compressed `delta_q` export, and any “compression” that is just top-mass pruning or first-moment averaging under a new name. The sole survivor is a runtime-only, discard-phase representative selector over CT-SMC particles, benchmarked against top-mass at equal expensive-evaluator budget.
+After stricter pass, four ideas dead for now: full-tree AFBS compression, full 46-action compression, training-first compressed `delta_q` export, and any “compression” that top-mass pruning or first-moment averaging under new name. Sole survivor = runtime-only, discard-phase representative selector over CT-SMC particles, benchmarked against top-mass at equal expensive-evaluator budget.
 
 ## 3. Exact mathematical formulation of the compression criterion
 
-The conceptual family here is legitimate: decision-aware / value-directed compression rather than raw belief approximation. But Hydra’s actual code narrows it sharply. The exact survivor is a discard-phase representative-world selector over CT-SMC particles, where the cheap geometry comes from current per-world Hand-EV and the final decision still comes from the existing expensive endgame evaluator. ([Google Research][9])
+Conceptual family legitimate: decision-aware / value-directed compression rather than raw belief approximation. But Hydra actual code narrows it sharply. Exact survivor = discard-phase representative-world selector over CT-SMC particles, where cheap geometry comes from current per-world Hand-EV and final decision still comes from existing expensive endgame evaluator. ([Google Research][9])
 
-Let the CT-SMC posterior at the current state be particles ({(X_i,\ell_i)}_{i=1}^P), where (X_i \in {0,\dots,4}^{34\times 4}) is the hidden-world contingency table and (\ell_i) is its log-weight. Normalize:
+Let CT-SMC posterior at current state be particles ({(X_i,\ell_i)}_{i=1}^P), where (X_i \in {0,\dots,4}^{34\times 4}) = hidden-world contingency table and (\ell_i) = log-weight. Normalize:
 
 [
-w_i = \frac{\exp(\ell_i - \ell_{\max})}{\sum_{j=1}^P \exp(\ell_j - \ell_{\max})}, \qquad \sum_i w_i = 1.
+w_i = \frac{\exp(\ell_i - \ell_{\max})}{\sum_{j=1}^{P} \exp(\ell_j - \ell_{\max})}, \qquad \sum_i w_i = 1.
 ]
 
-For each particle, define the world-specific unseen-tile count vector used by Hand-EV:
+For each particle, define world-specific unseen-tile count vector used by Hand-EV:
 
 [
 r_i[t] = \sum_{z=0}^{3} X_i[t,z], \qquad t \in {0,\dots,33}.
 ]
 
-This exactly mirrors what the bridge already does in expectation when it sums CT-SMC hidden columns into remaining counts; the difference is that we do it per world instead of after first-moment averaging. (hydra-core/src/bridge.rs:263-283)
+This exactly mirrors what bridge already does in expectation when it sums CT-SMC hidden columns into remaining counts; difference = do it per world instead of after first-moment averaging. (hydra-core/src/bridge.rs:263-283)
 
-Define the signature action set (A_{\text{sig}}(s)) as the set of unique legal discard tile types in the current hand, after collapsing aka discard actions to base tile types. In the strict surviving MVP, this is the only signature action set that is honest, because current cheap geometry is tile-type discard indexed. Let (|A_{\text{sig}}| = m \le 14).
+Define signature action set (A_{\text{sig}}(s)) as set of unique legal discard tile types in current hand, after collapsing aka discard actions to base tile types. In strict surviving MVP, this only honest signature action set, because current cheap geometry tile-type discard indexed. Let (|A_{\text{sig}}| = m \le 14).
 
 For each particle (i), compute current Hand-EV features:
 
@@ -192,17 +192,17 @@ For each particle (i), compute current Hand-EV features:
 f_i = \texttt{compute_hand_ev}(h, r_i),
 ]
 
-where (h \in {0,\dots,4}^{34}) is the player’s current hand. The exact MVP scalar signature is deliberately simple:
+where (h \in {0,\dots,4}^{34}) = player’s current hand. Exact MVP scalar signature deliberately simple:
 
 [
-q_i^{\text{sig}}(a) = f_i.\texttt{expected_score}[a], \qquad a \in A_{\text{sig}}.
+q_i^{\text{sig}}(a) = f_i.\texttt{expected_score}[a], \qquad \in A_{\text{sig}}.
 ]
 
-I am not baking a defensive penalty into the exact MVP formula because the current runtime does not expose a clean endgame-side safety scalar yet. That omission is a production blocker, not a reason to lie about the math. A later risk-aware variant can replace the scalar with
+I am not baking defensive penalty into exact MVP formula because current runtime does not expose clean endgame-side safety scalar yet. That omission production blocker, not reason to lie about math. Later risk-aware variant can replace scalar with
 [
 q_i^{\text{sig}}(a)= f_i.\texttt{expected_score}[a]-\lambda_{\text{risk}} d_{\text{pub}}(a),
 ]
-but that is not the proven current MVP.
+but that not proven current MVP.
 
 Now define posterior-mean signature values
 
@@ -210,48 +210,49 @@ Now define posterior-mean signature values
 \bar q^{\text{sig}}(a) = \sum_{i=1}^{P} w_i q_i^{\text{sig}}(a),
 ]
 
-and let the signature frontier (F \subseteq A_{\text{sig}}) be the top (k_F) discard tile types by (\bar q^{\text{sig}}), with strict MVP default (k_F = 3).
+and let signature frontier (F \subseteq A_{\text{sig}}) be top (k_F) discard tile types by (\bar q^{\text{sig}}), with strict MVP default (k_F = 3).
 
 Define per-world regret vectors on that frontier:
 
 [
-R_i(a) = \max_{b \in A_{\text{sig}}} q_i^{\text{sig}}(b) - q_i^{\text{sig}}(a), \qquad a \in F.
+R_i(a) = \max_{b \in A_{\text{sig}}} q_i^{\text{sig}}(b) - q_i^{\text{sig}}(a), \qquad \in F.
 ]
 
-The decision-aware world distance is then
+Decision-aware world distance then
 
 [
 d(i,j) = \frac{1}{|F|} \sum_{a \in F} \left| R_i(a) - R_j(a) \right|.
 ]
 
-This is the core point: posterior mass still weights the objective, but geometry is action distortion, not raw hidden-world distance. A top-mass baseline sorts by (w_i) alone. This objective clusters worlds by how much they disagree about the discard frontier.
+Core point: posterior mass still weights objective, but geometry = action distortion, not raw hidden-world distance. Top-mass baseline sorts by (w_i) alone. This objective clusters worlds by how much they disagree about discard frontier.
 
-Tail protection is explicit. For each frontier action (a \in F), define (T_\alpha(a)) as the smallest set of highest-regret particles whose total posterior mass is at least (\alpha), with strict MVP default (\alpha = 0.10). The medoid initialization must include at least one seed from the union of these tail sets before ordinary weighted k-medoids proceeds. This is what prevents the method from degenerating into “top-mass with fancier vocabulary.”
+Tail protection explicit. For each frontier action \in F), define (T_\alpha(a)) as smallest set of highest-regret particles whose total posterior mass at least (\alpha), with strict MVP default (\alpha = 0.10). Medoid initialization must include at least one seed from union of these tail sets before ordinary weighted k-medoids proceeds. This prevents method from degenerating into “top-mass with fancier vocabulary.”
 
-The weighted medoid problem is
+Weighted medoid problem
 
 [
 \min_{M,\phi} J(M,\phi)
 \quad\text{where}\quad
 J(M,\phi)=\sum_{i=1}^{P} w_i, d(i,\phi(i)),
 ]
+
 subject to (|M|=K) and (\phi(i)\in M).
 
-If (M={m_1,\dots,m_K}) are the selected medoids, the compressed cluster weights are
+If (M={m_1,\dots,m_K}) selected medoids, compressed cluster weights
 
 [
 W_k = \sum_{i:\phi(i)=m_k} w_i.
 ]
 
-The final action values are **not** taken from the cheap signature. They come from Hydra’s existing expensive evaluator on medoids only:
+Final action values are **not** taken from cheap signature. They come from Hydra’s existing expensive evaluator on medoids only:
 
 [
-\hat Q_K(u)=\sum_{k=1}^{K} W_k , Q^{\text{eval}}(X_{m_k},u),
+\hat Q_K(u)=\sum_{k=1}^{K} W_k, Q^{\text{eval}}(X_{m_k},u),
 \qquad u \in A_{\text{eval}}(s),
 ]
-where (A_{\text{eval}}(s)) is the actual legal-action set under the 46-action mask, and (Q^{\text{eval}}(X,u)) is the current `eval_fn(&Particle, action)` used by the endgame helper.
+where (A_{\text{eval}}(s)) = actual legal-action set under 46-action mask, and (Q^{\text{eval}}(X,u)) = current `eval_fn(&Particle, action)` used by endgame helper.
 
-The cheap compression certificate is signature-level, not truth-level:
+Cheap compression certificate signature-level, not truth-level:
 
 [
 \varepsilon_{\text{sig}}
@@ -266,7 +267,7 @@ The cheap compression certificate is signature-level, not truth-level:
 \right|.
 ]
 
-Let (\Delta_{\text{sig}}) be the top-2 gap in the compressed signature frontier:
+Let (\Delta_{\text{sig}}) be top-2 gap in compressed signature frontier:
 [
 \Delta_{\text{sig}}=
 \bar q^{\text{comp}}*{(1)}-\bar q^{\text{comp}}*{(2)},
@@ -278,17 +279,17 @@ If
 [
 \Delta_{\text{sig}} > 2 \varepsilon_{\text{sig}},
 ]
-then the signature winner is stable under this compression. But this only certifies that the clustering preserved the cheap local geometry. It does **not** certify true endgame optimality, because (q^{\text{sig}}) is only a proxy for (Q^{\text{eval}}). That is why the real go / no-go criterion must be offline full-evaluator regret, not the certificate itself.
+then signature winner stable under this compression. But this only certifies clustering preserved cheap local geometry. It does **not** certify true endgame optimality, because (q^{\text{sig}}) only proxy for (Q^{\text{eval}}). That why real go / no-go criterion must be offline full-evaluator regret, not certificate itself.
 
-The arithmetic only works if the scope stays narrow. At (P=128) and (m=14), the pairwise regret matrix has 229,376 entries, and a rough (K=8) PAM / local-search pass is about 1.72M absolute-difference operations. If you stored a richer 3-feature action embedding, `P × P × m × 3` float32 is 2.625 MiB. That is cheap. A bogus full-action (m=46) variant would be 753,664 entries and 8.625 MiB; memory is still tolerable, but semantics are not. On the expensive side, if the current 95%-mass reducer leaves 50–100 worlds and there are 14 discard-like legal actions, evaluation costs 700–1400 `eval_fn` calls; (K=8) representatives cost 112. That is a 6.25×–12.5× reduction.
+Arithmetic only works if scope stays narrow. At (P=128) and (m=14), pairwise regret matrix has 229,376 entries, and rough (K=8) PAM / local-search pass about 1.72M absolute-difference operations. If you stored richer 3-feature action embedding, `P × P × m × 3` float32 = 2.625 MiB. Cheap. Bogus full-action (m=46) variant would be 753,664 entries and 8.625 MiB; memory still tolerable, but semantics not. On expensive side, if current 95%-mass reducer leaves 50–100 worlds and 14 discard-like legal actions, evaluation costs 700–1400 `eval_fn` calls; (K=8) representatives cost 112. That 6.25×–12.5× reduction.
 
-My toy sanity check does show that the criterion is not tautological top-mass pruning. In an 11-world / 3-action toy with a low-mass catastrophic cluster, the full expected (Q) was ([-0.055,\ 0.797,\ 0.174]), so action 1 was correct. (K=3) regret-medoids recovered medoids ([0,4,7]), cluster weights ([0.44,0.30,0.26]), and reproduced the full expected (Q) / regret exactly with (\varepsilon_{\text{sig}} \approx 2.8\times10^{-17}). Equal-budget top-mass (K=3) kept worlds ([0,1,2]), chose action 0, and incurred full-reference regret (1.014). So the lane is not fake by construction. It still has to beat top-mass on real Hydra states.
+My toy sanity check does show criterion not tautological top-mass pruning. In 11-world / 3-action toy with low-mass catastrophic cluster, full expected (Q) was ([-0.055,\ 0.797,\ 0.174]), so action 1 correct. (K=3) regret-medoids recovered medoids ([0,4,7]), cluster weights ([0.44,0.30,0.26]), and reproduced full expected (Q) / regret exactly with (\varepsilon_{\text{sig}} \approx 2.8\times10^{-17}). Equal-budget top-mass (K=3) kept worlds ([0,1,2]), chose action 0, and incurred full-reference regret (1.014). So lane not fake by construction. Still must beat top-mass on real Hydra states.
 
 ## 4. Tensor shapes / runtime payloads
 
-The relevant live shapes are already present. CT-SMC particles are `allocation[34][4]` plus `log_weight`; the live encoder / model contract is `NUM_CHANNELS = 192`, `OBS_SIZE = 192 * 34`; the search-side `delta_q` input plane is `[34]`; and the model outputs include `belief_fields [B,16,34]`, `mixture_weight_logits [B,4]`, `delta_q [B,46]`, and `safety_residual [B,46]`. `sample.rs` and tests enforce the same `192 × 34` observation shape. ([GitHub][3])
+Relevant live shapes already present. CT-SMC particles = `allocation[34][4]` plus `log_weight`; live encoder / model contract = `NUM_CHANNELS = 192`, `OBS_SIZE = 192 * 34`; search-side `delta_q` input plane = `[34]`; model outputs include `belief_fields [B,16,34]`, `mixture_weight_logits [B,4]`, `delta_q [B,46]`, and `safety_residual [B,46]`. `sample.rs` and tests enforce same `192 × 34` observation shape. ([GitHub][3])
 
-For the surviving runtime-only MVP, the payloads should be:
+For surviving runtime-only MVP, payloads should be:
 
 * Existing inputs:
 
@@ -296,7 +297,7 @@ For the surviving runtime-only MVP, the payloads should be:
   * `log_weight`: `f64[P]`
   * `hand`: `u8[34]`
   * `legal_mask`: `bool[46]`
-  * optional `public_danger`: `f32[34]` later, not required by the strict MVP
+  * optional `public_danger`: `f32[34]` later, not required by strict MVP
   * `wall_remaining`: scalar
   * `has_threat`: scalar / bool
 
@@ -315,7 +316,7 @@ For the surviving runtime-only MVP, the payloads should be:
   * `q_out`: `f32[46]`
   * diagnostics: `epsilon_sig`, `gap_sig`, `fallback_reason`, `num_reps`
 
-A minimal Rust-side interface is:
+Minimal Rust-side interface:
 
 ```rust
 pub struct ActionCompressionConfig {
@@ -341,13 +342,13 @@ pub struct CompressionDiagnostics {
 }
 ```
 
-Implementation note: do **not** use `mean_allocation()` for posterior means in this path. In the live code it averages particles uniformly by count, not by log-weight. Use normalized `log_weight` directly, or the existing weighted helpers. ([GitHub][3])
+impl note: do **not** use `mean_allocation()` for posterior means in this path. In live code it averages particles uniformly by count, not by log-weight. Use normalized `log_weight` directly, or existing weighted helpers. ([GitHub][3])
 
-Later training export is a different payload problem. Runtime search-side `delta_q` is currently tile-type `[34]`, while the model head is `[46]`, `sample.rs` emits `delta_q_target: None`, and `HydraLoss` has no `delta_q_mask`. So later export would need either a new `delta_q_mask [46]`, a separate discard-only head, or an explicit semantic remapping from tile-type to full action IDs. That is future work, not part of the MVP. ([GitHub][10])
+Later training export different payload problem. Runtime search-side `delta_q` tile-type `[34]`, while model head `[46]`, `sample.rs` emits `delta_q_target: None`, and `HydraLoss` has no `delta_q_mask`. So later export would need either new `delta_q_mask [46]`, separate discard-only head, or explicit semantic remapping from tile-type to full action IDs. Future work, not part of MVP. ([GitHub][10])
 
 ## 5. Exact pseudocode
 
-This pseudocode is intentionally limited to the survivor: discard-phase representative selection over CT-SMC particles, with the current expensive endgame `eval_fn` left untouched. I am not including AFBS-node compression or train-side `delta_q` export pseudocode because those variants did not survive the dependency pass. ([GitHub][4])
+This pseudocode intentionally limited to survivor: discard-phase representative selection over CT-SMC particles, with current expensive endgame `eval_fn` left untouched. I am not including AFBS-node compression or train-side `delta_q` export pseudocode because those variants did not survive dependency pass. ([GitHub][4])
 
 ```text
 function normalize_log_weights(logw[0..P-1]):
@@ -548,69 +549,69 @@ function pimc_endgame_q_action_compressed(ctx, particles, legal_mask, eval_fn, c
     return q_out
 ```
 
-Two non-negotiable gates belong around this pseudocode. First: own-turn discard-phase only for the MVP. Second: if the method cannot produce a confident signature certificate, it falls back to the current top-mass path rather than pretending certainty.
+Two non-negotiable gates belong around this pseudocode. First: own-turn discard-phase only for MVP. Second: if method cannot produce confident signature certificate, it falls back to current top-mass path rather than pretending certainty.
 
 ## 6. Dependency closure table
 
 * **CT-SMC weighted particle posterior.**
-  **Status:** already exists.
-  **Evidence:** exact particle allocations, log-weights, `weighted_mean_tile_count`, and `ess_ratio` are live.
-  **Implication:** no new belief stack is needed; the compressor can operate directly on Hydra’s chosen search-grade posterior. ([GitHub][3])
+**Status:** already exists.
+**Evidence:** exact particle allocations, log-weights, `weighted_mean_tile_count`, and `ess_ratio` live.
+**Implication:** no new belief stack needed; compressor can operate directly on Hydra’s chosen search-grade posterior. ([GitHub][3])
 
 * **Bridge seam from CT-SMC to hand-aware local features.**
-  **Status:** already exists.
-  **Evidence:** `extract_ct_smc_remaining_counts` and `compute_ct_smc_hand_ev` are live.
-  **Implication:** a per-world Hand-EV signature is mechanically easy to derive once hand and particles are available together. ([GitHub][10])
+**Status:** already exists.
+**Evidence:** `extract_ct_smc_remaining_counts` and `compute_ct_smc_hand_ev` live.
+**Implication:** per-world Hand-EV signature mechanically easy to derive once hand + particles available together. ([GitHub][10])
 
 * **Expensive world-aggregating evaluator seam.**
-  **Status:** already exists.
-  **Evidence:** `pimc_endgame_q_topk` selects particles, normalizes their weights, and averages `eval_fn(particle, action)` over legal actions.
-  **Implication:** replace the selector, not the evaluator. That is the right narrow seam. ([GitHub][4])
+**Status:** already exists.
+**Evidence:** `pimc_endgame_q_topk` selects particles, normalizes weights, and averages `eval_fn(particle, action)` over legal actions.
+**Implication:** replace selector, not evaluator. Right narrow seam. ([GitHub][4])
 
-* **Hand input at the selector seam.**
-  **Status:** missing but cheap to expose.
-  **Evidence:** `compute_hand_ev` needs `(hand, remaining)`; `solve_with_particles` currently takes only `(particles, legal_mask, eval_fn)`.
-  **Implication:** the MVP needs a small API extension before runtime wiring. ([GitHub][5])
+* **Hand input at selector seam.**
+**Status:** missing but cheap to expose.
+**Evidence:** `compute_hand_ev` needs `(hand, remaining)`; `solve_with_particles` takes only `(particles, legal_mask, eval_fn)`.
+**Implication:** MVP needs small API extension before runtime wiring. ([GitHub][5])
 
 * **Cheap full 46-action local geometry.**
-  **Status:** missing.
-  **Evidence:** current Hand-EV and bridge-side `delta_q` are discard / tile-type centric, while the model head is 46-action.
-  **Implication:** the honest MVP is discard-phase only. Full-action compression does not survive. ([GitHub][5])
+**Status:** missing.
+**Evidence:** current Hand-EV and bridge-side `delta_q` discard / tile-type centric, while model head 46-action.
+**Implication:** honest MVP discard-phase only. Full-action compression does not survive. ([GitHub][5])
 
 * **Threat-aware defensive side-channel for compression.**
-  **Status:** partial.
-  **Evidence:** safety / opponent-risk features exist in bridge / encoder; endgame exactification is threat-gated; Hand-EV itself is offense-side.
-  **Implication:** benchmark pure Hand-EV first, but production deployment in threat states likely needs safety threaded in. ([GitHub][10])
+**Status:** partial.
+**Evidence:** safety / opponent-risk features exist in bridge / encoder; endgame exactification threat-gated; Hand-EV itself offense-side.
+**Implication:** benchmark pure Hand-EV first, but production deployment in threat states likely needs safety threaded in. ([GitHub][10])
 
 * **AFBS node-world semantics.**
-  **Status:** missing / placeholder.
-  **Evidence:** `particle_handle: Option<u32>` exists but is initialized `None`; current AFBS features are root-exit policy and ponder priority from gap / risk / ESS.
-  **Implication:** full-tree AFBS compression is out of scope and should stay out. ([GitHub][7])
+**Status:** missing / placeholder.
+**Evidence:** `particle_handle: Option<u32>` exists but initialized `None`; current AFBS features = root-exit policy and ponder priority from gap / risk / ESS.
+**Implication:** full-tree AFBS compression out of scope and should stay out. ([GitHub][7])
 
 * **Runtime hard-state gating hook.**
-  **Status:** already exists.
-  **Evidence:** inference uses top-2 policy gap; AFBS pondering already scores particle ESS.
-  **Implication:** later, `epsilon_sig` can become one more narrow gating signal instead of forcing a new control framework. ([GitHub][11])
+**Status:** already exists.
+**Evidence:** inference uses top-2 policy gap; AFBS pondering already scores particle ESS.
+**Implication:** later, `epsilon_sig` can become one more narrow gating signal instead of forcing new control framework. ([GitHub][11])
 
 * **Posterior-quality diagnostics beyond ESS.**
-  **Status:** partial.
-  **Evidence:** FINAL defines Gate A/B, but live code surfaces ESS much more clearly than online Gate A/B metrics.
-  **Implication:** offline benchmark must stratify by posterior-quality proxies; if posterior failure dominates, compression is not the bottleneck. ([GitHub][2])
+**Status:** partial.
+**Evidence:** FINAL defines Gate A/B, but live code surfaces ESS much more clearly than online Gate A/B metrics.
+**Implication:** offline benchmark must stratify by posterior-quality proxies; if posterior failure dominates, compression not bottleneck. ([GitHub][2])
 
 * **Train-side `delta_q` target path.**
-  **Status:** absent for current runtime semantics.
-  **Evidence:** `sample.rs` emits `delta_q_target: None`; `HydraLoss` uses dense unmasked MSE if present; runtime `delta_q` context is 34 tile types while the model head is 46 actions.
-  **Implication:** later export is future-only and requires semantic / masking work first. ([GitHub][8])
+**Status:** absent for current runtime semantics.
+**Evidence:** `sample.rs` emits `delta_q_target: None`; `HydraLoss` uses dense unmasked MSE if present; runtime `delta_q` context 34 tile types while model head 46 actions.
+**Implication:** later export future-only and requires semantic / masking work first. ([GitHub][8])
 
 ## 7. Offline falsification benchmark
 
-The minimum honest benchmark is a runtime-only, equal-budget endgame benchmark. Do **not** start in the training loader, and do **not** use a singleton reference. The reference must be full-posterior `pimc_endgame_q` over all available particles using the same expensive `eval_fn` that the compressed method will use. That stays inside Hydra’s actual seam and respects the no-training-first constraint. ([GitHub][4])
+Minimum honest benchmark = runtime-only, equal-budget endgame benchmark. Do **not** start in training loader, and do **not** use singleton reference. Reference must be full-posterior `pimc_endgame_q` over all available particles using same expensive `eval_fn` compressed method will use. That stays inside Hydra’s actual seam and respects no-training-first constraint. ([GitHub][4])
 
-Use a sidecar dump of at least 10k states satisfying:
+Use sidecar dump of at least 10k states satisfying:
 
 * wall remaining `<= 10`
 * threat flag true
-* current player’s decision is discard-phase only for the MVP
+* current player’s decision discard-phase only for MVP
 * CT-SMC snapshot available
 * current hand available
 * legal mask available
@@ -622,24 +623,24 @@ Compare these methods at **equal expensive-evaluator budget**:
 
 1. **Full reference:** all particles, same `eval_fn`.
 2. **Top-mass-K:** highest-weight (K) particles, (K \in {4,8,12,16}).
-3. **Action-sufficient-K:** the representative selector above, same (K).
-4. **Context only:** current 95%-mass top-mass variable-(K) operating point, reported for context but not as the fairness baseline.
+3. **Action-sufficient-K:** representative selector above, same (K).
+4. **Context only:** current 95%-mass top-mass variable-(K) operating point, reported for context but not fairness baseline.
 
 For each state and each (K):
 
 * compute (Q_{\text{ref}}), (Q_{\text{mass},K}), (Q_{\text{as},K})
 * let (a_{\text{ref}} = \arg\max Q_{\text{ref}})
 * measure **reference regret**
-  [
-  \text{regret}*{\text{method}} =
-  Q*{\text{ref}}(a_{\text{ref}}) - Q_{\text{ref}}(a_{\text{method}})
-  ]
-* record `eval_fn_calls = K * num_legal_actions` for the compressed methods
+[
+\text{regret}*{\text{method}} =
+Q*{\text{ref}}(a_{\text{ref}}) - Q_{\text{ref}}(a_{\text{method}})
+]
+* record `eval_fn_calls = K * num_legal_actions` for compressed methods
 * record wall-clock latency including clustering overhead
 * record fallback rate
-* record certificate calibration on the slice with (\Delta_{\text{sig}} > 2\varepsilon_{\text{sig}})
+* record certificate calibration on slice with (\Delta_{\text{sig}} > 2\varepsilon_{\text{sig}})
 
-The benchmark’s primary metrics are:
+Benchmark primary metrics:
 
 * mean reference regret
 * p95 reference regret
@@ -650,63 +651,63 @@ The benchmark’s primary metrics are:
 * fallback rate
 * certified-slice mismatch rate
 
-The **minimum go / no-go rule** is harsh on purpose: if there is no (K \in {4,8,12,16}) for which action-sufficient compression beats top-mass-(K) on **both mean regret and p95 regret** under paired evaluation, kill the method. If p99 regret worsens materially, kill it even if mean regret improves. This is the prompt’s required falsification bar.
+**Minimum go / no-go rule** harsh on purpose: if no (K \in {4,8,12,16}) where action-sufficient compression beats top-mass-(K) on **both mean regret and p95 regret** under paired evaluation, kill method. If p99 regret worsens materially, kill it even if mean regret improves. This prompt’s required falsification bar.
 
-I would also stratify the benchmark by:
+I would also stratify benchmark by:
 
 * ESS bucket
 * top-2 policy-gap bucket
 * wall bucket
 * optional safety / risk bucket
 
-That answers the “posterior quality vs compression quality” question directly. If both top-mass and action-sufficient compression fail mainly in low-quality-posterior slices, then posterior quality is the bottleneck, not compression.
+That answers “posterior quality vs compression quality” directly. If both top-mass and action-sufficient compression fail mainly in low-quality-posterior slices, posterior quality bottleneck, not compression.
 
-The concrete budget claim is easy to audit. If the current 95%-mass reducer leaves 50, 64, or 100 worlds and there are 14 discard-like legal actions, the expensive evaluator cost is 700, 896, or 1400 calls. (K=8) representatives cost 112 calls. The reduction is 6.25×, 8×, and 12.5× respectively. That is a real seam only if regret improves or at least stays better than top-mass at those same call counts.
+Concrete budget claim easy to audit. If current 95%-mass reducer leaves 50, 64, or 100 worlds and 14 discard-like legal actions, expensive evaluator cost = 700, 896, or 1400 calls. (K=8) representatives cost 112 calls. Reduction = 6.25×, 8×, and 12.5× respectively. Real seam only if regret improves or at least stays better than top-mass at same call counts.
 
 ## 8. Failure modes and kill criteria
 
 **Does this only preserve noisy evaluator mistakes more efficiently?**
-It can. That is the main red-team risk. The survivor mitigates it only partially: the final action values still come from the existing expensive `eval_fn`, not from the cheap Hand-EV signature, so the method is not directly replacing the evaluator. But the selector still chooses which worlds get evaluated. If the signature is misaligned, the wrong representatives get chosen more efficiently. That is exactly why training-first distillation from compressed worlds is dead for now, and why the offline reference benchmark is non-negotiable.
+It can. Main red-team risk. Survivor mitigates it only partially: final action values still come from existing expensive `eval_fn`, not cheap Hand-EV signature, so method not directly replacing evaluator. But selector still chooses which worlds get evaluated. If signature misaligned, wrong representatives get chosen more efficiently. That exactly why training-first distillation from compressed worlds dead for now, and why offline reference benchmark non-negotiable.
 
-**Is posterior quality the actual bottleneck, not compression quality?**
-Possibly. FINAL explicitly defines posterior-quality gates beyond ESS, and the live code clearly exposes ESS. If the benchmark shows that both top-mass and action-sufficient methods fail in the same low-ESS / low-posterior-quality slices, then compression is secondary and the right next move is posterior improvement, not better clustering. ([GitHub][2])
+**Is posterior quality actual bottleneck, not compression quality?**
+Possibly. FINAL explicitly defines posterior-quality gates beyond ESS, and live code clearly exposes ESS. If benchmark shows both top-mass and action-sufficient methods fail in same low-ESS / low-posterior-quality slices, then compression secondary and right next move = posterior improvement, not better clustering. ([GitHub][2])
 
-**Does this fail if Hand-EV realism is not improved first?**
-For broad deployment, yes. For the narrow runtime-only benchmark, not necessarily. The benchmark can still be run now because the final action values come from the existing expensive evaluator, and the question is whether Hand-EV is good enough to choose representatives. But a production go-live in threat states without a defensive side-channel is much less convincing. If the pure Hand-EV signature loses heavily on threat-tail slices, that is not a reason to expand the method; it is a reason to either thread safety into the selector or kill the lane.
+**Does this fail if Hand-EV realism not improved first?**
+For broad deployment, yes. For narrow runtime-only benchmark, not necessarily. Benchmark can still run now because final action values come from existing expensive evaluator, and question whether Hand-EV good enough to choose representatives. But production go-live in threat states without defensive side-channel much less convincing. If pure Hand-EV signature loses heavily on threat-tail slices, that not reason to expand method; reason to either thread safety into selector or kill lane.
 
-**Does the result reduce to top-mass pruning with fancier vocabulary?**
-It does if any of the following happen:
+**Does result reduce to top-mass pruning with fancier vocabulary?**
+It does if any following happen:
 
-* medoids are almost always just the highest-weight particles,
+* medoids almost highest-weight particles,
 * tail seeds do not matter,
-* the method does not beat top-mass-(K) at equal (K),
-* or the only winning variants secretly use too much expensive evaluator work before selection.
+* method does not beat top-mass-(K) at equal (K),
+* or only winning variants secretly use too much expensive evaluator work before selection.
 
 If that happens, kill it. Do not rename pruning as novelty.
 
-There is also a Hydra-specific multiplayer caveat. This method preserves a **current-player scalar action ranking** under Hydra’s existing evaluator API. It is not a multiplayer equilibrium abstraction and does not solve 4-player general-sum reasoning by itself. That is acceptable for the current seam because Hydra’s endgame helper is already written around a current-player scalar `Q(action)`, but it kills any stronger game-theoretic claim. ([GitHub][4])
+There also Hydra-specific multiplayer caveat. This method preserves **current-player scalar action ranking** under Hydra’s existing evaluator API. It not multiplayer equilibrium abstraction and does not solve 4-player general-sum reasoning by itself. Acceptable for current seam because Hydra’s endgame helper already written around current-player scalar `Q(action)`, but kills any stronger game-theoretic claim. ([GitHub][4])
 
-The ideas that did **not** survive are:
+Ideas that did **not** survive:
 
-* **Full AFBS / node-level world compression.** Failed because node-world semantics are still placeholder-only.
-* **Full 46-action action-sufficient compression.** Failed because the current cheap geometry is discard / tile-type only.
-* **Training-first compressed `delta_q` export.** Failed because `delta_q_target` is still absent, semantics are 34-vs-46 mismatched, and there is no `delta_q_mask`.
-* **Pure offense-only production deployment in threat states.** Failed as a deployment recommendation because Hand-EV is not yet defensive enough; it survives only as a benchmark ablation or after adding a safety side-channel.
+* **Full AFBS / node-level world compression.** Failed because node-world semantics still placeholder-only.
+* **Full 46-action action-sufficient compression.** Failed because current cheap geometry discard / tile-type only.
+* **Training-first compressed `delta_q` export.** Failed because `delta_q_target` still absent, semantics 34-vs-46 mismatched, and no `delta_q_mask`.
+* **Pure offense-only production deployment in threat states.** Failed as deployment rec because Hand-EV not yet defensive enough; survives only as benchmark ablation or after adding safety side-channel.
 
-My explicit kill criteria are:
+My explicit kill criteria:
 
 1. No (K \in {4,8,12,16}) beats top-mass-(K) on both mean and p95 reference regret.
 2. p99 regret worsens materially even when mean improves.
-3. Certified slice ((\Delta_{\text{sig}} > 2\varepsilon_{\text{sig}})) still has a high mismatch rate, so the certificate is useless.
-4. Fallback rate is so high that the method almost never applies on the target slice.
-5. Gains vanish once clustering overhead is included.
-6. The best-performing variant requires the broad AFBS or train-side changes that the prompt forbids.
+3. Certified slice ((\Delta_{\text{sig}} > 2\varepsilon_{\text{sig}})) still has high mismatch rate, so certificate useless.
+4. Fallback rate so high method almost never applies on target slice.
+5. Gains vanish once clustering overhead included.
+6. Best-performing variant requires broad AFBS or train-side changes prompt forbids.
 
 ## 9. Final recommendation: worth it now, later, or not worth it
 
-My final recommendation is: **worth it now only as a very narrow, runtime-only falsification project**. Not as a broad AFBS program. Not as a new belief stack. Not as a training-first `delta_q` export. The surviving MVP is a discard-phase representative selector over CT-SMC particles, attached to the current endgame/top-mass seam after a small hand-aware API extension, and judged only by whether it beats equal-budget top-mass pruning on full-reference decision regret. That is consistent with reconciliation’s sequencing and with the current repo surfaces. ([GitHub][1])
+My final rec: **worth it now only as narrow, runtime-only falsification project**. Not broad AFBS program. Not new belief stack. Not training-first `delta_q` export. Surviving MVP = discard-phase representative selector over CT-SMC particles, attached to current endgame/top-mass seam after small hand-aware API extension, and judged only by whether it beats equal-budget top-mass pruning on full-reference decision regret. That consistent with reconciliation’s sequencing and current repo surfaces. ([GitHub][1])
 
-Broader investment is **later, conditional, and only if the MVP wins**. If the equal-budget benchmark shows a real regret-vs-calls frontier improvement, then action-sufficient compression becomes a legitimate second-wave Hydra path: first wire the runtime helper, then thread a cheap safety side-channel, then revisit a root-only discard-phase version, and only much later reconsider masked / semantically aligned `delta_q` export. If the benchmark does not beat top-mass, kill the lane completely rather than renaming top-mass pruning. That is the narrowest recommendation the evidence supports after the stricter repo pass.
+Broader investment = **later, conditional, and only if MVP wins**. If equal-budget benchmark shows real regret-vs-calls frontier improvement, then action-sufficient compression becomes legitimate second-wave Hydra path: first wire runtime helper, then thread cheap safety side-channel, then revisit root-only discard-phase version, and only much later reconsider masked / semantically aligned `delta_q` export. If benchmark does not beat top-mass, kill lane completely rather than renaming top-mass pruning. That narrowest rec evidence supports after stricter repo pass.
 
 [1]: https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/design/HYDRA_RECONCILIATION.md "https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/design/HYDRA_RECONCILIATION.md"
 [2]: https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/design/HYDRA_FINAL.md "https://raw.githubusercontent.com/NikkeTryHard/hydra/master/research/design/HYDRA_FINAL.md"
@@ -720,6 +721,6 @@ Broader investment is **later, conditional, and only if the MVP wins**. If the e
 [10]: https://raw.githubusercontent.com/NikkeTryHard/hydra/master/hydra-core/src/bridge.rs "https://raw.githubusercontent.com/NikkeTryHard/hydra/master/hydra-core/src/bridge.rs"
 [11]: https://raw.githubusercontent.com/NikkeTryHard/hydra/master/hydra-train/src/inference.rs "https://raw.githubusercontent.com/NikkeTryHard/hydra/master/hydra-train/src/inference.rs"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

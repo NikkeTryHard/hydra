@@ -3,7 +3,7 @@
 Open-source Riichi Mahjong AI. Goal: rival [LuckyJ](https://haobofu.github.io/) (Tencent, 10.68 stable dan on Tenhou) with open weights.
 
 > ## Compute support
-> This research used Delta advanced computing/data resource, supported by National Science Foundation (award OAC 2005572) and State of Illinois. Delta = joint effort of University of Illinois Urbana-Champaign and National Center for Supercomputing Applications.
+> Research used Delta advanced computing/data resource, supported by National Science Foundation (award OAC 2005572) and State of Illinois. Delta = joint effort of University of Illinois Urbana-Champaign and National Center for Supercomputing Applications.
 
 ## Goal
 
@@ -27,13 +27,13 @@ Hydra doc split:
 
 - `HYDRA_FINAL.md` = max-ceiling destination
 - `HYDRA_RECONCILIATION.md` = roadmap to Hydra v1
-- `docs/CURRENT_STATUS.md` = what shipped or remains staged now
+- `docs/CURRENT_STATUS.md` = shipped/staged now
 
-Raw `answer_*_combined.md` files in `research/agent_handoffs/combined_all_variants/` remain raw archive corpus, not promoted doctrine.
+Raw `answer_*_combined.md` files in `research/agent_handoffs/combined_all_variants/` stay raw archive corpus, not promoted doctrine.
 
 ## Fresh-agent routing
 
-If entering Hydra with zero prior memory, use this order and stop when truth is enough for task:
+If entering Hydra with zero prior memory, use this order and stop when truth enough for task:
 
 1. `README.md` for repo routing
 2. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` for canonical archive intake
@@ -43,11 +43,11 @@ If entering Hydra with zero prior memory, use this order and stop when truth is 
 6. `docs/CURRENT_STATUS.md` for shipped/staged truth
 7. `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` for runtime truth
 
-`combined_all_variants/` remains raw archive corpus for provenance only.
+`combined_all_variants/` stays raw archive corpus for provenance only.
 
 ## Status vocabulary
 
-For implementation work, choose next lane from
+For impl work, choose next lane from
 `research/design/HYDRA_RECONCILIATION.md`, confirm shipped/staged status in
 `docs/CURRENT_STATUS.md`, then confirm exact runtime contracts in
 `docs/GAME_ENGINE.md` plus current code.
@@ -72,7 +72,7 @@ For implementation work, choose next lane from
 | `crates/hydra-train` | model, targets, losses, BC/RL/self-play orchestration, train binary | low-level rules engine behavior |
 
 If deciding what to build next, follow Fresh-agent routing order above.
-`research/design/HYDRA_SPEC.md` remains historical context only.
+`research/design/HYDRA_SPEC.md` stays historical context only.
 
 ## Research
 
@@ -99,11 +99,11 @@ If deciding what to build next, follow Fresh-agent routing order above.
 
 ## Status
 
-Hydra is in active implementation. For current shipped/staged repo snapshot, read [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). For runtime semantics and compatibility-sensitive invariants, read [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md).
+Hydra in active impl. For current shipped/staged repo snapshot, read [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). For runtime semantics and compatibility-sensitive invariants, read [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md).
 
 ## Operator docs
 
-If you need to run/debug training stack rather than read architecture docs first, start here:
+If need run/debug training stack rather than read architecture docs first, start here:
 
 - [`docs/TRAINING_WORKFLOWS.md`](docs/TRAINING_WORKFLOWS.md) — training entry modes, YAML contract, BC/RL shape, sidecar-enabled training
 - [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, selected-runtime authority, probe flows, runtime reuse rules

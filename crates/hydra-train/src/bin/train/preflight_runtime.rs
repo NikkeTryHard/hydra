@@ -22,8 +22,8 @@ use hydra_train::preflight::{
     BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
     EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PROFILING_STAGE_CHECKPOINT,
     PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK, PROFILING_STAGE_TRAIN,
-    PROFILING_STAGE_VALIDATION, PreflightCacheEntry, ProbeKind, ProbeResult, ProbeStatus,
-    ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
+    PROFILING_STAGE_VALIDATION, PreflightCacheEntry, PreflightConfig, ProbeKind, ProbeResult,
+    ProbeStatus, ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
 };
 use hydra_train::training::bc::gated_bc_context;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
@@ -368,6 +368,32 @@ fn emit_probe_step_progress(
     }
 }
 
+fn fast_repeated_run_ladder(
+    preflight: &PreflightConfig,
+    batch_size: usize,
+    seed: usize,
+) -> Vec<usize> {
+    let full = candidate_ladder(preflight, batch_size);
+    if full.is_empty() {
+        return vec![seed.min(batch_size).max(1)];
+    }
+    let window = preflight.fast_repeated_run_candidate_window.max(1);
+    let nearest_idx = full
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, candidate)| candidate.abs_diff(seed))
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    let start = nearest_idx.saturating_sub(window);
+    let end = (nearest_idx + window + 1).min(full.len());
+    let mut candidates = full[start..end].to_vec();
+    if !candidates.contains(&seed) && seed >= preflight.min_microbatch_size && seed <= batch_size {
+        candidates.push(seed);
+    }
+    candidates.sort_unstable_by(|a, b| b.cmp(a));
+    candidates.dedup();
+    candidates
+}
 fn exact_train_probe_runtime_seed(
     config: &TrainConfig,
     selected_candidate: usize,
@@ -415,12 +441,25 @@ fn search_train_microbatch(
     artifacts: &BcArtifactPaths,
     seed: usize,
 ) -> Result<(usize, Vec<ProbeResult>, Option<LoaderRuntimeScoreSeed>), String> {
-    let mut candidates = dynamic_probe_ladder(config, ProbeKind::Train, seed);
+    let mut candidates = if config.preflight.fast_repeated_run_profile {
+        fast_repeated_run_ladder(&config.preflight, config.batch_size, seed)
+    } else {
+        dynamic_probe_ladder(config, ProbeKind::Train, seed)
+    };
     let explicit_candidate = config.microbatch_size;
     let use_explicit_only =
         explicit_candidate.is_some() && !config.preflight.allow_override_explicit_microbatch;
     if use_explicit_only {
         candidates = vec![explicit_candidate.unwrap_or(1)];
+    }
+    if config.preflight.fast_repeated_run_profile {
+        println!(
+            "{}",
+            format_preflight_summary_line(
+                "Preflight fast profile:",
+                "using narrow train candidate window for repeated shard-backed run",
+            )
+        );
     }
     println!(
         "{}",
@@ -545,14 +584,14 @@ fn search_validation_microbatch(
     artifacts: &BcArtifactPaths,
     seed: usize,
 ) -> Result<(usize, Vec<ProbeResult>), String> {
-    let result = search_probe_candidate_ladder(
-        config_path,
-        config,
-        ProbeSearchSpec::new(ProbeKind::Validation, seed)
-            .with_explicit_candidate(config.validation_microbatch_size)
-            .with_no_stable_error("no stable validation microbatch found in preflight"),
-        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
-    )?;
+    let spec = ProbeSearchSpec::new(ProbeKind::Validation, seed)
+        .with_explicit_candidate(config.validation_microbatch_size)
+        .with_fast_repeated_run_ladder(config.preflight.fast_repeated_run_profile)
+        .with_no_stable_error("no stable validation microbatch found in preflight");
+    let result =
+        search_probe_candidate_ladder(config_path, config, spec, |kind, candidate, attempt| {
+            probe_result_path(artifacts, kind, candidate, attempt)
+        })?;
     println!(
         "{}",
         format_preflight_selection_line(format_probe_selection_summary(
@@ -1550,6 +1589,7 @@ struct ProbeSearchSpec {
     seed: usize,
     explicit_candidate: Option<usize>,
     allow_explicit_override: bool,
+    use_fast_repeated_run_ladder: bool,
     no_stable_error: String,
 }
 
@@ -1561,6 +1601,7 @@ impl ProbeSearchSpec {
             explicit_candidate: None,
             allow_explicit_override: true,
             no_stable_error: String::new(),
+            use_fast_repeated_run_ladder: false,
         }
     }
 
@@ -1571,6 +1612,11 @@ impl ProbeSearchSpec {
 
     fn with_allow_explicit_override(mut self, allow_explicit_override: bool) -> Self {
         self.allow_explicit_override = allow_explicit_override;
+        self
+    }
+
+    fn with_fast_repeated_run_ladder(mut self, enabled: bool) -> Self {
+        self.use_fast_repeated_run_ladder = enabled;
         self
     }
 
@@ -1599,6 +1645,8 @@ where
         && spec.allow_explicit_override;
     let mut candidates = if use_explicit_only {
         vec![spec.explicit_candidate.unwrap_or(spec.seed.max(1)).max(1)]
+    } else if spec.use_fast_repeated_run_ladder {
+        fast_repeated_run_ladder(&config.preflight, config.batch_size, spec.seed.max(1))
     } else {
         dynamic_probe_ladder(config, spec.kind, spec.seed.max(1))
     };
@@ -1685,31 +1733,34 @@ where
             });
         }
 
-        let summary = best_probe_summary(&results).ok_or_else(|| spec.no_stable_error.clone())?;
-        let candidate_score = candidate_average(&results, candidate).unwrap_or(0.0);
-        let mut growth_state = ProbeGrowthState {
-            patience: growth_patience,
-            steps: growth_steps,
-            prior_best_score,
-        };
-        if maybe_expand_probe_candidates(
-            &mut candidates,
-            ProbeGrowthDecision {
-                index,
-                kind: spec.kind,
-                candidate,
-                summary: &summary,
-                candidate_score,
-                tolerance,
-            },
-            config,
-            &mut growth_state,
-        ) {
-            break;
+        if !config.preflight.fast_repeated_run_profile {
+            let summary =
+                best_probe_summary(&results).ok_or_else(|| spec.no_stable_error.clone())?;
+            let candidate_score = candidate_average(&results, candidate).unwrap_or(0.0);
+            let mut growth_state = ProbeGrowthState {
+                patience: growth_patience,
+                steps: growth_steps,
+                prior_best_score,
+            };
+            if maybe_expand_probe_candidates(
+                &mut candidates,
+                ProbeGrowthDecision {
+                    index,
+                    kind: spec.kind,
+                    candidate,
+                    summary: &summary,
+                    candidate_score,
+                    tolerance,
+                },
+                config,
+                &mut growth_state,
+            ) {
+                break;
+            }
+            growth_patience = growth_state.patience;
+            growth_steps = growth_state.steps;
+            prior_best_score = growth_state.prior_best_score;
         }
-        growth_patience = growth_state.patience;
-        growth_steps = growth_state.steps;
-        prior_best_score = growth_state.prior_best_score;
         index += 1;
     }
 
@@ -3002,9 +3053,15 @@ pub(super) fn run_preflight(
         let phase_pb = make_bar(6, "[{bar:30.magenta/black}] {pos}/{len} {msg}")?;
         phase_pb.set_message(preflight_phase_label("train microbatch probe"));
 
-        let train_seed = config
-            .microbatch_size
-            .unwrap_or_else(|| candidate_ladder(&config.preflight, config.batch_size)[0]);
+        let train_seed = if config.preflight.fast_repeated_run_profile {
+            config
+                .microbatch_size
+                .unwrap_or_else(|| config.batch_size.max(1))
+        } else {
+            config
+                .microbatch_size
+                .unwrap_or_else(|| candidate_ladder(&config.preflight, config.batch_size)[0])
+        };
 
         let t_train_probe = Instant::now();
         let (train_microbatch, train_probe_results, train_runtime_seed) =

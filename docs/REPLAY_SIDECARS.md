@@ -1,14 +1,14 @@
 # Hydra Replay Sidecars
 
-Ops guide for Hydra replay-side supervision artifacts: ExIt sidecars, DeltaQ sidecars.
+Ops guide: Hydra replay-side supervision artifacts: ExIt sidecars, DeltaQ sidecars.
 
-Doc says what sidecar builders emit, how training consumes artifacts, what provenance checks must match before Hydra hydrates replay-time labels. For high-level training entrypoint, read [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md).
+Doc says builder emit, training consume, provenance checks must match before Hydra hydrates replay-time labels. High-level training entrypoint: [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md).
 
 ## What a replay sidecar is
 
-Replay sidecar = offline JSONL artifact keyed to replay decisions. Carries supervision Hydra does not want recomputed inline during normal replay loading.
+Replay sidecar = offline JSONL artifact keyed to replay decisions. Carries supervision Hydra not want recompute inline during normal replay load.
 
-Hydra now supports two replay-sidecar lanes:
+Hydra supports two replay-sidecar lanes:
 
 - ExIt sidecars
 - DeltaQ sidecars
@@ -19,7 +19,7 @@ Both generated from:
 - checkpoint identity
 - source version
 
-Both can then join during replay loading if replay decision keys and provenance checks match.
+Both can join during replay load if replay decision keys + provenance checks match.
 
 ## Shared CLI shape
 
@@ -43,7 +43,7 @@ Shared flags live in `crates/hydra-train/src/bin/common/replay_sidecar_common.rs
 | Flag | Meaning |
 |---|---|
 | `--input` | Replay source file to analyze |
-| `--checkpoint` | Model base/checkpoint identity used to generate labels |
+| `--checkpoint` | Model base/checkpoint identity for label generation |
 | `--output` | JSONL sidecar output path |
 | `--source-version` | Version tag stored in sidecar; required again at join time |
 | `--min-visits` | ExitConfig visit budget threshold override |
@@ -85,7 +85,7 @@ Output record type:
 
 Important differences from ExIt sidecars:
 
-- DeltaQ currently requires `source_version == 1`
+- DeltaQ requires `source_version == 1`
 - validation contract stricter for legal actions and target/mask semantics
 - lane still not default-on though tooling exists
 
@@ -93,14 +93,14 @@ Conceptually, DeltaQ sidecars capture replay-indexed child-minus-root value delt
 
 ## What `source_version` and `source_net_hash` do
 
-Hydra uses both `source_version` and `source_net_hash` as provenance identity when replay loading tries to hydrate labels from sidecars.
+Hydra uses both `source_version` and `source_net_hash` as provenance identity when replay load tries hydrate labels from sidecars.
 
 - `source_net_hash` comes from checkpoint identity
 - `source_version` is operator-supplied version tag
 
-Hydra refuses sidecar-label hydration when these do not match replay loader expected provenance.
+Hydra refuses sidecar-label hydration when these mismatch replay loader expected provenance.
 
-Deliberate. Sidecars not generic labels; they are contract-bound artifacts tied to replay identity, checkpoint lineage, and versioned semantics.
+Deliberate. Sidecars not generic labels; contract-bound artifacts tied to replay identity, checkpoint lineage, versioned semantics.
 
 ## How replay loading consumes sidecars
 
@@ -120,8 +120,8 @@ That includes:
 Source-identity part of contract intentionally differs by replay shape.
 
 - Loose replay loading joins sidecars by replay file name Hydra loads, not absolute host path.
-- Archive-backed replay loading joins sidecars by explicit archive-entry identity string, for example `replays.tar.zst/path/inside/game.json`.
-- So sidecar record keyed only to `game.json` matches loose replay load of `game.json`, but does not match archive entry whose identity is `replays.tar.zst/path/inside/game.json`.
+- Archive-backed replay loading joins sidecars by explicit archive-entry identity string, e.g. `replays.tar.zst/path/inside/game.json`.
+- So sidecar record keyed only to `game.json` matches loose replay load of `game.json`, but not archive entry whose identity is `replays.tar.zst/path/inside/game.json`.
 
 This matters because Hydra treats archive entries as first-class replay identities, not anonymous extracted files. Avoids accidental collisions between different archive entries sharing same base file name.
 
@@ -129,7 +129,7 @@ Operationally:
 
 - if you generate or inspect sidecars for loose replay files, expect file-name identity semantics
 - if you generate or inspect sidecars for archive-backed replay corpora, expect full archive-entry identity semantics
-- if sidecar looks structurally valid but hydration does not happen, mismatched identity shape is early thing to check
+- if sidecar looks structurally valid but hydration does not happen, mismatched identity shape is early check
 
 For ExIt, lookup returns target/mask arrays when sidecar contract matches.
 
@@ -148,7 +148,7 @@ Training consumes replay sidecars through config fields:
 - `exit_sidecar_path`
 - `delta_q_sidecar_path`
 
-When configured, replay loading tries sidecar hydration during replay decision preparation and target construction.
+When configured, replay loading tries sidecar hydration during replay decision prep and target construction.
 
 Use this when:
 
@@ -201,11 +201,11 @@ Use report to inspect:
 Use ExIt sidecars when:
 
 - you want replay-indexed search-derived root/visit-style supervision
-- you are working on shipped baseline ExIt carrier
+- you work on shipped baseline ExIt carrier
 
 Use DeltaQ sidecars when:
 
-- you are evaluating or training narrow DeltaQ lane
+- you evaluate or train narrow DeltaQ lane
 - you are prepared to keep provenance and version contracts tighter
 - you understand lane is implemented but not default-on
 

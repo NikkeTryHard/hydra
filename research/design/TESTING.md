@@ -1,24 +1,24 @@
 # Hydra Testing Strategy
 
-> **Status note:** This file mixes active testing requirements with older baseline-prefix checks. For next implementation priority, use `research/design/HYDRA_RECONCILIATION.md`. For live runtime and compatibility truth, use `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, and current code.
->
-> The live encoder/model contract is `192x34`. The old `85x34` view is still useful only as the baseline prefix (`channels 0..84`) and should be tested as such.
+> **Status note:** File mixes active reqs + old baseline-prefix checks. Next impl priority: `research/design/HYDRA_RECONCILIATION.md`. Live runtime + compat truth: `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, current code.
+> >
+> Live encoder/model contract = `192x34`. Old `85x34` view useful only as baseline prefix (`channels 0..84`); test it that way.
 
 ## Overview
 
-Testing is critical for a mahjong AI because engine bugs silently corrupt training data. A single incorrect legal action mask, a mis-scored hand, or a wrong tile encoding feeds the neural network garbage labels for hundreds of thousands of training steps before anyone notices. Unlike a web app where users report bugs, a training pipeline happily trains on wrong data and produces a model that plays "confidently wrong" — the worst possible outcome. Every component that touches training data must be verified against independent ground truth.
+Testing critical for mahjong AI. Engine bugs silently poison training data. One wrong legal mask, score, or tile encoding feeds garbage labels for huge training spans before detection. Unlike web apps, pipeline trains happily on bad data and yields model that plays confidently wrong. Every training-data-touching component needs independent ground-truth verification.
 
-This document specifies the testing strategy across all Hydra subsystems: the Rust game engine, observation encoder, MJAI parser, suit permutation augmentation, and the Burn training stack.
+This doc defines testing strategy for all Hydra subsystems: Rust engine, observation encoder, MJAI parser, suit permutation augmentation, Burn training stack.
 
 ### Coverage Reporting
 
-Hydra now publishes workspace-wide Rust coverage reports with `cargo-llvm-cov`. Coverage is a regression-review aid, not the definition of correctness.
+Hydra publishes workspace-wide Rust coverage via `cargo-llvm-cov`. Coverage = regression-review aid, not correctness proof.
 
 - Default fast regression path: `cargo nextest run --release`
 - Coverage path: `./scripts/coverage.sh`
-- Coverage artifacts: HTML report, LCOV export, and text summary
+- Coverage artifacts: HTML report, LCOV export, text summary
 
-Use coverage to verify that tests actually execute risky paths like encoder channel writes, replay roundtrips, legal-action generation, scoring, and training-label gating. Do not treat a single repo-wide percentage as proof that those paths are semantically safe.
+Use coverage to confirm tests hit risky paths like encoder writes, replay roundtrips, legal-action generation, scoring, training-label gating. Do not treat one repo-wide percentage as semantic safety proof.
 
 ---
 
@@ -26,7 +26,7 @@ Use coverage to verify that tests actually execute risky paths like encoder chan
 
 ### Game State Machine Tests
 
-Every transition in Hydra's live game-state flow must have a dedicated test. Use `hydra-engine` / `hydra-core` runtime code and `docs/GAME_ENGINE.md` as the primary owners of that flow; use `INFRASTRUCTURE.md` only as supporting historical/reference context when it still matches current runtime reality. The state machine governs round flow — dealing, drawing, discarding, call checks, kan processing, riichi declarations, and win checks — and a single missed transition can produce impossible game states that silently corrupt downstream data.
+Every Hydra live game-state transition needs dedicated test. Use `hydra-engine` / `hydra-core` runtime code and `docs/GAME_ENGINE.md` as primary truth; use `INFRASTRUCTURE.md` only as historical/supporting reference when still aligned with runtime reality. State machine controls round flow: dealing, drawing, discarding, call checks, kan processing, riichi declarations, win checks. One missed transition can create impossible states and silently corrupt downstream data.
 
 **Required transition coverage:**
 
@@ -34,9 +34,9 @@ Every transition in Hydra's live game-state flow must have a dedicated test. Use
 |------------|-----------------|
 | Dealing → Drawing | Deal 13 tiles to each player, verify hand sizes and wall count |
 | Drawing → Discarding | Draw tile, verify hand size increments by 1 |
-| Drawing → WinCheck (tsumo) | Draw a winning tile, verify tsumo is in legal actions |
+| Drawing → WinCheck (tsumo) | Draw winning tile, verify tsumo is in legal actions |
 | Discarding → CallCheck | Discard tile, verify call check runs for all other players |
-| CallCheck → Calling (chi/pon) | Call a tile, verify meld is formed and caller must discard |
+| CallCheck → Calling (chi/pon) | Call tile, verify meld is formed and caller must discard |
 | CallCheck → KanProcess | Daiminkan, verify dead wall draw and dora flip |
 | KanProcess → ChankanCheck | Kakan declared, verify other players can ron (chankan) |
 | KanProcess → RinshanCheck | Dead wall draw after kan, verify rinshan tsumo detection |
@@ -46,51 +46,51 @@ Every transition in Hydra's live game-state flow must have a dedicated test. Use
 
 ### Scoring Verification
 
-Cross-validate the Rust scoring engine against the `mahjong` Python library (v1.4.0, used via one-time build.rs validation script). The verification corpus is the full set of 11M+ Tenhou Houou hands.
+Cross-validate Rust scoring engine against `mahjong` Python library (v1.4.0, used via one-time build.rs validation script). Verification corpus = full 11M+ Tenhou Houou hands.
 
 **Methodology:**
 
-1. Parse each Tenhou hand record to extract the winning hand, melds, winning tile, and game context (round wind, seat wind, dora indicators, riichi status, ippatsu, tsumo/ron)
-2. Compute yaku, han, fu, and final score using both the Rust engine and the Python `mahjong` library
-3. Any disagreement is a bug — log the hand details and expected vs. actual values
-4. Target: zero disagreements across the full corpus
+1. Parse each Tenhou hand record for winning hand, melds, winning tile, game context (round wind, seat wind, dora indicators, riichi status, ippatsu, tsumo/ron)
+2. Compute yaku, han, fu, final score in both Rust engine and Python `mahjong` library
+3. Any disagreement = bug; log hand details and expected vs. actual
+4. Target: zero disagreements across full corpus
 
 **Edge cases requiring explicit test fixtures:**
 
 - Pinfu tsumo (fu calculation differs from ron)
-- Double yakuman (e.g., Daisangen + Tsuuiisou — additive stacking under the Tenhou ruleset Hydra targets)
+- Double yakuman (e.g., Daisangen + Tsuuiisou — additive stacking under Tenhou ruleset Hydra targets)
 - Kazoe yakuman (13+ han from non-yakuman yaku — scored as yakuman per Tenhou rules)
 - Paarenchan (8+ consecutive dealer wins — no special scoring per Tenhou rules; honba uncapped)
 - Kiriage mangan (3 han 60 fu / 4 han 30 fu = 7700, NOT rounded to mangan per Tenhou ranked rules)
 
 ### Wall Shuffle Determinism
 
-Verify that `(seed, kyoku, honba) → wall` produces identical results across runs, threads, and platforms. This is the foundation of the evaluation protocol (see [SEEDING.md § Reproducibility and Seeding Strategy](SEEDING.md#reproducibility-and-seeding-strategy)).
+Verify `(seed, kyoku, honba) → wall` stays identical across runs, threads, platforms. This underpins evaluation protocol (see [SEEDING.md § Reproducibility and Seeding Strategy](SEEDING.md#reproducibility-and-seeding-strategy)).
 
 **Tests:**
 
-1. Fix a seed, generate 1000 walls, compare byte-for-byte against a golden file
-2. Run the same generation across 8 rayon threads, verify identical output regardless of thread scheduling
+1. Fix seed, generate 1000 walls, compare byte-for-byte with golden file
+2. Run same generation across 8 rayon threads, verify identical output regardless of scheduling
 3. Cross-platform: generate walls on x86_64 and aarch64 (if available), verify identical output
-4. Regression guard: pin `chacha20 = "=0.10.0"` and the vendored Fisher-Yates shuffle — any change to either must fail CI until the golden file is updated
+4. Regression guard: pin `chacha20 = "=0.10.0"` and vendored Fisher-Yates shuffle — any change must fail CI until golden file updated
 
 ### Abortive Draw Handling
 
-All five abortive draw types from INFRASTRUCTURE.md must be tested:
+All five abortive draw types from INFRASTRUCTURE.md need tests:
 
 | Condition | Test |
 |-----------|------|
-| Kyuushu Kyuuhai | Construct a hand with 9+ unique terminals/honors, verify action 44 is legal; construct a hand with 8, verify it is not |
-| Suufon Renda | Force all 4 players to discard the same wind on turn 1, verify round aborts |
+| Kyuushu Kyuuhai | Construct hand with 9+ unique terminals/honors, verify action 44 is legal; construct hand with 8, verify it is not |
+| Suufon Renda | Force all 4 players to discard same wind on turn 1, verify round aborts |
 | Suucha Riichi | Force all 4 players to declare riichi, verify round aborts |
 | Suukaikan | Force 4 kans by different players, verify round aborts; force 4 kans by same player, verify round does NOT abort |
-| Sanchahou | Force 3 players to declare ron on the same discard, verify round aborts (triple ron is abortive in standard rules) |
+| Sanchahou | Force 3 players to declare ron on same discard, verify round aborts (triple ron is abortive in standard rules) |
 
 ### Nagashi Mangan Edge Cases
 
-- Player's entire discard pile is terminals/honors, none called by opponents → mangan payment
-- Opponent calls one of the player's terminals → nagashi mangan denied
-- Player is also tenpai at exhaustive draw → nagashi mangan takes priority over tenpai/noten payments
+- Player's full discard pile = terminals/honors, none called by opponents → mangan payment
+- Opponent calls one player terminal → nagashi mangan denied
+- Player also tenpai at exhaustive draw → nagashi mangan overrides tenpai/noten payments
 - Multiple players qualify for nagashi mangan simultaneously
 
 ---
@@ -99,7 +99,7 @@ All five abortive draw types from INFRASTRUCTURE.md must be tested:
 
 ### Baseline-Prefix Verification (Channels 0-84)
 
-Each of the first 85 channels must encode the baseline public+safety prefix exactly as described in `docs/GAME_ENGINE.md`. Build a test harness that constructs known game states and verifies the baseline prefix element by element, while keeping the full live tensor shape at `192x34`.
+Each first 85 channels must encode baseline public+safety prefix exactly as `docs/GAME_ENGINE.md` defines. Build harness that constructs known game states and verifies baseline prefix element by element, while keeping full live tensor shape at `192x34`.
 
 **Channel-by-channel tests:**
 
@@ -107,7 +107,7 @@ Each of the first 85 channels must encode the baseline public+safety prefix exac
 |---------------|-------------|
 | 0-3 (hand thermometer) | Set hand to [1m, 1m, 1m, 2m], verify ch0-2 at index 0 are 1.0, ch3 is 0.0 |
 | 8 (drawn tile) | Draw 5p, verify only index 12 is 1.0, all others 0.0 |
-| 9-10 (shanten masks) | Construct a tenpai hand, verify keep-shanten and next-shanten masks match `xiangting` output |
+| 9-10 (shanten masks) | Construct tenpai hand, verify keep-shanten and next-shanten masks match `xiangting` output |
 | 11-22 (discards) | Discard 3 tiles with known tedashi/tsumogiri flags, verify encoding |
 | 35-42 (dora/aka) | Set 2 dora indicators, verify thermometer encoding; check aka planes for red 5s |
 | 42-45 (riichi status) | Declare riichi for player 2, verify only ch43 is all-1.0 |
@@ -118,11 +118,11 @@ Each of the first 85 channels must encode the baseline public+safety prefix exac
 
 ### Known-State Golden Tests
 
-Maintain a set of 20+ hand-crafted game states with pre-computed expected tensors, serialized as `.npz` files. These serve as regression tests — any encoder change that alters golden outputs must be reviewed and the golden files explicitly regenerated.
+Maintain 20+ hand-crafted game states with precomputed expected tensors, serialized as `.npz` files. These are regression tests — any encoder change that alters golden outputs must be reviewed and golden files explicitly regenerated.
 
 ### Roundtrip Tests
 
-Construct a game state programmatically → encode to the live `192x34` tensor → verify expected values. The encoder is one-way (state → tensor), so "roundtrip" means verifying that the tensor faithfully represents the state, not that the state can be recovered from the tensor.
+Construct game state programmatically → encode to live `192x34` tensor → verify expected values. Encoder is one-way (state → tensor), so "roundtrip" here means tensor faithfully represents state, not that state can be recovered from tensor.
 
 ---
 
@@ -130,9 +130,9 @@ Construct a game state programmatically → encode to the live `192x34` tensor �
 
 ### Log Reconstruction
 
-Parse real Tenhou and Majsoul game logs in MJAI format, replay the events through the game engine, and verify that the reconstructed game state matches the log's recorded outcomes (final scores, winner, winning hand, yaku).
+Parse real Tenhou and Majsoul MJAI logs, replay events through engine, verify reconstructed state matches logged outcomes (final scores, winner, winning hand, yaku).
 
-Current status note: the live replay path now has explicit regression coverage for replay round-reset semantics and kan replay legality matching, and a full Tenhou Houou 2025 audit (`178,897` MJAI files) completed with `0` skips after those fixes. Remaining replay failures should be treated as true file/data faults unless a new regression reproducer says otherwise.
+Current status note: live replay path now has explicit regression coverage for replay round-reset semantics and kan replay legality matching, and full Tenhou Houou 2025 audit (`178,897` MJAI files) completed with `0` skips after those fixes. Remaining replay failures should be treated as real file/data faults unless new regression reproducer says otherwise.
 
 **Minimum test corpus:**
 
@@ -145,7 +145,7 @@ Current status note: the live replay path now has explicit regression coverage f
 | Scenario | What to Verify |
 |----------|---------------|
 | Multiple ron (double/triple) | Both/all winners detected, correct payment split |
-| Chankan | Ron on an added kan, correct yaku assignment |
+| Chankan | Ron on added kan, correct yaku assignment |
 | Rinshan tsumo | Win from dead wall draw after kan, rinshan kaihou yaku applied |
 | Double riichi | Riichi declared on first turn (no prior calls), double riichi yaku applied |
 | Ippatsu with intervening call | Opponent calls between riichi and next draw, ippatsu denied |
@@ -153,7 +153,7 @@ Current status note: the live replay path now has explicit regression coverage f
 
 ### Event Roundtrip
 
-Generate a game programmatically → serialize to MJAI events → parse events back through the engine → verify final state matches. This catches serialization/deserialization asymmetries.
+Generate game programmatically → serialize to MJAI events → parse events back through engine → verify final state matches. This catches serialization/deserialization asymmetries.
 
 ---
 
@@ -161,15 +161,15 @@ Generate a game programmatically → serialize to MJAI events → parse events b
 
 ### Validity
 
-All 6 permutations of `[manzu, pinzu, souzu]` must produce valid game states. For each permutation:
+All 6 permutations of `[manzu, pinzu, souzu]` must yield valid game states. For each permutation:
 
-1. Apply permutation to a game's MJAI event stream
-2. Replay permuted events through the engine
-3. Verify: no illegal states, no assertion failures, game reaches the same terminal condition
+1. Apply permutation to game MJAI event stream
+2. Replay permuted events through engine
+3. Verify: no illegal states, no assertion failures, game reaches same terminal condition
 
 ### Aka-Dora Roundtrip
 
-The `deaka → permute → re_akaize` chain must preserve aka-dora identity:
+`deaka → permute → re_akaize` chain must preserve aka-dora identity:
 
 - Red 5m permuted to pinzu → becomes red 5p (not normal 5p)
 - Red 5p permuted to souzu → becomes red 5s
@@ -177,7 +177,7 @@ The `deaka → permute → re_akaize` chain must preserve aka-dora identity:
 
 ### Score Invariance
 
-The same game played under all 6 permutations must produce identical final scores. Suits are strategically interchangeable — no yaku depends on suit identity (unlike honor tiles).
+Same game under all 6 permutations must produce identical final scores. Suits are strategically interchangeable — no yaku depends on suit identity (unlike honor tiles).
 
 ### Identity Permutation
 
@@ -187,7 +187,7 @@ Permutation [0, 1, 2] (identity) must produce output identical to no permutation
 
 ## Property-Based Testing
 
-Use the `proptest` crate for Rust engine invariants. Property-based tests generate thousands of random inputs and check that invariants hold for all of them.
+Use `proptest` crate for Rust engine invariants. Property-based tests generate many random inputs and check invariants hold.
 
 ### Core Invariants
 
@@ -198,15 +198,15 @@ Use the `proptest` crate for Rust engine invariants. Property-based tests genera
 | Shanten bounds | Shanten is non-negative and at most 6 for any valid hand |
 | Tile count bounds | No tile type appears more than 4 times across all visible locations |
 | Total tile count | Exactly 136 tiles exist across wall, hands, discards, melds, and dead wall |
-| State machine validity | No legal action sequence from a valid state produces an invalid state |
-| Terminal detection | A terminal state has an empty legal action set |
+| State machine validity | No legal action sequence from valid state produces invalid state |
+| Terminal detection | terminal state has empty legal action set |
 
 ### Strategy
 
-1. Generate a random valid initial game state (deal 13 tiles to each player from a shuffled 136-tile wall)
-2. At each step, choose a random legal action from the legal action mask
-3. Apply the action, check all invariants
-4. Repeat until terminal or 500 actions (capped to prevent infinite loops in degenerate cases)
+1. Generate random valid initial game state (deal 13 tiles to each player from shuffled 136-tile wall)
+2. At each step, choose random legal action from legal action mask
+3. Apply action, check all invariants
+4. Repeat until terminal or 500 actions (cap prevents infinite loops in degenerate cases)
 5. Run 10,000+ such random games per CI run
 
 ---
@@ -215,27 +215,27 @@ Use the `proptest` crate for Rust engine invariants. Property-based tests genera
 
 ### Shanten
 
-Compare the Rust `xiangting` crate's shanten calculation against an independent implementation on N=100,000 randomly generated hands.
+Compare Rust `xiangting` crate shanten calculation against independent impl on N=100,000 randomly generated hands.
 
 **Methodology:**
 
 1. Generate 100K random 13-tile hands (sampling without replacement from 136 tiles)
-2. Compute shanten using `xiangting` (Rust)
-3. Compute shanten using an independent algorithm (e.g., lookup table or brute-force)
-4. Any disagreement is a bug — log the hand tiles and both results
+2. Compute shanten with `xiangting` (Rust)
+3. Compute shanten with independent algorithm (e.g., lookup table or brute-force)
+4. Any disagreement = bug; log hand tiles and both results
 5. Include edge cases: complete hands (shanten = -1), kokushi tenpai, chiitoitsu tenpai
 
 ### Scoring
 
-Cross-validate Rust scoring against the `mahjong` Python library on 100K randomly constructed winning hands.
+Cross-validate Rust scoring against `mahjong` Python library on 100K randomly constructed winning hands.
 
 **Methodology:**
 
-1. Generate random winning hands (tenpai hands + a completing tile)
+1. Generate random winning hands (tenpai hands + completing tile)
 2. Assign random game context (round wind, seat wind, dora, riichi, tsumo/ron)
 3. Compute yaku/han/fu/score in both Rust and Python
-4. Diff results — any mismatch is logged with full context for debugging
-5. Special attention to fu calculation edge cases (open pinfu, closed tsumo, etc.)
+4. Diff results — any mismatch logged with full context for debugging
+5. Focus extra on fu edge cases (open pinfu, closed tsumo, etc.)
 
 ---
 
@@ -243,14 +243,14 @@ Cross-validate Rust scoring against the `mahjong` Python library on 100K randoml
 
 ### Model Smoke Tests
 
-- Forward pass with random input `[1, 192, 34]` produces the output shapes asserted by `hydra-train/src/model.rs` for the current `ActorNet` / `LearnerNet`
+- Forward pass with random input `[1, 192, 34]` produces output shapes asserted by `hydra-train/src/model.rs` for current `ActorNet` / `LearnerNet`
 - Legal action masking: masked logits are negative infinity, softmax produces zero probability for illegal actions
 - Inference: run forward pass through burn-tch backend, verify output matches expected within tolerance (atol=1e-5)
 
 ### Loss Function Tests
 
 - Policy CE loss with known logits and labels — verify against hand-computed value
-- GRP 24-way CE loss sums to correct value for a known permutation distribution
+- GRP 24-way CE loss sums to correct value for known permutation distribution
 - Focal BCE loss with γ=2.0 produces lower loss for high-confidence correct predictions than standard BCE
 - Composite loss with known component values → verify weighted sum matches expected total
 
@@ -258,5 +258,5 @@ Cross-validate Rust scoring against the `mahjong` Python library on 100K randoml
 
 - Burn DataLoaderBuilder yields batches of correct shape `[2048, 192, 34]`
 - 3-level shuffle produces different orderings across epochs (statistical test: correlation < 0.1)
-- Suit permutation produces 6 distinct outputs for the same input game
-- Filtering: a game with known bad metadata is excluded from the manifest
+- Suit permutation produces 6 distinct outputs for same input game
+- Filtering: game with known bad metadata is excluded from manifest

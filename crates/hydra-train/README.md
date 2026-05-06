@@ -1,6 +1,6 @@
 # hydra-train
 
-Training crate for Hydra Riichi Mahjong AI. Owns model stack, replay/self-play data plumbing, target build, eval harnesses, training/data bins turning `hydra-core` encoder/runtime signals into checkpoints or replay artifacts.
+Training crate for Hydra Riichi Mahjong AI. Owns model stack, replay/self-play data plumbing, target build, eval harnesses, training/data bins that turn `hydra-core` encoder/runtime signals into checkpoints or replay artifacts.
 
 ## Overview
 
@@ -10,7 +10,7 @@ Training crate for Hydra Riichi Mahjong AI. Owns model stack, replay/self-play d
 - `hydra-core` owns runtime bridge, encoding, simulation, seeding, and search/runtime feature plumbing
 - `hydra-train` owns model defs, losses, active BC/RL/self-play orchestration, sidecar gen, and training/eval utils
 
-Crate built around Burn and current Hydra training baseline. Shipped baseline already has live `192x34` encoder/model contract, replay-derived `safety_residual`, stronger public-teacher belief semantics tranche, and ExIt carrier across live self-play plus replay/sample sidecar-first lanes. Promotion-gated DeltaQ tooling also lives here, but not default-on training lane. Some internal modules stay for staged/reserve work, so use module table below as supported crate surface, not every file list.
+Crate built around Burn and current Hydra training baseline. Shipped baseline already has live `192x34` encoder/model contract, replay-derived `safety_residual`, stronger public-teacher belief semantics tranche, and ExIt carrier across live self-play plus replay/sample sidecar-first lanes. Promotion-gated DeltaQ tooling also lives here, but not default-on training lane. Some internal modules remain for staged/reserve work, so use module table below as supported crate surface, not full file list.
 
 For current shipped-vs-staged status, read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md).
 For active-path sequencing, read [`research/design/HYDRA_RECONCILIATION.md`](../../research/design/HYDRA_RECONCILIATION.md).
@@ -50,19 +50,19 @@ It does **not** own Riichi rules engine itself. If rule semantics drift, `hydra-
 
 ## Workspace binaries
 
-Crate currently exposes these workspace binaries:
+Crate exposes these workspace binaries:
 
 | Binary | Purpose |
 |--------|---------|
 | `train` | Main training entrypoint; supports normal training, preflight, probe, and DeltaQ-promotion modes |
-| `mjai_audit` | Audits replay datasets and archives, including failure bucketing and optional failure inventories |
+| `mjai_audit` | Audit replay datasets and archives, including failure bucketing and optional failure inventories |
 | `recompress` | Recompression util for replay/data artifacts |
 | `repack_tar` | Repack util for tar-based replay corpora |
-| `build_replay_delta_q_sidecar` | Builds replay-side DeltaQ sidecars |
-| `build_replay_exit_sidecar` | Builds replay-side ExIt sidecars |
+| `build_replay_delta_q_sidecar` | Build replay-side DeltaQ sidecars |
+| `build_replay_exit_sidecar` | Build replay-side ExIt sidecars |
 | `mjai_debug_failure` | Debug helper for replay failures |
-| `mjai_first_failure` | Finds/inspects first replay failure in dataset |
-| `build_bc_shards` | Builds BC shard datasets and manifests from replay corpora |
+| `mjai_first_failure` | Find/inspect first replay failure in dataset |
+| `build_bc_shards` | Build BC shard datasets and manifests from replay corpora |
 
 Main training entrypoint lives at [`src/bin/train.rs`](src/bin/train.rs). Split into focused `src/bin/train/*` submodules for runtime/preflight selection, probe transport, autotune, resume/state persistence, and test support.
 

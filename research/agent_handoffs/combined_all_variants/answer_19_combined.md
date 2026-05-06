@@ -1,30 +1,30 @@
-<combined_run_record run_id="answer_19" variant_id="prompt_and_agent_pair" schema_version="1">
-  <metadata>
-    <notes>Combined record for Prompt 19 and its returned agent answer.</notes>
-    <layout>single_markdown_file_prompt_then_answer</layout>
-  </metadata>
+Read full file. Compress prose only.<combined_run_record run_id="answer_19" variant_id="prompt_and_agent_pair" schema_version="1">
+<metadata>
+<notes>Combined record: Prompt 19 + returned agent answer.</notes>
+<layout>single_markdown_file_prompt_then_answer</layout>
+</metadata>
 
-  <prompt_section>
-  <prompt_text status="preserved" source_path="PROMPT_19_IMPLEMENT_TINY_PONDER_PRIORITY_SCORER.md">
-  <![CDATA[# Prompt 19 — tiny ponder-priority scorer blueprint
+<prompt_section>
+<prompt_text status="preserved" source_path="PROMPT_19_IMPLEMENT_TINY_PONDER_PRIORITY_SCORER.md">
+<![CDATA[# Prompt 19 — tiny ponder-priority scorer blueprint
 
 <role>
-Produce an implementation-ready blueprint.
-Do not give a memo.
-Do not tell us to write a separate spec.
-Your answer itself must be the blueprint.
+Produce impl-ready blueprint.
+No memo.
+Do not tell us write separate spec.
+Answer itself must be blueprint.
 </role>
 
 <direction>
-Work toward the strongest blueprint for a tiny learned scorer that improves ponder priority or hard-state precompute ordering.
+Work toward strongest blueprint for tiny learned scorer improving ponder priority or hard-state precompute ordering.
 
-Keep the problem narrow.
-Do not turn this into a broad runtime router.
+Keep problem narrow.
+Do not turn this into broad runtime router.
 Do not broaden into full metareasoning theory.
 
-We want an answer that tells us what the narrow decision is, how to supervise it, what cheap signals to use, how to benchmark it, how to roll it out safely, and when to kill it.
+Want answer telling narrow decision, supervision, cheap signals, benchmarking, safe rollout, kill conditions.
 
-Use the artifacts below to derive your conclusions.
+Use artifacts below to derive conclusions.
 </direction>
 
 <style>
@@ -36,26 +36,26 @@ Use the artifacts below to derive your conclusions.
 - include worked examples with numbers
 - include enough detail that we can validate it ourselves (pdfs, sources, links, similar projects)
 - distinguish direct artifact support from your own inference
-- use search/browse to find the original paper, then inspect the full PDF with skill; use abstracts or summaries only for discovery, not as the final evidence base
-- use the bash tool to run Python for calculations, math checks, and validation when rigor matters
-- do not finish prematurely; keep looping through discovery, thinking, testing, and validation until the information is saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
+- use search/browse to find original paper, then inspect full PDF with skill; use abstracts or summaries only for discovery, not final evidence base
+- use bash tool to run Python for calculations, math checks, validation when rigor matters
+- do not finish prematurely; keep looping through discovery, thinking, testing, validation until information saturated or blocked, and do not stop before at least 20+ such loops (as much loops as possible tho)
 </style>
 
 <artifact_note>
-The artifacts below reflect what the current codebase/docs appear to say right now. They are not guaranteed to be fully correct. Treat them as evidence to inspect and critique, not truth to inherit. High chance some of them are incomplete, misleading, stale, or semantically wrong, so validate everything.
+Artifacts below reflect what current codebase/docs seem say now. Not guaranteed fully correct. Treat as evidence to inspect and critique, not truth to inherit. High chance some incomplete, misleading, stale, or semantically wrong, so validate everything.
 </artifact_note>
 
 <artifacts>
-Embedded artifact/context dump intentionally omitted during normalization. Use the paired answer body plus the repository source files for audit and follow-up.
+Embedded artifact/context dump intentionally omitted during normalization. Use paired answer body plus repository source files for audit and follow-up.
 </artifacts>
 
 ]]>
-  </prompt_text>
-  </prompt_section>
+</prompt_text>
+</prompt_section>
 
-  <answer_section>
-  <answer_text status="preserved" source_path="agent_19.md">
-  <![CDATA[## Blueprint: tiny learned scorer for the next ponder quantum
+<answer_section>
+<answer_text status="preserved" source_path="agent_19.md">
+<![CDATA[## Blueprint: tiny learned scorer for next ponder quantum
 
 ```rust
 //! Anytime Factored-Belief Search (AFBS) with PUCT selection.
@@ -1592,7 +1592,7 @@ mod tests {
 }
 ```
 
-Artifact C — benchmark and doctrine excerpts:
+Artifact C — benchmark + doctrine excerpts:
 
 ```text
 Pondering = label amplification.
@@ -1632,62 +1632,62 @@ Evaluation harness summary fields: mean placement, stable dan, win rate, deal-in
 
 Learn exactly one thing:
 
-> **Given the current ponder queue and one fixed idle-search quantum `Q`, which queued task should get that next quantum?**
+> **Given current ponder queue + one fixed idle-search quantum `Q`, which queued task should get next quantum?**
 
 Do **not** learn:
 
 * action selection,
 * whether to ponder at all,
 * total idle budget,
-* a full runtime router,
+* full runtime router,
 * ACT/PonderNet-style variable halting.
 
-Keep any existing top-level budget split unchanged. The scorer only orders tasks **inside** the ponder queue.
+Keep existing top-level budget split unchanged. Scorer only orders tasks **inside** ponder queue.
 
-This is the right seam because your artifacts already expose a scalar priority slot:
+Right seam because artifacts already expose scalar priority slot:
 
 * `PonderManager` uses `BinaryHeap<PonderTask>`.
-* `PonderTask` already carries a `priority_score`.
-* the current heuristic is narrow and hand-coded:
+* `PonderTask` already carries `priority_score`.
+* current heuristic narrow + hand-coded:
 
 [
 h_{\text{hand}}(s)=10\max(0,0.1-\text{gap})+\max(0,\text{risk})+\max(0,1-\text{ESS})
 ]
 
-That is already a “tiny scorer”; the learned replacement should stay that small.
+This already “tiny scorer”; learned replacement should stay that small.
 
-### 2. What the artifacts directly support, and what that implies
+### 2. What artifacts directly support, and what that implies
 
 **Direct artifact support**
 
-* Queue ordering is already scalar and local: `priority_score` on `PonderTask`.
-* The current hand score uses exactly three cheap uncertainty signals: `top2_policy_gap`, `risk_score`, `particle_ess`.
-* Doctrine says “pondering = label amplification” and that extra compute is used on small top-2 gaps, high-risk defense, and low ESS states.
+* Queue ordering already scalar + local: `priority_score` on `PonderTask`.
+* Current hand score uses exactly three cheap uncertainty signals: `top2_policy_gap`, `risk_score`, `particle_ess`.
+* Doctrine says “pondering = label amplification” and extra compute goes to small top-2 gaps, high-risk defense, low ESS states.
 * `InferenceServer` only consumes cached ponder results by exact `info_state_hash(obs)`.
-* `PonderResult` already stores `visit_count`, `search_depth`, and `timestamp`.
-* `expand_node` truncates to `TOP_K`, then renormalizes the kept priors.
+* `PonderResult` already stores `visit_count`, `search_depth`, `timestamp`.
+* `expand_node` truncates to `TOP_K`, then renormalizes kept priors.
 
-**Inference / recommendation**
+**Inference / rec**
 
-* The model should predict **marginal value of one fixed search increment**, not total state value.
-* Runtime ordering should multiply that intrinsic marginal value by **reach probability** for speculative future states.
-* Label-harvest ordering should use the intrinsic marginal value **without** reach probability.
+* Model should predict **marginal value of one fixed search increment**, not total state value.
+* Runtime ordering should multiply intrinsic marginal value by **reach probability** for speculative future states.
+* Label-harvest ordering should use intrinsic marginal value **without** reach probability.
 
-That shape is much narrower than ACT/PonderNet-style learned halting, which are about end-to-end adaptive computation. ACT explicitly adds a hand-chosen time penalty and is sensitive to that coefficient; PonderNet improves adaptive compute but still learns a full halting policy. Good background, wrong serving seam here. ([arXiv][1])
+That shape much narrower than ACT/PonderNet-style learned halting, which learn end-to-end adaptive computation. ACT explicitly adds hand-chosen time penalty, sensitive to coefficient. PonderNet improves adaptive compute but still learns full halting policy. Good background, wrong serving seam here. ([arXiv][1])
 
 ### 3. Blockers to fix before training anything
 
-These are not optional.
+Not optional.
 
-#### 3.1 Resolve the speculative-cache key seam
+#### 3.1 Resolve speculative-cache key seam
 
-In Artifact A, speculative child cache keys are built with:
+In Artifact speculative child cache keys built with:
 
 ```rust
 predicted_child_hash(parent_hash, action)
 ```
 
-which is an XOR-derived synthetic key.
+which is XOR-derived synthetic key.
 
 In Artifact B, serving looks up ponder results with:
 
@@ -1695,20 +1695,20 @@ In Artifact B, serving looks up ponder results with:
 InferenceServer::info_state_hash(obs)
 ```
 
-which is an FNV hash over the actual observation floats.
+which is FNV hash over actual observation floats.
 
-Unless some unshown reconciliation layer exists, those are different key spaces. If that mismatch is real, predicted-child precompute cannot hit the fast path, so improving speculative ordering will not improve runtime.
+Unless some unshown reconciliation layer exists, these are different key spaces. If mismatch real, predicted-child precompute cannot hit fast path, so improving speculative ordering will not improve runtime.
 
 **Required fix**
 
-* either enqueue speculative children with the **actual child observation hash**,
+* either enqueue speculative children with **actual child observation hash**,
 * or keep both:
 
   * `spec_key` for background bookkeeping,
   * `actual_info_state_hash` once realized,
   * and reconcile them on state realization.
 
-If you do not fix this, kill the project before model work.
+If not fixed, kill project before model work.
 
 #### 3.2 Do not use renormalized top-k priors as reach probability
 
@@ -1718,30 +1718,30 @@ If you do not fix this, kill the project before model work.
 2. truncate to `TOP_K`,
 3. renormalize selected mass to 1.
 
-So `child.prior` after expansion is **not** the true probability of reaching that child under the parent action distribution.
+So `child.prior` after expansion is **not** true probability of reaching that child under parent action distribution.
 
 **Required fix**
 
 * store `reach_prob_raw = parent_policy[action]` **before** `TOP_K` truncation/renorm.
-* use that raw probability for runtime priority.
+* use raw probability for runtime priority.
 
-#### 3.3 Add staleness and dedup
+#### 3.3 Add staleness + dedup
 
-The excerpt shows:
+Excerpt shows:
 
 * `timestamp` exists on `PonderResult`, but no freshness gate in serving.
 * no obvious queue dedup / generation check.
-* multiple cache abstractions (`PonderCache`, `PonderManager.cache`, `InferenceServer.ponder_cache`) that need auditing to ensure they are the same live cache path.
+* multiple cache abstractions (`PonderCache`, `PonderManager.cache`, `InferenceServer.ponder_cache`) needing audit to ensure same live cache path.
 
 **Required fix**
 
 * add queue generation counters or stale-bit discard,
 * add `max_cache_age_ms`,
-* ensure the inference server and ponder worker share the same cache instance end to end.
+* ensure inference server + ponder worker share same cache instance end to end.
 
 ### 4. The fixed compute quantum
 
-Use a constant quantum:
+Use constant quantum:
 
 [
 Q = 32 \text{ leaf evals / AFBS iterations}
@@ -1750,35 +1750,35 @@ Q = 32 \text{ leaf evals / AFBS iterations}
 Reason:
 
 * `MIN_BATCH = 32` already exists.
-* one batch is a natural indivisible unit.
+* one batch = natural indivisible unit.
 * keeping `Q` fixed makes labels comparable.
 
-Use a fixed deeper reference budget:
+Use fixed deeper reference budget:
 
 [
 R = 16Q = 512
 ]
 
-Do not make `Q` input-dependent. The scorer is supposed to rank tasks for the **next** quantum, not learn halting.
+Do not make `Q` input-dependent. Scorer ranks tasks for **next** quantum, not halting.
 
 ### 5. The target to supervise
 
-Let a queued task be in its **current** search state at enqueue time, not necessarily from zero visits.
+Let queued task be in its **current** search state at enqueue time, not necessarily from zero visits.
 
 Define:
 
-* `π0, v0`: current shallow output before the extra quantum,
+* `π0, v0`: current shallow output before extra quantum,
 * `πQ, vQ`: output after adding exactly `Q` more iterations,
 * `πR, vR`: output after continuing to `R` total extra iterations.
 
-Use the same legal masking and normalization used in serving.
+Use same legal masking + normalization used in serving.
 
 #### 5.1 Intrinsic marginal gain target
 
 Policy component:
 
 [
-u_\pi = \max\left(0,; D_{\mathrm{KL}}(\pi_R ,|, \pi_0) - D_{\mathrm{KL}}(\pi_R ,|, \pi_Q)\right)
+u_\pi = \max\left(0,; D_{\mathrm{KL}}(\pi_R,|, \pi_0) - D_{\mathrm{KL}}(\pi_R,|, \pi_Q)\right)
 ]
 
 Value component:
@@ -1810,11 +1810,11 @@ Start with:
 
 Then retune on held-out replay only if needed.
 
-This target says: “How much closer did one more quantum move me toward a much stronger search result?” That is the right supervision for a tiny scorer that schedules compute. It mirrors the learned-branching pattern: imitate the marginal benefit of a stronger but expensive expert rather than optimize long-horizon outcome directly. Learned branching papers make this exact tradeoff argument: a cheaper predictor can improve total solve speed even if it is weaker than the expensive expert on a per-decision basis. ([arXiv][2])
+This target asks: “How much closer did one more quantum move me toward much stronger search result?” Right supervision for tiny compute-scheduling scorer. Mirrors learned-branching pattern: imitate marginal benefit of stronger but expensive expert, not optimize long-horizon outcome directly. Learned branching papers make this exact tradeoff argument: cheaper predictor can improve total solve speed even if weaker than expensive expert per decision. ([arXiv][2])
 
 #### 5.2 Runtime priority vs label priority
 
-Train the model on `y_hard` only.
+Train model on `y_hard` only.
 
 Then use two serving formulas:
 
@@ -1828,16 +1828,16 @@ Hard-state / label-harvest priority:
 p_{\text{label}} = \hat y_{\text{hard}}
 ]
 
-This is the key narrow trick:
+Key narrow trick:
 
-* runtime cares whether the state is likely to be reached,
-* label amplification cares whether the state is intrinsically informative.
+* runtime cares whether state likely reached,
+* label amplification cares whether state intrinsically informative.
 
-That matches your doctrine that pondering is both runtime help and label generation, and it is very close in spirit to KataGo’s compute allocation: vary search effort, but use stronger-search outputs as the valuable training target. KataGo’s playout-cap randomization explicitly mixed fast and full search, recorded only full-search turns for training, and improved compute efficiency over fixed playout counts. ([ar5iv][3])
+Matches doctrine that pondering is both runtime help + label generation, and close in spirit to KataGo’s compute allocation: vary search effort, but use stronger-search outputs as valuable training target. KataGo’s playout-cap randomization explicitly mixed fast + full search, recorded only full-search turns for training, improved compute efficiency over fixed playout counts. ([ar5iv][3])
 
 ### 6. Cheap signals to use
 
-Keep the model tiny. Start with signals that are already in the artifacts or are derivable by existing helpers.
+Keep model tiny. Start with signals already in artifacts or derivable by existing helpers.
 
 #### 6.1 Mandatory v1 features
 
@@ -1863,17 +1863,17 @@ x_4 = \mathbf{1}{\text{root_task}}
 x_5 = \mathbf{1}{\text{call_reaction_mode}}
 ]
 
-`reach_prob` is **not** an input feature. It is an external multiplier at serving time.
+`reach_prob` is **not** input feature. External multiplier at serving time.
 
 Why:
 
 * `gap`, `risk`, `ESS` are direct artifact signals.
-* `root_task` matters because root deepening is guaranteed reachable.
-* `call_reaction_mode` matters because the runtime regime differs (50 ms vs 150 ms budgets in the seam).
+* `root_task` matters because root deepening guaranteed reachable.
+* `call_reaction_mode` matters because runtime regime differs (50 ms vs 150 ms budgets in seam).
 
 #### 6.2 Optional zero-cost extras
 
-Only add these if they are already available at enqueue time without extra model calls:
+Only add if already available at enqueue time without extra model calls:
 
 [
 x_6 = \frac{H(\pi)}{\log(\max(2, |\mathcal{A}_{legal}|))}
@@ -1895,18 +1895,18 @@ x_9 = \frac{\log(1+\text{visit_count})}{\log(1+V_{\max})}
 x_{10} = \frac{\text{search_depth}}{D_{\max}}
 ]
 
-Use `policy_entropy`, `policy_top1_confidence`, and `num_legal_actions` from the inference seam, and `visit_count` / `search_depth` from `PonderResult`.
+Use `policy_entropy`, `policy_top1_confidence`, `num_legal_actions` from inference seam, and `visit_count` / `search_depth` from `PonderResult`.
 
 Interpretation:
 
 * entropy / many legal actions often mean more room for search to matter,
 * high current visits / depth mean diminishing marginal benefit from one more quantum.
 
-Do **not** add raw observation embeddings, full hidden-state features, or broad runtime counters in v1. That turns this into a router.
+Do **not** add raw observation embeddings, full hidden-state features, or broad runtime counters in v1. That turns this into router.
 
 ### 7. The model
 
-Use a sign-constrained linear model.
+Use sign-constrained linear model.
 
 [
 \hat y_{\text{hard}} = \max(0,; b + w^\top x)
@@ -1922,9 +1922,9 @@ Sign constraints:
 * `w_log_visits <= 0` if used
 * `w_depth <= 0` if used
 
-This preserves the monotonic shape already encoded by the hand heuristic while letting the weights be learned.
+This preserves monotonic shape already encoded by hand heuristic while letting weights be learned.
 
-Do **not** start with a tree model or MLP. A tiny local linear scorer is more than enough here. SmartChoices is a strong deployment pattern for this: local CPU inference, fallback to a default policy, validation gates relative to baseline, canary and rollback. HALP is the same lesson in a different domain: augment a heuristic with ML rather than replace it end to end. ([arXiv][4])
+Do **not** start with tree model or MLP. Tiny local linear scorer enough here. SmartChoices is strong deployment pattern for this: local CPU inference, fallback to default policy, validation gates relative to baseline, canary + rollback. HALP same lesson in different domain: augment heuristic with ML rather than replace end to end. ([arXiv][4])
 
 #### 7.1 Training objective
 
@@ -1934,7 +1934,7 @@ Fit on:
 t = \log(1+y_{\text{hard}})
 ]
 
-with Huber loss and `L2` regularization, under the sign constraints.
+with Huber loss + `L2` regularization, under sign constraints.
 
 That gives stable regression while preserving ranking.
 
@@ -1972,8 +1972,8 @@ cache_hit_on_realize   # yes/no
 
 Two rules matter:
 
-1. `reach_prob_raw` must be from the pre-truncation parent policy.
-2. `pi0 -> piQ -> piR` must continue from the task’s **actual current search state**, not restart from zero.
+1. `reach_prob_raw` must come from pre-truncation parent policy.
+2. `pi0 -> piQ -> piR` must continue from task’s **actual current search state**, not restart from zero.
 
 ### 9. Rust serving shape
 
@@ -2103,9 +2103,9 @@ Use three levels.
 
 #### 11.1 Offline queue-replay metric
 
-For each idle slot `t`, let `Q_t` be the queued tasks and `B_t` the number of quanta available.
+For each idle slot `t`, let `Q_t` be queued tasks and `B_t` number of quanta available.
 
-For a scheduler `S`, define realized replay utility:
+For scheduler `S`, define realized replay utility:
 
 [
 U(S)=\sum_t\sum_{i\in S(Q_t,B_t)} \mathbf{1}{\text{was_realized}*i}; y*{\text{hard},i}
@@ -2125,7 +2125,7 @@ Primary metric:
 \text{Capture}(S)=\frac{U(S)}{U(\text{oracle})}
 ]
 
-This is the metric that matters most.
+This metric matters most.
 
 #### 11.2 Label-amplification metric
 
@@ -2135,11 +2135,11 @@ Ignore realization and measure:
 U_{\text{label}}(S)=\sum_t\sum_{i\in S(Q_t,B_t)} y_{\text{hard},i}
 ]
 
-This tells you whether the scorer is surfacing intrinsically informative hard states.
+This tells whether scorer surfaces intrinsically informative hard states.
 
 #### 11.3 End-to-end gates
 
-Keep your existing artifact gates unchanged:
+Keep existing artifact gates unchanged:
 
 * `afbs_on_turn_ms < 150`
 * `ct_smc_dp_ms < 1`
@@ -2147,7 +2147,7 @@ Keep your existing artifact gates unchanged:
 * `self_play_games_per_sec > 20`
 * `distill_kl_drift < 0.1`
 
-Also keep the evaluation harness fields unchanged:
+Also keep evaluation harness fields unchanged:
 
 * mean placement,
 * stable dan,
@@ -2155,7 +2155,7 @@ Also keep the evaluation harness fields unchanged:
 * deal-in rate,
 * tsumo rate.
 
-Do **not** train on those. Use them only as outer acceptance metrics.
+Do **not** train on those. Use only as outer acceptance metrics.
 
 ### 12. Acceptance criteria and rollout
 
@@ -2177,11 +2177,11 @@ Stage 1: shadow mode.
 
 * compute learned scores,
 * keep scheduling with heuristic,
-* log both rankings and realized outcomes.
+* log both rankings + realized outcomes.
 
 Stage 2: tie-break mode.
 
-* use learned score only among tasks whose hand score falls in the same bucket.
+* use learned score only among tasks whose hand score falls in same bucket.
 
 Stage 3: predicted-child-only mode.
 
@@ -2193,23 +2193,23 @@ Stage 4: full ponder-queue mode.
 * learned priority everywhere,
 * fallback to heuristic on any parse/NaN/missing-model error.
 
-This is the same deployment style that SmartChoices argues for: local inference, validation requirements, fallback default behavior, canary, rollback. HALP is another good example of shipping a heuristic+ML hybrid instead of replacing the heuristic cold turkey. ([arXiv][4])
+Same deployment style SmartChoices argues for: local inference, validation requirements, fallback default behavior, canary, rollback. HALP another good example of shipping heuristic+ML hybrid instead of replacing heuristic cold turkey. ([arXiv][4])
 
 ### 13. Kill criteria
 
-Kill it immediately if any of these are true:
+Kill immediately if any true:
 
 1. **Speculative keys do not reconcile to serving keys.**
-   Then predicted-child precompute cannot hit, so the scorer cannot help runtime.
+Then predicted-child precompute cannot hit, so scorer cannot help runtime.
 
-2. **Heuristic + reach probability captures almost all the gain.**
-   If `Capture(heuristic_plus_reach)` is within 1 percentage point of the learned scorer, ship the simpler rule and stop. SmartChoices explicitly treats “a simpler model is not better” as a required check. ([arXiv][4])
+2. **Heuristic + reach probability captures almost all gain.**
+If `Capture(heuristic_plus_reach)` is within 1 percentage point of learned scorer, ship simpler rule and stop. SmartChoices explicitly treats “simpler model is not better” as required check. ([arXiv][4])
 
 3. **No replay win.**
-   After three held-out replay shards, learned capture is <2% better than heuristic+reach.
+After three held-out replay shards, learned capture is <2% better than heuristic+reach.
 
 4. **System regression.**
-   Any failure of the artifact gates, especially:
+Any failure of artifact gates, especially:
 
    * `self_play_games_per_sec <= 20`,
    * `afbs_on_turn_ms >= 150`,
@@ -2224,7 +2224,7 @@ Kill it immediately if any of these are true:
 6. **Degenerate scorer.**
 
    * almost all predicted priorities collapse into one bucket,
-   * or the learned weights simply rediscover the old heuristic with no measurable gain.
+   * or learned weights rediscover old heuristic with no measurable gain.
 
 ### 14. Worked example
 
@@ -2246,9 +2246,9 @@ gives:
 * `B_lowreach_hard = 2.50`
 * `C_midreach_easy = 0.15`
 
-So the current queue pops `B`.
+So current queue pops `B`.
 
-Now define marginal hard-gain labels from a deeper reference:
+Now define marginal hard-gain labels from deeper reference:
 
 * `A_root`: `y_hard ≈ 0.214991`
 * `B_lowreach_hard`: `y_hard ≈ 0.216032`
@@ -2271,30 +2271,30 @@ so:
 
 So runtime should pop `A`, while label-harvest could still prefer `B`.
 
-That is exactly the behavior you want:
+Exactly wanted behavior:
 
 * runtime compute goes to likely-to-matter states,
 * label amplification can still mine intrinsically hard but low-reach states.
 
 ### 15. Why this exact blueprint, not something broader
 
-ACT and PonderNet justify the general idea that harder inputs deserve more compute, but they solve a broader halting problem and bring tuning complexity you do not need at this seam. ([arXiv][1])
+ACT + PonderNet justify general idea that harder inputs deserve more compute, but solve broader halting problem and bring tuning complexity not needed at this seam. ([arXiv][1])
 
-KataGo is the closer pattern for supervision: vary search effort, use deeper search as the target, and keep the training target tied to the stronger search rather than the raw exploratory search dynamics. ([ar5iv][3])
+KataGo is closer pattern for supervision: vary search effort, use deeper search as target, keep training target tied to stronger search rather than raw exploratory search dynamics. ([ar5iv][3])
 
-Learned branching is the closest analogy for the tiny scorer itself: imitate the marginal value of an expensive decision rule with a cheap model, and judge success by **overall throughput-adjusted utility**, not by matching the expensive expert perfectly on every state. ([arXiv][2])
+Learned branching is closest analogy for tiny scorer itself: imitate marginal value of expensive decision rule with cheap model, judge success by **overall throughput-adjusted utility**, not by matching expensive expert perfectly on every state. ([arXiv][2])
 
-SmartChoices and HALP are the closest deployment analogies: local tiny inference, strict fallback, metric constraints versus baseline, canary/rollback, and a bias toward augmenting heuristics instead of replacing them. ([arXiv][4])
+SmartChoices + HALP are closest deployment analogies: local tiny inference, strict fallback, metric constraints versus baseline, canary/rollback, bias toward augmenting heuristics instead of replacing them. ([arXiv][4])
 
 ---
 
-That is the scorer to build: **a sign-constrained linear estimate of the intrinsic value of one fixed ponder quantum, multiplied by raw reach probability at runtime, with separate label-harvest use, hard fallback to the current heuristic, and explicit kill criteria if the simpler heuristic+reach baseline captures the same gain.**
+That is scorer to build: **sign-constrained linear estimate of intrinsic value of one fixed ponder quantum, multiplied by raw reach probability at runtime, with separate label-harvest use, hard fallback to current heuristic, and explicit kill criteria if simpler heuristic+reach baseline captures same gain.**
 
 [1]: https://arxiv.org/pdf/2107.05407.pdf "https://arxiv.org/pdf/2107.05407.pdf"
 [2]: https://arxiv.org/pdf/2307.01434 "https://arxiv.org/pdf/2307.01434"
 [3]: https://ar5iv.org/pdf/1902.10565 "https://ar5iv.org/pdf/1902.10565"
 [4]: https://arxiv.org/pdf/2304.13033 "https://arxiv.org/pdf/2304.13033"
 ]]>
-  </answer_text>
-  </answer_section>
+</answer_text>
+</answer_section>
 </combined_run_record>

@@ -1,29 +1,29 @@
 # MJAI Audit and Failure Triage
 
-Operator guide for validating replay corpora before training and drilling into broken MJAI inputs when Hydra rejects file or archive entry.
+Operator guide: validate replay corpora before training. Also triage broken MJAI inputs when Hydra rejects file or archive entry.
 
-This document covers three concrete binaries from `hydra-train`:
+This doc covers three concrete binaries from `hydra-train`:
 
 - `mjai_audit`
 - `mjai_first_failure`
 - `mjai_debug_failure`
 
-Use this guide before BC training, before building BC shards, before generating replay-side supervision artifacts from new corpus. For main training entrypoint, read [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). For replay sidecar generation, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
+Use before BC training, before BC shard build, before replay-side supervision artifact generation from new corpus. For main training entrypoint, read [`docs/TRAINING_WORKFLOWS.md`](TRAINING_WORKFLOWS.md). For replay sidecar generation, read [`docs/REPLAY_SIDECARS.md`](REPLAY_SIDECARS.md).
 
 ## When to use this workflow
 
 Run audit/triage loop when:
 
-- new replay corpus not yet validated
-- training skipping more files than expected
-- replay-sidecar generation or shard building seems to fail on subset of files
+- new replay corpus unvalidated
+- training skips more files than expected
+- replay-sidecar generation or shard build fails on subset
 - need isolate first broken entry inside `.tar.zst` archive
 - need human-readable reason single replay fails loader validation
 
-Workflow intentionally layered:
+Workflow layered:
 
-1. `mjai_audit` tells whether corpus healthy enough to use.
-2. `mjai_first_failure` isolates first bad archive entry when source is archive.
+1. `mjai_audit` tells whether corpus healthy enough.
+2. `mjai_first_failure` isolates first bad archive entry.
 3. `mjai_debug_failure` explains single failing replay in more detail.
 
 ## 1) `mjai_audit`: corpus-wide validation
@@ -42,24 +42,24 @@ mjai_audit <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-
 
 `mjai_audit` accepts:
 
-- directory containing loose replay files
+- directory with loose replay files
 - direct loose replay file path
 - direct `.tar.zst` archive path
 
-It uses same replay loader family Hydra training relies on:
+It uses same replay loader family Hydra training uses:
 
 - loose files validated with `load_game_from_path(...)`
 - archive entries validated with `load_game_from_stream(...)`
 
-That means audit not loose pre-check. It exercises same replay acceptance surface training pipeline later depends on.
+So audit not loose pre-check. It hits same replay acceptance surface training later needs.
 
 ### Important flags
 
 | Flag | Meaning |
 |---|---|
-| `--threads N` | Number of rayon worker threads used for audit work. Must be greater than 0. |
-| `--failure-examples N` | Maximum number of example failure payloads to print at end. Defaults to 20. |
-| `--failure-inventory-dir DIR` | If set, writes per-source JSONL inventories containing every failure encountered for that source. |
+| `--threads N` | Rayon worker count for audit work. Must be greater than 0. |
+| `--failure-examples N` | Max example failure payloads printed at end. Default 20. |
+| `--failure-inventory-dir DIR` | If set, writes per-source JSONL inventories with every failure for that source. |
 
 ### Example: audit a loose replay directory
 
@@ -78,7 +78,7 @@ cargo run -p hydra-train --bin mjai_audit -- /data/replays.tar.zst \
 
 ## Understanding `mjai_audit` output
 
-At startup, binary prints what it is auditing and how many worker threads it will use.
+At startup, binary prints target and worker-thread count.
 
 Summary lines that matter:
 
@@ -102,7 +102,7 @@ When failures exist, `mjai_audit` prints ranked summary headed by:
 Top failure buckets:
 ```
 
-Each bucket = first line of failure message, collapsed into count. Fastest way to answer:
+Each bucket = first line of failure message, collapsed into count. Fast way answer:
 
 - corpus mostly fine with one repeated schema issue?
 - one broken archive, or many unrelated failure classes?
@@ -110,13 +110,13 @@ Each bucket = first line of failure message, collapsed into count. Fastest way t
 
 ### Failure examples
 
-If `--failure-examples` non-zero, audit prints bounded sample of raw failures after bucket summary.
+If `--failure-examples` non-zero, audit prints bounded raw-failure sample after bucket summary.
 
-Use that output for quick triage. If need exhaustive failure details, use `--failure-inventory-dir`.
+Use for quick triage. Need exhaustive failure detail -> use `--failure-inventory-dir`.
 
 ## Failure inventories
 
-If `--failure-inventory-dir DIR` is set, Hydra creates one JSONL inventory per source.
+If `--failure-inventory-dir DIR` set, Hydra creates one JSONL inventory per source.
 
 Each line contains:
 
@@ -126,19 +126,19 @@ Each line contains:
 
 Useful when:
 
-- need hand failures to another cleanup tool
-- want durable machine-readable record instead of console output
-- large archive produces many bad entries and you do not want lose them in terminal scrollback
+- need hand failures to cleanup tool
+- want durable machine-readable record, not console output
+- large archive makes many bad entries, terminal scrollback not enough
 
 ### Identity format
 
-Hydra records identities differently by source type:
+Hydra records identities by source type:
 
 - loose file: file path itself
 - archive entry by path: `archive.tar.zst/path/inside/archive.json`
 - archive entry when path inspection fails: `archive.tar.zst#entry[<index>]`
 
-That makes mapping failures back to real container and entry possible without reverse-engineering audit logs.
+So failures map back to real container and entry without reverse-engineering audit logs.
 
 ## 2) `mjai_first_failure`: find the first bad entry in an archive
 
@@ -152,7 +152,7 @@ CLI shape:
 mjai_first_failure <archive.tar.zst>
 ```
 
-This tool intentionally narrow. It scans one archive in order and stops on first MJAI entry that fails replay loading.
+This tool narrow by design. It scans one archive in order, stops on first MJAI entry that fails replay load.
 
 On failure, it prints:
 
@@ -167,10 +167,10 @@ Example:
 cargo run -p hydra-train --bin mjai_first_failure -- /data/replays.tar.zst
 ```
 
-Use it when:
+Use when:
 
-- `mjai_audit` says archive bad, but need first reproducing entry fast
-- want deterministic “first bad record” for debugging or CI reproduction
+- `mjai_audit` says archive bad, need first reproducing entry fast
+- want deterministic first bad record for debugging or CI reproduction
 
 If archive healthy, Hydra prints:
 
@@ -190,7 +190,7 @@ CLI shape:
 mjai_debug_failure <replay.json>
 ```
 
-This tool runs focused replay-failure explainer on one replay file and prints detailed report for first failure found.
+This tool runs focused replay-failure explainer on one replay file. Prints detailed report for first failure found.
 
 Example:
 
@@ -198,7 +198,7 @@ Example:
 cargo run -p hydra-train --bin mjai_debug_failure -- /tmp/failing_replay.json
 ```
 
-Use it when:
+Use when:
 
 - already isolated single bad replay from `mjai_audit` or `mjai_first_failure`
 - need deeper explanation than one-line failure bucket or raw archive failure message
@@ -214,9 +214,9 @@ No failure found.
 ### For a new corpus
 
 1. Run `mjai_audit` on whole corpus.
-2. If no failures, proceed to training or shard building.
+2. If no failures, proceed to training or shard build.
 3. If failures exist, inspect failure buckets and few examples.
-4. If failures widespread, persist failure inventories and hand them to cleanup pipeline.
+4. If failures widespread, persist failure inventories and hand to cleanup pipeline.
 
 ### For a broken archive
 
@@ -230,16 +230,16 @@ Use `mjai_audit` as top-level gate because it measures:
 
 - how many sources load at all
 - how many samples survive loader validation
-- what dominant failure classes are
+- dominant failure classes
 
-That is much better signal than ad hoc file-count checks.
+Better signal than ad hoc file-count checks.
 
 ## Reading results correctly
 
 - few skipped files in large corpus may be tolerable for experimentation, but still real loader mismatches
-- large `samples` count with high `skipped` count usually means corpus usable but dirty
-- small `samples` count with many failures means training stats and validation splits may mislead; fix corpus first
-- archive failures often easier when first isolating one bad entry instead of treating archive as opaque
+- large `samples` count + high `skipped` count usually means corpus usable but dirty
+- small `samples` count + many failures means training stats and validation splits may mislead; fix corpus first
+- archive failures easier if first isolate one bad entry, not treat archive as opaque
 
 ## Relationship to training and shard building
 
@@ -249,7 +249,7 @@ Run this workflow before:
 - BC shard generation
 - replay-sidecar generation for ExIt or DeltaQ labels
 
-That order matters because all those workflows assume replay loader can consume underlying corpus consistently.
+Order matters because all those workflows assume replay loader can consume underlying corpus consistently.
 
 ## Where to read next
 
