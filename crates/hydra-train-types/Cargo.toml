@@ -1,0 +1,10 @@
+[package]
+name = "hydra-train-types"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Hydra training scalar coordination types"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true

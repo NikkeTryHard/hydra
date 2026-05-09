@@ -1,0 +1,14 @@
+//! Neural model components for Hydra.
+//!
+//! This crate owns the pure Burn model building blocks used by `hydra-train`.
+
+#![deny(clippy::dbg_macro, clippy::manual_assert)]
+
+/// Automatic mixed precision compatibility helpers.
+pub mod amp;
+/// SE-ResNet backbone modules.
+pub mod backbone;
+/// Model output head modules.
+pub mod heads;
+/// Search-as-Feature adaptor modules.
+pub mod saf;

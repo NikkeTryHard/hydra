@@ -13,6 +13,8 @@ members = [
     "crates/hydra-runtime-types",
     "crates/hydra-safety",
     "crates/hydra-train-algo",
+    "crates/hydra-model",
+    "crates/hydra-train-types",
     "crates/hydra-train",
 ]
 

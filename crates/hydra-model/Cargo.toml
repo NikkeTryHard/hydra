@@ -1,0 +1,20 @@
+[package]
+name = "hydra-model"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Neural model components for Hydra Riichi Mahjong AI"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }
+burn = { version = "0.20", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+burn = { version = "0.20", features = ["ndarray"] }

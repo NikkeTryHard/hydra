@@ -3225,6 +3225,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hydra-model"
+version = "0.1.0"
+dependencies = [
+ "burn",
+ "hydra-core",
+]
+
+[[package]]
 name = "hydra-replay-loader"
 version = "0.1.0"
 dependencies = [
@@ -3281,10 +3289,12 @@ dependencies = [
  "hydra-core",
  "hydra-data-core",
  "hydra-engine",
+ "hydra-model",
  "hydra-replay-loader",
  "hydra-replay-sidecar",
  "hydra-sample-cache",
  "hydra-train-algo",
+ "hydra-train-types",
  "indicatif",
  "libloading",
  "memmap2",
@@ -3308,6 +3318,10 @@ version = "0.1.0"
 dependencies = [
  "burn",
 ]
+
+[[package]]
+name = "hydra-train-types"
+version = "0.1.0"
 
 [[package]]
 name = "hyper"
