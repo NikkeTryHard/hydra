@@ -58,7 +58,7 @@ Single source truth for Hydra citations.
 | AlphaJong | https://github.com/Jimboom7/AlphaJong | JavaScript | — | — | Browser heuristic engine (NOT AlphaZero despite name). Tunable offense/defense sliders. Only weak baseline; useful to sanity-check Hydra beats simple heuristics by lot. |
 | mjai-manue | https://github.com/gimite/mjai-manue | Ruby | 37 | — | Original MJAI protocol client. Protocol ref; defines canonical MJAI message format Hydra must match. |
 | NAGA | https://dmv.nico/en/articles/mahjong_ai_naga/ | — | — | Commercial | **Pure supervised learning**. 4 independent CNNs (discard, call, riichi, kan) trained on Tenhou Houou logs via imitation learning. No self-play, no RL. Uses confidence estimation (DeVries & Taylor 2018) as training regularization and Guided Backpropagation (Springenberg et al. 2014) for interpretability. 5 playstyle variants (Omega, Gamma, Nishiki, Hibakari, Kagashi) differ by training data, not arch. CNN details (layers, filters, input shape) not public; [DMV article](https://dmv.nico/en/articles/mahjong_ai_naga/) only official technical doc. Achieved 10-dan on Tenhou (26,598 games — unverified; number absent from DMV article and no public source found), current models estimated ~9-dan stable. Not open-source. NAGA "match%" common but imperfect benchmark. |
-| LuckyJ | https://haobofu.github.io/ | — | — | Commercial | Tencent mahjong AI (绝艺/JueYi brand). 10-dan on Tenhou in 1,321 games, 10.68 stable dan, strongest known AI. ACH + OLSS, pure self-play. See [COMMUNITY_INSIGHTS § LuckyJ](COMMUNITY_INSIGHTS.md#4-luckyj-tencent) for arch analysis. |
+| LuckyJ | https://haobofu.github.io/ | — | — | Commercial | Tencent mahjong AI (绝艺/JueYi brand). 10-dan on Tenhou in 1,321 games, 10.68 stable dan, strongest known AI. ACH + OLSS, pure self-play. See [MAHJONG_AI_INTEL § LuckyJ](MAHJONG_AI_INTEL.md#luckyj-intel) for compact arch analysis. |
 
 ### Analysis & Review Tools
 
@@ -143,7 +143,7 @@ Single source truth for Hydra citations.
 
 ## Training Data Sources
 
-> See [ECOSYSTEM.md § Data Sources & Datasets](ECOSYSTEM.md#3-data-sources--datasets) for current training-data summary. Separate `archive/DATA_SOURCES.md` not present in current repo.
+> Current training-data summary preserved in [MAHJONG_AI_INTEL § Ecosystem / source volatility](MAHJONG_AI_INTEL.md#ecosystem--source-volatility). Separate `archive/DATA_SOURCES.md` not present in current repo.
 
 ---
 

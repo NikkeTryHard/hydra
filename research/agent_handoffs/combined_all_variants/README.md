@@ -1,25 +1,17 @@
 # Combined archive corpus
 
-Dir = raw historical archive corpus for Hydra handoff work.
+Raw `answer_*_combined.md` and reference prompt Markdown moved out of active docs.
 
-Historical wording disclaimer:
-- files = preserved snapshots of agent output at time
-- may contain older authority-flow language not matching live repo docs
-- mismatch intentional historical preservation, not signal current routing model failed update
+Use parent archive snapshot:
 
-What it is for:
-- preserve full `answer_*_combined.md` artifacts and prompt exemplars
-- keep broad prior exploration as evidence
-- provide source material for canonical archive SSOT in `ARCHIVE_CANONICAL_CLAIMS.jsonl`
+```text
+research/agent_handoffs/historical_markdown_snapshot.tar.xz
+```
 
-What it is not:
-- not canonical archive SSOT
-- not promoted doctrine
-- not runtime reality
-- not expected DRY same as live docs
+Why:
+- raw answer files are historical evidence, not doctrine
+- canonical claim ledger is `../ARCHIVE_CANONICAL_CLAIMS.jsonl`
+- derived triage is `../ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`
+- promoted doctrine lives in `../../design/HYDRA_RECONCILIATION.md` and `../../design/HYDRA_FINAL.md`
 
-Important path remaps after doc cleanup:
-- historical references to `research/BUILD_AGENT_PROMPT.md` should be interpreted through current routing chain instead: `README.md` -> `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` -> `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` -> `research/design/HYDRA_RECONCILIATION.md` / `research/design/HYDRA_FINAL.md` as needed -> `research/design/IMPLEMENTATION_ROADMAP.md`
-- historical references to `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.md` now map to `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` (source) and `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md` (generated render)
-
-If combined answer conflicts with canonical archive SSOT, promoted doctrine summaries, or current code, treat as historical raw evidence; validate before reuse.
+If validating ledger `source_ref`, extract snapshot outside active docs, inspect exact raw file/line, then return to promoted docs/current code before acting.

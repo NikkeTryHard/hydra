@@ -340,7 +340,7 @@ More compute when top-2 policy gap is small, in high-risk defense contexts, or w
 | Phase 1: Oracle guiding | 200 | LearnerNet + oracle critic | ~5M | Oracle-calibrated beliefs/danger |
 | Phase 2: DRDA-wrapped ACH | 800 | LearnerNet via ACH+DRDA | ~18M | Game-theoretic base + early ExIt |
 | Phase 3: ExIt + Pondering | 800 | LearnerNet (deep AFBS on hard positions) | ~12M | Deep search ExIt + endgame |
-| **Total** | **2000** |                                                                                                                                | **~35M** |                                                                                                                                |
+| **Total** | **2000** | All active nets | ~35M | BC -> oracle -> ACH/DRDA -> ExIt training budget |
 
 Logical role split: training, self-play generation, and pondering/search amplification should be partitioned across available Delta A100 budget as throughput permits. Treat as workload roles, not claim of exclusive full-node use. Distillation: Learner -> Actor continuously (IMPALA-style).
 

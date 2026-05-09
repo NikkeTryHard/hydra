@@ -1,64 +1,45 @@
 # hydra-core
 
-Core game/runtime crate for Hydra Riichi Mahjong AI. Sits atop `hydra-engine` / `riichienv-core`. Provides engine-side parts for training + inference: observation encoding, safety analysis, search/belief feature bridge, deterministic seeding, batch simulation.
+Crate-local landing page. Runtime manual lives in [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md). Shape/compat quick table lives in [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
 
-## Overview
+## Owns
 
-`hydra-core` turns raw game states into neural net inputs. Current live encoder = **fixed-superset 192x34 observation tensor**:
+- Runtime bridge from `hydra-engine` / `riichienv_core` observations into Hydra features.
+- Fixed-superset observation encoder: `192 x 34`; baseline prefix = channels `0..84`.
+- 46-action Hydra action space + legal mask semantics.
+- Safety features: genbutsu, suji, kabe, one-chance, tenpai hints.
+- Deterministic seeding: SHA-256 KDF, ChaCha8Rng, vendored Fisher-Yates wall shuffle.
+- Batch sim + game loop glue for training/eval.
+- Batch shanten cache + runtime feature plumbing for search/belief / Hand-EV planes.
 
-- channels `0..84`: baseline public + safety planes
-- channels `85..149`: Group C search/belief context + presence masks + reserved slots
-- channels `150..191`: Group D Hand-EV context + presence mask
+## Does not own
 
-Old `85x34` view still useful as baseline prefix, but not full current encoder.
+- Mahjong rules, scoring, legal action generation internals: `crates/hydra-engine` owns vendored engine behavior.
+- Model architecture, losses, runtime selection, BC/RL orchestration: `crates/hydra-train` owns.
+- Research doctrine / promoted-vs-staged decisions: `research/design/HYDRA_RECONCILIATION.md` + `research/design/HYDRA_FINAL.md` own.
 
-This crate also provides batch simulation pipeline: run thousands games in parallel via rayon, encode observations on fly, feed direct into training loop.
+## Critical invariants
 
-For full live runtime/channel contract, read [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md).
-For compatibility-sensitive shape/runtime facts, read [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
+| Surface | Contract |
+|---|---|
+| Encoder shape | `192 x 34` floats, row-major |
+| Baseline prefix | channels `0..84`; historical `85 x 34`, not full live encoder |
+| Group C | channels `85..149`; search/belief context + masks + reserve |
+| Group D | channels `150..191`; Hand-EV context + mask |
+| Action space | 46 actions, Mortal-compatible indexing |
+| Legal mask | `[bool; 46]`, same semantics for train + inference |
+| Riichi / kan | two-phase: declare, then choose specific discard/kan when engine asks |
+| Tiles | 34 tile kinds; 136-format preserves physical/aka identity where needed |
+| Determinism | same seed/config -> deterministic per-game results across rayon schedules |
 
-## Module Reference
+## Read next
 
-| Module | Description |
-|--------|-------------|
-| `encoder` | 192x34 fixed-superset observation encoder; first 85 channels preserve baseline public+safety planes |
-| `bridge` | Converts `hydra-engine` `Observation`/`ObservationRef` into encoder input types |
-| `safety` | Genbutsu, suji, kabe, one-chance safety calcs for 23 safety channels (62-84) |
-| `game_loop` | `GameRunner` with proper phase handling, `ActionSelector` trait, `FirstActionSelector` |
-| `simulator` | Batch game simulation with rayon parallelism and configurable thread pools |
-| `batch_encoder` | Pre-allocated contiguous buffer for encoding N observations without per-obs allocation |
-| `shanten_batch` | Batch shanten computation with hierarchical hash caching (base + all 34 discards in one pass) |
-| `seeding` | Deterministic RNG hierarchy: session seeds, per-game derivation, vendored Fisher-Yates shuffle |
-| `tile` | 34-tile type system, aka-dora handling, 136-format conversion, suit permutation for data augmentation |
-| `action` | 46-action space mapping (Mortal-compatible): discard, riichi, chi, pon, kan, pass, tsumo, ron |
-
-## Observation Tensor (192x34 fixed superset)
-
-Encoder produces `[f32; 192 * 34]` flat array (row-major) with three high-level regions:
-
-- `0..84`: baseline public + safety prefix
-- `85..149`: Group C search/belief context plus presence masks and reserved slots
-- `150..191`: Group D Hand-EV context plus presence mask
-
-For channel-by-channel breakdown and live runtime semantics, defer to `docs/GAME_ENGINE.md`.
-
-## Benchmarks
-
-Measured on Intel Core Ultra 7 265KF, Criterion median, `RAYON_NUM_THREADS=4`.
-Full methodology in [research/infrastructure/ENGINE_BENCHMARKS.md](../../research/infrastructure/ENGINE_BENCHMARKS.md).
-
-| Benchmark | Time |
-|-----------|------|
-| Single game (FirstActionSelector) | 396us |
-| Batch 100 games (4 cores, rayon) | 3.5ms (28,986 games/sec) |
-| Observation encode (baseline prefix + fixed superset write) | 422ns |
+- Need channel/action/seeding/runtime detail: [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md).
+- Need shape-sensitive compatibility facts: [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
+- Need engine ownership/license boundary: [`crates/hydra-engine/README.md`](../hydra-engine/README.md).
+- Need train runtime authority: [`docs/TRAINING_RUNBOOK.md`](../../docs/TRAINING_RUNBOOK.md).
+- Need perf numbers/history: [`research/infrastructure/ENGINE_BENCHMARKS.md`](../../research/infrastructure/ENGINE_BENCHMARKS.md).
 
 ## License
 
-Business Source License 1.1 (BSL). See [LICENSE](LICENSE) for full terms.
-
-- Free for personal, non-commercial, academic use
-- Commercial mahjong AI services require paid license from Licensor
-- Converts to Apache-2.0 on 2031-03-02
-
-For commercial licensing inquiries, contact Sho Kaneko.
+`hydra-core` = BSL-1.1. See [`LICENSE`](LICENSE). Personal/non-commercial/academic use allowed; commercial mahjong AI services require paid license from Licensor; converts to Apache-2.0 on 2031-03-02.

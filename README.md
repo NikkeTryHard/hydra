@@ -17,7 +17,7 @@ Train mahjong AI that:
 Hydra uses layered authority flow, built upward from archive handoff canon:
 
 1. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — epistemic root / canonical archive SSOT for upstream research conclusions
-2. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) and [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) — derived archive views over canonical source ledger
+2. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) — derived archive triage view over canonical source ledger; full render archived/generated on demand
 3. [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — promoted architecture doctrine from archive canon + repo validation
 4. [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted operational doctrine and Hydra v1 roadmap from archive canon + repo validation
 5. [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — promoted current-status snapshot for shipped repo surfaces
@@ -72,7 +72,7 @@ For impl work, choose next lane from
 | `crates/hydra-train` | model, targets, losses, BC/RL/self-play orchestration, train binary | low-level rules engine behavior |
 
 If deciding what to build next, follow Fresh-agent routing order above.
-`research/design/HYDRA_SPEC.md` stays historical context only.
+Historical design/planning docs now live as compact entries in `research/design/HYDRA_ARCHIVE.md`.
 
 ## Research
 
@@ -80,22 +80,17 @@ If deciding what to build next, follow Fresh-agent routing order above.
 |------|-------------|
 | [ARCHIVE_CANONICAL_CLAIMS.jsonl](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) | Epistemic root / canonical archive SSOT for upstream research intake |
 | [ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) | Derived archive prioritization view over canonical archive claims |
-| [ARCHIVE_CANONICAL_CLAIMS_RENDERED.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_RENDERED.md) | Generated human-readable mirror of canonical archive ledger |
-| [HYDRA_FINAL.md](research/design/HYDRA_FINAL.md) | Promoted architecture doctrine summary |
-| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Promoted operational doctrine summary and Hydra v1 roadmap |
-| [HYDRA_ARCHIVE.md](research/design/HYDRA_ARCHIVE.md) | Reserve-only design/archive planning surfaces |
-| [HYDRA_SPEC.md](research/design/HYDRA_SPEC.md) | Historical architecture spec only |
-| [MORTAL_ANALYSIS.md](research/intel/MORTAL_ANALYSIS.md) | Mortal architecture, training details, confirmed weaknesses |
-| [OPPONENT_MODELING.md](research/design/OPPONENT_MODELING.md) | Opponent-modeling rationale; includes active ideas and reserve/future extensions |
-| [INFRASTRUCTURE.md](research/infrastructure/INFRASTRUCTURE.md) | Rust stack, data pipeline, training infra, hardware, deployment |
-| [SEEDING.md](research/design/SEEDING.md) | RNG hierarchy, reproducibility, evaluation seed bank |
-| [CHECKPOINTING.md](research/infrastructure/CHECKPOINTING.md) | Checkpoint format, save protocol, retention policy |
-| [ECOSYSTEM.md](research/intel/ECOSYSTEM.md) | Useful repos, tooling, framework references |
-| [REWARD_DESIGN.md](research/design/REWARD_DESIGN.md) | Reward design and RVR notes |
-| [COMMUNITY_INSIGHTS.md](research/intel/COMMUNITY_INSIGHTS.md) | Community observations and external signals |
-| [REFERENCES.md](research/intel/REFERENCES.md) | Citation index |
-| [TESTING.md](research/design/TESTING.md) | Testing strategy, correctness verification, property-based tests |
-| [RUST_STACK.md](research/infrastructure/RUST_STACK.md) | 100% Rust decision and framework notes |
+| [HYDRA_FINAL.md](research/design/HYDRA_FINAL.md) | Promoted Max Hydra architecture doctrine |
+| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Promoted Hydra v1 active-path roadmap |
+| [HYDRA_ARCHIVE.md](research/design/HYDRA_ARCHIVE.md) | Historical/reserve design parking lot for retired docs |
+| [RESEARCH_DIGEST.md](research/evidence/RESEARCH_DIGEST.md) | Consolidated evidence: value decomposition, belief/search limits, safe exploitation, mean-field caveats |
+| [ALGORITHM_WATCH.md](research/evidence/ALGORITHM_WATCH.md) | ACH/LuckyJ, ExIt, R-NaD/DRDA, CFR variants, algorithm status |
+| [MAHJONG_AI_INTEL.md](research/intel/MAHJONG_AI_INTEL.md) | Competitor/community/tactical-gap intel; AGPL boundary |
+| [REFERENCES.md](research/intel/REFERENCES.md) | Citation/source ledger |
+| [INFRASTRUCTURE.md](research/infrastructure/INFRASTRUCTURE.md) | Rust/Burn, artifacts, checkpoint essentials, compute doctrine |
+| [ENGINE_BENCHMARKS.md](research/infrastructure/ENGINE_BENCHMARKS.md) | Measured benchmark ledger |
+| [SEEDING.md](research/design/SEEDING.md) | RNG hierarchy, reproducibility, eval seed bank |
+| [TESTING.md](research/design/TESTING.md) | Testing strategy and high-risk verification |
 
 ## Status
 
@@ -103,19 +98,14 @@ Hydra in active impl. For current shipped/staged repo snapshot, read [`docs/CURR
 
 ## Operator docs
 
-If need run/debug training stack rather than read architecture docs first, start here:
+If need run/debug training stack rather than architecture docs, start here:
 
-- [`docs/TRAINING_WORKFLOWS.md`](docs/TRAINING_WORKFLOWS.md) — training entry modes, YAML contract, BC/RL shape, sidecar-enabled training
-- [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, selected-runtime authority, probe flows, runtime reuse rules
-- [`docs/REPLAY_SIDECARS.md`](docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar generation and replay-time hydration contracts
-- [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus validation, failure inventories, triage tooling
-- [`docs/BC_SHARDS.md`](docs/BC_SHARDS.md) — BC shard production, manifest interpretation, training consumption
-- [`docs/DELTAQ_PROMOTION.md`](docs/DELTAQ_PROMOTION.md) — DeltaQ promotion gates, arena confirmation, artifact interpretation
-- [`docker/train/README.md`](docker/train/README.md) — container execution contract
+|- [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md) — train CLI modes, YAML contract, preflight/runtime authority, BC shards, replay sidecars, DeltaQ promotion, precision/CUDA notes
+|- [`docker/train/README.md`](docker/train/README.md) — container, GHCR, Kaggle-compatible artifact, MJAI audit, coverage commands
 
 ## Testing and Coverage
 
-Hydra uses `cargo nextest run --release` as default workspace test path and `cargo-llvm-cov` for workspace-wide coverage reporting. For local coverage generation details, read [`docs/COVERAGE.md`](docs/COVERAGE.md).
+Hydra uses `cargo nextest run --release` as default workspace test path. Coverage commands now live in [`docker/train/README.md`](docker/train/README.md).
 
 ## License
 

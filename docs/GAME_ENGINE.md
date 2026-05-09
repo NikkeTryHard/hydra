@@ -16,7 +16,7 @@ Core responsibilities:
 - Parallel batch sim with `rayon`
 - Game loop abstraction with pluggable action selection
 
-Hydra uses 100% Rust stack (see `research/infrastructure/RUST_STACK.md`). Training pipeline (`hydra-train`, Burn) consumes hydra-core directly; same process, same memory, zero IPC.
+Hydra uses 100% Rust stack (see `research/infrastructure/INFRASTRUCTURE.md`). Training pipeline (`hydra-train`, Burn) consumes hydra-core directly; same process, same memory, zero IPC.
 
 ## Foundation: RiichiEnv
 

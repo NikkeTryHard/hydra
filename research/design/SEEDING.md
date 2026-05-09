@@ -12,7 +12,7 @@
 - [../../docs/GAME_ENGINE.md](../../docs/GAME_ENGINE.md) — current runtime reality
 - [HYDRA_ARCHIVE.md](HYDRA_ARCHIVE.md) — reserve-only design/archive planning
 - [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — implementation/infrastructure reference
-- [../infrastructure/CHECKPOINTING.md](../infrastructure/CHECKPOINTING.md) — checkpoint format, save protocol, retention policy
+- [../infrastructure/INFRASTRUCTURE.md](../infrastructure/INFRASTRUCTURE.md) — checkpoint essentials, artifact routing, compute doctrine
 
 ---
 
@@ -118,7 +118,7 @@ Spawn index 4 stays intentionally unused in active branch. If Hydra later promot
 
 | Flag | Phase 1 / supervised stages | Later stochastic stages | Effect |
 |------|-------------|-----------------|--------|
-| Burn backend seed |                                                                                                                                |                                                                                                                                | Seeds all backend RNG streams |
+| Burn backend seed | Derived from master seed and backend id | Seed Burn/tch/cuda deterministic settings where backend supports it |
 | cuDNN benchmark off | | | Disables auto-tuning; fixed-size inputs make determinism simpler, though live runtime shape now `192x34` |
 | Deterministic kernels | Optional (debug) | No | Forces deterministic CUDA kernels; ~5–15% overhead |
 

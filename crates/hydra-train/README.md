@@ -1,110 +1,77 @@
 # hydra-train
 
-Training crate for Hydra Riichi Mahjong AI. Owns model stack, replay/self-play data plumbing, target build, eval harnesses, training/data bins that turn `hydra-core` encoder/runtime signals into checkpoints or replay artifacts.
+Crate-local map for Hydra training code. Not operator manual.
 
-## Overview
+Operator docs:
+- training modes/YAML and preflight/runtime authority: [`docs/TRAINING_RUNBOOK.md`](../../docs/TRAINING_RUNBOOK.md)
+- current shipped/staged status: [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md)
+- container, GHCR, Kaggle artifact, MJAI audit, coverage commands: [`docker/train/README.md`](../../docker/train/README.md)
 
-`hydra-train` = workspace layer above `hydra-core` and `hydra-engine`.
+## Owns
 
-- `hydra-engine` owns low-level Riichi rules and replay parsing
-- `hydra-core` owns runtime bridge, encoding, simulation, seeding, and search/runtime feature plumbing
-- `hydra-train` owns model defs, losses, active BC/RL/self-play orchestration, sidecar gen, and training/eval utils
+`hydra-train` sits above `hydra-core` and `hydra-engine`.
 
-Crate built around Burn and current Hydra training baseline. Shipped baseline already has live `192x34` encoder/model contract, replay-derived `safety_residual`, stronger public-teacher belief semantics tranche, and ExIt carrier across live self-play plus replay/sample sidecar-first lanes. Promotion-gated DeltaQ tooling also lives here, but not default-on training lane. Some internal modules remain for staged/reserve work, so use module table below as supported crate surface, not full file list.
-
-For current shipped-vs-staged status, read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md).
-For active-path sequencing, read [`research/design/HYDRA_RECONCILIATION.md`](../../research/design/HYDRA_RECONCILIATION.md).
-
-## What this crate owns
-
-`hydra-train` responsible for:
-
+Owns:
 - model/backbone/head defs
-- BC and RL optimize loops
-- replay data loading and sample collation
+- losses and BC/RL optimize loops
+- replay data loading, sample collation, BC shard consumption/build
 - self-play batch gen and eval harnesses
 - preflight/runtime autotune and resume-compat checks
-- replay sidecar gen for ExIt and DeltaQ-style lanes
-- workspace bins and utils like `train`, `mjai_audit`, `recompress`, `repack_tar`, replay sidecar builders, and replay failure inspection tools
+- replay sidecar generation for ExIt / DeltaQ-style lanes
+- training/data binaries listed below
 
-It does **not** own Riichi rules engine itself. If rule semantics drift, `hydra-engine` and `docs/GAME_ENGINE.md` are runtime authority.
+Does not own:
+- Riichi rules, scoring, legal actions, replay parsing core: `hydra-engine`
+- runtime bridge, encoder, simulation, seeding, search/runtime feature plumbing: `hydra-core`
+- operator truth for run commands: docs linked above
 
-## Module Reference
+If rule/runtime semantics drift, code plus [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md) win.
 
-| Module | Description |
-|--------|-------------|
-| `amp` | AMP/BF16 runtime helpers shared by training flows |
-| `backbone` | Backbone blocks for Hydra network stack |
-| `config` | Shared training/runtime config types and parsing helpers |
-| `data` | Replay loading, data-source scanning, augmentation, and batch/sample plumbing |
-| `eval` | Arena/eval helpers and training/eval metric summaries |
-| `heads` | Policy / value / aux head defs |
-| `inference` | Train-side model inference helpers |
-| `model` | Top-level `HydraModel` assembly and config surface |
-| `preflight` | Probe/preflight config for runtime selection and autotune flows |
-| `saf` | SAF-related train-side helpers |
-| `selfplay` | Self-play orchestration and mixed-policy game execution |
-| `selfplay_batch` | Batched self-play data plumbing |
-| `teacher` | Teacher-side feature/label helpers, including belief surfaces |
-| `training` | BC, RL, ACH, DRDA, ExIt, DeltaQ promotion/validation, losses, gates, and orchestrators |
+## Current contract snapshot
 
-## Workspace binaries
+- live encoder/model contract: `192x34`
+- action space: 46 actions
+- replay input support: loose MJAI dirs plus `.tar.zst` archives
+- shipped baseline includes replay-derived `safety_residual`, stronger public-teacher belief semantics, ExIt carrier across live self-play and replay/sample sidecar-first lanes
+- DeltaQ tooling exists but remains promotion-gated, not default-on
 
-Crate exposes these workspace binaries:
+Read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md) before treating staged code as live baseline.
+
+## Entry binaries
 
 | Binary | Purpose |
-|--------|---------|
-| `train` | Main training entrypoint; supports normal training, preflight, probe, and DeltaQ-promotion modes |
-| `mjai_audit` | Audit replay datasets and archives, including failure bucketing and optional failure inventories |
-| `recompress` | Recompression util for replay/data artifacts |
-| `repack_tar` | Repack util for tar-based replay corpora |
-| `build_replay_delta_q_sidecar` | Build replay-side DeltaQ sidecars |
-| `build_replay_exit_sidecar` | Build replay-side ExIt sidecars |
-| `mjai_debug_failure` | Debug helper for replay failures |
-| `mjai_first_failure` | Find/inspect first replay failure in dataset |
-| `build_bc_shards` | Build BC shard datasets and manifests from replay corpora |
+|---|---|
+| `train` | main entrypoint: normal train, preflight, probe-only, DeltaQ promotion |
+| `mjai_audit` | replay corpus/archive audit, failure buckets, optional failure inventories |
+| `mjai_first_failure` | first bad MJAI entry in archive |
+| `mjai_debug_failure` | detailed single-replay failure report |
+| `build_bc_shards` | build BC shard datasets/manifests from replay corpora |
+| `build_replay_exit_sidecar` | build replay-side ExIt sidecars |
+| `build_replay_delta_q_sidecar` | build replay-side DeltaQ sidecars |
+| `build_parsed_sample_cache` | build parsed sample cache artifact |
+| `recompress` | replay/data artifact recompression util |
+| `repack_tar` | tar replay corpus repack util |
 
-Main training entrypoint lives at [`src/bin/train.rs`](src/bin/train.rs). Split into focused `src/bin/train/*` submodules for runtime/preflight selection, probe transport, autotune, resume/state persistence, and test support.
+Main entrypoint: [`src/bin/train.rs`](src/bin/train.rs). Train submodules under `src/bin/train/` own runtime/preflight selection, probe transport, autotune, resume/state persistence, and test support.
 
-## Operator workflow docs
+## Module map
 
-For concrete runbook-style docs, not crate ownership summary, read:
-
-- [`docs/TRAINING_WORKFLOWS.md`](../../docs/TRAINING_WORKFLOWS.md) — training modes, YAML contract, BC/RL shape, and sidecar-enabled runs
-- [`docs/PREFLIGHT_AND_RUNTIME_SELECTION.md`](../../docs/PREFLIGHT_AND_RUNTIME_SELECTION.md) — preflight cache, probe flows, runtime authority, and resume rules
-- [`docs/REPLAY_SIDECARS.md`](../../docs/REPLAY_SIDECARS.md) — ExIt/DeltaQ sidecar gen and replay-time joins
-- [`docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md`](../../docs/MJAI_AUDIT_AND_FAILURE_TRIAGE.md) — replay corpus audit, failure inventories, and replay-debug workflow
-- [`docs/BC_SHARDS.md`](../../docs/BC_SHARDS.md) — BC shard production, manifest fields, and shard-backed training
-- [`docs/DELTAQ_PROMOTION.md`](../../docs/DELTAQ_PROMOTION.md) — DeltaQ promotion mode, gates, and persisted artifact fields
-
-## Runtime and data contract
-
-Training crate consumes same live runtime surface as rest of Hydra:
-
-- encoder/model contract: `192x34`
-- action space: 46 actions
-- replay input support: flat MJAI dirs plus `.tar.zst` archives
-- default workspace test path: `cargo nextest run --release`
-
-Docker/container-facing training contract documented in [`docker/train/README.md`](../../docker/train/README.md).
-
-## Training flow at a glance
-
-At high level, `hydra-train` does four things:
-
-1. reads config and picks runtime/preflight behavior
-2. loads replay or self-play data through `data::*`
-3. builds targets/losses and runs BC/RL/update loops through `training::*`
-4. evaluates, checkpoints, and reports metrics through train bin and eval helpers
-
-That split intentional: runtime semantics stay below this crate, while optimize policy and target construction stay here.
-
-## Where to read next
-
-- Need runtime truth? Read [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
-- Need current shipped/staged status? Read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md).
-- Need active Hydra v1 roadmap? Read [`research/design/HYDRA_RECONCILIATION.md`](../../research/design/HYDRA_RECONCILIATION.md).
-- Need container execution details? Read [`docker/train/README.md`](../../docker/train/README.md).
+| Module | Owns |
+|---|---|
+| `amp` | AMP/BF16 runtime helpers |
+| `backbone` | network backbone blocks |
+| `config` | shared train/runtime config parsing/types |
+| `data` | replay scan/load, augmentation, batch/sample plumbing |
+| `eval` | arena/eval helpers and metric summaries |
+| `heads` | policy/value/aux heads |
+| `inference` | train-side model inference helpers |
+| `model` | `HydraModel` assembly and config surface |
+| `preflight` | probe/preflight config and runtime selection helpers |
+| `saf` | SAF-related train helpers |
+| `selfplay` | self-play orchestration and mixed-policy execution |
+| `selfplay_batch` | batched self-play data plumbing |
+| `teacher` | teacher features/labels, incl belief surfaces |
+| `training` | BC, RL, ACH, DRDA, ExIt, DeltaQ gates/orchestrators |
 
 ## License
 
@@ -114,4 +81,4 @@ Business Source License 1.1 (BSL). See repo-root [LICENSE](../../LICENSE).
 - Commercial mahjong AI services require paid license from Licensor
 - Converts to Apache-2.0 on 2031-03-02
 
-For commercial licensing inquiries, contact Sho Kaneko.
+Commercial licensing: Sho Kaneko.

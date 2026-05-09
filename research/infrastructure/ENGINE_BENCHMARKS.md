@@ -87,7 +87,7 @@ likely 10-50x, not 1,990x headline suggests.
 hydra-engine is vendored fork of riichienv-core. Most honest
 comparison: same language, same machine, same compiler flags, same agent pattern.
 
-|                                                                                                                                | riichienv-core 0.3.4 | hydra-engine | Delta |
+| Throughput | riichienv-core 0.3.4 | hydra-engine | Delta | Notes |
 |---|---|---|---|
 | Single game | 933us (1,072/sec) | 396us (2,525/sec) | **2.36x faster** |
 | Batch 100 (sequential) | 94.1ms (1,063/sec) | 45.1ms (2,217/sec) | **2.09x faster** |
@@ -107,7 +107,7 @@ means ~104M games/hour of self-play data. Scales further with more cores.
 Both Rust, both implement full Riichi Mahjong. Only observation encoding
 directly comparable -- libriichi has no game simulation benchmark.
 
-|                                                                                                                                | libriichi | hydra-engine | Delta |
+| Throughput | libriichi | hydra-engine | Delta | Notes |
 |---|---|---|---|
 | Observation encode | 806us | 405ns | See caveat |
 
@@ -118,7 +118,7 @@ likely 10-50x, not 1,990x headline suggests.
 
 ### Hydra vs mahjax (JAX on CPU)
 
-|                                                                                                                                | mahjax (CPU) | hydra-engine | Delta |
+| Throughput | mahjax CPU | hydra-engine | Delta | Notes |
 |---|---|---|---|
 | Single game | 873us (1,145/sec) | 396us (2,525/sec) | **2.20x faster** |
 
@@ -136,7 +136,7 @@ no benchmark code or methodology is published alongside it.
 
 Both measured on same machine. This is our own measurement, not published numbers.
 
-|                                                                                                                                | Mjx | hydra-engine | Delta |
+| Throughput | Mjx | hydra-engine | Delta | Notes |
 |---|---|---|---|
 | Single game | 17,498us (57/sec) | 396us (2,525/sec) | **44x faster** |
 
@@ -165,7 +165,7 @@ missing `#include <cstdint>` for GCC 13+ compatibility. Compiled with
 
 ### Hydra vs Mjai (Ruby)
 
-|                                                                                                                                | Mjai | hydra-engine | Delta |
+| Throughput | Mjai | hydra-engine | Delta | Notes |
 |---|---|---|---|
 | Single game | 86,883us (12/sec) | 396us (2,525/sec) | **219x faster** |
 
