@@ -16,4 +16,4 @@ pub mod orchestrator;
 pub mod replay_delta_q;
 pub mod replay_exit;
 pub mod rl;
-pub(crate) mod validation_common;
+pub mod validation_common;

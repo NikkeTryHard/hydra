@@ -1,0 +1,15 @@
+[package]
+name = "hydra-selfplay"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Hydra self-play coordination primitives"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }
+hydra-train-types = { path = "../hydra-train-types" }
+riichienv-core = { version = "0.4.7", path = "../hydra-engine", package = "hydra-engine", features = ["fast-json-ingest"] }

@@ -1,7 +1,6 @@
 use burn::module::AutodiffModule;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-mod cooperative_state;
 
 use hydra_core::action::{
     ActionPhase, GameContext, HYDRA_ACTION_SPACE, HydraAction, build_legal_mask,
@@ -34,7 +33,7 @@ use crate::training::live_exit::{
     seed_root_children_all_legal,
 };
 use crate::training::rl::RlBatch;
-use cooperative_state::{
+use hydra_selfplay::cooperative_state::{
     ExitChildRequest, ExitSearchState, GameAdvance, PendingExitStep, PendingPolicyRequest,
     PendingTurnState, PreparedExitSearch,
 };

@@ -3274,6 +3274,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "hydra-search-labels"
+version = "0.1.0"
+dependencies = [
+ "burn",
+ "hydra-core",
+ "hydra-engine",
+ "hydra-model",
+ "hydra-replay-loader",
+ "hydra-replay-sidecar",
+ "hydra-train-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hydra-selfplay"
+version = "0.1.0"
+dependencies = [
+ "hydra-core",
+ "hydra-engine",
+ "hydra-train-types",
+]
+
+[[package]]
 name = "hydra-train"
 version = "0.1.0"
 dependencies = [
@@ -3293,6 +3317,8 @@ dependencies = [
  "hydra-replay-loader",
  "hydra-replay-sidecar",
  "hydra-sample-cache",
+ "hydra-search-labels",
+ "hydra-selfplay",
  "hydra-train-algo",
  "hydra-train-types",
  "indicatif",
