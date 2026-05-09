@@ -317,7 +317,7 @@ pub(crate) fn manifest_cache_matches(
     cached: &ManifestCacheEntry,
     data_dir: &Path,
     train_fraction: f32,
-    source_filters: &SourceFilterConfig,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
 ) -> bool {
     cached.data_dir == data_dir
         && cached.train_fraction_bits == train_fraction.to_bits()
@@ -329,12 +329,16 @@ pub(crate) fn scan_and_write_manifest_cache(
     cache_path: &Path,
     data_dir: &Path,
     train_fraction: f32,
-    source_filters: &SourceFilterConfig,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
     progress: Option<&indicatif::ProgressBar>,
     scan_error_context: &str,
 ) -> Result<DataManifest, String> {
+    let train_source_filters = SourceFilterConfig {
+        include_source_patterns: source_filters.include_source_patterns.clone(),
+        exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
+    };
     let manifest =
-        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
+        scan_data_sources_with_progress(data_dir, train_fraction, &train_source_filters, progress)
             .map_err(|err| {
                 format!(
                     "failed to scan {scan_error_context} from {}: {err}",
@@ -358,7 +362,7 @@ pub(crate) fn load_or_scan_manifest_cache<F>(
     cache_path: &Path,
     data_dir: &Path,
     train_fraction: f32,
-    source_filters: &SourceFilterConfig,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
     progress: Option<&indicatif::ProgressBar>,
     scan_error_context: &str,
     on_cache_hit: F,
@@ -1008,6 +1012,7 @@ mod tests {
         }
     }
 
+    use hydra_train_runtime::config::SourceFilterConfig;
     #[test]
     fn manifest_cache_matches_checks_data_dir_fraction_and_filters() {
         let entry = sample_manifest_cache_entry();

@@ -46,6 +46,7 @@ hydra-bc-shards = { path = "../hydra-bc-shards" }
 hydra-train-algo = { path = "../hydra-train-algo" }
 hydra-model = { path = "../hydra-model" }
 hydra-train-types = { path = "../hydra-train-types" }
+hydra-train-runtime = { path = "../hydra-train-runtime" }
 hydra-selfplay = { path = "../hydra-selfplay" }
 hydra-search-labels = { path = "../hydra-search-labels" }
 burn = { version = "0.20", features = ["train", "tch"] }
@@ -74,6 +75,7 @@ burn = { version = "0.20", features = ["ndarray"] }
 rand = "0.9"
 rand_chacha = "0.9"
 criterion = { version = "0.5", features = ["html_reports"] }
+hydra-train-runtime = { path = "../hydra-train-runtime", features = ["test-nvtx-recorder"] }
 
 [features]
 cuda-graph = []

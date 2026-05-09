@@ -111,7 +111,7 @@ mod tests {
             bc_shards_manifest_path: None,
             shard_prefetch_depth: None,
             train_fraction: 0.875,
-            source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
+            source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 7,

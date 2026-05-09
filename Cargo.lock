@@ -3320,6 +3320,7 @@ dependencies = [
  "hydra-search-labels",
  "hydra-selfplay",
  "hydra-train-algo",
+ "hydra-train-runtime",
  "hydra-train-types",
  "indicatif",
  "libloading",
@@ -3343,6 +3344,23 @@ name = "hydra-train-algo"
 version = "0.1.0"
 dependencies = [
  "burn",
+]
+
+[[package]]
+name = "hydra-train-runtime"
+version = "0.1.0"
+dependencies = [
+ "burn",
+ "cc",
+ "hydra-model",
+ "hydra-train-algo",
+ "hydra-train-types",
+ "libloading",
+ "rayon",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tch",
 ]
 
 [[package]]

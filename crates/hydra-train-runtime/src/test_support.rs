@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use crate::config::{BcHyperparamConfig, TrainConfig, ValidationGateConfig};
 #[cfg(test)]
-use hydra_train::preflight::PreflightConfig;
+use crate::preflight::PreflightConfig;
 
 #[cfg(test)]
 pub(crate) fn dummy_train_config() -> TrainConfig {
@@ -24,7 +24,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         bc_shards_manifest_path: None,
         shard_prefetch_depth: None,
         train_fraction: 0.9,
-        source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
+        source_filters: crate::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
         seed: 0,
@@ -52,6 +52,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(test)]
 pub(crate) fn unique_test_path(prefix: &str, label: &str) -> PathBuf {
     let base = std::env::temp_dir();
@@ -63,6 +64,7 @@ pub(crate) fn unique_test_path(prefix: &str, label: &str) -> PathBuf {
     base.join(format!("{prefix}-{label}-{}-{nanos}", std::process::id()))
 }
 
+#[allow(dead_code)]
 #[cfg(test)]
 pub(crate) fn unique_test_path_with_extension(
     prefix: &str,

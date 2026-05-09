@@ -22,3 +22,12 @@ pub mod selfplay;
 pub mod selfplay_batch;
 pub mod teacher;
 pub mod training;
+impl hydra_train_runtime::status::EpochProgressManifest for data::pipeline::DataManifest {
+    fn train_count(&self) -> usize {
+        self.train_count
+    }
+
+    fn counts_exact(&self) -> bool {
+        self.counts_exact
+    }
+}
