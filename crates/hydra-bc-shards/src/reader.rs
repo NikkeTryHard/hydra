@@ -648,7 +648,7 @@ fn augment_action_f32_from_bytes_into(
         any |= value != 0.0;
         dst[action_perm[src]] = value;
     }
-    for action in 37..HYDRA_ACTION_SPACE {
+    for (action, out) in dst.iter_mut().enumerate().take(HYDRA_ACTION_SPACE).skip(37) {
         let off = action * 4;
         #[cfg(target_endian = "little")]
         let value = {
@@ -659,7 +659,7 @@ fn augment_action_f32_from_bytes_into(
         #[cfg(not(target_endian = "little"))]
         let value = read_f32_le(&bytes[off..off + 4]);
         any |= value != 0.0;
-        dst[action] = value;
+        *out = value;
     }
     any
 }

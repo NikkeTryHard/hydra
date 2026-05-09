@@ -6,27 +6,32 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/lint-check.sh [--install-hook] [--anti-game-only]
+Usage: scripts/lint-check.sh [--install-hook] [--anti-game-only] [--cuda-graph]
 
 Strict Hydra quality gate:
   - caveman-compress staged Markdown
   - anti-game pattern scan
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - optional focused CUDA graph lint when --cuda-graph or HYDRA_LINT_CUDA_GRAPH=1 is set:
+    cargo clippy --all-targets --features cuda-graph -p hydra-train -- -D warnings
 
 Env:
   HYDRA_LINT_ANTI_GAME_ONLY=1  skip fmt/clippy
+  HYDRA_LINT_CUDA_GRAPH=1     also run focused hydra-train cuda-graph lint
   HYDRA_LINT_SKIP_INSTALL=1    avoid hook install prompt/side effects
 USAGE
 }
 
 INSTALL_HOOK=0
 ANTI_GAME_ONLY="${HYDRA_LINT_ANTI_GAME_ONLY:-0}"
+CUDA_GRAPH="${HYDRA_LINT_CUDA_GRAPH:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --install-hook) INSTALL_HOOK=1 ;;
     --anti-game-only) ANTI_GAME_ONLY=1 ;;
+    --cuda-graph) CUDA_GRAPH=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'error: unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -48,6 +53,126 @@ run_step() {
   "$@"
 }
 
+
+libtorch_include_dir() {
+  local root="$1"
+  if [[ -d "$root/include" ]]; then
+    printf '%s/include\n' "$root"
+  elif [[ -d "$root/libtorch/include" ]]; then
+    printf '%s/libtorch/include\n' "$root"
+  else
+    return 1
+  fi
+}
+
+first_existing_file() {
+  local base="$1"
+  shift
+  local rel
+  for rel in "$@"; do
+    if [[ -f "$base/$rel" ]]; then
+      printf '%s/%s\n' "$base" "$rel"
+      return 0
+    fi
+  done
+  return 1
+}
+
+python_torch_root() {
+  python3 - <<'PY'
+import pathlib
+import sys
+try:
+    import torch
+except Exception as exc:
+    raise SystemExit(f"python torch import failed: {exc}")
+root = pathlib.Path(torch.__file__).resolve().parent
+header = root / "include" / "c10" / "cuda" / "impl" / "cuda_cmake_macros.h"
+libs = [root / "lib" / "libc10_cuda.so", root / "lib" / "libtorch_cuda.so"]
+missing = [str(path) for path in [header, *libs] if not path.is_file()]
+if missing:
+    raise SystemExit("python torch is not a CUDA libtorch install; missing: " + ", ".join(missing))
+print(root)
+PY
+}
+
+resolve_libtorch_root() {
+  if [[ -n "${LIBTORCH:-}" ]]; then
+    printf '%s\n' "$LIBTORCH"
+    return 0
+  fi
+
+  if [[ "${LIBTORCH_USE_PYTORCH:-}" == "1" ]]; then
+    python_torch_root
+    return 0
+  fi
+
+  local torch_root
+  if torch_root="$(python_torch_root 2>/dev/null)"; then
+    export LIBTORCH_USE_PYTORCH=1
+    export LIBTORCH="$torch_root"
+    printf '%s\n' "$torch_root"
+    return 0
+  fi
+
+  fail "CUDA graph lint requires CUDA-enabled libtorch. Set LIBTORCH to a CUDA libtorch root, or install/select a Python torch package containing include/c10/cuda/impl/cuda_cmake_macros.h, lib/libc10_cuda.so, and lib/libtorch_cuda.so."
+}
+
+prepare_cuda_libtorch() {
+  if [[ -z "${CUDA_HOME:-}" ]] && [[ -d /opt/cuda ]]; then
+    export CUDA_HOME=/opt/cuda
+  fi
+
+  local libtorch_root
+  libtorch_root="$(resolve_libtorch_root)"
+  export LIBTORCH="$libtorch_root"
+
+  local missing=0
+  local libtorch_header libtorch_c10_cuda libtorch_torch_cuda cuda_runtime_header cudart_lib
+
+  local libtorch_include=""
+  if ! libtorch_include="$(libtorch_include_dir "$libtorch_root")"; then
+    printf '[hydra lint] missing CUDA libtorch include directory under LIBTORCH=%s\n' "$libtorch_root" >&2
+    missing=1
+  elif ! libtorch_header="$(first_existing_file "$libtorch_include" c10/cuda/impl/cuda_cmake_macros.h)"; then
+    printf '[hydra lint] missing CUDA libtorch header under LIBTORCH=%s: include/c10/cuda/impl/cuda_cmake_macros.h\n' "$libtorch_root" >&2
+    missing=1
+  fi
+  if ! libtorch_c10_cuda="$(first_existing_file "$libtorch_root" lib/libc10_cuda.so)"; then
+    printf '[hydra lint] missing CUDA libtorch library: %s/lib/libc10_cuda.so\n' "$libtorch_root" >&2
+    missing=1
+  fi
+  if ! libtorch_torch_cuda="$(first_existing_file "$libtorch_root" lib/libtorch_cuda.so)"; then
+    printf '[hydra lint] missing CUDA libtorch library: %s/lib/libtorch_cuda.so\n' "$libtorch_root" >&2
+    missing=1
+  fi
+
+  if [[ -z "${CUDA_HOME:-}" ]]; then
+    printf '[hydra lint] missing CUDA_HOME; set CUDA_HOME to a CUDA toolkit root containing include/cuda_runtime_api.h and lib64/libcudart.so\n' >&2
+    missing=1
+  else
+    if ! cuda_runtime_header="$(first_existing_file "$CUDA_HOME" include/cuda_runtime_api.h include/cuda_runtime.h)"; then
+      printf '[hydra lint] missing CUDA runtime header under CUDA_HOME=%s: include/cuda_runtime_api.h or include/cuda_runtime.h\n' "$CUDA_HOME" >&2
+      missing=1
+    fi
+    if ! cudart_lib="$(first_existing_file "$CUDA_HOME" lib64/libcudart.so lib/libcudart.so targets/x86_64-linux/lib/libcudart.so)"; then
+      printf '[hydra lint] missing CUDA runtime library under CUDA_HOME=%s: lib64/libcudart.so, lib/libcudart.so, or targets/x86_64-linux/lib/libcudart.so\n' "$CUDA_HOME" >&2
+      missing=1
+    fi
+  fi
+
+  if [[ "$missing" != "0" ]]; then
+    fail "CUDA graph/all-features lint prerequisites are incomplete; install CUDA toolkit and select a CUDA-enabled libtorch/PyTorch instead of skipping cuda-graph."
+  fi
+
+  printf '[hydra lint] CUDA libtorch: %s\n' "$libtorch_root"
+  printf '[hydra lint] CUDA toolkit: %s\n' "$CUDA_HOME"
+  printf '[hydra lint] verified %s\n' "$libtorch_header"
+  printf '[hydra lint] verified %s\n' "$libtorch_c10_cuda"
+  printf '[hydra lint] verified %s\n' "$libtorch_torch_cuda"
+  printf '[hydra lint] verified %s\n' "$cuda_runtime_header"
+  printf '[hydra lint] verified %s\n' "$cudart_lib"
+}
 anti_game_scan() {
   need_cmd rg
   local failed=0
@@ -114,4 +239,9 @@ fi
 
 need_cmd cargo
 run_step 'checking rustfmt' cargo fmt --all -- --check
-run_step 'checking clippy' cargo clippy --workspace --all-targets --all-features -- -D warnings
+prepare_cuda_libtorch
+run_step 'checking clippy (all features)' cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+if [[ "$CUDA_GRAPH" == "1" ]]; then
+  run_step 'checking clippy (hydra-train cuda-graph)' cargo clippy --all-targets --features cuda-graph -p hydra-train -- -D warnings
+fi
