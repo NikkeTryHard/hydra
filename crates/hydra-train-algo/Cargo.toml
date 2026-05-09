@@ -1,0 +1,19 @@
+[package]
+name = "hydra-train-algo"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Pure training algorithms for Hydra Riichi Mahjong AI"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+burn = { version = "0.20" }
+
+[dev-dependencies]
+burn = { version = "0.20", features = ["ndarray"] }

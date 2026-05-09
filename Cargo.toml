@@ -12,6 +12,7 @@ members = [
     "crates/hydra-encoder",
     "crates/hydra-runtime-types",
     "crates/hydra-safety",
+    "crates/hydra-train-algo",
     "crates/hydra-train",
 ]
 

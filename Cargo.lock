@@ -3284,6 +3284,7 @@ dependencies = [
  "hydra-replay-loader",
  "hydra-replay-sidecar",
  "hydra-sample-cache",
+ "hydra-train-algo",
  "indicatif",
  "libloading",
  "memmap2",
@@ -3299,6 +3300,13 @@ dependencies = [
  "time",
  "torch-sys",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "hydra-train-algo"
+version = "0.1.0"
+dependencies = [
+ "burn",
 ]
 
 [[package]]
