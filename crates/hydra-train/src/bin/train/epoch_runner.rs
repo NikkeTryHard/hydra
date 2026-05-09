@@ -7,10 +7,12 @@ use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
-use indicatif::MultiProgress;
+use indicatif::{MultiProgress, ProgressBar};
 use tboard::EventWriter;
 
 use hydra_train::amp::maybe_autocast;
+#[cfg(feature = "cuda-graph")]
+use hydra_train::data::bc_shards::BcShardBatch;
 use hydra_train::data::bc_shards::{
     BcShardHostBatch, BcShardReader, BcShardSplit, load_bc_shard_reader,
 };
@@ -20,8 +22,11 @@ use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,
     PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
-    PROFILING_STAGE_LOGGING, PROFILING_STAGE_LOSS, PROFILING_STAGE_OPTIMIZER_STEP,
-    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
+    PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED, PROFILING_STAGE_H2D_STREAM_SYNC,
+    PROFILING_STAGE_H2D_TENSOR_MATERIALIZE, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOGGING,
+    PROFILING_STAGE_LOSS, PROFILING_STAGE_METRIC_READBACK, PROFILING_STAGE_OPTIMIZER_STEP,
+    PROFILING_STAGE_PRODUCER_WAIT, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
+    ProfilingEnvelope,
 };
 use hydra_train::training::bc::{
     BCTrainerConfig, BcExitConfig, gated_bc_context, maybe_add_exit_loss,
@@ -30,20 +35,25 @@ use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
 
 use super::TrainBackend;
+use super::advisory::{
+    AdvisoryEvent, IntervalTimingInput, RuntimeAdvisory, interval_runtime_advisories,
+};
 use super::artifacts::{
     BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
-    append_step_log_to_writer, append_training_log_to_writer, log_tensorboard, save_checkpoint,
+    PersistedValidationGateArtifact, append_advisory_event_to_writer, append_step_log_to_writer,
+    append_training_log_to_writer, log_tensorboard, save_checkpoint,
     save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
+    write_validation_gate_artifact,
 };
 use super::bc_fixed_shape::{FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks};
-use super::config::{TrainConfig, validation_sample_limit};
+use super::config::{TrainConfig, shard_prefetch_depth, validation_sample_limit};
 use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
 use super::progress::{
-    BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry, batch_metric_sums_from_outputs,
-    batch_stats_from_metric_sums,
+    BatchMetricSums, BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry,
+    batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
 };
 use super::resume::{
     BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
@@ -54,7 +64,8 @@ use super::status::{
     estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
 };
 use super::validation::{
-    ValidationContext, ValidationRuntime, ValidationSummary, is_better_validation, run_validation,
+    ValidationContext, ValidationRuntime, ValidationSummary, evaluate_validation_gates,
+    is_better_validation, run_validation,
 };
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
@@ -161,6 +172,7 @@ struct IntervalStepSummaryContext<'a> {
     window_stats: ScalarAverages,
     step_rate: f64,
     profiling: Option<ProfilingEnvelope>,
+    advisories: Vec<RuntimeAdvisory>,
 }
 
 struct PeriodicCheckpointContext<'a> {
@@ -176,6 +188,67 @@ struct PeriodicCheckpointState {
     epoch_optimizer_steps: usize,
     total_loss: f64,
     best_validation: Option<BestValidation>,
+}
+
+fn should_save_periodic_checkpoint(
+    config: &TrainConfig,
+    global_step: usize,
+    session_start_global_step: usize,
+) -> bool {
+    let interval = config.checkpoint_every_n_steps;
+    interval > 0
+        && session_steps_completed(global_step, session_start_global_step) > 0
+        && session_steps_completed(global_step, session_start_global_step).is_multiple_of(interval)
+}
+
+fn should_refresh_train_progress_message(
+    config: &TrainConfig,
+    global_step: usize,
+    session_start_global_step: usize,
+) -> bool {
+    let session_step = session_steps_completed(global_step, session_start_global_step);
+    if session_step == 0 {
+        return false;
+    }
+    session_step == 1
+        || config.log_every_n_steps > 0 && session_step.is_multiple_of(config.log_every_n_steps)
+        || config.validate_every_n_steps > 0
+            && session_step.is_multiple_of(config.validate_every_n_steps)
+        || should_save_periodic_checkpoint(config, global_step, session_start_global_step)
+        || reached_session_step_budget(
+            global_step,
+            session_start_global_step,
+            config.max_train_steps,
+        )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "progress message call mirrors training context"
+)]
+fn update_train_progress_message(
+    train_pb: &ProgressBar,
+    config: &TrainConfig,
+    train_cfg: &BCTrainerConfig,
+    global_step: usize,
+    session_start_global_step: usize,
+    run_start: Instant,
+    lr: f64,
+    stats: ScalarAverages,
+) {
+    if !should_refresh_train_progress_message(config, global_step, session_start_global_step) {
+        return;
+    }
+    let lr_message = lr_status_message(global_step, train_cfg.warmup_steps, lr);
+    train_pb.set_message(format_progress_message(
+        stats.total_loss,
+        stats.policy_agreement,
+        &lr_message,
+        steps_per_second(
+            session_steps_completed(global_step, session_start_global_step),
+            run_start.elapsed(),
+        ),
+    ));
 }
 
 struct EpochEndValidationContext<'a, B = TrainBackend>
@@ -227,6 +300,7 @@ where
 {
     model: &'a HydraModel<B>,
     artifacts: &'a BcArtifactPaths,
+    config: &'a TrainConfig,
     best_validation: &'a mut Option<BestValidation>,
     checkpoint_index: usize,
     checkpoint_loss: f64,
@@ -269,13 +343,31 @@ where
 {
     let CompletedValidationContext {
         model,
+        config,
         artifacts,
         best_validation,
         checkpoint_index,
         checkpoint_loss,
         delta_q_scope,
     } = context;
-    if is_better_validation(summary, *best_validation) {
+    let previous_best = *best_validation;
+    let gate_decision = evaluate_validation_gates(config, summary, previous_best);
+    if gate_decision.enabled {
+        write_validation_gate_artifact(
+            &artifacts.validation_gate_path,
+            &PersistedValidationGateArtifact {
+                scope: delta_q_scope,
+                step_or_epoch: checkpoint_index,
+                decision: &gate_decision,
+                samples: summary.samples,
+                policy_loss: summary.policy_loss,
+                policy_agreement: summary.agreement,
+                best_policy_loss: previous_best.map(|best| best.policy_loss),
+                best_policy_agreement: previous_best.map(|best| best.agreement),
+            },
+        )?;
+    }
+    if is_better_validation(summary, *best_validation) && gate_decision.passed {
         *best_validation = Some(BestValidation {
             policy_loss: summary.policy_loss,
             agreement: summary.agreement,
@@ -288,8 +380,15 @@ where
             checkpoint_loss,
             Some(summary),
         )?;
+    } else if gate_decision.enabled
+        && !gate_decision.passed
+        && config.validation_gates.fail_training_on_gate_failure
+    {
+        return Err(format!(
+            "validation gate failed: {}",
+            gate_decision.failed_names().join(",")
+        ));
     }
-
     if let (Some(report), Some(result)) = (
         summary.delta_q_promotion.as_ref(),
         summary.delta_q_promotion_result.as_ref(),
@@ -349,7 +448,7 @@ fn bc_interval_profiling(
     train_seconds: f64,
     sub_timing: &TrainSubStageTiming,
     validation: Option<ProfilingEnvelope>,
-    logging_seconds: f64,
+    checkpoint_seconds: f64,
 ) -> ProfilingEnvelope {
     ProfilingEnvelope::from_children(
         PROFILING_STAGE_BC_INTERVAL,
@@ -360,7 +459,7 @@ fn bc_interval_profiling(
                 sub_timing.to_profiling_children(),
             ),
             validation.unwrap_or_else(|| ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 0.0)),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, logging_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_CHECKPOINT, checkpoint_seconds),
         ],
     )
 }
@@ -398,34 +497,69 @@ where
 
 #[derive(Default)]
 pub(super) struct TrainSubStageTiming {
+    pub(super) producer_wait_seconds: f64,
     pub(super) collation_seconds: f64,
+    pub(super) h2d_transfer_seconds: f64,
+    pub(super) h2d_pageable_to_pinned_seconds: f64,
+    pub(super) h2d_tensor_materialize_seconds: f64,
+    pub(super) h2d_stream_sync_seconds: f64,
     pub(super) forward_seconds: f64,
     pub(super) loss_seconds: f64,
     pub(super) backward_seconds: f64,
+    pub(super) metric_readback_seconds: f64,
     pub(super) optimizer_step_seconds: f64,
 }
 
 impl TrainSubStageTiming {
     fn accumulate(&mut self, other: &TrainSubStageTiming) {
+        self.producer_wait_seconds += other.producer_wait_seconds;
+        self.h2d_transfer_seconds += other.h2d_transfer_seconds;
+        self.h2d_pageable_to_pinned_seconds += other.h2d_pageable_to_pinned_seconds;
+        self.h2d_tensor_materialize_seconds += other.h2d_tensor_materialize_seconds;
+        self.h2d_stream_sync_seconds += other.h2d_stream_sync_seconds;
         self.collation_seconds += other.collation_seconds;
         self.forward_seconds += other.forward_seconds;
         self.loss_seconds += other.loss_seconds;
         self.backward_seconds += other.backward_seconds;
+        self.metric_readback_seconds += other.metric_readback_seconds;
         self.optimizer_step_seconds += other.optimizer_step_seconds;
     }
 
     fn to_profiling_children(&self) -> Vec<ProfilingEnvelope> {
         vec![
+            ProfilingEnvelope::leaf(PROFILING_STAGE_PRODUCER_WAIT, self.producer_wait_seconds),
             ProfilingEnvelope::leaf(PROFILING_STAGE_COLLATION, self.collation_seconds),
+            ProfilingEnvelope::nested(
+                PROFILING_STAGE_H2D_TRANSFER,
+                self.h2d_transfer_seconds,
+                vec![
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED,
+                        self.h2d_pageable_to_pinned_seconds,
+                    ),
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
+                        self.h2d_tensor_materialize_seconds,
+                    ),
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_H2D_STREAM_SYNC,
+                        self.h2d_stream_sync_seconds,
+                    ),
+                ],
+            ),
             ProfilingEnvelope::leaf(PROFILING_STAGE_FORWARD, self.forward_seconds),
             ProfilingEnvelope::leaf(PROFILING_STAGE_LOSS, self.loss_seconds),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_METRIC_READBACK,
+                self.metric_readback_seconds,
+            ),
             ProfilingEnvelope::leaf(PROFILING_STAGE_BACKWARD, self.backward_seconds),
             ProfilingEnvelope::leaf(PROFILING_STAGE_OPTIMIZER_STEP, self.optimizer_step_seconds),
         ]
     }
 }
 
-fn train_logical_batch<B, O>(
+pub(super) fn train_logical_batch<B, O>(
     logical_batch: &[MjaiSample],
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
@@ -454,7 +588,7 @@ where
     let logical_batch_len = logical_batch.len().max(1) as f32;
     let mut total_samples = 0usize;
     let mut microbatch_count = 0usize;
-    let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
+    let mut metric_sums: Option<BatchMetricSums<B>> = None;
 
     if let Some(fixed_shape) = run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
         logical_batch,
@@ -530,7 +664,7 @@ where
         );
 
         metric_sums = Some(match metric_sums.take() {
-            Some(existing) => existing + chunk_metric_sums,
+            Some(existing) => existing.accumulate(chunk_metric_sums),
             None => chunk_metric_sums,
         });
         total_samples += chunk.len();
@@ -546,15 +680,18 @@ where
         }
     }
 
-    let batch_stats = metric_sums
-        .map(|metric_sums| {
-            vec![batch_stats_from_metric_sums(
-                total_samples,
-                microbatch_count,
-                metric_sums,
-            )]
-        })
-        .unwrap_or_default();
+    let batch_stats = if let Some(metric_sums) = metric_sums {
+        let metric_started = Instant::now();
+        let stats = vec![batch_stats_from_metric_sums(
+            total_samples,
+            microbatch_count,
+            metric_sums,
+        )];
+        sub_timing_fallback.metric_readback_seconds += metric_started.elapsed().as_secs_f64();
+        stats
+    } else {
+        Vec::new()
+    };
 
     if !batch_stats.is_empty() {
         let t = Instant::now();
@@ -656,6 +793,7 @@ where
     finalize_completed_validation(
         CompletedValidationContext {
             model,
+            config,
             artifacts,
             best_validation,
             checkpoint_index: global_step,
@@ -686,6 +824,102 @@ where
     Ok(Some(summary))
 }
 
+fn child_elapsed_seconds(profiling: &ProfilingEnvelope, stage: &str) -> f64 {
+    profiling
+        .children
+        .iter()
+        .find(|child| child.stage == stage)
+        .map(|child| child.elapsed_seconds)
+        .unwrap_or(0.0)
+}
+
+fn train_child_elapsed_seconds(profiling: &ProfilingEnvelope, stage: &str) -> f64 {
+    profiling
+        .children
+        .iter()
+        .find(|child| child.stage == PROFILING_STAGE_TRAIN)
+        .map(|train| child_elapsed_seconds(train, stage))
+        .unwrap_or(0.0)
+}
+
+fn train_nested_child_elapsed_seconds(
+    profiling: &ProfilingEnvelope,
+    parent_stage: &str,
+    child_stage: &str,
+) -> f64 {
+    profiling
+        .children
+        .iter()
+        .find(|child| child.stage == PROFILING_STAGE_TRAIN)
+        .and_then(|train| {
+            train
+                .children
+                .iter()
+                .find(|child| child.stage == parent_stage)
+        })
+        .map(|parent| child_elapsed_seconds(parent, child_stage))
+        .unwrap_or(0.0)
+}
+
+fn interval_timing_input(
+    config: &TrainConfig,
+    profiling: &ProfilingEnvelope,
+    window_steps: usize,
+) -> IntervalTimingInput {
+    let device = config.device.trim().to_ascii_lowercase();
+    IntervalTimingInput {
+        producer_wait_seconds: train_child_elapsed_seconds(
+            profiling,
+            PROFILING_STAGE_PRODUCER_WAIT,
+        ),
+        collation_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_COLLATION),
+        h2d_transfer_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_H2D_TRANSFER),
+        h2d_pageable_to_pinned_seconds: train_nested_child_elapsed_seconds(
+            profiling,
+            PROFILING_STAGE_H2D_TRANSFER,
+            PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED,
+        ),
+        h2d_tensor_materialize_seconds: train_nested_child_elapsed_seconds(
+            profiling,
+            PROFILING_STAGE_H2D_TRANSFER,
+            PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
+        ),
+        h2d_stream_sync_seconds: train_nested_child_elapsed_seconds(
+            profiling,
+            PROFILING_STAGE_H2D_TRANSFER,
+            PROFILING_STAGE_H2D_STREAM_SYNC,
+        ),
+        metric_readback_seconds: train_child_elapsed_seconds(
+            profiling,
+            PROFILING_STAGE_METRIC_READBACK,
+        ),
+        forward_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_FORWARD),
+        backward_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_BACKWARD),
+        optimizer_step_seconds: train_child_elapsed_seconds(
+            profiling,
+            PROFILING_STAGE_OPTIMIZER_STEP,
+        ),
+        kernel_launch_count: config
+            .nsight_trace
+            .as_ref()
+            .and_then(|trace| trace.kernel_launch_count),
+        tiny_kernel_fraction: config
+            .nsight_trace
+            .as_ref()
+            .and_then(|trace| trace.tiny_kernel_fraction),
+        cuda_runtime_launch_seconds: config
+            .nsight_trace
+            .as_ref()
+            .and_then(|trace| trace.cuda_runtime_launch_seconds),
+        validation_seconds: child_elapsed_seconds(profiling, PROFILING_STAGE_VALIDATION),
+        checkpoint_seconds: child_elapsed_seconds(profiling, PROFILING_STAGE_CHECKPOINT),
+        logging_seconds: child_elapsed_seconds(profiling, PROFILING_STAGE_LOGGING),
+        total_seconds: profiling.elapsed_seconds,
+        steps: window_steps,
+        is_cuda: device == "cuda" || device.starts_with("cuda:"),
+    }
+}
+
 fn emit_interval_step_summary<W>(
     multi: &MultiProgress,
     tb: &mut Option<EventWriter<W>>,
@@ -711,6 +945,7 @@ where
         window_stats,
         step_rate,
         mut profiling,
+        advisories,
     } = context;
     let logging_started = Instant::now();
     multi
@@ -807,6 +1042,8 @@ where
         train_loss_opp_next: window_stats.loss_opp_next,
         train_loss_score_pdf: window_stats.loss_score_pdf,
         train_loss_score_cdf: window_stats.loss_score_cdf,
+        train_rare_actions: window_stats.rare_actions,
+        val_rare_actions: val_summary.as_ref().map(|summary| summary.rare_actions),
         val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
         val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
         val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
@@ -814,10 +1051,17 @@ where
             .as_ref()
             .and_then(|summary| summary.delta_q_promotion_snapshot),
         profiling,
+        advisories,
         best_val_policy_loss: best_validation.map(|best| best.policy_loss),
         best_val_agreement: best_validation.map(|best| best.agreement),
     };
     append_step_log_to_writer(step_log, &step_entry)?;
+    if !step_entry.advisories.is_empty() {
+        append_advisory_event_to_writer(
+            step_log,
+            &AdvisoryEvent::interval(&step_entry.advisories),
+        )?;
+    }
     Ok(())
 }
 
@@ -958,6 +1202,7 @@ where
     finalize_completed_validation(
         CompletedValidationContext {
             model,
+            config,
             artifacts,
             best_validation,
             checkpoint_index: epoch + 1,
@@ -1085,6 +1330,8 @@ where
         train_loss_opp_next: train_stats.loss_opp_next,
         train_loss_score_pdf: train_stats.loss_score_pdf,
         train_loss_score_cdf: train_stats.loss_score_cdf,
+        train_rare_actions: train_stats.rare_actions,
+        val_rare_actions: val_summary.as_ref().map(|summary| summary.rare_actions),
         val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
         val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
         val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
@@ -1092,6 +1339,7 @@ where
             .as_ref()
             .and_then(|summary| summary.delta_q_promotion_snapshot),
         profiling,
+        advisories: Vec::new(),
         best_val_policy_loss: best_validation.map(|best| best.policy_loss),
         best_val_agreement: best_validation.map(|best| best.agreement),
         num_batches: train_stats.num_batches,
@@ -1263,17 +1511,22 @@ where
             epoch_optimizer_steps += 1;
             *global_step += 1;
             train_pb.inc(1);
-            let running_stats = stats.finalize();
-            let lr_message = lr_status_message(*global_step, train_cfg.warmup_steps, lr);
-            train_pb.set_message(format_progress_message(
-                running_stats.total_loss,
-                running_stats.policy_agreement,
-                &lr_message,
-                steps_per_second(
-                    session_steps_completed(*global_step, session_start_global_step),
-                    run_start.elapsed(),
-                ),
-            ));
+            if should_refresh_train_progress_message(
+                config,
+                *global_step,
+                session_start_global_step,
+            ) {
+                update_train_progress_message(
+                    &train_pb,
+                    config,
+                    train_cfg,
+                    *global_step,
+                    session_start_global_step,
+                    *run_start,
+                    lr,
+                    stats.finalize(),
+                );
+            }
 
             let session_step = session_steps_completed(*global_step, session_start_global_step);
             let val_summary = maybe_run_interval_validation(
@@ -1345,28 +1598,39 @@ where
                         epoch_optimizer_steps,
                         window_stats,
                         step_rate,
-                        profiling: Some(interval_profiling),
+                        profiling: Some(interval_profiling.clone()),
+                        advisories: interval_runtime_advisories(interval_timing_input(
+                            config,
+                            &interval_profiling,
+                            window_steps,
+                        )),
                     },
                 )?;
             }
 
-            let periodic_checkpoint_seconds = maybe_save_periodic_checkpoint(
-                epoch_model(model_slot)?,
-                optimizer,
-                PeriodicCheckpointContext {
-                    config,
-                    artifacts,
-                    epoch,
-                    session_start_global_step,
-                    current_runtime,
-                },
-                PeriodicCheckpointState {
-                    global_step: *global_step,
-                    epoch_optimizer_steps,
-                    total_loss: stats.finalize().total_loss,
-                    best_validation: *best_validation,
-                },
-            )?;
+            let periodic_checkpoint_seconds =
+                if should_save_periodic_checkpoint(config, *global_step, session_start_global_step)
+                {
+                    maybe_save_periodic_checkpoint(
+                        epoch_model(model_slot)?,
+                        optimizer,
+                        PeriodicCheckpointContext {
+                            config,
+                            artifacts,
+                            epoch,
+                            session_start_global_step,
+                            current_runtime,
+                        },
+                        PeriodicCheckpointState {
+                            global_step: *global_step,
+                            epoch_optimizer_steps,
+                            total_loss: stats.finalize().total_loss,
+                            best_validation: *best_validation,
+                        },
+                    )?
+                } else {
+                    0.0
+                };
             step_window_checkpoint_seconds += periodic_checkpoint_seconds;
             epoch_checkpoint_seconds += periodic_checkpoint_seconds;
 
@@ -1540,13 +1804,10 @@ where
     })
 }
 
-/// Prefetch queue depth for the CPU producer thread.
+/// Default prefetch queue depth for the CPU producer thread.
 ///
 /// Depth 2 keeps at most two host batches resident in memory while the GPU
-/// processes the current one.  This is enough to hide the CPU collation
-/// latency without ballooning host memory.
-const SHARD_PREFETCH_DEPTH: usize = 2;
-
+/// processes the current one. User config may raise this conservatively.
 fn run_epoch_from_shards<B, O, W>(
     context: EpochRunnerContext<'_, B>,
     runtime: EpochRuntimeMut<'_, O, W, B>,
@@ -1655,12 +1916,12 @@ where
     let batch_size = config.batch_size;
     let augment = config.augment;
     let producer_start_index = samples_to_skip;
-    let (tx, rx) =
-        mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(SHARD_PREFETCH_DEPTH);
+    let prefetch_depth = shard_prefetch_depth(config);
+    let (tx, rx) = mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(prefetch_depth);
     // Recycle channel: consumer returns consumed batches so the producer
     // can swap their heap capacity back into the scratch, eliminating
     // 18+ per-batch allocations (including ~1.6MB for obs_flat).
-    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(SHARD_PREFETCH_DEPTH + 1);
+    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(prefetch_depth + 1);
 
     let producer_handle = std::thread::Builder::new()
         .name("bc-shard-prefetch".into())
@@ -1687,7 +1948,13 @@ where
         })
         .map_err(|err| format!("failed to spawn bc-shard-prefetch thread: {err}"))?;
 
-    for recv_result in rx {
+    loop {
+        let recv_started = Instant::now();
+        let recv_result = match rx.recv() {
+            Ok(result) => result,
+            Err(_) => break,
+        };
+        let producer_wait_seconds = recv_started.elapsed().as_secs_f64();
         let (host_batch, take) = recv_result?;
         let lr = effective_lr(train_cfg, *global_step, total_steps);
         let train_started = Instant::now();
@@ -1719,6 +1986,8 @@ where
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
         step_window_train_seconds += train_seconds;
         epoch_train_seconds += train_seconds;
+        let mut batch_sub_timing = batch_sub_timing;
+        batch_sub_timing.producer_wait_seconds += producer_wait_seconds;
         step_window_sub_timing.accumulate(&batch_sub_timing);
         epoch_sub_timing.accumulate(&batch_sub_timing);
         epoch_optimizer_steps += 1;
@@ -1726,17 +1995,18 @@ where
         seen_samples += take;
         train_pb.inc(1);
 
-        let running_stats = stats.finalize();
-        let lr_message = lr_status_message(*global_step, train_cfg.warmup_steps, lr);
-        train_pb.set_message(format_progress_message(
-            running_stats.total_loss,
-            running_stats.policy_agreement,
-            &lr_message,
-            steps_per_second(
-                session_steps_completed(*global_step, session_start_global_step),
-                run_start.elapsed(),
-            ),
-        ));
+        if should_refresh_train_progress_message(config, *global_step, session_start_global_step) {
+            update_train_progress_message(
+                &train_pb,
+                config,
+                train_cfg,
+                *global_step,
+                session_start_global_step,
+                *run_start,
+                lr,
+                stats.finalize(),
+            );
+        }
 
         let session_step = session_steps_completed(*global_step, session_start_global_step);
         let val_summary = maybe_run_interval_validation(
@@ -1805,28 +2075,38 @@ where
                     epoch_optimizer_steps,
                     window_stats,
                     step_rate,
-                    profiling: Some(interval_profiling),
+                    profiling: Some(interval_profiling.clone()),
+                    advisories: interval_runtime_advisories(interval_timing_input(
+                        config,
+                        &interval_profiling,
+                        window_steps,
+                    )),
                 },
             )?;
         }
 
-        let periodic_checkpoint_seconds = maybe_save_periodic_checkpoint(
-            epoch_model(model_slot)?,
-            optimizer,
-            PeriodicCheckpointContext {
-                config,
-                artifacts,
-                epoch,
-                session_start_global_step,
-                current_runtime,
-            },
-            PeriodicCheckpointState {
-                global_step: *global_step,
-                epoch_optimizer_steps,
-                total_loss: stats.finalize().total_loss,
-                best_validation: *best_validation,
-            },
-        )?;
+        let periodic_checkpoint_seconds =
+            if should_save_periodic_checkpoint(config, *global_step, session_start_global_step) {
+                maybe_save_periodic_checkpoint(
+                    epoch_model(model_slot)?,
+                    optimizer,
+                    PeriodicCheckpointContext {
+                        config,
+                        artifacts,
+                        epoch,
+                        session_start_global_step,
+                        current_runtime,
+                    },
+                    PeriodicCheckpointState {
+                        global_step: *global_step,
+                        epoch_optimizer_steps,
+                        total_loss: stats.finalize().total_loss,
+                        best_validation: *best_validation,
+                    },
+                )?
+            } else {
+                0.0
+            };
         step_window_checkpoint_seconds += periodic_checkpoint_seconds;
         epoch_checkpoint_seconds += periodic_checkpoint_seconds;
 
@@ -1840,6 +2120,9 @@ where
         }
     }
 
+    drop(rx);
+    drop(recycle_tx);
+
     // Join the producer thread; if it panicked, propagate as an error.
     producer_handle
         .join()
@@ -1847,6 +2130,7 @@ where
 
     let train_total_loss = stats.finalize().total_loss;
     let continuation = build_epoch_continuation(epoch, epoch_completed, epoch_optimizer_steps);
+    let checkpoint_started = Instant::now();
     {
         let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
         save_latest_checkpoint_and_state(
@@ -1862,6 +2146,8 @@ where
             },
         )?;
     }
+    let checkpoint_seconds = checkpoint_started.elapsed().as_secs_f64();
+    epoch_checkpoint_seconds += checkpoint_seconds;
     if !continuation.epoch_completed {
         emit_paused_training_message(&continuation);
         return Ok(EpochRunOutcome {
@@ -1992,30 +2278,37 @@ where
 
     let t = Instant::now();
     let (shard_batch, recycled_host_batch) = {
-        let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
+        let _h2d_scope = nvtx::scope(PROFILING_STAGE_H2D_TRANSFER);
         #[cfg(feature = "cuda-graph")]
         {
             if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
-                (
-                    super::pinned_transfer::materialize_staged_reuse::<B>(
-                        &host_batch,
-                        pinned_staging,
-                        h2d_ctx,
-                        train_device,
-                        gpu_tensors,
-                    ),
-                    Some(host_batch),
-                )
+                let (shard_batch, h2d_timing) = super::pinned_transfer::materialize_staged_reuse::<B>(
+                    &host_batch,
+                    pinned_staging,
+                    h2d_ctx,
+                    train_device,
+                    gpu_tensors,
+                );
+                sub_timing.h2d_pageable_to_pinned_seconds += h2d_timing.pageable_to_pinned_seconds;
+                sub_timing.h2d_tensor_materialize_seconds += h2d_timing.tensor_materialize_seconds;
+                sub_timing.h2d_stream_sync_seconds += h2d_timing.stream_sync_seconds;
+                (shard_batch, Some(host_batch))
             } else {
-                (host_batch.materialize_owned::<B>(train_device), None)
+                let t_materialize = Instant::now();
+                let shard_batch = host_batch.materialize_owned::<B>(train_device);
+                sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
+                (shard_batch, None)
             }
         }
         #[cfg(not(feature = "cuda-graph"))]
         {
-            (host_batch.materialize_owned::<B>(train_device), None)
+            let t_materialize = Instant::now();
+            let shard_batch = host_batch.materialize_owned::<B>(train_device);
+            sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
+            (shard_batch, None)
         }
     };
-    sub_timing.collation_seconds += t.elapsed().as_secs_f64();
+    sub_timing.h2d_transfer_seconds += t.elapsed().as_secs_f64();
 
     let obs = shard_batch.obs;
     let batch = shard_batch.batch;
@@ -2030,7 +2323,7 @@ where
     let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
     let mut total_samples = 0usize;
     let mut microbatch_count = 0usize;
-    let mut metric_sums: Option<burn::prelude::Tensor<B, 1>> = None;
+    let mut metric_sums: Option<BatchMetricSums<B>> = None;
     let effective_microbatch = microbatch_size.max(1);
 
     if effective_microbatch >= batch_size {
@@ -2132,7 +2425,7 @@ where
                 &breakdown,
             );
             metric_sums = Some(match metric_sums.take() {
-                Some(existing) => existing + chunk_metric_sums,
+                Some(existing) => existing.accumulate(chunk_metric_sums),
                 None => chunk_metric_sums,
             });
             total_samples += chunk_len;
@@ -2157,16 +2450,298 @@ where
     head_controller.tick_warmup();
     sub_timing.optimizer_step_seconds += optimizer_started.elapsed().as_secs_f64();
 
-    let stats = metric_sums
-        .map(|metric_sums| {
-            vec![batch_stats_from_metric_sums(
-                total_samples,
-                microbatch_count,
-                metric_sums,
-            )]
-        })
-        .unwrap_or_default();
+    let stats = if let Some(metric_sums) = metric_sums {
+        let metric_started = Instant::now();
+        let stats = vec![batch_stats_from_metric_sums(
+            total_samples,
+            microbatch_count,
+            metric_sums,
+        )];
+        sub_timing.metric_readback_seconds += metric_started.elapsed().as_secs_f64();
+        stats
+    } else {
+        Vec::new()
+    };
     Ok((stats, sub_timing, recycled_host_batch))
+}
+
+#[cfg(feature = "cuda-graph")]
+pub(super) fn probe_logical_batch_from_host_batch<B>(
+    host_batch: BcShardHostBatch,
+    config: TrainLogicalBatchConfig<'_, B>,
+    head_controller: &mut HeadActivationController,
+    model: &HydraModel<B>,
+    #[cfg(feature = "cuda-graph")] staging: Option<&mut (
+        super::pinned_transfer::PinnedStagingArea,
+        super::pinned_transfer::AsyncH2DContext,
+        super::pinned_transfer::PreallocatedDeviceTensors,
+    )>,
+) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+{
+    let TrainLogicalBatchConfig {
+        microbatch_size,
+        use_amp,
+        augment: _,
+        train_device,
+        loss_fn,
+        bc_exit_cfg,
+        lr: _,
+    } = config;
+
+    let mut sub_timing = TrainSubStageTiming::default();
+    let t = Instant::now();
+    let shard_batch = {
+        let _h2d_scope = nvtx::scope(PROFILING_STAGE_H2D_TRANSFER);
+        #[cfg(feature = "cuda-graph")]
+        {
+            if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
+                let (shard_batch, h2d_timing) = super::pinned_transfer::materialize_staged_reuse::<B>(
+                    &host_batch,
+                    pinned_staging,
+                    h2d_ctx,
+                    train_device,
+                    gpu_tensors,
+                );
+                sub_timing.h2d_pageable_to_pinned_seconds += h2d_timing.pageable_to_pinned_seconds;
+                sub_timing.h2d_tensor_materialize_seconds += h2d_timing.tensor_materialize_seconds;
+                sub_timing.h2d_stream_sync_seconds += h2d_timing.stream_sync_seconds;
+                shard_batch
+            } else {
+                let t_materialize = Instant::now();
+                let shard_batch = host_batch.materialize_owned::<B>(train_device);
+                sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
+                shard_batch
+            }
+        }
+        #[cfg(not(feature = "cuda-graph"))]
+        {
+            let t_materialize = Instant::now();
+            let shard_batch = host_batch.materialize_owned::<B>(train_device);
+            sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
+            shard_batch
+        }
+    };
+    sub_timing.h2d_transfer_seconds += t.elapsed().as_secs_f64();
+
+    let (stats, mut compute_timing) = probe_device_batch_compute(
+        shard_batch,
+        microbatch_size,
+        use_amp,
+        loss_fn,
+        bc_exit_cfg,
+        head_controller,
+        model,
+    )?;
+    compute_timing.h2d_transfer_seconds = sub_timing.h2d_transfer_seconds;
+    compute_timing.h2d_pageable_to_pinned_seconds = sub_timing.h2d_pageable_to_pinned_seconds;
+    compute_timing.h2d_tensor_materialize_seconds = sub_timing.h2d_tensor_materialize_seconds;
+    compute_timing.h2d_stream_sync_seconds = sub_timing.h2d_stream_sync_seconds;
+    Ok((stats, compute_timing))
+}
+
+#[cfg(feature = "cuda-graph")]
+pub(super) fn probe_device_batch_compute<B>(
+    shard_batch: BcShardBatch<B>,
+    microbatch_size: usize,
+    use_amp: bool,
+    loss_fn: &HydraLoss<B>,
+    bc_exit_cfg: &BcExitConfig,
+    head_controller: &mut HeadActivationController,
+    model: &HydraModel<B>,
+) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+{
+    let mut sub_timing = TrainSubStageTiming::default();
+    let obs = shard_batch.obs;
+    let batch = shard_batch.batch;
+    let targets = shard_batch.targets;
+    let batch_size = batch.actions.dims()[0];
+    if batch_size == 0 {
+        return Ok((Vec::new(), sub_timing));
+    }
+
+    let logical_batch_len = batch_size.max(1) as f32;
+    let mut total_samples = 0usize;
+    let mut microbatch_count = 0usize;
+    let mut metric_sums: Option<BatchMetricSums<B>> = None;
+    let effective_microbatch = microbatch_size.max(1);
+    if effective_microbatch >= batch_size {
+        let (active_loss_fn, warmup_heads) =
+            gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let t = Instant::now();
+        let output = {
+            let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+            maybe_autocast(use_amp, || {
+                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+            })
+        };
+        sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let (breakdown, total) = {
+            let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+            let breakdown = active_loss_fn.total_loss(&output, &targets);
+            let total = maybe_add_exit_loss(
+                breakdown.total.clone(),
+                output.policy_logits.clone(),
+                batch.exit_target.as_ref(),
+                batch.exit_mask.as_ref(),
+                bc_exit_cfg,
+            );
+            (breakdown, total)
+        };
+        sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+        metric_sums = Some(batch_metric_sums_from_outputs(
+            batch_size,
+            output.policy_logits.clone(),
+            targets.legal_mask.clone(),
+            batch.actions.clone(),
+            total.clone(),
+            &breakdown,
+        ));
+        total_samples = batch_size;
+        microbatch_count = 1;
+        let t = Instant::now();
+        let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+        let _grads = total.backward();
+        sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+    } else {
+        for start in (0..batch_size).step_by(effective_microbatch) {
+            let end = (start + effective_microbatch).min(batch_size);
+            let chunk_len = end - start;
+            #[allow(
+                clippy::single_range_in_vec_init,
+                reason = "Burn slice API expects a one-element range slice"
+            )]
+            let r = [start..end];
+            let obs_chunk = obs.clone().slice(r.clone());
+            let batch_chunk = MjaiBcBatch {
+                actions: batch.actions.clone().slice(r.clone()),
+                exit_target: batch
+                    .exit_target
+                    .as_ref()
+                    .map(|t| t.clone().slice(r.clone())),
+                exit_mask: batch.exit_mask.as_ref().map(|t| t.clone().slice(r.clone())),
+            };
+            let targets_chunk = targets.slice_batch(start, end);
+            let (active_loss_fn, warmup_heads) =
+                gated_bc_context(Some(head_controller), loss_fn, &targets_chunk);
+            let t = Instant::now();
+            let output = {
+                let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                maybe_autocast(use_amp, || {
+                    model.forward_with_warmup(obs_chunk, &active_loss_fn.config, &warmup_heads)
+                })
+            };
+            sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let (breakdown, total) = {
+                let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+                let breakdown = active_loss_fn.total_loss(&output, &targets_chunk);
+                let total = maybe_add_exit_loss(
+                    breakdown.total.clone(),
+                    output.policy_logits.clone(),
+                    batch_chunk.exit_target.as_ref(),
+                    batch_chunk.exit_mask.as_ref(),
+                    bc_exit_cfg,
+                );
+                (breakdown, total)
+            };
+            sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+            let chunk_metric_sums = batch_metric_sums_from_outputs(
+                chunk_len,
+                output.policy_logits.clone(),
+                targets_chunk.legal_mask.clone(),
+                batch_chunk.actions.clone(),
+                total.clone(),
+                &breakdown,
+            );
+            metric_sums = Some(match metric_sums.take() {
+                Some(existing) => existing.accumulate(chunk_metric_sums),
+                None => chunk_metric_sums,
+            });
+            total_samples += chunk_len;
+            microbatch_count += 1;
+            let t = Instant::now();
+            let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let weighted_total = total * (chunk_len as f32 / logical_batch_len);
+            let _grads = weighted_total.backward();
+            sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+        }
+    }
+    let stats = if let Some(metric_sums) = metric_sums {
+        let metric_started = Instant::now();
+        let stats = vec![batch_stats_from_metric_sums(
+            total_samples,
+            microbatch_count,
+            metric_sums,
+        )];
+        sub_timing.metric_readback_seconds += metric_started.elapsed().as_secs_f64();
+        stats
+    } else {
+        Vec::new()
+    };
+    Ok((stats, sub_timing))
+}
+
+#[cfg(feature = "cuda-graph")]
+pub(super) fn probe_device_batch_compute_no_stats<B>(
+    shard_batch: BcShardBatch<B>,
+    microbatch_size: usize,
+    use_amp: bool,
+    loss_fn: &HydraLoss<B>,
+    bc_exit_cfg: &BcExitConfig,
+    head_controller: &mut HeadActivationController,
+    model: &HydraModel<B>,
+) -> Result<TrainSubStageTiming, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+{
+    let mut sub_timing = TrainSubStageTiming::default();
+    let obs = shard_batch.obs;
+    let batch = shard_batch.batch;
+    let targets = shard_batch.targets;
+    let batch_size = batch.actions.dims()[0];
+    if batch_size == 0 {
+        return Ok(sub_timing);
+    }
+
+    let effective_microbatch = microbatch_size.max(1);
+    if effective_microbatch < batch_size {
+        return Err("CUDA graph capture probe requires full-batch microbatch to avoid capture-unsafe slice/materialization ops".to_string());
+    }
+    let (active_loss_fn, warmup_heads) = gated_bc_context(Some(head_controller), loss_fn, &targets);
+    let t = Instant::now();
+    let output = {
+        let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+        maybe_autocast(use_amp, || {
+            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+        })
+    };
+    sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    let breakdown = active_loss_fn.total_loss(&output, &targets);
+    let total = maybe_add_exit_loss(
+        breakdown.total,
+        output.policy_logits,
+        batch.exit_target.as_ref(),
+        batch.exit_mask.as_ref(),
+        bc_exit_cfg,
+    );
+    sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+    let _grads = total.backward();
+    sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+    Ok(sub_timing)
 }
 
 #[cfg(test)]
@@ -2204,6 +2779,7 @@ mod tests {
             loss_opp_next: total_loss + 0.6,
             loss_score_pdf: total_loss + 0.7,
             loss_score_cdf: total_loss + 0.8,
+            rare_actions: crate::progress::RareActionMetrics::default(),
         }
     }
 
@@ -2218,14 +2794,17 @@ mod tests {
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -2261,6 +2840,9 @@ mod tests {
             policy_loss,
             agreement,
             samples: 64,
+            rare_actions: crate::progress::RareActionMetrics::default(),
+            saw_exit_targets: false,
+            saw_delta_q_targets: false,
             profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,
@@ -2286,7 +2868,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time before unix epoch")
             .as_nanos();
-        PathBuf::from("/home/nikketryhard/tmp").join(format!("hydra_epoch_runner_{label}_{unique}"))
+        std::env::temp_dir().join(format!("hydra_epoch_runner_{label}_{unique}"))
     }
 
     fn test_artifacts(label: &str) -> BcArtifactPaths {
@@ -2617,12 +3199,20 @@ mod tests {
             sub_timing.optimizer_step_seconds > 0.0,
             "optimizer_step should have measurable time"
         );
+        assert!(
+            sub_timing.metric_readback_seconds > 0.0,
+            "metric_readback should have measurable time"
+        );
 
         let children = sub_timing.to_profiling_children();
-        assert_eq!(children.len(), 5);
+        assert_eq!(children.len(), 8);
         assert!(
-            children.iter().all(|c| c.elapsed_seconds > 0.0),
-            "all profiling children should have positive elapsed_seconds"
+            children.iter().all(|c| {
+                c.stage == PROFILING_STAGE_PRODUCER_WAIT
+                    || c.stage == PROFILING_STAGE_H2D_TRANSFER
+                    || c.elapsed_seconds > 0.0
+            }),
+            "active profiling children should have positive elapsed_seconds"
         );
     }
 
@@ -2660,6 +3250,7 @@ mod tests {
                     window_stats: ScalarAverages::default().finalize(),
                     step_rate: 12.0,
                     profiling: None,
+                    advisories: Vec::new(),
                 },
             )
             .expect("emit interval step summary should succeed");
@@ -2852,6 +3443,35 @@ mod tests {
             })
         );
         assert!(!artifacts.best_model_base.with_extension("mpk").exists());
+    }
+
+    #[test]
+    fn progress_message_refreshes_only_on_display_boundaries() {
+        let mut config = dummy_config();
+        config.log_every_n_steps = 10;
+        config.validate_every_n_steps = 4;
+        config.checkpoint_every_n_steps = 6;
+        config.max_train_steps = Some(11);
+
+        assert!(!should_refresh_train_progress_message(&config, 100, 100));
+        assert!(should_refresh_train_progress_message(&config, 101, 100));
+        assert!(!should_refresh_train_progress_message(&config, 103, 100));
+        assert!(should_refresh_train_progress_message(&config, 104, 100));
+        assert!(should_refresh_train_progress_message(&config, 106, 100));
+        assert!(should_refresh_train_progress_message(&config, 110, 100));
+        assert!(should_refresh_train_progress_message(&config, 111, 100));
+    }
+
+    #[test]
+    fn checkpoint_boundary_helper_matches_session_relative_cadence() {
+        let mut config = dummy_config();
+        config.checkpoint_every_n_steps = 5;
+
+        assert!(!should_save_periodic_checkpoint(&config, 100, 100));
+        assert!(!should_save_periodic_checkpoint(&config, 104, 100));
+        assert!(should_save_periodic_checkpoint(&config, 105, 100));
+        assert!(!should_save_periodic_checkpoint(&config, 109, 100));
+        assert!(should_save_periodic_checkpoint(&config, 110, 100));
     }
 
     #[test]
@@ -3134,6 +3754,7 @@ mod tests {
                 window_stats,
                 step_rate: 12.5,
                 profiling: None,
+                advisories: Vec::new(),
             },
         )
         .expect("emit skipped validation interval summary");
@@ -3186,6 +3807,7 @@ mod tests {
                 window_stats,
                 step_rate: 3.0,
                 profiling: None,
+                advisories: Vec::new(),
             },
         )
         .expect("emit interval summary with validation");
@@ -3416,10 +4038,16 @@ mod tests {
         let train_stats = train_stats.finalize();
 
         let sub_timing = TrainSubStageTiming {
+            producer_wait_seconds: 0.04,
             collation_seconds: 0.01,
+            h2d_transfer_seconds: 0.06,
+            h2d_pageable_to_pinned_seconds: 0.01,
+            h2d_tensor_materialize_seconds: 0.04,
+            h2d_stream_sync_seconds: 0.01,
             forward_seconds: 0.5,
             loss_seconds: 0.02,
             backward_seconds: 0.3,
+            metric_readback_seconds: 0.02,
             optimizer_step_seconds: 0.05,
         };
         let profiling = bc_epoch_profiling(0.88, &sub_timing, None, 0.1, 0.0);
@@ -3473,6 +4101,48 @@ mod tests {
                 stage_name
             );
         }
+
+        let h2d_child = train_sub_children
+            .iter()
+            .find(|c| c["stage"].as_str() == Some("h2d_transfer"))
+            .expect("h2d transfer stage should be present in JSON");
+        let h2d_sub_children = h2d_child["children"]
+            .as_array()
+            .expect("h2d child should have materialization sub-stage children");
+        for stage_name in &[
+            "h2d_pageable_to_pinned",
+            "h2d_tensor_materialize",
+            "h2d_stream_sync",
+        ] {
+            let elapsed = h2d_sub_children
+                .iter()
+                .find(|c| c["stage"].as_str() == Some(stage_name))
+                .and_then(|c| c["elapsed_seconds"].as_f64())
+                .expect("h2d sub-stage should carry elapsed seconds");
+            assert!(
+                elapsed > 0.0,
+                "h2d sub-stage '{stage_name}' should be positive"
+            );
+        }
+    }
+
+    #[test]
+    fn bc_interval_profiling_records_checkpoint_separately_from_logging() {
+        let sub_timing = TrainSubStageTiming::default();
+
+        let profiling = bc_interval_profiling(1.0, &sub_timing, None, 0.25);
+
+        assert_eq!(
+            child_elapsed_seconds(&profiling, PROFILING_STAGE_CHECKPOINT),
+            0.25
+        );
+        assert_eq!(
+            child_elapsed_seconds(&profiling, PROFILING_STAGE_LOGGING),
+            0.0
+        );
+        let input = interval_timing_input(&dummy_config(), &profiling, 4);
+        assert_eq!(input.checkpoint_seconds, 0.25);
+        assert_eq!(input.logging_seconds, 0.0);
     }
 
     #[test]

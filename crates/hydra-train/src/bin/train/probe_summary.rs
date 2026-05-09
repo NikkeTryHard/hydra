@@ -211,6 +211,31 @@ mod tests {
     }
 
     #[test]
+    fn best_probe_summary_prefers_larger_microbatch_when_average_ties() {
+        let summary = best_probe_summary(&[
+            ProbeResult {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                status: ProbeStatus::Success,
+                measured_samples_per_second: Some(500.0),
+                elapsed_seconds: Some(2.0),
+                detail: String::new(),
+            },
+            ProbeResult {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 128,
+                status: ProbeStatus::Success,
+                measured_samples_per_second: Some(500.0),
+                elapsed_seconds: Some(2.0),
+                detail: String::new(),
+            },
+        ])
+        .expect("best summary should exist");
+
+        assert_eq!(summary.candidate_microbatch, 128);
+    }
+
+    #[test]
     fn probe_kind_name_supports_rl_microbatch() {
         assert_eq!(probe_kind_name(ProbeKind::RlMicrobatch), "rl_microbatch");
     }

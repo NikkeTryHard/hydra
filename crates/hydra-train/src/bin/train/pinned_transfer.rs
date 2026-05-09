@@ -24,7 +24,7 @@
 //!   makes the compute stream wait on the event before returning the
 //!   device-side batch.
 
-use std::ptr;
+use std::{ptr, time::Instant};
 
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::prelude::*;
@@ -59,6 +59,7 @@ pub(crate) struct PinnedStagingArea {
     // f32 buffers (sizes in *elements*, not bytes)
     obs: PinnedBuffer,
     legal_mask: PinnedBuffer,
+    policy_target: PinnedBuffer,
     value_target: PinnedBuffer,
     grp_target: PinnedBuffer,
     oracle_target: PinnedBuffer,
@@ -94,6 +95,7 @@ impl PinnedStagingArea {
             batch_size,
             obs: PinnedBuffer::new(batch_size * OBS_SIZE * f32_bytes),
             legal_mask: PinnedBuffer::new(action_elems * f32_bytes),
+            policy_target: PinnedBuffer::new(action_elems * f32_bytes),
             value_target: PinnedBuffer::new(batch_size * f32_bytes),
             grp_target: PinnedBuffer::new(batch_size * GRP_CLASS_COUNT * f32_bytes),
             oracle_target: PinnedBuffer::new(batch_size * PLAYER_COUNT * f32_bytes),
@@ -140,6 +142,7 @@ impl PinnedStagingArea {
         copy_f32_to_pinned(&host.score_pdf_flat, &mut self.score_pdf);
         copy_f32_to_pinned(&host.score_cdf_flat, &mut self.score_cdf);
         copy_i64_to_pinned(&host.actions, &mut self.actions);
+        stage_policy_target_from_actions(&host.actions, host.batch_size, &mut self.policy_target);
 
         if let Some(buf) = host.safety_target_flat.as_ref() {
             copy_f32_to_pinned(buf, &mut self.safety_target);
@@ -184,6 +187,13 @@ impl AsyncH2DContext {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct PinnedH2DTiming {
+    pub(crate) pageable_to_pinned_seconds: f64,
+    pub(crate) tensor_materialize_seconds: f64,
+    pub(crate) stream_sync_seconds: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Top-level async materialize entry point
 // ---------------------------------------------------------------------------
@@ -224,6 +234,7 @@ pub(crate) struct PreallocatedDeviceTensors {
     score_cdf: tch::Tensor,
 
     // i64 buffer
+    policy_target: tch::Tensor,
     actions: tch::Tensor,
 
     // optional f32 buffers (always allocated at max-batch size)
@@ -258,6 +269,7 @@ impl PreallocatedDeviceTensors {
             score_pdf: tch::Tensor::zeros([b * SCORE_BINS as i64], opts_f32),
             score_cdf: tch::Tensor::zeros([b * SCORE_BINS as i64], opts_f32),
             actions: tch::Tensor::zeros([b], opts_i64),
+            policy_target: tch::Tensor::zeros([b * action_space], opts_f32),
             safety_target: tch::Tensor::zeros([b * action_space], opts_f32),
             safety_mask: tch::Tensor::zeros([b * action_space], opts_f32),
             exit_target: tch::Tensor::zeros([b * action_space], opts_f32),
@@ -281,17 +293,20 @@ pub(crate) fn materialize_staged_reuse<B>(
     h2d: &AsyncH2DContext,
     device: &LibTorchDevice,
     gpu_tensors: &mut PreallocatedDeviceTensors,
-) -> BcShardBatch<B>
+) -> (BcShardBatch<B>, PinnedH2DTiming)
 where
     B: AutodiffBackend<
             Device = LibTorchDevice,
             InnerBackend: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
         >,
 {
+    let mut timing = PinnedH2DTiming::default();
     let batch = host.batch_size;
 
     // 1. CPU memcpy: pageable Vec -> pinned staging
+    let t_stage = Instant::now();
     staging.stage(host);
+    timing.pageable_to_pinned_seconds += t_stage.elapsed().as_secs_f64();
 
     // 2. Remember the current (compute) stream so we can restore it.
     let device_index = cuda_device_index(device);
@@ -301,10 +316,13 @@ where
     h2d.copy_stream.set_current();
 
     // 4. Copy pinned -> preallocated GPU tensors, produce Burn tensors.
+    let t_materialize = Instant::now();
     let shard_batch =
         unsafe { materialize_reuse_from_pinned::<B>(staging, host, batch, gpu_tensors) };
+    timing.tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
 
     // 5. Record event on copy stream.
+    let t_sync = Instant::now();
     h2d.event.record(&h2d.copy_stream);
 
     // 6. Restore compute stream.
@@ -312,8 +330,9 @@ where
 
     // 7. Make compute stream wait on copy completion.
     compute_stream.wait_event(&h2d.event);
+    timing.stream_sync_seconds += t_sync.elapsed().as_secs_f64();
 
-    shard_batch
+    (shard_batch, timing)
 }
 
 pub(crate) fn materialize_staged_reuse_inner<B>(
@@ -490,8 +509,15 @@ where
             exit_mask: exit_mask_tensor.clone(),
         };
 
+        let policy_target = burn_tensor_from_tch_f32::<B, 1>(copy_pinned_f32_to_gpu(
+            &staging.policy_target,
+            batch * HYDRA_ACTION_SPACE,
+            &mut gpu.policy_target,
+        ))
+        .reshape([batch, HYDRA_ACTION_SPACE]);
+
         let targets = HydraTargets {
-            policy_target: policy_target_from_actions::<B>(actions_tensor.clone(), batch),
+            policy_target,
             legal_mask,
             value_target,
             grp_target,
@@ -679,8 +705,15 @@ where
             exit_mask: exit_mask_tensor.clone(),
         };
 
+        let policy_target = burn_tensor_from_tch_f32_inner::<B, 1>(copy_pinned_f32_to_gpu(
+            &staging.policy_target,
+            batch * HYDRA_ACTION_SPACE,
+            &mut gpu.policy_target,
+        ))
+        .reshape([batch, HYDRA_ACTION_SPACE]);
+
         let targets = HydraTargets {
-            policy_target: policy_target_from_actions::<B>(actions_tensor.clone(), batch),
+            policy_target,
             legal_mask,
             value_target,
             grp_target,
@@ -764,7 +797,6 @@ unsafe fn copy_pinned_f32_to_gpu(
             tch::Device::Cpu,
         )
     };
-    // narrow to the actual batch count (preallocated may be larger)
     let mut dst_slice = gpu_dst.narrow(0, 0, count as i64);
     dst_slice.copy_(&cpu_view);
     dst_slice
@@ -862,12 +894,24 @@ fn copy_i64_to_pinned(src: &[i64], dst: &mut PinnedBuffer) {
     }
 }
 
-fn policy_target_from_actions<B: Backend>(
-    actions: Tensor<B, 1, Int>,
-    batch_size: usize,
-) -> Tensor<B, 2> {
-    actions
-        .one_hot::<2>(HYDRA_ACTION_SPACE)
-        .reshape([batch_size, HYDRA_ACTION_SPACE])
-        .float()
+fn stage_policy_target_from_actions(actions: &[i64], batch_size: usize, dst: &mut PinnedBuffer) {
+    let action_space = HYDRA_ACTION_SPACE;
+    let count = batch_size * action_space;
+    let byte_count = count * std::mem::size_of::<f32>();
+    assert!(
+        byte_count <= dst.len(),
+        "policy target staging requires {byte_count} bytes but buffer has {}",
+        dst.len()
+    );
+    unsafe {
+        ptr::write_bytes(dst.as_mut_ptr(), 0, byte_count);
+        let values = std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f32>(), count);
+        for (row, &action) in actions.iter().take(batch_size).enumerate() {
+            if let Ok(action) = usize::try_from(action)
+                && action < action_space
+            {
+                values[row * action_space + action] = 1.0;
+            }
+        }
+    }
 }

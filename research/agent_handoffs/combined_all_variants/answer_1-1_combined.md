@@ -379,7 +379,7 @@ and scalar:
 [
 v_{\text{off}}
 ==============
-  
+
 P_{\text{win}}\cdot \frac{\mathbb E[\text{score}\mid \text{win}]}{12000}
 +0.05,P_{\text{tenpai}}
 +0.01,\frac{u_1}{20}

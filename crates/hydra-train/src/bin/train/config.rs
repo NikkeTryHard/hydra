@@ -8,8 +8,9 @@ use hydra_train::preflight::{PreflightConfig, ProbeKind};
 
 pub(crate) use super::config_runtime::{
     configure_threads, default_num_threads_for_system, device_label, display_num_threads,
-    loader_runtime_config, train_device, train_microbatch_size, trainer_config_from_train_config,
-    validate_config, validation_microbatch_size, validation_sample_limit,
+    loader_runtime_config, shard_prefetch_depth, train_device, train_microbatch_size,
+    trainer_config_from_train_config, validate_config, validation_microbatch_size,
+    validation_sample_limit,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -30,6 +31,8 @@ pub(crate) struct TrainConfig {
     pub(crate) delta_q_sidecar_path: Option<PathBuf>,
     #[serde(default)]
     pub(crate) bc_shards_manifest_path: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) shard_prefetch_depth: Option<usize>,
     #[serde(default = "default_train_fraction")]
     pub(crate) train_fraction: f32,
     #[serde(default)]
@@ -42,9 +45,12 @@ pub(crate) struct TrainConfig {
     #[serde(default)]
     pub(crate) advanced_loss: Option<AdvancedLossConfig>,
     #[serde(default)]
+    pub(crate) validation_gates: ValidationGateConfig,
     pub(crate) rl: Option<RlTrainConfig>,
     #[serde(default)]
     pub(crate) bc: BcHyperparamConfig,
+    #[serde(default)]
+    pub(crate) nsight_trace: Option<NsightTraceConfig>,
     #[serde(default = "default_device")]
     pub(crate) device: String,
     #[serde(default)]
@@ -210,6 +216,14 @@ impl Default for BcHyperparamConfig {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct NsightTraceConfig {
+    pub(crate) kernel_launch_count: Option<u64>,
+    pub(crate) tiny_kernel_fraction: Option<f64>,
+    pub(crate) cuda_runtime_launch_seconds: Option<f64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AdvancedLossConfig {
     pub(crate) exit: Option<f32>,
     pub(crate) safety_residual: Option<f32>,
@@ -219,6 +233,47 @@ pub(crate) struct AdvancedLossConfig {
     pub(crate) delta_q: Option<f32>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ValidationGateConfig {
+    #[serde(default)]
+    pub(crate) enabled: bool,
+    #[serde(default = "default_validation_gate_min_samples")]
+    pub(crate) min_validation_samples: Option<usize>,
+    #[serde(default = "default_validation_gate_max_policy_loss_regression")]
+    pub(crate) max_policy_loss_regression: Option<f64>,
+    #[serde(default)]
+    pub(crate) min_policy_agreement_delta: Option<f64>,
+    #[serde(default)]
+    pub(crate) fail_training_on_gate_failure: bool,
+    #[serde(default = "default_true")]
+    pub(crate) require_sidecar_coverage_when_weighted: bool,
+}
+
+impl Default for ValidationGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_validation_samples: default_validation_gate_min_samples(),
+            max_policy_loss_regression: default_validation_gate_max_policy_loss_regression(),
+            min_policy_agreement_delta: None,
+            fail_training_on_gate_failure: false,
+            require_sidecar_coverage_when_weighted: true,
+        }
+    }
+}
+
+fn default_validation_gate_min_samples() -> Option<usize> {
+    Some(1024)
+}
+
+fn default_validation_gate_max_policy_loss_regression() -> Option<f64> {
+    Some(0.0)
+}
+
+fn default_true() -> bool {
+    true
+}
 pub(crate) fn default_batch_size() -> usize {
     2048
 }
@@ -285,6 +340,10 @@ pub(crate) fn default_tensorboard() -> bool {
 
 pub(crate) fn default_archive_queue_bound() -> usize {
     128
+}
+
+pub(crate) fn default_shard_prefetch_depth() -> usize {
+    2
 }
 
 pub(crate) fn default_validation_every_n_epochs() -> usize {

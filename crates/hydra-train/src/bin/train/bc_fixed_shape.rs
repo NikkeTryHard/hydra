@@ -1,6 +1,5 @@
 use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams};
-use burn::prelude::Tensor;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use hydra_train::amp::maybe_autocast;
@@ -14,7 +13,9 @@ use hydra_train::training::bc::{BcExitConfig, gated_bc_context, maybe_add_exit_l
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, LossBreakdown};
 
-use crate::progress::{BatchStats, batch_metric_sums_from_outputs, batch_stats_from_metric_sums};
+use crate::progress::{
+    BatchMetricSums, BatchStats, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
+};
 
 use std::time::Instant;
 
@@ -66,7 +67,7 @@ where
 fn accumulate_metric_sums<B: AutodiffBackend<Device = LibTorchDevice>>(
     total_samples: usize,
     microbatch_count: usize,
-    metric_sums: Tensor<B, 1>,
+    metric_sums: BatchMetricSums<B>,
 ) -> BatchStats
 where
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
@@ -83,11 +84,11 @@ fn split_divisible_prefix(
 }
 
 fn merge_metric_sums<B: Backend>(
-    metric_sums: &mut Option<Tensor<B, 1>>,
-    chunk_metric_sums: Tensor<B, 1>,
+    metric_sums: &mut Option<BatchMetricSums<B>>,
+    chunk_metric_sums: BatchMetricSums<B>,
 ) {
     *metric_sums = Some(match metric_sums.take() {
-        Some(existing) => existing + chunk_metric_sums,
+        Some(existing) => existing.accumulate(chunk_metric_sums),
         None => chunk_metric_sums,
     });
 }
@@ -121,7 +122,7 @@ where
     let (fixed_shape_prefix, tail_remainder) =
         split_divisible_prefix(logical_batch, microbatch_size);
     let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
-    let mut metric_sums: Option<Tensor<B, 1>> = None;
+    let mut metric_sums: Option<BatchMetricSums<B>> = None;
     let mut total_samples = 0usize;
     let mut microbatch_count = 0usize;
     let mut sub_timing = TrainSubStageTiming::default();
@@ -246,9 +247,13 @@ where
         return Ok(None);
     };
 
+    let stats_started = Instant::now();
+    let batch_stats = accumulate_metric_sums(total_samples, microbatch_count, metric_sums);
+    sub_timing.metric_readback_seconds += stats_started.elapsed().as_secs_f64();
+
     Ok(Some(FixedShapeTrainStepOutput {
         grads: accumulator.grads(),
-        batch_stats: accumulate_metric_sums(total_samples, microbatch_count, metric_sums),
+        batch_stats,
         sub_stage_timing: sub_timing,
     }))
 }
@@ -444,7 +449,6 @@ mod tests {
     use crate::validation::validation_batch_stats;
     use burn::backend::{Autodiff, LibTorch};
     use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams, Optimizer};
-    use burn::prelude::Tensor;
     use hydra_train::config::INPUT_CHANNELS;
     use hydra_train::data::sample::{
         collate_batch_samples, collate_samples, collate_samples_owned,
@@ -568,7 +572,7 @@ mod tests {
             return None;
         }
 
-        let mut metric_sums: Option<Tensor<TestTrainBackend, 1>> = None;
+        let mut metric_sums: Option<BatchMetricSums<TestTrainBackend>> = None;
         let mut total_samples = 0usize;
         let mut microbatch_count = 0usize;
 

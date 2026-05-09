@@ -31,6 +31,7 @@ use hydra_train::training::losses::HydraLoss;
 use tboard::EventWriter;
 
 use super::TrainBackend;
+use super::advisory::{RuntimeAdvisory, selected_runtime_probe_advisories};
 #[cfg(test)]
 use super::artifacts::write_manifest_cache;
 use super::artifacts::{
@@ -160,6 +161,7 @@ pub(super) struct PreflightRuntime {
     pub(super) train_probe_results: Vec<ProbeResult>,
     pub(super) validation_probe_results: Vec<ProbeResult>,
     pub(super) benchmark: Option<BenchmarkResult>,
+    pub(super) advisories: Vec<RuntimeAdvisory>,
     pub(super) explicit: ExplicitSettings,
 }
 
@@ -394,6 +396,20 @@ fn fast_repeated_run_ladder(
     candidates.dedup();
     candidates
 }
+
+fn prioritize_full_batch_train_candidate(
+    candidates: &mut Vec<usize>,
+    batch_size: usize,
+    seed: usize,
+) {
+    let batch_size = batch_size.max(1);
+    if batch_size <= seed.max(1) {
+        return;
+    }
+    candidates.retain(|candidate| *candidate != batch_size);
+    let insert_at = usize::from(!candidates.is_empty());
+    candidates.insert(insert_at, batch_size);
+}
 fn exact_train_probe_runtime_seed(
     config: &TrainConfig,
     selected_candidate: usize,
@@ -451,6 +467,8 @@ fn search_train_microbatch(
         explicit_candidate.is_some() && !config.preflight.allow_override_explicit_microbatch;
     if use_explicit_only {
         candidates = vec![explicit_candidate.unwrap_or(1)];
+    } else {
+        prioritize_full_batch_train_candidate(&mut candidates, config.batch_size, seed);
     }
     if config.preflight.fast_repeated_run_profile {
         println!(
@@ -618,7 +636,7 @@ fn diverse_probe_candidates(
             .unwrap_or(0.0)
             .partial_cmp(&left.average_samples_per_second.unwrap_or(0.0))
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.candidate_microbatch.cmp(&right.candidate_microbatch))
+            .then_with(|| right.candidate_microbatch.cmp(&left.candidate_microbatch))
     });
     if summaries.is_empty() {
         return summaries;
@@ -667,7 +685,7 @@ fn diverse_probe_candidates(
             .unwrap_or(0.0)
             .partial_cmp(&left.average_samples_per_second.unwrap_or(0.0))
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.candidate_microbatch.cmp(&right.candidate_microbatch))
+            .then_with(|| right.candidate_microbatch.cmp(&left.candidate_microbatch))
     });
     selected.truncate(limit.max(1));
     selected
@@ -812,9 +830,10 @@ fn build_stage_two_finalists(inputs: StageTwoFinalistInputs<'_>) -> Vec<Benchmar
             .partial_cmp(&left_score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
-                left.runtime
+                right
+                    .runtime
                     .train_microbatch_size
-                    .cmp(&right.runtime.train_microbatch_size)
+                    .cmp(&left.runtime.train_microbatch_size)
             })
     });
     finalists.truncate(config.preflight.real_benchmark_max_finalists.max(1));
@@ -1301,11 +1320,14 @@ fn benchmark_logging_cost(
         train_loss_opp_next: train_stats.loss_opp_next,
         train_loss_score_pdf: train_stats.loss_score_pdf,
         train_loss_score_cdf: train_stats.loss_score_cdf,
+        train_rare_actions: train_stats.rare_actions,
+        val_rare_actions: Some(validation_summary.rare_actions),
         val_total_loss: Some(validation_summary.total_loss),
         val_policy_loss: Some(validation_summary.policy_loss),
         val_policy_agreement: Some(validation_summary.agreement),
         val_delta_q_promotion: validation_summary.delta_q_promotion_snapshot,
         profiling: None,
+        advisories: Vec::new(),
         best_val_policy_loss: best_validation.map(|value| value.policy_loss),
         best_val_agreement: best_validation.map(|value| value.agreement),
     };
@@ -1650,6 +1672,9 @@ where
     } else {
         dynamic_probe_ladder(config, spec.kind, spec.seed.max(1))
     };
+    if !use_explicit_only && matches!(spec.kind, ProbeKind::Train) {
+        prioritize_full_batch_train_candidate(&mut candidates, config.batch_size, spec.seed);
+    }
     let mut seen = BTreeSet::new();
     candidates.retain(|candidate| seen.insert(*candidate));
     println!(
@@ -3053,15 +3078,7 @@ pub(super) fn run_preflight(
         let phase_pb = make_bar(6, "[{bar:30.magenta/black}] {pos}/{len} {msg}")?;
         phase_pb.set_message(preflight_phase_label("train microbatch probe"));
 
-        let train_seed = if config.preflight.fast_repeated_run_profile {
-            config
-                .microbatch_size
-                .unwrap_or_else(|| config.batch_size.max(1))
-        } else {
-            config
-                .microbatch_size
-                .unwrap_or_else(|| candidate_ladder(&config.preflight, config.batch_size)[0])
-        };
+        let train_seed = config.microbatch_size.unwrap_or(config.batch_size);
 
         let t_train_probe = Instant::now();
         let (train_microbatch, train_probe_results, train_runtime_seed) =
@@ -3252,6 +3269,19 @@ pub(super) fn run_preflight(
         None
     };
     let benchmark_secs = t_benchmark.elapsed().as_secs_f64();
+    let mut advisories = Vec::new();
+    if benchmark.is_none() {
+        advisories.extend(selected_runtime_probe_advisories(
+            ProbeKind::Train,
+            runtime.selected.train_microbatch_size,
+            &train_probe_results,
+        ));
+        advisories.extend(selected_runtime_probe_advisories(
+            ProbeKind::Validation,
+            runtime.selected.validation_microbatch_size,
+            &validation_probe_results,
+        ));
+    }
 
     // Atomic cache write: only update cache after ALL work completes successfully
     write_preflight_cache(
@@ -3333,6 +3363,7 @@ pub(super) fn run_preflight(
         train_probe_results,
         validation_probe_results,
         benchmark,
+        advisories,
         explicit,
     })
 }
@@ -3495,6 +3526,22 @@ mod tests {
         let path = unique_test_path(label).with_extension(extension);
         fs::write(&path, contents).expect("temporary test file should be writable");
         path
+    }
+
+    #[test]
+    fn fast_repeated_run_ladder_uses_measurable_candidate_when_batch_below_minimum() {
+        let mut config = dummy_config();
+        config.batch_size = 10;
+        config.microbatch_size = None;
+        config.preflight.fast_repeated_run_profile = true;
+        config.preflight.min_microbatch_size = 16;
+        config.preflight.candidate_microbatches = vec![32, 16];
+
+        let seed = config.microbatch_size.unwrap_or(config.batch_size);
+        let candidates = fast_repeated_run_ladder(&config.preflight, config.batch_size, seed);
+
+        assert_eq!(seed, 10);
+        assert_eq!(candidates, vec![16]);
     }
 
     fn missing_test_path(label: &str) -> PathBuf {
@@ -3661,6 +3708,19 @@ mod tests {
         }
     }
 
+    fn probe_summary(
+        candidate_microbatch: usize,
+        average_samples_per_second: f64,
+    ) -> ProbeCandidateSummary {
+        ProbeCandidateSummary {
+            candidate_microbatch,
+            status: ProbeStatus::Success,
+            attempts: 1,
+            average_samples_per_second: Some(average_samples_per_second),
+            average_elapsed_seconds: Some(1.0),
+        }
+    }
+
     #[test]
     fn exact_train_probe_runtime_seed_uses_only_exact_standard_attempts() {
         let mut config = dummy_config();
@@ -3791,6 +3851,43 @@ mod tests {
     }
 
     #[test]
+    fn prioritize_full_batch_train_candidate_preserves_seed_first() {
+        let mut candidates = vec![32, 64, 16];
+
+        prioritize_full_batch_train_candidate(&mut candidates, 128, 32);
+
+        assert_eq!(candidates, vec![32, 128, 64, 16]);
+    }
+
+    #[test]
+    fn prioritize_full_batch_train_candidate_noops_when_seed_is_full_batch() {
+        let mut candidates = vec![128, 64, 32];
+
+        prioritize_full_batch_train_candidate(&mut candidates, 128, 128);
+
+        assert_eq!(candidates, vec![128, 64, 32]);
+    }
+
+    #[test]
+    fn diverse_probe_candidates_prefer_larger_microbatch_when_scores_tie() {
+        let results = vec![
+            probe_result_with_runtime(ProbeKind::Train, 32, ProbeStatus::Success, Some(100.0)),
+            probe_result_with_runtime(ProbeKind::Train, 128, ProbeStatus::Success, Some(100.0)),
+            probe_result_with_runtime(ProbeKind::Train, 64, ProbeStatus::Success, Some(100.0)),
+        ];
+
+        let candidates = diverse_probe_candidates(&results, 32, 3, 0.0);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.candidate_microbatch)
+                .collect::<Vec<_>>(),
+            vec![128, 64, 32]
+        );
+    }
+
+    #[test]
     fn stage_two_finalists_accept_loader_ranked_first_by_runtime_autotune() {
         let mut config = dummy_config();
         config.preflight.real_benchmark_loader_candidates = 1;
@@ -3862,6 +3959,48 @@ mod tests {
         );
         assert_eq!(finalists[0].runtime.loader, selected_loader);
         assert_eq!(finalists[0].loader_probe_samples_per_second, 105.0);
+    }
+
+    #[test]
+    fn stage_two_finalists_prefer_larger_train_microbatch_when_scores_tie() {
+        let mut config = dummy_config();
+        config.batch_size = 128;
+        config.preflight.real_benchmark_max_finalists = 2;
+        let loader = LoaderRuntimeConfig {
+            num_threads: Some(6),
+            buffer_games: 32,
+            buffer_samples: 256,
+            archive_queue_bound: 16,
+        };
+        let selected = EffectiveRuntimeConfig {
+            selected: hydra_train::preflight::SelectedRuntimeConfig {
+                train_microbatch_size: 32,
+                validation_microbatch_size: 64,
+                accum_steps: 4,
+            },
+            loader,
+        };
+        let train_candidates = vec![probe_summary(32, 400.0), probe_summary(128, 400.0)];
+        let validation_candidates = vec![probe_summary(64, 300.0)];
+        let loader_candidates = vec![RankedLoaderRuntime {
+            loader,
+            tuple: (16, 256, 32),
+            train_samples_per_second: 100.0,
+        }];
+
+        let finalists = build_stage_two_finalists(StageTwoFinalistInputs {
+            config: &config,
+            selected: &selected,
+            train_candidates: &train_candidates,
+            validation_candidates: &validation_candidates,
+            loader_candidates: &loader_candidates,
+            train_probe_results: &[],
+            validation_probe_results: &[],
+            ranked_loaders: &loader_candidates,
+        });
+
+        assert_eq!(finalists[0].runtime.train_microbatch_size, 128);
+        assert_eq!(finalists[0].runtime.accum_steps, 1);
     }
 
     #[test]
@@ -5874,6 +6013,10 @@ mod tests {
             result.validation_probe_results.is_empty(),
             "cache hit should skip validation probing"
         );
+        assert!(
+            result.advisories.is_empty(),
+            "cache hit has no probe results and must not invent selected-vs-best advisories"
+        );
 
         let _ = fs::remove_dir_all(&output_dir);
         let _ = fs::remove_dir_all(&data_dir);
@@ -5983,6 +6126,10 @@ mod tests {
                 .report_path()
                 .exists(),
             "cache-hit preflight without stage-2 benchmark should not emit benchmark report"
+        );
+        assert!(
+            result.advisories.is_empty(),
+            "cache hit has no probe results and must not invent selected-vs-best advisories"
         );
 
         let _ = fs::remove_dir_all(&output_dir);

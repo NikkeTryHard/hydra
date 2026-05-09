@@ -260,10 +260,14 @@ pub(super) fn dynamic_probe_ladder(
         .filter(|candidate| *candidate < seed)
         .collect::<Vec<_>>();
     let mut ladder = vec![seed.max(1)];
+    if matches!(kind, ProbeKind::Train) && config.batch_size > seed.max(1) {
+        ladder.push(config.batch_size);
+    }
     ladder.extend(dynamic_probe_growth_candidates(config, kind, seed));
     lower.sort_unstable_by(|a, b| b.cmp(a));
     ladder.extend(lower);
-    ladder.dedup();
+    let mut seen = BTreeSet::new();
+    ladder.retain(|candidate| seen.insert(*candidate));
     ladder
 }
 
@@ -319,7 +323,18 @@ mod tests {
         config.batch_size = 512;
         config.preflight.candidate_microbatches = vec![512, 256, 128, 64, 32, 16];
         let ladder = dynamic_probe_ladder(&config, ProbeKind::Train, 64);
-        assert_eq!(ladder, vec![64, 128, 256, 512, 32, 16]);
+        assert_eq!(ladder, vec![64, 512, 128, 256, 32, 16]);
+    }
+
+    #[test]
+    fn dynamic_train_probe_ladder_prioritizes_full_batch_from_small_seed() {
+        let mut config = dummy_config();
+        config.batch_size = 128;
+        config.preflight.candidate_microbatches = vec![128, 64, 32, 16];
+
+        let ladder = dynamic_probe_ladder(&config, ProbeKind::Train, 32);
+
+        assert_eq!(ladder, vec![32, 128, 64, 16]);
     }
 
     #[test]

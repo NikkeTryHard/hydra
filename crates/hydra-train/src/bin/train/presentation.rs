@@ -11,6 +11,7 @@ use hydra_train::preflight::{
     EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult, ProbeStatus,
 };
 
+use super::advisory::{AdvisorySeverity, RuntimeAdvisory};
 use super::artifacts::BcArtifactPaths;
 use super::config::TrainConfig;
 use super::config::display_num_threads;
@@ -120,6 +121,15 @@ pub(super) fn format_warning_line(detail: impl std::fmt::Display) -> String {
         "Warning:".bold().yellow(),
         detail.to_string().yellow()
     ))
+}
+
+pub(super) fn format_advisory_line(advisory: &RuntimeAdvisory) -> String {
+    let severity = match advisory.severity {
+        AdvisorySeverity::Info => "Info".bold().cyan(),
+        AdvisorySeverity::Warning => "Warning".bold().yellow(),
+    };
+    let detail = format!("{}: {}", advisory.key, advisory.message);
+    with_utc_timestamp(format!("{} {}", severity, detail.yellow()))
 }
 
 pub(super) fn phase_label(prefix: &str, epoch_index: usize, num_epochs: usize) -> String {
@@ -669,6 +679,32 @@ pub(super) fn explicit_preflight_summary(
         explicit.validation_microbatch_explicit,
     )
 }
+pub(super) fn cuda_graph_replay_label() -> &'static str {
+    "production_off_probe_only"
+}
+
+pub(super) fn optimized_path_summary(config: &TrainConfig) -> String {
+    let shard_input = config.bc_shards_manifest_path.is_some();
+    let pinned_staging = cfg!(feature = "cuda-graph") && shard_input;
+    let preallocated_tensors = pinned_staging;
+    let copy_compute_overlap = if pinned_staging {
+        "unproven-single-buffer"
+    } else {
+        "off"
+    };
+    format!(
+        "input={} pinned_h2d={} prealloc_gpu_tensors={} cuda_graph_replay={} copy_compute_overlap={}",
+        if shard_input {
+            "bc_shards"
+        } else {
+            "raw_replay"
+        },
+        if pinned_staging { "on" } else { "off" },
+        if preallocated_tensors { "on" } else { "off" },
+        cuda_graph_replay_label(),
+        copy_compute_overlap,
+    )
+}
 
 pub(super) fn explicit_preflight_recommendation() -> String {
     "using config runtime except epoch-boundary selected-runtime reuse; run train <config.yaml> --preflight to tune this machine before training"
@@ -746,6 +782,7 @@ pub(super) fn print_banner(
         )
         .yellow(),
     );
+    print_banner_field("Optimized path", optimized_path_summary(config).yellow());
     print_banner_field("BC hyperparams", bc_hyperparam_summary(train_cfg).yellow());
     print_banner_field("Epochs", config.num_epochs.to_string().yellow());
     print_banner_field(
@@ -776,12 +813,13 @@ pub(super) fn print_banner(
 mod tests {
     use super::{
         bc_hyperparam_summary, explicit_preflight_recommendation, explicit_preflight_summary,
-        format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
-        format_probe_results_table, format_probe_spinner_message, format_probe_status_line,
-        format_progress_message, format_runtime_tuning_message, format_status_line,
-        format_timed_phase_message, format_warning_line, make_bar, make_spinner, model_kind,
-        parse_probe_progress_fields, phase_label, preflight_phase_label, probe_failure_reason,
-        probe_status_label, timestamped, with_utc_timestamp,
+        format_advisory_line, format_preflight_selection_line, format_preflight_summary_line,
+        format_probe_progress_line, format_probe_results_table, format_probe_spinner_message,
+        format_probe_status_line, format_progress_message, format_runtime_tuning_message,
+        format_status_line, format_timed_phase_message, format_warning_line, make_bar,
+        make_spinner, model_kind, optimized_path_summary, parse_probe_progress_fields, phase_label,
+        preflight_phase_label, probe_failure_reason, probe_status_label, timestamped,
+        with_utc_timestamp,
     };
     use hydra_train::model::HydraModelConfig;
     use hydra_train::preflight::{
@@ -865,9 +903,43 @@ mod tests {
     }
 
     #[test]
+    fn optimized_path_summary_reports_raw_replay_defaults() {
+        let mut config = crate::test_support::dummy_train_config();
+        config.bc_shards_manifest_path = None;
+
+        assert_eq!(
+            optimized_path_summary(&config),
+            "input=raw_replay pinned_h2d=off prealloc_gpu_tensors=off cuda_graph_replay=production_off_probe_only copy_compute_overlap=off"
+        );
+    }
+
+    #[test]
+    fn optimized_path_summary_reports_shard_path() {
+        let mut config = crate::test_support::dummy_train_config();
+        config.bc_shards_manifest_path = Some(std::path::PathBuf::from("/shards/manifest.json"));
+
+        let summary = optimized_path_summary(&config);
+        assert!(summary.contains("input=bc_shards"));
+        assert!(summary.contains("cuda_graph_replay=production_off_probe_only"));
+    }
+
+    #[test]
     fn timestamp_helpers_preserve_message_after_stripping_ansi() {
         assert_timestamped_message(&with_utc_timestamp("hello".to_string()), "hello");
         assert_timestamped_message(&timestamped(42), "42");
+    }
+
+    #[test]
+    fn advisory_line_renders_key_and_message() {
+        let advisory = crate::advisory::RuntimeAdvisory::warning(
+            "steady_state_cuda_bc_uses_loose_replay",
+            "use shards for steady-state CUDA BC",
+        );
+
+        assert_timestamped_message(
+            &format_advisory_line(&advisory),
+            "Warning steady_state_cuda_bc_uses_loose_replay: use shards for steady-state CUDA BC",
+        );
     }
 
     #[test]

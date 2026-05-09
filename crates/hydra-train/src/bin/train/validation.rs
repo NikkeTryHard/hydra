@@ -28,10 +28,13 @@ use hydra_train::training::delta_q_promotion::{
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
-use super::config::{TrainConfig, validation_microbatch_size, validation_sample_limit};
+use super::config::{
+    TrainConfig, shard_prefetch_depth, validation_microbatch_size, validation_sample_limit,
+};
 use super::nvtx;
 #[cfg(feature = "cuda-graph")]
 use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
+use super::progress::{BatchMetricSums, RareActionMetrics};
 #[cfg(test)]
 use super::progress::{BatchStats, batch_stats_from_outputs};
 use super::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums};
@@ -116,6 +119,7 @@ pub(super) struct ValidationSummary {
     pub(super) policy_loss: f64,
     pub(super) agreement: f64,
     pub(super) samples: usize,
+    pub(super) rare_actions: RareActionMetrics,
     pub(super) profiling: Option<ProfilingEnvelope>,
     pub(super) delta_q_promotion: Option<DeltaQPromotionReport>,
     pub(super) delta_q_promotion_result: Option<DeltaQPromotionResult>,
@@ -123,15 +127,143 @@ pub(super) struct ValidationSummary {
     pub(super) delta_q_policy_transfer: Option<DeltaQPolicyTransferReport>,
     pub(super) delta_q_policy_transfer_result: Option<DeltaQPolicyTransferResult>,
     pub(super) delta_q_policy_transfer_snapshot: Option<DeltaQPolicyTransferSnapshot>,
+    pub(super) saw_exit_targets: bool,
+    pub(super) saw_delta_q_targets: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(super) struct ValidationGateCriterion {
+    pub(super) name: String,
+    pub(super) passed: bool,
+    pub(super) observed: Option<f64>,
+    pub(super) threshold: Option<f64>,
+    pub(super) message: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(super) struct ValidationGateDecision {
+    pub(super) enabled: bool,
+    pub(super) passed: bool,
+    pub(super) criteria: Vec<ValidationGateCriterion>,
+}
+
+impl ValidationGateDecision {
+    pub(super) fn disabled() -> Self {
+        Self {
+            enabled: false,
+            passed: true,
+            criteria: Vec::new(),
+        }
+    }
+
+    pub(super) fn failed_names(&self) -> Vec<String> {
+        self.criteria
+            .iter()
+            .filter(|criterion| !criterion.passed)
+            .map(|criterion| criterion.name.clone())
+            .collect()
+    }
+}
+
+pub(super) fn evaluate_validation_gates(
+    config: &TrainConfig,
+    summary: &ValidationSummary,
+    best: Option<BestValidation>,
+) -> ValidationGateDecision {
+    if !config.validation_gates.enabled {
+        return ValidationGateDecision::disabled();
+    }
+    let mut criteria = Vec::new();
+    if let Some(min_samples) = config.validation_gates.min_validation_samples {
+        let observed = summary.samples as f64;
+        criteria.push(ValidationGateCriterion {
+            name: "min_validation_samples".to_string(),
+            passed: summary.samples >= min_samples,
+            observed: Some(observed),
+            threshold: Some(min_samples as f64),
+            message: format!("validation samples {observed} >= {min_samples}"),
+        });
+    }
+    if let (Some(best), Some(max_regression)) =
+        (best, config.validation_gates.max_policy_loss_regression)
+    {
+        let threshold = best.policy_loss + max_regression;
+        criteria.push(ValidationGateCriterion {
+            name: "max_policy_loss_regression".to_string(),
+            passed: summary.policy_loss <= threshold,
+            observed: Some(summary.policy_loss),
+            threshold: Some(threshold),
+            message: format!("policy loss {:.6} <= {:.6}", summary.policy_loss, threshold),
+        });
+    }
+    if let (Some(best), Some(min_delta)) =
+        (best, config.validation_gates.min_policy_agreement_delta)
+    {
+        let threshold = best.agreement + min_delta;
+        criteria.push(ValidationGateCriterion {
+            name: "min_policy_agreement_delta".to_string(),
+            passed: summary.agreement >= threshold,
+            observed: Some(summary.agreement),
+            threshold: Some(threshold),
+            message: format!(
+                "policy agreement {:.6} >= {:.6}",
+                summary.agreement, threshold
+            ),
+        });
+    }
+    if config
+        .validation_gates
+        .require_sidecar_coverage_when_weighted
+    {
+        if config
+            .advanced_loss
+            .as_ref()
+            .and_then(|loss| loss.exit)
+            .is_some_and(|weight| weight > 0.0)
+        {
+            criteria.push(ValidationGateCriterion {
+                name: "exit_sidecar_coverage".to_string(),
+                passed: summary.saw_exit_targets,
+                observed: Some(if summary.saw_exit_targets { 1.0 } else { 0.0 }),
+                threshold: Some(1.0),
+                message: "ExIt sidecar targets present in validation".to_string(),
+            });
+        }
+        if config
+            .advanced_loss
+            .as_ref()
+            .and_then(|loss| loss.delta_q)
+            .is_some_and(|weight| weight > 0.0)
+        {
+            criteria.push(ValidationGateCriterion {
+                name: "delta_q_sidecar_coverage".to_string(),
+                passed: summary.saw_delta_q_targets,
+                observed: Some(if summary.saw_delta_q_targets {
+                    1.0
+                } else {
+                    0.0
+                }),
+                threshold: Some(1.0),
+                message: "DeltaQ sidecar targets present in validation".to_string(),
+            });
+        }
+    }
+    let passed = criteria.iter().all(|criterion| criterion.passed);
+    ValidationGateDecision {
+        enabled: true,
+        passed,
+        criteria,
+    }
 }
 
 struct ValidationAccumulator<B: Backend> {
-    metric_sums: Option<Tensor<B, 1>>,
+    metric_sums: Option<BatchMetricSums<B>>,
     microbatch_count: usize,
     total_samples: usize,
     delta_q_promotion: DeltaQPromotionReport,
     delta_q_policy_transfer: DeltaQPolicyTransferReport,
     saw_delta_q_targets: bool,
+    saw_exit_targets: bool,
     profiling: ProfilingEnvelope,
 }
 
@@ -144,6 +276,7 @@ impl<B: Backend> ValidationAccumulator<B> {
             delta_q_promotion: DeltaQPromotionReport::new(),
             delta_q_policy_transfer: DeltaQPolicyTransferReport::new(),
             saw_delta_q_targets: false,
+            saw_exit_targets: false,
             profiling: ProfilingEnvelope::nested(
                 PROFILING_STAGE_VALIDATION,
                 0.0,
@@ -227,6 +360,9 @@ fn process_validation_batch<TB>(
         &breakdown,
     );
     let mut baseline_elapsed_seconds = 0.0;
+    if batch.exit_target.is_some() && batch.exit_mask.is_some() {
+        accumulator.saw_exit_targets = true;
+    }
     if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
         let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
             output.policy_logits.clone()
@@ -270,7 +406,7 @@ fn process_validation_batch<TB>(
             ],
         ));
     accumulator.metric_sums = Some(match accumulator.metric_sums.take() {
-        Some(existing) => existing + chunk_metric_sums,
+        Some(existing) => existing.accumulate(chunk_metric_sums),
         None => chunk_metric_sums,
     });
     accumulator.microbatch_count += 1;
@@ -287,6 +423,7 @@ fn finalize_validation_summary<B: Backend>(
         delta_q_promotion,
         delta_q_policy_transfer,
         saw_delta_q_targets,
+        saw_exit_targets,
         profiling,
     } = accumulator;
 
@@ -303,6 +440,9 @@ fn finalize_validation_summary<B: Backend>(
             delta_q_policy_transfer: None,
             delta_q_policy_transfer_result: None,
             delta_q_policy_transfer_snapshot: None,
+            rare_actions: RareActionMetrics::default(),
+            saw_exit_targets: false,
+            saw_delta_q_targets: false,
         };
     }
 
@@ -345,6 +485,9 @@ fn finalize_validation_summary<B: Backend>(
         policy_loss: stats.loss_policy,
         agreement: stats.policy_agreement,
         samples: total_samples,
+        rare_actions: stats.rare_actions,
+        saw_exit_targets,
+        saw_delta_q_targets,
         profiling: Some(profiling),
         delta_q_promotion,
         delta_q_promotion_result,
@@ -565,13 +708,10 @@ pub(super) fn materialize_validation_samples(
     Ok(Some(microbatches.into_boxed_slice()))
 }
 
-/// Prefetch queue depth for the validation CPU producer thread.
+/// Default prefetch queue depth for the validation CPU producer thread.
 ///
-/// Depth 2 keeps at most two host batches resident while the GPU
-/// processes the current one -- enough to hide CPU collation latency
-/// without ballooning host memory.
-const VALIDATION_SHARD_PREFETCH_DEPTH: usize = 2;
-
+/// Depth 2 keeps at most two host batches resident while the GPU processes
+/// the current one. User config may raise this conservatively.
 pub(super) fn run_validation_from_shards<TB>(
     model: &HydraModel<TB>,
     baseline_model: &HydraModel<TB>,
@@ -628,11 +768,9 @@ where
 
     // -- producer/consumer pipeline: CPU collation on a scoped background thread --
     let batch_size = validation_batch_size;
-    let (tx, rx) = mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(
-        VALIDATION_SHARD_PREFETCH_DEPTH,
-    );
-    let (recycle_tx, recycle_rx) =
-        mpsc::sync_channel::<BcShardHostBatch>(VALIDATION_SHARD_PREFETCH_DEPTH + 1);
+    let prefetch_depth = shard_prefetch_depth(config);
+    let (tx, rx) = mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(prefetch_depth);
+    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(prefetch_depth + 1);
 
     let consumer_result: Result<(), String> = std::thread::scope(|scope| {
         scope.spawn(move || {
@@ -784,6 +922,9 @@ mod tests {
             policy_loss,
             agreement,
             samples: 64,
+            rare_actions: RareActionMetrics::default(),
+            saw_exit_targets: false,
+            saw_delta_q_targets: false,
             profiling: None,
             delta_q_promotion: None,
             delta_q_promotion_result: None,

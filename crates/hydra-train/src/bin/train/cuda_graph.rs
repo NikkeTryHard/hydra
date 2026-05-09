@@ -3,16 +3,22 @@
     reason = "CUDA graph bindings are exercised through FFI and runtime feature gates"
 )]
 
-use std::ffi::{c_int, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 unsafe extern "C" {
+    fn hydra_cuda_graph_backend_kind() -> c_int;
     fn hydra_cuda_graph_new(keep_graph: c_int) -> *mut c_void;
     fn hydra_cuda_graph_capture_begin(g: *mut c_void, pool_first: u64, pool_second: u64) -> c_int;
     fn hydra_cuda_graph_capture_end(g: *mut c_void) -> c_int;
     fn hydra_cuda_graph_replay(g: *mut c_void) -> c_int;
     fn hydra_cuda_graph_reset(g: *mut c_void) -> c_int;
     fn hydra_cuda_graph_free(g: *mut c_void);
+    fn hydra_cuda_last_error_code() -> c_int;
+    fn hydra_cuda_error_name(code: c_int) -> *const c_char;
+    fn hydra_cuda_error_string(code: c_int) -> *const c_char;
+    fn hydra_cuda_device_synchronize() -> c_int;
+    fn hydra_cuda_last_exception_message() -> *const c_char;
 
     fn hydra_cuda_stream_from_pool(
         device_index: i64,
@@ -63,6 +69,40 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+const CUDA_GRAPH_BACKEND_REAL: c_int = 1;
+
+fn cuda_graph_backend_kind() -> c_int {
+    unsafe { hydra_cuda_graph_backend_kind() }
+}
+
+fn cuda_graph_backend_label() -> &'static str {
+    match cuda_graph_backend_kind() {
+        CUDA_GRAPH_BACKEND_REAL => "real CUDA graph/pinned FFI",
+        _ => "stub/unavailable CUDA graph FFI",
+    }
+}
+
+fn cuda_graph_backend_guidance() -> &'static str {
+    match cuda_graph_backend_kind() {
+        CUDA_GRAPH_BACKEND_REAL => {
+            "real CUDA FFI is active; for allocation failures check pinned-memory pressure, batch size, driver/runtime health, and concurrent GPU processes"
+        }
+        _ => {
+            "rebuild hydra-train with --features cuda-graph and a complete CUDA/libtorch setup, e.g. CUDA_HOME=/opt/cuda LIBTORCH_USE_PYTORCH=1 LIBTORCH_BYPASS_VERSION_CHECK=1; build.rs must find CUDA headers/libs and link cudart plus c10_cuda"
+        }
+    }
+}
+
+fn assert_cuda_graph_backend_available(op: &str) {
+    assert_eq!(
+        cuda_graph_backend_kind(),
+        CUDA_GRAPH_BACKEND_REAL,
+        "CUDA {op} unavailable: backend={} ({})",
+        cuda_graph_backend_label(),
+        cuda_graph_backend_guidance()
+    );
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CudaStream {
     stream_id: i64,
@@ -72,6 +112,7 @@ pub(crate) struct CudaStream {
 
 impl CudaStream {
     pub(crate) fn from_pool(device_index: i64) -> Self {
+        assert_cuda_graph_backend_available("stream_from_pool");
         let mut s = Self::default();
         unsafe {
             hydra_cuda_stream_from_pool(
@@ -85,6 +126,7 @@ impl CudaStream {
     }
 
     pub(crate) fn current(device_index: i64) -> Self {
+        assert_cuda_graph_backend_available("stream_get_current");
         let mut s = Self::default();
         unsafe {
             hydra_cuda_stream_get_current(
@@ -110,14 +152,28 @@ impl CudaStream {
     }
 }
 
+pub(crate) fn synchronize_device() -> Result<(), String> {
+    cuda_result(
+        unsafe { hydra_cuda_device_synchronize() },
+        "device_synchronize",
+    )
+}
+
 pub(crate) struct CudaGraph {
     ptr: NonNull<c_void>,
 }
 
 impl CudaGraph {
     pub(crate) fn new(keep_graph: bool) -> Self {
+        assert_cuda_graph_backend_available("graph_new");
         let ptr = NonNull::new(unsafe { hydra_cuda_graph_new(c_int::from(keep_graph)) })
-            .expect("CUDA graph backend unavailable");
+            .unwrap_or_else(|| {
+                panic!(
+                    "CUDA graph_new failed: backend={} ({})",
+                    cuda_graph_backend_label(),
+                    cuda_graph_backend_guidance()
+                )
+            });
         Self { ptr }
     }
 
@@ -128,6 +184,13 @@ impl CudaGraph {
         );
     }
 
+    pub(crate) fn try_capture_begin(&self, pool: (u64, u64)) -> Result<(), String> {
+        cuda_graph_result(
+            unsafe { hydra_cuda_graph_capture_begin(self.ptr.as_ptr(), pool.0, pool.1) },
+            "capture_begin",
+        )
+    }
+
     pub(crate) fn capture_end(&self) {
         check_cuda_graph_status(
             unsafe { hydra_cuda_graph_capture_end(self.ptr.as_ptr()) },
@@ -135,11 +198,25 @@ impl CudaGraph {
         );
     }
 
+    pub(crate) fn try_capture_end(&self) -> Result<(), String> {
+        cuda_graph_result(
+            unsafe { hydra_cuda_graph_capture_end(self.ptr.as_ptr()) },
+            "capture_end",
+        )
+    }
+
     pub(crate) fn replay(&self) {
         check_cuda_graph_status(
             unsafe { hydra_cuda_graph_replay(self.ptr.as_ptr()) },
             "replay",
         );
+    }
+
+    pub(crate) fn try_replay(&self) -> Result<(), String> {
+        cuda_graph_result(
+            unsafe { hydra_cuda_graph_replay(self.ptr.as_ptr()) },
+            "replay",
+        )
     }
 
     pub(crate) fn reset(&self) {
@@ -157,11 +234,77 @@ impl Drop for CudaGraph {
 }
 
 fn check_cuda_graph_status(status: c_int, op: &str) {
-    assert_eq!(status, 0, "CUDA graph {op} failed");
+    assert_eq!(
+        status,
+        0,
+        "CUDA graph {op} failed: backend={} ({})",
+        cuda_graph_backend_label(),
+        cuda_graph_backend_guidance()
+    );
 }
 
+fn cuda_graph_result(status: c_int, op: &str) -> Result<(), String> {
+    if status == 0 {
+        Ok(())
+    } else {
+        let cuda_code = unsafe { hydra_cuda_last_error_code() };
+        Err(format!(
+            "CUDA graph {op} failed: backend={} ({}) status={status} cuda_last_error={} {}: {} exception={}",
+            cuda_graph_backend_label(),
+            cuda_graph_backend_guidance(),
+            cuda_code,
+            cuda_error_name(cuda_code),
+            cuda_error_string(cuda_code),
+            cuda_last_exception_message(),
+        ))
+    }
+}
+
+fn cuda_result(status: c_int, op: &str) -> Result<(), String> {
+    if status == 0 {
+        Ok(())
+    } else {
+        let cuda_code = unsafe { hydra_cuda_last_error_code() };
+        Err(format!(
+            "CUDA {op} failed: backend={} ({}) status={status} cuda_last_error={} {}: {} exception={}",
+            cuda_graph_backend_label(),
+            cuda_graph_backend_guidance(),
+            cuda_code,
+            cuda_error_name(cuda_code),
+            cuda_error_string(cuda_code),
+            cuda_last_exception_message(),
+        ))
+    }
+}
+
+fn cuda_error_name(code: c_int) -> String {
+    unsafe { c_string_lossy(hydra_cuda_error_name(code)) }
+}
+
+fn cuda_error_string(code: c_int) -> String {
+    unsafe { c_string_lossy(hydra_cuda_error_string(code)) }
+}
+
+fn cuda_last_exception_message() -> String {
+    unsafe { c_string_lossy(hydra_cuda_last_exception_message()) }
+}
+
+unsafe fn c_string_lossy(ptr: *const c_char) -> String {
+    if ptr.is_null() {
+        return "<null>".to_string();
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
 fn check_cuda_status(status: c_int, op: &str) {
-    assert_eq!(status, 0, "CUDA {op} failed");
+    assert_eq!(
+        status,
+        0,
+        "CUDA {op} failed: backend={} ({})",
+        cuda_graph_backend_label(),
+        cuda_graph_backend_guidance()
+    );
 }
 
 pub(crate) struct CudaEvent {
@@ -170,8 +313,15 @@ pub(crate) struct CudaEvent {
 
 impl CudaEvent {
     pub(crate) fn new(enable_timing: bool) -> Self {
+        assert_cuda_graph_backend_available("event_create");
         let ptr = NonNull::new(unsafe { hydra_cuda_event_create(c_int::from(enable_timing)) })
-            .expect("CUDA event creation failed");
+            .unwrap_or_else(|| {
+                panic!(
+                    "CUDA event creation failed: backend={} ({})",
+                    cuda_graph_backend_label(),
+                    cuda_graph_backend_guidance()
+                )
+            });
         Self { ptr }
     }
 
@@ -246,9 +396,20 @@ pub(crate) struct PinnedBuffer {
 
 impl PinnedBuffer {
     pub(crate) fn new(size_bytes: usize) -> Self {
+        Self::new_labeled("unnamed", size_bytes)
+    }
+
+    pub(crate) fn new_labeled(label: &'static str, size_bytes: usize) -> Self {
         assert!(size_bytes > 0, "PinnedBuffer size must be > 0");
-        let ptr = NonNull::new(unsafe { hydra_pinned_malloc(size_bytes as u64) })
-            .expect("CUDA pinned malloc failed");
+        let ptr =
+            NonNull::new(unsafe { hydra_pinned_malloc(size_bytes as u64) }).unwrap_or_else(|| {
+                panic!(
+                    "CUDA pinned malloc failed for {label}: requested {} bytes; backend={} ({})",
+                    size_bytes,
+                    cuda_graph_backend_label(),
+                    cuda_graph_backend_guidance()
+                )
+            });
         Self {
             ptr,
             len: size_bytes,
@@ -275,18 +436,23 @@ impl PinnedBuffer {
             count <= self.len,
             "copy_to_device_async: count exceeds buffer length"
         );
-        check_cuda_status(
-            unsafe {
-                hydra_memcpy_async_h2d(
-                    dst,
-                    self.ptr.as_ptr(),
-                    count as u64,
-                    stream.stream_id,
-                    stream.device_index,
-                    stream.device_type,
-                )
-            },
-            "memcpy_async_h2d",
+        let status = unsafe {
+            hydra_memcpy_async_h2d(
+                dst,
+                self.ptr.as_ptr(),
+                count as u64,
+                stream.stream_id,
+                stream.device_index,
+                stream.device_type,
+            )
+        };
+        assert_eq!(
+            status,
+            0,
+            "CUDA memcpy_async_h2d failed for {} bytes: backend={} ({})",
+            count,
+            cuda_graph_backend_label(),
+            cuda_graph_backend_guidance()
         );
     }
 }

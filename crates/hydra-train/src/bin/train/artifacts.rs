@@ -24,12 +24,15 @@ use hydra_train::training::delta_q_promotion::{
     DeltaQPromotionResult,
 };
 
+use super::advisory::AdvisoryEvent;
+#[cfg(test)]
+use super::advisory::RuntimeAdvisory;
 use super::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
 use super::resume::{
     BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
     current_timestamp_s, read_resume_state, read_rl_resume_state, write_resume_state,
 };
-use super::validation::ValidationSummary;
+use super::validation::{ValidationGateDecision, ValidationSummary};
 
 pub(crate) struct BcArtifactPaths {
     pub(crate) root: PathBuf,
@@ -42,6 +45,7 @@ pub(crate) struct BcArtifactPaths {
     pub(crate) training_log_path: PathBuf,
     pub(crate) step_log_path: PathBuf,
     pub(crate) delta_q_promotion_path: PathBuf,
+    pub(crate) validation_gate_path: PathBuf,
 }
 
 pub(crate) struct RlArtifactPaths {
@@ -184,6 +188,7 @@ impl BcArtifactPaths {
             training_log_path: root.join("training_log.jsonl"),
             step_log_path: root.join("step_log.jsonl"),
             delta_q_promotion_path: root.join("delta_q_promotion.json"),
+            validation_gate_path: root.join("validation_gate.json"),
             root,
             tb_root,
             tb_session_dir,
@@ -574,6 +579,16 @@ where
     append_jsonl_entry(writer, entry, "step log", "step log entry")
 }
 
+pub(crate) fn append_advisory_event_to_writer<W>(
+    writer: &mut W,
+    entry: &AdvisoryEvent<'_>,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(writer, entry, "step log", "runtime advisory event")
+}
+
 pub(crate) fn append_rl_step_log_to_writer<W>(
     writer: &mut W,
     entry: &RlStepLogEntry,
@@ -645,6 +660,27 @@ pub(crate) fn write_delta_q_promotion_artifact(
     })
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct PersistedValidationGateArtifact<'a> {
+    pub(crate) scope: &'a str,
+    pub(crate) step_or_epoch: usize,
+    pub(crate) decision: &'a ValidationGateDecision,
+    pub(crate) samples: usize,
+    pub(crate) policy_loss: f64,
+    pub(crate) policy_agreement: f64,
+    pub(crate) best_policy_loss: Option<f64>,
+    pub(crate) best_policy_agreement: Option<f64>,
+}
+
+pub(crate) fn write_validation_gate_artifact(
+    path: &Path,
+    artifact: &PersistedValidationGateArtifact<'_>,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(artifact)
+        .map_err(|err| format!("failed to serialize validation gate artifact: {err}"))?;
+    atomic_write_text(path, &json, "validation gate artifact")
+}
+
 pub(crate) fn save_latest_rl_checkpoint_and_state<B, O>(
     artifacts: &RlArtifactPaths,
     model: &HydraModel<B>,
@@ -694,6 +730,7 @@ pub(crate) fn log_tensorboard<W: Write>(
         train.policy_agreement as f32,
     )
     .map_err(|err| format!("tensorboard write train/policy_agreement failed: {err}"))?;
+    write_rare_action_tensorboard(tb, step, "train", &train.rare_actions)?;
     if let Some(val_summary) = val_summary {
         tb.write_scalar(step, "val/policy_agreement", val_summary.agreement as f32)
             .map_err(|err| format!("tensorboard write val/policy_agreement failed: {err}"))?;
@@ -701,6 +738,7 @@ pub(crate) fn log_tensorboard<W: Write>(
             .map_err(|err| format!("tensorboard write val/policy_loss failed: {err}"))?;
         tb.write_scalar(step, "val/total_loss", val_summary.total_loss as f32)
             .map_err(|err| format!("tensorboard write val/total_loss failed: {err}"))?;
+        write_rare_action_tensorboard(tb, step, "val", &val_summary.rare_actions)?;
         if let Some(delta_q) = val_summary.delta_q_promotion_snapshot {
             tb.write_scalar(
                 step,
@@ -768,6 +806,7 @@ pub(crate) fn log_tensorboard<W: Write>(
             })?;
         }
     }
+
     tb.write_scalar(step, "lr", lr as f32)
         .map_err(|err| format!("tensorboard write lr failed: {err}"))?;
     if let Some(best_validation) = best_validation {
@@ -783,6 +822,44 @@ pub(crate) fn log_tensorboard<W: Write>(
             best_validation.agreement as f32,
         )
         .map_err(|err| format!("tensorboard write val/best_policy_agreement failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn write_rare_action_tensorboard<W: Write>(
+    tb: &mut EventWriter<W>,
+    step: i64,
+    split: &str,
+    metrics: &crate::progress::RareActionMetrics,
+) -> Result<(), String> {
+    let buckets = [
+        ("discard", metrics.discard),
+        ("aka_discard", metrics.aka_discard),
+        ("riichi", metrics.riichi),
+        ("chi", metrics.chi),
+        ("pon", metrics.pon),
+        ("kan", metrics.kan),
+        ("agari", metrics.agari),
+        ("ryuukyoku", metrics.ryuukyoku),
+        ("pass", metrics.pass),
+    ];
+    for (name, bucket) in buckets {
+        tb.write_scalar(
+            step,
+            &format!("{split}/rare_action/{name}_count"),
+            bucket.count as f32,
+        )
+        .map_err(|err| {
+            format!("tensorboard write {split}/rare_action/{name}_count failed: {err}")
+        })?;
+        tb.write_scalar(
+            step,
+            &format!("{split}/rare_action/{name}_accuracy"),
+            bucket.accuracy as f32,
+        )
+        .map_err(|err| {
+            format!("tensorboard write {split}/rare_action/{name}_accuracy failed: {err}")
+        })?;
     }
     Ok(())
 }
@@ -1023,11 +1100,14 @@ mod tests {
             train_loss_opp_next: 0.6,
             train_loss_score_pdf: 0.7,
             train_loss_score_cdf: 0.8,
+            train_rare_actions: crate::progress::RareActionMetrics::default(),
             val_total_loss: Some(1.2),
             val_policy_loss: Some(0.9),
             val_policy_agreement: Some(0.75),
             val_delta_q_promotion: None,
+            val_rare_actions: None,
             profiling: Some(ProfilingEnvelope::leaf("bc_epoch", 1.2)),
+            advisories: Vec::new(),
             best_val_policy_loss: Some(0.8),
             best_val_agreement: Some(0.77),
             num_batches: 4,
@@ -1049,11 +1129,14 @@ mod tests {
             train_loss_opp_next: 0.6,
             train_loss_score_pdf: 0.7,
             train_loss_score_cdf: 0.8,
+            train_rare_actions: crate::progress::RareActionMetrics::default(),
             val_total_loss: Some(1.2),
             val_policy_loss: Some(0.9),
             val_policy_agreement: Some(0.75),
             val_delta_q_promotion: None,
+            val_rare_actions: None,
             profiling: Some(ProfilingEnvelope::leaf("bc_interval", 0.6)),
+            advisories: Vec::new(),
             best_val_policy_loss: Some(0.8),
             best_val_agreement: Some(0.77),
         }
@@ -1072,6 +1155,7 @@ mod tests {
             total_samples: 8192,
             delta_q_state: "Active".to_string(),
             profiling: Some(ProfilingEnvelope::leaf("rl_step", 0.4)),
+            advisories: Vec::new(),
         }
     }
 
@@ -1086,6 +1170,9 @@ mod tests {
             policy_loss: 0.8,
             agreement: 0.7,
             samples: 64,
+            rare_actions: crate::progress::RareActionMetrics::default(),
+            saw_exit_targets: false,
+            saw_delta_q_targets: true,
             profiling: Some(ProfilingEnvelope::leaf("validation", 0.9)),
             delta_q_promotion: Some(promotion_report.clone()),
             delta_q_promotion_result: Some(promotion_result.clone()),
@@ -1428,6 +1515,18 @@ mod tests {
         assert!(rl_raw.contains("\"phase\":\"exit_pondering\""));
         assert!(rl_raw.contains("\"delta_q_state\":\"Active\""));
         assert!(rl_raw.contains("\"profiling\":{"));
+
+        let advisories = vec![RuntimeAdvisory::warning(
+            "cuda_shards_without_pinned_async_h2d",
+            "CUDA shard run is under-optimized",
+        )];
+        let mut advisory_raw = Vec::new();
+        append_advisory_event_to_writer(&mut advisory_raw, &AdvisoryEvent::startup(&advisories))
+            .expect("append advisory event");
+        let advisory_line = String::from_utf8(advisory_raw).expect("advisory json utf8");
+        assert!(advisory_line.contains("\"event\":\"runtime_advisories\""));
+        assert!(advisory_line.contains("\"scope\":\"startup\""));
+        assert!(advisory_line.contains("cuda_shards_without_pinned_async_h2d"));
 
         cleanup_dir(&output_dir);
     }

@@ -246,7 +246,7 @@ With PPO self-play, critical failure mode:
 
 | Solution | Description |
 |----------|-------------|
-| **Opponent pool** | Sample from past N network states, not only latest |                                                                                                                                
+| **Opponent pool** | Sample from past N network states, not only latest |
 | **Random opponents** | Periodically play vs random to keep base competency |
 | **Reward normalization** | Balance gradual heuristics with win/loss bonuses |
 | **Asymmetric bonuses** | Bonus only winner; no loser penalty |

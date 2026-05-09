@@ -1,9 +1,9 @@
 #include <cstdint>
 #include <exception>
+#include <string>
 
 #ifdef __has_include
-#if __has_include(<torch/torch.h>) && __has_include(<ATen/Context.h>)
-#include <torch/torch.h>
+#if __has_include(<ATen/Context.h>)
 #include <ATen/Context.h>
 #define HYDRA_HAS_TORCH 1
 #else
@@ -26,7 +26,7 @@
   try { x } catch (const std::exception&) { }
 
 #define HYDRA_PROTECT_ERR(x) \
-  try { x } catch (const std::exception&) { return -1; }
+  try { x } catch (const std::exception& e) { hydra_last_error_message = e.what(); return -1; } catch (...) { hydra_last_error_message = "unknown C++ exception"; return -1; }
 
 extern "C" {
 
@@ -55,8 +55,14 @@ void hydra_set_allow_tf32_cudnn(int) {}
 #ifdef HYDRA_ENABLE_CUDA_GRAPH_FFI
 
 #if HYDRA_HAS_CUDA_GRAPH
+int hydra_cuda_graph_backend_kind() {
+  return 1;
+}
+
 
 namespace {
+static thread_local std::string hydra_last_error_message;
+
 
 void hydra_pack_stream(
     const c10::cuda::CUDAStream& stream,
@@ -75,6 +81,9 @@ void hydra_pack_stream(
   }
 }
 
+}
+const char* hydra_cuda_last_exception_message() {
+  return hydra_last_error_message.c_str();
 }
 
 void* hydra_cuda_graph_new(int keep_graph) {
@@ -110,6 +119,24 @@ int hydra_cuda_graph_reset(void* graph) {
       return 0;)
 }
 
+int hydra_cuda_last_error_code() {
+  return static_cast<int>(cudaGetLastError());
+}
+
+const char* hydra_cuda_error_name(int code) {
+  return cudaGetErrorName(static_cast<cudaError_t>(code));
+}
+
+const char* hydra_cuda_error_string(int code) {
+  return cudaGetErrorString(static_cast<cudaError_t>(code));
+}
+
+
+int hydra_cuda_device_synchronize() {
+  HYDRA_PROTECT_ERR(
+      cudaDeviceSynchronize();
+      return 0;)
+}
 void hydra_cuda_graph_free(void* graph) {
   delete static_cast<at::cuda::CUDAGraph*>(graph);
 }
@@ -148,6 +175,9 @@ void hydra_cuda_stream_set_current(int64_t stream_id, int64_t device_idx, int64_
           static_cast<c10::DeviceType>(device_type));
       c10::cuda::setCurrentCUDAStream(stream);)
 }
+
+
+
 
 void hydra_cuda_stream_synchronize(int64_t stream_id, int64_t device_idx, int64_t device_type) {
   HYDRA_PROTECT(
@@ -262,6 +292,10 @@ int hydra_memcpy_async_h2d(
 }
 
 #else
+int hydra_cuda_graph_backend_kind() {
+  return 0;
+}
+
 
 void* hydra_cuda_graph_new(int) {
   return nullptr;

@@ -91,7 +91,7 @@ install_hook() {
 #!/usr/bin/env sh
 set -eu
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-"$ROOT/scripts/caveman-compress-hook.sh"
+sh "$ROOT/scripts/caveman-compress-hook.sh"
 exec "$ROOT/scripts/lint-check.sh"
 HOOK
   chmod +x "$hook"

@@ -112,7 +112,7 @@ Markdown compression:
 
 ## graphify
 
-Graphify = primary navigation layer for codebase structure and repo discovery.
+Graphify = map, not evidence. Search/LSP = scalpel for concrete edits.
 
 Current repo graph:
 - Built with `graphifyy 0.7.7` from uv tool install at `~/.local/share/uv/tools/graphifyy/bin/python`.
@@ -121,10 +121,11 @@ Current repo graph:
 - `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, `graphify-out/manifest.json`, and `graphify-out/wiki/` are durable graph artifacts. `.graphify_*` root scratch files are legacy/transient.
 
 Rules:
-- Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md` for god nodes and community structure.
-- If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw file trees.
+- Broad architecture/corpus question: read `graphify-out/wiki/index.md` or `graphify-out/GRAPH_REPORT.md` first if present.
+- Concrete implementation/debugging: prefer search/LSP; use graphify only to orient scope.
+- Do not run semantic graphify extraction unless explicitly requested or cross-document synthesis requires it.
+- After code edits, prefer AST-only/repo-local safe rebuild when graph freshness is required: use recorded `PYTHON` and `from graphify.watch import _rebuild_code; _rebuild_code(Path('.'))`.
 - Prefer graphify and targeted docs over keeping large static repo maps in this file.
 - Use recorded interpreter when present: `PYTHON=$(python3 -c "from pathlib import Path; print(Path('graphify-out/.graphify_python').read_text().strip())")`.
 - If interpreter missing/stale, restore via uv: `uv tool install graphifyy` or `uv tool upgrade graphifyy`, then write `graphify-out/.graphify_python` to `~/.local/share/uv/tools/graphifyy/bin/python`.
-- After modifying code files, rebuild code graph with: `"$PYTHON" -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"`.
 - For full graph refreshes, prefer latest graphify skill instructions and uv-managed graphify over system `pip`; keep OMP-specific task/subagent rules from `~/.omp/agent/skills/graphify/SKILL.md`.

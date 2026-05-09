@@ -316,7 +316,7 @@ Why it matters: End-to-end evidence for what repo proves: trajectory label carri
 | Should normal `mjai_loader` / `MjaiSample` path stay absent for `exit_target` / `exit_mask` in current tranche? | **Yes.** |
 | What provenance class survives?                                                                                                                 | **Search-derived** (replay-indexed, but not replay-derived).                                       |
 | What is smallest decisive unblocker?                                                                                                        | Add explicit **offline root-search sidecar producer** reusing current live ExIt kernel. |
- 
+
 **Direct artifact support**
 
 * README still says replay/sample `exit_target` production is immediate need, so not already closed in ordinary path (`README L0062`).

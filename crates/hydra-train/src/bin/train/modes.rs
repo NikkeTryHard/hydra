@@ -14,6 +14,7 @@ use hydra_train::training::delta_q_promotion::{
 };
 
 use super::TrainBackend;
+use super::advisory::{AdvisoryDeduper, AdvisoryEvent, startup_runtime_advisories};
 use super::artifacts::{
     BcArtifactPaths, PersistedDeltaQPromotionArtifact, write_delta_q_promotion_artifact,
 };
@@ -24,10 +25,10 @@ use super::config::{TrainConfig, configure_threads, device_label, validate_confi
 use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use super::presentation::{
-    explicit_preflight_recommendation, explicit_preflight_summary, format_preflight_selection_line,
-    format_preflight_summary_line, format_probe_results_table, format_status_line,
-    format_timed_phase_message, format_warning_line, print_banner, print_preflight_banner,
-    timestamped,
+    explicit_preflight_recommendation, explicit_preflight_summary, format_advisory_line,
+    format_preflight_selection_line, format_preflight_summary_line, format_probe_results_table,
+    format_status_line, format_timed_phase_message, format_warning_line, print_banner,
+    print_preflight_banner, timestamped,
 };
 use super::probe_request::ProbeRequest;
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
@@ -61,6 +62,7 @@ where
         device_name,
         train_device,
         current_runtime,
+        microbatch_explicitness,
         session_start_global_step,
         total_steps,
         microbatch_size,
@@ -96,6 +98,18 @@ where
         &train_cfg,
     );
     resume.print_banner_with_effective_runtime(Some(current_runtime));
+    let mut advisory_deduper = AdvisoryDeduper::new();
+    let startup_advisories =
+        advisory_deduper.retain_new(startup_runtime_advisories(&config, microbatch_explicitness));
+    for advisory in &startup_advisories {
+        println!("{}", format_advisory_line(advisory));
+    }
+    if !startup_advisories.is_empty() {
+        super::artifacts::append_advisory_event_to_writer(
+            &mut step_log,
+            &AdvisoryEvent::startup(&startup_advisories),
+        )?;
+    }
     let cached_validation_samples = if config.bc_shards_manifest_path.is_some() {
         None
     } else {
@@ -234,6 +248,9 @@ pub(super) fn handle_preflight_mode(
                 benchmark.runtime.loader.num_threads,
             ))
         );
+    }
+    for advisory in &preflight.advisories {
+        println!("{}", format_advisory_line(advisory));
     }
     print_probe_table(
         "Preflight train table",

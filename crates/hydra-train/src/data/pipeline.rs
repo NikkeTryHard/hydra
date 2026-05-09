@@ -1433,7 +1433,10 @@ pub fn stream_val_microbatches(
 fn is_mjai_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
-        Some(name) if name.ends_with(".json") || name.ends_with(".json.gz")
+        Some(name)
+            if name.ends_with(".json")
+                || name.ends_with(".json.gz")
+                || name.ends_with(".json.zst")
     )
 }
 
@@ -1679,6 +1682,7 @@ mod tests {
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tar::Builder;
+    use zstd::stream::Encoder as ZstdEncoder;
 
     use crate::data::mjai_loader::{MjaiDataset, MjaiGame, prepare_replay_decision, update_safety};
     use crate::training::replay_delta_q::{DeltaQSidecarIndex, ReplayDeltaQRecordV1};
@@ -2183,6 +2187,28 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_data_sources_accepts_single_zstd_mjai_file() {
+        let loose_path = unique_temp_path("single_loose_zstd", ".mjai.json.zst");
+        let file = File::create(&loose_path).expect("create zstd loose replay");
+        let mut encoder = ZstdEncoder::new(file, 1).expect("create zstd encoder");
+        encoder
+            .write_all(valid_game_json().as_bytes())
+            .expect("write zstd loose replay");
+        encoder.finish().expect("finish zstd loose replay");
+
+        let filters = SourceFilterConfig::default();
+        let manifest = scan_data_sources_with_fraction(&loose_path, 1.0, &filters, None)
+            .expect("zstd loose replay should scan");
+
+        assert_eq!(
+            manifest.sources,
+            vec![DataSource::LooseFile(loose_path.clone())]
+        );
+        assert_eq!(manifest.total_games, 1);
+        fs::remove_file(loose_path).ok();
+    }
+
+    #[test]
     fn source_matches_filters_respects_include_and_exclude_patterns() {
         let source = DataSource::Archive(PathBuf::from("/data/majsoul-jade-mjai-2024.tar"));
         assert!(source_matches_filters(
@@ -2285,6 +2311,7 @@ mod tests {
         fs::write(sub1.join("a.mjai.json.gz"), b"").expect("write first mjai file");
         fs::write(sub2.join("b.mjai.json"), b"").expect("write second mjai file");
         fs::write(dir.join("c.mjai.json.gz"), b"").expect("write root mjai file");
+        fs::write(dir.join("d.mjai.json.zst"), b"").expect("write zstd mjai file");
 
         let sources = scan_directory_sources(&dir).expect("scan directory recursively");
         let loose_count = sources
@@ -2292,7 +2319,7 @@ mod tests {
             .filter(|s| matches!(s, DataSource::LooseFile(_)))
             .count();
         assert_eq!(
-            loose_count, 3,
+            loose_count, 4,
             "should find files in root and subdirectories"
         );
 

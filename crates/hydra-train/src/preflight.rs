@@ -418,6 +418,12 @@ pub const PROFILING_STAGE_FORWARD: &str = "forward";
 pub const PROFILING_STAGE_LOSS: &str = "loss";
 pub const PROFILING_STAGE_BACKWARD: &str = "backward";
 pub const PROFILING_STAGE_OPTIMIZER_STEP: &str = "optimizer_step";
+pub const PROFILING_STAGE_PRODUCER_WAIT: &str = "producer_wait";
+pub const PROFILING_STAGE_H2D_TRANSFER: &str = "h2d_transfer";
+pub const PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED: &str = "h2d_pageable_to_pinned";
+pub const PROFILING_STAGE_H2D_TENSOR_MATERIALIZE: &str = "h2d_tensor_materialize";
+pub const PROFILING_STAGE_H2D_STREAM_SYNC: &str = "h2d_stream_sync";
+pub const PROFILING_STAGE_METRIC_READBACK: &str = "metric_readback";
 pub const PROFILING_STAGE_DATA_LOAD: &str = "data_load";
 pub const PROFILING_STAGE_PREFLIGHT_MODEL_INIT: &str = "preflight_model_init";
 pub const PROFILING_STAGE_PREFLIGHT_OPTIMIZER_INIT: &str = "preflight_optimizer_init";
@@ -871,6 +877,12 @@ mod tests {
             PROFILING_STAGE_LOSS,
             PROFILING_STAGE_BACKWARD,
             PROFILING_STAGE_OPTIMIZER_STEP,
+            PROFILING_STAGE_PRODUCER_WAIT,
+            PROFILING_STAGE_H2D_TRANSFER,
+            PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED,
+            PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
+            PROFILING_STAGE_H2D_STREAM_SYNC,
+            PROFILING_STAGE_METRIC_READBACK,
             PROFILING_STAGE_DATA_LOAD,
             PROFILING_STAGE_PREFLIGHT_MODEL_INIT,
             PROFILING_STAGE_PREFLIGHT_OPTIMIZER_INIT,

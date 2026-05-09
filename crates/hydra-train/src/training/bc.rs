@@ -525,7 +525,7 @@ where
         accum_agreement += policy_agreement(
             output.policy_logits.clone(),
             targets.legal_mask.clone(),
-            target_actions_from_policy_target(targets.policy_target.clone()),
+            batch.actions.clone(),
         );
         let breakdown = loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
@@ -908,6 +908,24 @@ mod tests {
         assert!((acc - correct as f64 / total as f64).abs() < 1e-12);
     }
 
+    #[test]
+    fn policy_target_argmax_matches_batch_actions() {
+        let device = Default::default();
+        let actions = Tensor::<TestBackend, 1, Int>::from_ints(&[0i32, 7, 45][..], &device);
+        let mut policy_target = vec![0.0f32; 3 * 46];
+        policy_target[0] = 1.0;
+        policy_target[46 + 7] = 1.0;
+        policy_target[2 * 46 + 45] = 1.0;
+        let recovered = target_actions_from_policy_target(
+            Tensor::<TestBackend, 1>::from_floats(policy_target.as_slice(), &device)
+                .reshape([3, 46]),
+        );
+        let same = recovered.equal(actions).into_data().convert::<i64>();
+        assert_eq!(
+            same.as_slice::<i64>().expect("policy action parity"),
+            &[1, 1, 1]
+        );
+    }
     #[test]
     fn test_train_epoch_reports_policy_agreement() {
         let device = Default::default();

@@ -6,6 +6,10 @@ SKILL_DIR="${CAVEMAN_COMPRESS_SKILL_DIR:-$HOME/.omp/agent/skills/caveman-compres
 BIN="$SKILL_DIR/target/release/caveman-rs"
 
 if [[ ! -x "$BIN" ]]; then
+  if [[ ! -f "$SKILL_DIR/Cargo.toml" ]]; then
+    printf '[caveman] compressor unavailable at %s; skipping markdown compression\n' "$BIN" >&2
+    exit 0
+  fi
   cargo build --release --manifest-path "$SKILL_DIR/Cargo.toml" >/dev/null
 fi
 
@@ -25,14 +29,10 @@ done
 
 "$BIN" "${abs_files[@]}"
 
-if git -C "$ROOT_DIR" ls-files --others --modified --exclude-standard -- '*.original.md' | grep -q .; then
-  git -C "$ROOT_DIR" ls-files --others --modified --exclude-standard -- '*.original.md' | xargs -r rm -f
-fi
-
-git -C "$ROOT_DIR" add -- "${md_files[@]}"
-
 if git -C "$ROOT_DIR" diff --cached --name-only -- '*.original.md' | grep -q .; then
   printf '[caveman] refusing commit with *.original.md staged\n' >&2
   git -C "$ROOT_DIR" diff --cached --name-only -- '*.original.md' >&2
   exit 1
 fi
+
+git -C "$ROOT_DIR" add -- "${md_files[@]}"

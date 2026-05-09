@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
-use crate::config::{BcHyperparamConfig, TrainConfig};
+use crate::config::{BcHyperparamConfig, TrainConfig, ValidationGateConfig};
 #[cfg(test)]
 use hydra_train::preflight::PreflightConfig;
 
@@ -22,14 +22,17 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         exit_sidecar_path: None,
         delta_q_sidecar_path: None,
         bc_shards_manifest_path: None,
+        shard_prefetch_depth: None,
         train_fraction: 0.9,
         source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        validation_gates: ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
+        nsight_trace: None,
         device: "cpu".to_string(),
         buffer_games: 16,
         buffer_samples: 128,

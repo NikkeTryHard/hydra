@@ -1,4 +1,4 @@
-//! MJAI `.json` / `.json.gz` loader for behavioral cloning data.
+//! MJAI `.json` / `.json.gz` / `.json.zst` loader for behavioral cloning data.
 
 use crate::data::replay_targets::{
     build_safety_residual_targets, build_stage_a_belief_targets, exact_waits,
@@ -21,16 +21,16 @@ use hydra_core::safety::SafetyInfo;
 use riichienv_core::action::{Action as EngineAction, ActionType, Phase};
 use riichienv_core::observation::Observation;
 use riichienv_core::parser::mjai_to_tid;
-use riichienv_core::replay::{
-    MjaiEvent, load_mjai_events_from_path, mjai_event_actor, mjai_event_to_action, read_mjai_events,
-};
+use riichienv_core::replay::{MjaiEvent, mjai_event_actor, mjai_event_to_action, read_mjai_events};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 use std::array;
+use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+use zstd::stream::read::Decoder as ZstdDecoder;
 
 const MISSING_TILE_TARGET: u8 = 255;
 
@@ -1105,21 +1105,39 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
         delta_q_sidecar,
     )
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamCompression {
+    Plain,
+    Gzip,
+    Zstd,
+}
+
+fn inspect_stream_compression<R: BufRead>(reader: &mut R) -> io::Result<StreamCompression> {
+    let buf = reader
+        .fill_buf()
+        .map_err(|err| invalid_data(format!("failed to inspect MJAI stream: {err}")))?;
+    if buf.starts_with(&[0x1f, 0x8b]) {
+        Ok(StreamCompression::Gzip)
+    } else if buf.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        Ok(StreamCompression::Zstd)
+    } else {
+        Ok(StreamCompression::Plain)
+    }
+}
 
 pub fn load_game_from_stream<R: Read>(reader: R) -> io::Result<MjaiGame> {
     let mut reader = BufReader::new(reader);
-    let is_gzip = {
-        let buf = reader
-            .fill_buf()
-            .map_err(|err| invalid_data(format!("failed to inspect MJAI stream: {err}")))?;
-        buf.starts_with(&[0x1f, 0x8b])
-    };
+    let compression = inspect_stream_compression(&mut reader)?;
 
-    if is_gzip {
-        return load_game_from_reader(BufReader::new(GzDecoder::new(reader)));
+    match compression {
+        StreamCompression::Gzip => load_game_from_reader(BufReader::new(GzDecoder::new(reader))),
+        StreamCompression::Zstd => {
+            let zstd = ZstdDecoder::new(reader)
+                .map_err(|err| invalid_data(format!("failed to open zstd MJAI stream: {err}")))?;
+            load_game_from_reader(BufReader::new(zstd))
+        }
+        StreamCompression::Plain => load_game_from_reader(reader),
     }
-
-    load_game_from_reader(reader)
 }
 
 pub fn load_game_from_stream_with_sidecar<R: Read>(
@@ -1132,15 +1150,10 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
     let mut reader = BufReader::new(reader);
-    let is_gzip = {
-        let buf = reader
-            .fill_buf()
-            .map_err(|err| invalid_data(format!("failed to inspect MJAI stream: {err}")))?;
-        buf.starts_with(&[0x1f, 0x8b])
-    };
+    let compression = inspect_stream_compression(&mut reader)?;
 
-    if is_gzip {
-        return load_game_from_reader_with_sidecar(
+    match compression {
+        StreamCompression::Gzip => load_game_from_reader_with_sidecar(
             source_identity,
             exit_provenance,
             delta_q_provenance,
@@ -1148,24 +1161,36 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
             BufReader::new(GzDecoder::new(reader)),
             exit_sidecar,
             delta_q_sidecar,
-        );
+        ),
+        StreamCompression::Zstd => {
+            let zstd = ZstdDecoder::new(reader)
+                .map_err(|err| invalid_data(format!("failed to open zstd MJAI stream: {err}")))?;
+            load_game_from_reader_with_sidecar(
+                source_identity,
+                exit_provenance,
+                delta_q_provenance,
+                profile,
+                BufReader::new(zstd),
+                exit_sidecar,
+                delta_q_sidecar,
+            )
+        }
+        StreamCompression::Plain => load_game_from_reader_with_sidecar(
+            source_identity,
+            exit_provenance,
+            delta_q_provenance,
+            profile,
+            reader,
+            exit_sidecar,
+            delta_q_sidecar,
+        ),
     }
-
-    load_game_from_reader_with_sidecar(
-        source_identity,
-        exit_provenance,
-        delta_q_provenance,
-        profile,
-        reader,
-        exit_sidecar,
-        delta_q_sidecar,
-    )
 }
 
 pub fn load_game_from_path(path: impl AsRef<Path>) -> io::Result<MjaiGame> {
-    let events = load_mjai_events_from_path(path)
-        .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))?;
-    load_game_from_events(events)
+    let file = fs::File::open(path)?;
+    load_game_from_stream(file)
+        .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))
 }
 
 pub fn load_game_from_path_with_sidecar(
@@ -1181,14 +1206,13 @@ pub fn load_game_from_path_with_sidecar(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| invalid_data(format!("invalid filename {}", path.display())))?;
-    let events = load_mjai_events_from_path(path)
-        .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))?;
-    load_game_from_events_with_sidecar(
+    let file = fs::File::open(path)?;
+    load_game_from_stream_with_sidecar(
         identity,
         exit_provenance,
         delta_q_provenance,
         profile,
-        events,
+        file,
         exit_sidecar,
         delta_q_sidecar,
     )

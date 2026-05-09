@@ -30,10 +30,7 @@ pub(crate) fn parse_train_device(value: &str) -> Result<LibTorchDevice, String> 
 }
 
 pub(crate) fn train_device(config_device: &str) -> Result<LibTorchDevice, String> {
-    match env::var("HYDRA_TRAIN_DEVICE") {
-        Ok(value) => parse_train_device(&value),
-        Err(_) => parse_train_device(config_device),
-    }
+    parse_train_device(config_device)
 }
 
 pub(crate) fn device_label(config_device: &str) -> String {
@@ -98,6 +95,14 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
     if config.archive_queue_bound == 0 {
         return Err("archive_queue_bound must be greater than 0".to_string());
     }
+    if let Some(shard_prefetch_depth) = config.shard_prefetch_depth {
+        if shard_prefetch_depth == 0 {
+            return Err("shard_prefetch_depth must be greater than 0".to_string());
+        }
+        if shard_prefetch_depth > 64 {
+            return Err("shard_prefetch_depth must be at most 64".to_string());
+        }
+    }
     if config.validation_every_n_epochs == 0 {
         return Err("validation_every_n_epochs must be greater than 0".to_string());
     }
@@ -124,6 +129,34 @@ pub(crate) fn validate_config(config: &TrainConfig) -> Result<(), String> {
         && max_validation_samples == 0
     {
         return Err("max_validation_samples must be greater than 0 when set".to_string());
+    }
+    if config.validation_gates.enabled {
+        if config.validation_gates.min_validation_samples == Some(0) {
+            return Err(
+                "validation_gates.min_validation_samples must be greater than 0 when set"
+                    .to_string(),
+            );
+        }
+        if config
+            .validation_gates
+            .max_policy_loss_regression
+            .is_some_and(|value| value < 0.0)
+        {
+            return Err(
+                "validation_gates.max_policy_loss_regression must be non-negative when set"
+                    .to_string(),
+            );
+        }
+        if config
+            .validation_gates
+            .min_policy_agreement_delta
+            .is_some_and(|value| value < 0.0)
+        {
+            return Err(
+                "validation_gates.min_policy_agreement_delta must be non-negative when set"
+                    .to_string(),
+            );
+        }
     }
     if let Some(microbatch_size) = config.microbatch_size
         && microbatch_size == 0
@@ -270,6 +303,12 @@ pub(crate) fn validation_sample_limit(config: &TrainConfig) -> Option<usize> {
     })
 }
 
+pub(crate) fn shard_prefetch_depth(config: &TrainConfig) -> usize {
+    config
+        .shard_prefetch_depth
+        .unwrap_or_else(super::config::default_shard_prefetch_depth)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::config::{
@@ -388,6 +427,30 @@ mod tests {
 
         assert_eq!(train_microbatch_size(&config), 64);
         assert_eq!(validation_microbatch_size(&config), 32);
+    }
+
+    #[test]
+    fn shard_prefetch_depth_defaults_and_validates_bounds() {
+        let mut config = dummy_config();
+        config.shard_prefetch_depth = None;
+        assert_eq!(shard_prefetch_depth(&config), 2);
+        assert!(validate_config(&config).is_ok());
+
+        config.shard_prefetch_depth = Some(4);
+        assert_eq!(shard_prefetch_depth(&config), 4);
+        assert!(validate_config(&config).is_ok());
+
+        config.shard_prefetch_depth = Some(0);
+        assert_eq!(
+            validate_config(&config),
+            Err("shard_prefetch_depth must be greater than 0".to_string())
+        );
+
+        config.shard_prefetch_depth = Some(65);
+        assert_eq!(
+            validate_config(&config),
+            Err("shard_prefetch_depth must be at most 64".to_string())
+        );
     }
 
     #[test]

@@ -52,8 +52,10 @@ pub fn is_mjai_archive_entry(path: &Path) -> bool {
         Some(name)
             if name.ends_with(".json")
                 || name.ends_with(".json.gz")
+                || name.ends_with(".json.zst")
                 || name.ends_with(".mjai.json")
                 || name.ends_with(".mjai.json.gz")
+                || name.ends_with(".mjai.json.zst")
     )
 }
 
@@ -114,10 +116,11 @@ mod tests {
 
         assert!(is_mjai_archive_entry(Path::new("round.mjai.json")));
         assert!(is_mjai_archive_entry(Path::new("round.mjai.json.gz")));
+        assert!(is_mjai_archive_entry(Path::new("round.mjai.json.zst")));
         assert!(is_mjai_archive_entry(Path::new("round.json")));
+        assert!(is_mjai_archive_entry(Path::new("round.json.zst")));
         assert!(!is_mjai_archive_entry(Path::new("round.txt")));
         assert!(!is_mjai_archive_entry(Path::new("round.mjai")));
         assert!(!is_mjai_archive_entry(Path::new("round.log")));
-        assert!(!is_mjai_archive_entry(Path::new("round.json.zst")));
     }
 }

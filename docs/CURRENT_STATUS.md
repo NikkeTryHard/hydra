@@ -35,11 +35,14 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - Current Hand-EV realism upgrade shipped in live baseline surface.
 - Replay-derived `safety_residual` shipped as narrow supervised lane.
 - ExIt has end-to-end carrier across live self-play lane and replay/sample sidecar-first lane.
+- Rare-action train/validation metrics shipped as observability only; no policy behavior change.
 
+- BC shard CUDA path has reusable pinned H2D staging, preallocated GPU tensors, CPU f32 policy-target materialization, and child-process CUDA graph compute-capture probe. Production CUDA graph replay remains blocked by Burn `GradientsParams` optimizer contract; runtime labels say `cuda_graph_replay=production_off_probe_only`.
 ### Implemented but not default-on
 
 - Narrow DeltaQ supervision lane impl in code, promotion-gated through arena-confirmation path.
 - DeltaQ promotion artifacts now persist explicit `arena_decision` plus `arena_report`, but lane still **not** default-on.
+- `validation_gates` config exists for experiments; disabled by default and gates best-checkpoint promotion, not resume checkpoints.
 
 ### Implemented but staged
 
@@ -65,6 +68,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 | BF16/AMP precision | shipped baseline (BC); staged (RL, DeltaQ) | BC training, preflight, probe, autotune, stage-2 benchmark all dispatch by precision. RL training and DeltaQ promotion explicitly gated with hard errors. |
 | Preflight cache system | shipped baseline | Fingerprint v4 key covers hardware, workload, preflight config, explicit microbatch overrides. Identical-run fast path skips probing on cache hit. BC and RL bootstrap read cache under documented authority rules. |
 | NVTX profiling | shipped baseline | Orchestration-level fully instrumented (epoch, step, validation, checkpoint, logging, self-play, stage-2 benchmark). BC microbatch sub-stages (collation, forward, loss, backward, optimizer_step) instrumented. Library internals not yet instrumented. Gated by `HYDRA_NVTX` env var via dlopen. |
+| CUDA BC shard throughput | shipped baseline (transport/metrics); probe-only (CUDA graph replay) | `cuda-graph` feature enables pinned staging/preallocated tensors for shard train/probe/validation. CPU f32 policy-target path avoids lazy `IntTensor::one_hot`; metric accumulation avoids discarded progress finalization and redundant agreement kernels. Child graph probe proves compute-only capture/replay parity, but production replay is blocked by Burn optimizer gradient extraction. |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |
 | ExIt carrier | shipped baseline | Live self-play lane + replay/sample sidecar-first lane |
 | DeltaQ lane | implemented but not default-on | Arena-confirmation path impl; promotion artifact now records pre-arena rec plus final `arena_decision`/`arena_report` |

@@ -1,3 +1,5 @@
+#[path = "train/advisory.rs"]
+mod advisory;
 #[path = "train/artifacts.rs"]
 mod artifacts;
 #[path = "train/bc_fixed_shape.rs"]
@@ -15,6 +17,8 @@ mod cuda_graph;
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]
 mod gpu_config;
+#[path = "train/graph_probe.rs"]
+mod graph_probe;
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
 #[path = "train/modes.rs"]
@@ -71,6 +75,7 @@ use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
+use self::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use self::modes::{
     handle_delta_q_promotion_mode, handle_preflight_mode, handle_probe_mode, handle_training_mode,
 };
@@ -98,6 +103,12 @@ fn run() -> Result<(), String> {
     let cli = parse_args(env::args())?;
     let config = read_config(&cli.config_path)?;
     gpu_config::apply_gpu_performance_flags(&config.device);
+    if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE_CHILD").is_some() {
+        return handle_graph_probe_child(&cli.config_path);
+    }
+    if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE").is_some() {
+        return handle_graph_probe_parent(&cli.config_path);
+    }
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
         return Ok(());
     }
@@ -723,14 +734,17 @@ unexpected_field: true
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -933,6 +947,40 @@ bc:
     }
 
     #[test]
+    fn read_config_accepts_nsight_trace_metrics() {
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+nsight_trace:
+  kernel_launch_count: 314697
+  tiny_kernel_fraction: 0.981
+  cuda_runtime_launch_seconds: 0.797
+"#;
+        let yaml_path = write_temp_file("nsight_trace", "yaml", yaml);
+        let config = read_config(&yaml_path).expect("nsight trace block should parse");
+        let trace = config.nsight_trace.expect("trace metrics should exist");
+        assert_eq!(trace.kernel_launch_count, Some(314697));
+        assert_eq!(trace.tiny_kernel_fraction, Some(0.981));
+        assert_eq!(trace.cuda_runtime_launch_seconds, Some(0.797));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_nsight_trace_fields() {
+        let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+nsight_trace:
+  made_up_metric: 1
+"#;
+        let yaml_path = write_temp_file("nsight_trace_unknown", "yaml", yaml);
+        let err = read_config(&yaml_path).expect_err("unknown nsight field should fail");
+        assert!(err.contains("failed to parse yaml config"));
+        assert!(err.contains("made_up_metric"));
+        std::fs::remove_file(yaml_path).ok();
+    }
+
+    #[test]
     fn read_config_rejects_unknown_bc_fields() {
         let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
@@ -1107,6 +1155,9 @@ preflight:
             delta_q_policy_transfer: None,
             delta_q_policy_transfer_result: None,
             delta_q_policy_transfer_snapshot: None,
+            rare_actions: crate::progress::RareActionMetrics::default(),
+            saw_exit_targets: false,
+            saw_delta_q_targets: false,
         };
         assert!(is_better_validation(&summary, None));
 
@@ -1128,6 +1179,9 @@ preflight:
             delta_q_policy_transfer: None,
             delta_q_policy_transfer_result: None,
             delta_q_policy_transfer_snapshot: None,
+            rare_actions: crate::progress::RareActionMetrics::default(),
+            saw_exit_targets: false,
+            saw_delta_q_targets: false,
         };
         assert!(is_better_validation(
             &tied,
@@ -1157,14 +1211,17 @@ preflight:
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -1210,14 +1267,17 @@ preflight:
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -1264,14 +1324,17 @@ preflight:
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: Some(crate::config::RlTrainConfig::default()),
             bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -1410,12 +1473,14 @@ advanced_loss:
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig {
                 learning_rate: 1e-4,
@@ -1424,6 +1489,7 @@ advanced_loss:
                 grad_clip_norm: 1.0,
                 warmup_steps: 100,
             },
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -1457,6 +1523,7 @@ advanced_loss:
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
@@ -1466,8 +1533,10 @@ advanced_loss:
                 exit: Some(0.1),
                 ..Default::default()
             }),
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,
@@ -1501,6 +1570,7 @@ advanced_loss:
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
@@ -1510,8 +1580,10 @@ advanced_loss:
                 delta_q: Some(0.1),
                 ..Default::default()
             }),
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,

@@ -581,7 +581,8 @@ impl BcShardHostBatch {
             Tensor::<B, 1>::from_floats(buf.as_slice(), device).reshape([batch, HYDRA_ACTION_SPACE])
         });
 
-        let policy_target = policy_target_from_actions::<B>(actions_tensor.clone(), batch);
+        let policy_target =
+            policy_target_from_action_slice::<B>(self.actions.as_slice(), batch, device);
 
         let batch_struct = MjaiBcBatch {
             actions: actions_tensor,
@@ -646,8 +647,9 @@ impl BcShardHostBatch {
             TensorData::new(self.obs_flat, [b, NUM_CHANNELS, TILE_COUNT]),
             device,
         );
-        let actions_tensor =
-            Tensor::<B, 1, Int>::from_data(TensorData::new(self.actions, [b]), device);
+        let actions = self.actions;
+        let policy_target = policy_target_from_action_slice::<B>(actions.as_slice(), b, device);
+        let actions_tensor = Tensor::<B, 1, Int>::from_data(TensorData::new(actions, [b]), device);
         let legal_mask = Tensor::<B, 2>::from_data(
             TensorData::new(self.legal_mask_flat, [b, HYDRA_ACTION_SPACE]),
             device,
@@ -695,8 +697,6 @@ impl BcShardHostBatch {
         let exit_mask_tensor = self.exit_mask_flat.map(|buf| {
             Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
         });
-
-        let policy_target = policy_target_from_actions::<B>(actions_tensor.clone(), b);
 
         let batch_struct = MjaiBcBatch {
             actions: actions_tensor,
@@ -1063,6 +1063,79 @@ fn validate_bc_shard_manifest_contract(manifest: &BcShardManifest) -> Result<(),
             "BC shard manifest action_space {} does not match current HYDRA_ACTION_SPACE {}. \
              Shards must be rebuilt with the current action contract.",
             manifest.action_space, HYDRA_ACTION_SPACE,
+        ));
+    }
+    let mut total_samples = 0u64;
+    let mut total_shards = 0usize;
+    for split in &manifest.splits {
+        validate_bc_shard_split_manifest_contract(split)?;
+        total_samples += split.sample_count;
+        total_shards += split.shard_count;
+    }
+    if manifest.totals.sample_count != total_samples {
+        return Err(format!(
+            "BC shard manifest totals.sample_count {} does not match split total {}",
+            manifest.totals.sample_count, total_samples
+        ));
+    }
+    if manifest.totals.shard_count != total_shards {
+        return Err(format!(
+            "BC shard manifest totals.shard_count {} does not match split shard total {}",
+            manifest.totals.shard_count, total_shards
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bc_shard_split_manifest_contract(split: &BcShardSplitManifest) -> Result<(), String> {
+    if split.shard_count != split.shards.len() {
+        return Err(format!(
+            "BC shard manifest {:?} shard_count {} does not match descriptor count {}",
+            split.split,
+            split.shard_count,
+            split.shards.len()
+        ));
+    }
+    let mut expected_start = 0u64;
+    for (idx, shard) in split.shards.iter().enumerate() {
+        if shard.split != split.split {
+            return Err(format!(
+                "BC shard descriptor {} has split {:?}, expected {:?}",
+                idx, shard.split, split.split
+            ));
+        }
+        if shard.shard_index != idx {
+            return Err(format!(
+                "BC shard descriptor for {:?} has shard_index {}, expected {}",
+                split.split, shard.shard_index, idx
+            ));
+        }
+        if shard.first_sample_index != expected_start {
+            return Err(format!(
+                "BC shard descriptor {} for {:?} starts at {}, expected contiguous start {}",
+                idx, split.split, shard.first_sample_index, expected_start
+            ));
+        }
+        if shard.feature_flags != split.feature_flags {
+            return Err(format!(
+                "BC shard descriptor {} for {:?} feature_flags {} does not match split feature_flags {}",
+                idx, split.split, shard.feature_flags, split.feature_flags
+            ));
+        }
+        if shard.record_size != split.record_size {
+            return Err(format!(
+                "BC shard descriptor {} for {:?} record_size {} does not match split record_size {}",
+                idx, split.split, shard.record_size, split.record_size
+            ));
+        }
+        expected_start = expected_start
+            .checked_add(shard.sample_count)
+            .ok_or_else(|| "BC shard split sample_count overflow".to_string())?;
+    }
+    if split.sample_count != expected_start {
+        return Err(format!(
+            "BC shard split {:?} sample_count {} does not match descriptor total {}",
+            split.split, split.sample_count, expected_start
         ));
     }
     Ok(())
@@ -2538,14 +2611,30 @@ fn read_oracle_f32(bytes: &[u8]) -> [f32; PLAYER_COUNT] {
     read_f32_array::<PLAYER_COUNT>(bytes)
 }
 
-fn policy_target_from_actions<B: Backend>(
-    actions: Tensor<B, 1, Int>,
+pub fn policy_target_vec_from_actions(actions: &[i64], batch_size: usize) -> Vec<f32> {
+    let mut policy_target = vec![0.0f32; batch_size * HYDRA_ACTION_SPACE];
+    for (row, &action) in actions.iter().take(batch_size).enumerate() {
+        if let Ok(action) = usize::try_from(action)
+            && action < HYDRA_ACTION_SPACE
+        {
+            policy_target[row * HYDRA_ACTION_SPACE + action] = 1.0;
+        }
+    }
+    policy_target
+}
+
+fn policy_target_from_action_slice<B: Backend>(
+    actions: &[i64],
     batch_size: usize,
+    device: &B::Device,
 ) -> Tensor<B, 2> {
-    actions
-        .one_hot::<2>(HYDRA_ACTION_SPACE)
-        .reshape([batch_size, HYDRA_ACTION_SPACE])
-        .float()
+    Tensor::<B, 2>::from_data(
+        TensorData::new(
+            policy_target_vec_from_actions(actions, batch_size),
+            [batch_size, HYDRA_ACTION_SPACE],
+        ),
+        device,
+    )
 }
 
 #[cfg(test)]
@@ -2905,6 +2994,94 @@ mod tests {
         assert_eq!(raw_presence.counts, shard_presence.counts);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn policy_target_vec_bounds_invalid_actions() {
+        let policy_target =
+            policy_target_vec_from_actions(&[0, -1, HYDRA_ACTION_SPACE as i64, 45], 4);
+        assert_eq!(policy_target.len(), 4 * HYDRA_ACTION_SPACE);
+        assert_eq!(policy_target[0], 1.0);
+        assert!(
+            policy_target[HYDRA_ACTION_SPACE..2 * HYDRA_ACTION_SPACE]
+                .iter()
+                .all(|&value| value == 0.0)
+        );
+        assert!(
+            policy_target[2 * HYDRA_ACTION_SPACE..3 * HYDRA_ACTION_SPACE]
+                .iter()
+                .all(|&value| value == 0.0)
+        );
+        assert_eq!(policy_target[3 * HYDRA_ACTION_SPACE + 45], 1.0);
+    }
+
+    #[test]
+    fn host_batch_materialize_bounds_invalid_policy_actions() {
+        type B = NdArray<f32>;
+
+        fn make_host(actions: Vec<i64>) -> BcShardHostBatch {
+            let batch_size = actions.len();
+            BcShardHostBatch {
+                batch_size,
+                obs_flat: vec![0.0; batch_size * OBS_SIZE],
+                actions,
+                legal_mask_flat: vec![1.0; batch_size * HYDRA_ACTION_SPACE],
+                value_target: vec![0.0; batch_size],
+                grp_target_flat: vec![0.0; batch_size * GRP_CLASS_COUNT],
+                oracle_target_flat: vec![0.0; batch_size * PLAYER_COUNT],
+                oracle_target_mask: vec![0.0; batch_size],
+                tenpai_flat: vec![0.0; batch_size * OPPONENT_COUNT],
+                danger_flat: vec![0.0; batch_size * SPATIAL_TARGET_SIZE],
+                danger_mask_flat: vec![0.0; batch_size * SPATIAL_TARGET_SIZE],
+                opp_next_flat: vec![0.0; batch_size * SPATIAL_TARGET_SIZE],
+                score_pdf_flat: vec![0.0; batch_size * SCORE_BINS],
+                score_cdf_flat: vec![0.0; batch_size * SCORE_BINS],
+                safety_target_flat: None,
+                safety_mask_flat: None,
+                exit_target_flat: None,
+                exit_mask_flat: None,
+                delta_q_target_flat: None,
+                delta_q_mask_flat: None,
+                target_presence: TargetPresence::with_batch_size(batch_size),
+            }
+        }
+
+        fn assert_policy_target(tensor: Tensor<B, 2>) {
+            let data = tensor.into_data();
+            let values = data.as_slice::<f32>().expect("policy_target f32");
+            assert_eq!(values[3], 1.0);
+            assert!(values[0..3].iter().all(|&value| value == 0.0));
+            assert!(
+                values[4..HYDRA_ACTION_SPACE]
+                    .iter()
+                    .all(|&value| value == 0.0)
+            );
+            assert!(
+                values[HYDRA_ACTION_SPACE..2 * HYDRA_ACTION_SPACE]
+                    .iter()
+                    .all(|&value| value == 0.0)
+            );
+            assert!(
+                values[2 * HYDRA_ACTION_SPACE..3 * HYDRA_ACTION_SPACE]
+                    .iter()
+                    .all(|&value| value == 0.0)
+            );
+        }
+
+        let device = Default::default();
+        let actions = vec![3, -1, HYDRA_ACTION_SPACE as i64];
+        assert_policy_target(
+            make_host(actions.clone())
+                .materialize::<B>(&device)
+                .targets
+                .policy_target,
+        );
+        assert_policy_target(
+            make_host(actions)
+                .materialize_owned::<B>(&device)
+                .targets
+                .policy_target,
+        );
     }
 
     #[test]
@@ -3270,22 +3447,67 @@ mod tests {
         })
         .expect("shards should build");
 
+        let err = match load_bc_shard_reader(&build.manifest_path, BcShardSplit::Validation) {
+            Ok(_) => panic!("missing split should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("missing Validation split"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_bc_shard_reader_rejects_non_contiguous_shard_descriptors() {
+        let root = unique_bc_shard_temp_dir("non_contiguous_manifest");
+        let replay_path = root.join("game.mjai.json");
+        fs::write(&replay_path, tiny_real_mjai_replay()).expect("fixture should write");
+        let shard_dir = root.join("shards");
+
+        let build = build_bc_shards(&BuildBcShardsConfig {
+            input: replay_path,
+            output_dir: shard_dir.clone(),
+            manifest_name: "manifest.json".into(),
+            train_fraction: 1.0,
+            shard_samples: 1,
+            split_mode: BcShardSplitMode::Train,
+            source_manifest: None,
+            exit_sidecar: None,
+            exit_sidecar_path: None,
+            exit_provenance: SidecarProvenance::default(),
+            delta_q_sidecar: None,
+            delta_q_sidecar_path: None,
+            delta_q_provenance: SidecarProvenance::default(),
+        })
+        .expect("shards should build");
+
         let mut manifest: BcShardManifest = serde_json::from_str(
             &fs::read_to_string(&build.manifest_path).expect("manifest should exist"),
         )
         .expect("manifest should deserialize");
-        manifest.splits.clear();
+        let split = manifest
+            .splits
+            .iter_mut()
+            .find(|split| split.split == BcShardSplit::Train)
+            .expect("train split exists");
+        let mut extra = split.shards[0].clone();
+        extra.shard_index = 1;
+        extra.first_sample_index = split.shards[0].sample_count + 1;
+        split.shards.push(extra);
+        split.shard_count = split.shards.len();
+        split.sample_count += split.shards[1].sample_count;
+        manifest.totals.shard_count = split.shard_count;
+        manifest.totals.sample_count = split.sample_count;
         fs::write(
             &build.manifest_path,
             serde_json::to_string_pretty(&manifest).expect("manifest should serialize"),
         )
         .expect("mutated manifest should write");
 
-        let err = match load_bc_shard_reader(&build.manifest_path, BcShardSplit::Validation) {
-            Ok(_) => panic!("missing split should be rejected"),
+        let err = match load_bc_shard_reader(&build.manifest_path, BcShardSplit::Train) {
+            Ok(_) => panic!("non-contiguous split should be rejected"),
             Err(err) => err,
         };
-        assert!(err.contains("missing Validation split"));
+        assert!(err.contains("expected contiguous start") || err.contains("shard_index"));
 
         let _ = fs::remove_dir_all(root);
     }

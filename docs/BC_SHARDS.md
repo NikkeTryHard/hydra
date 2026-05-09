@@ -26,7 +26,7 @@ Use BC shards when:
 
 Raw loose/archive replay loading stays slow offline path for audit, shard production, debugging, intentional transport comparison.
 
-GPU transfer note: shard train/probe/validation paths use pinned host staging + async H2D + preallocated GPU tensors only when Hydra is built with `--features cuda-graph` and run on CUDA. Otherwise shard rows still mmap/prefetch on CPU, but device materialization uses normal pageable tensor construction.
+GPU transfer note: shard train/probe/validation paths use pinned host staging + async H2D + preallocated GPU tensors only when Hydra is built with `--features cuda-graph` and run on CUDA. Otherwise shard rows still mmap/prefetch on CPU, but device materialization uses normal pageable tensor construction. Current optimized CUDA path preserves v2 shard layout and copies pageable host batches into pinned staging before H2D; direct pinned host collation is next root-cause optimization, but it must prove byte/tolerance equality for unaugmented and augmented rows, all optional sidecar lanes, target presence, tail batches, and recycle ownership before replacing stable path. Shard v3/direct-collated persisted layout is intentionally deferred because it changes artifact contract and augmentation/storage tradeoffs.
 
 ## Owning surfaces
 

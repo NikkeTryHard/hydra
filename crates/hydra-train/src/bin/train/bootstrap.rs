@@ -32,6 +32,7 @@ use hydra_train::training::replay_exit::{
 use hydra_train::training::rl::RlConfig;
 
 use super::TrainBackend;
+use super::advisory::MicrobatchExplicitness;
 #[cfg(test)]
 use super::artifacts::write_manifest_cache;
 use super::artifacts::{
@@ -81,6 +82,66 @@ fn data_manifest_from_bc_shard_manifest(manifest: &BcShardManifest) -> DataManif
         val_count,
         counts_exact: true,
     }
+}
+
+fn validate_bc_shard_manifest_for_config(
+    manifest: &BcShardManifest,
+    config: &TrainConfig,
+) -> Result<(), String> {
+    if manifest.train_fraction.to_bits() != config.train_fraction.to_bits() {
+        return Err(format!(
+            "BC shard manifest train_fraction {} does not match config train_fraction {}. Rebuild shards or use matching config.",
+            manifest.train_fraction, config.train_fraction
+        ));
+    }
+    if !config.source_filters.is_empty() {
+        return Err(
+            "BC shard manifest does not record source_filters; shard-backed BC requires empty source_filters or shards rebuilt with an explicit recorded filter contract"
+                .to_string(),
+        );
+    }
+
+    let advanced_loss = config.advanced_loss.as_ref();
+    if advanced_loss
+        .and_then(|loss| loss.exit)
+        .is_some_and(|weight| weight > 0.0)
+    {
+        let configured = config
+            .exit_sidecar_path
+            .as_ref()
+            .ok_or_else(|| "advanced_loss.exit requires exit_sidecar_path".to_string())?;
+        let manifest_sidecar = manifest.exit_sidecar.as_ref().ok_or_else(|| {
+            "advanced_loss.exit requires BC shards built with matching ExIt sidecar".to_string()
+        })?;
+        if manifest_sidecar.path != configured.display().to_string() {
+            return Err(format!(
+                "BC shard ExIt sidecar {} does not match config exit_sidecar_path {}",
+                manifest_sidecar.path,
+                configured.display()
+            ));
+        }
+    }
+    if advanced_loss
+        .and_then(|loss| loss.delta_q)
+        .is_some_and(|weight| weight > 0.0)
+    {
+        let configured = config
+            .delta_q_sidecar_path
+            .as_ref()
+            .ok_or_else(|| "advanced_loss.delta_q requires delta_q_sidecar_path".to_string())?;
+        let manifest_sidecar = manifest.delta_q_sidecar.as_ref().ok_or_else(|| {
+            "advanced_loss.delta_q requires BC shards built with matching delta_q sidecar"
+                .to_string()
+        })?;
+        if manifest_sidecar.path != configured.display().to_string() {
+            return Err(format!(
+                "BC shard delta_q sidecar {} does not match config delta_q_sidecar_path {}",
+                manifest_sidecar.path,
+                configured.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn apply_cached_bc_runtime_if_matching(
@@ -162,6 +223,7 @@ where
     pub(super) device_name: String,
     pub(super) train_device: LibTorchDevice,
     pub(super) current_runtime: super::resume::RuntimeResumeContract,
+    pub(super) microbatch_explicitness: MicrobatchExplicitness,
     pub(super) session_start_global_step: usize,
     pub(super) total_steps: usize,
     pub(super) microbatch_size: usize,
@@ -233,6 +295,7 @@ where
     B::InnerBackend: Backend<Device = LibTorchDevice>,
 {
     validate_config(&config)?;
+    let microbatch_explicitness = MicrobatchExplicitness::from_config(&config);
 
     let resume = ResumeContext::load(&config)?;
     let session_start_global_step = resume.session_start_global_step;
@@ -307,6 +370,7 @@ where
     let manifest = if let Some(shard_manifest_path) = config.bc_shards_manifest_path.as_ref() {
         let shard_manifest =
             hydra_train::data::bc_shards::read_bc_shard_manifest(shard_manifest_path)?;
+        validate_bc_shard_manifest_for_config(&shard_manifest, &config)?;
         scan_pb.finish_with_message(format!(
             "using BC shard manifest: {} train / {} val samples",
             shard_manifest
@@ -473,6 +537,7 @@ where
             device_name,
             train_device,
             current_runtime,
+            microbatch_explicitness,
             session_start_global_step,
             total_steps,
             microbatch_size,
@@ -812,14 +877,17 @@ mod tests {
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: true,
             resume_checkpoint: None,
             seed: 7,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: Some(RlTrainConfig::default()),
             bc: Default::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             precision_mode: crate::config::PrecisionMode::Fp32,
             buffer_games: 16,
@@ -1695,6 +1763,48 @@ mod tests {
         cleanup_dir(&root_dir);
     }
 
+    #[test]
+    fn validate_bc_shard_manifest_for_config_rejects_train_fraction_mismatch() {
+        let root_dir = unique_temp_dir("bc_shard_train_fraction_mismatch");
+        let output_dir = root_dir.join("output");
+        let data_dir = root_dir.join("data");
+        create_empty_dir(&output_dir);
+        create_empty_dir(&data_dir);
+
+        let mut config = dummy_bc_config(data_dir, output_dir);
+        let manifest = BcShardManifest {
+            manifest_version: hydra_train::data::bc_shards::BC_SHARD_MANIFEST_VERSION,
+            shard_version: hydra_train::data::bc_shards::BC_SHARD_VERSION,
+            shard_header_size: hydra_train::data::bc_shards::BC_SHARD_HEADER_SIZE,
+            base_record_size: hydra_train::data::bc_shards::BC_BASE_RECORD_SIZE,
+            max_record_size: hydra_train::data::bc_shards::BC_RECORD_SIZE_WITH_ALL_OPTIONALS,
+            obs_size: hydra_core::encoder::OBS_SIZE,
+            num_channels: hydra_core::encoder::NUM_CHANNELS,
+            action_space: hydra_core::action::HYDRA_ACTION_SPACE,
+            train_fraction: 0.5,
+            shard_samples: 10_000,
+            augment_runtime: true,
+            input: config.data_dir.display().to_string(),
+            output_dir: config.output_dir.display().to_string(),
+            created_at: "1970-01-01T00:00:00Z".to_string(),
+            source_count: 0,
+            source_total_games_hint: 0,
+            source_train_count_hint: 0,
+            source_val_count_hint: 0,
+            source_counts_exact: true,
+            exit_sidecar: None,
+            delta_q_sidecar: None,
+            totals: Default::default(),
+            splits: Vec::new(),
+        };
+
+        let err = validate_bc_shard_manifest_for_config(&manifest, &config)
+            .expect_err("train_fraction mismatch should be rejected");
+        assert!(err.contains("train_fraction"));
+        config.train_fraction = manifest.train_fraction;
+        assert!(validate_bc_shard_manifest_for_config(&manifest, &config).is_ok());
+        cleanup_dir(&root_dir);
+    }
     #[test]
     fn initialize_rl_training_bootstrap_rejects_resume_runtime_mismatch() {
         let output_dir = unique_temp_dir("rl_resume_runtime_mismatch");

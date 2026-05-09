@@ -168,7 +168,11 @@ When `bc_shards_manifest_path` is set, preflight behavior changes beyond validat
 
 So shard-backed preflight results are not directly comparable to loose-replay preflight results when reasoning about replay-scan throughput or stage-2 winner selection.
 
-For shard-backed CUDA preflight, train probes use same host-batch materialization path as shard training. Pinned staging + async H2D require `--features cuda-graph`; otherwise probes still avoid loose replay scan/collation but use default tensor materialization.
+For shard-backed CUDA preflight, train probes use same host-batch materialization path as shard training. Pinned staging + preallocated GPU tensors require `--features cuda-graph`; otherwise probes still avoid loose replay scan/collation but use default tensor materialization. Current shard CUDA path collates pageable then stages to pinned memory; policy targets are generated as CPU f32 one-hot before transfer, with invalid action IDs producing all-zero rows. Child-process CUDA graph probe is feasibility/reporting only, not selected-runtime authority.
+
+Shard host-batch prefetch depth defaults to `2`. Set top-level `shard_prefetch_depth` only after profiling shows producer wait or H2D transfer bubbles; it raises bounded host-batch queue depth for shard train and validation without changing order, labels, augmentation, losses, or selected-runtime semantics.
+
+Preflight prints `selected_*_runtime_slower_than_best_probe_candidate` when selected train or validation microbatch is at least 20% slower than best stable measured probe candidate and no stage-2 benchmark overrode probe ranking. This is optimization advice, not correctness failure; failed/OOM larger candidates do not trigger it.
 
 ### Local refinement and coordinate search
 

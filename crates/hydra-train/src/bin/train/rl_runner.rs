@@ -116,6 +116,7 @@ fn make_rl_step_entry(inputs: RlStepEntryInputs<'_>) -> RlStepLogEntry {
         total_samples: inputs.total_samples,
         delta_q_state: format!("{:?}", inputs.delta_q_state),
         profiling: inputs.profiling,
+        advisories: Vec::new(),
     }
 }
 
@@ -490,7 +491,7 @@ mod tests {
     use tboard::SummaryReader;
 
     fn unique_temp_dir(label: &str) -> PathBuf {
-        let base_dir = PathBuf::from("/home/nikketryhard/tmp");
+        let base_dir = std::env::temp_dir();
         fs::create_dir_all(&base_dir).expect("create test temp root");
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -574,14 +575,17 @@ mod tests {
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
             train_fraction: 0.9,
             source_filters: hydra_train::data::pipeline::SourceFilterConfig::default(),
             augment: false,
             resume_checkpoint: None,
             seed: 7,
             advanced_loss: None,
+            validation_gates: crate::config::ValidationGateConfig::default(),
             rl: Some(crate::config::RlTrainConfig::default()),
             bc: Default::default(),
+            nsight_trace: None,
             device: "cpu".to_string(),
             buffer_games: 16,
             buffer_samples: 128,

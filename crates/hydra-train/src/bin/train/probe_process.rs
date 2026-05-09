@@ -380,7 +380,7 @@ fn run_probe_child_process(
         return Err("preflight interrupted; probe child terminated".to_string());
     }
 
-    interrupted.store(true, Ordering::SeqCst);
+    interrupted.store(false, Ordering::SeqCst);
     let stdout = match stdout_handle {
         Some(handle) => join_output_forwarder(handle, "stdout")?,
         None => Vec::new(),

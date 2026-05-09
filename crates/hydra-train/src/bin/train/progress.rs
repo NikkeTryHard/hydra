@@ -1,5 +1,9 @@
+use super::advisory::RuntimeAdvisory;
 use super::validation::DeltaQPromotionSnapshot;
 use burn::prelude::*;
+use hydra_core::action::{
+    AGARI, AKA_5M, AKA_5S, CHI_LEFT, CHI_RIGHT, DISCARD_START, KAN, PASS, PON, RIICHI, RYUUKYOKU,
+};
 use hydra_train::preflight::ProfilingEnvelope;
 use hydra_train::training::losses::LossBreakdown;
 
@@ -17,6 +21,7 @@ pub(super) struct ScalarAverages {
     pub(super) loss_score_cdf: f64,
     pub(super) num_samples: usize,
     pub(super) num_batches: usize,
+    pub(super) rare_actions: RareActionMetrics,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -33,6 +38,25 @@ pub(super) struct BatchStats {
     pub(super) loss_opp_next: f64,
     pub(super) loss_score_pdf: f64,
     pub(super) loss_score_cdf: f64,
+    pub(super) rare_actions: RareActionMetrics,
+}
+
+pub(super) struct BatchMetricSums<B: Backend> {
+    gpu_sums: Tensor<B, 1>,
+    rare_values: [f32; 19],
+}
+
+impl<B: Backend> BatchMetricSums<B> {
+    pub(super) fn accumulate(self, other: Self) -> Self {
+        let mut rare_values = self.rare_values;
+        for (lhs, rhs) in rare_values.iter_mut().zip(other.rare_values) {
+            *lhs += rhs;
+        }
+        Self {
+            gpu_sums: self.gpu_sums + other.gpu_sums,
+            rare_values,
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -50,12 +74,16 @@ pub(super) struct EpochLogEntry {
     pub(super) train_loss_opp_next: f64,
     pub(super) train_loss_score_pdf: f64,
     pub(super) train_loss_score_cdf: f64,
+    pub(super) train_rare_actions: RareActionMetrics,
+    pub(super) val_rare_actions: Option<RareActionMetrics>,
     pub(super) val_total_loss: Option<f64>,
     pub(super) val_policy_loss: Option<f64>,
     pub(super) val_policy_agreement: Option<f64>,
     pub(super) val_delta_q_promotion: Option<DeltaQPromotionSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) profiling: Option<ProfilingEnvelope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) advisories: Vec<RuntimeAdvisory>,
     pub(super) best_val_policy_loss: Option<f64>,
     pub(super) best_val_agreement: Option<f64>,
     pub(super) num_batches: usize,
@@ -76,12 +104,16 @@ pub(super) struct StepLogEntry {
     pub(super) train_loss_opp_next: f64,
     pub(super) train_loss_score_pdf: f64,
     pub(super) train_loss_score_cdf: f64,
+    pub(super) train_rare_actions: RareActionMetrics,
+    pub(super) val_rare_actions: Option<RareActionMetrics>,
     pub(super) val_total_loss: Option<f64>,
     pub(super) val_policy_loss: Option<f64>,
     pub(super) val_policy_agreement: Option<f64>,
     pub(super) val_delta_q_promotion: Option<DeltaQPromotionSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) profiling: Option<ProfilingEnvelope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) advisories: Vec<RuntimeAdvisory>,
     pub(super) best_val_policy_loss: Option<f64>,
     pub(super) best_val_agreement: Option<f64>,
 }
@@ -100,6 +132,8 @@ pub(super) struct RlStepLogEntry {
     pub(super) delta_q_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) profiling: Option<ProfilingEnvelope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) advisories: Vec<RuntimeAdvisory>,
 }
 
 pub(super) struct BannerStats {
@@ -109,6 +143,66 @@ pub(super) struct BannerStats {
     pub(super) val_count: usize,
     pub(super) accum_steps: usize,
     pub(super) counts_exact: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+pub(super) struct RareActionBucketMetrics {
+    pub(super) count: usize,
+    pub(super) accuracy: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+pub(super) struct RareActionMetrics {
+    pub(super) discard: RareActionBucketMetrics,
+    pub(super) aka_discard: RareActionBucketMetrics,
+    pub(super) riichi: RareActionBucketMetrics,
+    pub(super) chi: RareActionBucketMetrics,
+    pub(super) pon: RareActionBucketMetrics,
+    pub(super) kan: RareActionBucketMetrics,
+    pub(super) agari: RareActionBucketMetrics,
+    pub(super) ryuukyoku: RareActionBucketMetrics,
+    pub(super) pass: RareActionBucketMetrics,
+}
+
+const DISCARD_BUCKET: usize = 0;
+const AKA_DISCARD_BUCKET: usize = 1;
+const RIICHI_BUCKET: usize = 2;
+const CHI_BUCKET: usize = 3;
+const PON_BUCKET: usize = 4;
+const KAN_BUCKET: usize = 5;
+const AGARI_BUCKET: usize = 6;
+const RYUUKYOKU_BUCKET: usize = 7;
+const PASS_BUCKET: usize = 8;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct RareActionSums {
+    counts: [usize; 9],
+    correct: [usize; 9],
+}
+
+impl RareActionSums {
+    fn record(&mut self, action: u8, predicted: u8) {
+        let bucket = action_bucket(action);
+        self.counts[bucket] += 1;
+        if predicted == action {
+            self.correct[bucket] += 1;
+        }
+    }
+}
+
+fn action_bucket(action: u8) -> usize {
+    match action {
+        DISCARD_START..=33 => DISCARD_BUCKET,
+        AKA_5M..=AKA_5S => AKA_DISCARD_BUCKET,
+        RIICHI => RIICHI_BUCKET,
+        CHI_LEFT..=CHI_RIGHT => CHI_BUCKET,
+        PON => PON_BUCKET,
+        KAN => KAN_BUCKET,
+        AGARI => AGARI_BUCKET,
+        RYUUKYOKU => RYUUKYOKU_BUCKET,
+        PASS => PASS_BUCKET,
+        other => panic!("invalid Hydra action id for rare-action metrics: {other}"),
+    }
 }
 
 #[cfg(test)]
@@ -123,15 +217,14 @@ pub(super) fn batch_metric_sums_from_outputs<B: Backend>(
     actions: Tensor<B, 1, Int>,
     total_loss: Tensor<B, 1>,
     breakdown: &LossBreakdown<B>,
-) -> Tensor<B, 1> {
+) -> BatchMetricSums<B> {
     let masked = policy_logits + (legal_mask.ones_like() - legal_mask) * (-1e9f32);
-    let predicted = masked.argmax(1).squeeze_dim::<1>(1).float();
-    let actions = actions.float();
+    let predicted_actions = masked.argmax(1).squeeze_dim::<1>(1);
+    let rare_values = rare_action_metric_values_from_predictions(predicted_actions, actions);
     let sample_weight = sample_count as f32;
 
-    Tensor::cat(
+    let gpu_sums = Tensor::cat(
         vec![
-            predicted.equal(actions).float().sum(),
             total_loss * sample_weight,
             breakdown.policy.clone() * sample_weight,
             breakdown.value.clone() * sample_weight,
@@ -143,33 +236,39 @@ pub(super) fn batch_metric_sums_from_outputs<B: Backend>(
             breakdown.score_cdf.clone() * sample_weight,
         ],
         0,
-    )
+    );
+
+    BatchMetricSums {
+        gpu_sums,
+        rare_values,
+    }
 }
 
 pub(super) fn batch_stats_from_metric_sums<B: Backend>(
     sample_count: usize,
     batch_count: usize,
-    metric_sums: Tensor<B, 1>,
+    metric_sums: BatchMetricSums<B>,
 ) -> BatchStats {
-    let metrics = metric_sums.into_data().convert::<f32>();
+    let metrics = metric_sums.gpu_sums.into_data().convert::<f32>();
     let values = metrics
         .as_slice::<f32>()
         .expect("profiling metrics should be readable as f32");
-    let agreement = average_metric(values[0], sample_count);
+    let agreement = average_metric(metric_sums.rare_values[0], sample_count);
 
     BatchStats {
         sample_count,
         batch_count,
-        total_loss: average_metric(values[1], sample_count),
+        total_loss: average_metric(values[0], sample_count),
         policy_agreement: agreement,
-        loss_policy: average_metric(values[2], sample_count),
-        loss_value: average_metric(values[3], sample_count),
-        loss_grp: average_metric(values[4], sample_count),
-        loss_tenpai: average_metric(values[5], sample_count),
-        loss_danger: average_metric(values[6], sample_count),
-        loss_opp_next: average_metric(values[7], sample_count),
-        loss_score_pdf: average_metric(values[8], sample_count),
-        loss_score_cdf: average_metric(values[9], sample_count),
+        loss_policy: average_metric(values[1], sample_count),
+        loss_value: average_metric(values[2], sample_count),
+        loss_grp: average_metric(values[3], sample_count),
+        loss_tenpai: average_metric(values[4], sample_count),
+        loss_danger: average_metric(values[5], sample_count),
+        loss_opp_next: average_metric(values[6], sample_count),
+        loss_score_pdf: average_metric(values[7], sample_count),
+        loss_score_cdf: average_metric(values[8], sample_count),
+        rare_actions: rare_metrics_from_values(&metric_sums.rare_values),
     }
 }
 
@@ -203,6 +302,61 @@ fn average_metric(value_sum: f32, sample_count: usize) -> f64 {
     }
 }
 
+fn rare_action_metric_values_from_predictions<B: Backend>(
+    predicted: Tensor<B, 1, Int>,
+    actions: Tensor<B, 1, Int>,
+) -> [f32; 19] {
+    let predicted = predicted.into_data().convert::<i64>();
+    let actions = actions.into_data().convert::<i64>();
+    let predicted = predicted
+        .as_slice::<i64>()
+        .expect("predicted actions should be readable as i64");
+    let actions = actions
+        .as_slice::<i64>()
+        .expect("target actions should be readable as i64");
+    let mut sums = RareActionSums::default();
+    let mut values = [0.0f32; 19];
+    let mut overall_correct = 0usize;
+    for (&action, &predicted) in actions.iter().zip(predicted.iter()) {
+        if action == predicted {
+            overall_correct += 1;
+        }
+        sums.record(action as u8, predicted as u8);
+    }
+    values[0] = overall_correct as f32;
+    for idx in 0..9 {
+        values[1 + idx * 2] = sums.counts[idx] as f32;
+        values[1 + idx * 2 + 1] = sums.correct[idx] as f32;
+    }
+    values
+}
+
+fn rare_metrics_from_values(values: &[f32]) -> RareActionMetrics {
+    let bucket = |idx: usize| {
+        let count = values[1 + idx * 2] as usize;
+        let correct = values[1 + idx * 2 + 1] as f64;
+        RareActionBucketMetrics {
+            count,
+            accuracy: if count == 0 {
+                0.0
+            } else {
+                correct / count as f64
+            },
+        }
+    };
+    RareActionMetrics {
+        discard: bucket(DISCARD_BUCKET),
+        aka_discard: bucket(AKA_DISCARD_BUCKET),
+        riichi: bucket(RIICHI_BUCKET),
+        chi: bucket(CHI_BUCKET),
+        pon: bucket(PON_BUCKET),
+        kan: bucket(KAN_BUCKET),
+        agari: bucket(AGARI_BUCKET),
+        ryuukyoku: bucket(RYUUKYOKU_BUCKET),
+        pass: bucket(PASS_BUCKET),
+    }
+}
+
 impl ScalarAverages {
     pub(super) fn record_batch(&mut self, batch: BatchStats) {
         let weight = batch.sample_count as f64;
@@ -221,6 +375,7 @@ impl ScalarAverages {
         self.loss_score_cdf += batch.loss_score_cdf * weight;
         self.num_samples += batch.sample_count;
         self.num_batches += batch.batch_count.max(1);
+        self.rare_actions = merge_rare_metrics(self.rare_actions, batch.rare_actions);
     }
 
     pub(super) fn finalize(mut self) -> Self {
@@ -238,8 +393,46 @@ impl ScalarAverages {
         self.loss_opp_next /= denom;
         self.loss_score_pdf /= denom;
         self.loss_score_cdf /= denom;
+        self.rare_actions = finalize_rare_metrics(self.rare_actions);
         self
     }
+}
+
+fn merge_rare_metrics(mut lhs: RareActionMetrics, rhs: RareActionMetrics) -> RareActionMetrics {
+    fn merge_bucket(lhs: &mut RareActionBucketMetrics, rhs: RareActionBucketMetrics) {
+        lhs.count += rhs.count;
+        lhs.accuracy += rhs.accuracy * rhs.count as f64;
+    }
+    merge_bucket(&mut lhs.discard, rhs.discard);
+    merge_bucket(&mut lhs.aka_discard, rhs.aka_discard);
+    merge_bucket(&mut lhs.riichi, rhs.riichi);
+    merge_bucket(&mut lhs.chi, rhs.chi);
+    merge_bucket(&mut lhs.pon, rhs.pon);
+    merge_bucket(&mut lhs.kan, rhs.kan);
+    merge_bucket(&mut lhs.agari, rhs.agari);
+    merge_bucket(&mut lhs.ryuukyoku, rhs.ryuukyoku);
+    merge_bucket(&mut lhs.pass, rhs.pass);
+    lhs
+}
+
+fn finalize_rare_metrics(mut metrics: RareActionMetrics) -> RareActionMetrics {
+    fn finalize_bucket(bucket: &mut RareActionBucketMetrics) {
+        if bucket.count == 0 {
+            bucket.accuracy = 0.0;
+        } else {
+            bucket.accuracy /= bucket.count as f64;
+        }
+    }
+    finalize_bucket(&mut metrics.discard);
+    finalize_bucket(&mut metrics.aka_discard);
+    finalize_bucket(&mut metrics.riichi);
+    finalize_bucket(&mut metrics.chi);
+    finalize_bucket(&mut metrics.pon);
+    finalize_bucket(&mut metrics.kan);
+    finalize_bucket(&mut metrics.agari);
+    finalize_bucket(&mut metrics.ryuukyoku);
+    finalize_bucket(&mut metrics.pass);
+    metrics
 }
 
 #[cfg(test)]
@@ -280,6 +473,7 @@ pub(super) fn batch_stats_from_breakdown<B: Backend>(
         loss_opp_next: values[6] as f64,
         loss_score_pdf: values[7] as f64,
         loss_score_cdf: values[8] as f64,
+        rare_actions: RareActionMetrics::default(),
     }
 }
 
@@ -294,7 +488,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        BatchStats, ScalarAverages, batch_stats_from_breakdown, batch_stats_from_outputs, scalar1,
+        BatchStats, RareActionMetrics, ScalarAverages, batch_stats_from_breakdown,
+        batch_stats_from_outputs, scalar1,
     };
 
     fn batch(sample_count: usize, total_loss: f64, agreement: f64) -> BatchStats {
@@ -358,6 +553,7 @@ mod tests {
             loss_opp_next: 6.0,
             loss_score_pdf: 7.0,
             loss_score_cdf: 8.0,
+            rare_actions: RareActionMetrics::default(),
         });
 
         let stats = stats.finalize();
@@ -509,6 +705,82 @@ mod tests {
     }
 
     #[test]
+    fn rare_action_metrics_reuse_masked_prediction_for_all_buckets() {
+        type B = NdArray<f32>;
+
+        let device = Default::default();
+        let actions = Tensor::<B, 1, Int>::from_ints([0, 34, 37, 38, 41, 42, 43, 44, 45], &device);
+        let policy_logits = Tensor::<B, 2>::from_floats(
+            [
+                row_with_best(0),
+                row_with_best(34),
+                row_with_best(0),
+                row_with_best(38),
+                row_with_best(0),
+                row_with_best(42),
+                row_with_best(0),
+                row_with_best(44),
+                row_with_best(45),
+            ],
+            &device,
+        );
+        let legal_mask = Tensor::<B, 2>::ones([9, hydra_core::action::HYDRA_ACTION_SPACE], &device);
+        let breakdown = zero_breakdown::<B>(1.0);
+
+        let stats = batch_stats_from_outputs(
+            9,
+            policy_logits,
+            legal_mask,
+            actions,
+            breakdown.total.clone(),
+            &breakdown,
+        );
+
+        assert_eq!(stats.rare_actions.discard.count, 1);
+        assert_eq!(stats.rare_actions.discard.accuracy, 1.0);
+        assert_eq!(stats.rare_actions.aka_discard.count, 1);
+        assert_eq!(stats.rare_actions.aka_discard.accuracy, 1.0);
+        assert_eq!(stats.rare_actions.riichi.count, 1);
+        assert_eq!(stats.rare_actions.riichi.accuracy, 0.0);
+        assert_eq!(stats.rare_actions.chi.count, 1);
+        assert_eq!(stats.rare_actions.chi.accuracy, 1.0);
+        assert_eq!(stats.rare_actions.pon.count, 1);
+        assert_eq!(stats.rare_actions.pon.accuracy, 0.0);
+        assert_eq!(stats.rare_actions.kan.count, 1);
+        assert_eq!(stats.rare_actions.kan.accuracy, 1.0);
+        assert_eq!(stats.rare_actions.agari.count, 1);
+        assert_eq!(stats.rare_actions.agari.accuracy, 0.0);
+        assert_eq!(stats.rare_actions.ryuukyoku.count, 1);
+        assert_eq!(stats.rare_actions.ryuukyoku.accuracy, 1.0);
+        assert_eq!(stats.rare_actions.pass.count, 1);
+        assert_eq!(stats.rare_actions.pass.accuracy, 1.0);
+    }
+
+    #[test]
+    fn metric_prediction_respects_legal_mask() {
+        type B = NdArray<f32>;
+
+        let device = Default::default();
+        let policy_logits = Tensor::<B, 2>::from_floats([[1.0, 100.0, 3.0]], &device);
+        let legal_mask = Tensor::<B, 2>::from_floats([[1.0, 0.0, 1.0]], &device);
+        let actions = Tensor::<B, 1, Int>::from_ints([2], &device);
+        let breakdown = zero_breakdown::<B>(1.0);
+
+        let stats = batch_stats_from_outputs(
+            1,
+            policy_logits,
+            legal_mask,
+            actions,
+            breakdown.total.clone(),
+            &breakdown,
+        );
+
+        assert_eq!(stats.policy_agreement, 1.0);
+        assert_eq!(stats.rare_actions.discard.count, 1);
+        assert_eq!(stats.rare_actions.discard.accuracy, 1.0);
+    }
+
+    #[test]
     fn log_entries_and_banner_stats_cover_data_fields() {
         let epoch = super::EpochLogEntry {
             epoch: 2,
@@ -524,11 +796,14 @@ mod tests {
             train_loss_opp_next: 0.6,
             train_loss_score_pdf: 0.7,
             train_loss_score_cdf: 0.8,
+            train_rare_actions: RareActionMetrics::default(),
             val_total_loss: Some(1.5),
             val_policy_loss: Some(1.25),
             val_policy_agreement: Some(0.75),
             val_delta_q_promotion: None,
+            val_rare_actions: None,
             profiling: Some(ProfilingEnvelope::leaf("bc_epoch", 1.25)),
+            advisories: Vec::new(),
             best_val_policy_loss: Some(1.0),
             best_val_agreement: Some(0.8),
             num_batches: 3,
@@ -547,11 +822,14 @@ mod tests {
             train_loss_opp_next: 0.6,
             train_loss_score_pdf: 0.7,
             train_loss_score_cdf: 0.8,
+            train_rare_actions: RareActionMetrics::default(),
             val_total_loss: Some(1.5),
             val_policy_loss: Some(1.25),
             val_policy_agreement: Some(0.75),
             val_delta_q_promotion: None,
+            val_rare_actions: None,
             profiling: Some(ProfilingEnvelope::leaf("bc_interval", 0.5)),
+            advisories: Vec::new(),
             best_val_policy_loss: Some(1.0),
             best_val_agreement: Some(0.8),
         };
@@ -567,6 +845,7 @@ mod tests {
             total_samples: 1024,
             delta_q_state: "Warmup".to_string(),
             profiling: Some(ProfilingEnvelope::leaf("rl_step", 0.75)),
+            advisories: Vec::new(),
         };
         let banner = super::BannerStats {
             total_sources: 2,
@@ -600,5 +879,31 @@ mod tests {
 
     fn scalar_tensor<B: burn::tensor::backend::Backend>(value: f32) -> burn::tensor::Tensor<B, 1> {
         burn::tensor::Tensor::<B, 1>::from_data(TensorData::from([value]), &Default::default())
+    }
+
+    fn row_with_best(best: usize) -> [f32; hydra_core::action::HYDRA_ACTION_SPACE] {
+        let mut row = [0.0; hydra_core::action::HYDRA_ACTION_SPACE];
+        row[best] = 10.0;
+        row
+    }
+
+    fn zero_breakdown<B: burn::tensor::backend::Backend>(total: f32) -> LossBreakdown<B> {
+        LossBreakdown {
+            policy: scalar_tensor::<B>(0.0),
+            value: scalar_tensor::<B>(0.0),
+            grp: scalar_tensor::<B>(0.0),
+            tenpai: scalar_tensor::<B>(0.0),
+            danger: scalar_tensor::<B>(0.0),
+            opp_next: scalar_tensor::<B>(0.0),
+            score_pdf: scalar_tensor::<B>(0.0),
+            score_cdf: scalar_tensor::<B>(0.0),
+            oracle_critic: scalar_tensor::<B>(0.0),
+            belief_fields: scalar_tensor::<B>(0.0),
+            mixture_weight: scalar_tensor::<B>(0.0),
+            opponent_hand_type: scalar_tensor::<B>(0.0),
+            delta_q: scalar_tensor::<B>(0.0),
+            safety_residual: scalar_tensor::<B>(0.0),
+            total: scalar_tensor::<B>(total),
+        }
     }
 }
