@@ -25,10 +25,10 @@ use super::config::{TrainConfig, configure_threads, device_label, validate_confi
 use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use super::presentation::{
-    explicit_preflight_recommendation, explicit_preflight_summary, format_advisory_line,
-    format_preflight_selection_line, format_preflight_summary_line, format_probe_results_table,
-    format_status_line, format_timed_phase_message, format_warning_line, print_banner,
-    print_preflight_banner, timestamped,
+    bc_hyperparam_summary_input, explicit_preflight_recommendation, explicit_preflight_summary,
+    format_advisory_line, format_preflight_selection_line, format_preflight_summary_line,
+    format_probe_results_table, format_status_line, format_timed_phase_message,
+    format_warning_line, print_banner, print_preflight_banner, timestamped,
 };
 use super::probe_request::ProbeRequest;
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
@@ -95,7 +95,7 @@ where
         &artifacts,
         &device_name,
         &banner_stats,
-        &train_cfg,
+        bc_hyperparam_summary_input(&train_cfg),
     );
     resume.print_banner_with_effective_runtime(Some(current_runtime));
     let mut advisory_deduper = AdvisoryDeduper::new();

@@ -3355,6 +3355,7 @@ dependencies = [
  "colored",
  "hydra-train-runtime",
  "hydra-train-types",
+ "indicatif",
  "serde",
  "serde_json",
  "serde_yaml",

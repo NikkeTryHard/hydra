@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use burn::optim::Optimizer;
 use burn::prelude::Module;
@@ -11,10 +11,7 @@ use tboard::EventWriter;
 use hydra_train::data::pipeline::{DataManifest, scan_data_sources_with_progress};
 use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
-use hydra_train::preflight::{
-    BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
-    PreflightCacheKey, default_cache_name, default_manifest_cache_name,
-};
+use hydra_train::preflight::{ManifestCacheEntry, PreflightCacheEntry};
 use hydra_train::training::bc::CheckpointMeta;
 use hydra_train::training::delta_q_promotion::{
     DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPolicyTransferReport,
@@ -28,53 +25,13 @@ use super::advisory::RuntimeAdvisory;
 use super::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
 use super::resume::{
     BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
-    current_timestamp_s, read_resume_state, read_rl_resume_state, write_resume_state,
+    read_resume_state, read_rl_resume_state, write_resume_state,
 };
 use super::validation::{ValidationGateDecision, ValidationSummary};
-
-pub(crate) struct BcArtifactPaths {
-    pub(crate) root: PathBuf,
-    pub(crate) tb_root: PathBuf,
-    pub(crate) tb_session_dir: PathBuf,
-    pub(crate) latest_model_base: PathBuf,
-    pub(crate) latest_optimizer_base: PathBuf,
-    pub(crate) best_model_base: PathBuf,
-    pub(crate) latest_state_path: PathBuf,
-    pub(crate) training_log_path: PathBuf,
-    pub(crate) step_log_path: PathBuf,
-    pub(crate) delta_q_promotion_path: PathBuf,
-    pub(crate) validation_gate_path: PathBuf,
-}
-
-pub(crate) struct RlArtifactPaths {
-    pub(crate) root: PathBuf,
-    pub(crate) tb_root: PathBuf,
-    pub(crate) tb_session_dir: PathBuf,
-    pub(crate) latest_model_base: PathBuf,
-    pub(crate) latest_optimizer_base: PathBuf,
-    pub(crate) latest_state_path: PathBuf,
-    pub(crate) step_log_path: PathBuf,
-}
-
-pub(crate) struct PreflightPaths {
-    pub(crate) cache_path: PathBuf,
-    pub(crate) manifest_cache_path: PathBuf,
-}
-
-pub(crate) struct PreflightBenchmarkPaths {
-    pub(crate) root: PathBuf,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct PreflightBenchmarkReport {
-    pub(crate) cache_key: PreflightCacheKey,
-    pub(crate) runtime: EffectiveRuntimeConfig,
-    pub(crate) benchmark: BenchmarkResult,
-}
-
-pub(crate) struct RlPreflightPaths {
-    pub(crate) cache_path: PathBuf,
-}
+pub(crate) use hydra_train_exec::artifacts::{
+    BcArtifactPaths, JsonlAppender, PreflightBenchmarkPaths, PreflightBenchmarkReport,
+    PreflightPaths, RlArtifactPaths, RlPreflightPaths, atomic_write_text,
+};
 
 pub(crate) struct LatestCheckpointState<'a> {
     pub(crate) global_step: usize,
@@ -82,175 +39,6 @@ pub(crate) struct LatestCheckpointState<'a> {
     pub(crate) best_validation: Option<BestValidation>,
     pub(crate) continuation: &'a EpochContinuation,
     pub(crate) runtime: RuntimeResumeContract,
-}
-
-pub(crate) type JsonlAppender = fs::File;
-
-pub(crate) fn atomic_write_text(path: &Path, contents: &str, label: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create {label} dir {}: {err}", parent.display()))?;
-    }
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("tmp");
-    let tmp_path = path.with_extension(format!(
-        "{extension}.tmp-{}-{}",
-        std::process::id(),
-        current_timestamp_s()
-    ));
-    fs::write(&tmp_path, contents).map_err(|err| {
-        format!(
-            "failed to write temporary {label} {}: {err}",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).map_err(|err| {
-        let _ = fs::remove_file(&tmp_path);
-        format!(
-            "failed to finalize {label} {} from {}: {err}",
-            path.display(),
-            tmp_path.display()
-        )
-    })
-}
-
-impl PreflightPaths {
-    pub(crate) fn new(artifacts: &BcArtifactPaths) -> Self {
-        Self {
-            cache_path: artifacts.root.join(default_cache_name()),
-            manifest_cache_path: artifacts.root.join(default_manifest_cache_name()),
-        }
-    }
-}
-
-impl PreflightBenchmarkPaths {
-    pub(crate) fn new(artifacts: &BcArtifactPaths) -> Self {
-        Self {
-            root: artifacts.root.join("preflight_benchmark"),
-        }
-    }
-
-    pub(crate) fn create_root_dir(&self) -> Result<(), String> {
-        fs::create_dir_all(&self.root).map_err(|err| {
-            format!(
-                "failed to create preflight benchmark dir {}: {err}",
-                self.root.display()
-            )
-        })
-    }
-
-    pub(crate) fn candidate_dir(&self, candidate_index: usize) -> PathBuf {
-        self.root.join(format!("candidate_{candidate_index:02}"))
-    }
-
-    pub(crate) fn create_candidate_dir(&self, candidate_index: usize) -> Result<PathBuf, String> {
-        let path = self.candidate_dir(candidate_index);
-        fs::create_dir_all(&path).map_err(|err| {
-            format!(
-                "failed to create preflight benchmark candidate dir {}: {err}",
-                path.display()
-            )
-        })?;
-        Ok(path)
-    }
-
-    pub(crate) fn report_path(&self) -> PathBuf {
-        self.root.join("report.json")
-    }
-}
-
-impl RlPreflightPaths {
-    pub(crate) fn new(artifacts: &RlArtifactPaths) -> Self {
-        Self {
-            cache_path: artifacts.root.join(default_cache_name()),
-        }
-    }
-}
-
-impl BcArtifactPaths {
-    pub(crate) fn new(output_dir: &Path, resume_global_step: usize) -> Self {
-        let root = output_dir.join("bc");
-        let tb_root = root.join("tb");
-        let tb_session_dir = tb_root.join(format!(
-            "run_g{:08}_{}",
-            resume_global_step,
-            current_timestamp_s()
-        ));
-        Self {
-            latest_model_base: root.join("latest_model"),
-            latest_optimizer_base: root.join("latest_optimizer"),
-            best_model_base: root.join("best_model"),
-            latest_state_path: root.join("latest_state.yaml"),
-            training_log_path: root.join("training_log.jsonl"),
-            step_log_path: root.join("step_log.jsonl"),
-            delta_q_promotion_path: root.join("delta_q_promotion.json"),
-            validation_gate_path: root.join("validation_gate.json"),
-            root,
-            tb_root,
-            tb_session_dir,
-        }
-    }
-
-    pub(crate) fn create_root_dir(&self) -> Result<(), String> {
-        fs::create_dir_all(&self.root).map_err(|err| {
-            format!(
-                "failed to create BC artifact dir {}: {err}",
-                self.root.display()
-            )
-        })?;
-        Ok(())
-    }
-
-    pub(crate) fn create_tensorboard_dirs(&self) -> Result<(), String> {
-        for dir in [&self.tb_root, &self.tb_session_dir] {
-            fs::create_dir_all(dir).map_err(|err| {
-                format!("failed to create BC artifact dir {}: {err}", dir.display())
-            })?;
-        }
-        Ok(())
-    }
-}
-
-impl RlArtifactPaths {
-    pub(crate) fn new(output_dir: &Path, resume_global_step: usize) -> Self {
-        let root = output_dir.join("rl");
-        let tb_root = root.join("tb");
-        let tb_session_dir = tb_root.join(format!(
-            "run_g{:08}_{}",
-            resume_global_step,
-            current_timestamp_s()
-        ));
-        Self {
-            latest_model_base: root.join("latest_model"),
-            latest_optimizer_base: root.join("latest_optimizer"),
-            latest_state_path: root.join("latest_state.yaml"),
-            step_log_path: root.join("step_log.jsonl"),
-            root,
-            tb_root,
-            tb_session_dir,
-        }
-    }
-
-    pub(crate) fn create_root_dir(&self) -> Result<(), String> {
-        fs::create_dir_all(&self.root).map_err(|err| {
-            format!(
-                "failed to create RL artifact dir {}: {err}",
-                self.root.display()
-            )
-        })?;
-        Ok(())
-    }
-
-    pub(crate) fn create_tensorboard_dirs(&self) -> Result<(), String> {
-        for dir in [&self.tb_root, &self.tb_session_dir] {
-            fs::create_dir_all(dir).map_err(|err| {
-                format!("failed to create RL artifact dir {}: {err}", dir.display())
-            })?;
-        }
-        Ok(())
-    }
 }
 
 pub(crate) fn write_preflight_cache(
@@ -874,7 +662,9 @@ mod tests {
         BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
         EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
         PreflightCacheKey, ProfilingEnvelope, SelectedRuntimeConfig, WorkloadFingerprint,
+        default_cache_name, default_manifest_cache_name,
     };
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tboard::SummaryReader;
 

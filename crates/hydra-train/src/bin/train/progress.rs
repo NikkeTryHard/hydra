@@ -1,45 +1,15 @@
-use super::advisory::RuntimeAdvisory;
 use super::validation::DeltaQPromotionSnapshot;
+pub(super) use hydra_train_exec::progress::{
+    BannerStats, BatchStats, RareActionBucketMetrics, RareActionMetrics, RlStepLogEntry,
+    ScalarAverages,
+};
+pub(super) type EpochLogEntry = hydra_train_exec::progress::EpochLogEntry<DeltaQPromotionSnapshot>;
+pub(super) type StepLogEntry = hydra_train_exec::progress::StepLogEntry<DeltaQPromotionSnapshot>;
 use burn::prelude::*;
 use hydra_core::action::{
     AGARI, AKA_5M, AKA_5S, CHI_LEFT, CHI_RIGHT, DISCARD_START, KAN, PASS, PON, RIICHI, RYUUKYOKU,
 };
-use hydra_train::preflight::ProfilingEnvelope;
 use hydra_train::training::losses::LossBreakdown;
-
-#[derive(Default, serde::Serialize, Clone, Copy)]
-pub(super) struct ScalarAverages {
-    pub(super) total_loss: f64,
-    pub(super) policy_agreement: f64,
-    pub(super) loss_policy: f64,
-    pub(super) loss_value: f64,
-    pub(super) loss_grp: f64,
-    pub(super) loss_tenpai: f64,
-    pub(super) loss_danger: f64,
-    pub(super) loss_opp_next: f64,
-    pub(super) loss_score_pdf: f64,
-    pub(super) loss_score_cdf: f64,
-    pub(super) num_samples: usize,
-    pub(super) num_batches: usize,
-    pub(super) rare_actions: RareActionMetrics,
-}
-
-#[derive(Clone, Copy, Default)]
-pub(super) struct BatchStats {
-    pub(super) sample_count: usize,
-    pub(super) batch_count: usize,
-    pub(super) total_loss: f64,
-    pub(super) policy_agreement: f64,
-    pub(super) loss_policy: f64,
-    pub(super) loss_value: f64,
-    pub(super) loss_grp: f64,
-    pub(super) loss_tenpai: f64,
-    pub(super) loss_danger: f64,
-    pub(super) loss_opp_next: f64,
-    pub(super) loss_score_pdf: f64,
-    pub(super) loss_score_cdf: f64,
-    pub(super) rare_actions: RareActionMetrics,
-}
 
 pub(super) struct BatchMetricSums<B: Backend> {
     gpu_sums: Tensor<B, 1>,
@@ -57,111 +27,6 @@ impl<B: Backend> BatchMetricSums<B> {
             rare_values,
         }
     }
-}
-
-#[derive(serde::Serialize)]
-pub(super) struct EpochLogEntry {
-    pub(super) epoch: usize,
-    pub(super) global_step: usize,
-    pub(super) lr: f64,
-    pub(super) train_total_loss: f64,
-    pub(super) train_policy_agreement: f64,
-    pub(super) train_loss_policy: f64,
-    pub(super) train_loss_value: f64,
-    pub(super) train_loss_grp: f64,
-    pub(super) train_loss_tenpai: f64,
-    pub(super) train_loss_danger: f64,
-    pub(super) train_loss_opp_next: f64,
-    pub(super) train_loss_score_pdf: f64,
-    pub(super) train_loss_score_cdf: f64,
-    pub(super) train_rare_actions: RareActionMetrics,
-    pub(super) val_rare_actions: Option<RareActionMetrics>,
-    pub(super) val_total_loss: Option<f64>,
-    pub(super) val_policy_loss: Option<f64>,
-    pub(super) val_policy_agreement: Option<f64>,
-    pub(super) val_delta_q_promotion: Option<DeltaQPromotionSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) profiling: Option<ProfilingEnvelope>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) advisories: Vec<RuntimeAdvisory>,
-    pub(super) best_val_policy_loss: Option<f64>,
-    pub(super) best_val_agreement: Option<f64>,
-    pub(super) num_batches: usize,
-}
-
-#[derive(serde::Serialize)]
-pub(super) struct StepLogEntry {
-    pub(super) global_step: usize,
-    pub(super) epoch: usize,
-    pub(super) lr: f64,
-    pub(super) train_total_loss: f64,
-    pub(super) train_policy_agreement: f64,
-    pub(super) train_loss_policy: f64,
-    pub(super) train_loss_value: f64,
-    pub(super) train_loss_grp: f64,
-    pub(super) train_loss_tenpai: f64,
-    pub(super) train_loss_danger: f64,
-    pub(super) train_loss_opp_next: f64,
-    pub(super) train_loss_score_pdf: f64,
-    pub(super) train_loss_score_cdf: f64,
-    pub(super) train_rare_actions: RareActionMetrics,
-    pub(super) val_rare_actions: Option<RareActionMetrics>,
-    pub(super) val_total_loss: Option<f64>,
-    pub(super) val_policy_loss: Option<f64>,
-    pub(super) val_policy_agreement: Option<f64>,
-    pub(super) val_delta_q_promotion: Option<DeltaQPromotionSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) profiling: Option<ProfilingEnvelope>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) advisories: Vec<RuntimeAdvisory>,
-    pub(super) best_val_policy_loss: Option<f64>,
-    pub(super) best_val_agreement: Option<f64>,
-}
-
-#[derive(serde::Serialize)]
-pub(super) struct RlStepLogEntry {
-    pub(super) global_step: usize,
-    pub(super) phase: String,
-    pub(super) loss: f64,
-    pub(super) effective_lr: f64,
-    pub(super) exit_weight: f32,
-    pub(super) games_per_batch: usize,
-    pub(super) samples_in_batch: usize,
-    pub(super) total_games: u64,
-    pub(super) total_samples: u64,
-    pub(super) delta_q_state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) profiling: Option<ProfilingEnvelope>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) advisories: Vec<RuntimeAdvisory>,
-}
-
-pub(super) struct BannerStats {
-    pub(super) total_sources: usize,
-    pub(super) total_games: usize,
-    pub(super) train_count: usize,
-    pub(super) val_count: usize,
-    pub(super) accum_steps: usize,
-    pub(super) counts_exact: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
-pub(super) struct RareActionBucketMetrics {
-    pub(super) count: usize,
-    pub(super) accuracy: f64,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
-pub(super) struct RareActionMetrics {
-    pub(super) discard: RareActionBucketMetrics,
-    pub(super) aka_discard: RareActionBucketMetrics,
-    pub(super) riichi: RareActionBucketMetrics,
-    pub(super) chi: RareActionBucketMetrics,
-    pub(super) pon: RareActionBucketMetrics,
-    pub(super) kan: RareActionBucketMetrics,
-    pub(super) agari: RareActionBucketMetrics,
-    pub(super) ryuukyoku: RareActionBucketMetrics,
-    pub(super) pass: RareActionBucketMetrics,
 }
 
 const DISCARD_BUCKET: usize = 0;
@@ -355,84 +220,6 @@ fn rare_metrics_from_values(values: &[f32]) -> RareActionMetrics {
         ryuukyoku: bucket(RYUUKYOKU_BUCKET),
         pass: bucket(PASS_BUCKET),
     }
-}
-
-impl ScalarAverages {
-    pub(super) fn record_batch(&mut self, batch: BatchStats) {
-        let weight = batch.sample_count as f64;
-        if weight <= f64::EPSILON {
-            return;
-        }
-        self.total_loss += batch.total_loss * weight;
-        self.policy_agreement += batch.policy_agreement * weight;
-        self.loss_policy += batch.loss_policy * weight;
-        self.loss_value += batch.loss_value * weight;
-        self.loss_grp += batch.loss_grp * weight;
-        self.loss_tenpai += batch.loss_tenpai * weight;
-        self.loss_danger += batch.loss_danger * weight;
-        self.loss_opp_next += batch.loss_opp_next * weight;
-        self.loss_score_pdf += batch.loss_score_pdf * weight;
-        self.loss_score_cdf += batch.loss_score_cdf * weight;
-        self.num_samples += batch.sample_count;
-        self.num_batches += batch.batch_count.max(1);
-        self.rare_actions = merge_rare_metrics(self.rare_actions, batch.rare_actions);
-    }
-
-    pub(super) fn finalize(mut self) -> Self {
-        if self.num_samples == 0 {
-            return self;
-        }
-        let denom = self.num_samples as f64;
-        self.total_loss /= denom;
-        self.policy_agreement /= denom;
-        self.loss_policy /= denom;
-        self.loss_value /= denom;
-        self.loss_grp /= denom;
-        self.loss_tenpai /= denom;
-        self.loss_danger /= denom;
-        self.loss_opp_next /= denom;
-        self.loss_score_pdf /= denom;
-        self.loss_score_cdf /= denom;
-        self.rare_actions = finalize_rare_metrics(self.rare_actions);
-        self
-    }
-}
-
-fn merge_rare_metrics(mut lhs: RareActionMetrics, rhs: RareActionMetrics) -> RareActionMetrics {
-    fn merge_bucket(lhs: &mut RareActionBucketMetrics, rhs: RareActionBucketMetrics) {
-        lhs.count += rhs.count;
-        lhs.accuracy += rhs.accuracy * rhs.count as f64;
-    }
-    merge_bucket(&mut lhs.discard, rhs.discard);
-    merge_bucket(&mut lhs.aka_discard, rhs.aka_discard);
-    merge_bucket(&mut lhs.riichi, rhs.riichi);
-    merge_bucket(&mut lhs.chi, rhs.chi);
-    merge_bucket(&mut lhs.pon, rhs.pon);
-    merge_bucket(&mut lhs.kan, rhs.kan);
-    merge_bucket(&mut lhs.agari, rhs.agari);
-    merge_bucket(&mut lhs.ryuukyoku, rhs.ryuukyoku);
-    merge_bucket(&mut lhs.pass, rhs.pass);
-    lhs
-}
-
-fn finalize_rare_metrics(mut metrics: RareActionMetrics) -> RareActionMetrics {
-    fn finalize_bucket(bucket: &mut RareActionBucketMetrics) {
-        if bucket.count == 0 {
-            bucket.accuracy = 0.0;
-        } else {
-            bucket.accuracy /= bucket.count as f64;
-        }
-    }
-    finalize_bucket(&mut metrics.discard);
-    finalize_bucket(&mut metrics.aka_discard);
-    finalize_bucket(&mut metrics.riichi);
-    finalize_bucket(&mut metrics.chi);
-    finalize_bucket(&mut metrics.pon);
-    finalize_bucket(&mut metrics.kan);
-    finalize_bucket(&mut metrics.agari);
-    finalize_bucket(&mut metrics.ryuukyoku);
-    finalize_bucket(&mut metrics.pass);
-    metrics
 }
 
 #[cfg(test)]

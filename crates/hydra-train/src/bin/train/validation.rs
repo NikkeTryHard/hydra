@@ -39,6 +39,10 @@ use super::progress::{BatchMetricSums, RareActionMetrics};
 use super::progress::{BatchStats, batch_stats_from_outputs};
 use super::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums};
 use super::resume::BestValidation;
+pub(super) use hydra_train_exec::validation::{
+    DeltaQPolicyTransferSnapshot, DeltaQPromotionSnapshot, ValidationGateCriterion,
+    ValidationGateDecision,
+};
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 pub(super) struct ValidationContext<'a, B: Backend> {
@@ -58,61 +62,6 @@ pub(super) struct ValidationRuntime<'a> {
     pub(super) head_controller: Option<&'a mut HeadActivationController>,
     pub(super) progress: Option<&'a ProgressBar>,
 }
-
-#[derive(Clone, Copy, Debug, serde::Serialize)]
-pub(super) struct DeltaQPromotionSnapshot {
-    pub(super) compared_states: u64,
-    pub(super) candidate_top1_agreement: f64,
-    pub(super) candidate_mean_regret: f64,
-    pub(super) baseline_mean_regret: f64,
-    pub(super) mean_decision_lift: f64,
-    pub(super) negative_lift_fraction: f64,
-    pub(super) regret_beats_baseline_rate: f64,
-    pub(super) top1_beats_baseline_rate: f64,
-    pub(super) passed: bool,
-}
-
-impl DeltaQPromotionSnapshot {
-    fn from_report(report: &DeltaQPromotionReport, result: &DeltaQPromotionResult) -> Self {
-        Self {
-            compared_states: report.compared_states,
-            candidate_top1_agreement: report.candidate_top1_agreement(),
-            candidate_mean_regret: report.candidate_mean_regret(),
-            baseline_mean_regret: report.baseline_mean_regret(),
-            mean_decision_lift: report.mean_decision_lift(),
-            negative_lift_fraction: report.negative_lift_fraction(),
-            regret_beats_baseline_rate: report.candidate_regret_beats_baseline_rate(),
-            top1_beats_baseline_rate: report.candidate_top1_beats_baseline_rate(),
-            passed: result.passed,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, serde::Serialize)]
-pub(super) struct DeltaQPolicyTransferSnapshot {
-    pub(super) compared_states: u64,
-    pub(super) candidate_policy_top1_to_teacher: f64,
-    pub(super) baseline_policy_top1_to_teacher: f64,
-    pub(super) candidate_policy_mean_teacher_regret: f64,
-    pub(super) baseline_policy_mean_teacher_regret: f64,
-    pub(super) candidate_beats_baseline_rate: f64,
-    pub(super) negative_transfer_fraction: f64,
-}
-
-impl DeltaQPolicyTransferSnapshot {
-    fn from_report(report: &DeltaQPolicyTransferReport) -> Self {
-        Self {
-            compared_states: report.compared_states,
-            candidate_policy_top1_to_teacher: report.candidate_policy_top1_to_teacher(),
-            baseline_policy_top1_to_teacher: report.baseline_policy_top1_to_teacher(),
-            candidate_policy_mean_teacher_regret: report.candidate_policy_mean_teacher_regret(),
-            baseline_policy_mean_teacher_regret: report.baseline_policy_mean_teacher_regret(),
-            candidate_beats_baseline_rate: report.candidate_beats_baseline_rate(),
-            negative_transfer_fraction: report.negative_transfer_fraction(),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(super) struct ValidationSummary {
     pub(super) total_loss: f64,
@@ -131,37 +80,34 @@ pub(super) struct ValidationSummary {
     pub(super) saw_delta_q_targets: bool,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-pub(super) struct ValidationGateCriterion {
-    pub(super) name: String,
-    pub(super) passed: bool,
-    pub(super) observed: Option<f64>,
-    pub(super) threshold: Option<f64>,
-    pub(super) message: String,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub(super) struct ValidationGateDecision {
-    pub(super) enabled: bool,
-    pub(super) passed: bool,
-    pub(super) criteria: Vec<ValidationGateCriterion>,
-}
-
-impl ValidationGateDecision {
-    pub(super) fn disabled() -> Self {
-        Self {
-            enabled: false,
-            passed: true,
-            criteria: Vec::new(),
-        }
+fn delta_q_promotion_snapshot_from_report(
+    report: &DeltaQPromotionReport,
+    result: &DeltaQPromotionResult,
+) -> DeltaQPromotionSnapshot {
+    DeltaQPromotionSnapshot {
+        compared_states: report.compared_states,
+        candidate_top1_agreement: report.candidate_top1_agreement(),
+        candidate_mean_regret: report.candidate_mean_regret(),
+        baseline_mean_regret: report.baseline_mean_regret(),
+        mean_decision_lift: report.mean_decision_lift(),
+        negative_lift_fraction: report.negative_lift_fraction(),
+        regret_beats_baseline_rate: report.candidate_regret_beats_baseline_rate(),
+        top1_beats_baseline_rate: report.candidate_top1_beats_baseline_rate(),
+        passed: result.passed,
     }
+}
 
-    pub(super) fn failed_names(&self) -> Vec<String> {
-        self.criteria
-            .iter()
-            .filter(|criterion| !criterion.passed)
-            .map(|criterion| criterion.name.clone())
-            .collect()
+fn delta_q_policy_transfer_snapshot_from_report(
+    report: &DeltaQPolicyTransferReport,
+) -> DeltaQPolicyTransferSnapshot {
+    DeltaQPolicyTransferSnapshot {
+        compared_states: report.compared_states,
+        candidate_policy_top1_to_teacher: report.candidate_policy_top1_to_teacher(),
+        baseline_policy_top1_to_teacher: report.baseline_policy_top1_to_teacher(),
+        candidate_policy_mean_teacher_regret: report.candidate_policy_mean_teacher_regret(),
+        baseline_policy_mean_teacher_regret: report.baseline_policy_mean_teacher_regret(),
+        candidate_beats_baseline_rate: report.candidate_beats_baseline_rate(),
+        negative_transfer_fraction: report.negative_transfer_fraction(),
     }
 }
 
@@ -468,9 +414,9 @@ fn finalize_validation_summary<B: Backend>(
             &delta_q_policy_transfer,
             &DeltaQPolicyTransferThresholds::default(),
         );
-        let snapshot = DeltaQPromotionSnapshot::from_report(&delta_q_promotion, &result);
+        let snapshot = delta_q_promotion_snapshot_from_report(&delta_q_promotion, &result);
         let policy_transfer_snapshot =
-            DeltaQPolicyTransferSnapshot::from_report(&delta_q_policy_transfer);
+            delta_q_policy_transfer_snapshot_from_report(&delta_q_policy_transfer);
         (
             Some(delta_q_promotion),
             Some(result),
@@ -1037,7 +983,7 @@ mod tests {
             criteria: Vec::new(),
         };
 
-        let snapshot = DeltaQPromotionSnapshot::from_report(&report, &result);
+        let snapshot = delta_q_promotion_snapshot_from_report(&report, &result);
 
         assert_eq!(snapshot.compared_states, 8);
         assert!((snapshot.candidate_top1_agreement - 0.75).abs() < 1e-12);
@@ -1062,7 +1008,7 @@ mod tests {
             negative_transfer_count: 1,
         };
 
-        let snapshot = DeltaQPolicyTransferSnapshot::from_report(&report);
+        let snapshot = delta_q_policy_transfer_snapshot_from_report(&report);
 
         assert_eq!(snapshot.compared_states, 8);
         assert!((snapshot.candidate_policy_top1_to_teacher - 0.625).abs() < 1e-12);
@@ -1075,7 +1021,7 @@ mod tests {
 
     #[test]
     fn delta_q_snapshots_handle_zero_compared_states() {
-        let promotion_snapshot = DeltaQPromotionSnapshot::from_report(
+        let promotion_snapshot = delta_q_promotion_snapshot_from_report(
             &DeltaQPromotionReport::new(),
             &DeltaQPromotionResult {
                 passed: false,
@@ -1093,7 +1039,7 @@ mod tests {
         assert!(!promotion_snapshot.passed);
 
         let transfer_snapshot =
-            DeltaQPolicyTransferSnapshot::from_report(&DeltaQPolicyTransferReport::new());
+            delta_q_policy_transfer_snapshot_from_report(&DeltaQPolicyTransferReport::new());
         assert_eq!(transfer_snapshot.compared_states, 0);
         assert_eq!(transfer_snapshot.candidate_policy_top1_to_teacher, 0.0);
         assert_eq!(transfer_snapshot.baseline_policy_top1_to_teacher, 0.0);
