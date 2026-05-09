@@ -3321,6 +3321,7 @@ dependencies = [
  "hydra-search-labels",
  "hydra-selfplay",
  "hydra-train-algo",
+ "hydra-train-exec",
  "hydra-train-runtime",
  "hydra-train-types",
  "indicatif",
@@ -3351,7 +3352,13 @@ dependencies = [
 name = "hydra-train-exec"
 version = "0.1.0"
 dependencies = [
+ "colored",
  "hydra-train-runtime",
+ "hydra-train-types",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "time",
 ]
 
 [[package]]

@@ -14,3 +14,13 @@ crate-type = ["rlib"]
 
 [dependencies]
 hydra-train-runtime = { path = "../hydra-train-runtime" }
+hydra-train-types = { path = "../hydra-train-types" }
+colored = "3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.149"
+serde_yaml = "0.9"
+time = { version = "0.3", features = ["formatting"] }
+
+
+[features]
+cuda-graph = []
