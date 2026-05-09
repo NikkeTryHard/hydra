@@ -3,6 +3,8 @@
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
 
+pub use hydra_train_runtime::config::*;
+pub use hydra_train_runtime::config_runtime::*;
 pub use hydra_train_types::phase::{PipelineState, TrainingPhase};
 pub const INPUT_CHANNELS: usize = NUM_CHANNELS;
 pub const TILE_DIM: usize = NUM_TILES;

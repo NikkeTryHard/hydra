@@ -1,22 +1,22 @@
-# Hydra Game Engine (hydra-core)
+# Hydra Game Engine (`hydra-core` facade)
 
-Ref doc for `hydra-core` Rust crate, game engine powering Hydra Riichi Mahjong AI.
+Ref doc for public `hydra-core` game-engine API after crate split.
 
 ## Overview
 
-`hydra-core` Rust lib gives Hydra training + runtime all game-side needs: full Riichi Mahjong sim, observation encoding, safety analysis, search/belief feature bridge, batch exec. Wraps `riichienv-core` as base engine; adds Hydra-specific encoding, seeding, orchestration.
+`hydra-core` is public facade + orchestration crate. It re-exports split impl crates for stable callers, owns bridge/simulator/game-loop/seeding, and wraps `riichienv-core` as rules engine.
 
 Core responsibilities:
 
-- Tile repr + suit permutation for data aug
-- 46-action space with bidirectional conversion to/from `riichienv` actions
-- Current **192-channel x 34-tile fixed-superset observation encoder**; first 85 channels preserve original public+safety baseline, Groups C/D add live search/belief + Hand-EV planes
-- Tile safety analysis (genbutsu, suji, kabe, one-chance)
+- Runtime tile/action API via `hydra-runtime-types`, exposed through `hydra-core`
+- 192-channel x 34-tile fixed-superset observation encoder via `hydra-encoder`; first 85 channels preserve original public+safety baseline, Groups C/D add live search/belief + Hand-EV planes
+- Tile safety analysis via `hydra-safety` (genbutsu, suji, kabe, one-chance)
+- Belief/search feature helpers via `hydra-belief-search`
 - Deterministic seeding via SHA-256 KDF + ChaCha8Rng
 - Parallel batch sim with `rayon`
 - Game loop abstraction with pluggable action selection
 
-Hydra uses 100% Rust stack (see `research/infrastructure/INFRASTRUCTURE.md`). Training pipeline (`hydra-train`, Burn) consumes hydra-core directly; same process, same memory, zero IPC.
+Hydra uses 100% Rust stack (see `research/infrastructure/INFRASTRUCTURE.md`). Training/runtime callers may depend on `hydra-core` facade; impl ownership lives in split crates below.
 
 ## Foundation: RiichiEnv
 
@@ -34,23 +34,24 @@ Hydra treats `riichienv-core` as black-box game engine. All game state progressi
 
 Because `riichienv-core` correctness already verified upstream: smly ran Mortal as black-box MJAI player (separate process, no linking) over 1M+ hanchan on RiichiEnv with zero errors ([source](https://github.com/smly/RiichiEnv)). Hydra needs no own cross-engine validation. Correctness inherited through dependency. No Mortal code exists in RiichiEnv or Hydra.
 
-## Module Reference
+## Module / Crate Ownership
 
-| Module | File | Description |
-|--------|------|-------------|
-| `tile` | `tile.rs` | Tile types (0-33), 136-format repr, aka-dora handling, suit permutation |
-| `action` | `action.rs` | 46-action space, `HydraAction` enum, bidirectional riichienv conversion, legal mask builder |
-| `encoder` | `encoder.rs` | 192x34 fixed-superset observation tensor, `ObservationEncoder`, incremental encoding with `DirtyFlags` |
-| `safety` | `safety.rs` | `SafetyInfo` per-opponent tile safety: genbutsu, suji, kabe, one-chance |
-| `simulator` | `simulator.rs` | `BatchSimulator` with rayon thread pool, `BatchConfig`, `GameResult` collection |
-| `seeding` | `seeding.rs` | SHA-256 KDF, `SessionRng`, deterministic wall generation, Fisher-Yates shuffle |
-| `bridge` | `bridge.rs` | Converts riichienv `Observation` into encoder-ready data via `extract_*` fns |
-| `game_loop` | `game_loop.rs` | `GameRunner`, `ActionSelector` trait, step-by-step or run-to-completion exec |
-| `batch_encoder` | `batch_encoder.rs` | Pre-allocated contiguous buffer for encoding N observations without per-obs allocation |
-| `shanten_batch` | `shanten_batch.rs` | Batch shanten with hierarchical hash caching (base + all 34 discards in one pass) |
+| Public route | impl owner | Role |
+|--------------|----------------------|------|
+| `hydra_core::tile` | `hydra-runtime-types::tile` | Tile constants/types, 136-format repr, aka-dora, suit permutation |
+| `hydra_core::action` | bridge in `hydra-core` over `hydra-runtime-types::action` | 46-action `HydraAction`, riichienv conversion, legal mask builder |
+| `hydra_core::encoder` | `hydra-encoder::encoder` | 192x34 fixed-superset tensor, `ObservationEncoder`, `DirtyFlags` |
+| `hydra_core::batch_encoder` | `hydra-encoder::batch_encoder` | Pre-allocated contiguous batch encoding buffer |
+| `hydra_core::safety` | `hydra-safety` | `SafetyInfo`: genbutsu, suji, kabe, one-chance |
+| `hydra_core::{ct_smc, hand_ev, afbs, endgame, robust_opponent, shanten_batch, sinkhorn}` | `hydra-belief-search` | Belief/search, Hand-EV, shanten cache, Sinkhorn/SIB helpers |
+| `hydra_core::bridge` | `hydra-core::bridge` | riichienv `Observation` -> encoder-ready data |
+| `hydra_core::simulator` | `hydra-core::simulator` | `BatchSimulator`, `BatchConfig`, `GameResult` collection |
+| `hydra_core::game_loop` | `hydra-core::game_loop` | `GameRunner`, `ActionSelector`, run loop |
+| `hydra_core::seeding` | `hydra-core::seeding` | SHA-256 KDF, `SessionRng`, deterministic wall shuffle |
+| `hydra_core::arena` | `hydra-core::arena` | Arena/runtime glue for core orchestration |
 
 
-## Tile System (`tile.rs`)
+## Tile System (`hydra-runtime-types::tile`, via `hydra_core::tile`)
 
 ### TileType
 
@@ -77,9 +78,9 @@ These are 0th copy (index 0 within each group of 4) of respective 5-tiles: 136-f
 
 ### Suit Permutation
 
-For training data aug, `tile.rs` provides suit permutation fns. Six permutations exist for three numbered suits (manzu, pinzu, souzu); honor tiles stay unchanged. Given permutation index (0-5), module remaps all tile types in hand/observation to permuted suit assignment. This 6x aug helps model learn suit-invariant patterns.
+For training data aug, runtime tile API provides suit permutation fns. Six permutations exist for three numbered suits (manzu, pinzu, souzu); honor tiles stay unchanged. Given permutation index (0-5), module remaps all tile types in hand/observation to permuted suit assignment. This 6x aug helps model learn suit-invariant patterns.
 
-## Action Space (`action.rs`)
+## Action Space (`hydra-core::action`, uses `hydra-runtime-types::action`)
 
 ### 46-Action Space
 
@@ -115,7 +116,7 @@ It validates range 0-45 on construction via `HydraAction::new(id) -> Option<Self
 
 `build_legal_action_mask` takes current riichienv game state, returns `[bool; 46]`. Each slot = `true` if action legal now. Training pipeline uses this mask to zero illegal actions before softmax, so model never selects impossible move.
 
-## Observation Encoder (`encoder.rs`)
+## Observation Encoder (`hydra-encoder::encoder`, via `hydra_core::encoder`)
 
 ### Tensor Shape
 
@@ -183,7 +184,7 @@ Each observation is `192 x 34` float tensor (6,528 values). First 85 channels re
 
 This matters for perf: one discard dirties only discard + safety channels, skipping more expensive hand/meld/dora re-encoding. In batch sim of thousands of games, savings compound.
 
-## Safety System (`safety.rs`)
+## Safety System (`hydra-safety`, via `hydra_core::safety`)
 
 Safety module computes per-opponent, per-tile safety info used to fill encoder channels 62-84 and guide defensive play.
 
@@ -219,7 +220,7 @@ pub struct SafetyInfo {
 
 All safety arrays update incrementally. When new discard or meld occurs, only affected opponent `SafetyInfo` recomputes.
 
-## Batch Simulator (`simulator.rs`)
+## Batch Simulator (`hydra-core::simulator`)
 
 ### BatchSimulator
 
@@ -256,7 +257,7 @@ Each game derives seed as `base_seed + game_index`. Two runs with same `BatchCon
 
 Current each game in batch allocates fresh `GameState`. Future opt: pool pre-allocated game states and recycle between batches, removing per-game allocation overhead during high-throughput self-play.
 
-## Seeding (`seeding.rs`)
+## Seeding (`hydra-core::seeding`)
 
 Deterministic seeding is critical for reproducible training + eval. Seeding module provides hierarchical RNG system.
 
@@ -288,7 +289,7 @@ Given same session seed + batch config, `hydra-core` produces bit-identical resu
 
 Only requirement: same Rust toolchain version, since floating-point encoder output depends on compiler codegen.
 
-## Game Loop (`game_loop.rs`)
+## Game Loop (`hydra-core::game_loop`)
 
 ### GameRunner
 
@@ -313,7 +314,7 @@ Any type implementing `ActionSelector` can drive game loop. `FirstActionSelector
 
 During play, `GameRunner` maintains `[SafetyInfo; 4]` array (one per player view). After every discard, call, and riichi event, runner `track_action` incrementally updates relevant safety data across all views. These feed encoder safety channels (62-84) on next observation request.
 
-## Bridge (`bridge.rs`)
+## Bridge (`hydra-core::bridge`)
 
 Bridge module converts riichienv `Observation` into data encoder needs. Translation layer so encoder does not depend on riichienv types directly.
 
@@ -331,11 +332,11 @@ Each `extract_*` fn pulls one data category from riichienv observation:
 
 `encode_observation` is main bridge fn. Takes riichienv `Observation`, calls all `extract_*` fns, feeds results into `ObservationEncoder`. Returns filled 192x34 fixed-superset float buffer ready for model.
 
-Current runtime-status note: bridge now carries two live Hand-EV paths on same fixed surface. Default computes Hand-EV from public remaining counts. When search context supplies CT-SMC posterior, it upgrades that path to use wall-weighted remaining counts from posterior while keeping same encoder/runtime interface. Same bridge surface also fills fixed-shape Group C search/belief planes from live mixture/search/risk context when present, else zero-filled planes plus presence masks. This file records runtime reality only; promoted sequencing/doctrine still lives in `research/design/HYDRA_FINAL.md` and `research/design/HYDRA_RECONCILIATION.md`.
+Current runtime-status note: bridge carries two live Hand-EV paths on same fixed surface. Default computes Hand-EV from public remaining counts. When search context supplies CT-SMC posterior, it upgrades to wall-weighted remaining counts while keeping same encoder/runtime interface. Bridge also fills fixed-shape Group C search/belief planes from live mixture/search/risk context when present, else zero-filled planes plus presence masks.
 
 ## Testing
 
-Every module in `hydra-core` has inline unit tests (`#[cfg(test)]` modules). Beyond unit tests, `tests/` dir contains integration tests:
+Split impl crates keep inline unit tests (`#[cfg(test)]`). `hydra-core/tests/` contains integration tests:
 
 | Test File | What It Covers |
 |-----------|---------------|
@@ -356,23 +357,20 @@ Current replay-status note: after fixing MJAI replay round-start reset semantics
 
 Run benchmarks with `cargo bench`.
 
-## Dependencies
-
-### Runtime
+## Direct Dependencies (`hydra-core`)
 
 | Crate | Purpose |
 |-------|---------|
-| `riichienv-core` | Game engine (rules, state, legality) |
-| `rayon` | Work-stealing thread pool for parallel batch sim |
-| `serde` | Serialization for configs, game results, replay data |
-| `ndarray` | N-dimensional array ops for observation tensors |
-| `serde_json` | JSON serialization for MJAI protocol data |
-| `chacha20` | ChaCha20 cipher (pinned version for determinism) |
-| `rand` | RNG traits + distributions |
-| `rand_chacha` | `ChaCha8Rng` for deterministic seeding |
-| `sha2` | SHA-256 hashing for seed key derivation |
-| `anyhow` | App-level error handling |
-| `thiserror` | Derive macro for library error enums |
+| `riichienv-core` | Vendored rules/state/legality engine (`hydra-engine`) |
+| `hydra-runtime-types` | Runtime tile/action rails re-exported by facade |
+| `hydra-safety` | Safety analysis re-exported by facade |
+| `hydra-encoder` | Observation + batch encoder re-exported by facade |
+| `hydra-belief-search` | Belief/search helpers re-exported by facade |
+| `rayon` | Parallel batch sim |
+| `serde`, `serde_json` | Config/result/replay serialization |
+| `rand`, `rand_chacha`, `sha2` | Deterministic seeding |
+| `anyhow`, `thiserror` | Error handling |
+| `dashmap`, `smallvec` | Runtime support containers |
 
 ### Dev / Test
 

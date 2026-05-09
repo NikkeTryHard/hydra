@@ -67,9 +67,24 @@ For impl work, choose next lane from
 
 | Crate | Owns | Does not own |
 |---|---|---|
-| `crates/hydra-engine` | vendored rules engine behavior | Hydra-specific runtime/training orchestration |
-| `crates/hydra-core` | runtime bridge, encoder, simulator, seeding, search/runtime feature plumbing | Burn training logic or vendored rules ownership |
-| `crates/hydra-train` | model, targets, losses, BC/RL/self-play orchestration, train binary | low-level rules engine behavior |
+| `crates/hydra-engine` | vendored riichi rules engine | Hydra runtime/training orchestration |
+| `crates/hydra-runtime-types` | shared runtime rails/types | rules, encoder, training |
+| `crates/hydra-safety` | safety rail primitives | policy/model/training execution |
+| `crates/hydra-belief-search` | belief/search primitives | neural labels or training loop |
+| `crates/hydra-encoder` | observation encoder components | simulator or training ownership |
+| `crates/hydra-core` | public runtime bridge over engine/types/safety/encoder/search; simulator, action/tile API, seeding | Burn model/training/data pipelines or vendored rules ownership |
+| `crates/hydra-data-core` | sample DTOs/scoring helpers | replay IO, shard/cache storage |
+| `crates/hydra-replay-sidecar` | replay sidecar JSONL contracts | replay loading/conversion |
+| `crates/hydra-replay-loader` | MJAI replay load + sample conversion | model/training loop |
+| `crates/hydra-sample-cache` | parsed-sample cache format | replay parsing authority |
+| `crates/hydra-bc-shards` | backend-agnostic BC shard host format | optimizer/model runtime |
+| `crates/hydra-train-types` | training scalar coordination types | algorithms, model layers, CLI |
+| `crates/hydra-model` | Burn neural model components | training algorithms/runtime CLI |
+| `crates/hydra-train-algo` | pure Burn training algorithms/loss math | CLI/config/preflight, model definition |
+| `crates/hydra-selfplay` | self-play coordination primitives | train CLI/runtime contracts |
+| `crates/hydra-search-labels` | search-label generation | base search/runtime primitives |
+| `crates/hydra-train-runtime` | train CLI/config/preflight/probe/status contracts | execution modules still in `hydra-train` |
+| `crates/hydra-train` | compatibility facade + bins during split migration; remaining execution modules | settled ownership for new model/algo/runtime code |
 
 If deciding what to build next, follow Fresh-agent routing order above.
 Historical design/planning docs now live as compact entries in `research/design/HYDRA_ARCHIVE.md`.

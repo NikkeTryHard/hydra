@@ -52,7 +52,10 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "test helpers are shared across feature-specific test targets"
+)]
 #[cfg(test)]
 pub(crate) fn unique_test_path(prefix: &str, label: &str) -> PathBuf {
     let base = std::env::temp_dir();
@@ -64,7 +67,10 @@ pub(crate) fn unique_test_path(prefix: &str, label: &str) -> PathBuf {
     base.join(format!("{prefix}-{label}-{}-{nanos}", std::process::id()))
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "extension helper is used only by tests that need file suffixes"
+)]
 #[cfg(test)]
 pub(crate) fn unique_test_path_with_extension(
     prefix: &str,

@@ -13,6 +13,39 @@ use hydra_train::training::exit;
 use hydra_train::training::gae;
 use hydra_train::training::losses::*;
 
+#[allow(
+    unused_imports,
+    reason = "compile coverage for old public config imports"
+)]
+use hydra_train::config::{
+    BcHyperparamConfig, PipelineState, PrecisionMode, ProbeCliRequest, RlPhaseConfig,
+    RlTrainConfig, SourceFilterConfig, TrainCli, TrainConfig, TrainingPhase, ValidationGateConfig,
+    default_batch_size, parse_args, read_config, validate_config,
+};
+#[allow(
+    unused_imports,
+    reason = "compile coverage for old replay delta-q imports"
+)]
+use hydra_train::training::replay_delta_q::{
+    DeltaQSidecarIndex, REPLAY_DELTA_Q_PROVENANCE, REPLAY_DELTA_Q_SEMANTICS_V1,
+    ReplayDecisionKey as DeltaQReplayDecisionKey, ReplayDeltaQLookupKey, ReplayDeltaQRecordV1,
+    copy_label_arrays as delta_q_copy_label_arrays,
+    legal_mask_digest_from_bool as delta_q_legal_mask_digest_from_bool,
+    legal_mask_digest_from_f32 as delta_q_legal_mask_digest_from_f32, read_jsonl_records,
+    source_hash_from_identity as delta_q_source_hash_from_identity,
+    source_net_hash_from_checkpoint_identity as delta_q_source_net_hash_from_checkpoint_identity,
+    validate_delta_q_contract,
+};
+#[allow(
+    unused_imports,
+    reason = "compile coverage for old replay exit imports"
+)]
+use hydra_train::training::replay_exit::{
+    ExitSidecarIndex, REPLAY_EXIT_PROVENANCE, REPLAY_EXIT_SEMANTICS_V1, ReplayDecisionKey,
+    ReplayExitLookupKey, ReplayExitRecordV1, copy_label_arrays, legal_mask_digest_from_bool,
+    legal_mask_digest_from_f32, source_hash_from_identity,
+    source_net_hash_from_checkpoint_identity,
+};
 type TestBackend = Autodiff<NdArray<f32>>;
 type InferBackend = NdArray<f32>;
 
