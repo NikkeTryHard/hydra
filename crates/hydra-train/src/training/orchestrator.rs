@@ -19,53 +19,11 @@ use crate::training::losses::{HydraLoss, HydraTargets};
 use crate::training::rl::{
     RlBatch, RlConfig, RlStepRequest, rl_step_with_phase_progress_and_controller,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BenchmarkGateMetrics {
-    pub afbs_on_turn_ms: f32,
-    pub ct_smc_dp_ms: f32,
-    pub endgame_exact_ms: f32,
-    pub self_play_games_per_sec: f32,
-    pub distill_kl_drift: f32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ValidationGateMetrics {
-    pub mean_decision_improvement: f32,
-    pub negative_decision_fraction: f32,
-    pub opponent_kl_p95: f32,
-    pub opponent_kl_p95_limit: f32,
-    pub hunter_overfold_reduction: f32,
-    pub danger_underestimate_rate: f32,
-    pub max_danger_underestimate_rate: f32,
-    pub saf_advantage_over_shallow: f32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GateReport {
-    pub passed: bool,
-    pub failures: Vec<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PhaseTrainReport {
-    pub phase: TrainingPhase,
-    pub skipped: bool,
-    pub loss: Option<f64>,
-    pub effective_lr: f64,
-    pub oracle_keep_prob: Option<f32>,
-    pub kept_oracle_fraction: Option<f32>,
-    pub exit_weight: Option<f32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MaintenancePlan {
-    pub should_rebase: bool,
-    pub should_distill: bool,
-    pub distill_warning: bool,
-    pub shallow_exit_enabled: bool,
-    pub deep_exit_enabled: bool,
-}
+pub use hydra_train_types::orchestrator::{
+    BenchmarkGateMetrics, GateReport, MaintenancePlan, OrchestratorPlanInputs, PhaseTrainReport,
+    ValidationGateMetrics, evaluate_benchmark_gates, evaluate_validation_gates,
+    maintenance_plan_from_inputs, maybe_advance_phase, phase_advance_report,
+};
 
 pub struct RlPhaseTrainRequest<'a, B: Backend> {
     pub state: &'a PipelineState,
@@ -88,101 +46,6 @@ pub struct SupervisedPhaseTrainRequest<'a, B: Backend> {
     pub rng_values: &'a [f32],
 }
 
-pub fn evaluate_benchmark_gates(
-    metrics: &BenchmarkGateMetrics,
-    max_distill_kl_drift: f32,
-) -> GateReport {
-    let mut failures = Vec::new();
-    if metrics.afbs_on_turn_ms >= 150.0 {
-        failures.push("latency_afbs_on_turn");
-    }
-    if metrics.ct_smc_dp_ms >= 1.0 {
-        failures.push("latency_ct_smc_dp");
-    }
-    if metrics.endgame_exact_ms >= 100.0 {
-        failures.push("latency_endgame_exact");
-    }
-    if metrics.self_play_games_per_sec <= 20.0 {
-        failures.push("throughput_self_play");
-    }
-    if metrics.distill_kl_drift > max_distill_kl_drift {
-        failures.push("distill_kl_drift");
-    }
-    GateReport {
-        passed: failures.is_empty(),
-        failures,
-    }
-}
-
-pub fn evaluate_validation_gates(metrics: &ValidationGateMetrics) -> GateReport {
-    let mut failures = Vec::new();
-    if metrics.mean_decision_improvement <= 0.0 {
-        failures.push("g0_mean_decision_improvement");
-    }
-    if metrics.negative_decision_fraction >= 0.40 {
-        failures.push("g0_negative_fraction");
-    }
-    if metrics.opponent_kl_p95 > metrics.opponent_kl_p95_limit {
-        failures.push("g1_robustness_calibration");
-    }
-    if metrics.hunter_overfold_reduction <= 0.0 {
-        failures.push("g2_hunter_overfold_reduction");
-    }
-    if metrics.danger_underestimate_rate > metrics.max_danger_underestimate_rate {
-        failures.push("g2_danger_underestimate_rate");
-    }
-    if metrics.saf_advantage_over_shallow <= 0.0 {
-        failures.push("g3_saf_amortization");
-    }
-    GateReport {
-        passed: failures.is_empty(),
-        failures,
-    }
-}
-
-pub fn phase_advance_report(
-    state: &PipelineState,
-    benchmark_report: Option<&GateReport>,
-    validation_report: Option<&GateReport>,
-) -> GateReport {
-    let mut failures = Vec::new();
-    match state.phase {
-        TrainingPhase::BenchmarkGates => match benchmark_report {
-            Some(report) if report.passed => {}
-            Some(report) => failures.extend(report.failures.iter().copied()),
-            None => failures.push("missing_benchmark_report"),
-        },
-        TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
-            if !state.should_advance_phase() {
-                failures.push("phase_budget_incomplete");
-            }
-            match validation_report {
-                Some(report) if report.passed => {}
-                Some(report) => failures.extend(report.failures.iter().copied()),
-                None => failures.push("missing_validation_report"),
-            }
-        }
-        _ => {
-            if !state.should_advance_phase() {
-                failures.push("phase_budget_incomplete");
-            }
-        }
-    }
-    GateReport {
-        passed: failures.is_empty(),
-        failures,
-    }
-}
-
-pub fn maybe_advance_phase(state: &mut PipelineState, advance_report: &GateReport) -> bool {
-    if advance_report.passed {
-        state.advance_phase();
-        true
-    } else {
-        false
-    }
-}
-
 pub fn maintenance_plan(
     state: &PipelineState,
     rebase_tracker: &RebaseTracker,
@@ -191,33 +54,14 @@ pub fn maintenance_plan(
     elapsed_secs: u64,
     max_distill_kl_drift: f32,
 ) -> MaintenancePlan {
-    let phase_progress = state.phase_progress();
-    let shallow_exit_enabled = match state.phase {
-        TrainingPhase::DrdaAchSelfPlay => phase_progress > 0.5,
-        TrainingPhase::ExitPondering => true,
-        _ => false,
-    };
-    let deep_exit_enabled = matches!(state.phase, TrainingPhase::ExitPondering);
-    let should_rebase = matches!(
-        state.phase,
-        TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering
-    ) && rebase_tracker.should_rebase();
-    let should_distill = match state.phase {
-        TrainingPhase::BenchmarkGates => false,
-        TrainingPhase::BcWarmStart => state.should_advance_phase(),
-        TrainingPhase::OracleGuiding => false,
-        TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
-            distill_state.should_distill(distill_cfg, elapsed_secs)
-        }
-    };
-
-    MaintenancePlan {
-        should_rebase,
-        should_distill,
-        distill_warning: distill_state.should_warn(max_distill_kl_drift),
-        shallow_exit_enabled,
-        deep_exit_enabled,
-    }
+    maintenance_plan_from_inputs(OrchestratorPlanInputs {
+        phase: state.phase,
+        phase_progress: state.phase_progress(),
+        should_advance_phase: state.should_advance_phase(),
+        rebase_due: rebase_tracker.should_rebase(),
+        distill_due: distill_state.should_distill(distill_cfg, elapsed_secs),
+        distill_should_warn: distill_state.should_warn(max_distill_kl_drift),
+    })
 }
 
 pub fn live_exit_config_from_plan(plan: &MaintenancePlan) -> LiveExitConfig {

@@ -4,7 +4,7 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use hydra_train::amp::maybe_autocast;
 use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
-use hydra_train::model::HydraModel;
+use hydra_train::model::{HydraModel, HydraTrainModelExt};
 use hydra_train::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
     PROFILING_STAGE_LOSS,
@@ -144,7 +144,7 @@ where
         let output = {
             let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
@@ -202,7 +202,7 @@ where
         let output = {
             let _forward_scope = super::nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
@@ -360,7 +360,7 @@ where
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let output = maybe_autocast(use_amp, || {
-            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+            model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
         let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
@@ -405,7 +405,7 @@ where
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let output = maybe_autocast(use_amp, || {
-            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+            model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
         let breakdown = active_loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
@@ -586,7 +586,7 @@ mod tests {
             let (active_loss_fn, warmup_heads) =
                 gated_bc_context(Some(head_controller), loss_fn, &targets);
             let output =
-                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+                model.forward_with_warmup_train(obs.clone(), &active_loss_fn.config, &warmup_heads);
             let breakdown = active_loss_fn.total_loss(&output, &targets);
             let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
             let chunk_metric_sums = batch_metric_sums_from_outputs(
@@ -668,7 +668,7 @@ mod tests {
             let (active_loss_fn, warmup_heads) =
                 gated_bc_context(Some(head_controller), loss_fn, &targets);
             let output =
-                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+                model.forward_with_warmup_train(obs.clone(), &active_loss_fn.config, &warmup_heads);
             let breakdown = active_loss_fn.total_loss(&output, &targets);
             let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, bc_exit_cfg);
             step_batches.push(validation_batch_stats(

@@ -16,4 +16,4 @@ crate-type = ["rlib"]
 burn = { version = "0.20" }
 
 [dev-dependencies]
-burn = { version = "0.20", features = ["ndarray"] }
+burn = { version = "0.20", features = ["autodiff", "ndarray"] }

@@ -19,7 +19,7 @@ use hydra_train::data::pipeline::{
     stream_val_microbatches, stream_val_pass,
 };
 use hydra_train::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
-use hydra_train::model::HydraModelConfig;
+use hydra_train::model::{HydraModelConfig, HydraTrainModelExt};
 use hydra_train::selfplay::{
     CooperativeSelfPlayCoordinator, generate_self_play_batch_source,
     generate_self_play_batch_source_cooperative, generate_self_play_batch_source_cooperative_reuse,
@@ -242,7 +242,7 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
     });
     group.bench_function("candidate_forward_and_loss", |b| {
         b.iter(|| {
-            let output = valid.forward_with_warmup(bench_obs.clone(), &loss_fn.config, &[]);
+            let output = valid.forward_with_warmup_train(bench_obs.clone(), &loss_fn.config, &[]);
             let breakdown = loss_fn.total_loss(&output, &bench_targets);
             let total = bc_total_with_optional_exit_from_breakdown(
                 &output,
@@ -254,7 +254,7 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
         });
     });
     group.bench_function("candidate_metrics_only", |b| {
-        let output = valid.forward_with_warmup(bench_obs.clone(), &loss_fn.config, &[]);
+        let output = valid.forward_with_warmup_train(bench_obs.clone(), &loss_fn.config, &[]);
         let breakdown = loss_fn.total_loss(&output, &bench_targets);
         let total = bc_total_with_optional_exit_from_breakdown(
             &output,

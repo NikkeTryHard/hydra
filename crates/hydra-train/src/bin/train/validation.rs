@@ -11,9 +11,9 @@ use hydra_train::data::bc_shards::{
 };
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_microbatches};
 use hydra_train::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
-use hydra_train::model::HydraModel;
 #[cfg(test)]
 use hydra_train::model::HydraOutput;
+use hydra_train::model::{HydraModel, HydraTrainModelExt};
 use hydra_train::preflight::{
     PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
     PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
@@ -338,8 +338,11 @@ fn process_validation_batch<TB>(
     let candidate_started = Instant::now();
     let (output, breakdown, total) = {
         let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
-        let output =
-            model_valid.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads);
+        let output = model_valid.forward_with_warmup_train(
+            obs.clone(),
+            &active_loss_fn.config,
+            &warmup_heads,
+        );
         let breakdown = active_loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
             breakdown.total.clone(),

@@ -705,10 +705,11 @@ pub mod tests {
     #[test]
     fn test_zero_weight_advanced_heads_keep_baseline_losses_unchanged() {
         let device = Default::default();
+        use crate::model::HydraTrainModelExt;
         let model = HydraModelConfig::actor().init::<B>(&device);
         let x = Tensor::<B, 3>::zeros([2, crate::config::INPUT_CHANNELS, 34], &device);
         let outputs = model.forward(x.clone());
-        let optimized_outputs = model.forward_active(x, &HydraLossConfig::new());
+        let optimized_outputs = model.forward_active_train(x, &HydraLossConfig::new());
         let targets = make_dummy_targets::<B>(&device, 2);
         let loss_fn = HydraLoss::<B>::new(HydraLossConfig::new());
         let baseline = loss_fn.total_loss(&outputs, &targets);

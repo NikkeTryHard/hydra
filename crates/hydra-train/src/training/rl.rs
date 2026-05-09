@@ -4,7 +4,7 @@ use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
-use crate::model::HydraModel;
+use crate::model::{HydraModel, HydraTrainModelExt};
 use crate::training::ach::{AchConfig, ach_policy_loss};
 use crate::training::drda;
 use crate::training::head_gates::{
@@ -336,7 +336,7 @@ pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
         )]
         let mb_adv = advantages_normed.clone().slice([start..end]);
 
-        let output = m.forward_active(mb_batch.obs.clone(), &active_loss_fn.config);
+        let output = m.forward_active_train(mb_batch.obs.clone(), &active_loss_fn.config);
         let combined = drda::combined_logits(
             mb_batch.base_logits.clone(),
             output.policy_logits.clone(),
@@ -395,7 +395,7 @@ fn rl_microbatch_forward<B: AutodiffBackend>(
     request: RlFastPathRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    let output = model.forward_active(request.batch.obs.clone(), &request.loss_fn.config);
+    let output = model.forward_active_train(request.batch.obs.clone(), &request.loss_fn.config);
     let combined = drda::combined_logits(
         request.batch.base_logits.clone(),
         output.policy_logits.clone(),
@@ -1016,7 +1016,7 @@ mod tests {
                 reason = "Burn slice API expects a one-element range slice"
             )]
             let mb_adv = advantages_normed.clone().slice([start..end]);
-            let output = expected_model.forward_active(mb_batch.obs.clone(), &loss_fn.config);
+            let output = expected_model.forward_active_train(mb_batch.obs.clone(), &loss_fn.config);
             let combined = drda::combined_logits(
                 mb_batch.base_logits.clone(),
                 output.policy_logits.clone(),

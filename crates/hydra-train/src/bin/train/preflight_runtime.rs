@@ -15,7 +15,7 @@ use hydra_train::data::pipeline::{
     DataManifest, StreamingLoaderConfig, stream_train_epoch, stream_val_microbatches,
 };
 use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
-use hydra_train::model::{HydraModel, HydraModelConfig};
+use hydra_train::model::{HydraModel, HydraModelConfig, HydraTrainModelExt};
 #[cfg(test)]
 use hydra_train::preflight::ManifestCacheEntry;
 use hydra_train::preflight::{
@@ -1148,7 +1148,7 @@ where
                     let (active_loss_fn, warmup_heads) =
                         gated_bc_context(Some(&mut head_controller), &loss_fn, &targets);
                     let output =
-                        model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads);
+                        model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads);
                     let breakdown = active_loss_fn.total_loss(&output, &targets);
                     let total = hydra_train::training::bc::maybe_add_exit_loss(
                         breakdown.total.clone(),

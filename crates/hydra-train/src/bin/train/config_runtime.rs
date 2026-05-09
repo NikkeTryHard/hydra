@@ -30,7 +30,11 @@ pub(crate) fn parse_train_device(value: &str) -> Result<LibTorchDevice, String> 
 }
 
 pub(crate) fn train_device(config_device: &str) -> Result<LibTorchDevice, String> {
-    parse_train_device(config_device)
+    let value = match env::var("HYDRA_TRAIN_DEVICE") {
+        Ok(value) => value,
+        Err(_) => config_device.to_string(),
+    };
+    parse_train_device(&value)
 }
 
 pub(crate) fn device_label(config_device: &str) -> String {

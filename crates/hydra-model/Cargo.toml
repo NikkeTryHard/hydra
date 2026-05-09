@@ -17,4 +17,4 @@ hydra-core = { path = "../hydra-core" }
 burn = { version = "0.20", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-burn = { version = "0.20", features = ["ndarray"] }
+burn = { version = "0.20", features = ["autodiff", "ndarray", "tch"] }

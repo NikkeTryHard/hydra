@@ -3,6 +3,7 @@
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
 
+pub use hydra_train_types::phase::{PipelineState, TrainingPhase};
 pub const INPUT_CHANNELS: usize = NUM_CHANNELS;
 pub const TILE_DIM: usize = NUM_TILES;
 pub const HIDDEN_CHANNELS: usize = 256;
@@ -74,91 +75,6 @@ pub const ON_TURN_PARTICLES: usize = 128;
 pub const PONDER_BEAM_W: usize = 256;
 pub const PONDER_DEPTH: u8 = 10;
 pub const PONDER_PARTICLES: usize = 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum TrainingPhase {
-    BenchmarkGates,
-    BcWarmStart,
-    OracleGuiding,
-    DrdaAchSelfPlay,
-    ExitPondering,
-}
-
-impl TrainingPhase {
-    pub fn gpu_hours_budget(self) -> u32 {
-        match self {
-            Self::BenchmarkGates => 150,
-            Self::BcWarmStart => 50,
-            Self::OracleGuiding => 200,
-            Self::DrdaAchSelfPlay => 800,
-            Self::ExitPondering => 800,
-        }
-    }
-
-    pub fn cumulative_budget_before(self) -> u32 {
-        match self {
-            Self::BenchmarkGates => 0,
-            Self::BcWarmStart => Self::BenchmarkGates.gpu_hours_budget(),
-            Self::OracleGuiding => {
-                Self::BenchmarkGates.gpu_hours_budget() + Self::BcWarmStart.gpu_hours_budget()
-            }
-            Self::DrdaAchSelfPlay => {
-                Self::BenchmarkGates.gpu_hours_budget()
-                    + Self::BcWarmStart.gpu_hours_budget()
-                    + Self::OracleGuiding.gpu_hours_budget()
-            }
-            Self::ExitPondering => {
-                Self::BenchmarkGates.gpu_hours_budget()
-                    + Self::BcWarmStart.gpu_hours_budget()
-                    + Self::OracleGuiding.gpu_hours_budget()
-                    + Self::DrdaAchSelfPlay.gpu_hours_budget()
-            }
-        }
-    }
-
-    pub fn cumulative_budget_through(self) -> u32 {
-        self.cumulative_budget_before() + self.gpu_hours_budget()
-    }
-
-    pub fn exit_schedule_phase(self) -> u8 {
-        match self {
-            Self::BenchmarkGates | Self::BcWarmStart | Self::OracleGuiding => 1,
-            Self::DrdaAchSelfPlay => 2,
-            Self::ExitPondering => 3,
-        }
-    }
-
-    pub fn next(self) -> Option<Self> {
-        match self {
-            Self::BenchmarkGates => Some(Self::BcWarmStart),
-            Self::BcWarmStart => Some(Self::OracleGuiding),
-            Self::OracleGuiding => Some(Self::DrdaAchSelfPlay),
-            Self::DrdaAchSelfPlay => Some(Self::ExitPondering),
-            Self::ExitPondering => None,
-        }
-    }
-
-    pub fn uses_exit(self) -> bool {
-        matches!(self, Self::DrdaAchSelfPlay | Self::ExitPondering)
-    }
-
-    pub fn uses_oracle(self) -> bool {
-        matches!(
-            self,
-            Self::OracleGuiding | Self::DrdaAchSelfPlay | Self::ExitPondering
-        )
-    }
-
-    pub fn phase_index(self) -> u8 {
-        match self {
-            Self::BenchmarkGates => 0,
-            Self::BcWarmStart => 1,
-            Self::OracleGuiding => 2,
-            Self::DrdaAchSelfPlay => 3,
-            Self::ExitPondering => 4,
-        }
-    }
-}
 
 pub struct OracleGuidingConfig {
     pub dropout_start: f32,
@@ -256,100 +172,6 @@ pub fn validate_all_configs(
         .validate()
         .map_err(|e| format!("distill: {e}"))?;
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PipelineState {
-    pub phase: TrainingPhase,
-    pub gpu_hours_used: f32,
-    pub total_games: u64,
-    pub total_samples: u64,
-    pub learner_version: u32,
-    pub actor_version: u32,
-}
-
-impl Default for PipelineState {
-    fn default() -> Self {
-        Self {
-            phase: TrainingPhase::BenchmarkGates,
-            gpu_hours_used: 0.0,
-            total_games: 0,
-            total_samples: 0,
-            learner_version: 0,
-            actor_version: 0,
-        }
-    }
-}
-
-impl PipelineState {
-    pub fn advance_phase(&mut self) {
-        self.phase = match self.phase {
-            TrainingPhase::BenchmarkGates => TrainingPhase::BcWarmStart,
-            TrainingPhase::BcWarmStart => TrainingPhase::OracleGuiding,
-            TrainingPhase::OracleGuiding => TrainingPhase::DrdaAchSelfPlay,
-            TrainingPhase::DrdaAchSelfPlay => TrainingPhase::ExitPondering,
-            TrainingPhase::ExitPondering => TrainingPhase::ExitPondering,
-        };
-    }
-
-    pub fn remaining_budget(&self) -> f32 {
-        2000.0 - self.gpu_hours_used
-    }
-
-    pub fn total_budget() -> f32 {
-        2000.0
-    }
-
-    pub fn overall_progress(&self) -> f32 {
-        (self.gpu_hours_used / Self::total_budget()).min(1.0)
-    }
-
-    pub fn phase_progress(&self) -> f32 {
-        let budget = self.phase.gpu_hours_budget() as f32;
-        if budget == 0.0 {
-            return 0.0;
-        }
-        self.phase_hours_used() / budget
-    }
-
-    pub fn phase_hours_used(&self) -> f32 {
-        let phase_start = self.phase.cumulative_budget_before() as f32;
-        let phase_budget = self.phase.gpu_hours_budget() as f32;
-        (self.gpu_hours_used - phase_start).clamp(0.0, phase_budget)
-    }
-
-    pub fn increment_learner_version(&mut self) {
-        self.learner_version += 1;
-    }
-    pub fn increment_actor_version(&mut self) {
-        self.actor_version += 1;
-    }
-
-    pub fn record_game(&mut self, num_samples: usize) {
-        self.total_games += 1;
-        self.total_samples += num_samples as u64;
-    }
-
-    pub fn tick_gpu_hours(&mut self, hours: f32) {
-        self.gpu_hours_used += hours;
-    }
-
-    pub fn should_advance_phase(&self) -> bool {
-        self.gpu_hours_used >= self.phase.cumulative_budget_through() as f32
-    }
-
-    pub fn progress_summary(&self) -> String {
-        format!(
-            "phase={:?} phase_hours={:.1}/{} total_hours={:.1} games={} v{}->v{}",
-            self.phase,
-            self.phase_hours_used(),
-            self.phase.gpu_hours_budget(),
-            self.gpu_hours_used,
-            self.total_games,
-            self.learner_version,
-            self.actor_version
-        )
-    }
 }
 
 #[cfg(test)]

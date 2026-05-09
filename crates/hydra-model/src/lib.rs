@@ -10,5 +10,7 @@ pub mod amp;
 pub mod backbone;
 /// Model output head modules.
 pub mod heads;
+/// Full Hydra model and forward DTOs.
+pub mod model;
 /// Search-as-Feature adaptor modules.
 pub mod saf;

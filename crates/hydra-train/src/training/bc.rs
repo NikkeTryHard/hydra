@@ -4,7 +4,6 @@ use crate::amp::maybe_autocast;
 use crate::config::OracleGuidingConfig;
 use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_bc_owned};
 use crate::model::{HydraModel, HydraModelConfig};
-use crate::training::exit::exit_loss;
 use crate::training::head_gates::{
     AdvancedHead, HeadActivationController, borrow_or_extract_target_presence,
 };
@@ -14,6 +13,11 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
+pub use hydra_train_algo::bc::{
+    BcExitConfig, cosine_annealing_lr, maybe_add_exit_loss, oracle_guidance_mask_tensor,
+    oracle_guidance_mask_values, policy_agreement, policy_agreement_counts,
+    target_actions_from_policy_target, warmup_then_cosine_lr,
+};
 
 pub fn phase_learning_rate(
     phase: crate::config::TrainingPhase,
@@ -29,33 +33,6 @@ pub fn phase_learning_rate(
         TrainingPhase::BenchmarkGates => (2.5e-4, 2.5e-4),
     };
     cosine_annealing_lr(step, total_steps, lr_max, lr_min)
-}
-
-pub fn warmup_then_cosine_lr(
-    step: usize,
-    warmup_steps: usize,
-    total_steps: usize,
-    lr_max: f64,
-    lr_min: f64,
-) -> f64 {
-    if step < warmup_steps {
-        lr_max * (step as f64 / warmup_steps as f64)
-    } else {
-        cosine_annealing_lr(
-            step - warmup_steps,
-            total_steps - warmup_steps,
-            lr_max,
-            lr_min,
-        )
-    }
-}
-
-pub fn cosine_annealing_lr(step: usize, total_steps: usize, lr_max: f64, lr_min: f64) -> f64 {
-    if total_steps == 0 {
-        return lr_max;
-    }
-    let t = (step as f64 / total_steps as f64).min(1.0);
-    lr_min + 0.5 * (lr_max - lr_min) * (1.0 + (std::f64::consts::PI * t).cos())
 }
 
 #[derive(Config, Debug)]
@@ -133,17 +110,6 @@ pub struct OracleGuidingStepSchedule<'a> {
     pub total_steps: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct BcExitConfig {
-    pub exit_weight: f32,
-}
-
-impl Default for BcExitConfig {
-    fn default() -> Self {
-        Self { exit_weight: 0.0 }
-    }
-}
-
 pub fn bc_total_with_exit_from_breakdown<B: Backend>(
     output: &crate::model::HydraOutput<B>,
     batch: &MjaiBatch<B>,
@@ -159,26 +125,6 @@ pub fn bc_total_with_exit_from_breakdown<B: Backend>(
         exit_cfg,
     );
     total
-}
-
-pub fn maybe_add_exit_loss<B: Backend>(
-    total: Tensor<B, 1>,
-    policy_logits: Tensor<B, 2>,
-    exit_target: Option<&Tensor<B, 2>>,
-    exit_mask: Option<&Tensor<B, 2>>,
-    exit_cfg: &BcExitConfig,
-) -> Tensor<B, 1> {
-    if let (Some(exit_target), Some(exit_mask)) = (exit_target, exit_mask) {
-        total
-            + exit_loss(
-                policy_logits,
-                exit_target.clone(),
-                exit_mask.clone(),
-                exit_cfg.exit_weight,
-            )
-    } else {
-        total
-    }
 }
 
 pub fn bc_total_with_optional_exit_from_breakdown<B: Backend>(
@@ -230,42 +176,6 @@ pub fn gated_bc_context<B: Backend>(
     }
 }
 
-pub fn policy_agreement<B: Backend>(
-    logits: Tensor<B, 2>,
-    mask: Tensor<B, 2>,
-    targets: Tensor<B, 1, Int>,
-) -> f64 {
-    let (correct, total) = policy_agreement_counts(logits, mask, targets);
-    correct as f64 / total as f64
-}
-
-pub fn policy_agreement_counts<B: Backend>(
-    logits: Tensor<B, 2>,
-    mask: Tensor<B, 2>,
-    targets: Tensor<B, 1, Int>,
-) -> (usize, usize) {
-    let masked = logits + (mask.ones_like() - mask) * (-1e9f32);
-    let predicted = masked.argmax(1).squeeze_dim::<1>(1);
-    let correct = predicted.equal(targets);
-    let dims = correct.dims();
-    let total = dims[0];
-    let correct = correct
-        .into_data()
-        .convert::<i64>()
-        .as_slice::<i64>()
-        .expect("policy agreement correctness should be readable as i64")
-        .iter()
-        .map(|&value| value as usize)
-        .sum();
-    (correct, total)
-}
-
-pub fn target_actions_from_policy_target<B: Backend>(
-    policy_target: Tensor<B, 2>,
-) -> Tensor<B, 1, Int> {
-    policy_target.argmax(1).squeeze_dim::<1>(1)
-}
-
 pub fn bc_train_step<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch_input: BcTrainBatchInput<'_, B>,
@@ -292,29 +202,6 @@ pub fn bc_train_step<B: AutodiffBackend>(
     let grads = GradientsParams::from_grads(grads, &model);
     let model = optimizer.step(step_context.lr, model, grads);
     (model, loss_val)
-}
-
-pub fn oracle_guidance_mask_values(
-    batch_size: usize,
-    keep_prob: f32,
-    rng_values: &[f32],
-) -> Vec<f32> {
-    (0..batch_size)
-        .map(|idx| {
-            let sample = rng_values.get(idx).copied().unwrap_or(0.0);
-            if sample < keep_prob { 1.0 } else { 0.0 }
-        })
-        .collect()
-}
-
-pub fn oracle_guidance_mask_tensor<B: Backend>(
-    batch_size: usize,
-    keep_prob: f32,
-    rng_values: &[f32],
-    device: &B::Device,
-) -> Tensor<B, 1> {
-    let mask = oracle_guidance_mask_values(batch_size, keep_prob, rng_values);
-    Tensor::<B, 1>::from_floats(mask.as_slice(), device)
 }
 
 pub fn oracle_guiding_train_step<B: AutodiffBackend>(
@@ -643,12 +530,24 @@ mod tests {
     use burn::grad_clipping::GradientClippingConfig;
     use burn::optim::AdamConfig;
 
+    use std::time::{SystemTime, UNIX_EPOCH};
     type TestBackend = Autodiff<NdArray<f32>>;
 
     fn bc_optimizer() -> impl burn::optim::Optimizer<HydraModel<TestBackend>, TestBackend> {
         AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
             .init()
+    }
+
+    fn unique_checkpoint_base(label: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("hydra-{label}-{}-{nanos}", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn empty_batch(
@@ -1131,15 +1030,15 @@ mod tests {
             &device,
         );
         let out1 = model.forward(x.clone());
-        let path = "/tmp/hydra_test_ckpt";
+        let path = unique_checkpoint_base("test-ckpt");
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-        model.save_file(path, &recorder).expect("save failed");
+        model.save_file(&path, &recorder).expect("save failed");
         let loaded = HydraModelConfig::new(2)
             .with_hidden_channels(32)
             .with_se_bottleneck(8)
             .with_num_groups(4)
             .init::<NdArray<f32>>(&device)
-            .load_file(path, &recorder, &device)
+            .load_file(&path, &recorder, &device)
             .expect("load failed");
         let out2 = loaded.forward(x);
         let d1 = out1.policy_logits.to_data();

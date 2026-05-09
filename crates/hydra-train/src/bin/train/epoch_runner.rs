@@ -18,7 +18,7 @@ use hydra_train::data::bc_shards::{
 };
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
 use hydra_train::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
-use hydra_train::model::HydraModel;
+use hydra_train::model::{HydraModel, HydraTrainModelExt};
 use hydra_train::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,
     PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
@@ -633,7 +633,7 @@ where
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing_fallback.forward_seconds += t.elapsed().as_secs_f64();
@@ -2334,7 +2334,7 @@ where
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
@@ -2396,7 +2396,11 @@ where
             let output = {
                 let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
                 maybe_autocast(use_amp, || {
-                    model.forward_with_warmup(obs_chunk, &active_loss_fn.config, &warmup_heads)
+                    model.forward_with_warmup_train(
+                        obs_chunk,
+                        &active_loss_fn.config,
+                        &warmup_heads,
+                    )
                 })
             };
             sub_timing.forward_seconds += t.elapsed().as_secs_f64();
@@ -2579,7 +2583,7 @@ where
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
-                model.forward_with_warmup(obs.clone(), &active_loss_fn.config, &warmup_heads)
+                model.forward_with_warmup_train(obs.clone(), &active_loss_fn.config, &warmup_heads)
             })
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
@@ -2636,7 +2640,11 @@ where
             let output = {
                 let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
                 maybe_autocast(use_amp, || {
-                    model.forward_with_warmup(obs_chunk, &active_loss_fn.config, &warmup_heads)
+                    model.forward_with_warmup_train(
+                        obs_chunk,
+                        &active_loss_fn.config,
+                        &warmup_heads,
+                    )
                 })
             };
             sub_timing.forward_seconds += t.elapsed().as_secs_f64();
@@ -2723,7 +2731,7 @@ where
     let output = {
         let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
         maybe_autocast(use_amp, || {
-            model.forward_with_warmup(obs, &active_loss_fn.config, &warmup_heads)
+            model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         })
     };
     sub_timing.forward_seconds += t.elapsed().as_secs_f64();
