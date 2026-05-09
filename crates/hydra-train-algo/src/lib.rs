@@ -4,3 +4,4 @@ pub mod ach;
 pub mod distill;
 pub mod drda;
 pub mod gae;
+pub mod losses;

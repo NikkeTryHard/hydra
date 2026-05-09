@@ -3322,6 +3322,10 @@ dependencies = [
 [[package]]
 name = "hydra-train-types"
 version = "0.1.0"
+dependencies = [
+ "burn",
+ "serde",
+]
 
 [[package]]
 name = "hyper"

@@ -1,0 +1,371 @@
+//! Tensor target and scalar loss configuration types shared by training crates.
+//!
+//! This module owns the target batch container and loss-weight configuration
+//! without depending on `hydra-train` models, loss functions, or training
+//! orchestration. Keeping these types below `hydra-train` lets callers share
+//! target/config contracts without creating dependency cycles.
+
+use burn::prelude::*;
+
+use crate::head_gates::TargetPresence;
+
+/// Batched supervised targets consumed by Hydra loss functions.
+///
+/// All tensor fields are batched on dimension 0. Optional advanced-head targets
+/// are present only when the batch carries labels for that head. When present,
+/// masks use positive values to mark valid per-sample or per-action labels.
+#[derive(Clone)]
+pub struct HydraTargets<B: Backend> {
+    /// Policy target distribution over legal actions, shape `[batch, 46]`.
+    pub policy_target: Tensor<B, 2>,
+    /// Legal action mask, shape `[batch, 46]`.
+    pub legal_mask: Tensor<B, 2>,
+    /// Scalar value target, shape `[batch]`.
+    pub value_target: Tensor<B, 1>,
+    /// GRP class target, shape `[batch, classes]`.
+    pub grp_target: Tensor<B, 2>,
+    /// Tenpai target, shape `[batch, classes]`.
+    pub tenpai_target: Tensor<B, 2>,
+    /// Danger target, shape `[batch, players, tiles]`.
+    pub danger_target: Tensor<B, 3>,
+    /// Danger target mask, shape `[batch, players, tiles]`.
+    pub danger_mask: Tensor<B, 3>,
+    /// Opponent next-discard target, shape `[batch, opponents, tiles]`.
+    pub opp_next_target: Tensor<B, 3>,
+    /// Score PDF target, shape `[batch, buckets]`.
+    pub score_pdf_target: Tensor<B, 2>,
+    /// Score CDF target, shape `[batch, buckets]`.
+    pub score_cdf_target: Tensor<B, 2>,
+    /// Optional oracle critic target, shape `[batch, players]`.
+    pub oracle_target: Option<Tensor<B, 2>>,
+    /// Optional belief-field target, shape `[batch, fields, values]`.
+    pub belief_fields_target: Option<Tensor<B, 3>>,
+    /// Optional per-sample belief-field mask, shape `[batch]`.
+    pub belief_fields_mask: Option<Tensor<B, 1>>,
+    /// Optional mixture-weight target, shape `[batch, classes]`.
+    pub mixture_weight_target: Option<Tensor<B, 2>>,
+    /// Optional per-sample mixture-weight mask, shape `[batch]`.
+    pub mixture_weight_mask: Option<Tensor<B, 1>>,
+    /// Optional opponent hand-type target, shape `[batch, classes]`.
+    pub opponent_hand_type_target: Option<Tensor<B, 2>>,
+    /// Optional delta-Q target, shape `[batch, actions]`.
+    pub delta_q_target: Option<Tensor<B, 2>>,
+    /// Optional delta-Q action mask, shape `[batch, actions]`.
+    pub delta_q_mask: Option<Tensor<B, 2>>,
+    /// Optional safety residual target, shape `[batch, actions]`.
+    pub safety_residual_target: Option<Tensor<B, 2>>,
+    /// Optional safety residual action mask, shape `[batch, actions]`.
+    pub safety_residual_mask: Option<Tensor<B, 2>>,
+    /// Optional per-sample oracle-guidance mask, shape `[batch]`.
+    pub oracle_guidance_mask: Option<Tensor<B, 1>>,
+    /// Optional cached target-presence metadata for head activation gates.
+    pub target_presence: Option<TargetPresence>,
+}
+
+impl<B: Backend> HydraTargets<B> {
+    /// Slice all target tensors along the batch dimension (dim 0).
+    ///
+    /// Produces a sub-batch covering `[start..end)`. Used by microbatch
+    /// accumulation to split a full RL batch into VRAM-friendly chunks.
+    #[allow(
+        clippy::single_range_in_vec_init,
+        reason = "Burn slice API expects a one-element range slice"
+    )]
+    pub fn slice_batch(&self, start: usize, end: usize) -> Self {
+        let r1 = [start..end];
+        let r2 = [start..end];
+        let r3 = [start..end];
+        Self {
+            policy_target: self.policy_target.clone().slice(r1.clone()),
+            legal_mask: self.legal_mask.clone().slice(r1.clone()),
+            value_target: self.value_target.clone().slice(r2.clone()),
+            grp_target: self.grp_target.clone().slice(r1.clone()),
+            tenpai_target: self.tenpai_target.clone().slice(r1.clone()),
+            danger_target: self.danger_target.clone().slice(r3.clone()),
+            danger_mask: self.danger_mask.clone().slice(r3.clone()),
+            opp_next_target: self.opp_next_target.clone().slice(r3.clone()),
+            score_pdf_target: self.score_pdf_target.clone().slice(r1.clone()),
+            score_cdf_target: self.score_cdf_target.clone().slice(r1.clone()),
+            oracle_target: self
+                .oracle_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            belief_fields_target: self
+                .belief_fields_target
+                .as_ref()
+                .map(|t| t.clone().slice(r3.clone())),
+            belief_fields_mask: self
+                .belief_fields_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r2.clone())),
+            mixture_weight_target: self
+                .mixture_weight_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            mixture_weight_mask: self
+                .mixture_weight_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r2.clone())),
+            opponent_hand_type_target: self
+                .opponent_hand_type_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            delta_q_target: self
+                .delta_q_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            delta_q_mask: self
+                .delta_q_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            safety_residual_target: self
+                .safety_residual_target
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            safety_residual_mask: self
+                .safety_residual_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r1.clone())),
+            oracle_guidance_mask: self
+                .oracle_guidance_mask
+                .as_ref()
+                .map(|t| t.clone().slice(r2)),
+            target_presence: None,
+        }
+    }
+}
+
+/// Loss-weight configuration for Hydra's baseline and advanced heads.
+///
+/// Advanced heads default to zero and are intended to be enabled by explicit
+/// configuration or by the head-gate controller once density/interference gates
+/// pass. The generated `Config` builder API preserves the historical
+/// `HydraLossConfig::new().with_w_*` call pattern.
+#[derive(Config, Debug)]
+pub struct HydraLossConfig {
+    /// Policy cross-entropy weight.
+    #[config(default = "1.0")]
+    pub w_pi: f32,
+    /// Value MSE weight.
+    #[config(default = "0.5")]
+    pub w_v: f32,
+    /// GRP classification weight.
+    #[config(default = "0.2")]
+    pub w_grp: f32,
+    /// Tenpai prediction weight.
+    #[config(default = "0.1")]
+    pub w_tenpai: f32,
+    /// Tile danger prediction weight.
+    #[config(default = "0.1")]
+    pub w_danger: f32,
+    /// Opponent next-discard prediction weight.
+    #[config(default = "0.1")]
+    pub w_opp: f32,
+    /// Score distribution weight, applied to both PDF and CDF losses.
+    #[config(default = "0.025")]
+    pub w_score: f32,
+    /// Oracle critic advanced-head weight.
+    #[config(default = "0.0")]
+    pub w_oracle_critic: f32,
+    /// Belief-fields advanced-head weight.
+    #[config(default = "0.0")]
+    pub w_belief_fields: f32,
+    /// Mixture-weight advanced-head weight.
+    #[config(default = "0.0")]
+    pub w_mixture_weight: f32,
+    /// Opponent hand-type advanced-head weight.
+    #[config(default = "0.0")]
+    pub w_opponent_hand_type: f32,
+    /// Delta-Q advanced-head weight.
+    #[config(default = "0.0")]
+    pub w_delta_q: f32,
+    /// Safety-residual advanced-head weight.
+    #[config(default = "0.0")]
+    pub w_safety_residual: f32,
+}
+
+impl HydraLossConfig {
+    /// Returns the total configured scalar weight across all loss components.
+    pub fn total_weight(&self) -> f32 {
+        self.w_pi
+            + self.w_v
+            + self.w_grp
+            + self.w_tenpai
+            + self.w_danger
+            + self.w_opp
+            + self.w_score * 2.0
+            + self.w_oracle_critic
+            + self.w_belief_fields
+            + self.w_mixture_weight
+            + self.w_opponent_hand_type
+            + self.w_delta_q
+            + self.w_safety_residual
+    }
+
+    /// Returns a copy with every loss weight multiplied by `factor`.
+    pub fn scale_all(&self, factor: f32) -> Self {
+        Self::new()
+            .with_w_pi(self.w_pi * factor)
+            .with_w_v(self.w_v * factor)
+            .with_w_grp(self.w_grp * factor)
+            .with_w_tenpai(self.w_tenpai * factor)
+            .with_w_danger(self.w_danger * factor)
+            .with_w_opp(self.w_opp * factor)
+            .with_w_score(self.w_score * factor)
+            .with_w_oracle_critic(self.w_oracle_critic * factor)
+            .with_w_belief_fields(self.w_belief_fields * factor)
+            .with_w_mixture_weight(self.w_mixture_weight * factor)
+            .with_w_opponent_hand_type(self.w_opponent_hand_type * factor)
+            .with_w_delta_q(self.w_delta_q * factor)
+            .with_w_safety_residual(self.w_safety_residual * factor)
+    }
+
+    /// Returns a compact human-readable summary of core loss weights.
+    pub fn summary(&self) -> String {
+        format!(
+            "loss(pi={:.1}, v={:.1}, grp={:.1})",
+            self.w_pi, self.w_v, self.w_grp
+        )
+    }
+
+    /// Validates that every configured loss weight is non-negative.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.w_pi < 0.0
+            || self.w_v < 0.0
+            || self.w_grp < 0.0
+            || self.w_tenpai < 0.0
+            || self.w_danger < 0.0
+            || self.w_opp < 0.0
+            || self.w_score < 0.0
+            || self.w_oracle_critic < 0.0
+            || self.w_belief_fields < 0.0
+            || self.w_mixture_weight < 0.0
+            || self.w_opponent_hand_type < 0.0
+            || self.w_delta_q < 0.0
+            || self.w_safety_residual < 0.0
+        {
+            return Err("loss weights must be non-negative");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::NdArray;
+
+    type B = NdArray<f32>;
+
+    fn onehot2d<B: Backend>(
+        device: &B::Device,
+        batch: usize,
+        classes: usize,
+        idx: usize,
+    ) -> Tensor<B, 2> {
+        let mut d = vec![0.0f32; batch * classes];
+        for i in 0..batch {
+            d[i * classes + idx] = 1.0;
+        }
+        Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, classes])
+    }
+
+    fn onehot3d<B: Backend>(
+        device: &B::Device,
+        batch: usize,
+        c1: usize,
+        c2: usize,
+    ) -> Tensor<B, 3> {
+        let mut d = vec![0.0f32; batch * c1 * c2];
+        for i in 0..(batch * c1) {
+            d[i * c2] = 1.0;
+        }
+        Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, c1, c2])
+    }
+
+    fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
+        HydraTargets {
+            policy_target: onehot2d(device, batch, 46, 0),
+            legal_mask: Tensor::ones([batch, 46], device),
+            value_target: Tensor::zeros([batch], device),
+            grp_target: onehot2d(device, batch, 24, 0),
+            tenpai_target: Tensor::zeros([batch, 3], device),
+            danger_target: Tensor::zeros([batch, 3, 34], device),
+            danger_mask: Tensor::ones([batch, 3, 34], device),
+            opp_next_target: onehot3d(device, batch, 3, 34),
+            score_pdf_target: onehot2d(device, batch, 64, 32),
+            score_cdf_target: Tensor::zeros([batch, 64], device),
+            oracle_target: None,
+            belief_fields_target: None,
+            belief_fields_mask: None,
+            mixture_weight_target: None,
+            mixture_weight_mask: None,
+            opponent_hand_type_target: None,
+            delta_q_target: None,
+            delta_q_mask: None,
+            safety_residual_target: None,
+            safety_residual_mask: None,
+            oracle_guidance_mask: None,
+            target_presence: None,
+        }
+    }
+
+    #[test]
+    fn default_weights_match_roadmap() {
+        let cfg = HydraLossConfig::new();
+        assert!((cfg.w_pi - 1.0).abs() < 1e-6);
+        assert!((cfg.w_v - 0.5).abs() < 1e-6);
+        assert!((cfg.w_grp - 0.2).abs() < 1e-6);
+        assert!((cfg.w_tenpai - 0.1).abs() < 1e-6);
+        assert!((cfg.w_danger - 0.1).abs() < 1e-6);
+        assert!((cfg.w_opp - 0.1).abs() < 1e-6);
+        assert!((cfg.w_score - 0.025).abs() < 1e-6);
+        assert!((cfg.w_oracle_critic - 0.0).abs() < 1e-6);
+        assert!((cfg.w_belief_fields - 0.0).abs() < 1e-6);
+        assert!((cfg.w_mixture_weight - 0.0).abs() < 1e-6);
+        assert!((cfg.w_opponent_hand_type - 0.0).abs() < 1e-6);
+        assert!((cfg.w_delta_q - 0.0).abs() < 1e-6);
+        assert!((cfg.w_safety_residual - 0.0).abs() < 1e-6);
+        assert!((cfg.total_weight() - 2.05).abs() < 1e-4);
+    }
+
+    #[test]
+    fn validate_rejects_negative_primary_weights() {
+        assert!(
+            HydraLossConfig::new()
+                .with_w_tenpai(-0.1)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            HydraLossConfig::new()
+                .with_w_danger(-0.1)
+                .validate()
+                .is_err()
+        );
+        assert!(HydraLossConfig::new().with_w_opp(-0.1).validate().is_err());
+        assert!(
+            HydraLossConfig::new()
+                .with_w_score(-0.1)
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn slice_batch_clears_cached_target_presence() {
+        let device = Default::default();
+        let mut targets = make_dummy_targets::<B>(&device, 4);
+        targets.target_presence = Some(TargetPresence {
+            counts: [1, 2, 3, 4, 5, 6],
+            delta_q_actions_present: 7,
+            batch_size: 4,
+        });
+
+        let sliced = targets.slice_batch(1, 3);
+        assert!(
+            sliced.target_presence.is_none(),
+            "sliced targets must drop cached full-batch presence metadata"
+        );
+    }
+}
