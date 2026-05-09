@@ -58,7 +58,7 @@ Tooling rules:
 - Recommended Linux setup on `x86_64-unknown-linux-gnu`: `clang` + `mold` + `scripts/rustc-wrapper.sh`
 - `scripts/rustc-wrapper.sh` uses `sccache` if available, else falls back to `rustc`
 - Prefer `uv` / `uv tool` for Python CLIs and one-off tooling; avoid repo-local virtualenvs unless task explicitly needs one
-- Keep generated/runtime-heavy artifacts out of normal commits unless intentionally refreshing them (`target/`, `output/`, local notebooks payloads, transient graphify scratch files)
+- Keep generated/runtime-heavy artifacts out of normal commits unless intentionally refreshing them (`target/`, `output/`, local notebooks payloads)
 
 ## Critical runtime and execution invariants
 
@@ -109,23 +109,3 @@ Markdown compression:
 |- Do not keep `*.original.md` backup files in repo. Rust `caveman-rs` compressor overwrites atomically without original backups.
 |- Pre-commit hook runs `scripts/caveman-compress-hook.sh` on staged Markdown and refuses staged `*.original.md`.
 |- If compression fails validation, leave source unchanged and report exact failure. No bluff.
-
-## graphify
-
-Graphify = map, not evidence. Search/LSP = scalpel for concrete edits.
-
-Current repo graph:
-- Built with `graphifyy 0.7.7` from uv tool install at `~/.local/share/uv/tools/graphifyy/bin/python`.
-- Latest observed graph report: `graphify-out/GRAPH_REPORT.md` from 2026-05-05, 5,738 nodes, 11,737 edges, 269 communities.
-- Agent-crawlable wiki exists at `graphify-out/wiki/index.md` (194 markdown files generated with `graphify.wiki.to_wiki`).
-- `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, `graphify-out/manifest.json`, and `graphify-out/wiki/` are durable graph artifacts. `.graphify_*` root scratch files are legacy/transient.
-
-Rules:
-- Broad architecture/corpus question: read `graphify-out/wiki/index.md` or `graphify-out/GRAPH_REPORT.md` first if present.
-- Concrete implementation/debugging: prefer search/LSP; use graphify only to orient scope.
-- Do not run semantic graphify extraction unless explicitly requested or cross-document synthesis requires it.
-- After code edits, prefer AST-only/repo-local safe rebuild when graph freshness is required: use recorded `PYTHON` and `from graphify.watch import _rebuild_code; _rebuild_code(Path('.'))`.
-- Prefer graphify and targeted docs over keeping large static repo maps in this file.
-- Use recorded interpreter when present: `PYTHON=$(python3 -c "from pathlib import Path; print(Path('graphify-out/.graphify_python').read_text().strip())")`.
-- If interpreter missing/stale, restore via uv: `uv tool install graphifyy` or `uv tool upgrade graphifyy`, then write `graphify-out/.graphify_python` to `~/.local/share/uv/tools/graphifyy/bin/python`.
-- For full graph refreshes, prefer latest graphify skill instructions and uv-managed graphify over system `pip`; keep OMP-specific task/subagent rules from `~/.omp/agent/skills/graphify/SKILL.md`.

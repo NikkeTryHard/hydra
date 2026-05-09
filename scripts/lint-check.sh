@@ -54,28 +54,28 @@ anti_game_scan() {
 
   printf '\n[hydra lint] anti-game scan\n'
 
-  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!graphify-out/**' --glob '!research/agent_handoffs/**' \
+  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!research/agent_handoffs/**' \
     '(^|[^[:alnum:]_])RUSTFLAGS=.*(^|[[:space:]])(-A|--allow)([[:space:]]|=)|cargo[[:space:]]+clippy[^\n]*--[^\n]*(^|[[:space:]])(-A|--allow)([[:space:]]|=)|CLIPPY_ARGS=.*(^|[[:space:]])(-A|--allow)([[:space:]]|=)' \
     .; then
     printf '\n[hydra lint] found command-line lint suppression\n' >&2
     failed=1
   fi
 
-  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!graphify-out/**' --glob '!research/agent_handoffs/**' \
+  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!research/agent_handoffs/**' \
     '#!?\[allow\((warnings|clippy::all|clippy::correctness|clippy::suspicious|clippy::complexity|clippy::perf|clippy::style|clippy::pedantic|clippy::restriction|clippy::nursery|clippy::cargo)\)\]' \
     .; then
     printf '\n[hydra lint] found blanket lint allow attribute\n' >&2
     failed=1
   fi
 
-  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!graphify-out/**' --glob '!research/agent_handoffs/**' \
+  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!research/agent_handoffs/**' \
     'clippy[[:space:]]*::[[:space:]]*allow_attributes_without_reason[[:space:]]*=[[:space:]]*"allow"|allow_attributes_without_reason[[:space:]]*=[[:space:]]*"allow"' \
     .; then
     printf '\n[hydra lint] found attempt to disable allow-reason enforcement\n' >&2
     failed=1
   fi
 
-  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!graphify-out/**' --glob '!research/agent_handoffs/**' \
+  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!research/agent_handoffs/**' \
     '#!?\[allow\([^\]]*\)\]' \
     crates scripts; then
     printf '\n[hydra lint] allow attributes above are permitted only when narrow and justified; clippy enforces reason text\n'
