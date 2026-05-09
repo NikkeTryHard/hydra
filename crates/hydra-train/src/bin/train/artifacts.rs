@@ -8,9 +8,7 @@ use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder,
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use tboard::EventWriter;
 
-use hydra_train::data::pipeline::{
-    DataManifest, SourceFilterConfig, scan_data_sources_with_progress,
-};
+use hydra_train::data::pipeline::{DataManifest, scan_data_sources_with_progress};
 use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
@@ -333,12 +331,8 @@ pub(crate) fn scan_and_write_manifest_cache(
     progress: Option<&indicatif::ProgressBar>,
     scan_error_context: &str,
 ) -> Result<DataManifest, String> {
-    let train_source_filters = SourceFilterConfig {
-        include_source_patterns: source_filters.include_source_patterns.clone(),
-        exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
-    };
     let manifest =
-        scan_data_sources_with_progress(data_dir, train_fraction, &train_source_filters, progress)
+        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
             .map_err(|err| {
                 format!(
                     "failed to scan {scan_error_context} from {}: {err}",

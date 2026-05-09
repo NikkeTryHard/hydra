@@ -3195,6 +3195,7 @@ name = "hydra-data-core"
 version = "0.1.0"
 dependencies = [
  "hydra-core",
+ "serde",
 ]
 
 [[package]]
@@ -3347,11 +3348,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hydra-train-exec"
+version = "0.1.0"
+dependencies = [
+ "hydra-train-runtime",
+]
+
+[[package]]
 name = "hydra-train-runtime"
 version = "0.1.0"
 dependencies = [
  "burn",
  "cc",
+ "hydra-data-core",
  "hydra-model",
  "hydra-train-algo",
  "hydra-train-types",

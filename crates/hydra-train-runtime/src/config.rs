@@ -3,21 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::preflight::{PreflightConfig, ProbeKind};
+pub use hydra_data_core::SourceFilterConfig;
 use hydra_train_types::phase::TrainingPhase as PipelineTrainingPhase;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
-pub struct SourceFilterConfig {
-    #[serde(default)]
-    pub include_source_patterns: Vec<String>,
-    #[serde(default)]
-    pub exclude_source_patterns: Vec<String>,
-}
-
-impl SourceFilterConfig {
-    pub fn is_empty(&self) -> bool {
-        self.include_source_patterns.is_empty() && self.exclude_source_patterns.is_empty()
-    }
-}
 
 pub use super::config_runtime::{
     configure_threads, default_num_threads_for_system, device_label, display_num_threads,

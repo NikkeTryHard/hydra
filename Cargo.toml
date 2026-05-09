@@ -18,6 +18,7 @@ members = [
     "crates/hydra-selfplay",
     "crates/hydra-search-labels",
     "crates/hydra-train-runtime",
+    "crates/hydra-train-exec",
     "crates/hydra-train",
 ]
 

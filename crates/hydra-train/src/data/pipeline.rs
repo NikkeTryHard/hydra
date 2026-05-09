@@ -7,6 +7,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 
 use burn::prelude::*;
+pub use hydra_data_core::{DataManifest, DataSource, GameLocator, SourceFilterConfig};
 use indicatif::ProgressBar;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
@@ -35,13 +36,6 @@ use crate::training::replay_exit::ExitSidecarIndex;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 const MJAI_ARCHIVE_QUEUE_BOUND: usize = 128;
-
-/// Identifies a game's location for deterministic train/val splitting.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GameLocator {
-    /// For loose files: filename. For archive entries: "archive_name/entry_name"
-    pub identity: String,
-}
 
 /// Configuration for the streaming loader.
 #[derive(Debug, Clone)]
@@ -106,40 +100,6 @@ impl StreamingLoaderConfig {
             self.replay_target_profile
         }
     }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
-pub struct SourceFilterConfig {
-    #[serde(default)]
-    pub include_source_patterns: Vec<String>,
-    #[serde(default)]
-    pub exclude_source_patterns: Vec<String>,
-}
-
-impl SourceFilterConfig {
-    pub fn is_empty(&self) -> bool {
-        self.include_source_patterns.is_empty() && self.exclude_source_patterns.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct DataManifest {
-    pub sources: Vec<DataSource>,
-    pub total_games: usize,
-    pub train_count: usize,
-    pub val_count: usize,
-    pub counts_exact: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub enum DataSource {
-    Archive(PathBuf),
-    LooseFile(PathBuf),
-    ParsedSampleCache {
-        path: PathBuf,
-        original_identity: String,
-        original_source_path: PathBuf,
-    },
 }
 
 #[derive(Clone, Copy)]
@@ -681,7 +641,7 @@ fn source_matches_filters(source: &DataSource, filters: &SourceFilterConfig) -> 
             original_source_path,
             ..
         } => original_source_path.to_string_lossy(),
-        _ => data_source_path(source).to_string_lossy(),
+        _ => source.path().to_string_lossy(),
     };
     let included = filters.include_source_patterns.is_empty()
         || filters
@@ -774,7 +734,7 @@ fn scan_data_sources_with_fraction(
 fn scan_directory_sources(dir: &Path) -> io::Result<Vec<DataSource>> {
     let mut sources = Vec::new();
     scan_directory_sources_recursive(dir, &mut sources)?;
-    sources.sort_by(|a, b| data_source_path(a).cmp(data_source_path(b)));
+    sources.sort_by(|a, b| a.path().cmp(b.path()));
     Ok(sources)
 }
 
@@ -796,13 +756,6 @@ fn scan_directory_sources_recursive(dir: &Path, sources: &mut Vec<DataSource>) -
         }
     }
     Ok(())
-}
-
-fn data_source_path(source: &DataSource) -> &Path {
-    match source {
-        DataSource::Archive(path) | DataSource::LooseFile(path) => path.as_path(),
-        DataSource::ParsedSampleCache { path, .. } => path.as_path(),
-    }
 }
 
 fn data_source_for_cache_path(path: &Path) -> io::Result<DataSource> {

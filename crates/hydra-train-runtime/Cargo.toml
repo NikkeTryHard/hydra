@@ -14,6 +14,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hydra-model = { path = "../hydra-model" }
+hydra-data-core = { path = "../hydra-data-core" }
 hydra-train-types = { path = "../hydra-train-types" }
 hydra-train-algo = { path = "../hydra-train-algo" }
 burn = { version = "0.20", features = ["train", "tch"] }

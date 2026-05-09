@@ -337,10 +337,7 @@ where
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: false,
-        source_filters: hydra_train::data::pipeline::SourceFilterConfig {
-            include_source_patterns: config.source_filters.include_source_patterns.clone(),
-            exclude_source_patterns: config.source_filters.exclude_source_patterns.clone(),
-        },
+        source_filters: config.source_filters.clone(),
         replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
         exit_sidecar,
         exit_sidecar_source_net_hash: None,

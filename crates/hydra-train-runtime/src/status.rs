@@ -7,6 +7,15 @@ pub trait EpochProgressManifest {
     /// Whether manifest counts are exact enough for projection.
     fn counts_exact(&self) -> bool;
 }
+impl EpochProgressManifest for hydra_data_core::DataManifest {
+    fn train_count(&self) -> usize {
+        self.train_count
+    }
+
+    fn counts_exact(&self) -> bool {
+        self.counts_exact
+    }
+}
 
 /// Estimated progress through one training epoch.
 #[derive(Clone, Copy, Debug, PartialEq)]
