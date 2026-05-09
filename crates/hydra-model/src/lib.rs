@@ -10,6 +10,8 @@ pub mod amp;
 pub mod backbone;
 /// Model output head modules.
 pub mod heads;
+/// Inference server and policy-selection utilities.
+pub mod inference;
 /// Full Hydra model and forward DTOs.
 pub mod model;
 /// Search-as-Feature adaptor modules.

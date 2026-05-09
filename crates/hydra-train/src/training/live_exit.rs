@@ -23,12 +23,12 @@ use riichienv_core::observation::Observation;
 use riichienv_core::observation_ref::ObservationRef;
 use riichienv_core::state::GameState;
 
-use crate::selfplay::StepRecord;
 use crate::training::exit::{
     ExitConfig, MIN_EXIT_AVG_ROOT_VISITS_PER_LEGAL_DISCARD, build_delta_q_from_afbs_tree,
     build_exit_from_afbs_tree, compatible_discard_state, is_hard_state,
 };
 
+pub use hydra_train_types::selfplay::{RootDecisionContext, StepRecord};
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TrajectorySearchLabels {
     pub exit: Option<TrajectoryExitLabel>,
@@ -178,30 +178,6 @@ pub fn base_pi_from_logits(step: &StepRecord) -> [f32; HYDRA_ACTION_SPACE] {
 pub fn budget_from_legal_count(cfg: &ExitConfig, n_legal: usize) -> u32 {
     cfg.min_visits
         .max((MIN_EXIT_AVG_ROOT_VISITS_PER_LEGAL_DISCARD * n_legal as f32).ceil() as u32)
-}
-
-/// Minimal root-decision context required by the ExIt producer.
-///
-/// This keeps the canonical teacher-building logic reusable across live and
-/// future offline producer paths without forcing those paths to construct a
-/// full [`StepRecord`].
-#[derive(Clone, Copy, Debug)]
-pub struct RootDecisionContext {
-    pub obs_encoded: [f32; OBS_SIZE],
-    pub legal_mask: [bool; HYDRA_ACTION_SPACE],
-    pub policy_logits: [f32; HYDRA_ACTION_SPACE],
-    pub player_id: u8,
-}
-
-impl RootDecisionContext {
-    pub fn from_step(step: &StepRecord) -> Self {
-        Self {
-            obs_encoded: step.obs,
-            legal_mask: step.legal_mask,
-            policy_logits: step.policy_logits,
-            player_id: step.player_id,
-        }
-    }
 }
 
 /// Seeds all legal discard children onto an AFBS tree root node.

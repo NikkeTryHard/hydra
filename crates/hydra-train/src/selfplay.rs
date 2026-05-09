@@ -29,9 +29,9 @@ use crate::training::exit::{
 };
 use crate::training::gae::GaeConfig;
 use crate::training::live_exit::{
-    ExitSearchAdapter, LiveExitConfig, RootDecisionContext, SelfPlayExitAdapter,
-    TrajectorySearchLabels, base_pi_from_logits, budget_from_legal_count, legal_discard_actions,
-    make_live_exit_fn, seed_root_children_all_legal,
+    ExitSearchAdapter, LiveExitConfig, SelfPlayExitAdapter, TrajectorySearchLabels,
+    base_pi_from_logits, budget_from_legal_count, legal_discard_actions, make_live_exit_fn,
+    seed_root_children_all_legal,
 };
 use crate::training::rl::RlBatch;
 use cooperative_state::{
@@ -40,6 +40,7 @@ use cooperative_state::{
 };
 
 pub use crate::selfplay_batch::{default_gae_config, trajectories_to_rl_batch};
+pub use hydra_train_types::selfplay::{RootDecisionContext, StepRecord};
 
 const DEFAULT_GAME_MODE: u8 = 0;
 #[cfg(not(test))]
@@ -66,16 +67,6 @@ where
     trajectory: &'a mut Trajectory,
     infer_fn: &'a mut F,
     chosen_actions: &'a mut [Option<Action>; 4],
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct StepRecord {
-    pub obs: [f32; OBS_SIZE],
-    pub action: u8,
-    pub policy_logits: [f32; HYDRA_ACTION_SPACE],
-    pub pi_old: [f32; HYDRA_ACTION_SPACE],
-    pub legal_mask: [bool; HYDRA_ACTION_SPACE],
-    pub player_id: u8,
 }
 
 pub struct NnActionSelector {
