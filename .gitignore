@@ -13,13 +13,10 @@ __pycache__/
 *.pyc
 .tmp_archive_claims/
 
-# Generated graphify artifacts are local-only navigation/cache outputs.
-/graphify-out/
-/.graphify_*
-/graph.html
-/graph.svg
-/graph.graphml
-/cypher.txt
+# OMP session dumps may contain sensitive transcript/tool data.
+/omp-session-*.html
+
+
 
 # Local funding / outreach drafts
 /email_draft_*.txt
