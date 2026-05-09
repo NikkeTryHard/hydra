@@ -60,6 +60,12 @@ Tooling rules:
 - Prefer `uv` / `uv tool` for Python CLIs and one-off tooling; avoid repo-local virtualenvs unless task explicitly needs one
 - Keep generated/runtime-heavy artifacts out of normal commits unless intentionally refreshing them (`target/`, `output/`, local notebooks payloads)
 
+Codebase-memory MCP:
+- Use for broad code discovery before search/read loops: `search_graph`, `trace_path`, `get_code_snippet`, `detect_changes`.
+- Use LSP for definition/reference/rename; use `read` before editing exact lines.
+- Local index should stay cache-only. Do not commit `.codebase-memory/` artifacts.
+- `.cbmignore` intentionally excludes research/provenance blobs; keep code/config/docs indexed.
+
 ## Critical runtime and execution invariants
 
 Keep globally visible; easy to violate, costly to rediscover:

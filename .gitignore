@@ -31,6 +31,9 @@ handoff_zips/
 output/
 out/
 dist/
+.codebase-memory/
+.cbmignore
+local/
 
 # Generated Kaggle runtime payloads are intentionally local-only.
 /notebooks/offline-bundle/*.bin
