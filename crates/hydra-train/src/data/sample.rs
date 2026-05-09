@@ -4,6 +4,11 @@ use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_core::tile::ALL_PERMUTATIONS;
+pub use hydra_data_core::sample::{
+    GRP_PERM_TABLE, MjaiSample, SCORE_BINS, one_hot_action, score_delta_to_bin, score_delta_to_cdf,
+    score_delta_to_pdf, score_delta_to_value, score_to_placement, score_to_placements,
+    scores_to_grp_index,
+};
 use std::cell::RefCell;
 
 use crate::data::sample_targets::{
@@ -51,30 +56,6 @@ fn permute_spatial_targets_3x34(values: [f32; 102], perm: &[u8; 3]) -> [f32; 102
     out
 }
 
-pub struct MjaiSample {
-    pub obs: [f32; OBS_SIZE],
-    pub action: u8,
-    pub legal_mask: [f32; HYDRA_ACTION_SPACE],
-    pub placement: u8,
-    pub score_delta: i32,
-    pub grp_label: u8,
-    pub oracle_target: Option<[f32; 4]>,
-    pub tenpai: [f32; 3],
-    pub opp_next: [u8; 3],
-    pub danger: [f32; 102],
-    pub danger_mask: [f32; 102],
-    pub safety_residual: Option<[f32; HYDRA_ACTION_SPACE]>,
-    pub safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
-    pub exit_target: Option<[f32; HYDRA_ACTION_SPACE]>,
-    pub exit_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
-    pub delta_q_target: Option<[f32; HYDRA_ACTION_SPACE]>,
-    pub delta_q_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
-    pub belief_fields: Option<[f32; 16 * 34]>,
-    pub mixture_weights: Option<[f32; 4]>,
-    pub belief_fields_present: bool,
-    pub mixture_weights_present: bool,
-}
-
 const PLAYER_COUNT: usize = 4;
 const OPPONENT_COUNT: usize = 3;
 const TILE_COUNT: usize = 34;
@@ -85,82 +66,6 @@ const SPATIAL_TARGET_SIZE: usize = OPPONENT_COUNT * TILE_COUNT;
 
 thread_local! {
     static COLLATE_SCRATCH: RefCell<Option<CollateBuffers>> = const { RefCell::new(None) };
-}
-
-const SCORE_BIN_MIN: f32 = -50000.0;
-const SCORE_BIN_MAX: f32 = 60000.0;
-const SCORE_BINS: usize = 64;
-
-pub fn scores_to_grp_index(scores: [i32; 4]) -> Result<u8, &'static str> {
-    let mut indexed: [(i32, u8); 4] = [
-        (scores[0], 0),
-        (scores[1], 1),
-        (scores[2], 2),
-        (scores[3], 3),
-    ];
-    indexed.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let ranking = [indexed[0].1, indexed[1].1, indexed[2].1, indexed[3].1];
-    GRP_PERM_TABLE
-        .iter()
-        .position(|p| *p == ranking)
-        .map(|i| i as u8)
-        .ok_or("invalid ranking permutation")
-}
-
-pub const GRP_PERM_TABLE: [[u8; 4]; 24] = generate_perm_table();
-
-const fn generate_perm_table() -> [[u8; 4]; 24] {
-    let mut table = [[0u8; 4]; 24];
-    let mut idx = 0;
-    let mut a = 0u8;
-    while a < 4 {
-        let mut b = 0u8;
-        while b < 4 {
-            if b != a {
-                let mut c = 0u8;
-                while c < 4 {
-                    if c != a && c != b {
-                        let d = 6 - a - b - c;
-                        table[idx] = [a, b, c, d];
-                        idx += 1;
-                    }
-                    c += 1;
-                }
-            }
-            b += 1;
-        }
-        a += 1;
-    }
-    table
-}
-
-#[inline]
-pub fn score_delta_to_bin(score_delta: i32) -> usize {
-    const RANGE_INV: f32 = 1.0 / (SCORE_BIN_MAX - SCORE_BIN_MIN);
-    let normalized = (score_delta as f32 - SCORE_BIN_MIN) * RANGE_INV;
-    let bin = (normalized * SCORE_BINS as f32) as usize;
-    bin.min(SCORE_BINS - 1)
-}
-
-#[inline]
-pub fn score_delta_to_value(score_delta: i32) -> f32 {
-    const INV_100K: f32 = 1.0 / 100_000.0;
-    (score_delta as f32 * INV_100K).clamp(-1.0, 1.0)
-}
-
-pub fn score_delta_to_pdf(score_delta: i32) -> [f32; SCORE_BINS] {
-    let mut pdf = [0.0f32; SCORE_BINS];
-    pdf[score_delta_to_bin(score_delta)] = 1.0;
-    pdf
-}
-
-pub fn score_delta_to_cdf(score_delta: i32) -> [f32; SCORE_BINS] {
-    let bin = score_delta_to_bin(score_delta);
-    let mut cdf = [0.0f32; SCORE_BINS];
-    for v in &mut cdf[bin..] {
-        *v = 1.0;
-    }
-    cdf
 }
 
 pub struct MjaiBatch<B: Backend> {
@@ -708,32 +613,6 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
     build_batch_from_samples::<B>(samples, false, device)
         .expect("valid sample collation")
         .expect("non-empty samples")
-}
-
-pub fn score_to_placement(scores: [i32; 4], player: u8) -> u8 {
-    score_to_placements(scores)[player as usize]
-}
-
-pub fn score_to_placements(scores: [i32; 4]) -> [u8; 4] {
-    let mut indexed: Vec<(i32, u8)> = scores
-        .iter()
-        .enumerate()
-        .map(|(i, &s)| (s, i as u8))
-        .collect();
-    indexed.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let mut placements = [3u8; 4];
-    for (placement, (_, player)) in indexed.into_iter().enumerate() {
-        placements[player as usize] = placement as u8;
-    }
-    placements
-}
-
-pub fn one_hot_action(action: u8, num_classes: usize) -> Vec<f32> {
-    let mut v = vec![0.0f32; num_classes];
-    if (action as usize) < num_classes {
-        v[action as usize] = 1.0;
-    }
-    v
 }
 
 pub fn collate_batch_augmented<B: Backend>(

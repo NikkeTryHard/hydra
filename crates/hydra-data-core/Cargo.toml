@@ -1,0 +1,16 @@
+[package]
+name = "hydra-data-core"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Pure sample DTOs and scoring helpers for Hydra training data"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }

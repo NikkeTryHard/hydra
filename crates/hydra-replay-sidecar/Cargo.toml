@@ -1,0 +1,15 @@
+[package]
+name = "hydra-replay-sidecar"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Pure replay sidecar JSONL contracts for Hydra training"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.149"

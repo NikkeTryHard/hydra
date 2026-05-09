@@ -1,7 +1,7 @@
 //! PIMC endgame solver for wall <= 10.
 
-use crate::action::HYDRA_ACTION_SPACE;
 use crate::ct_smc::Particle;
+use hydra_runtime_types::action::HYDRA_ACTION_SPACE;
 
 pub struct EndgameSolver {
     pub max_wall: u8,

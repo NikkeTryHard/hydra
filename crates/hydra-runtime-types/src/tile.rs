@@ -19,19 +19,28 @@ pub const NUM_SUIT_TILES: usize = 9;
 /// Total physical tiles in a standard mahjong set.
 pub const NUM_TILES_136: usize = 136;
 
-// Suit range starts (tile type indices).
+/// First manzu tile type index.
 pub const MANZU_START: u8 = 0;
+/// First pinzu tile type index.
 pub const PINZU_START: u8 = 9;
+/// First souzu tile type index.
 pub const SOUZU_START: u8 = 18;
+/// First honor (jihai) tile type index.
 pub const JIHAI_START: u8 = 27;
 
-// Named honor tile indices for readability.
+/// East wind tile type index.
 pub const EAST: u8 = 27;
+/// South wind tile type index.
 pub const SOUTH: u8 = 28;
+/// West wind tile type index.
 pub const WEST: u8 = 29;
+/// North wind tile type index.
 pub const NORTH: u8 = 30;
+/// White dragon tile type index.
 pub const HAKU: u8 = 31;
+/// Green dragon tile type index.
 pub const HATSU: u8 = 32;
+/// Red dragon tile type index.
 pub const CHUN: u8 = 33;
 
 // ---------------------------------------------------------------------------
@@ -59,9 +68,13 @@ pub const AKA_SOUZU_TYPE: u8 = 36;
 /// The four tile categories in Riichi Mahjong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Suit {
+    /// Characters suit.
     Manzu = 0,
+    /// Dots/circles suit.
     Pinzu = 1,
+    /// Bamboo suit.
     Souzu = 2,
+    /// Honor tiles.
     Jihai = 3,
 }
 
@@ -294,6 +307,18 @@ pub fn tile_type_to_mjai(tile_type: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_and_aka_abi_constants_are_frozen() {
+        assert_eq!(NUM_TILE_TYPES, 34);
+        assert_eq!(NUM_TILES_136, 136);
+        assert_eq!(AKA_MANZU_136, 16);
+        assert_eq!(AKA_PINZU_136, 52);
+        assert_eq!(AKA_SOUZU_136, 88);
+        assert_eq!(AKA_MANZU_TYPE, 34);
+        assert_eq!(AKA_PINZU_TYPE, 35);
+        assert_eq!(AKA_SOUZU_TYPE, 36);
+    }
 
     #[test]
     fn tile_type_new_valid() {

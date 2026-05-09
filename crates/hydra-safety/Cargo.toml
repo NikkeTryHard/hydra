@@ -1,0 +1,16 @@
+[package]
+name = "hydra-safety"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Safety rails for Hydra Riichi Mahjong AI"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+hydra-runtime-types = { path = "../hydra-runtime-types" }

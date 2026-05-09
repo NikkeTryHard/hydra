@@ -1,0 +1,20 @@
+[package]
+name = "hydra-bc-shards"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Backend-agnostic BC shard host format for Hydra training"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }
+hydra-data-core = { path = "../hydra-data-core" }
+memmap2 = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.149"

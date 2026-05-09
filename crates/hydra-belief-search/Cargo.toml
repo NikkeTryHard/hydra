@@ -1,0 +1,23 @@
+[package]
+name = "hydra-belief-search"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Belief-state search components for Hydra Riichi Mahjong AI"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+hydra-runtime-types = { path = "../hydra-runtime-types" }
+riichienv-core = { path = "../hydra-engine", package = "hydra-engine" }
+rand = "0.9"
+dashmap = "6.1.0"
+smallvec = "1.15.1"
+
+[dev-dependencies]
+rand_chacha = "0.9"

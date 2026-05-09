@@ -1,18 +1,21 @@
 //! Replay-indexed offline ExIt producer and sidecar join helpers.
 
-use std::collections::HashMap;
 use std::io;
-use std::io::BufRead;
 
 use burn::prelude::Backend;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::safety::SafetyInfo;
+use hydra_replay_sidecar::legal_mask_digest_from_bool;
 use riichienv_core::replay::MjaiEvent;
 use riichienv_core::state::GameState;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 
-use crate::data::mjai_loader::{bool_mask_to_f32, prepare_replay_decision, update_safety};
+pub use hydra_replay_sidecar::{
+    ExitSidecarIndex, REPLAY_EXIT_PROVENANCE, REPLAY_EXIT_SEMANTICS_V1, ReplayDecisionKey,
+    ReplayExitLookupKey, ReplayExitRecordV1, copy_label_arrays, legal_mask_digest_from_f32,
+    read_jsonl_records, source_hash_from_identity, source_net_hash_from_checkpoint_identity,
+};
+
+use crate::data::mjai_loader::{prepare_replay_decision, update_safety};
 use crate::model::HydraModel;
 use crate::training::exit::ExitConfig;
 use crate::training::exit_validation::ExitValidationReport;
@@ -20,162 +23,6 @@ use crate::training::live_exit::{
     RootDecisionContext, SelfPlayExitAdapter, budget_from_legal_count, obs_hash,
     try_exit_label_from_context_with_batched_child_values,
 };
-
-pub const REPLAY_EXIT_SEMANTICS_V1: &str = "exit_root_child_visits_v1";
-pub const REPLAY_EXIT_PROVENANCE: &str = "search-derived";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ReplayDecisionKey {
-    pub source_hash: u64,
-    pub event_index: u32,
-    pub actor: u8,
-    pub obs_hash: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ReplayExitLookupKey {
-    pub replay: ReplayDecisionKey,
-    pub action: u8,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReplayExitRecordV1 {
-    pub version: u32,
-    pub semantics: String,
-    pub provenance: String,
-    pub key: ReplayDecisionKey,
-    pub action: u8,
-    pub legal_mask_digest: u64,
-    pub source_net_hash: u64,
-    pub source_version: u32,
-    pub root_visit_count: u32,
-    pub legal_discard_count: u8,
-    pub supported_actions: u8,
-    pub coverage: f32,
-    pub kl_to_base: f32,
-    pub target: Vec<f32>,
-    pub mask: Vec<f32>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ExitSidecarIndex {
-    records: HashMap<ReplayExitLookupKey, ReplayExitRecordV1>,
-}
-
-impl ExitSidecarIndex {
-    pub fn from_records(records: Vec<ReplayExitRecordV1>) -> Self {
-        let records = records
-            .into_iter()
-            .map(|record| {
-                (
-                    ReplayExitLookupKey {
-                        replay: record.key,
-                        action: record.action,
-                    },
-                    record,
-                )
-            })
-            .collect();
-        Self { records }
-    }
-
-    pub fn lookup_label(
-        &self,
-        key: &ReplayDecisionKey,
-        action: u8,
-        legal_mask: &[f32; HYDRA_ACTION_SPACE],
-        source_net_hash: u64,
-        source_version: u32,
-    ) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])> {
-        let record = self.records.get(&ReplayExitLookupKey {
-            replay: *key,
-            action,
-        })?;
-        if record.version != 1
-            || record.semantics != REPLAY_EXIT_SEMANTICS_V1
-            || record.provenance != REPLAY_EXIT_PROVENANCE
-            || record.legal_mask_digest != legal_mask_digest_from_f32(legal_mask)
-            || record.source_net_hash != source_net_hash
-            || record.source_version != source_version
-        {
-            return None;
-        }
-        copy_label_arrays(&record.target, &record.mask)
-    }
-
-    pub fn from_jsonl_reader(reader: impl BufRead) -> io::Result<Self> {
-        Ok(Self::from_records(read_jsonl_records(
-            reader,
-            "replay ExIt sidecar",
-        )?))
-    }
-
-    pub fn from_jsonl_path(path: &std::path::Path) -> io::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        Self::from_jsonl_reader(std::io::BufReader::new(file))
-    }
-}
-
-pub fn source_hash_from_identity(identity: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in identity.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
-pub fn source_net_hash_from_checkpoint_identity(identity: &str) -> u64 {
-    source_hash_from_identity(identity)
-}
-
-pub fn legal_mask_digest_from_f32(mask: &[f32; HYDRA_ACTION_SPACE]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for &value in mask {
-        hash ^= u64::from(value > 0.0);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
-fn legal_mask_digest_from_bool(mask: &[bool; HYDRA_ACTION_SPACE]) -> u64 {
-    legal_mask_digest_from_f32(&bool_mask_to_f32(*mask))
-}
-
-pub(crate) fn copy_label_arrays(
-    target: &[f32],
-    mask: &[f32],
-) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])> {
-    if target.len() != HYDRA_ACTION_SPACE || mask.len() != HYDRA_ACTION_SPACE {
-        return None;
-    }
-    let mut target_arr = [0.0f32; HYDRA_ACTION_SPACE];
-    let mut mask_arr = [0.0f32; HYDRA_ACTION_SPACE];
-    target_arr.copy_from_slice(target);
-    mask_arr.copy_from_slice(mask);
-    Some((target_arr, mask_arr))
-}
-
-pub(crate) fn read_jsonl_records<T>(reader: impl BufRead, sidecar_name: &str) -> io::Result<Vec<T>>
-where
-    T: DeserializeOwned,
-{
-    let mut records = Vec::new();
-    for (line_idx, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let record = serde_json::from_str(&line).map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid {sidecar_name} line {}: {err}", line_idx + 1),
-            )
-        })?;
-        records.push(record);
-    }
-    Ok(records)
-}
 
 pub type ReplayExitAdapter = SelfPlayExitAdapter;
 
@@ -722,7 +569,7 @@ mod tests {
         let index = ExitSidecarIndex::from_jsonl_reader(Cursor::new(raw))
             .expect("valid jsonl with blanks should parse");
 
-        assert_eq!(index.records.len(), 1);
+        assert_eq!(index.len(), 1);
         assert_eq!(
             source_net_hash_from_checkpoint_identity("checkpoint-a"),
             source_hash_from_identity("checkpoint-a")
@@ -839,6 +686,6 @@ mod tests {
         let index = ExitSidecarIndex::from_jsonl_path(&path).expect("jsonl path should parse");
         std::fs::remove_file(&path).expect("temp jsonl should be removable");
 
-        assert_eq!(index.records.len(), 1);
+        assert_eq!(index.len(), 1);
     }
 }

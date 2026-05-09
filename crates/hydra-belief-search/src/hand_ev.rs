@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::shanten_batch::{BatchDrawShantenResult, batch_discard_shanten, batch_draw_shanten};
-use crate::tile::NUM_TILE_TYPES;
+use hydra_runtime_types::tile::NUM_TILE_TYPES;
 
 #[derive(Clone)]
 pub struct HandEvFeatures {

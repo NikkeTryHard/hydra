@@ -10,7 +10,7 @@ pub const NUM_OPPONENTS: usize = 3;
 pub const TENPAI_HINT_THRESHOLD: f32 = 0.5;
 
 /// Number of tile types.
-const NUM_TILES: usize = 34;
+const NUM_TILES: usize = hydra_runtime_types::tile::NUM_TILE_TYPES;
 
 /// Set bit `idx` (0-33) in a u64 bitfield.
 #[inline]

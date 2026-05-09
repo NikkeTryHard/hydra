@@ -3145,13 +3145,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "hydra-bc-shards"
+version = "0.1.0"
+dependencies = [
+ "hydra-core",
+ "hydra-data-core",
+ "memmap2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hydra-belief-search"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "hydra-engine",
+ "hydra-runtime-types",
+ "rand 0.9.2",
+ "rand_chacha 0.9.0",
+ "smallvec",
+]
+
+[[package]]
 name = "hydra-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
  "dashmap",
+ "hydra-belief-search",
+ "hydra-encoder",
  "hydra-engine",
+ "hydra-runtime-types",
+ "hydra-safety",
  "proptest",
  "rand 0.9.2",
  "rand_chacha 0.9.0",
@@ -3161,6 +3188,23 @@ dependencies = [
  "sha2",
  "smallvec",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hydra-data-core"
+version = "0.1.0"
+dependencies = [
+ "hydra-core",
+]
+
+[[package]]
+name = "hydra-encoder"
+version = "0.1.0"
+dependencies = [
+ "hydra-belief-search",
+ "hydra-engine",
+ "hydra-runtime-types",
+ "hydra-safety",
 ]
 
 [[package]]
@@ -3181,6 +3225,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "hydra-replay-loader"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "hydra-core",
+ "hydra-data-core",
+ "hydra-engine",
+ "hydra-replay-sidecar",
+ "zstd 0.13.3",
+]
+
+[[package]]
+name = "hydra-replay-sidecar"
+version = "0.1.0"
+dependencies = [
+ "hydra-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hydra-runtime-types"
+version = "0.1.0"
+
+[[package]]
+name = "hydra-safety"
+version = "0.1.0"
+dependencies = [
+ "hydra-runtime-types",
+]
+
+[[package]]
+name = "hydra-sample-cache"
+version = "0.1.0"
+dependencies = [
+ "hydra-core",
+ "hydra-data-core",
+ "serde",
+]
+
+[[package]]
 name = "hydra-train"
 version = "0.1.0"
 dependencies = [
@@ -3192,8 +3277,13 @@ dependencies = [
  "dashmap",
  "flate2",
  "half",
+ "hydra-bc-shards",
  "hydra-core",
+ "hydra-data-core",
  "hydra-engine",
+ "hydra-replay-loader",
+ "hydra-replay-sidecar",
+ "hydra-sample-cache",
  "indicatif",
  "libloading",
  "memmap2",

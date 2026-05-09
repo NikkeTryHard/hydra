@@ -22,10 +22,10 @@
 //! - 62..84: safety channels (genbutsu, suji, kabe, one-chance, tenpai)
 //! - 85..149: Group C search/belief context + presence masks + reserved slots
 //! - 150..191: Group D Hand-EV context + presence mask
-use crate::hand_ev::HandEvFeatures;
-use crate::safety::SafetyInfo;
-use crate::shanten_batch::BatchShantenResult;
-use crate::tile::NUM_TILE_TYPES;
+use hydra_belief_search::hand_ev::HandEvFeatures;
+use hydra_belief_search::shanten_batch::{self, BatchShantenResult};
+use hydra_runtime_types::tile::NUM_TILE_TYPES;
+use hydra_safety::{self, SafetyInfo};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -330,7 +330,7 @@ impl ObservationEncoder {
     pub fn encode_shanten_masks(&mut self, hand: &[u8; NUM_TILES]) {
         let total: u8 = hand.iter().sum();
         let len_div3 = total / 3;
-        let batch = crate::shanten_batch::batch_discard_shanten(hand, len_div3);
+        let batch = shanten_batch::batch_discard_shanten(hand, len_div3);
         self.encode_shanten_masks_from_batch(&batch);
     }
 
@@ -762,7 +762,7 @@ impl ObservationEncoder {
 // ---------------------------------------------------------------------------
 
 /// Number of opponents for safety channels.
-const NUM_OPPS: usize = crate::safety::NUM_OPPONENTS; // 3
+const NUM_OPPS: usize = hydra_safety::NUM_OPPONENTS; // 3
 
 /// Iterate over set bits in a `u64` bitmask using trailing-zeros extraction.
 ///
@@ -1220,7 +1220,16 @@ impl ObservationEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::safety::bit_set;
+    use hydra_safety::bit_set;
+
+    #[test]
+    fn encoder_geometry_abi_constants_are_frozen() {
+        assert_eq!(BASELINE_CHANNELS, 85);
+        assert_eq!(NUM_CHANNELS, 192);
+        assert_eq!(NUM_TILES, 34);
+        assert_eq!(OBS_SIZE, 6528);
+        assert_eq!(OBS_SIZE, NUM_CHANNELS * NUM_TILES);
+    }
 
     /// Helper: read a single cell from the obs buffer.
     fn get(enc: &ObservationEncoder, ch: usize, tile: usize) -> f32 {
@@ -1928,7 +1937,7 @@ mod tests {
         };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
-        let shanten_batch = crate::shanten_batch::batch_discard_shanten(&hand, 0);
+        let shanten_batch = shanten_batch::batch_discard_shanten(&hand, 0);
 
         let mut hand_ev = HandEvFeatures::default();
         hand_ev.tenpai_prob[3][0] = 0.2;
@@ -1988,7 +1997,7 @@ mod tests {
         };
         let meta = test_metadata();
         let safety = SafetyInfo::new();
-        let shanten_batch = crate::shanten_batch::batch_discard_shanten(&hand, 0);
+        let shanten_batch = shanten_batch::batch_discard_shanten(&hand, 0);
 
         let mut search = SearchFeaturePlanes {
             belief_features_present: true,

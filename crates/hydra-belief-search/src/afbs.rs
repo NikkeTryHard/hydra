@@ -5,8 +5,8 @@
 //! [`CacheNamespace`] so consumers can decide whether a cached result
 //! is safe to reuse at runtime vs. learner-only.
 
-use crate::action::HYDRA_ACTION_SPACE;
 use dashmap::DashMap;
+use hydra_runtime_types::action::HYDRA_ACTION_SPACE;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -14,6 +14,7 @@ use std::time::Instant;
 
 pub const C_PUCT: f32 = 2.5;
 pub const TOP_K: usize = 5;
+const OBS_SIZE: usize = 192 * 34;
 
 /// Trust level assigned to a cached ponder result.
 ///
@@ -695,7 +696,7 @@ impl LeafBatch {
 
     pub fn with_capacity(batch_capacity: usize) -> Self {
         Self {
-            obs_buffer: Vec::with_capacity(batch_capacity * crate::encoder::OBS_SIZE),
+            obs_buffer: Vec::with_capacity(batch_capacity * OBS_SIZE),
             node_indices: Vec::with_capacity(batch_capacity),
             batch_size: 0,
         }
@@ -710,7 +711,7 @@ impl LeafBatch {
     pub fn add(&mut self, obs: &[f32], node_idx: NodeIdx) {
         assert_eq!(
             obs.len(),
-            crate::encoder::OBS_SIZE,
+            OBS_SIZE,
             "leaf observation must have OBS_SIZE elements"
         );
         self.obs_buffer.extend_from_slice(obs);
@@ -853,14 +854,14 @@ mod tests {
     #[test]
     fn batched_eval_correct_size() {
         let mut batch = LeafBatch::new();
-        let obs = [0.0f32; crate::encoder::OBS_SIZE];
+        let obs = [0.0f32; OBS_SIZE];
         for i in 0..32 {
             batch.add(&obs, i);
         }
         assert_eq!(batch.batch_size, 32);
         assert!(batch.is_ready());
         assert_eq!(batch.node_indices.len(), 32);
-        assert_eq!(batch.obs_buffer.len(), 32 * crate::encoder::OBS_SIZE);
+        assert_eq!(batch.obs_buffer.len(), 32 * OBS_SIZE);
     }
 
     #[test]

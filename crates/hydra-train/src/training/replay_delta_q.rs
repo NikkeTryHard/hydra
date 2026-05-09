@@ -1,16 +1,17 @@
 //! Replay-indexed offline delta-q producer and sidecar join helpers.
 
-use std::collections::HashMap;
 use std::io;
-use std::io::BufRead;
 
 use burn::prelude::Backend;
-use hydra_core::action::{AKA_5M, AKA_5P, AKA_5S, DISCARD_END, HYDRA_ACTION_SPACE};
-use hydra_core::arena::TrajectoryDeltaQLabel;
+use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::replay::MjaiEvent;
 use riichienv_core::state::GameState;
-use serde::{Deserialize, Serialize};
+
+pub use hydra_replay_sidecar::{
+    DeltaQSidecarIndex, REPLAY_DELTA_Q_PROVENANCE, REPLAY_DELTA_Q_SEMANTICS_V1,
+    ReplayDeltaQLookupKey, ReplayDeltaQRecordV1, validate_delta_q_contract,
+};
 
 use crate::data::mjai_loader::{bool_mask_to_f32, prepare_replay_decision, update_safety};
 use crate::model::HydraModel;
@@ -21,127 +22,8 @@ use crate::training::live_exit::{
     try_search_labels_from_context_with_batched_child_values,
 };
 use crate::training::replay_exit::{
-    ReplayDecisionKey, copy_label_arrays, legal_mask_digest_from_f32, read_jsonl_records,
-    source_hash_from_identity,
+    ReplayDecisionKey, legal_mask_digest_from_f32, source_hash_from_identity,
 };
-
-pub const REPLAY_DELTA_Q_SEMANTICS_V1: &str = "delta_q_child_minus_root_v1";
-pub const REPLAY_DELTA_Q_PROVENANCE: &str = "search-derived";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ReplayDeltaQLookupKey {
-    pub replay: ReplayDecisionKey,
-    pub action: u8,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReplayDeltaQRecordV1 {
-    pub version: u32,
-    pub semantics: String,
-    pub provenance: String,
-    pub key: ReplayDecisionKey,
-    pub action: u8,
-    pub legal_mask_digest: u64,
-    pub source_net_hash: u64,
-    pub source_version: u32,
-    pub target: Vec<f32>,
-    pub mask: Vec<f32>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct DeltaQSidecarIndex {
-    records: HashMap<ReplayDeltaQLookupKey, ReplayDeltaQRecordV1>,
-}
-
-impl DeltaQSidecarIndex {
-    pub fn from_records(records: Vec<ReplayDeltaQRecordV1>) -> Self {
-        let records = records
-            .into_iter()
-            .map(|record| {
-                (
-                    ReplayDeltaQLookupKey {
-                        replay: record.key,
-                        action: record.action,
-                    },
-                    record,
-                )
-            })
-            .collect();
-        Self { records }
-    }
-
-    pub fn lookup_label(
-        &self,
-        key: &ReplayDecisionKey,
-        action: u8,
-        legal_mask: &[f32; HYDRA_ACTION_SPACE],
-        source_net_hash: u64,
-        source_version: u32,
-    ) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])> {
-        let record = self.records.get(&ReplayDeltaQLookupKey {
-            replay: *key,
-            action,
-        })?;
-        if record.version != 1
-            || record.semantics != REPLAY_DELTA_Q_SEMANTICS_V1
-            || record.provenance != REPLAY_DELTA_Q_PROVENANCE
-            || record.legal_mask_digest != legal_mask_digest_from_f32(legal_mask)
-            || record.source_net_hash != source_net_hash
-            || record.source_version != source_version
-        {
-            return None;
-        }
-        let (target, mask) = copy_label_arrays(&record.target, &record.mask)?;
-        let validated = validate_delta_q_contract(&target, &mask, legal_mask)?;
-        Some((validated.target, validated.mask))
-    }
-
-    pub fn from_jsonl_reader(reader: impl BufRead) -> io::Result<Self> {
-        Ok(Self::from_records(read_jsonl_records(
-            reader,
-            "replay delta_q sidecar",
-        )?))
-    }
-
-    pub fn from_jsonl_path(path: &std::path::Path) -> io::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        Self::from_jsonl_reader(std::io::BufReader::new(file))
-    }
-}
-
-fn validate_delta_q_contract(
-    target: &[f32; HYDRA_ACTION_SPACE],
-    mask: &[f32; HYDRA_ACTION_SPACE],
-    legal_mask: &[f32; HYDRA_ACTION_SPACE],
-) -> Option<TrajectoryDeltaQLabel> {
-    let label = TrajectoryDeltaQLabel::from_slices(target, mask)?;
-    let mut saw_masked = false;
-    for (action_idx, &legal_value) in legal_mask.iter().enumerate().take(HYDRA_ACTION_SPACE) {
-        let mask_value = label.mask[action_idx];
-        if mask_value < -1e-6 || ((mask_value - 1.0).abs() > 1e-3 && mask_value > 1e-6) {
-            return None;
-        }
-        let target_value = label.target[action_idx];
-        if !target_value.is_finite() {
-            return None;
-        }
-        if mask_value > 0.5 {
-            saw_masked = true;
-            if legal_value <= 0.0 {
-                return None;
-            }
-            if action_idx > DISCARD_END as usize {
-                return None;
-            }
-            if matches!(action_idx as u8, AKA_5M | AKA_5P | AKA_5S) {
-                return None;
-            }
-        } else if target_value.abs() > 1e-5 {
-            return None;
-        }
-    }
-    saw_masked.then_some(label)
-}
 
 pub fn generate_replay_delta_q_records<B: Backend>(
     source_hash: u64,
@@ -279,6 +161,7 @@ pub fn replay_delta_q_records_for_identity<B: Backend>(
 mod tests {
     use super::*;
     use crate::data::mjai_loader::load_game_from_events_with_sidecar;
+    use hydra_core::action::AKA_5M;
     use hydra_core::encoder::ObservationEncoder;
     use riichienv_core::replay::read_mjai_events;
     use riichienv_core::rule::GameRule;
@@ -590,7 +473,7 @@ mod tests {
         let index = DeltaQSidecarIndex::from_jsonl_reader(Cursor::new(raw))
             .expect("valid jsonl with blanks should parse");
 
-        assert_eq!(index.records.len(), 1);
+        assert_eq!(index.len(), 1);
 
         let mut target = [0.0f32; HYDRA_ACTION_SPACE];
         let mut mask = [0.0f32; HYDRA_ACTION_SPACE];
@@ -715,6 +598,6 @@ mod tests {
         let index = DeltaQSidecarIndex::from_jsonl_path(&path).expect("jsonl path should parse");
         std::fs::remove_file(&path).expect("temp jsonl should be removable");
 
-        assert_eq!(index.records.len(), 1);
+        assert_eq!(index.len(), 1);
     }
 }

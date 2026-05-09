@@ -1,0 +1,18 @@
+[package]
+name = "hydra-sample-cache"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Parsed-sample cache binary format for Hydra data pipelines"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }
+hydra-data-core = { path = "../hydra-data-core" }
+serde = { version = "1.0", features = ["derive"] }

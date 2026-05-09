@@ -1,6 +1,19 @@
 [workspace]
 resolver = "2"
-members = ["crates/hydra-core", "crates/hydra-engine", "crates/hydra-train"]
+members = [
+    "crates/hydra-core",
+    "crates/hydra-data-core",
+    "crates/hydra-replay-sidecar",
+    "crates/hydra-sample-cache",
+    "crates/hydra-replay-loader",
+    "crates/hydra-bc-shards",
+    "crates/hydra-belief-search",
+    "crates/hydra-engine",
+    "crates/hydra-encoder",
+    "crates/hydra-runtime-types",
+    "crates/hydra-safety",
+    "crates/hydra-train",
+]
 
 [workspace.lints.clippy]
 correctness = { level = "deny", priority = -1 }

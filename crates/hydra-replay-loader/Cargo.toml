@@ -1,0 +1,18 @@
+[package]
+name = "hydra-replay-loader"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Hydra MJAI replay loader and replay-to-sample conversion"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }
+hydra-data-core = { path = "../hydra-data-core" }
+hydra-replay-sidecar = { path = "../hydra-replay-sidecar" }
+flate2 = { version = "1.1.9", features = ["zlib-rs"], default-features = false }
+riichienv-core = { version = "0.4.7", path = "../hydra-engine", package = "hydra-engine", features = ["fast-json-ingest"] }
+zstd = "0.13"

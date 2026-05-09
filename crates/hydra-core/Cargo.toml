@@ -15,6 +15,10 @@ crate-type = ["rlib"]
 [dependencies]
 # Game engine foundation (Apache-2.0)
 riichienv-core = { path = "../hydra-engine", package = "hydra-engine" }
+hydra-runtime-types = { path = "../hydra-runtime-types" }
+hydra-safety = { path = "../hydra-safety" }
+hydra-encoder = { path = "../hydra-encoder" }
+hydra-belief-search = { path = "../hydra-belief-search" }
 
 # Spec'd dependencies from INFRASTRUCTURE.md
 rayon = "1.10"
