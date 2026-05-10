@@ -2,7 +2,6 @@
 
 #![deny(clippy::dbg_macro, clippy::manual_assert)]
 
-pub mod bc_fixed_shape;
 pub mod bc_metrics;
 pub mod bc_runtime;
 pub mod config;
