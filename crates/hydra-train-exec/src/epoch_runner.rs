@@ -11,6 +11,7 @@ use crate::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 use crate::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
 use crate::losses::HydraLoss;
 use crate::model::{HydraModel, HydraTrainModelExt};
+use crate::nvtx;
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
@@ -21,7 +22,6 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::NUM_CHANNELS;
 use hydra_model::amp::maybe_autocast;
 use hydra_train_runtime::head_gates::HeadActivationController;
-use hydra_train_runtime::nvtx;
 use hydra_train_runtime::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,
     PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,

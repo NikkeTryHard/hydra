@@ -5,10 +5,8 @@
 pub mod config;
 pub mod config_runtime;
 pub mod delta_q_promotion;
-pub mod gpu_config;
 pub mod head_gates;
 pub mod loss_policy;
-pub mod nvtx;
 pub mod preflight;
 pub mod probe_request;
 pub mod progress;

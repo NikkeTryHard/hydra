@@ -223,29 +223,31 @@ int hydra_cuda_event_record(void* event, int64_t stream_id, int64_t device_idx, 
 }
 
 int hydra_cuda_event_synchronize(void* event) {
-  if (event == nullptr) return -1;
-  return (cudaEventSynchronize(static_cast<cudaEvent_t>(event)) == cudaSuccess) ? 0 : -1;
+  if (cudaEventSynchronize(static_cast<cudaEvent_t>(event)) != cudaSuccess) {
+    return -1;
+  }
+  return 0;
 }
 
 int hydra_cuda_event_query(void* event) {
-  if (event == nullptr) return -1;
-  cudaError_t err = cudaEventQuery(static_cast<cudaEvent_t>(event));
-  if (err == cudaSuccess) return 0;
-  if (err == cudaErrorNotReady) return 1;
+  const auto status = cudaEventQuery(static_cast<cudaEvent_t>(event));
+  if (status == cudaSuccess) {
+    return 1;
+  }
+  if (status == cudaErrorNotReady) {
+    return 0;
+  }
   return -1;
 }
 
 int hydra_cuda_event_elapsed_ms(void* start, void* end, float* elapsed_ms) {
-  if (start == nullptr || end == nullptr || elapsed_ms == nullptr) return -1;
-  return (cudaEventElapsedTime(
-      elapsed_ms,
-      static_cast<cudaEvent_t>(start),
-      static_cast<cudaEvent_t>(end)) == cudaSuccess) ? 0 : -1;
+  if (cudaEventElapsedTime(elapsed_ms, static_cast<cudaEvent_t>(start), static_cast<cudaEvent_t>(end)) != cudaSuccess) {
+    return -1;
+  }
+  return 0;
 }
 
-int hydra_cuda_stream_wait_event(
-    int64_t stream_id, int64_t device_idx, int64_t device_type,
-    void* event) {
+int hydra_cuda_stream_wait_event(int64_t stream_id, int64_t device_idx, int64_t device_type, void* event) {
   HYDRA_PROTECT_ERR(
       auto stream = c10::cuda::CUDAStream::unpack3(
           static_cast<c10::StreamId>(stream_id),
@@ -258,12 +260,12 @@ int hydra_cuda_stream_wait_event(
 }
 
 // ---------------------------------------------------------------------------
-// Pinned (page-locked) host memory helpers
+// Pinned host memory + async H2D
 // ---------------------------------------------------------------------------
 
 void* hydra_pinned_malloc(uint64_t size_bytes) {
   void* ptr = nullptr;
-  if (cudaMallocHost(&ptr, static_cast<size_t>(size_bytes)) != cudaSuccess) {
+  if (cudaHostAlloc(&ptr, static_cast<size_t>(size_bytes), cudaHostAllocDefault) != cudaSuccess) {
     return nullptr;
   }
   return ptr;
@@ -275,78 +277,42 @@ void hydra_pinned_free(void* ptr) {
   }
 }
 
-int hydra_memcpy_async_h2d(
-    void* dst, const void* src, uint64_t size_bytes,
-    int64_t stream_id, int64_t device_idx, int64_t device_type) {
+int hydra_memcpy_async_h2d(void* dst, const void* src, uint64_t size_bytes, int64_t stream_id, int64_t device_idx, int64_t device_type) {
   HYDRA_PROTECT_ERR(
       auto stream = c10::cuda::CUDAStream::unpack3(
           static_cast<c10::StreamId>(stream_id),
           static_cast<c10::DeviceIndex>(device_idx),
           static_cast<c10::DeviceType>(device_type));
-      if (cudaMemcpyAsync(
-              dst, src, static_cast<size_t>(size_bytes),
-              cudaMemcpyHostToDevice, stream.stream()) != cudaSuccess) {
+      if (cudaMemcpyAsync(dst, src, static_cast<size_t>(size_bytes), cudaMemcpyHostToDevice, stream.stream()) != cudaSuccess) {
         return -1;
       }
       return 0;)
 }
 
 #else
+
 int hydra_cuda_graph_backend_kind() {
   return 0;
 }
 
-
-void* hydra_cuda_graph_new(int) {
-  return nullptr;
+const char* hydra_cuda_last_exception_message() {
+  return "CUDA graph FFI unavailable";
 }
 
-int hydra_cuda_graph_capture_begin(void*, uint64_t, uint64_t) {
-  return -1;
-}
-
-int hydra_cuda_graph_capture_end(void*) {
-  return -1;
-}
-
-int hydra_cuda_graph_replay(void*) {
-  return -1;
-}
-
-int hydra_cuda_graph_reset(void*) {
-  return -1;
-}
-
+void* hydra_cuda_graph_new(int) { return nullptr; }
+int hydra_cuda_graph_capture_begin(void*, uint64_t, uint64_t) { return -1; }
+int hydra_cuda_graph_capture_end(void*) { return -1; }
+int hydra_cuda_graph_replay(void*) { return -1; }
+int hydra_cuda_graph_reset(void*) { return -1; }
 void hydra_cuda_graph_free(void*) {}
-
-void hydra_cuda_stream_from_pool(
-    int64_t device_index,
-    int64_t* stream_id,
-    int64_t* device_idx_out,
-    int64_t* device_type) {
-  if (stream_id != nullptr) {
-    *stream_id = 0;
-  }
-  if (device_idx_out != nullptr) {
-    *device_idx_out = device_index;
-  }
-  if (device_type != nullptr) {
-    *device_type = 0;
-  }
-}
-
-void hydra_cuda_stream_get_current(
-    int64_t device_index,
-    int64_t* stream_id,
-    int64_t* device_idx_out,
-    int64_t* device_type) {
-  hydra_cuda_stream_from_pool(device_index, stream_id, device_idx_out, device_type);
-}
-
+int hydra_cuda_last_error_code() { return -1; }
+const char* hydra_cuda_error_name(int) { return "cuda_graph_unavailable"; }
+const char* hydra_cuda_error_string(int) { return "CUDA graph FFI unavailable"; }
+int hydra_cuda_device_synchronize() { return -1; }
+void hydra_cuda_stream_from_pool(int64_t, int64_t*, int64_t*, int64_t*) {}
+void hydra_cuda_stream_get_current(int64_t, int64_t*, int64_t*, int64_t*) {}
 void hydra_cuda_stream_set_current(int64_t, int64_t, int64_t) {}
-
 void hydra_cuda_stream_synchronize(int64_t, int64_t, int64_t) {}
-
 void* hydra_cuda_event_create(int) { return nullptr; }
 void hydra_cuda_event_destroy(void*) {}
 int hydra_cuda_event_record(void*, int64_t, int64_t, int64_t) { return -1; }
@@ -354,12 +320,12 @@ int hydra_cuda_event_synchronize(void*) { return -1; }
 int hydra_cuda_event_query(void*) { return -1; }
 int hydra_cuda_event_elapsed_ms(void*, void*, float*) { return -1; }
 int hydra_cuda_stream_wait_event(int64_t, int64_t, int64_t, void*) { return -1; }
-
 void* hydra_pinned_malloc(uint64_t) { return nullptr; }
 void hydra_pinned_free(void*) {}
 int hydra_memcpy_async_h2d(void*, const void*, uint64_t, int64_t, int64_t, int64_t) { return -1; }
 
 #endif
+
 #endif
 
 }

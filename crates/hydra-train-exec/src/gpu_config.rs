@@ -14,7 +14,7 @@ fn device_requests_cuda(device: &str) -> bool {
         .is_some_and(|kind| kind.eq_ignore_ascii_case("cuda"))
 }
 
-/// Global libtorch performance flags.  Must be called before any tensor ops.
+/// Global libtorch performance flags. Must be called before any tensor ops.
 pub fn apply_gpu_performance_flags(device: &str) {
     if !device_requests_cuda(device) {
         return;
@@ -42,11 +42,11 @@ pub fn apply_gpu_performance_flags(device: &str) {
 
     if tch::Cuda::is_available() {
         // Auto-tunes conv algorithms per input shape on first call, caches
-        // the fastest.  Safe with fixed tensor shapes (Hydra's case).
+        // the fastest. Safe with fixed tensor shapes (Hydra's case).
         tch::Cuda::cudnn_set_benchmark(true);
 
         // TF32: on Ampere+ GPUs, uses Tensor Cores for FP32 matmul/conv
-        // with 10-bit mantissa.  Same exponent range, no overflow risk.
+        // with 10-bit mantissa. Same exponent range, no overflow risk.
         // tch-rs doesn't expose globalContext TF32 setters.
         unsafe {
             hydra_set_allow_tf32_cublas(1);

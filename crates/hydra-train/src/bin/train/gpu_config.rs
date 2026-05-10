@@ -1,1 +1,1 @@
-pub(crate) use hydra_train_runtime::gpu_config::*;
+pub(crate) use hydra_train_exec::gpu_config::*;

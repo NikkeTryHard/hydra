@@ -236,7 +236,7 @@ fn require_libtorch_cuda_component(libtorch_lib: &Path, name: &str) {
 fn format_paths(paths: &[PathBuf]) -> String {
     paths
         .iter()
-        .map(|path| path.display().to_string())
+        .map(|p| p.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }

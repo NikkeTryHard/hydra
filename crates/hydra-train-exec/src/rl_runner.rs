@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use colored::Colorize;
 
+use crate::nvtx;
 use crate::presentation::format_status_line;
 use hydra_selfplay::{
     CooperativeSelfPlayCoordinator, CooperativeSelfPlayRequest, generate_self_play_rl_batch_reuse,
@@ -10,7 +11,6 @@ use hydra_train_algo::distill::{DistillConfig, DistillState};
 use hydra_train_algo::drda::RebaseTracker;
 use hydra_train_runtime::config::{RlTrainConfig, TrainConfig};
 use hydra_train_runtime::head_gates::{AdvancedHead, HeadState};
-use hydra_train_runtime::nvtx;
 use hydra_train_runtime::preflight::{
     PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_RL_STEP,
     PROFILING_STAGE_SELF_PLAY, PROFILING_STAGE_TRAIN, ProfilingEnvelope,

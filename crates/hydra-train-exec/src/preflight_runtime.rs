@@ -55,6 +55,7 @@ use crate::data_pipeline::DataSource;
 use crate::epoch_runner::{
     TrainLogicalBatchConfig, materialize_host_batch_owned, train_device_batch,
 };
+use crate::nvtx;
 #[cfg(feature = "cuda-graph")]
 use crate::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
 use crate::presentation::{
@@ -92,7 +93,6 @@ use hydra_train_runtime::config::{
 };
 use hydra_train_runtime::config_runtime::trainer_config_from_train_config;
 use hydra_train_runtime::loss_policy::{build_bc_exit_config, build_loss_config};
-use hydra_train_runtime::nvtx;
 use hydra_train_runtime::probe_request::{
     ProbeBatchRequest, ProbeRequest, probe_batch_child_request_from_cli,
     probe_child_request_from_cli,

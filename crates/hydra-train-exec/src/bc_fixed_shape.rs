@@ -131,7 +131,7 @@ where
     for chunk in fixed_shape_prefix.chunks_exact(microbatch_size) {
         let t = Instant::now();
         let collated = {
-            let _collation_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_COLLATION);
+            let _collation_scope = crate::nvtx::scope(PROFILING_STAGE_COLLATION);
             collate_samples_bc_owned::<B>(chunk, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
@@ -143,7 +143,7 @@ where
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t = Instant::now();
         let output = {
-            let _forward_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_FORWARD);
+            let _forward_scope = crate::nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
                 model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
@@ -151,7 +151,7 @@ where
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
         let (breakdown, total) = {
-            let _loss_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_LOSS);
+            let _loss_scope = crate::nvtx::scope(PROFILING_STAGE_LOSS);
             let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
             let total = maybe_add_exit_loss(
                 breakdown.total.clone(),
@@ -178,7 +178,7 @@ where
         microbatch_count += 1;
         {
             let t = Instant::now();
-            let _backward_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let _backward_scope = crate::nvtx::scope(PROFILING_STAGE_BACKWARD);
             let grads = weighted_total.backward();
             let grads = GradientsParams::from_grads(grads, model);
             accumulator.accumulate(model, grads);
@@ -189,7 +189,7 @@ where
     if !tail_remainder.is_empty() {
         let t = Instant::now();
         let collated = {
-            let _collation_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_COLLATION);
+            let _collation_scope = crate::nvtx::scope(PROFILING_STAGE_COLLATION);
             collate_samples_bc_owned::<B>(tail_remainder, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
@@ -201,7 +201,7 @@ where
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t = Instant::now();
         let output = {
-            let _forward_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_FORWARD);
+            let _forward_scope = crate::nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(use_amp, || {
                 model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
@@ -209,7 +209,7 @@ where
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
         let (breakdown, total) = {
-            let _loss_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_LOSS);
+            let _loss_scope = crate::nvtx::scope(PROFILING_STAGE_LOSS);
             let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
             let total = maybe_add_exit_loss(
                 breakdown.total.clone(),
@@ -236,7 +236,7 @@ where
         microbatch_count += 1;
         {
             let t = Instant::now();
-            let _backward_scope = hydra_train_runtime::nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let _backward_scope = crate::nvtx::scope(PROFILING_STAGE_BACKWARD);
             let grads = weighted_total.backward();
             let grads = GradientsParams::from_grads(grads, model);
             accumulator.accumulate(model, grads);
@@ -1118,7 +1118,7 @@ mod tests {
             HeadActivationController::new(HeadActivationConfig::default_with_params(1));
         let logical_batch: Vec<MjaiSample> = (0..3).map(dummy_train_sample).collect();
 
-        let (result, events) = hydra_train_runtime::nvtx::with_test_recorder(|| {
+        let (result, events) = crate::nvtx::with_test_recorder(|| {
             run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
                 logical_batch: &logical_batch,
                 augment: false,

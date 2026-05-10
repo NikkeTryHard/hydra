@@ -8,6 +8,7 @@ use crate::delta_q_promotion::{
 };
 use crate::losses::HydraLoss;
 use crate::model::{HydraModel, HydraTrainModelExt};
+use crate::nvtx;
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::module::AutodiffModule;
 use burn::prelude::*;
@@ -18,7 +19,6 @@ use hydra_bc_shards::{
 };
 use hydra_data_core::manifest::DataManifest;
 use hydra_train_runtime::head_gates::HeadActivationController;
-use hydra_train_runtime::nvtx;
 use hydra_train_runtime::preflight::{
     PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
     PROFILING_STAGE_VALIDATION, ProfilingEnvelope,

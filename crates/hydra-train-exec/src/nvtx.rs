@@ -1,4 +1,4 @@
-//! NVTX runtime scope helpers.
+//! NVTX execution scope helpers.
 
 use std::env;
 #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]

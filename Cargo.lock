@@ -3307,7 +3307,6 @@ name = "hydra-train"
 version = "0.1.0"
 dependencies = [
  "burn",
- "cc",
  "colored",
  "criterion",
  "ctrlc",
@@ -3329,7 +3328,6 @@ dependencies = [
  "hydra-train-runtime",
  "hydra-train-types",
  "indicatif",
- "libloading",
  "memmap2",
  "rand 0.9.2",
  "rand_chacha 0.9.0",
@@ -3357,6 +3355,7 @@ name = "hydra-train-exec"
 version = "0.1.0"
 dependencies = [
  "burn",
+ "cc",
  "colored",
  "ctrlc",
  "hydra-bc-shards",
@@ -3372,6 +3371,7 @@ dependencies = [
  "hydra-train-runtime",
  "hydra-train-types",
  "indicatif",
+ "libloading",
  "rayon",
  "serde",
  "serde_json",
@@ -3380,6 +3380,7 @@ dependencies = [
  "tboard",
  "tch",
  "time",
+ "torch-sys",
  "zstd 0.13.3",
 ]
 
@@ -3388,18 +3389,15 @@ name = "hydra-train-runtime"
 version = "0.1.0"
 dependencies = [
  "burn",
- "cc",
  "hydra-core",
  "hydra-data-core",
  "hydra-model",
  "hydra-train-algo",
  "hydra-train-types",
- "libloading",
  "rayon",
  "serde",
  "serde_json",
  "serde_yaml",
- "tch",
 ]
 
 [[package]]

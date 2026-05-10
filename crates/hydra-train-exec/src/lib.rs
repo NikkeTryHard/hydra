@@ -31,6 +31,8 @@ pub mod data_pipeline;
 pub mod delta_q_promotion;
 /// Epoch-runner execution helpers shared by train execution.
 pub mod epoch_runner;
+/// Global libtorch GPU performance flags.
+pub mod gpu_config;
 /// CUDA graph probe parent/child execution.
 pub mod graph_probe;
 /// Training execution loss adapter.
@@ -39,6 +41,8 @@ pub mod losses;
 pub mod model;
 /// Train binary mode dispatch facade.
 pub mod modes;
+/// NVTX profiling scope adapter.
+pub mod nvtx;
 /// CUDA pinned host staging and reusable device materialization for BC shards.
 #[cfg(feature = "cuda-graph")]
 pub mod pinned_transfer;
