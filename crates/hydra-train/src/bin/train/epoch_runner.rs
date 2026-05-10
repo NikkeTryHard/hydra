@@ -46,7 +46,7 @@ use super::artifacts::{
     write_validation_gate_artifact,
 };
 use super::bc_fixed_shape::{FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks};
-use super::config::{TrainConfig, shard_prefetch_depth, validation_sample_limit};
+use super::config::{TrainConfig, shard_prefetch_depth};
 use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
@@ -68,6 +68,7 @@ use super::validation::{
     is_better_validation, run_validation,
 };
 pub(super) use hydra_train_exec::progress::TrainSubStageTiming;
+use hydra_train_runtime::validation::ValidationRunLimits;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -700,10 +701,9 @@ where
             )
             .bold()
             .magenta(),
-            match validation_sample_limit(config) {
-                Some(limit) => format!("target_samples={limit}").yellow(),
-                None => "target_samples=all".yellow(),
-            }
+            ValidationRunLimits::from_config(config)
+                .target_samples_label()
+                .yellow(),
         )))
         .map_err(|err| format!("failed to print validation start summary: {err}"))?;
 
@@ -1109,10 +1109,9 @@ where
             timestamped(format!(
                 "{} {}",
                 "validation @ epoch end".bold().magenta(),
-                match validation_sample_limit(config) {
-                    Some(limit) => format!("target_samples={limit}").yellow(),
-                    None => "target_samples=all".yellow(),
-                }
+                ValidationRunLimits::from_config(config)
+                    .target_samples_label()
+                    .yellow(),
             ))
         );
     }

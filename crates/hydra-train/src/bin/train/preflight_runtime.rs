@@ -46,7 +46,7 @@ use super::bc_fixed_shape::{
 };
 use super::config::{
     ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
-    train_device, trainer_config_from_train_config, validation_sample_limit,
+    train_device, trainer_config_from_train_config,
 };
 use super::epoch_runner::{TrainLogicalBatchConfig, train_logical_batch_from_host_batch};
 use super::loss_policy::{build_bc_exit_config, build_loss_config};
@@ -88,6 +88,7 @@ use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, materialize_validation_samples,
     run_validation, run_validation_from_shards,
 };
+use hydra_train_runtime::validation::ValidationRunLimits;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -900,7 +901,7 @@ fn stage_two_benchmark_validation_cache_key(
         loader_buffer_samples: loader.buffer_samples,
         loader_buffer_games: loader.buffer_games,
         loader_num_threads: loader.num_threads,
-        validation_sample_limit: validation_sample_limit(benchmark_config),
+        validation_sample_limit: ValidationRunLimits::from_config(benchmark_config).sample_limit,
     }
 }
 
@@ -2334,9 +2335,7 @@ where
         reader,
     )?;
     Ok(measure_samples_per_second(
-        validation_sample_limit(config)
-            .unwrap_or(reader.sample_count())
-            .min(reader.sample_count()),
+        ValidationRunLimits::from_config(config).bounded_total_rows(reader.sample_count()),
         started_at.elapsed(),
     ))
 }

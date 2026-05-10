@@ -3353,6 +3353,8 @@ name = "hydra-train-exec"
 version = "0.1.0"
 dependencies = [
  "colored",
+ "hydra-bc-shards",
+ "hydra-data-core",
  "hydra-train-runtime",
  "hydra-train-types",
  "indicatif",

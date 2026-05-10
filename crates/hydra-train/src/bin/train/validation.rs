@@ -28,9 +28,7 @@ use hydra_train::training::delta_q_promotion::{
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
-use super::config::{
-    TrainConfig, shard_prefetch_depth, validation_microbatch_size, validation_sample_limit,
-};
+use super::config::{TrainConfig, shard_prefetch_depth};
 use super::nvtx;
 #[cfg(feature = "cuda-graph")]
 use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
@@ -43,6 +41,7 @@ pub(super) use hydra_train_exec::validation::{
     DeltaQPolicyTransferSnapshot, DeltaQPromotionSnapshot, ValidationGateDecision,
     ValidationScalarSummary,
 };
+use hydra_train_runtime::validation::ValidationRunLimits;
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 pub(super) struct ValidationContext<'a, B: Backend> {
@@ -461,8 +460,8 @@ where
     } = runtime;
     let model_valid = model.valid();
     let baseline_valid = baseline_model.valid();
-    let validation_batch_size = validation_microbatch_size(config);
-    let validation_sample_limit = validation_sample_limit(config);
+    let validation_limits = ValidationRunLimits::from_config(config);
+    let validation_batch_size = validation_limits.microbatch_size;
     let mut accumulator = ValidationAccumulator::new();
     let mut head_controller = head_controller;
 
@@ -499,17 +498,11 @@ where
 
     if let Some(cached_samples) = cached_samples {
         for chunk in cached_samples {
-            if let Some(limit) = validation_sample_limit
-                && accumulator.total_samples >= limit
-            {
+            if validation_limits.reached_sample_limit(accumulator.total_samples) {
                 break;
             }
-            let capped_chunk = if let Some(limit) = validation_sample_limit {
-                let remaining = limit.saturating_sub(accumulator.total_samples);
-                &chunk[..chunk.len().min(remaining)]
-            } else {
-                chunk.as_ref()
-            };
+            let take = validation_limits.capped_len(accumulator.total_samples, chunk.len());
+            let capped_chunk = &chunk[..take];
             if capped_chunk.is_empty() {
                 break;
             }
@@ -521,24 +514,16 @@ where
         {
             let microbatch =
                 microbatch_result.map_err(|err| format!("validation stream failed: {err}"))?;
-            if let Some(limit) = validation_sample_limit
-                && accumulator.total_samples >= limit
-            {
+            if validation_limits.reached_sample_limit(accumulator.total_samples) {
                 break;
             }
-            let capped_chunk = if let Some(limit) = validation_sample_limit {
-                let remaining = limit.saturating_sub(accumulator.total_samples);
-                &microbatch[..microbatch.len().min(remaining)]
-            } else {
-                microbatch.as_slice()
-            };
+            let take = validation_limits.capped_len(accumulator.total_samples, microbatch.len());
+            let capped_chunk = &microbatch[..take];
             if capped_chunk.is_empty() {
                 break;
             }
             run_chunk(capped_chunk, &mut head_controller, &mut accumulator)?;
-            if let Some(limit) = validation_sample_limit
-                && accumulator.total_samples >= limit
-            {
+            if validation_limits.reached_sample_limit(accumulator.total_samples) {
                 break;
             }
         }
@@ -555,10 +540,11 @@ pub(super) fn materialize_validation_samples(
     if config.bc_shards_manifest_path.is_some() {
         return Ok(None);
     }
-    let Some(limit) = validation_sample_limit(config) else {
+    let limits = ValidationRunLimits::from_config(config);
+    let Some(limit) = limits.sample_limit else {
         return Ok(None);
     };
-    let microbatch_size = validation_microbatch_size(config);
+    let microbatch_size = limits.microbatch_size;
     let mut microbatches = Vec::new();
     let mut total_samples = 0usize;
     for microbatch_result in stream_val_microbatches(manifest, loader_config, microbatch_size, None)
@@ -620,15 +606,13 @@ where
     } = runtime;
     let model_valid = model.valid();
     let baseline_valid = baseline_model.valid();
-    let validation_batch_size = validation_microbatch_size(config);
-    let validation_sample_limit = validation_sample_limit(config);
+    let validation_limits = ValidationRunLimits::from_config(config);
+    let validation_batch_size = validation_limits.microbatch_size;
     let mut accumulator = ValidationAccumulator::new();
     let mut head_controller = head_controller;
 
     let total_rows = reader.sample_count();
-    let limit_rows = validation_sample_limit
-        .unwrap_or(total_rows)
-        .min(total_rows);
+    let limit_rows = validation_limits.bounded_total_rows(total_rows);
 
     #[cfg(feature = "cuda-graph")]
     let mut staging_context = match device {

@@ -13,10 +13,8 @@ use colored::Colorize;
 use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
-use hydra_train::data::bc_shards::{
-    BcShardManifest, BcShardReader, BcShardSplit, load_bc_shard_reader,
-};
-use hydra_train::data::pipeline::{DataManifest, DataSource, StreamingLoaderConfig};
+use hydra_train::data::bc_shards::{BcShardReader, BcShardSplit, load_bc_shard_reader};
+use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 #[cfg(test)]
 use hydra_train::preflight::ManifestCacheEntry;
@@ -30,6 +28,11 @@ use hydra_train::training::replay_exit::{
     ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
 };
 use hydra_train::training::rl::RlConfig;
+use hydra_train_exec::bc_shard_adapter::{
+    BcShardManifest, BcShardManifestConfigRef, BcShardSplit as ManifestBcShardSplit,
+    data_manifest_from_bc_shard_manifest, read_bc_shard_manifest,
+    validate_bc_shard_manifest_for_config as validate_bc_shard_manifest_for_config_ref,
+};
 
 use super::TrainBackend;
 use super::advisory::MicrobatchExplicitness;
@@ -59,89 +62,22 @@ type JsonlAppender = super::artifacts::JsonlAppender;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
-fn data_manifest_from_bc_shard_manifest(manifest: &BcShardManifest) -> DataManifest {
-    let train_count = manifest
-        .splits
-        .iter()
-        .find(|split| split.split == BcShardSplit::Train)
-        .map(|split| split.sample_count as usize)
-        .unwrap_or(0);
-    let val_count = manifest
-        .splits
-        .iter()
-        .find(|split| split.split == BcShardSplit::Validation)
-        .map(|split| split.sample_count as usize)
-        .unwrap_or(0);
-
-    DataManifest {
-        sources: vec![DataSource::LooseFile(
-            Path::new(&manifest.input).to_path_buf(),
-        )],
-        total_games: manifest.source_total_games_hint,
-        train_count,
-        val_count,
-        counts_exact: true,
-    }
-}
-
 fn validate_bc_shard_manifest_for_config(
     manifest: &BcShardManifest,
     config: &TrainConfig,
 ) -> Result<(), String> {
-    if manifest.train_fraction.to_bits() != config.train_fraction.to_bits() {
-        return Err(format!(
-            "BC shard manifest train_fraction {} does not match config train_fraction {}. Rebuild shards or use matching config.",
-            manifest.train_fraction, config.train_fraction
-        ));
-    }
-    if !config.source_filters.is_empty() {
-        return Err(
-            "BC shard manifest does not record source_filters; shard-backed BC requires empty source_filters or shards rebuilt with an explicit recorded filter contract"
-                .to_string(),
-        );
-    }
-
     let advanced_loss = config.advanced_loss.as_ref();
-    if advanced_loss
-        .and_then(|loss| loss.exit)
-        .is_some_and(|weight| weight > 0.0)
-    {
-        let configured = config
-            .exit_sidecar_path
-            .as_ref()
-            .ok_or_else(|| "advanced_loss.exit requires exit_sidecar_path".to_string())?;
-        let manifest_sidecar = manifest.exit_sidecar.as_ref().ok_or_else(|| {
-            "advanced_loss.exit requires BC shards built with matching ExIt sidecar".to_string()
-        })?;
-        if manifest_sidecar.path != configured.display().to_string() {
-            return Err(format!(
-                "BC shard ExIt sidecar {} does not match config exit_sidecar_path {}",
-                manifest_sidecar.path,
-                configured.display()
-            ));
-        }
-    }
-    if advanced_loss
-        .and_then(|loss| loss.delta_q)
-        .is_some_and(|weight| weight > 0.0)
-    {
-        let configured = config
-            .delta_q_sidecar_path
-            .as_ref()
-            .ok_or_else(|| "advanced_loss.delta_q requires delta_q_sidecar_path".to_string())?;
-        let manifest_sidecar = manifest.delta_q_sidecar.as_ref().ok_or_else(|| {
-            "advanced_loss.delta_q requires BC shards built with matching delta_q sidecar"
-                .to_string()
-        })?;
-        if manifest_sidecar.path != configured.display().to_string() {
-            return Err(format!(
-                "BC shard delta_q sidecar {} does not match config delta_q_sidecar_path {}",
-                manifest_sidecar.path,
-                configured.display()
-            ));
-        }
-    }
-    Ok(())
+    validate_bc_shard_manifest_for_config_ref(
+        manifest,
+        BcShardManifestConfigRef {
+            train_fraction: config.train_fraction,
+            source_filters: &config.source_filters,
+            exit_sidecar_path: config.exit_sidecar_path.as_deref(),
+            delta_q_sidecar_path: config.delta_q_sidecar_path.as_deref(),
+            exit_loss_weight: advanced_loss.and_then(|loss| loss.exit),
+            delta_q_loss_weight: advanced_loss.and_then(|loss| loss.delta_q),
+        },
+    )
 }
 
 fn apply_cached_bc_runtime_if_matching(
@@ -368,21 +304,20 @@ where
     )?;
     scan_pb.set_message("Scanning archives...".to_string());
     let manifest = if let Some(shard_manifest_path) = config.bc_shards_manifest_path.as_ref() {
-        let shard_manifest =
-            hydra_train::data::bc_shards::read_bc_shard_manifest(shard_manifest_path)?;
+        let shard_manifest = read_bc_shard_manifest(shard_manifest_path)?;
         validate_bc_shard_manifest_for_config(&shard_manifest, &config)?;
         scan_pb.finish_with_message(format!(
             "using BC shard manifest: {} train / {} val samples",
             shard_manifest
                 .splits
                 .iter()
-                .find(|split| split.split == BcShardSplit::Train)
+                .find(|split| split.split == ManifestBcShardSplit::Train)
                 .map(|split| split.sample_count)
                 .unwrap_or(0),
             shard_manifest
                 .splits
                 .iter()
-                .find(|split| split.split == BcShardSplit::Validation)
+                .find(|split| split.split == ManifestBcShardSplit::Validation)
                 .map(|split| split.sample_count)
                 .unwrap_or(0)
         ));

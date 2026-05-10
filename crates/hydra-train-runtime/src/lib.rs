@@ -20,6 +20,7 @@ pub mod probe_request;
 pub mod progress;
 pub mod schedule;
 pub mod status;
+pub mod validation;
 
 #[cfg(test)]
 mod test_support;

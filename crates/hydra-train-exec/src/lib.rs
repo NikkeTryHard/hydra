@@ -15,6 +15,8 @@ pub mod resume;
 
 /// Artifact path and log-only helpers shared across training execution seams.
 pub mod artifacts;
+/// BC shard manifest adapters shared by train bootstrap.
+pub mod bc_shard_adapter;
 /// Validation snapshot and gate DTOs shared across training execution seams.
 pub mod validation;
 
