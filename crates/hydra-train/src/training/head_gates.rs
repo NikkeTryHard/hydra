@@ -1,93 +1,4 @@
-//! Head activation discipline: density, interference, and warmup gates.
-//!
-//! Prevents sparse or noisy advanced heads from dragging the shared SE-ResNet
-//! trunk backward via negative transfer. Implements the archive's gate pack
-//! from `answer_13_combined.md` sections 3.3, 5, and 6:
-//!
-//! - **Density gate**: Per-head label density `rho_h` for dense heads
-//!   (threshold: `rho >= 0.8`) and samples-per-param `spp_h` for sparse
-//!   search-derived heads (threshold: `spp >= 5.0`).
-//!
-//! - **Gradient conflict gate**: Shared-trunk gradient cosine between each
-//!   auxiliary head loss and the policy+value loss. Heads are kept off if
-//!   cosine is negative on >30% of checks after warmup.
-//!
-//! - **Warmup protocol**: When activating a head, train head-only (trunk
-//!   frozen) for a configurable number of steps before unfreezing. Transition
-//!   to full activation only if gradient conflict gate passes.
-//!
-//! # Gate sequence
-//!
-//! 1. Target correctness audit (manual prerequisite, not automated here).
-//! 2. Density gate: `rho_h >= min_dense_rho` or `spp_h >= min_sparse_spp`.
-//! 3. Head-only warmup with trunk frozen for `warmup_steps` updates.
-//! 4. Gradient conflict gate: negative cosine fraction < `max_negative_frac`.
-//! 5. Feature-ablation gate (requires evaluation infrastructure, documented
-//!    but not automated here).
-//!
-//! The controller manages per-head state transitions:
-//! `Off` -> (density passes) -> `Warmup` -> (conflict passes) -> `Active`.
-//!
-//! # Integration
-//!
-//! The caller (orchestrator) is responsible for:
-//! - Calling [`extract_target_presence`] and
-//!   [`HeadActivationController::record_batch`] each training step.
-//! - Periodically computing shared-trunk gradient cosine (see
-//!   [`grad_cosine_from_flat`]) and calling
-//!   [`HeadActivationController::record_grad_cosine`].
-//! - Using [`HeadActivationController::approved_loss_config`] to get effective
-//!   loss weights (unapproved heads are zeroed out).
-//! - Checking [`HeadActivationController::warmup_heads`] and detaching trunk
-//!   outputs for heads in warmup state so they train head-only.
-//!
-//! # Important: do not use `grad_norm_approx` for the conflict gate
-//!
-//! The existing `grad_norm_approx` in `losses.rs` is a loss-magnitude proxy,
-//! not a true parameter-gradient norm. Use [`grad_cosine_from_flat`] with
-//! real flattened shared-trunk gradients instead.
-
-use crate::training::losses::HydraLossConfig;
-use std::ops::{Deref, DerefMut};
-
-pub use hydra_train_types::head_gates::{
-    AdvancedHead, DEFAULT_MAX_NEGATIVE_FRAC, DEFAULT_MIN_CONFLICT_CHECKS, DEFAULT_MIN_DENSE_RHO,
-    DEFAULT_MIN_EVAL_SAMPLES, DEFAULT_MIN_SPARSE_SPP, DEFAULT_WARMUP_STEPS, GradConflictTracker,
-    HeadActivationConfig, HeadCoverage, HeadGateReport, HeadKind, HeadState, NUM_ADVANCED_HEADS,
-    TargetPresence, borrow_or_extract_target_presence, extract_target_presence,
-    grad_cosine_from_flat,
-};
-
-/// Head activation controller with Hydra loss-config adapter methods.
-#[derive(Clone, Debug)]
-pub struct HeadActivationController(hydra_train_types::head_gates::HeadActivationController);
-
-impl HeadActivationController {
-    /// Creates a controller with all heads in [`HeadState::Off`].
-    pub fn new(config: HeadActivationConfig) -> Self {
-        Self(hydra_train_types::head_gates::HeadActivationController::new(config))
-    }
-
-    /// Returns a [`HydraLossConfig`] with unapproved heads zeroed out.
-    pub fn approved_loss_config(&self, base: &HydraLossConfig) -> HydraLossConfig {
-        hydra_train_types::head_gates::approved_loss_config(&self.0, base)
-    }
-}
-
-impl Deref for HeadActivationController {
-    type Target = hydra_train_types::head_gates::HeadActivationController;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for HeadActivationController {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
+pub use hydra_train_runtime::head_gates::*;
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -95,6 +6,7 @@ impl DerefMut for HeadActivationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::training::losses::HydraLossConfig;
     use crate::training::losses::HydraTargets;
     use burn::backend::NdArray;
     use burn::prelude::*;

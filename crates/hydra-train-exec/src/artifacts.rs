@@ -324,25 +324,27 @@ pub fn open_rl_step_log_appender(path: &Path) -> Result<JsonlAppender, String> {
 }
 
 /// Appends a BC epoch training log entry as one JSONL line.
-pub fn append_training_log_to_writer<W, DeltaQPromotionSnapshot>(
+pub fn append_training_log_to_writer<W, DeltaQPromotionSnapshot, Advisory>(
     writer: &mut W,
-    entry: &EpochLogEntry<DeltaQPromotionSnapshot>,
+    entry: &EpochLogEntry<DeltaQPromotionSnapshot, Advisory>,
 ) -> Result<(), String>
 where
     W: Write,
     DeltaQPromotionSnapshot: serde::Serialize,
+    Advisory: serde::Serialize,
 {
     append_jsonl_entry(writer, entry, "training log", "training log entry")
 }
 
 /// Appends a BC step training log entry as one JSONL line.
-pub fn append_step_log_to_writer<W, DeltaQPromotionSnapshot>(
+pub fn append_step_log_to_writer<W, DeltaQPromotionSnapshot, Advisory>(
     writer: &mut W,
-    entry: &StepLogEntry<DeltaQPromotionSnapshot>,
+    entry: &StepLogEntry<DeltaQPromotionSnapshot, Advisory>,
 ) -> Result<(), String>
 where
     W: Write,
     DeltaQPromotionSnapshot: serde::Serialize,
+    Advisory: serde::Serialize,
 {
     append_jsonl_entry(writer, entry, "step log", "step log entry")
 }
@@ -359,9 +361,13 @@ where
 }
 
 /// Appends an RL step training log entry as one JSONL line.
-pub fn append_rl_step_log_to_writer<W>(writer: &mut W, entry: &RlStepLogEntry) -> Result<(), String>
+pub fn append_rl_step_log_to_writer<W, Advisory>(
+    writer: &mut W,
+    entry: &RlStepLogEntry<Advisory>,
+) -> Result<(), String>
 where
     W: Write,
+    Advisory: serde::Serialize,
 {
     append_jsonl_entry(writer, entry, "RL step log", "RL step log entry")
 }
