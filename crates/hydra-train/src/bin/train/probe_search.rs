@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use colored::Colorize;
-use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
+use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
 use super::config::TrainConfig;
 use super::preflight_runtime::{
@@ -668,7 +668,7 @@ pub(super) fn probe_candidate_ladder(
 mod tests {
     use std::path::PathBuf;
 
-    use hydra_train::preflight::{PreflightConfig, ProbeKind, ProbeStatus};
+    use hydra_train_runtime::preflight::{PreflightConfig, ProbeKind, ProbeStatus};
 
     use super::*;
     use crate::config::TrainConfig;

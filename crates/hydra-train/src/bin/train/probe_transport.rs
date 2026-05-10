@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
+use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
 use super::artifacts::{BcArtifactPaths, RlArtifactPaths, atomic_write_text};
 use super::probe_request::{ProbeBatchRequest, ProbeRequest};

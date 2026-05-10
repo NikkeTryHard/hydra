@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus, candidate_ladder};
+use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus, candidate_ladder};
 
 use super::config::TrainConfig;
 use super::probe_request::{ProbeRequest, probe_candidate_ceiling};
@@ -273,7 +273,7 @@ pub(super) fn dynamic_probe_ladder(
 
 #[cfg(test)]
 mod tests {
-    use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
+    use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
     use super::*;
     use crate::config::TrainConfig;

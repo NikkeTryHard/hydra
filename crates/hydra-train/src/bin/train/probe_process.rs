@@ -23,7 +23,7 @@ use std::time::Instant;
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressStyle};
 
-use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
+use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
 use super::artifacts::BcArtifactPaths;
 #[cfg(test)]
@@ -484,8 +484,8 @@ pub(super) fn execute_probe_request(
         if use_actor_model {
             super::preflight_runtime::run_probe_only_with_test_model_config_result(
                 &config,
-                &hydra_train::model::HydraModelConfig::new(1)
-                    .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+                &hydra_model::model::HydraModelConfig::new(1)
+                    .with_input_channels(hydra_core::encoder::NUM_CHANNELS)
                     .with_hidden_channels(4)
                     .with_num_groups(4)
                     .with_se_bottleneck(1),
@@ -671,7 +671,7 @@ mod tests {
     use std::io::Cursor;
     use std::process::Command;
 
-    use hydra_train::preflight::PreflightConfig;
+    use hydra_train_runtime::preflight::PreflightConfig;
 
     use super::super::artifacts::{BcArtifactPaths, RlArtifactPaths};
     use super::super::config::{

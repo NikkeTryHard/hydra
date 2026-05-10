@@ -1,7 +1,7 @@
 use std::fs;
 
-use hydra_train::model::HydraModelConfig;
-use hydra_train::preflight::{HardwareFingerprint, PreflightCacheKey, WorkloadFingerprint};
+use hydra_model::model::HydraModelConfig;
+use hydra_train_runtime::preflight::{HardwareFingerprint, PreflightCacheKey, WorkloadFingerprint};
 
 use super::config::{AdvancedLossConfig, PrecisionMode, TrainConfig};
 
@@ -94,7 +94,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use hydra_train::preflight::PreflightConfig;
+    use hydra_train_runtime::preflight::PreflightConfig;
 
     use crate::config::{AdvancedLossConfig, BcHyperparamConfig, PrecisionMode};
 

@@ -1,4 +1,4 @@
-use hydra_train::model::HydraModelConfig;
+use hydra_model::model::HydraModelConfig;
 use hydra_train::training::bc::BCTrainerConfig;
 use hydra_train::training::rl::{DEFAULT_RL_MICROBATCH_SIZE, RlConfig};
 
