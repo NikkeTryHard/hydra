@@ -3,27 +3,22 @@ use std::path::PathBuf;
 
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::tensor::backend::{AutodiffBackend, Backend};
-use hydra_train::preflight::ProbeKind;
 use hydra_train_exec::delta_q_promotion::handle_delta_q_promotion_mode as run_exec_delta_q_promotion_mode;
 use hydra_train_exec::modes::{
-    format_probe_table_message, handle_preflight_mode as run_exec_preflight_mode,
+    handle_preflight_mode as run_exec_preflight_mode, handle_probe_mode as run_exec_probe_mode,
 };
 
 use super::TrainBackend;
 use super::advisory::{AdvisoryDeduper, AdvisoryEvent, startup_runtime_advisories};
-use super::artifacts::BcArtifactPaths;
 use super::bootstrap::TrainingReaders;
 use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
 use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
-use super::config::{TrainConfig, configure_threads, device_label, validate_config};
+use super::config::TrainConfig;
 use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use super::preflight_runtime::run_probe_ladder_only;
 use super::presentation::{
     bc_hyperparam_summary_input, explicit_preflight_recommendation, format_advisory_line,
-    format_preflight_selection_line, format_status_line, format_warning_line, print_banner,
-    print_preflight_banner, timestamped,
+    format_warning_line, print_banner, timestamped,
 };
-use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use super::rl_runner::run_rl_training_loop;
 use hydra_train_exec::data_pipeline::TrainValidationLoader;
 use hydra_train_exec::validation_runner::materialize_validation_samples;
@@ -181,38 +176,7 @@ pub(super) fn handle_probe_mode(
     config: &TrainConfig,
     request: ProbeRequest,
 ) -> Result<(), String> {
-    validate_config(config)?;
-    configure_threads(config.num_threads)?;
-    let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
-    artifacts.create_root_dir()?;
-    print_preflight_banner("Hydra probe-only", config, &device_label(&config.device));
-    println!("{}", format_probe_only_status_message(request));
-    let (selected, results) = run_probe_ladder_only(config_path, config, &artifacts, request)?;
-    let selected_summary = best_probe_summary(&results).ok_or_else(|| {
-        format!(
-            "no stable {} probe result found",
-            probe_kind_name(request.kind)
-        )
-    })?;
-    println!(
-        "{}",
-        format_preflight_selection_line(format_probe_selection_summary(
-            request.kind,
-            &selected_summary,
-        ))
-    );
-    println!(
-        "{}",
-        format_status_line(
-            "Probe best candidate:",
-            format_probe_best_candidate_detail(request.kind, selected)
-        )
-    );
-    println!(
-        "{}",
-        format_probe_table_message("Probe final table", request.kind, &results, selected)
-    );
-    Ok(())
+    run_exec_probe_mode(config_path, config, request)
 }
 
 pub(super) fn handle_training_mode(
@@ -272,24 +236,6 @@ pub(super) fn handle_delta_q_promotion_mode(
     run_exec_delta_q_promotion_mode::<TrainBackend>(config_path, config, baseline_checkpoint)
 }
 
-fn format_probe_only_status_detail(request: ProbeRequest) -> String {
-    format!(
-        "kind={} candidate_mb={} warmup_steps={} measure_steps={}",
-        probe_kind_name(request.kind),
-        request.candidate_microbatch,
-        request.warmup_steps,
-        request.measure_steps,
-    )
-}
-
-fn format_probe_only_status_message(request: ProbeRequest) -> String {
-    format_status_line("Probe-only:", format_probe_only_status_detail(request))
-}
-
-fn format_probe_best_candidate_detail(kind: ProbeKind, selected: usize) -> String {
-    format!("{}={}", probe_kind_name(kind), selected)
-}
-
 fn format_best_validation_summary(
     best_validation: Option<&super::resume::BestValidation>,
 ) -> String {
@@ -316,7 +262,9 @@ mod tests {
         pre_arena_recommendation,
     };
     use hydra_train_exec::modes::{
-        format_bc_preflight_selection_message, format_rl_preflight_selection_message,
+        format_bc_preflight_selection_message, format_probe_best_candidate_detail,
+        format_probe_only_status_detail, format_probe_only_status_message,
+        format_probe_table_message, format_rl_preflight_selection_message,
     };
     use std::path::{Path, PathBuf};
 

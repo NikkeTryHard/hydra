@@ -23,8 +23,6 @@ mod preflight_fingerprint;
 mod preflight_runtime;
 #[path = "train/presentation.rs"]
 mod presentation;
-#[path = "train/probe_summary.rs"]
-mod probe_summary;
 #[path = "train/progress.rs"]
 mod progress;
 #[path = "train/resume.rs"]

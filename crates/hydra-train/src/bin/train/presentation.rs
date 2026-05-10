@@ -11,9 +11,8 @@ use super::config::{TrainConfig, display_num_threads};
 use super::progress::BannerStats;
 
 pub(crate) use hydra_train_exec::presentation::{
-    explicit_preflight_recommendation, format_advisory_line, format_preflight_selection_line,
-    format_progress_message, format_status_line, format_warning_line, make_bar, make_spinner,
-    phase_label, timestamped,
+    explicit_preflight_recommendation, format_advisory_line, format_progress_message,
+    format_warning_line, make_bar, make_spinner, phase_label, timestamped,
 };
 
 pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {
@@ -59,35 +58,6 @@ pub(super) fn optimized_path_summary(config: &TrainConfig) -> String {
         hydra_train_exec::presentation::cuda_graph_replay_label(),
         copy_compute_overlap,
     )
-}
-
-pub(super) fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &str) {
-    hydra_train_exec::presentation::print_header_block(title);
-    hydra_train_exec::presentation::print_banner_field("Device", device_name.green());
-    hydra_train_exec::presentation::print_banner_field(
-        "Dataset",
-        config.data_dir.display().to_string().green(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Optimizer batch",
-        format!("{} samples", config.batch_size).yellow(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Runtime defaults",
-        format!(
-            "train_mb={} val_mb={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={}",
-            config.microbatch_size.unwrap_or(config.batch_size),
-            config
-                .validation_microbatch_size
-                .unwrap_or(config.microbatch_size.unwrap_or(config.batch_size)),
-            display_num_threads(config.num_threads),
-            config.buffer_games,
-            config.buffer_samples,
-            config.archive_queue_bound,
-        )
-        .yellow(),
-    );
-    println!();
 }
 
 pub(super) fn print_banner(

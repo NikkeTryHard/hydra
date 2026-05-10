@@ -19,12 +19,13 @@ use hydra_train_runtime::preflight::{
 use hydra_train_runtime::probe_request::{ProbeRequest, probe_request_from_cli};
 
 use crate::artifacts::BcArtifactPaths;
-use crate::preflight_runtime::{run_preflight, run_rl_preflight};
+use crate::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use crate::presentation::{
     explicit_preflight_summary, format_advisory_line, format_preflight_selection_line,
-    format_preflight_summary_line, format_probe_results_table, format_timed_phase_message,
-    print_banner_field, print_header_block, timestamped,
+    format_preflight_summary_line, format_probe_results_table, format_status_line,
+    format_timed_phase_message, print_banner_field, print_header_block, timestamped,
 };
+use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 
 /// Mode handlers supplied by the train binary during the cutover.
 ///
@@ -160,6 +161,46 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
     Ok(())
 }
 
+/// Runs explicit probe-only mode for BC or RL probe requests.
+pub fn handle_probe_mode(
+    config_path: &Path,
+    config: &TrainConfig,
+    request: ProbeRequest,
+) -> Result<(), String> {
+    validate_config(config)?;
+    configure_threads(config.num_threads)?;
+    let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
+    artifacts.create_root_dir()?;
+    print_preflight_banner("Hydra probe-only", config, &device_label(&config.device));
+    println!("{}", format_probe_only_status_message(request));
+    let (selected, results) = run_probe_ladder_only(config_path, config, &artifacts, request)?;
+    let selected_summary = best_probe_summary(&results).ok_or_else(|| {
+        format!(
+            "no stable {} probe result found",
+            probe_kind_name(request.kind)
+        )
+    })?;
+    println!(
+        "{}",
+        format_preflight_selection_line(format_probe_selection_summary(
+            request.kind,
+            &selected_summary,
+        ))
+    );
+    println!(
+        "{}",
+        format_status_line(
+            "Probe best candidate:",
+            format_probe_best_candidate_detail(request.kind, selected)
+        )
+    );
+    println!(
+        "{}",
+        format_probe_table_message("Probe final table", request.kind, &results, selected)
+    );
+    Ok(())
+}
+
 /// Prints the preflight banner shared by BC, RL, and probe-only execution.
 pub fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &str) {
     print_header_block(title);
@@ -228,6 +269,27 @@ fn print_probe_table(title: &str, kind: ProbeKind, results: &[ProbeResult], sele
         "{}",
         format_probe_table_message(title, kind, results, selected)
     );
+}
+
+/// Formats probe-only request status detail.
+pub fn format_probe_only_status_detail(request: ProbeRequest) -> String {
+    format!(
+        "kind={} candidate_mb={} warmup_steps={} measure_steps={}",
+        probe_kind_name(request.kind),
+        request.candidate_microbatch,
+        request.warmup_steps,
+        request.measure_steps,
+    )
+}
+
+/// Formats probe-only request status message.
+pub fn format_probe_only_status_message(request: ProbeRequest) -> String {
+    format_status_line("Probe-only:", format_probe_only_status_detail(request))
+}
+
+/// Formats the selected probe candidate detail.
+pub fn format_probe_best_candidate_detail(kind: ProbeKind, selected: usize) -> String {
+    format!("{}={}", probe_kind_name(kind), selected)
 }
 
 /// Dispatches the parsed train CLI into the selected execution mode.
@@ -393,6 +455,15 @@ mod tests {
         }
     }
 
+    fn probe_request(kind: ProbeKind) -> ProbeRequest {
+        ProbeRequest {
+            kind,
+            candidate_microbatch: 192,
+            warmup_steps: 4,
+            measure_steps: 8,
+        }
+    }
+
     #[test]
     fn formats_rl_and_bc_preflight_selection_messages() {
         let rl_message = format_rl_preflight_selection_message(32, 8);
@@ -441,6 +512,49 @@ mod tests {
         assert!(message.contains("candidate_mb"));
         assert!(message.contains("train        yes       64"));
         assert!(message.contains("train        no        48"));
+    }
+
+    #[test]
+    fn formats_probe_only_status_message_for_rl_games() {
+        let message = format_probe_only_status_message(probe_request(ProbeKind::RlGames));
+
+        assert!(message.contains("Probe-only:"));
+        assert!(message.contains("kind=rl_games candidate_mb=192 warmup_steps=4 measure_steps=8"));
+    }
+
+    #[test]
+    fn formats_probe_best_candidate_detail_for_all_probe_kinds() {
+        assert_eq!(
+            format_probe_only_status_detail(probe_request(ProbeKind::RlMicrobatch)),
+            "kind=rl_microbatch candidate_mb=192 warmup_steps=4 measure_steps=8"
+        );
+        assert_eq!(
+            format_probe_best_candidate_detail(ProbeKind::Train, 48),
+            "train=48"
+        );
+        assert_eq!(
+            format_probe_best_candidate_detail(ProbeKind::Validation, 96),
+            "validation=96"
+        );
+        assert_eq!(
+            format_probe_best_candidate_detail(ProbeKind::RlGames, 8),
+            "rl_games=8"
+        );
+    }
+
+    #[test]
+    fn handle_probe_mode_validates_config_before_probe_runtime() {
+        let mut config = config();
+        config.batch_size = 0;
+
+        let err = handle_probe_mode(
+            Path::new("config.yaml"),
+            &config,
+            probe_request(ProbeKind::Train),
+        )
+        .expect_err("invalid config should fail before probe runtime");
+
+        assert_eq!(err, "batch_size must be greater than 0");
     }
 
     #[test]
