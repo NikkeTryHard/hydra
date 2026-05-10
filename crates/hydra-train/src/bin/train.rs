@@ -1,11 +1,12 @@
+#[cfg(test)]
 #[path = "train/advisory.rs"]
 mod advisory;
+#[cfg(test)]
 #[path = "train/artifacts.rs"]
 mod artifacts;
-#[path = "train/bootstrap.rs"]
-mod bootstrap;
 #[path = "train/config.rs"]
 mod config;
+#[cfg(test)]
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]
@@ -13,27 +14,31 @@ mod gpu_config;
 #[cfg(test)]
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
+#[cfg(test)]
 #[path = "train/modes.rs"]
 mod modes;
+#[cfg(test)]
 #[path = "train/nvtx.rs"]
 mod nvtx;
-#[path = "train/preflight_fingerprint.rs"]
-mod preflight_fingerprint;
+#[cfg(test)]
 #[path = "train/presentation.rs"]
 mod presentation;
+#[cfg(test)]
 #[path = "train/progress.rs"]
 mod progress;
+#[cfg(test)]
 #[path = "train/resume.rs"]
 mod resume;
-#[path = "train/rl_runner.rs"]
-mod rl_runner;
+#[cfg(test)]
 #[path = "train/schedule.rs"]
 mod schedule;
+#[cfg(test)]
 #[path = "train/status.rs"]
 mod status;
 #[cfg(test)]
 #[path = "train/test_support.rs"]
 mod test_support;
+#[cfg(test)]
 #[path = "train/validation.rs"]
 mod validation;
 
@@ -41,15 +46,14 @@ use std::env;
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
-use hydra_train_exec::modes::{TrainModeHandlers, run_train_modes};
+use hydra_train_exec::modes::run_train_modes;
 use hydra_train_exec::preflight_runtime::run_probe_child_mode;
-use hydra_train_runtime::probe_request::ProbeRequest;
-use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use self::config::{
@@ -65,6 +69,7 @@ use self::resume::{
 #[cfg(test)]
 use hydra_train::preflight::PreflightConfig;
 
+#[cfg(test)]
 type TrainBackend = Autodiff<LibTorch<f32>>;
 
 fn run() -> Result<(), String> {
@@ -81,46 +86,7 @@ fn run() -> Result<(), String> {
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
         return Ok(());
     }
-    let mut handlers = BinModeHandlers;
-    run_train_modes(cli, config, &mut handlers)
-}
-
-struct BinModeHandlers;
-
-impl TrainModeHandlers for BinModeHandlers {
-    fn handle_preflight_mode(
-        &mut self,
-        config_path: &Path,
-        config: &config::TrainConfig,
-    ) -> Result<(), String> {
-        modes::handle_preflight_mode(config_path, config)
-    }
-
-    fn handle_probe_mode(
-        &mut self,
-        config_path: &Path,
-        config: &config::TrainConfig,
-        request: ProbeRequest,
-    ) -> Result<(), String> {
-        modes::handle_probe_mode(config_path, config, request)
-    }
-
-    fn handle_delta_q_promotion_mode(
-        &mut self,
-        config_path: &Path,
-        config: config::TrainConfig,
-        baseline_checkpoint: Option<PathBuf>,
-    ) -> Result<(), String> {
-        modes::handle_delta_q_promotion_mode(config_path, config, baseline_checkpoint)
-    }
-
-    fn handle_training_mode(
-        &mut self,
-        config_path: &Path,
-        config: config::TrainConfig,
-    ) -> Result<(), String> {
-        modes::handle_training_mode(config_path, config)
-    }
+    run_train_modes(cli, config)
 }
 
 fn main() {

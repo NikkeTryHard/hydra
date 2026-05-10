@@ -1,21 +1,16 @@
-use colored::Colorize;
-
+#[cfg(test)]
+use super::config::TrainConfig;
+#[cfg(test)]
 use hydra_train::model::HydraModelConfig;
+#[cfg(test)]
 use hydra_train_exec::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary as exec_bc_hyperparam_summary,
 };
-use hydra_train_types::config::BCTrainerConfig;
 
-use super::artifacts::BcArtifactPaths;
-use super::config::{TrainConfig, display_num_threads};
-use super::progress::BannerStats;
-
-pub(crate) use hydra_train_exec::presentation::{
-    explicit_preflight_recommendation, format_advisory_line, format_warning_line, timestamped,
-};
 #[cfg(test)]
 pub(crate) use hydra_train_exec::presentation::{format_progress_message, phase_label};
 
+#[cfg(test)]
 pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {
     if config.is_learner() {
         "learner"
@@ -24,20 +19,12 @@ pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(super) fn bc_hyperparam_summary(input: BcHyperparamSummaryInput) -> String {
     exec_bc_hyperparam_summary(input)
 }
 
-pub(super) fn bc_hyperparam_summary_input(train_cfg: &BCTrainerConfig) -> BcHyperparamSummaryInput {
-    BcHyperparamSummaryInput {
-        lr: train_cfg.lr,
-        min_learning_rate: train_cfg.min_learning_rate,
-        weight_decay: train_cfg.weight_decay.into(),
-        grad_clip_norm: train_cfg.grad_clip_norm.into(),
-        warmup_steps: train_cfg.warmup_steps,
-    }
-}
-
+#[cfg(test)]
 pub(super) fn optimized_path_summary(config: &TrainConfig) -> String {
     let shard_input = config.bc_shards_manifest_path.is_some();
     let pinned_staging = cfg!(feature = "cuda-graph") && shard_input;
@@ -59,116 +46,6 @@ pub(super) fn optimized_path_summary(config: &TrainConfig) -> String {
         hydra_train_exec::presentation::cuda_graph_replay_label(),
         copy_compute_overlap,
     )
-}
-
-pub(super) fn print_banner(
-    model_config: &HydraModelConfig,
-    config: &TrainConfig,
-    artifacts: &BcArtifactPaths,
-    device_name: &str,
-    stats: &BannerStats,
-    train_hyperparams: BcHyperparamSummaryInput,
-) {
-    hydra_train_exec::presentation::print_header_block("Hydra BC trainer");
-    hydra_train_exec::presentation::print_banner_field(
-        "Model",
-        format!(
-            "{} ({} blocks, {}ch)",
-            model_kind(model_config),
-            model_config.num_blocks,
-            model_config.hidden_channels
-        )
-        .green(),
-    );
-    hydra_train_exec::presentation::print_banner_field("Device", device_name.green());
-    hydra_train_exec::presentation::print_banner_field(
-        "Dataset",
-        if stats.counts_exact {
-            format!(
-                "{} ({} sources, {} games)",
-                config.data_dir.display(),
-                stats.total_sources,
-                stats.total_games
-            )
-        } else {
-            format!(
-                "{} ({} sources, archive counts deferred)",
-                config.data_dir.display(),
-                stats.total_sources,
-            )
-        }
-        .green(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Train",
-        if stats.counts_exact {
-            format!(
-                "{} games | Val: {} games",
-                stats.train_count, stats.val_count
-            )
-        } else {
-            "streaming split, counts estimated while loading".to_string()
-        }
-        .green(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Buffer",
-        format!(
-            "{} samples (max {} games, archive_queue_bound={}, threads={})",
-            config.buffer_samples,
-            config.buffer_games,
-            config.archive_queue_bound,
-            display_num_threads(config.num_threads)
-        )
-        .yellow(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Optimizer batch",
-        format!(
-            "{} ({} x {} accum)",
-            config.batch_size,
-            config.microbatch_size.unwrap_or(config.batch_size),
-            stats.accum_steps
-        )
-        .yellow(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Optimized path",
-        optimized_path_summary(config).yellow(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "BC hyperparams",
-        bc_hyperparam_summary(train_hyperparams).yellow(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Epochs",
-        config.num_epochs.to_string().yellow(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Schedule",
-        format!(
-            "warmup+cosine (warmup_steps={}, max_train_steps={})",
-            train_hyperparams.warmup_steps,
-            config
-                .max_train_steps
-                .map(|steps| steps.to_string())
-                .unwrap_or_else(|| "epoch-derived".to_string())
-        )
-        .yellow(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "Output",
-        artifacts.root.display().to_string().green(),
-    );
-    hydra_train_exec::presentation::print_banner_field(
-        "TBoard",
-        if config.tensorboard {
-            artifacts.tb_session_dir.display().to_string().green()
-        } else {
-            "disabled".yellow()
-        },
-    );
-    println!();
 }
 
 #[cfg(test)]

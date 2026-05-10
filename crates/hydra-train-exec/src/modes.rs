@@ -1,68 +1,46 @@
 //! Train binary mode dispatch facade.
 //!
-//! This module owns the CLI mode selection order for the train executable without
-//! depending on the compatibility `hydra-train` crate. The binary supplies the
-//! concrete handlers while execution internals continue moving into this crate.
+//! This module owns the CLI mode selection order and default train-mode bodies
+//! without depending on the compatibility `hydra-train` crate.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use burn::backend::libtorch::{LibTorchDevice, TchTensor};
+use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
 use hydra_train_runtime::config::{
-    TrainCli, TrainConfig, configure_threads, device_label, display_num_threads, train_device,
-    validate_config,
+    PrecisionMode, TrainCli, TrainConfig, configure_threads, device_label, display_num_threads,
+    train_device, validate_config,
 };
 use hydra_train_runtime::preflight::{
     EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult,
 };
 use hydra_train_runtime::probe_request::{ProbeRequest, probe_request_from_cli};
+use hydra_train_types::config::BCTrainerConfig;
 
-use crate::artifacts::BcArtifactPaths;
+use crate::advisory::{AdvisoryDeduper, AdvisoryEvent, startup_runtime_advisories};
+use crate::artifacts::{BcArtifactPaths, append_advisory_event_to_writer};
+use crate::bootstrap::{
+    RlTrainingBootstrap, RlTrainingRuntime, TrainBackend, TrainingBootstrap, TrainingReaders,
+    TrainingRuntime, initialize_rl_training_bootstrap, initialize_training_bootstrap,
+};
+use crate::data_pipeline::TrainValidationLoader;
+use crate::delta_q_promotion::handle_delta_q_promotion_mode as run_delta_q_promotion_mode;
+use crate::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use crate::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use crate::presentation::{
+    BcHyperparamSummaryInput, bc_hyperparam_summary, explicit_preflight_recommendation,
     explicit_preflight_summary, format_advisory_line, format_preflight_selection_line,
     format_preflight_summary_line, format_probe_results_table, format_status_line,
-    format_timed_phase_message, print_banner_field, print_header_block, timestamped,
+    format_timed_phase_message, format_warning_line, print_banner_field, print_header_block,
+    timestamped,
 };
 use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
-
-/// Mode handlers supplied by the train binary during the cutover.
-///
-/// These callbacks are the temporary compatibility seam: dispatch order and CLI
-/// interpretation live here, while individual mode bodies can keep moving from
-/// bin-private modules into `hydra-train-exec` independently.
-pub trait TrainModeHandlers {
-    /// Runs explicit preflight mode.
-    fn handle_preflight_mode(
-        &mut self,
-        config_path: &Path,
-        config: &TrainConfig,
-    ) -> Result<(), String>;
-
-    /// Runs explicit probe-only mode.
-    fn handle_probe_mode(
-        &mut self,
-        config_path: &Path,
-        config: &TrainConfig,
-        request: ProbeRequest,
-    ) -> Result<(), String>;
-
-    /// Runs Delta-Q promotion mode.
-    fn handle_delta_q_promotion_mode(
-        &mut self,
-        config_path: &Path,
-        config: TrainConfig,
-        baseline_checkpoint: Option<PathBuf>,
-    ) -> Result<(), String>;
-
-    /// Runs the default training mode.
-    fn handle_training_mode(
-        &mut self,
-        config_path: &Path,
-        config: TrainConfig,
-    ) -> Result<(), String>;
-}
+use crate::resume::BestValidation;
+use crate::rl_runner::run_rl_training_loop;
+use crate::validation_runner::materialize_validation_samples;
 
 /// Runs explicit preflight mode for BC or RL training.
 pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result<(), String> {
@@ -292,105 +270,388 @@ pub fn format_probe_best_candidate_detail(kind: ProbeKind, selected: usize) -> S
     format!("{}={}", probe_kind_name(kind), selected)
 }
 
+type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
+
+fn bc_hyperparam_summary_input(train_cfg: &BCTrainerConfig) -> BcHyperparamSummaryInput {
+    BcHyperparamSummaryInput {
+        lr: train_cfg.lr,
+        min_learning_rate: train_cfg.min_learning_rate,
+        weight_decay: train_cfg.weight_decay.into(),
+        grad_clip_norm: train_cfg.grad_clip_norm.into(),
+        warmup_steps: train_cfg.warmup_steps,
+    }
+}
+
+fn model_kind(config: &HydraModelConfig) -> &'static str {
+    if config.is_learner() {
+        "learner"
+    } else {
+        "actor"
+    }
+}
+
+fn optimized_path_summary(config: &TrainConfig) -> String {
+    let shard_input = config.bc_shards_manifest_path.is_some();
+    let pinned_staging = cfg!(feature = "cuda-graph") && shard_input;
+    let preallocated_tensors = pinned_staging;
+    let copy_compute_overlap = if pinned_staging {
+        "unproven-single-buffer"
+    } else {
+        "off"
+    };
+    format!(
+        "input={} pinned_h2d={} prealloc_gpu_tensors={} cuda_graph_replay={} copy_compute_overlap={}",
+        if shard_input {
+            "bc_shards"
+        } else {
+            "raw_replay"
+        },
+        if pinned_staging { "on" } else { "off" },
+        if preallocated_tensors { "on" } else { "off" },
+        crate::presentation::cuda_graph_replay_label(),
+        copy_compute_overlap,
+    )
+}
+
+fn print_bc_training_banner(
+    model_config: &HydraModelConfig,
+    config: &TrainConfig,
+    artifacts: &BcArtifactPaths,
+    device_name: &str,
+    stats: &hydra_train_runtime::progress::BannerStats,
+    train_hyperparams: BcHyperparamSummaryInput,
+) {
+    print_header_block("Hydra BC trainer");
+    print_banner_field(
+        "Model",
+        format!(
+            "{} ({} blocks, {}ch)",
+            model_kind(model_config),
+            model_config.num_blocks,
+            model_config.hidden_channels
+        )
+        .green(),
+    );
+    print_banner_field("Device", device_name.green());
+    print_banner_field(
+        "Dataset",
+        if stats.counts_exact {
+            format!(
+                "{} ({} sources, {} games)",
+                config.data_dir.display(),
+                stats.total_sources,
+                stats.total_games
+            )
+        } else {
+            format!(
+                "{} ({} sources, archive counts deferred)",
+                config.data_dir.display(),
+                stats.total_sources,
+            )
+        }
+        .green(),
+    );
+    print_banner_field(
+        "Train",
+        if stats.counts_exact {
+            format!(
+                "{} games | Val: {} games",
+                stats.train_count, stats.val_count
+            )
+        } else {
+            "streaming split, counts estimated while loading".to_string()
+        }
+        .green(),
+    );
+    print_banner_field(
+        "Buffer",
+        format!(
+            "{} samples (max {} games, archive_queue_bound={}, threads={})",
+            config.buffer_samples,
+            config.buffer_games,
+            config.archive_queue_bound,
+            display_num_threads(config.num_threads)
+        )
+        .yellow(),
+    );
+    print_banner_field(
+        "Optimizer batch",
+        format!(
+            "{} ({} x {} accum)",
+            config.batch_size,
+            config.microbatch_size.unwrap_or(config.batch_size),
+            stats.accum_steps
+        )
+        .yellow(),
+    );
+    print_banner_field("Optimized path", optimized_path_summary(config).yellow());
+    print_banner_field(
+        "BC hyperparams",
+        bc_hyperparam_summary(train_hyperparams).yellow(),
+    );
+    print_banner_field("Epochs", config.num_epochs.to_string().yellow());
+    print_banner_field(
+        "Schedule",
+        format!(
+            "warmup+cosine (warmup_steps={}, max_train_steps={})",
+            train_hyperparams.warmup_steps,
+            config
+                .max_train_steps
+                .map(|steps| steps.to_string())
+                .unwrap_or_else(|| "epoch-derived".to_string())
+        )
+        .yellow(),
+    );
+    print_banner_field("Output", artifacts.root.display().to_string().green());
+    print_banner_field(
+        "TBoard",
+        if config.tensorboard {
+            artifacts.tb_session_dir.display().to_string().green()
+        } else {
+            "disabled".yellow()
+        },
+    );
+    println!();
+}
+
+fn run_bc_training_mode_for_backend<B>(
+    bootstrap: TrainingBootstrap<B>,
+    runtime: TrainingRuntime<B>,
+    readers: TrainingReaders,
+) -> Result<(), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+{
+    let TrainingBootstrap {
+        config,
+        resume,
+        artifacts,
+        loader_config,
+        manifest,
+        train_cfg,
+        model_config,
+        device_name,
+        train_device,
+        current_runtime,
+        microbatch_explicitness,
+        session_start_global_step,
+        total_steps,
+        microbatch_size,
+        use_amp,
+        banner_stats,
+        loss_fn,
+        valid_loss_fn,
+        bc_exit_cfg,
+    } = bootstrap;
+    let TrainingRuntime {
+        model,
+        mut optimizer,
+        mut best_validation,
+        mut global_step,
+        run_start,
+        mut last_log_step,
+        mut last_log_time,
+        mut tb,
+        mut training_log,
+        mut step_log,
+        mut head_controller,
+    } = runtime;
+    let TrainingReaders = readers;
+
+    print_bc_training_banner(
+        &model_config,
+        &config,
+        &artifacts,
+        &device_name,
+        &banner_stats,
+        bc_hyperparam_summary_input(&train_cfg),
+    );
+    resume.print_banner_with_effective_runtime(Some(current_runtime));
+    let mut advisory_deduper = AdvisoryDeduper::new();
+    let startup_advisories =
+        advisory_deduper.retain_new(startup_runtime_advisories(&config, microbatch_explicitness));
+    for advisory in &startup_advisories {
+        println!("{}", format_advisory_line(advisory));
+    }
+    if !startup_advisories.is_empty() {
+        append_advisory_event_to_writer(
+            &mut step_log,
+            &AdvisoryEvent::startup(&startup_advisories),
+        )?;
+    }
+    let cached_validation_samples = if config.bc_shards_manifest_path.is_some() {
+        None
+    } else {
+        materialize_validation_samples(
+            &config,
+            &TrainValidationLoader {
+                config: &loader_config,
+            },
+            &manifest,
+        )?
+    };
+    let mut model = Some(model);
+
+    for epoch in resume.start_epoch..config.num_epochs {
+        let outcome = run_epoch(
+            EpochRunnerContext {
+                epoch,
+                config: &config,
+                manifest: &manifest,
+                loader_config: &loader_config,
+                artifacts: &artifacts,
+                train_cfg: &train_cfg,
+                loss_fn: &loss_fn,
+                valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &bc_exit_cfg,
+                train_device: &train_device,
+                session_start_global_step,
+                steps_to_skip: resume.steps_to_skip_for_epoch(epoch),
+                microbatch_size,
+                use_amp,
+                total_steps,
+                current_runtime,
+                run_start: &run_start,
+                head_controller: &mut head_controller,
+                cached_validation_samples: cached_validation_samples.as_deref(),
+            },
+            EpochRuntimeMut {
+                model: &mut model,
+                optimizer: &mut optimizer,
+                global_step: &mut global_step,
+                best_validation: &mut best_validation,
+                tb: &mut tb,
+                training_log: &mut training_log,
+                step_log: &mut step_log,
+                last_log_step: &mut last_log_step,
+                last_log_time: &mut last_log_time,
+            },
+        )?;
+        if outcome.stop_after_epoch {
+            break;
+        }
+    }
+
+    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_none() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {}",
+                "Finished BC training. Best validation policy CE:"
+                    .bold()
+                    .cyan(),
+                format_best_validation_summary(best_validation.as_ref())
+                    .bold()
+                    .green()
+            ))
+        );
+    }
+
+    Ok(())
+}
+
+/// Runs default BC/RL training mode.
+pub fn handle_training_mode(config_path: &Path, config: TrainConfig) -> Result<(), String> {
+    println!(
+        "{}",
+        format_warning_line(explicit_preflight_recommendation())
+    );
+    if let Some(rl_cfg) = config.rl.clone() {
+        if matches!(config.precision_mode, PrecisionMode::Bf16Autocast) {
+            return Err(
+                "precision_mode=bf16_autocast is not supported for RL training yet".to_string(),
+            );
+        }
+        let (bootstrap, runtime) = initialize_rl_training_bootstrap(config_path, config, rl_cfg)?;
+        let RlTrainingBootstrap {
+            config: _,
+            rl_config,
+            artifacts,
+            model_config,
+            device_name,
+            ..
+        } = &bootstrap;
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} mode=rl phase={:?} games_per_batch={} device={} artifacts={} model={} ",
+                "Hydra RL training".bold().cyan(),
+                rl_config.phase,
+                rl_config.games_per_batch,
+                device_name,
+                artifacts.root.display(),
+                if model_config.is_learner() {
+                    "learner"
+                } else {
+                    "actor"
+                },
+            ))
+        );
+        let runtime: RlTrainingRuntime = runtime;
+        return run_rl_training_loop(bootstrap, runtime);
+    }
+    let (bootstrap, runtime, readers) = initialize_training_bootstrap(config_path, config)?;
+    run_bc_training_mode_for_backend::<TrainBackend>(bootstrap, runtime, readers)
+}
+
+/// Runs Delta-Q promotion mode for the default train backend.
+pub fn handle_delta_q_promotion_mode(
+    config_path: &Path,
+    config: TrainConfig,
+    baseline_checkpoint: Option<PathBuf>,
+) -> Result<(), String> {
+    run_delta_q_promotion_mode::<TrainBackend>(config_path, config, baseline_checkpoint)
+}
+
+/// Formats the final best-validation summary.
+pub fn format_best_validation_summary(best_validation: Option<&BestValidation>) -> String {
+    if let Some(best_validation) = best_validation {
+        format!(
+            "{:.4} (agree {:.2}%)",
+            best_validation.policy_loss,
+            best_validation.agreement * 100.0
+        )
+    } else {
+        "n/a".to_string()
+    }
+}
+
 /// Dispatches the parsed train CLI into the selected execution mode.
 ///
 /// The order preserves the previous train binary behavior:
 /// preflight, Delta-Q promotion, probe-only, then default training. Probe-only
 /// request defaults are resolved against the already-loaded config here so the
 /// binary no longer owns mode selection semantics.
-pub fn run_train_modes<H>(
-    cli: TrainCli,
-    config: TrainConfig,
-    handlers: &mut H,
-) -> Result<(), String>
-where
-    H: TrainModeHandlers,
-{
+pub fn run_train_modes(cli: TrainCli, config: TrainConfig) -> Result<(), String> {
     if cli.preflight {
-        return handlers.handle_preflight_mode(&cli.config_path, &config);
+        return handle_preflight_mode(&cli.config_path, &config);
     }
     if cli.delta_q_promotion {
-        return handlers.handle_delta_q_promotion_mode(
+        return handle_delta_q_promotion_mode(
             &cli.config_path,
             config,
             cli.delta_q_baseline_checkpoint,
         );
     }
     if let Some(request) = probe_request_from_cli(&config, cli.probe_only)? {
-        return handlers.handle_probe_mode(&cli.config_path, &config, request);
+        return handle_probe_mode(&cli.config_path, &config, request);
     }
-    handlers.handle_training_mode(&cli.config_path, config)
+    handle_training_mode(&cli.config_path, config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_test_path as shared_unique_test_path;
     use hydra_train_runtime::config::{
-        BcHyperparamConfig, ProbeCliRequest, TrainConfig, ValidationGateConfig,
+        BcHyperparamConfig, ProbeCliRequest, RlTrainConfig, TrainConfig, ValidationGateConfig,
     };
     use hydra_train_runtime::preflight::{
         EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PreflightConfig, ProbeKind,
         ProbeResult, ProbeStatus, SelectedRuntimeConfig,
     };
-
-    #[derive(Default)]
-    struct RecordingHandlers {
-        calls: Vec<String>,
-    }
-
-    impl TrainModeHandlers for RecordingHandlers {
-        fn handle_preflight_mode(
-            &mut self,
-            config_path: &Path,
-            _config: &TrainConfig,
-        ) -> Result<(), String> {
-            self.calls
-                .push(format!("preflight:{}", config_path.display()));
-            Ok(())
-        }
-
-        fn handle_probe_mode(
-            &mut self,
-            config_path: &Path,
-            _config: &TrainConfig,
-            request: ProbeRequest,
-        ) -> Result<(), String> {
-            self.calls.push(format!(
-                "probe:{}:{}:{}:{}",
-                config_path.display(),
-                request.kind as u8,
-                request.candidate_microbatch,
-                request.warmup_steps,
-            ));
-            Ok(())
-        }
-
-        fn handle_delta_q_promotion_mode(
-            &mut self,
-            config_path: &Path,
-            _config: TrainConfig,
-            baseline_checkpoint: Option<PathBuf>,
-        ) -> Result<(), String> {
-            self.calls.push(format!(
-                "delta_q:{}:{}",
-                config_path.display(),
-                baseline_checkpoint
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "none".to_string()),
-            ));
-            Ok(())
-        }
-
-        fn handle_training_mode(
-            &mut self,
-            config_path: &Path,
-            _config: TrainConfig,
-        ) -> Result<(), String> {
-            self.calls.push(format!("train:{}", config_path.display()));
-            Ok(())
-        }
-    }
 
     fn cli() -> TrainCli {
         TrainCli {
@@ -462,6 +723,17 @@ mod tests {
             warmup_steps: 4,
             measure_steps: 8,
         }
+    }
+
+    fn dummy_best_validation(policy_loss: f64, agreement: f64) -> BestValidation {
+        BestValidation {
+            policy_loss,
+            agreement,
+        }
+    }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        shared_unique_test_path("hydra-modes-test", label)
     }
 
     #[test]
@@ -543,6 +815,25 @@ mod tests {
     }
 
     #[test]
+    fn format_best_validation_summary_formats_metrics_and_none_case() {
+        let summary = dummy_best_validation(0.125, 0.875);
+        assert_eq!(
+            format_best_validation_summary(Some(&summary)),
+            "0.1250 (agree 87.50%)"
+        );
+        assert_eq!(format_best_validation_summary(None), "n/a");
+    }
+
+    #[test]
+    fn format_best_validation_summary_rounds_and_handles_zero_agreement() {
+        let summary = dummy_best_validation(1.0 / 3.0, 0.0);
+        assert_eq!(
+            format_best_validation_summary(Some(&summary)),
+            "0.3333 (agree 0.00%)"
+        );
+    }
+
+    #[test]
     fn handle_probe_mode_validates_config_before_probe_runtime() {
         let mut config = config();
         config.batch_size = 0;
@@ -562,11 +853,12 @@ mod tests {
         let mut cli = cli();
         cli.preflight = true;
         cli.delta_q_promotion = true;
-        let mut handlers = RecordingHandlers::default();
+        let mut config = config();
+        config.batch_size = 0;
 
-        run_train_modes(cli, config(), &mut handlers).expect("dispatch should succeed");
+        let err = run_train_modes(cli, config).expect_err("preflight should validate first");
 
-        assert_eq!(handlers.calls, ["preflight:config.yaml"]);
+        assert_eq!(err, "batch_size must be greater than 0");
     }
 
     #[test]
@@ -580,11 +872,12 @@ mod tests {
             warmup_steps: Some(2),
             measure_steps: Some(3),
         });
-        let mut handlers = RecordingHandlers::default();
+        let mut config = config();
+        config.buffer_samples = 0;
 
-        run_train_modes(cli, config(), &mut handlers).expect("dispatch should succeed");
+        let err = run_train_modes(cli, config).expect_err("delta-q should validate first");
 
-        assert_eq!(handlers.calls, ["delta_q:config.yaml:baseline.mpk"]);
+        assert_eq!(err, "buffer_samples must be greater than 0");
     }
 
     #[test]
@@ -598,24 +891,25 @@ mod tests {
         });
         let mut config = config();
         config.preflight.warmup_steps = 7;
-        let mut handlers = RecordingHandlers::default();
+        config.batch_size = 0;
 
-        run_train_modes(cli, config, &mut handlers).expect("dispatch should succeed");
+        let err = run_train_modes(cli, config).expect_err("probe mode should validate first");
 
-        assert_eq!(handlers.calls, ["probe:config.yaml:1:64:7"]);
+        assert_eq!(err, "batch_size must be greater than 0");
     }
 
     #[test]
     fn dispatches_default_training_mode() {
-        let mut handlers = RecordingHandlers::default();
+        let mut config = config();
+        config.archive_queue_bound = 0;
 
-        run_train_modes(cli(), config(), &mut handlers).expect("dispatch should succeed");
+        let err = run_train_modes(cli(), config).expect_err("training should validate first");
 
-        assert_eq!(handlers.calls, ["train:config.yaml"]);
+        assert_eq!(err, "archive_queue_bound must be greater than 0");
     }
 
     #[test]
-    fn returns_probe_resolution_errors_before_handler_call() {
+    fn returns_probe_resolution_errors_before_mode_call() {
         let mut cli = cli();
         cli.probe_only = Some(ProbeCliRequest {
             kind: ProbeKind::Train,
@@ -623,12 +917,56 @@ mod tests {
             warmup_steps: Some(1),
             measure_steps: Some(1),
         });
-        let mut handlers = RecordingHandlers::default();
 
-        let err = run_train_modes(cli, config(), &mut handlers)
-            .expect_err("invalid probe request should fail");
+        let err = run_train_modes(cli, config()).expect_err("invalid probe request should fail");
 
         assert_eq!(err, "--probe-candidate-microbatch must be greater than 0");
-        assert!(handlers.calls.is_empty());
+    }
+
+    #[test]
+    fn handle_training_mode_returns_validation_errors_from_bootstrap() {
+        let mut config = config();
+        config.archive_queue_bound = 0;
+
+        let err = handle_training_mode(Path::new("config.yaml"), config)
+            .expect_err("invalid config should fail before training bootstrap work");
+        assert_eq!(err, "archive_queue_bound must be greater than 0");
+    }
+
+    #[test]
+    fn handle_training_mode_rl_branch_rejects_invalid_device_before_runtime_work() {
+        let mut config = config();
+        config.rl = Some(RlTrainConfig::default());
+        config.device = "definitely-not-a-device".to_string();
+
+        let err = handle_training_mode(Path::new("config.yaml"), config)
+            .expect_err("invalid RL device should fail before bootstrap runtime work");
+
+        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
+    }
+
+    #[test]
+    fn handle_training_mode_bc_branch_bubbles_bootstrap_errors_before_device_runtime_work() {
+        let mut config = config();
+        config.data_dir = unique_test_path("missing-bc-train-data");
+        config.output_dir = unique_test_path("bc-train-out");
+
+        let err = handle_training_mode(Path::new("config.yaml"), config)
+            .expect_err("missing BC data should fail while bootstrap initializes training mode");
+
+        assert!(
+            err.contains("failed to scan data_dir") || err.contains("No such file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_delta_q_promotion_mode_returns_validation_errors_from_bootstrap() {
+        let mut config = config();
+        config.buffer_samples = 0;
+
+        let err = handle_delta_q_promotion_mode(Path::new("config.yaml"), config, None)
+            .expect_err("invalid config should fail before promotion runtime");
+        assert_eq!(err, "buffer_samples must be greater than 0");
     }
 }

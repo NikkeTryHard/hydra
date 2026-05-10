@@ -1,253 +1,32 @@
-use colored::Colorize;
-use std::path::PathBuf;
-
-use burn::backend::libtorch::{LibTorchDevice, TchTensor};
-use burn::tensor::backend::{AutodiffBackend, Backend};
-use hydra_train_exec::delta_q_promotion::handle_delta_q_promotion_mode as run_exec_delta_q_promotion_mode;
-use hydra_train_exec::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use hydra_train_exec::modes::{
+    handle_delta_q_promotion_mode as run_exec_delta_q_promotion_mode,
     handle_preflight_mode as run_exec_preflight_mode, handle_probe_mode as run_exec_probe_mode,
 };
-
-use super::TrainBackend;
-use super::advisory::{AdvisoryDeduper, AdvisoryEvent, startup_runtime_advisories};
-use super::bootstrap::TrainingReaders;
-use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
-use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
-use super::config::TrainConfig;
-use super::presentation::{
-    bc_hyperparam_summary_input, explicit_preflight_recommendation, format_advisory_line,
-    format_warning_line, print_banner, timestamped,
-};
-use super::rl_runner::run_rl_training_loop;
-use hydra_train_exec::data_pipeline::TrainValidationLoader;
-use hydra_train_exec::validation_runner::materialize_validation_samples;
+use hydra_train_runtime::config::TrainConfig;
 use hydra_train_runtime::probe_request::ProbeRequest;
-
-type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
-
-fn run_bc_training_mode_for_backend<B>(
-    bootstrap: TrainingBootstrap<B>,
-    runtime: TrainingRuntime<B>,
-    readers: TrainingReaders,
-) -> Result<(), String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
-{
-    let TrainingBootstrap {
-        config,
-        resume,
-        artifacts,
-        loader_config,
-        manifest,
-        train_cfg,
-        model_config,
-        device_name,
-        train_device,
-        current_runtime,
-        microbatch_explicitness,
-        session_start_global_step,
-        total_steps,
-        microbatch_size,
-        use_amp,
-        banner_stats,
-        loss_fn,
-        valid_loss_fn,
-        bc_exit_cfg,
-    } = bootstrap;
-    let TrainingRuntime {
-        model,
-        mut optimizer,
-        mut best_validation,
-        mut global_step,
-        run_start,
-        mut last_log_step,
-        mut last_log_time,
-        mut tb,
-        mut training_log,
-        mut step_log,
-        mut head_controller,
-    } = runtime;
-    let TrainingReaders = readers;
-
-    print_banner(
-        &model_config,
-        &config,
-        &artifacts,
-        &device_name,
-        &banner_stats,
-        bc_hyperparam_summary_input(&train_cfg),
-    );
-    resume.print_banner_with_effective_runtime(Some(current_runtime));
-    let mut advisory_deduper = AdvisoryDeduper::new();
-    let startup_advisories =
-        advisory_deduper.retain_new(startup_runtime_advisories(&config, microbatch_explicitness));
-    for advisory in &startup_advisories {
-        println!("{}", format_advisory_line(advisory));
-    }
-    if !startup_advisories.is_empty() {
-        super::artifacts::append_advisory_event_to_writer(
-            &mut step_log,
-            &AdvisoryEvent::startup(&startup_advisories),
-        )?;
-    }
-    let cached_validation_samples = if config.bc_shards_manifest_path.is_some() {
-        None
-    } else {
-        materialize_validation_samples(
-            &config,
-            &TrainValidationLoader {
-                config: &loader_config,
-            },
-            &manifest,
-        )?
-    };
-    let mut model = Some(model);
-
-    for epoch in resume.start_epoch..config.num_epochs {
-        let outcome = run_epoch(
-            EpochRunnerContext {
-                epoch,
-                config: &config,
-                manifest: &manifest,
-                loader_config: &loader_config,
-                artifacts: &artifacts,
-                train_cfg: &train_cfg,
-                loss_fn: &loss_fn,
-                valid_loss_fn: &valid_loss_fn,
-                bc_exit_cfg: &bc_exit_cfg,
-                train_device: &train_device,
-                session_start_global_step,
-                steps_to_skip: resume.steps_to_skip_for_epoch(epoch),
-                microbatch_size,
-                use_amp,
-                total_steps,
-                current_runtime,
-                run_start: &run_start,
-                head_controller: &mut head_controller,
-                cached_validation_samples: cached_validation_samples.as_deref(),
-            },
-            EpochRuntimeMut {
-                model: &mut model,
-                optimizer: &mut optimizer,
-                global_step: &mut global_step,
-                best_validation: &mut best_validation,
-                tb: &mut tb,
-                training_log: &mut training_log,
-                step_log: &mut step_log,
-                last_log_step: &mut last_log_step,
-                last_log_time: &mut last_log_time,
-            },
-        )?;
-        if outcome.stop_after_epoch {
-            break;
-        }
-    }
-
-    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_none() {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} {}",
-                "Finished BC training. Best validation policy CE:"
-                    .bold()
-                    .cyan(),
-                format_best_validation_summary(best_validation.as_ref())
-                    .bold()
-                    .green()
-            ))
-        );
-    }
-
-    Ok(())
-}
+use std::path::{Path, PathBuf};
 
 pub(super) fn handle_preflight_mode(
-    config_path: &std::path::Path,
+    config_path: &Path,
     config: &TrainConfig,
 ) -> Result<(), String> {
     run_exec_preflight_mode(config_path, config)
 }
 
 pub(super) fn handle_probe_mode(
-    config_path: &std::path::Path,
+    config_path: &Path,
     config: &TrainConfig,
     request: ProbeRequest,
 ) -> Result<(), String> {
     run_exec_probe_mode(config_path, config, request)
 }
 
-pub(super) fn handle_training_mode(
-    config_path: &std::path::Path,
-    config: TrainConfig,
-) -> Result<(), String> {
-    println!(
-        "{}",
-        format_warning_line(explicit_preflight_recommendation())
-    );
-    if let Some(rl_cfg) = config.rl.clone() {
-        if matches!(
-            config.precision_mode,
-            crate::config::PrecisionMode::Bf16Autocast
-        ) {
-            return Err(
-                "precision_mode=bf16_autocast is not supported for RL training yet".to_string(),
-            );
-        }
-        let (bootstrap, runtime) = initialize_rl_training_bootstrap(config_path, config, rl_cfg)?;
-        let RlTrainingBootstrap {
-            config: _,
-            rl_config,
-            artifacts,
-            model_config,
-            device_name,
-            ..
-        } = &bootstrap;
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} mode=rl phase={:?} games_per_batch={} device={} artifacts={} model={} ",
-                "Hydra RL training".bold().cyan(),
-                rl_config.phase,
-                rl_config.games_per_batch,
-                device_name,
-                artifacts.root.display(),
-                if model_config.is_learner() {
-                    "learner"
-                } else {
-                    "actor"
-                },
-            ))
-        );
-        let _runtime: RlTrainingRuntime = runtime;
-        return run_rl_training_loop(bootstrap, _runtime);
-    }
-    let (bootstrap, runtime, readers) = initialize_training_bootstrap(config_path, config)?;
-    run_bc_training_mode_for_backend::<TrainBackend>(bootstrap, runtime, readers)
-}
-
 pub(super) fn handle_delta_q_promotion_mode(
-    config_path: &std::path::Path,
+    config_path: &Path,
     config: TrainConfig,
     baseline_checkpoint: Option<PathBuf>,
 ) -> Result<(), String> {
-    run_exec_delta_q_promotion_mode::<TrainBackend>(config_path, config, baseline_checkpoint)
-}
-
-fn format_best_validation_summary(
-    best_validation: Option<&super::resume::BestValidation>,
-) -> String {
-    if let Some(best_validation) = best_validation {
-        format!(
-            "{:.4} (agree {:.2}%)",
-            best_validation.policy_loss,
-            best_validation.agreement * 100.0
-        )
-    } else {
-        "n/a".to_string()
-    }
+    run_exec_delta_q_promotion_mode(config_path, config, baseline_checkpoint)
 }
 
 #[cfg(test)]
@@ -269,7 +48,6 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::super::config::{RlTrainConfig, TrainConfig};
-    use super::super::resume::BestValidation;
     use super::*;
     use crate::test_support::{dummy_train_config, unique_test_path as shared_unique_test_path};
 
@@ -300,13 +78,6 @@ mod tests {
             measured_samples_per_second: Some(if selected { 512.0 } else { 384.0 }),
             elapsed_seconds: Some(if selected { 1.5 } else { 2.0 }),
             detail: String::new(),
-        }
-    }
-
-    fn dummy_best_validation(policy_loss: f64, agreement: f64) -> BestValidation {
-        BestValidation {
-            policy_loss,
-            agreement,
         }
     }
 
@@ -343,16 +114,6 @@ mod tests {
         assert!(message.contains("rl_games"));
         assert!(message.contains("candidate_mb"));
         assert!(message.contains("yes       24"));
-    }
-
-    #[test]
-    fn format_best_validation_summary_formats_metrics_and_none_case() {
-        let summary = dummy_best_validation(0.125, 0.875);
-        assert_eq!(
-            format_best_validation_summary(Some(&summary)),
-            "0.1250 (agree 87.50%)"
-        );
-        assert_eq!(format_best_validation_summary(None), "n/a");
     }
 
     #[test]
@@ -600,52 +361,6 @@ mod tests {
     }
 
     #[test]
-    fn handle_training_mode_returns_validation_errors_from_bootstrap() {
-        let mut config = dummy_config();
-        config.archive_queue_bound = 0;
-
-        let err = handle_training_mode(Path::new("config.yaml"), config)
-            .expect_err("invalid config should fail before training bootstrap work");
-        assert_eq!(err, "archive_queue_bound must be greater than 0");
-    }
-
-    #[test]
-    fn handle_training_mode_rl_branch_rejects_invalid_device_before_runtime_work() {
-        let mut config = dummy_config();
-        config.rl = Some(RlTrainConfig::default());
-        config.device = "definitely-not-a-device".to_string();
-
-        let err = handle_training_mode(Path::new("config.yaml"), config)
-            .expect_err("invalid RL device should fail before bootstrap runtime work");
-
-        assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
-    }
-
-    #[test]
-    fn handle_training_mode_bc_branch_bubbles_bootstrap_errors_before_device_runtime_work() {
-        let mut config = dummy_config();
-        config.data_dir = unique_test_path("missing-bc-train-data");
-        config.output_dir = unique_test_path("bc-train-out");
-
-        let err = handle_training_mode(Path::new("config.yaml"), config)
-            .expect_err("missing BC data should fail while bootstrap initializes training mode");
-
-        assert!(
-            err.contains("failed to read data dir") || err.contains("failed to scan MJAI data")
-        );
-    }
-
-    #[test]
-    fn handle_delta_q_promotion_mode_returns_validation_errors_from_bootstrap() {
-        let mut config = dummy_config();
-        config.buffer_samples = 0;
-
-        let err = handle_delta_q_promotion_mode(Path::new("config.yaml"), config, None)
-            .expect_err("invalid config should fail before promotion runtime");
-        assert_eq!(err, "buffer_samples must be greater than 0");
-    }
-
-    #[test]
     fn handle_delta_q_promotion_mode_requires_baseline_checkpoint_after_bootstrap() {
         let mut config = dummy_config();
         let data_dir = unique_test_path("promotion-data");
@@ -761,15 +476,6 @@ mod tests {
         assert!(message.contains("Validation probe table"));
         assert!(message.contains("validation"));
         assert!(message.contains("candidate_mb"));
-    }
-
-    #[test]
-    fn format_best_validation_summary_rounds_and_handles_zero_agreement() {
-        let summary = dummy_best_validation(1.0 / 3.0, 0.0);
-        assert_eq!(
-            format_best_validation_summary(Some(&summary)),
-            "0.3333 (agree 0.00%)"
-        );
     }
 
     #[test]
