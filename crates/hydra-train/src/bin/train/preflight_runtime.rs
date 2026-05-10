@@ -20,7 +20,7 @@ use hydra_train::model::{HydraModel, HydraModelConfig, HydraTrainModelExt};
 use hydra_train::preflight::ManifestCacheEntry;
 use hydra_train::preflight::{
     BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
-    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PROFILING_STAGE_CHECKPOINT,
+    EffectiveRuntimeConfig, LoaderRuntimeConfig, PROFILING_STAGE_CHECKPOINT,
     PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK, PROFILING_STAGE_TRAIN,
     PROFILING_STAGE_VALIDATION, PreflightConfig, ProbeKind, ProbeResult, ProbeStatus,
     ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
@@ -31,7 +31,7 @@ use hydra_train::training::losses::HydraLoss;
 use tboard::EventWriter;
 
 use super::TrainBackend;
-use super::advisory::{RuntimeAdvisory, selected_runtime_probe_advisories};
+use super::advisory::selected_runtime_probe_advisories;
 #[cfg(test)]
 use super::artifacts::write_manifest_cache;
 use super::artifacts::{
@@ -158,21 +158,8 @@ fn advance_probe_loop(
     Ok(None)
 }
 
-pub(super) struct PreflightRuntime {
-    pub(super) runtime: EffectiveRuntimeConfig,
-    pub(super) train_probe_results: Vec<ProbeResult>,
-    pub(super) validation_probe_results: Vec<ProbeResult>,
-    pub(super) benchmark: Option<BenchmarkResult>,
-    pub(super) advisories: Vec<RuntimeAdvisory>,
-    pub(super) explicit: ExplicitSettings,
-}
-
-pub(super) struct RlPreflightRuntime {
-    pub(super) selected_games_per_batch: usize,
-    pub(super) selected_microbatch_size: usize,
-    pub(super) rl_games_probe_results: Vec<ProbeResult>,
-    pub(super) rl_microbatch_probe_results: Vec<ProbeResult>,
-}
+pub(super) type PreflightRuntime = hydra_train_exec::preflight_runtime::PreflightRuntime;
+pub(super) type RlPreflightRuntime = hydra_train_exec::preflight_runtime::RlPreflightRuntime;
 
 #[derive(Debug, Clone)]
 struct BenchmarkFinalist {

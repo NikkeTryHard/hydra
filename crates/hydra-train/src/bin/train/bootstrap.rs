@@ -91,78 +91,78 @@ fn apply_cached_bc_runtime_if_matching(
     )
 }
 
-pub(super) struct TrainingBootstrap<B>
+pub struct TrainingBootstrap<B>
 where
     B: AutodiffBackend,
 {
-    pub(super) config: TrainConfig,
-    pub(super) resume: ResumeContext,
-    pub(super) artifacts: BcArtifactPaths,
-    pub(super) loader_config: StreamingLoaderConfig,
-    pub(super) manifest: DataManifest,
-    pub(super) train_cfg: BCTrainerConfig,
-    pub(super) model_config: HydraModelConfig,
-    pub(super) device_name: String,
-    pub(super) train_device: LibTorchDevice,
-    pub(super) current_runtime: super::resume::RuntimeResumeContract,
-    pub(super) microbatch_explicitness: MicrobatchExplicitness,
-    pub(super) session_start_global_step: usize,
-    pub(super) total_steps: usize,
-    pub(super) microbatch_size: usize,
-    pub(super) use_amp: bool,
-    pub(super) banner_stats: BannerStats,
-    pub(super) loss_fn: HydraLoss<B>,
-    pub(super) valid_loss_fn: HydraLoss<ValidBackendOf<B>>,
-    pub(super) bc_exit_cfg: BcExitConfig,
+    pub config: TrainConfig,
+    pub resume: ResumeContext,
+    pub artifacts: BcArtifactPaths,
+    pub loader_config: StreamingLoaderConfig,
+    pub manifest: DataManifest,
+    pub train_cfg: BCTrainerConfig,
+    pub model_config: HydraModelConfig,
+    pub device_name: String,
+    pub train_device: LibTorchDevice,
+    pub current_runtime: super::resume::RuntimeResumeContract,
+    pub microbatch_explicitness: MicrobatchExplicitness,
+    pub session_start_global_step: usize,
+    pub total_steps: usize,
+    pub microbatch_size: usize,
+    pub use_amp: bool,
+    pub banner_stats: BannerStats,
+    pub loss_fn: HydraLoss<B>,
+    pub valid_loss_fn: HydraLoss<ValidBackendOf<B>>,
+    pub bc_exit_cfg: BcExitConfig,
 }
 
-pub(super) struct TrainingRuntime<B>
+pub struct TrainingRuntime<B>
 where
     B: AutodiffBackend,
 {
-    pub(super) model: HydraModel<B>,
-    pub(super) optimizer: OptimizerAdaptor<Adam, HydraModel<B>, B>,
-    pub(super) best_validation: Option<super::resume::BestValidation>,
-    pub(super) global_step: usize,
-    pub(super) run_start: Instant,
-    pub(super) last_log_step: usize,
-    pub(super) last_log_time: Instant,
-    pub(super) tb: Option<EventWriter<std::fs::File>>,
-    pub(super) training_log: JsonlAppender,
-    pub(super) step_log: JsonlAppender,
-    pub(super) head_controller: HeadActivationController,
+    pub model: HydraModel<B>,
+    pub optimizer: OptimizerAdaptor<Adam, HydraModel<B>, B>,
+    pub best_validation: Option<super::resume::BestValidation>,
+    pub global_step: usize,
+    pub run_start: Instant,
+    pub last_log_step: usize,
+    pub last_log_time: Instant,
+    pub tb: Option<EventWriter<std::fs::File>>,
+    pub training_log: JsonlAppender,
+    pub step_log: JsonlAppender,
+    pub head_controller: HeadActivationController,
 }
 
-pub(super) struct TrainingReaders;
+pub struct TrainingReaders;
 
-pub(super) struct RlTrainingBootstrap {
-    pub(super) config: TrainConfig,
-    pub(super) rl_config: RlTrainConfig,
-    pub(super) resume: RlResumeContext,
-    pub(super) artifacts: RlArtifactPaths,
-    pub(super) model_config: HydraModelConfig,
-    pub(super) device_name: String,
-    pub(super) train_device: LibTorchDevice,
-    pub(super) current_runtime: RlRuntimeResumeContract,
-    pub(super) session_start_global_step: usize,
-    pub(super) total_steps: usize,
-    pub(super) loss_fn: HydraLoss<TrainBackend>,
-    pub(super) rl_step_cfg: RlConfig,
-    pub(super) gae_config: GaeConfig,
+pub struct RlTrainingBootstrap {
+    pub config: TrainConfig,
+    pub rl_config: RlTrainConfig,
+    pub resume: RlResumeContext,
+    pub artifacts: RlArtifactPaths,
+    pub model_config: HydraModelConfig,
+    pub device_name: String,
+    pub train_device: LibTorchDevice,
+    pub current_runtime: RlRuntimeResumeContract,
+    pub session_start_global_step: usize,
+    pub total_steps: usize,
+    pub loss_fn: HydraLoss<TrainBackend>,
+    pub rl_step_cfg: RlConfig,
+    pub gae_config: GaeConfig,
 }
 
-pub(super) struct RlTrainingRuntime {
-    pub(super) model: HydraModel<TrainBackend>,
-    pub(super) optimizer: OptimizerAdaptor<Adam, HydraModel<TrainBackend>, TrainBackend>,
-    pub(super) global_step: usize,
-    pub(super) run_start: Instant,
-    pub(super) last_log_step: usize,
-    pub(super) last_log_time: Instant,
-    pub(super) tb: Option<EventWriter<std::fs::File>>,
-    pub(super) step_log: JsonlAppender,
-    pub(super) pipeline_state: PipelineState,
-    pub(super) head_controller: HeadActivationController,
-    pub(super) self_play_coordinator: CooperativeSelfPlayCoordinator,
+pub struct RlTrainingRuntime {
+    pub model: HydraModel<TrainBackend>,
+    pub optimizer: OptimizerAdaptor<Adam, HydraModel<TrainBackend>, TrainBackend>,
+    pub global_step: usize,
+    pub run_start: Instant,
+    pub last_log_step: usize,
+    pub last_log_time: Instant,
+    pub tb: Option<EventWriter<std::fs::File>>,
+    pub step_log: JsonlAppender,
+    pub pipeline_state: PipelineState,
+    pub head_controller: HeadActivationController,
+    pub self_play_coordinator: CooperativeSelfPlayCoordinator,
 }
 
 fn initialize_training_bootstrap_for_backend_with_model_config<B>(
