@@ -77,7 +77,7 @@ use super::probe_transport::{
     ProbeBatchArtifact, probe_result_path, rl_probe_result_path, write_probe_batch_artifact,
     write_probe_result,
 };
-use super::progress::{ScalarAverages, StepLogEntry, batch_stats_from_outputs};
+use super::progress::{ScalarAverages, StepLogEntry};
 use super::resume::{BestValidation, EpochContinuation, runtime_resume_contract};
 use super::runtime_autotune::{
     LoaderRuntimeScoreSeed, RankedLoaderRuntime, RuntimeTupleStats,
@@ -88,6 +88,7 @@ use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, materialize_validation_samples,
     run_validation, run_validation_from_shards,
 };
+use hydra_train_runtime::bc_metrics::batch_stats_from_outputs;
 use hydra_train_runtime::validation::ValidationRunLimits;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;

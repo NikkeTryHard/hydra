@@ -391,7 +391,8 @@ where
         delta_q_scope,
     } = context;
     let previous_best = *best_validation;
-    let gate_decision = evaluate_validation_gates(config, &summary, previous_best);
+    let run_config = hydra_train_runtime::validation::ValidationRunConfig::from_config(config);
+    let gate_decision = evaluate_validation_gates(&run_config, &summary, previous_best);
     if gate_decision.enabled {
         write_validation_gate_artifact(
             &artifacts.validation_gate_path,

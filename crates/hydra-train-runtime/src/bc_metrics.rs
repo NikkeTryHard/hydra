@@ -224,7 +224,6 @@ fn rare_metrics_from_values(values: &[f32]) -> RareActionMetrics {
 }
 
 /// Builds scalar stats directly from a loss breakdown.
-#[cfg(test)]
 pub fn batch_stats_from_breakdown<B: Backend>(
     sample_count: usize,
     agreement: f64,

@@ -1,5 +1,27 @@
-use crate::config::TrainConfig;
-use crate::config_runtime::{validation_microbatch_size, validation_sample_limit};
+use crate::config::{AdvancedLossConfig, TrainConfig, ValidationGateConfig};
+use crate::config_runtime::{
+    shard_prefetch_depth, validation_microbatch_size, validation_sample_limit,
+};
+
+#[derive(Debug, Clone)]
+pub struct ValidationRunConfig {
+    pub limits: ValidationRunLimits,
+    pub gates: ValidationGateConfig,
+    pub advanced_loss: Option<AdvancedLossConfig>,
+    pub shard_prefetch_depth: usize,
+}
+
+impl ValidationRunConfig {
+    #[must_use]
+    pub fn from_config(config: &TrainConfig) -> Self {
+        Self {
+            limits: ValidationRunLimits::from_config(config),
+            gates: config.validation_gates.clone(),
+            advanced_loss: config.advanced_loss.clone(),
+            shard_prefetch_depth: shard_prefetch_depth(config),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationRunLimits {
@@ -61,6 +83,36 @@ mod tests {
         assert_eq!(limits.microbatch_size, 20);
         assert_eq!(limits.sample_limit, Some(60));
         assert_eq!(limits.target_samples_label(), "target_samples=60");
+    }
+
+    #[test]
+    fn run_config_from_config_preserves_gate_loss_and_prefetch_settings() {
+        let mut config = dummy_train_config();
+        config.microbatch_size = Some(64);
+        config.validation_microbatch_size = Some(16);
+        config.max_validation_samples = Some(37);
+        config.validation_gates.enabled = true;
+        config.validation_gates.min_policy_agreement_delta = Some(0.05);
+        config.advanced_loss = Some(crate::config::AdvancedLossConfig {
+            delta_q: Some(0.25),
+            ..Default::default()
+        });
+        config.shard_prefetch_depth = Some(4);
+
+        let run_config = ValidationRunConfig::from_config(&config);
+
+        assert_eq!(run_config.limits.microbatch_size, 16);
+        assert_eq!(run_config.limits.sample_limit, Some(37));
+        assert!(run_config.gates.enabled);
+        assert_eq!(run_config.gates.min_policy_agreement_delta, Some(0.05));
+        assert_eq!(
+            run_config
+                .advanced_loss
+                .as_ref()
+                .and_then(|loss| loss.delta_q),
+            Some(0.25)
+        );
+        assert_eq!(run_config.shard_prefetch_depth, 4);
     }
 
     #[test]

@@ -37,18 +37,22 @@ use hydra_train_types::delta_q_promotion::{
 };
 use hydra_train_types::losses::HydraTargets;
 
-use super::config::{TrainConfig, shard_prefetch_depth};
+use super::config::TrainConfig;
 use super::nvtx;
-use super::progress::{BatchMetricSums, RareActionMetrics};
-#[cfg(test)]
-use super::progress::{BatchStats, batch_stats_from_outputs};
-use super::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums};
-use super::resume::BestValidation;
+use super::progress::RareActionMetrics;
+use hydra_train_exec::resume::BestValidation;
 pub(super) use hydra_train_exec::validation::{
     DeltaQPolicyTransferSnapshot, DeltaQPromotionSnapshot, ValidationGateDecision,
     ValidationSummary,
 };
-use hydra_train_runtime::validation::ValidationRunLimits;
+#[cfg(test)]
+use hydra_train_runtime::bc_metrics::batch_stats_from_outputs;
+use hydra_train_runtime::bc_metrics::{
+    BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
+};
+#[cfg(test)]
+use hydra_train_runtime::progress::BatchStats;
+use hydra_train_runtime::validation::{ValidationRunConfig, ValidationRunLimits};
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 pub(super) struct ValidationContext<'a, B: Backend> {
@@ -101,12 +105,12 @@ fn delta_q_policy_transfer_snapshot_from_report(
 }
 
 pub(super) fn evaluate_validation_gates(
-    config: &TrainConfig,
+    config: &ValidationRunConfig,
     summary: &ValidationSummary,
     best: Option<BestValidation>,
 ) -> ValidationGateDecision {
     hydra_train_exec::validation::evaluate_validation_gates(
-        &config.validation_gates,
+        &config.gates,
         config.advanced_loss.as_ref(),
         &summary.scalar_summary(),
         best,
@@ -444,7 +448,8 @@ where
     } = runtime;
     let model_valid = model.valid();
     let baseline_valid = baseline_model.valid();
-    let validation_limits = ValidationRunLimits::from_config(config);
+    let run_config = ValidationRunConfig::from_config(config);
+    let validation_limits = run_config.limits;
     let validation_batch_size = validation_limits.microbatch_size;
     let mut accumulator = ValidationAccumulator::new();
     let mut head_controller = head_controller;
@@ -633,7 +638,8 @@ where
     } = runtime;
     let model_valid = model.valid();
     let baseline_valid = baseline_model.valid();
-    let validation_limits = ValidationRunLimits::from_config(config);
+    let run_config = ValidationRunConfig::from_config(config);
+    let validation_limits = run_config.limits;
     let validation_batch_size = validation_limits.microbatch_size;
     let mut accumulator = ValidationAccumulator::new();
     let mut head_controller = head_controller;
@@ -646,7 +652,7 @@ where
 
     // -- producer/consumer pipeline: CPU collation on a scoped background thread --
     let batch_size = validation_batch_size;
-    let prefetch_depth = shard_prefetch_depth(config);
+    let prefetch_depth = run_config.shard_prefetch_depth;
     let (tx, rx) =
         mpsc::sync_channel::<Result<(ValidationHostBatch, usize), String>>(prefetch_depth);
     let (recycle_tx, recycle_rx) = mpsc::sync_channel::<ValidationHostBatch>(prefetch_depth + 1);
@@ -764,9 +770,9 @@ mod tests {
 
     use super::super::TrainBackend;
     use crate::config::{BcHyperparamConfig, TrainConfig};
-    use crate::resume::BestValidation;
     use crate::test_loose_replay_fixtures::write_real_preflight_fixture;
     use crate::test_support::dummy_train_config;
+    use hydra_train_exec::resume::BestValidation;
 
     type TestValidBackend = ValidBackendOf<TrainBackend>;
 

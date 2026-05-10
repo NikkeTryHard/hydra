@@ -16,54 +16,11 @@ pub(super) type RlStepLogEntry =
 pub(super) use hydra_train_runtime::bc_metrics::scalar1;
 pub(super) use hydra_train_runtime::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
-    batch_stats_from_outputs,
 };
-
 #[cfg(test)]
-use burn::prelude::*;
-#[cfg(test)]
-use hydra_train::training::losses::LossBreakdown;
-#[cfg(test)]
-pub(super) fn batch_stats_from_breakdown<B: Backend>(
-    sample_count: usize,
-    agreement: f64,
-    breakdown: &LossBreakdown<B>,
-) -> BatchStats {
-    let metrics = Tensor::cat(
-        vec![
-            breakdown.total.clone(),
-            breakdown.policy.clone(),
-            breakdown.value.clone(),
-            breakdown.grp.clone(),
-            breakdown.tenpai.clone(),
-            breakdown.danger.clone(),
-            breakdown.opp_next.clone(),
-            breakdown.score_pdf.clone(),
-            breakdown.score_cdf.clone(),
-        ],
-        0,
-    )
-    .into_data()
-    .convert::<f32>();
-    let values = metrics
-        .as_slice::<f32>()
-        .expect("breakdown scalars should be readable as f32");
-    BatchStats {
-        sample_count,
-        batch_count: 1,
-        total_loss: values[0] as f64,
-        policy_agreement: agreement,
-        loss_policy: values[1] as f64,
-        loss_value: values[2] as f64,
-        loss_grp: values[3] as f64,
-        loss_tenpai: values[4] as f64,
-        loss_danger: values[5] as f64,
-        loss_opp_next: values[6] as f64,
-        loss_score_pdf: values[7] as f64,
-        loss_score_cdf: values[8] as f64,
-        rare_actions: RareActionMetrics::default(),
-    }
-}
+pub(super) use hydra_train_runtime::bc_metrics::{
+    batch_stats_from_breakdown, batch_stats_from_outputs,
+};
 
 #[cfg(test)]
 mod tests {
