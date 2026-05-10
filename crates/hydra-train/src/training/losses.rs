@@ -9,7 +9,7 @@ pub use hydra_train_algo::losses::{
     soft_target_from_exit, tenpai_bce, value_mse, value_target_from_gae,
 };
 pub use hydra_train_algo::losses::{combine_sample_masks, masked_action_mse, masked_mean};
-pub use hydra_train_runtime::losses::HydraLoss;
+pub use hydra_train_exec::losses::HydraLoss;
 pub use hydra_train_types::losses::{HydraLossConfig, HydraTargets, LossBreakdown};
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ mod tests {
     use burn::backend::NdArray;
     use burn::tensor::Tensor;
     use burn::tensor::TensorData;
-    use hydra_train_runtime::model::HydraOutput;
+    use hydra_train_exec::model::HydraOutput;
     use hydra_train_types::losses::HydraTargets;
 
     type B = NdArray<f32>;

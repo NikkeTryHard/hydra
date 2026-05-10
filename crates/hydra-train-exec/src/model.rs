@@ -1,4 +1,4 @@
-//! Training-runtime model adapters.
+//! Training execution model adapters.
 //!
 //! The canonical Burn model implementation lives in `hydra_model::model`; this
 //! module owns adapters from shared training configuration types to model

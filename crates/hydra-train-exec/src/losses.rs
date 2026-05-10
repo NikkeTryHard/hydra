@@ -10,12 +10,15 @@ use hydra_train_algo::losses::{
 };
 use hydra_train_types::losses::{HydraLossConfig, HydraTargets, LossBreakdown};
 
+/// Multi-head Hydra training loss adapter.
 pub struct HydraLoss<B: Backend> {
+    /// Loss weights and optional-head gates used when computing totals.
     pub config: HydraLossConfig,
     _backend: PhantomData<B>,
 }
 
 impl<B: Backend> HydraLoss<B> {
+    /// Creates a loss adapter from a shared Hydra loss configuration.
     pub fn new(config: HydraLossConfig) -> Self {
         Self {
             config,
@@ -23,6 +26,7 @@ impl<B: Backend> HydraLoss<B> {
         }
     }
 
+    /// Computes all configured loss components and their weighted total.
     pub fn total_loss(
         &self,
         outputs: &HydraOutput<B>,

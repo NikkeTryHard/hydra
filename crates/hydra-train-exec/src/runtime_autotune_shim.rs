@@ -1,4 +1,5 @@
 use crate::data_pipeline::{DataManifest, StreamingLoaderConfig};
+use crate::model::HydraModelConfig;
 use crate::rl_runner::live_exit_config_from_plan;
 use crate::rl_step::{RlPhaseTrainRequest, rl_phase_train_step_with_controller};
 use burn::backend::libtorch::LibTorchDevice;
@@ -10,7 +11,6 @@ use hydra_selfplay::{
 use hydra_train_algo::distill::{DistillConfig, DistillState};
 use hydra_train_algo::drda::RebaseTracker;
 use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
-use hydra_train_runtime::model::HydraModelConfig;
 use hydra_train_runtime::preflight::LoaderRuntimeConfig;
 use hydra_train_types::orchestrator::{OrchestratorPlanInputs, maintenance_plan_from_inputs};
 use hydra_train_types::phase::PipelineState;
@@ -326,9 +326,8 @@ where
         hydra_train_runtime::config_runtime::trainer_config_from_train_config(config)
             .optimizer_config()
             .init();
-    let loss_fn = hydra_train_runtime::losses::HydraLoss::<B>::new(build_rl_loss_config(
-        config.advanced_loss.as_ref(),
-    )?);
+    let loss_fn =
+        crate::losses::HydraLoss::<B>::new(build_rl_loss_config(config.advanced_loss.as_ref())?);
     let rl_cfg = rl_config_from_train_config(rl);
     let mut state = PipelineState {
         phase: rl.phase.to_training_phase(),

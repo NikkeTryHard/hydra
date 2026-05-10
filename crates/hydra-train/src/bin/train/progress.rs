@@ -15,13 +15,13 @@ pub(super) type StepLogEntry = hydra_train_exec::progress::StepLogEntry<
 pub(super) type RlStepLogEntry =
     hydra_train_exec::progress::RlStepLogEntry<hydra_train_exec::advisory::RuntimeAdvisory>;
 #[cfg(test)]
-pub(super) use hydra_train_exec::progress::RareActionMetrics;
+pub(super) use hydra_train_exec::bc_metrics::scalar1;
 #[cfg(test)]
-pub(super) use hydra_train_runtime::bc_metrics::scalar1;
-#[cfg(test)]
-pub(super) use hydra_train_runtime::bc_metrics::{
+pub(super) use hydra_train_exec::bc_metrics::{
     batch_stats_from_breakdown, batch_stats_from_outputs,
 };
+#[cfg(test)]
+pub(super) use hydra_train_exec::progress::RareActionMetrics;
 
 #[cfg(test)]
 mod tests {

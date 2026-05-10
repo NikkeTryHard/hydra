@@ -5,6 +5,7 @@ use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::model::HydraModel;
 use burn::optim::Optimizer;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
@@ -13,7 +14,6 @@ use hydra_data_core::{DataManifest, DataSource};
 use hydra_sample_cache::{
     ParsedSampleCacheMetadata, is_parsed_sample_cache_file, read_parsed_sample_cache_metadata,
 };
-use hydra_train_runtime::model::HydraModel;
 use hydra_train_runtime::preflight::{
     BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
     PreflightCacheKey, default_cache_name, default_manifest_cache_name,

@@ -4,6 +4,12 @@
 //! `hydra-train` binary crate.
 
 use crate::bc_fixed_shape::{FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks};
+use crate::bc_metrics::{
+    BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
+};
+use crate::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
+use crate::losses::HydraLoss;
+use crate::model::{HydraModel, HydraTrainModelExt};
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
@@ -13,14 +19,8 @@ use hydra_bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard_reader};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::NUM_CHANNELS;
 use hydra_model::amp::maybe_autocast;
-use hydra_train_runtime::bc_metrics::{
-    BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
-};
-use hydra_train_runtime::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 use hydra_train_runtime::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
 use hydra_train_runtime::head_gates::HeadActivationController;
-use hydra_train_runtime::losses::HydraLoss;
-use hydra_train_runtime::model::{HydraModel, HydraTrainModelExt};
 use hydra_train_runtime::nvtx;
 use hydra_train_runtime::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,

@@ -10,6 +10,10 @@ pub mod advisory;
 )]
 /// Fixed-shape behavioral-cloning train/probe execution helpers.
 pub mod bc_fixed_shape;
+/// Behavioral-cloning metric readback helpers.
+pub mod bc_metrics;
+/// Behavioral-cloning execution adapters.
+pub mod bc_runtime;
 /// Training bootstrap initialization and prepared runtime state.
 pub mod bootstrap;
 /// CUDA graph and pinned-memory FFI wrappers for exec-owned GPU adapters.
@@ -23,6 +27,10 @@ pub mod delta_q_promotion;
 pub mod epoch_runner;
 /// CUDA graph probe parent/child execution.
 pub mod graph_probe;
+/// Training execution loss adapter.
+pub mod losses;
+/// Training execution model adapters.
+pub mod model;
 /// Train binary mode dispatch facade.
 pub mod modes;
 /// CUDA pinned host staging and reusable device materialization for BC shards.

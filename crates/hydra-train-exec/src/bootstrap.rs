@@ -12,18 +12,19 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use tboard::EventWriter;
 
+use crate::bc_runtime::BcExitConfig;
 use crate::bc_shard_adapter::{
     BcShardManifest, BcShardManifestConfigRef, BcShardSplit as ManifestBcShardSplit,
     data_manifest_from_bc_shard_manifest, read_bc_shard_manifest,
     validate_bc_shard_manifest_for_config as validate_bc_shard_manifest_for_config_ref,
 };
 use crate::data_pipeline::{DataManifest, ReplayTargetProfile, StreamingLoaderConfig};
+use crate::losses::HydraLoss;
 use hydra_model::model::{HydraModel, HydraModelConfig};
 use hydra_replay_sidecar::{
     DeltaQSidecarIndex, ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
 };
 use hydra_train_algo::gae::GaeConfig;
-use hydra_train_runtime::bc_runtime::BcExitConfig;
 use hydra_train_runtime::config::{RlTrainConfig, TrainConfig};
 use hydra_train_runtime::config_runtime::{
     configure_threads, device_label, rl_config_from_train_config, train_device,
@@ -33,7 +34,6 @@ use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationContro
 use hydra_train_runtime::loss_policy::{
     build_bc_exit_config, build_loss_config, build_rl_loss_config,
 };
-use hydra_train_runtime::losses::HydraLoss;
 use hydra_train_runtime::progress::BannerStats;
 use hydra_train_runtime::schedule::schedule_total_steps;
 use hydra_train_types::config::BCTrainerConfig;

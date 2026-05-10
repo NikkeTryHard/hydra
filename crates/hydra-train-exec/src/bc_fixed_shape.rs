@@ -2,22 +2,22 @@ use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
+use crate::losses::HydraLoss;
+use crate::model::{HydraModel, HydraTrainModelExt};
 use hydra_model::amp::maybe_autocast;
 use hydra_train_algo::bc::{BcExitConfig, maybe_add_exit_loss};
 use hydra_train_runtime::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train_runtime::head_gates::HeadActivationController;
-use hydra_train_runtime::losses::HydraLoss;
-use hydra_train_runtime::model::{HydraModel, HydraTrainModelExt};
 use hydra_train_runtime::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
     PROFILING_STAGE_LOSS,
 };
 use hydra_train_types::losses::LossBreakdown;
 
-use hydra_train_runtime::bc_metrics::{
+use crate::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
 };
-use hydra_train_runtime::bc_runtime::gated_bc_context;
+use crate::bc_runtime::gated_bc_context;
 use hydra_train_runtime::progress::{BatchStats, TrainSubStageTiming};
 
 use std::time::Instant;
@@ -447,10 +447,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bc_runtime::bc_total_with_exit_from_breakdown;
     use burn::backend::{Autodiff, LibTorch};
     use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams, Optimizer};
     use hydra_core::encoder::NUM_CHANNELS;
-    use hydra_train_runtime::bc_runtime::bc_total_with_exit_from_breakdown;
     use hydra_train_runtime::data::sample::{
         collate_batch_samples, collate_samples, collate_samples_owned,
     };
@@ -460,7 +460,7 @@ mod tests {
     type TestTrainBackend = Autodiff<LibTorch<f32>>;
 
     fn tiny_dummy_model(device: &LibTorchDevice) -> HydraModel<TestTrainBackend> {
-        hydra_train_runtime::model::HydraModelConfig::new(1)
+        crate::model::HydraModelConfig::new(1)
             .with_input_channels(NUM_CHANNELS)
             .with_hidden_channels(4)
             .with_num_groups(4)

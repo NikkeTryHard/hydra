@@ -9,7 +9,7 @@ use burn::module::AutodiffModule;
 use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-pub use hydra_train_runtime::bc_runtime::{
+pub use hydra_train_exec::bc_runtime::{
     BcExitConfig, bc_total_with_exit_from_breakdown, cosine_annealing_lr, gated_bc_context,
     maybe_add_exit_loss, oracle_guidance_mask_tensor, oracle_guidance_mask_values,
     policy_agreement, policy_agreement_counts, target_actions_from_policy_target,

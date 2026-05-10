@@ -4,6 +4,8 @@
     reason = "compatibility wrapper moved from hydra-train during RL seam cutover"
 )]
 
+use crate::losses::HydraLoss;
+use crate::model::HydraTrainModelExt;
 use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
@@ -11,8 +13,6 @@ use hydra_model::model::HydraModel;
 use hydra_search_labels::exit::exit_loss;
 use hydra_train_algo::ach::ach_policy_loss;
 use hydra_train_algo::drda;
-use hydra_train_runtime::losses::HydraLoss;
-use hydra_train_runtime::model::HydraTrainModelExt;
 
 use hydra_train_types::config::RlConfig;
 use hydra_train_types::head_gates::{

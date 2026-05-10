@@ -4,7 +4,7 @@ use burn::tensor::Tensor;
 pub use hydra_train_types::delta_q_promotion::*;
 use hydra_train_types::losses::HydraTargets;
 
-use crate::model::HydraOutput;
+use hydra_model::model::HydraOutput;
 
 pub fn collect_promotion_metrics_from_outputs<B: Backend>(
     output: &HydraOutput<B>,

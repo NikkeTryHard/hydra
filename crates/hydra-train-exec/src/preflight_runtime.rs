@@ -4,9 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::bc_runtime::gated_bc_context;
 use crate::data_pipeline::{
     DataManifest, StreamingLoaderConfig, stream_train_epoch, stream_val_microbatches,
 };
+use crate::losses::HydraLoss;
+use crate::model::{HydraModel, HydraModelConfig, HydraTrainModelExt};
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::module::AutodiffModule;
 use burn::optim::adaptor::OptimizerAdaptor;
@@ -18,11 +21,8 @@ use hydra_bc_shards::{
     load_bc_shard_reader as load_extracted_bc_shard_reader,
 };
 use hydra_replay_loader::ReplayTargetProfile;
-use hydra_train_runtime::bc_runtime::gated_bc_context;
 use hydra_train_runtime::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
-use hydra_train_runtime::losses::HydraLoss;
-use hydra_train_runtime::model::{HydraModel, HydraModelConfig, HydraTrainModelExt};
 #[cfg(test)]
 use hydra_train_runtime::preflight::ManifestCacheEntry;
 use hydra_train_runtime::preflight::{
@@ -49,6 +49,7 @@ use crate::bc_fixed_shape::{
     FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
     probe_train_fixed_chunks,
 };
+use crate::bc_metrics::batch_stats_from_outputs;
 #[cfg(test)]
 use crate::data_pipeline::DataSource;
 use crate::epoch_runner::{
@@ -86,7 +87,6 @@ use crate::validation_runner::{
     run_validation,
 };
 use hydra_data_core::manifest::DataManifest as CoreDataManifest;
-use hydra_train_runtime::bc_metrics::batch_stats_from_outputs;
 use hydra_train_runtime::config::{
     ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system, train_device,
 };
@@ -1471,7 +1471,7 @@ where
                     let output =
                         model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads);
                     let breakdown = active_loss_fn.total_loss(&output, &targets);
-                    let total = hydra_train_runtime::bc_runtime::maybe_add_exit_loss(
+                    let total = crate::bc_runtime::maybe_add_exit_loss(
                         breakdown.total.clone(),
                         output.policy_logits.clone(),
                         batch.exit_target.as_ref(),
@@ -2626,12 +2626,12 @@ where
         };
         let output = model_valid.forward(obs);
         let breakdown = loss_fn.total_loss(&output, &targets);
-        let total = hydra_train_runtime::bc_runtime::maybe_add_exit_loss(
+        let total = crate::bc_runtime::maybe_add_exit_loss(
             breakdown.total.clone(),
             output.policy_logits.clone(),
             batch.exit_target.as_ref(),
             batch.exit_mask.as_ref(),
-            &hydra_train_runtime::bc_runtime::BcExitConfig::default(),
+            &crate::bc_runtime::BcExitConfig::default(),
         );
         let _ = batch_stats_from_outputs(
             microbatch.len(),
