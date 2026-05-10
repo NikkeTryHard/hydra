@@ -6,17 +6,18 @@ use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::optim::Optimizer;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
-use indicatif::{MultiProgress, ProgressBar};
+use indicatif::MultiProgress;
 use tboard::EventWriter;
 
 use hydra_train::data::sample::MjaiSample;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
-    PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL, PROFILING_STAGE_CHECKPOINT,
-    PROFILING_STAGE_LOGGING, PROFILING_STAGE_TRAIN, ProfilingEnvelope,
+    PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_TRAIN, ProfilingEnvelope,
 };
 #[cfg(test)]
-use hydra_train::preflight::{PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_PRODUCER_WAIT};
+use hydra_train::preflight::{
+    PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOGGING, PROFILING_STAGE_PRODUCER_WAIT,
+};
 use hydra_train::training::bc::BcExitConfig;
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
@@ -24,12 +25,9 @@ use hydra_train_exec::data_pipeline::{DataManifest, StreamingLoaderConfig, strea
 use hydra_train_types::config::BCTrainerConfig;
 
 use super::TrainBackend;
-use super::advisory::{
-    AdvisoryEvent, IntervalTimingInput, RuntimeAdvisory, interval_runtime_advisories,
-};
+use super::advisory::{RuntimeAdvisory, interval_runtime_advisories};
 use super::artifacts::{
-    BcArtifactPaths, JsonlAppender, LatestCheckpointState, append_advisory_event_to_writer,
-    append_step_log_to_writer, save_latest_checkpoint_and_state,
+    BcArtifactPaths, JsonlAppender, LatestCheckpointState, save_latest_checkpoint_and_state,
 };
 use super::config::{TrainConfig, shard_prefetch_depth};
 
@@ -37,21 +35,22 @@ use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
-use super::progress::{BatchStats, ScalarAverages, StepLogEntry};
+use super::progress::{BatchStats, ScalarAverages};
 use super::resume::{
     BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
-    display_step_label, epoch_progress_message_with_rate, estimate_epoch_progress,
-    reached_session_step_budget, session_steps_completed,
+    estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
 };
 use super::validation::ValidationSummary;
-use hydra_train_exec::artifacts::log_tensorboard;
 use hydra_train_exec::epoch_runner::{
-    self as exec_epoch, BcShardPrefetcher, EpochEndValidationContext, ValidationEvent,
-    ValidationStepContext, maybe_run_interval_validation, run_epoch_end_validation,
+    self as exec_epoch, BcShardPrefetcher, EpochEndValidationContext, IntervalStepSummaryContext,
+    PeriodicCheckpointContext, PeriodicCheckpointState, ValidationEvent, ValidationStepContext,
+    emit_interval_step_summary, interval_timing_input_for_config as interval_timing_input,
+    maybe_run_interval_validation, maybe_save_periodic_checkpoint, run_epoch_end_validation,
     should_run_epoch_end_validation, train_logical_batch_from_host_batch,
+    update_train_progress_message,
 };
 #[cfg(test)]
 use hydra_train_exec::epoch_runner::{
@@ -118,39 +117,6 @@ pub(super) struct EpochRunOutcome {
 pub(super) type TrainLogicalBatchConfig<'a, B = TrainBackend> =
     exec_epoch::TrainLogicalBatchConfig<'a, B>;
 
-struct IntervalStepSummaryContext<'a> {
-    manifest: &'a DataManifest,
-    config: &'a TrainConfig,
-    session_start_global_step: usize,
-    global_step: usize,
-    epoch: usize,
-    lr: f64,
-    best_validation: Option<BestValidation>,
-    val_summary: Option<ValidationSummary>,
-    seen_samples: usize,
-    assumed_games_seen: usize,
-    epoch_optimizer_steps: usize,
-    window_stats: ScalarAverages,
-    step_rate: f64,
-    profiling: Option<ProfilingEnvelope>,
-    advisories: Vec<RuntimeAdvisory>,
-}
-
-struct PeriodicCheckpointContext<'a> {
-    config: &'a TrainConfig,
-    artifacts: &'a BcArtifactPaths,
-    epoch: usize,
-    session_start_global_step: usize,
-    current_runtime: RuntimeResumeContract,
-}
-
-struct PeriodicCheckpointState {
-    global_step: usize,
-    epoch_optimizer_steps: usize,
-    total_loss: f64,
-    best_validation: Option<BestValidation>,
-}
-
 fn epoch_model<B>(model_slot: &Option<HydraModel<B>>) -> Result<&HydraModel<B>, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
@@ -158,59 +124,6 @@ where
     model_slot
         .as_ref()
         .ok_or_else(|| "epoch model missing after logical batch execution".to_string())
-}
-
-fn should_save_periodic_checkpoint(
-    config: &TrainConfig,
-    global_step: usize,
-    session_start_global_step: usize,
-) -> bool {
-    exec_epoch::should_save_periodic_checkpoint(
-        &exec_epoch::EpochCadenceInput::from(config),
-        global_step,
-        session_start_global_step,
-    )
-}
-
-fn should_refresh_train_progress_message(
-    config: &TrainConfig,
-    global_step: usize,
-    session_start_global_step: usize,
-) -> bool {
-    exec_epoch::should_refresh_train_progress_message(
-        &exec_epoch::EpochCadenceInput::from(config),
-        global_step,
-        session_start_global_step,
-    )
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "progress message call mirrors training context"
-)]
-fn update_train_progress_message(
-    train_pb: &ProgressBar,
-    config: &TrainConfig,
-    train_cfg: &BCTrainerConfig,
-    global_step: usize,
-    session_start_global_step: usize,
-    run_start: Instant,
-    lr: f64,
-    stats: ScalarAverages,
-) {
-    if !should_refresh_train_progress_message(config, global_step, session_start_global_step) {
-        return;
-    }
-    let lr_message = lr_status_message(global_step, train_cfg.warmup_steps, lr);
-    train_pb.set_message(format_progress_message(
-        stats.total_loss,
-        stats.policy_agreement,
-        &lr_message,
-        steps_per_second(
-            session_steps_completed(global_step, session_start_global_step),
-            run_start.elapsed(),
-        ),
-    ));
 }
 
 struct EpochFinalizeContext<'a> {
@@ -297,227 +210,6 @@ fn record_drained_batch_stats(
 #[cfg(test)]
 fn child_elapsed_seconds(profiling: &ProfilingEnvelope, stage: &str) -> f64 {
     exec_epoch::child_elapsed_seconds(profiling, stage)
-}
-
-fn interval_timing_input(
-    config: &TrainConfig,
-    profiling: &ProfilingEnvelope,
-    window_steps: usize,
-) -> IntervalTimingInput {
-    exec_epoch::interval_timing_input(
-        &config.device,
-        config
-            .nsight_trace
-            .as_ref()
-            .and_then(|trace| trace.kernel_launch_count),
-        config
-            .nsight_trace
-            .as_ref()
-            .and_then(|trace| trace.tiny_kernel_fraction),
-        config
-            .nsight_trace
-            .as_ref()
-            .and_then(|trace| trace.cuda_runtime_launch_seconds),
-        profiling,
-        window_steps,
-    )
-}
-
-fn emit_interval_step_summary<W>(
-    multi: &MultiProgress,
-    tb: &mut Option<EventWriter<W>>,
-    step_log: &mut JsonlAppender,
-    context: IntervalStepSummaryContext<'_>,
-) -> Result<(), String>
-where
-    W: Write,
-{
-    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
-    let IntervalStepSummaryContext {
-        manifest,
-        config,
-        session_start_global_step,
-        global_step,
-        epoch,
-        lr,
-        best_validation,
-        val_summary,
-        seen_samples,
-        assumed_games_seen,
-        epoch_optimizer_steps,
-        window_stats,
-        step_rate,
-        mut profiling,
-        advisories,
-    } = context;
-    let logging_started = Instant::now();
-    multi
-        .println(timestamped(format!(
-            "{} {} {} {} {} {} {} {}",
-            display_step_label(
-                global_step,
-                session_start_global_step,
-                config.max_train_steps
-            )
-            .bold()
-            .cyan(),
-            format!("train_loss={:.4}", window_stats.total_loss).green(),
-            format!("train_agree={:.2}%", window_stats.policy_agreement * 100.0).green(),
-            if let Some(val_summary) = val_summary.as_ref() {
-                format!(
-                    "val_ce={:.4} val_agree={:.2}%",
-                    val_summary.policy_loss,
-                    val_summary.agreement * 100.0
-                )
-            } else {
-                "val=skipped".to_string()
-            }
-            .bold()
-            .yellow(),
-            if let Some(best_validation) = best_validation {
-                format!(
-                    "best_ce={:.4} best_agree={:.2}%",
-                    best_validation.policy_loss,
-                    best_validation.agreement * 100.0
-                )
-            } else {
-                "best=n/a".to_string()
-            }
-            .bold()
-            .magenta(),
-            epoch_progress_message_with_rate(
-                estimate_epoch_progress(
-                    manifest,
-                    seen_samples,
-                    assumed_games_seen,
-                    epoch_optimizer_steps,
-                    config.batch_size,
-                ),
-                Some(step_rate),
-            )
-            .white(),
-            format!("steps/s={step_rate:.2}").white(),
-            lr_status_message(global_step, config.bc.warmup_steps, lr).white(),
-        )))
-        .map_err(|err| format!("failed to print train summary: {err}"))?;
-
-    if let Some(ref mut tb_writer) = tb.as_mut() {
-        log_tensorboard(
-            tb_writer,
-            global_step,
-            &window_stats,
-            val_summary.as_ref(),
-            lr,
-            best_validation,
-        )?;
-    }
-
-    let logging_seconds = logging_started.elapsed().as_secs_f64();
-    if let Some(existing) = profiling.as_mut() {
-        existing.merge_assign(&ProfilingEnvelope::from_children(
-            existing.stage.clone(),
-            vec![ProfilingEnvelope::leaf(
-                PROFILING_STAGE_LOGGING,
-                logging_seconds,
-            )],
-        ));
-    } else {
-        profiling = Some(ProfilingEnvelope::from_children(
-            PROFILING_STAGE_BC_INTERVAL,
-            vec![ProfilingEnvelope::leaf(
-                PROFILING_STAGE_LOGGING,
-                logging_seconds,
-            )],
-        ));
-    }
-
-    let step_entry = StepLogEntry {
-        global_step,
-        epoch: epoch + 1,
-        lr,
-        train_total_loss: window_stats.total_loss,
-        train_policy_agreement: window_stats.policy_agreement,
-        train_loss_policy: window_stats.loss_policy,
-        train_loss_value: window_stats.loss_value,
-        train_loss_grp: window_stats.loss_grp,
-        train_loss_tenpai: window_stats.loss_tenpai,
-        train_loss_danger: window_stats.loss_danger,
-        train_loss_opp_next: window_stats.loss_opp_next,
-        train_loss_score_pdf: window_stats.loss_score_pdf,
-        train_loss_score_cdf: window_stats.loss_score_cdf,
-        train_rare_actions: window_stats.rare_actions,
-        val_rare_actions: val_summary.as_ref().map(|summary| summary.rare_actions),
-        val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
-        val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
-        val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
-        val_delta_q_promotion: val_summary
-            .as_ref()
-            .and_then(|summary| summary.delta_q_promotion_snapshot),
-        profiling,
-        advisories,
-        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
-        best_val_agreement: best_validation.map(|best| best.agreement),
-    };
-    append_step_log_to_writer(step_log, &step_entry)?;
-    if !step_entry.advisories.is_empty() {
-        append_advisory_event_to_writer(
-            step_log,
-            &AdvisoryEvent::interval(&step_entry.advisories),
-        )?;
-    }
-    Ok(())
-}
-
-fn maybe_save_periodic_checkpoint<B, O>(
-    model: &HydraModel<B>,
-    optimizer: &O,
-    context: PeriodicCheckpointContext<'_>,
-    state: PeriodicCheckpointState,
-) -> Result<f64, String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    O: Optimizer<HydraModel<B>, B>,
-{
-    let PeriodicCheckpointContext {
-        config,
-        artifacts,
-        epoch,
-        session_start_global_step,
-        current_runtime,
-    } = context;
-    let PeriodicCheckpointState {
-        global_step,
-        epoch_optimizer_steps,
-        total_loss,
-        best_validation,
-    } = state;
-    let session_step = session_steps_completed(global_step, session_start_global_step);
-    if session_step == 0 || !session_step.is_multiple_of(config.checkpoint_every_n_steps) {
-        return Ok(0.0);
-    }
-
-    let continuation = EpochContinuation {
-        next_epoch: epoch,
-        skip_optimizer_steps_in_epoch: epoch_optimizer_steps,
-        epoch_completed: false,
-    };
-    let checkpoint_started = Instant::now();
-    {
-        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
-        save_latest_checkpoint_and_state(
-            artifacts,
-            model,
-            optimizer,
-            LatestCheckpointState {
-                global_step,
-                train_loss: total_loss,
-                best_validation,
-                continuation: &continuation,
-                runtime: current_runtime,
-            },
-        )?;
-    }
-    Ok(checkpoint_started.elapsed().as_secs_f64())
 }
 
 fn emit_paused_training_message(continuation: &EpochContinuation) {
@@ -734,8 +426,8 @@ where
             epoch_optimizer_steps += 1;
             *global_step += 1;
             train_pb.inc(1);
-            if should_refresh_train_progress_message(
-                config,
+            if exec_epoch::should_refresh_train_progress_message(
+                &exec_epoch::EpochCadenceInput::from(config),
                 *global_step,
                 session_start_global_step,
             ) {
@@ -830,29 +522,31 @@ where
                 )?;
             }
 
-            let periodic_checkpoint_seconds =
-                if should_save_periodic_checkpoint(config, *global_step, session_start_global_step)
-                {
-                    maybe_save_periodic_checkpoint(
-                        epoch_model(model_slot)?,
-                        optimizer,
-                        PeriodicCheckpointContext {
-                            config,
-                            artifacts,
-                            epoch,
-                            session_start_global_step,
-                            current_runtime,
-                        },
-                        PeriodicCheckpointState {
-                            global_step: *global_step,
-                            epoch_optimizer_steps,
-                            total_loss: stats.finalize().total_loss,
-                            best_validation: *best_validation,
-                        },
-                    )?
-                } else {
-                    0.0
-                };
+            let periodic_checkpoint_seconds = if exec_epoch::should_save_periodic_checkpoint(
+                &exec_epoch::EpochCadenceInput::from(config),
+                *global_step,
+                session_start_global_step,
+            ) {
+                maybe_save_periodic_checkpoint(
+                    epoch_model(model_slot)?,
+                    optimizer,
+                    PeriodicCheckpointContext {
+                        config,
+                        artifacts,
+                        epoch,
+                        session_start_global_step,
+                        current_runtime,
+                    },
+                    PeriodicCheckpointState {
+                        global_step: *global_step,
+                        epoch_optimizer_steps,
+                        total_loss: stats.finalize().total_loss,
+                        best_validation: *best_validation,
+                    },
+                )?
+            } else {
+                0.0
+            };
             step_window_checkpoint_seconds += periodic_checkpoint_seconds;
             epoch_checkpoint_seconds += periodic_checkpoint_seconds;
 
@@ -1188,7 +882,11 @@ where
         seen_samples += take;
         train_pb.inc(1);
 
-        if should_refresh_train_progress_message(config, *global_step, session_start_global_step) {
+        if exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(config),
+            *global_step,
+            session_start_global_step,
+        ) {
             update_train_progress_message(
                 &train_pb,
                 config,
@@ -1277,28 +975,31 @@ where
             )?;
         }
 
-        let periodic_checkpoint_seconds =
-            if should_save_periodic_checkpoint(config, *global_step, session_start_global_step) {
-                maybe_save_periodic_checkpoint(
-                    epoch_model(model_slot)?,
-                    optimizer,
-                    PeriodicCheckpointContext {
-                        config,
-                        artifacts,
-                        epoch,
-                        session_start_global_step,
-                        current_runtime,
-                    },
-                    PeriodicCheckpointState {
-                        global_step: *global_step,
-                        epoch_optimizer_steps,
-                        total_loss: stats.finalize().total_loss,
-                        best_validation: *best_validation,
-                    },
-                )?
-            } else {
-                0.0
-            };
+        let periodic_checkpoint_seconds = if exec_epoch::should_save_periodic_checkpoint(
+            &exec_epoch::EpochCadenceInput::from(config),
+            *global_step,
+            session_start_global_step,
+        ) {
+            maybe_save_periodic_checkpoint(
+                epoch_model(model_slot)?,
+                optimizer,
+                PeriodicCheckpointContext {
+                    config,
+                    artifacts,
+                    epoch,
+                    session_start_global_step,
+                    current_runtime,
+                },
+                PeriodicCheckpointState {
+                    global_step: *global_step,
+                    epoch_optimizer_steps,
+                    total_loss: stats.finalize().total_loss,
+                    best_validation: *best_validation,
+                },
+            )?
+        } else {
+            0.0
+        };
         step_window_checkpoint_seconds += periodic_checkpoint_seconds;
         epoch_checkpoint_seconds += periodic_checkpoint_seconds;
 
@@ -2319,13 +2020,41 @@ mod tests {
         config.checkpoint_every_n_steps = 6;
         config.max_train_steps = Some(11);
 
-        assert!(!should_refresh_train_progress_message(&config, 100, 100));
-        assert!(should_refresh_train_progress_message(&config, 101, 100));
-        assert!(!should_refresh_train_progress_message(&config, 103, 100));
-        assert!(should_refresh_train_progress_message(&config, 104, 100));
-        assert!(should_refresh_train_progress_message(&config, 106, 100));
-        assert!(should_refresh_train_progress_message(&config, 110, 100));
-        assert!(should_refresh_train_progress_message(&config, 111, 100));
+        assert!(!exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            100,
+            100
+        ));
+        assert!(exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            101,
+            100
+        ));
+        assert!(!exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            103,
+            100
+        ));
+        assert!(exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            104,
+            100
+        ));
+        assert!(exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            106,
+            100
+        ));
+        assert!(exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            110,
+            100
+        ));
+        assert!(exec_epoch::should_refresh_train_progress_message(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            111,
+            100
+        ));
     }
 
     #[test]
@@ -2333,11 +2062,31 @@ mod tests {
         let mut config = dummy_config();
         config.checkpoint_every_n_steps = 5;
 
-        assert!(!should_save_periodic_checkpoint(&config, 100, 100));
-        assert!(!should_save_periodic_checkpoint(&config, 104, 100));
-        assert!(should_save_periodic_checkpoint(&config, 105, 100));
-        assert!(!should_save_periodic_checkpoint(&config, 109, 100));
-        assert!(should_save_periodic_checkpoint(&config, 110, 100));
+        assert!(!exec_epoch::should_save_periodic_checkpoint(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            100,
+            100
+        ));
+        assert!(!exec_epoch::should_save_periodic_checkpoint(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            104,
+            100
+        ));
+        assert!(exec_epoch::should_save_periodic_checkpoint(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            105,
+            100
+        ));
+        assert!(!exec_epoch::should_save_periodic_checkpoint(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            109,
+            100
+        ));
+        assert!(exec_epoch::should_save_periodic_checkpoint(
+            &exec_epoch::EpochCadenceInput::from(&config),
+            110,
+            100
+        ));
     }
 
     #[test]
@@ -2999,7 +2748,7 @@ mod tests {
             0.25
         );
         assert_eq!(
-            child_elapsed_seconds(&profiling, PROFILING_STAGE_LOGGING),
+            exec_epoch::child_elapsed_seconds(&profiling, PROFILING_STAGE_LOGGING),
             0.0
         );
         let input = interval_timing_input(&dummy_config(), &profiling, 4);

@@ -32,28 +32,34 @@ use hydra_train_runtime::preflight::{
     ProfilingEnvelope,
 };
 use hydra_train_runtime::progress::{
-    BatchStats, RareActionMetrics, ScalarAverages, TrainSubStageTiming,
+    BatchStats, RareActionMetrics, ScalarAverages, StepLogEntry, TrainSubStageTiming,
 };
-use hydra_train_runtime::schedule::lr_status_message;
-use hydra_train_runtime::status::{display_validation_scope_label, session_steps_completed};
+use hydra_train_runtime::schedule::{lr_status_message, steps_per_second};
+use hydra_train_runtime::status::{
+    display_step_label, display_validation_scope_label, epoch_progress_message_with_rate,
+    estimate_epoch_progress, session_steps_completed,
+};
 use hydra_train_runtime::validation::{ValidationRunConfig, ValidationRunLimits};
 use hydra_train_types::head_gates::{AdvancedHead, TargetPresence};
 use hydra_train_types::losses::{HydraTargets, LossBreakdown};
-use indicatif::MultiProgress;
+use indicatif::{MultiProgress, ProgressBar};
+use std::io::Write;
 use std::sync::mpsc;
 use std::time::Instant;
 use tboard::EventWriter;
 
-use crate::advisory::IntervalTimingInput;
+use crate::advisory::{AdvisoryEvent, IntervalTimingInput, RuntimeAdvisory};
 use crate::artifacts::{
-    BcArtifactPaths, JsonlAppender, PersistedDeltaQPromotionArtifact,
-    PersistedValidationGateArtifact, append_training_log_to_writer, log_tensorboard,
-    save_checkpoint, write_delta_q_promotion_artifact, write_validation_gate_artifact,
+    BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
+    PersistedValidationGateArtifact, append_advisory_event_to_writer, append_step_log_to_writer,
+    append_training_log_to_writer, log_tensorboard, save_checkpoint,
+    save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
+    write_validation_gate_artifact,
 };
 use crate::data_pipeline::{DataManifest, StreamingLoaderConfig, TrainValidationLoader};
-use crate::presentation::{phase_label, timestamped};
+use crate::presentation::{format_progress_message, phase_label, timestamped};
 use crate::progress::EpochLogEntry;
-use crate::resume::{BestValidation, EpochContinuation};
+use crate::resume::{BestValidation, EpochContinuation, RuntimeResumeContract};
 use crate::validation::{ValidationSummary, evaluate_validation_gates, is_better_validation};
 use crate::validation_runner::{ValidationContext, ValidationRuntime, run_validation};
 
@@ -649,6 +655,66 @@ where
     Ok(Some(summary))
 }
 
+/// Context needed to emit a step-interval train summary.
+pub struct IntervalStepSummaryContext<'a> {
+    /// Manifest used to estimate epoch progress.
+    pub manifest: &'a DataManifest,
+    /// Runtime train config.
+    pub config: &'a hydra_train_runtime::config::TrainConfig,
+    /// Global optimizer step at session start.
+    pub session_start_global_step: usize,
+    /// Current global optimizer step.
+    pub global_step: usize,
+    /// Zero-based epoch index.
+    pub epoch: usize,
+    /// Effective learning rate for this step.
+    pub lr: f64,
+    /// Best validation snapshot before/after this interval.
+    pub best_validation: Option<BestValidation>,
+    /// Optional validation summary emitted at this interval.
+    pub val_summary: Option<ValidationSummary>,
+    /// Samples observed in the epoch so far.
+    pub seen_samples: usize,
+    /// Games observed in the epoch so far when known.
+    pub assumed_games_seen: usize,
+    /// Optimizer steps completed in the epoch so far.
+    pub epoch_optimizer_steps: usize,
+    /// Windowed training metrics.
+    pub window_stats: ScalarAverages,
+    /// Windowed step rate.
+    pub step_rate: f64,
+    /// Optional profiling envelope for the interval.
+    pub profiling: Option<ProfilingEnvelope>,
+    /// Runtime advisories attached to this interval.
+    pub advisories: Vec<RuntimeAdvisory>,
+}
+
+/// Context needed to write a periodic latest checkpoint.
+pub struct PeriodicCheckpointContext<'a> {
+    /// Runtime train config.
+    pub config: &'a hydra_train_runtime::config::TrainConfig,
+    /// Artifact paths for BC training.
+    pub artifacts: &'a BcArtifactPaths,
+    /// Zero-based epoch index.
+    pub epoch: usize,
+    /// Global optimizer step at session start.
+    pub session_start_global_step: usize,
+    /// Runtime contract persisted in resume state.
+    pub current_runtime: RuntimeResumeContract,
+}
+
+/// Mutable periodic checkpoint state sampled at the checkpoint boundary.
+pub struct PeriodicCheckpointState {
+    /// Current global optimizer step.
+    pub global_step: usize,
+    /// Optimizer steps completed in the current epoch.
+    pub epoch_optimizer_steps: usize,
+    /// Current aggregate training loss.
+    pub total_loss: f64,
+    /// Best validation snapshot to persist.
+    pub best_validation: Option<BestValidation>,
+}
+
 /// Returns true when a periodic checkpoint should be saved at `global_step`.
 #[must_use]
 pub fn should_save_periodic_checkpoint(
@@ -693,6 +759,36 @@ pub fn should_refresh_train_progress_message(
             session_start_global_step,
             config.max_train_steps(),
         )
+}
+
+/// Updates the progress-bar train message on display boundaries.
+pub fn update_train_progress_message(
+    train_pb: &ProgressBar,
+    config: &hydra_train_runtime::config::TrainConfig,
+    train_cfg: &hydra_train_types::config::BCTrainerConfig,
+    global_step: usize,
+    session_start_global_step: usize,
+    run_start: Instant,
+    lr: f64,
+    stats: ScalarAverages,
+) {
+    if !should_refresh_train_progress_message(
+        &EpochCadenceInput::from(config),
+        global_step,
+        session_start_global_step,
+    ) {
+        return;
+    }
+    let lr_message = lr_status_message(global_step, train_cfg.warmup_steps, lr);
+    train_pb.set_message(format_progress_message(
+        stats.total_loss,
+        stats.policy_agreement,
+        &lr_message,
+        steps_per_second(
+            session_steps_completed(global_step, session_start_global_step),
+            run_start.elapsed(),
+        ),
+    ));
 }
 
 /// Returns true when epoch-end validation is due.
@@ -1166,6 +1262,231 @@ pub fn interval_timing_input(
         steps: window_steps,
         is_cuda: device == "cuda" || device.starts_with("cuda:"),
     }
+}
+
+/// Converts config and interval profiling into advisory timing input.
+#[must_use]
+pub fn interval_timing_input_for_config(
+    config: &hydra_train_runtime::config::TrainConfig,
+    profiling: &ProfilingEnvelope,
+    window_steps: usize,
+) -> IntervalTimingInput {
+    interval_timing_input(
+        &config.device,
+        config
+            .nsight_trace
+            .as_ref()
+            .and_then(|trace| trace.kernel_launch_count),
+        config
+            .nsight_trace
+            .as_ref()
+            .and_then(|trace| trace.tiny_kernel_fraction),
+        config
+            .nsight_trace
+            .as_ref()
+            .and_then(|trace| trace.cuda_runtime_launch_seconds),
+        profiling,
+        window_steps,
+    )
+}
+
+/// Emits interval console, TensorBoard, step JSONL, and advisory records.
+pub fn emit_interval_step_summary<W>(
+    multi: &MultiProgress,
+    tb: &mut Option<EventWriter<W>>,
+    step_log: &mut JsonlAppender,
+    context: IntervalStepSummaryContext<'_>,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
+    let IntervalStepSummaryContext {
+        manifest,
+        config,
+        session_start_global_step,
+        global_step,
+        epoch,
+        lr,
+        best_validation,
+        val_summary,
+        seen_samples,
+        assumed_games_seen,
+        epoch_optimizer_steps,
+        window_stats,
+        step_rate,
+        mut profiling,
+        advisories,
+    } = context;
+    let logging_started = Instant::now();
+    multi
+        .println(timestamped(format!(
+            "{} {} {} {} {} {} {} {}",
+            display_step_label(
+                global_step,
+                session_start_global_step,
+                config.max_train_steps
+            )
+            .bold()
+            .cyan(),
+            format!("train_loss={:.4}", window_stats.total_loss).green(),
+            format!("train_agree={:.2}%", window_stats.policy_agreement * 100.0).green(),
+            if let Some(val_summary) = val_summary.as_ref() {
+                format!(
+                    "val_ce={:.4} val_agree={:.2}%",
+                    val_summary.policy_loss,
+                    val_summary.agreement * 100.0
+                )
+            } else {
+                "val=skipped".to_string()
+            }
+            .bold()
+            .yellow(),
+            if let Some(best_validation) = best_validation {
+                format!(
+                    "best_ce={:.4} best_agree={:.2}%",
+                    best_validation.policy_loss,
+                    best_validation.agreement * 100.0
+                )
+            } else {
+                "best=n/a".to_string()
+            }
+            .bold()
+            .magenta(),
+            epoch_progress_message_with_rate(
+                estimate_epoch_progress(
+                    manifest,
+                    seen_samples,
+                    assumed_games_seen,
+                    epoch_optimizer_steps,
+                    config.batch_size,
+                ),
+                Some(step_rate),
+            )
+            .white(),
+            format!("steps/s={step_rate:.2}").white(),
+            lr_status_message(global_step, config.bc.warmup_steps, lr).white(),
+        )))
+        .map_err(|err| format!("failed to print train summary: {err}"))?;
+
+    if let Some(ref mut tb_writer) = tb.as_mut() {
+        log_tensorboard(
+            tb_writer,
+            global_step,
+            &window_stats,
+            val_summary.as_ref(),
+            lr,
+            best_validation,
+        )?;
+    }
+
+    let logging_seconds = logging_started.elapsed().as_secs_f64();
+    if let Some(existing) = profiling.as_mut() {
+        existing.merge_assign(&ProfilingEnvelope::from_children(
+            existing.stage.clone(),
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    } else {
+        profiling = Some(ProfilingEnvelope::from_children(
+            PROFILING_STAGE_BC_INTERVAL,
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    }
+
+    let step_entry = StepLogEntry {
+        global_step,
+        epoch: epoch + 1,
+        lr,
+        train_total_loss: window_stats.total_loss,
+        train_policy_agreement: window_stats.policy_agreement,
+        train_loss_policy: window_stats.loss_policy,
+        train_loss_value: window_stats.loss_value,
+        train_loss_grp: window_stats.loss_grp,
+        train_loss_tenpai: window_stats.loss_tenpai,
+        train_loss_danger: window_stats.loss_danger,
+        train_loss_opp_next: window_stats.loss_opp_next,
+        train_loss_score_pdf: window_stats.loss_score_pdf,
+        train_loss_score_cdf: window_stats.loss_score_cdf,
+        train_rare_actions: window_stats.rare_actions,
+        val_rare_actions: val_summary.as_ref().map(|summary| summary.rare_actions),
+        val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
+        val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
+        val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
+        val_delta_q_promotion: val_summary
+            .as_ref()
+            .and_then(|summary| summary.delta_q_promotion_snapshot),
+        profiling,
+        advisories,
+        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
+        best_val_agreement: best_validation.map(|best| best.agreement),
+    };
+    append_step_log_to_writer(step_log, &step_entry)?;
+    if !step_entry.advisories.is_empty() {
+        append_advisory_event_to_writer(
+            step_log,
+            &AdvisoryEvent::interval(&step_entry.advisories),
+        )?;
+    }
+    Ok(())
+}
+
+/// Saves a latest checkpoint when `state.global_step` is on the periodic boundary.
+pub fn maybe_save_periodic_checkpoint<B, O>(
+    model: &HydraModel<B>,
+    optimizer: &O,
+    context: PeriodicCheckpointContext<'_>,
+    state: PeriodicCheckpointState,
+) -> Result<f64, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let PeriodicCheckpointContext {
+        config,
+        artifacts,
+        epoch,
+        session_start_global_step,
+        current_runtime,
+    } = context;
+    let PeriodicCheckpointState {
+        global_step,
+        epoch_optimizer_steps,
+        total_loss,
+        best_validation,
+    } = state;
+    let session_step = session_steps_completed(global_step, session_start_global_step);
+    if session_step == 0 || !session_step.is_multiple_of(config.checkpoint_every_n_steps) {
+        return Ok(0.0);
+    }
+
+    let continuation = EpochContinuation {
+        next_epoch: epoch,
+        skip_optimizer_steps_in_epoch: epoch_optimizer_steps,
+        epoch_completed: false,
+    };
+    let checkpoint_started = Instant::now();
+    {
+        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
+        save_latest_checkpoint_and_state(
+            artifacts,
+            model,
+            optimizer,
+            LatestCheckpointState {
+                global_step,
+                train_loss: total_loss,
+                best_validation,
+                continuation: &continuation,
+                runtime: current_runtime,
+            },
+        )?;
+    }
+    Ok(checkpoint_started.elapsed().as_secs_f64())
 }
 
 /// Device-resident BC shard batch materialized from a backend-agnostic host batch.

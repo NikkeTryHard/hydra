@@ -2,10 +2,12 @@
 use std::path::Path;
 
 #[cfg(test)]
+use hydra_train_exec::artifacts::append_step_log_to_writer;
+#[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::log_tensorboard;
 pub(crate) use hydra_train_exec::artifacts::{
     BcArtifactPaths, JsonlAppender, LatestCheckpointState, append_advisory_event_to_writer,
-    append_step_log_to_writer, save_latest_checkpoint_and_state,
+    save_latest_checkpoint_and_state,
 };
 #[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::{

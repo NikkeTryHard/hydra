@@ -4,6 +4,7 @@ pub(super) type EpochLogEntry = hydra_train_exec::progress::EpochLogEntry<
     hydra_train_exec::validation::DeltaQPromotionSnapshot,
     hydra_train_exec::advisory::RuntimeAdvisory,
 >;
+#[cfg(test)]
 pub(super) type StepLogEntry = hydra_train_exec::progress::StepLogEntry<
     hydra_train_exec::validation::DeltaQPromotionSnapshot,
     hydra_train_exec::advisory::RuntimeAdvisory,
