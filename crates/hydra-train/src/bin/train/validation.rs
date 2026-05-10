@@ -6,8 +6,12 @@ use indicatif::ProgressBar;
 use std::sync::mpsc;
 use std::time::Instant;
 
+use hydra_bc_shards::{
+    BcShardHostBatch as ExtractedBcShardHostBatch, BcShardReader as ExtractedBcShardReader,
+    BcShardSplit as ExtractedBcShardSplit, load_bc_shard_reader as load_extracted_bc_shard_reader,
+};
 use hydra_train::data::bc_shards::{
-    BcShardHostBatch, BcShardReader, BcShardSplit, load_bc_shard_reader,
+    BcShardBatch, BcShardHostBatch, BcShardReader, materialize_extracted_host_batch,
 };
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_microbatches};
 use hydra_train::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
@@ -30,8 +34,6 @@ use hydra_train::training::losses::{HydraLoss, HydraTargets};
 
 use super::config::{TrainConfig, shard_prefetch_depth};
 use super::nvtx;
-#[cfg(feature = "cuda-graph")]
-use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
 use super::progress::{BatchMetricSums, RareActionMetrics};
 #[cfg(test)]
 use super::progress::{BatchStats, batch_stats_from_outputs};
@@ -441,8 +443,15 @@ where
         return run_validation_from_shards(model, baseline_model, context, runtime, reader);
     }
     if let Some(manifest_path) = context.config.bc_shards_manifest_path.as_ref() {
-        let reader = load_bc_shard_reader(manifest_path, BcShardSplit::Validation)?;
-        return run_validation_from_shards(model, baseline_model, context, runtime, &reader);
+        let reader =
+            load_extracted_bc_shard_reader(manifest_path, ExtractedBcShardSplit::Validation)?;
+        return run_validation_from_shard_reader(
+            model,
+            baseline_model,
+            context,
+            runtime,
+            ValidationShardReader::Extracted(&reader),
+        );
     }
     let ValidationContext {
         config,
@@ -590,6 +599,49 @@ where
             IntTensorPrimitive = TchTensor,
         >,
 {
+    run_validation_from_shard_reader(
+        model,
+        baseline_model,
+        context,
+        runtime,
+        ValidationShardReader::Train(reader),
+    )
+}
+
+enum ValidationShardReader<'a> {
+    Train(&'a BcShardReader),
+    Extracted(&'a ExtractedBcShardReader),
+}
+
+enum ValidationHostBatch {
+    Train(BcShardHostBatch),
+    Extracted(ExtractedBcShardHostBatch),
+}
+
+impl ValidationHostBatch {
+    fn materialize<B: Backend>(self, device: &B::Device) -> BcShardBatch<B> {
+        match self {
+            Self::Train(host) => host.materialize_owned::<B>(device),
+            Self::Extracted(host) => materialize_extracted_host_batch::<B>(host, device),
+        }
+    }
+}
+
+fn run_validation_from_shard_reader<TB>(
+    model: &HydraModel<TB>,
+    baseline_model: &HydraModel<TB>,
+    context: ValidationContext<'_, ValidBackendOf<TB>>,
+    runtime: ValidationRuntime<'_>,
+    reader: ValidationShardReader<'_>,
+) -> Result<ValidationSummary, String>
+where
+    TB: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<TB>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
     let ValidationContext {
         config,
         loader_config: _,
@@ -611,80 +663,77 @@ where
     let mut accumulator = ValidationAccumulator::new();
     let mut head_controller = head_controller;
 
-    let total_rows = reader.sample_count();
-    let limit_rows = validation_limits.bounded_total_rows(total_rows);
-
-    #[cfg(feature = "cuda-graph")]
-    let mut staging_context = match device {
-        burn::backend::libtorch::LibTorchDevice::Cuda(idx) => {
-            let device_index = *idx as i64;
-            Some((
-                PinnedStagingArea::new(validation_batch_size),
-                AsyncH2DContext::new(device_index),
-                PreallocatedDeviceTensors::new(validation_batch_size, device),
-            ))
-        }
-        _ => None,
+    let total_rows = match reader {
+        ValidationShardReader::Train(reader) => reader.sample_count(),
+        ValidationShardReader::Extracted(reader) => reader.sample_count(),
     };
+    let limit_rows = validation_limits.bounded_total_rows(total_rows);
 
     // -- producer/consumer pipeline: CPU collation on a scoped background thread --
     let batch_size = validation_batch_size;
     let prefetch_depth = shard_prefetch_depth(config);
-    let (tx, rx) = mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(prefetch_depth);
-    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(prefetch_depth + 1);
+    let (tx, rx) =
+        mpsc::sync_channel::<Result<(ValidationHostBatch, usize), String>>(prefetch_depth);
+    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<ValidationHostBatch>(prefetch_depth + 1);
 
     let consumer_result: Result<(), String> = std::thread::scope(|scope| {
         scope.spawn(move || {
-            let mut scratch = reader.new_scratch(batch_size);
-            let mut idx = 0usize;
-            while idx < limit_rows {
-                let take = batch_size.min(limit_rows - idx);
-                let result = reader
-                    .collate_host_batch_range_into(idx, take, false, &mut scratch)
-                    .map(|()| {
-                        let batch = if let Ok(mut recycled) = recycle_rx.try_recv() {
-                            scratch.swap_batch(&mut recycled)
-                        } else {
-                            scratch.take_batch()
-                        };
-                        (batch, take)
-                    });
-                if tx.send(result).is_err() {
-                    break;
+            match reader {
+                ValidationShardReader::Train(reader) => {
+                    let mut scratch = reader.new_scratch(batch_size);
+                    let mut idx = 0usize;
+                    while idx < limit_rows {
+                        let take = batch_size.min(limit_rows - idx);
+                        let result = reader
+                            .collate_host_batch_range_into(idx, take, false, &mut scratch)
+                            .map(|()| {
+                                let batch = if let Ok(ValidationHostBatch::Train(mut recycled)) =
+                                    recycle_rx.try_recv()
+                                {
+                                    scratch.swap_batch(&mut recycled)
+                                } else {
+                                    scratch.take_batch()
+                                };
+                                (ValidationHostBatch::Train(batch), take)
+                            });
+                        if tx.send(result).is_err() {
+                            break;
+                        }
+                        idx += take;
+                    }
                 }
-                idx += take;
+                ValidationShardReader::Extracted(reader) => {
+                    let mut scratch = reader.new_scratch(batch_size);
+                    let mut idx = 0usize;
+                    while idx < limit_rows {
+                        let take = batch_size.min(limit_rows - idx);
+                        let result = reader
+                            .collate_host_batch_range_into(idx, take, false, &mut scratch)
+                            .map(|()| {
+                                let batch =
+                                    if let Ok(ValidationHostBatch::Extracted(mut recycled)) =
+                                        recycle_rx.try_recv()
+                                    {
+                                        scratch.swap_batch(&mut recycled)
+                                    } else {
+                                        scratch.take_batch()
+                                    };
+                                (ValidationHostBatch::Extracted(batch), take)
+                            });
+                        if tx.send(result).is_err() {
+                            break;
+                        }
+                        idx += take;
+                    }
+                }
             }
             drop(tx);
         });
 
         for recv_result in rx {
             let (host_batch, take) = recv_result?;
-            #[cfg(feature = "cuda-graph")]
             let (shard_batch, recycled_host_batch) =
-                {
-                    if let Some((ref mut pinned_staging, ref h2d_ctx, ref mut gpu_tensors)) =
-                        staging_context
-                    {
-                        (
-                            super::pinned_transfer::materialize_staged_reuse_inner::<
-                                ValidBackendOf<TB>,
-                            >(
-                                &host_batch, pinned_staging, h2d_ctx, device, gpu_tensors
-                            ),
-                            Some(host_batch),
-                        )
-                    } else {
-                        (
-                            host_batch.materialize_owned::<ValidBackendOf<TB>>(device),
-                            None,
-                        )
-                    }
-                };
-            #[cfg(not(feature = "cuda-graph"))]
-            let (shard_batch, recycled_host_batch) = (
-                host_batch.materialize_owned::<ValidBackendOf<TB>>(device),
-                None,
-            );
+                (host_batch.materialize::<ValidBackendOf<TB>>(device), None);
             let obs = shard_batch.obs;
             let batch = shard_batch.batch;
             let targets = shard_batch.targets;

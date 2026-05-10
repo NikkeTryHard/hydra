@@ -335,6 +335,11 @@ where
     (shard_batch, timing)
 }
 
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "inner-backend transfer path is exercised by focused tests only"
+)]
 pub(crate) fn materialize_staged_reuse_inner<B>(
     host: &BcShardHostBatch,
     staging: &mut PinnedStagingArea,
@@ -582,6 +587,7 @@ where
 /// [`PinnedStagingArea::stage`] must have been called with a host batch
 /// whose `batch_size <= staging.batch_size` before this function.
 /// All tensors from a previous call must have been dropped.
+#[cfg(test)]
 pub(crate) unsafe fn materialize_reuse_from_pinned_inner<B>(
     staging: &PinnedStagingArea,
     host: &BcShardHostBatch,
@@ -840,6 +846,7 @@ where
     )))
 }
 
+#[cfg(test)]
 fn burn_tensor_from_tch_f32_inner<B, const D: usize>(t: tch::Tensor) -> Tensor<B, D>
 where
     B: Backend<Device = LibTorchDevice, FloatTensorPrimitive = TchTensor>,
@@ -859,6 +866,7 @@ where
     Tensor::from_primitive(B::int_from_inner(tch_tensor))
 }
 
+#[cfg(test)]
 fn burn_int_tensor_from_tch_inner<B>(t: tch::Tensor) -> Tensor<B, 1, Int>
 where
     B: Backend<Device = LibTorchDevice, IntTensorPrimitive = TchTensor>,

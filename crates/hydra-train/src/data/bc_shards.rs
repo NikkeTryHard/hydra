@@ -35,6 +35,11 @@ use crate::training::replay_delta_q::DeltaQSidecarIndex;
 use crate::training::replay_exit::ExitSidecarIndex;
 
 pub use hydra_bc_shards::{
+    BcShardHostBatch as ExtractedBcShardHostBatch, BcShardReader as ExtractedBcShardReader,
+    BcShardSplit as ExtractedBcShardReaderSplit,
+    load_bc_shard_reader as load_extracted_bc_shard_reader,
+};
+pub use hydra_bc_shards::{
     BcShardManifest as ExtractedBcShardManifest, BcShardSplit as ExtractedBcShardSplit,
     validate_bc_shard_manifest_contract as validate_extracted_bc_shard_manifest_contract,
     validate_bc_shard_split_manifest_contract as validate_extracted_bc_shard_split_manifest_contract,
@@ -544,6 +549,84 @@ fn resize_uninit_i64(buf: &mut Vec<i64>, len: usize) {
     }
     unsafe { buf.set_len(len) };
 }
+fn target_presence_from_extracted_host_batch(
+    host: &ExtractedBcShardHostBatch,
+    batch_size: usize,
+) -> TargetPresence {
+    let mut presence = TargetPresence::with_batch_size(batch_size);
+    presence.counts[AdvancedHead::OracleCritic.index()] = host
+        .oracle_target_mask
+        .iter()
+        .take(batch_size)
+        .filter(|&&value| value > 0.0)
+        .count();
+    if let (Some(_target), Some(mask)) = (&host.safety_target_flat, &host.safety_mask_flat) {
+        presence.counts[AdvancedHead::SafetyResidual.index()] =
+            count_nonzero_action_rows(mask, batch_size, HYDRA_ACTION_SPACE);
+    }
+    if let (Some(_target), Some(mask)) = (&host.delta_q_target_flat, &host.delta_q_mask_flat) {
+        let (rows, actions) =
+            count_nonzero_action_rows_and_entries(mask, batch_size, HYDRA_ACTION_SPACE);
+        presence.counts[AdvancedHead::DeltaQ.index()] = rows;
+        presence.delta_q_actions_present = actions;
+    }
+    presence
+}
+
+fn count_nonzero_action_rows(mask: &[f32], batch_size: usize, action_space: usize) -> usize {
+    mask.chunks_exact(action_space)
+        .take(batch_size)
+        .filter(|row| row.iter().any(|&value| value > 0.0))
+        .count()
+}
+
+fn count_nonzero_action_rows_and_entries(
+    mask: &[f32],
+    batch_size: usize,
+    action_space: usize,
+) -> (usize, usize) {
+    let mut rows = 0usize;
+    let mut entries = 0usize;
+    for row in mask.chunks_exact(action_space).take(batch_size) {
+        let row_entries = row.iter().filter(|&&value| value > 0.0).count();
+        if row_entries > 0 {
+            rows += 1;
+            entries += row_entries;
+        }
+    }
+    (rows, entries)
+}
+
+pub fn materialize_extracted_host_batch<B: Backend>(
+    host: ExtractedBcShardHostBatch,
+    device: &B::Device,
+) -> BcShardBatch<B> {
+    let target_presence = target_presence_from_extracted_host_batch(&host, host.batch_size);
+    materialize_host_parts_owned::<B>(
+        host.batch_size,
+        host.obs_flat,
+        host.actions,
+        host.legal_mask_flat,
+        host.value_target,
+        host.grp_target_flat,
+        host.oracle_target_flat,
+        host.oracle_target_mask,
+        host.tenpai_flat,
+        host.danger_flat,
+        host.danger_mask_flat,
+        host.opp_next_flat,
+        host.score_pdf_flat,
+        host.score_cdf_flat,
+        host.safety_target_flat,
+        host.safety_mask_flat,
+        host.exit_target_flat,
+        host.exit_mask_flat,
+        host.delta_q_target_flat,
+        host.delta_q_mask_flat,
+        target_presence,
+        device,
+    )
+}
 
 impl BcShardHostBatch {
     /// Materialize device tensors from CPU-side flat buffers.
@@ -647,107 +730,153 @@ impl BcShardHostBatch {
     /// Eliminates ~2-3 MB of per-batch allocation+copy on the
     /// non-pinned materialization path.
     pub fn materialize_owned<B: Backend>(self, device: &B::Device) -> BcShardBatch<B> {
-        let b = self.batch_size;
+        materialize_host_parts_owned::<B>(
+            self.batch_size,
+            self.obs_flat,
+            self.actions,
+            self.legal_mask_flat,
+            self.value_target,
+            self.grp_target_flat,
+            self.oracle_target_flat,
+            self.oracle_target_mask,
+            self.tenpai_flat,
+            self.danger_flat,
+            self.danger_mask_flat,
+            self.opp_next_flat,
+            self.score_pdf_flat,
+            self.score_cdf_flat,
+            self.safety_target_flat,
+            self.safety_mask_flat,
+            self.exit_target_flat,
+            self.exit_mask_flat,
+            self.delta_q_target_flat,
+            self.delta_q_mask_flat,
+            self.target_presence,
+            device,
+        )
+    }
+}
 
-        let obs = Tensor::<B, 3>::from_data(
-            TensorData::new(self.obs_flat, [b, NUM_CHANNELS, TILE_COUNT]),
-            device,
-        );
-        let actions = self.actions;
-        let policy_target = policy_target_from_action_slice::<B>(actions.as_slice(), b, device);
-        let actions_tensor = Tensor::<B, 1, Int>::from_data(TensorData::new(actions, [b]), device);
-        let legal_mask = Tensor::<B, 2>::from_data(
-            TensorData::new(self.legal_mask_flat, [b, HYDRA_ACTION_SPACE]),
-            device,
-        );
-        let value_target =
-            Tensor::<B, 1>::from_data(TensorData::new(self.value_target, [b]), device);
-        let grp_target = Tensor::<B, 2>::from_data(
-            TensorData::new(self.grp_target_flat, [b, GRP_CLASS_COUNT]),
-            device,
-        );
-        let oracle_target = Tensor::<B, 2>::from_data(
-            TensorData::new(self.oracle_target_flat, [b, PLAYER_COUNT]),
-            device,
-        );
-        let oracle_target_mask =
-            Tensor::<B, 1>::from_data(TensorData::new(self.oracle_target_mask, [b]), device);
-        let tenpai_target = Tensor::<B, 2>::from_data(
-            TensorData::new(self.tenpai_flat, [b, OPPONENT_COUNT]),
-            device,
-        );
-        let danger_target = Tensor::<B, 3>::from_data(
-            TensorData::new(self.danger_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
-            device,
-        );
-        let danger_mask = Tensor::<B, 3>::from_data(
-            TensorData::new(self.danger_mask_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
-            device,
-        );
-        let opp_next_target = Tensor::<B, 3>::from_data(
-            TensorData::new(self.opp_next_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
-            device,
-        );
-        let score_pdf_target = Tensor::<B, 2>::from_data(
-            TensorData::new(self.score_pdf_flat, [b, SCORE_BINS]),
-            device,
-        );
-        let score_cdf_target = Tensor::<B, 2>::from_data(
-            TensorData::new(self.score_cdf_flat, [b, SCORE_BINS]),
-            device,
-        );
+#[allow(
+    clippy::too_many_arguments,
+    reason = "materializes a flat shard record without regrouping hot-path owned buffers"
+)]
+fn materialize_host_parts_owned<B: Backend>(
+    batch_size: usize,
+    obs_flat: Vec<f32>,
+    actions: Vec<i64>,
+    legal_mask_flat: Vec<f32>,
+    value_target: Vec<f32>,
+    grp_target_flat: Vec<f32>,
+    oracle_target_flat: Vec<f32>,
+    oracle_target_mask: Vec<f32>,
+    tenpai_flat: Vec<f32>,
+    danger_flat: Vec<f32>,
+    danger_mask_flat: Vec<f32>,
+    opp_next_flat: Vec<f32>,
+    score_pdf_flat: Vec<f32>,
+    score_cdf_flat: Vec<f32>,
+    safety_target_flat: Option<Vec<f32>>,
+    safety_mask_flat: Option<Vec<f32>>,
+    exit_target_flat: Option<Vec<f32>>,
+    exit_mask_flat: Option<Vec<f32>>,
+    delta_q_target_flat: Option<Vec<f32>>,
+    delta_q_mask_flat: Option<Vec<f32>>,
+    target_presence: TargetPresence,
+    device: &B::Device,
+) -> BcShardBatch<B> {
+    let b = batch_size;
 
-        let exit_target_tensor = self.exit_target_flat.map(|buf| {
+    let obs = Tensor::<B, 3>::from_data(
+        TensorData::new(obs_flat, [b, NUM_CHANNELS, TILE_COUNT]),
+        device,
+    );
+    let policy_target = policy_target_from_action_slice::<B>(actions.as_slice(), b, device);
+    let actions_tensor = Tensor::<B, 1, Int>::from_data(TensorData::new(actions, [b]), device);
+    let legal_mask = Tensor::<B, 2>::from_data(
+        TensorData::new(legal_mask_flat, [b, HYDRA_ACTION_SPACE]),
+        device,
+    );
+    let value_target = Tensor::<B, 1>::from_data(TensorData::new(value_target, [b]), device);
+    let grp_target = Tensor::<B, 2>::from_data(
+        TensorData::new(grp_target_flat, [b, GRP_CLASS_COUNT]),
+        device,
+    );
+    let oracle_target = Tensor::<B, 2>::from_data(
+        TensorData::new(oracle_target_flat, [b, PLAYER_COUNT]),
+        device,
+    );
+    let oracle_target_mask =
+        Tensor::<B, 1>::from_data(TensorData::new(oracle_target_mask, [b]), device);
+    let tenpai_target =
+        Tensor::<B, 2>::from_data(TensorData::new(tenpai_flat, [b, OPPONENT_COUNT]), device);
+    let danger_target = Tensor::<B, 3>::from_data(
+        TensorData::new(danger_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
+        device,
+    );
+    let danger_mask = Tensor::<B, 3>::from_data(
+        TensorData::new(danger_mask_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
+        device,
+    );
+    let opp_next_target = Tensor::<B, 3>::from_data(
+        TensorData::new(opp_next_flat, [b, OPPONENT_COUNT, TILE_COUNT]),
+        device,
+    );
+    let score_pdf_target =
+        Tensor::<B, 2>::from_data(TensorData::new(score_pdf_flat, [b, SCORE_BINS]), device);
+    let score_cdf_target =
+        Tensor::<B, 2>::from_data(TensorData::new(score_cdf_flat, [b, SCORE_BINS]), device);
+
+    let exit_target_tensor = exit_target_flat.map(|buf| {
+        Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+    });
+    let exit_mask_tensor = exit_mask_flat.map(|buf| {
+        Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+    });
+
+    let batch = MjaiBcBatch {
+        actions: actions_tensor,
+        exit_target: exit_target_tensor,
+        exit_mask: exit_mask_tensor,
+    };
+
+    let targets = HydraTargets {
+        policy_target,
+        legal_mask,
+        value_target,
+        grp_target,
+        tenpai_target,
+        danger_target,
+        danger_mask,
+        opp_next_target,
+        score_pdf_target,
+        score_cdf_target,
+        oracle_target: Some(oracle_target),
+        belief_fields_target: None,
+        belief_fields_mask: None,
+        mixture_weight_target: None,
+        mixture_weight_mask: None,
+        opponent_hand_type_target: None,
+        delta_q_target: delta_q_target_flat.map(|buf| {
             Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
-        });
-        let exit_mask_tensor = self.exit_mask_flat.map(|buf| {
+        }),
+        delta_q_mask: delta_q_mask_flat.map(|buf| {
             Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
-        });
+        }),
+        safety_residual_target: safety_target_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+        }),
+        safety_residual_mask: safety_mask_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+        }),
+        oracle_guidance_mask: Some(oracle_target_mask),
+        target_presence: Some(target_presence),
+    };
 
-        let batch_struct = MjaiBcBatch {
-            actions: actions_tensor,
-            exit_target: exit_target_tensor,
-            exit_mask: exit_mask_tensor,
-        };
-
-        let targets = HydraTargets {
-            policy_target,
-            legal_mask,
-            value_target,
-            grp_target,
-            tenpai_target,
-            danger_target,
-            danger_mask,
-            opp_next_target,
-            score_pdf_target,
-            score_cdf_target,
-            oracle_target: Some(oracle_target),
-            belief_fields_target: None,
-            belief_fields_mask: None,
-            mixture_weight_target: None,
-            mixture_weight_mask: None,
-            opponent_hand_type_target: None,
-            delta_q_target: self.delta_q_target_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
-            }),
-            delta_q_mask: self.delta_q_mask_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
-            }),
-            safety_residual_target: self.safety_target_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
-            }),
-            safety_residual_mask: self.safety_mask_flat.map(|buf| {
-                Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
-            }),
-            oracle_guidance_mask: Some(oracle_target_mask),
-            target_presence: Some(self.target_presence),
-        };
-
-        BcShardBatch {
-            obs,
-            batch: batch_struct,
-            targets,
-        }
+    BcShardBatch {
+        obs,
+        batch,
+        targets,
     }
 }
 
@@ -3319,6 +3448,101 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extracted_host_materialization_bridge_matches_train_host() {
+        type B = NdArray<f32>;
+
+        let batch_size = 2;
+        let mut train_host = BcShardHostBatch {
+            batch_size,
+            obs_flat: (0..batch_size * OBS_SIZE)
+                .map(|idx| idx as f32 * 0.001)
+                .collect(),
+            actions: vec![3, 7],
+            legal_mask_flat: vec![1.0; batch_size * HYDRA_ACTION_SPACE],
+            value_target: vec![0.25, -0.5],
+            grp_target_flat: vec![0.0; batch_size * GRP_CLASS_COUNT],
+            oracle_target_flat: vec![0.1; batch_size * PLAYER_COUNT],
+            oracle_target_mask: vec![1.0, 0.0],
+            tenpai_flat: vec![0.0; batch_size * OPPONENT_COUNT],
+            danger_flat: vec![0.0; batch_size * SPATIAL_TARGET_SIZE],
+            danger_mask_flat: vec![1.0; batch_size * SPATIAL_TARGET_SIZE],
+            opp_next_flat: vec![0.0; batch_size * SPATIAL_TARGET_SIZE],
+            score_pdf_flat: vec![0.0; batch_size * SCORE_BINS],
+            score_cdf_flat: vec![0.0; batch_size * SCORE_BINS],
+            safety_target_flat: Some(vec![0.0; batch_size * HYDRA_ACTION_SPACE]),
+            safety_mask_flat: Some(vec![0.0; batch_size * HYDRA_ACTION_SPACE]),
+            exit_target_flat: Some(vec![0.0; batch_size * HYDRA_ACTION_SPACE]),
+            exit_mask_flat: Some(vec![0.0; batch_size * HYDRA_ACTION_SPACE]),
+            delta_q_target_flat: Some(vec![0.0; batch_size * HYDRA_ACTION_SPACE]),
+            delta_q_mask_flat: Some(vec![0.0; batch_size * HYDRA_ACTION_SPACE]),
+            target_presence: TargetPresence::with_batch_size(batch_size),
+        };
+        train_host.safety_mask_flat.as_mut().expect("safety mask")[5] = 1.0;
+        train_host.delta_q_mask_flat.as_mut().expect("delta q mask")[HYDRA_ACTION_SPACE + 2] = 1.0;
+        train_host.delta_q_mask_flat.as_mut().expect("delta q mask")[HYDRA_ACTION_SPACE + 4] = 1.0;
+        train_host.target_presence.counts[AdvancedHead::OracleCritic.index()] = 1;
+        train_host.target_presence.counts[AdvancedHead::SafetyResidual.index()] = 1;
+        train_host.target_presence.counts[AdvancedHead::DeltaQ.index()] = 1;
+        train_host.target_presence.delta_q_actions_present = 2;
+
+        let extracted_host = ExtractedBcShardHostBatch {
+            batch_size: train_host.batch_size,
+            obs_flat: train_host.obs_flat.clone(),
+            actions: train_host.actions.clone(),
+            legal_mask_flat: train_host.legal_mask_flat.clone(),
+            value_target: train_host.value_target.clone(),
+            grp_target_flat: train_host.grp_target_flat.clone(),
+            oracle_target_flat: train_host.oracle_target_flat.clone(),
+            oracle_target_mask: train_host.oracle_target_mask.clone(),
+            tenpai_flat: train_host.tenpai_flat.clone(),
+            danger_flat: train_host.danger_flat.clone(),
+            danger_mask_flat: train_host.danger_mask_flat.clone(),
+            opp_next_flat: train_host.opp_next_flat.clone(),
+            score_pdf_flat: train_host.score_pdf_flat.clone(),
+            score_cdf_flat: train_host.score_cdf_flat.clone(),
+            safety_target_flat: train_host.safety_target_flat.clone(),
+            safety_mask_flat: train_host.safety_mask_flat.clone(),
+            exit_target_flat: train_host.exit_target_flat.clone(),
+            exit_mask_flat: train_host.exit_mask_flat.clone(),
+            delta_q_target_flat: train_host.delta_q_target_flat.clone(),
+            delta_q_mask_flat: train_host.delta_q_mask_flat.clone(),
+        };
+
+        let device = Default::default();
+        let train_batch = train_host.materialize_owned::<B>(&device);
+        let extracted_batch = materialize_extracted_host_batch::<B>(extracted_host, &device);
+
+        let train_presence = train_batch
+            .targets
+            .target_presence
+            .expect("train target presence");
+        let extracted_presence = extracted_batch
+            .targets
+            .target_presence
+            .expect("extracted target presence");
+        assert_eq!(train_presence.batch_size, extracted_presence.batch_size);
+        assert_eq!(train_presence.counts, extracted_presence.counts);
+        assert_eq!(
+            train_presence.delta_q_actions_present,
+            extracted_presence.delta_q_actions_present
+        );
+        assert_eq!(
+            train_batch
+                .targets
+                .policy_target
+                .into_data()
+                .as_slice::<f32>()
+                .expect("train policy"),
+            extracted_batch
+                .targets
+                .policy_target
+                .into_data()
+                .as_slice::<f32>()
+                .expect("extracted policy")
+        );
     }
 
     #[test]
