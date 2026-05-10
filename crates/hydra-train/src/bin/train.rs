@@ -19,8 +19,6 @@ mod modes;
 mod nvtx;
 #[path = "train/preflight_fingerprint.rs"]
 mod preflight_fingerprint;
-#[path = "train/preflight_runtime.rs"]
-mod preflight_runtime;
 #[path = "train/presentation.rs"]
 mod presentation;
 #[path = "train/progress.rs"]
@@ -47,9 +45,9 @@ use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
-use self::preflight_runtime::run_probe_child_mode;
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use hydra_train_exec::modes::{TrainModeHandlers, run_train_modes};
+use hydra_train_exec::preflight_runtime::run_probe_child_mode;
 use hydra_train_runtime::probe_request::ProbeRequest;
 use std::path::{Path, PathBuf};
 
