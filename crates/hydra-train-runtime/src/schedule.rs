@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use hydra_train_algo::bc::warmup_then_cosine_lr;
-
 use crate::config::TrainConfig;
 
 /// Minimal trainer schedule inputs needed to compute BC learning rates.
@@ -62,13 +60,25 @@ pub fn effective_lr(
     total_steps: usize,
 ) -> f64 {
     let train_cfg = train_cfg.into();
-    warmup_then_cosine_lr(
-        step,
-        train_cfg.warmup_steps.min(total_steps),
-        total_steps,
-        train_cfg.lr,
-        train_cfg.min_learning_rate,
-    )
+    let warmup_steps = train_cfg.warmup_steps.min(total_steps);
+    if step < warmup_steps {
+        train_cfg.lr * (step as f64 / warmup_steps as f64)
+    } else {
+        cosine_annealing_lr(
+            step - warmup_steps,
+            total_steps - warmup_steps,
+            train_cfg.lr,
+            train_cfg.min_learning_rate,
+        )
+    }
+}
+
+fn cosine_annealing_lr(step: usize, total_steps: usize, lr_max: f64, lr_min: f64) -> f64 {
+    if total_steps == 0 {
+        return lr_max;
+    }
+    let t = (step as f64 / total_steps as f64).min(1.0);
+    lr_min + 0.5 * (lr_max - lr_min) * (1.0 + (std::f64::consts::PI * t).cos())
 }
 
 /// Computes a step rate from count and wall-clock duration.
