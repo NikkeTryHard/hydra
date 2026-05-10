@@ -11,10 +11,9 @@ use super::config::{TrainConfig, display_num_threads};
 use super::progress::BannerStats;
 
 pub(crate) use hydra_train_exec::presentation::{
-    explicit_preflight_recommendation, explicit_preflight_summary, format_advisory_line,
-    format_preflight_selection_line, format_preflight_summary_line, format_probe_results_table,
-    format_progress_message, format_status_line, format_timed_phase_message, format_warning_line,
-    make_bar, make_spinner, phase_label, timestamped,
+    explicit_preflight_recommendation, format_advisory_line, format_preflight_selection_line,
+    format_progress_message, format_status_line, format_warning_line, make_bar, make_spinner,
+    phase_label, timestamped,
 };
 
 pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {

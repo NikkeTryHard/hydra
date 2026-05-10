@@ -13,7 +13,7 @@ use hydra_train::data::sample::MjaiSample;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{
     PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL, PROFILING_STAGE_CHECKPOINT,
-    PROFILING_STAGE_LOGGING, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
+    PROFILING_STAGE_LOGGING, PROFILING_STAGE_TRAIN, ProfilingEnvelope,
 };
 #[cfg(test)]
 use hydra_train::preflight::{PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_PRODUCER_WAIT};
@@ -28,10 +28,8 @@ use super::advisory::{
     AdvisoryEvent, IntervalTimingInput, RuntimeAdvisory, interval_runtime_advisories,
 };
 use super::artifacts::{
-    BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
-    PersistedValidationGateArtifact, append_advisory_event_to_writer, append_step_log_to_writer,
-    save_checkpoint, save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
-    write_validation_gate_artifact,
+    BcArtifactPaths, JsonlAppender, LatestCheckpointState, append_advisory_event_to_writer,
+    append_step_log_to_writer, save_latest_checkpoint_and_state,
 };
 use super::config::{TrainConfig, shard_prefetch_depth};
 
@@ -45,19 +43,24 @@ use super::resume::{
 };
 use super::schedule::{effective_lr, lr_status_message, steps_per_second};
 use super::status::{
-    display_step_label, display_validation_scope_label, epoch_progress_message_with_rate,
-    estimate_epoch_progress, reached_session_step_budget, session_steps_completed,
+    display_step_label, epoch_progress_message_with_rate, estimate_epoch_progress,
+    reached_session_step_budget, session_steps_completed,
 };
-use super::validation::{
-    ValidationContext, ValidationRuntime, ValidationSummary, evaluate_validation_gates,
-    is_better_validation, run_validation, validation_loader,
-};
+use super::validation::ValidationSummary;
 use hydra_train_exec::artifacts::log_tensorboard;
 use hydra_train_exec::epoch_runner::{
-    self as exec_epoch, BcShardPrefetcher, train_logical_batch_from_host_batch,
+    self as exec_epoch, BcShardPrefetcher, EpochEndValidationContext, ValidationEvent,
+    ValidationStepContext, maybe_run_interval_validation, run_epoch_end_validation,
+    should_run_epoch_end_validation, train_logical_batch_from_host_batch,
+};
+#[cfg(test)]
+use hydra_train_exec::epoch_runner::{
+    ValidationExecutor, maybe_run_interval_validation_with_executor,
+    run_epoch_end_validation_with_executor,
 };
 pub(super) use hydra_train_exec::progress::TrainSubStageTiming;
-use hydra_train_runtime::validation::ValidationRunLimits;
+#[cfg(test)]
+use hydra_train_exec::validation_runner::{ValidationContext, ValidationRuntime};
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -114,27 +117,6 @@ pub(super) struct EpochRunOutcome {
 
 pub(super) type TrainLogicalBatchConfig<'a, B = TrainBackend> =
     exec_epoch::TrainLogicalBatchConfig<'a, B>;
-
-struct ValidationStepContext<'a, B = TrainBackend>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    multi: &'a MultiProgress,
-    config: &'a TrainConfig,
-    loader_config: &'a StreamingLoaderConfig,
-    manifest: &'a DataManifest,
-    train_device: &'a LibTorchDevice,
-    valid_loss_fn: &'a HydraLoss<ValidBackendOf<B>>,
-    bc_exit_cfg: &'a BcExitConfig,
-    artifacts: &'a BcArtifactPaths,
-    session_start_global_step: usize,
-    cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
-}
 
 struct IntervalStepSummaryContext<'a> {
     manifest: &'a DataManifest,
@@ -231,79 +213,6 @@ fn update_train_progress_message(
     ));
 }
 
-struct EpochEndValidationContext<'a, B = TrainBackend>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    config: &'a TrainConfig,
-    loader_config: &'a StreamingLoaderConfig,
-    manifest: &'a DataManifest,
-    train_device: &'a LibTorchDevice,
-    valid_loss_fn: &'a HydraLoss<ValidBackendOf<B>>,
-    bc_exit_cfg: &'a BcExitConfig,
-    artifacts: &'a BcArtifactPaths,
-    cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
-}
-
-#[derive(Clone)]
-struct ValidationEvent {
-    global_step: usize,
-    summary: ValidationSummary,
-}
-
-trait ValidationExecutor<B>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    fn run_validation(
-        &mut self,
-        model: &HydraModel<B>,
-        context: ValidationContext<
-            '_,
-            TrainConfig,
-            super::validation::TrainValidationLoader<'_>,
-            ValidBackendOf<B>,
-        >,
-        runtime: ValidationRuntime<'_>,
-    ) -> Result<ValidationSummary, String>;
-}
-
-struct DefaultValidationExecutor;
-
-impl<B> ValidationExecutor<B> for DefaultValidationExecutor
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    fn run_validation(
-        &mut self,
-        model: &HydraModel<B>,
-        context: ValidationContext<
-            '_,
-            TrainConfig,
-            super::validation::TrainValidationLoader<'_>,
-            ValidBackendOf<B>,
-        >,
-        runtime: ValidationRuntime<'_>,
-    ) -> Result<ValidationSummary, String> {
-        run_validation(model, context, runtime)
-    }
-}
-
 struct EpochFinalizeContext<'a> {
     config: &'a TrainConfig,
     train_cfg: &'a BCTrainerConfig,
@@ -314,132 +223,6 @@ struct EpochFinalizeContext<'a> {
     best_validation: Option<BestValidation>,
     final_lr: f64,
     profiling: Option<ProfilingEnvelope>,
-}
-
-struct CompletedValidationContext<'a, B = TrainBackend>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    model: &'a HydraModel<B>,
-    artifacts: &'a BcArtifactPaths,
-    config: &'a TrainConfig,
-    best_validation: &'a mut Option<BestValidation>,
-    checkpoint_index: usize,
-    checkpoint_loss: f64,
-    delta_q_scope: &'static str,
-}
-
-fn should_run_epoch_end_validation(epoch: usize, num_epochs: usize, every_n_epochs: usize) -> bool {
-    exec_epoch::should_run_epoch_end_validation(epoch, num_epochs, every_n_epochs)
-}
-
-fn validation_delta_q_suffix(summary: &ValidationSummary) -> colored::ColoredString {
-    summary
-        .delta_q_promotion_snapshot
-        .as_ref()
-        .map(|report| {
-            format!(
-            " val_dq_lift={:.4} val_dq_regret={:.4}/{:.4} val_dq_win={:.2}% val_dq_offline_gate={}",
-            report.mean_decision_lift,
-            report.candidate_mean_regret,
-            report.baseline_mean_regret,
-            report.regret_beats_baseline_rate * 100.0,
-            report.passed
-        )
-        })
-        .unwrap_or_default()
-        .yellow()
-}
-
-fn finalize_completed_validation<B>(
-    context: CompletedValidationContext<'_, B>,
-    summary: ValidationSummary,
-) -> Result<ValidationSummary, String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    let CompletedValidationContext {
-        model,
-        config,
-        artifacts,
-        best_validation,
-        checkpoint_index,
-        checkpoint_loss,
-        delta_q_scope,
-    } = context;
-    let previous_best = *best_validation;
-    let run_config = hydra_train_runtime::validation::ValidationRunConfig::from_config(config);
-    let gate_decision = evaluate_validation_gates(&run_config, &summary, previous_best);
-    if gate_decision.enabled {
-        write_validation_gate_artifact(
-            &artifacts.validation_gate_path,
-            &PersistedValidationGateArtifact {
-                scope: delta_q_scope,
-                step_or_epoch: checkpoint_index,
-                decision: &gate_decision,
-                samples: summary.samples,
-                policy_loss: summary.policy_loss,
-                policy_agreement: summary.agreement,
-                best_policy_loss: previous_best.map(|best| best.policy_loss),
-                best_policy_agreement: previous_best.map(|best| best.agreement),
-            },
-        )?;
-    }
-    if is_better_validation(&summary, *best_validation) && gate_decision.passed {
-        *best_validation = Some(BestValidation {
-            policy_loss: summary.policy_loss,
-            agreement: summary.agreement,
-        });
-        let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
-        save_checkpoint(
-            model,
-            &artifacts.best_model_base,
-            checkpoint_index,
-            checkpoint_loss,
-            Some(&summary),
-        )?;
-    } else if gate_decision.enabled
-        && !gate_decision.passed
-        && config.validation_gates.fail_training_on_gate_failure
-    {
-        return Err(format!(
-            "validation gate failed: {}",
-            gate_decision.failed_names().join(",")
-        ));
-    }
-    if let (Some(report), Some(result)) = (
-        summary.delta_q_promotion.as_ref(),
-        summary.delta_q_promotion_result.as_ref(),
-    ) {
-        write_delta_q_promotion_artifact(
-            &artifacts.delta_q_promotion_path,
-            &PersistedDeltaQPromotionArtifact {
-                scope: delta_q_scope,
-                step_or_epoch: checkpoint_index,
-                recommendation: result.recommendation(),
-                stage: "offline_gate",
-                arena_confirmation: None,
-                arena_decision: None,
-                arena_report: None,
-                report,
-                result,
-                policy_transfer: summary.delta_q_policy_transfer.as_ref(),
-                policy_transfer_result: summary.delta_q_policy_transfer_result.as_ref(),
-            },
-        )?;
-    }
-
-    Ok(summary)
 }
 
 fn build_epoch_continuation(
@@ -509,137 +292,6 @@ fn record_drained_batch_stats(
     step_window: &mut ScalarAverages,
 ) {
     exec_epoch::record_drained_batch_stats(drained, stats, step_window);
-}
-
-fn maybe_run_interval_validation<B>(
-    context: ValidationStepContext<'_, B>,
-    model: &HydraModel<B>,
-    head_controller: Option<&mut HeadActivationController>,
-    best_validation: &mut Option<BestValidation>,
-    global_step: usize,
-    step_window_total_loss: f64,
-) -> Result<Option<ValidationSummary>, String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    maybe_run_interval_validation_with_executor(
-        context,
-        model,
-        head_controller,
-        best_validation,
-        global_step,
-        step_window_total_loss,
-        &mut DefaultValidationExecutor,
-    )
-}
-
-fn maybe_run_interval_validation_with_executor<B, E>(
-    context: ValidationStepContext<'_, B>,
-    model: &HydraModel<B>,
-    head_controller: Option<&mut HeadActivationController>,
-    best_validation: &mut Option<BestValidation>,
-    global_step: usize,
-    step_window_total_loss: f64,
-    validation_executor: &mut E,
-) -> Result<Option<ValidationSummary>, String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    E: ValidationExecutor<B>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    let ValidationStepContext {
-        multi,
-        config,
-        loader_config,
-        manifest,
-        train_device,
-        valid_loss_fn,
-        bc_exit_cfg,
-        artifacts,
-        session_start_global_step,
-        cached_validation_samples,
-    } = context;
-    let session_step = session_steps_completed(global_step, session_start_global_step);
-    if session_step == 0 || !session_step.is_multiple_of(config.validate_every_n_steps) {
-        return Ok(None);
-    }
-
-    multi
-        .println(timestamped(format!(
-            "{} {}",
-            display_validation_scope_label(
-                global_step,
-                session_start_global_step,
-                config.max_train_steps,
-            )
-            .bold()
-            .magenta(),
-            ValidationRunLimits::from_config(config)
-                .target_samples_label()
-                .yellow(),
-        )))
-        .map_err(|err| format!("failed to print validation start summary: {err}"))?;
-
-    let summary = {
-        let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
-        validation_executor.run_validation(
-            model,
-            ValidationContext {
-                config,
-                loader: &validation_loader(loader_config),
-                manifest,
-                cached_samples: cached_validation_samples,
-                device: train_device,
-                loss_fn: valid_loss_fn,
-                exit_cfg: bc_exit_cfg,
-            },
-            ValidationRuntime {
-                head_controller,
-                progress: None,
-            },
-        )?
-    };
-    let summary = finalize_completed_validation(
-        CompletedValidationContext {
-            model,
-            config,
-            artifacts,
-            best_validation,
-            checkpoint_index: global_step,
-            checkpoint_loss: step_window_total_loss,
-            delta_q_scope: "step_validation",
-        },
-        summary,
-    )?;
-
-    multi
-        .println(timestamped(format!(
-            "{} {} {} {} {}{}",
-            display_validation_scope_label(
-                global_step,
-                session_start_global_step,
-                config.max_train_steps,
-            )
-            .bold()
-            .magenta(),
-            format!("val_samples={}", summary.samples).yellow(),
-            format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
-            format!("val_total={:.4}", summary.total_loss).yellow(),
-            format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
-            validation_delta_q_suffix(&summary),
-        )))
-        .map_err(|err| format!("failed to print validation summary: {err}"))?;
-
-    Ok(Some(summary))
 }
 
 #[cfg(test)]
@@ -883,126 +535,6 @@ fn emit_paused_training_message(continuation: &EpochContinuation) {
 
 fn benchmark_quiet() -> bool {
     std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some()
-}
-
-fn run_epoch_end_validation<B>(
-    epoch: usize,
-    model: &HydraModel<B>,
-    context: EpochEndValidationContext<'_, B>,
-    head_controller: Option<&mut HeadActivationController>,
-    best_validation: &mut Option<BestValidation>,
-    train_total_loss: f64,
-) -> Result<Option<ValidationSummary>, String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    run_epoch_end_validation_with_executor(
-        epoch,
-        model,
-        context,
-        head_controller,
-        best_validation,
-        train_total_loss,
-        &mut DefaultValidationExecutor,
-    )
-}
-
-fn run_epoch_end_validation_with_executor<B, E>(
-    epoch: usize,
-    model: &HydraModel<B>,
-    context: EpochEndValidationContext<'_, B>,
-    head_controller: Option<&mut HeadActivationController>,
-    best_validation: &mut Option<BestValidation>,
-    train_total_loss: f64,
-    validation_executor: &mut E,
-) -> Result<Option<ValidationSummary>, String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-    E: ValidationExecutor<B>,
-    ValidBackendOf<B>: Backend<
-            Device = LibTorchDevice,
-            FloatTensorPrimitive = TchTensor,
-            IntTensorPrimitive = TchTensor,
-        >,
-{
-    let EpochEndValidationContext {
-        config,
-        loader_config,
-        manifest,
-        train_device,
-        valid_loss_fn,
-        bc_exit_cfg,
-        artifacts,
-        cached_validation_samples,
-    } = context;
-    if !should_run_epoch_end_validation(epoch, config.num_epochs, config.validation_every_n_epochs)
-    {
-        return Ok(None);
-    }
-
-    if !benchmark_quiet() {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} {}",
-                "validation @ epoch end".bold().magenta(),
-                ValidationRunLimits::from_config(config)
-                    .target_samples_label()
-                    .yellow(),
-            ))
-        );
-    }
-    let summary = {
-        let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
-        validation_executor.run_validation(
-            model,
-            ValidationContext {
-                config,
-                loader: &validation_loader(loader_config),
-                manifest,
-                cached_samples: cached_validation_samples,
-                device: train_device,
-                loss_fn: valid_loss_fn,
-                exit_cfg: bc_exit_cfg,
-            },
-            ValidationRuntime {
-                head_controller,
-                progress: None,
-            },
-        )?
-    };
-    let summary = finalize_completed_validation(
-        CompletedValidationContext {
-            model,
-            config,
-            artifacts,
-            best_validation,
-            checkpoint_index: epoch + 1,
-            checkpoint_loss: train_total_loss,
-            delta_q_scope: "epoch_validation",
-        },
-        summary,
-    )?;
-    if !benchmark_quiet() {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} {} {} {} {}{}",
-                "validation @ epoch end".bold().magenta(),
-                format!("val_samples={}", summary.samples).yellow(),
-                format!("val_policy_ce={:.4}", summary.policy_loss).yellow(),
-                format!("val_total={:.4}", summary.total_loss).yellow(),
-                format!("val_agree={:.2}%", summary.agreement * 100.0).yellow(),
-                validation_delta_q_suffix(&summary),
-            ))
-        );
-    }
-    Ok(Some(summary))
 }
 
 fn finalize_epoch_outputs<W>(
@@ -2004,7 +1536,7 @@ mod tests {
             _context: ValidationContext<
                 '_,
                 TrainConfig,
-                crate::validation::TrainValidationLoader<'_>,
+                hydra_train_exec::data_pipeline::TrainValidationLoader<'_>,
                 ValidBackendOf<TrainBackend>,
             >,
             _runtime: ValidationRuntime<'_>,

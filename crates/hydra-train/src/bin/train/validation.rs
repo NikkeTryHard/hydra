@@ -1,35 +1,12 @@
-pub(super) use hydra_train_exec::data_pipeline::TrainValidationLoader;
+#[cfg(test)]
+use hydra_train_exec::resume::BestValidation;
 #[cfg(test)]
 pub(super) use hydra_train_exec::validation::DeltaQPolicyTransferSnapshot;
 #[cfg(test)]
 pub(super) use hydra_train_exec::validation::DeltaQPromotionSnapshot;
-pub(super) use hydra_train_exec::validation::{ValidationGateDecision, ValidationSummary};
-pub(super) use hydra_train_exec::validation_runner::{
-    ValidationContext, ValidationRuntime, materialize_validation_samples, run_validation,
-};
-use hydra_train_runtime::validation::ValidationRunConfig;
+pub(super) use hydra_train_exec::validation::ValidationSummary;
 
-use hydra_train_exec::resume::BestValidation;
-
-pub(super) fn validation_loader(
-    config: &hydra_train_exec::data_pipeline::StreamingLoaderConfig,
-) -> TrainValidationLoader<'_> {
-    TrainValidationLoader { config }
-}
-
-pub(super) fn evaluate_validation_gates(
-    config: &ValidationRunConfig,
-    summary: &ValidationSummary,
-    best: Option<BestValidation>,
-) -> ValidationGateDecision {
-    hydra_train_exec::validation::evaluate_validation_gates(
-        &config.gates,
-        config.advanced_loss.as_ref(),
-        &summary.scalar_summary(),
-        best,
-    )
-}
-
+#[cfg(test)]
 pub(super) fn is_better_validation(
     summary: &ValidationSummary,
     best: Option<BestValidation>,
