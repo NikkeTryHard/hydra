@@ -9,6 +9,11 @@ use hydra_train_runtime::preflight::{
     PreflightCacheKey, default_cache_name, default_manifest_cache_name,
 };
 use hydra_train_types::checkpoint::CheckpointMeta;
+use hydra_train_types::delta_q_promotion::{
+    ArenaPromotionDecision, DeltaQArenaConfirmationRequest, DeltaQArenaReport,
+    DeltaQPolicyTransferReport, DeltaQPolicyTransferResult, DeltaQPromotionRecommendation,
+    DeltaQPromotionReport, DeltaQPromotionResult,
+};
 
 use crate::advisory::AdvisoryEvent;
 use crate::progress::{EpochLogEntry, RlStepLogEntry, StepLogEntry};
@@ -112,6 +117,42 @@ pub fn write_validation_gate_artifact(
     let json = serde_json::to_string_pretty(artifact)
         .map_err(|err| format!("failed to serialize validation gate artifact: {err}"))?;
     atomic_write_text(path, &json, "validation gate artifact")
+}
+/// Persisted DeltaQ promotion artifact.
+#[derive(serde::Serialize)]
+pub struct PersistedDeltaQPromotionArtifact<'a> {
+    /// Validation or promotion scope associated with the artifact.
+    pub scope: &'a str,
+    /// Step or epoch associated with the artifact.
+    pub step_or_epoch: usize,
+    /// Promotion recommendation before or after arena confirmation.
+    pub recommendation: DeltaQPromotionRecommendation,
+    /// Promotion pipeline stage that produced the artifact.
+    pub stage: &'a str,
+    /// Arena confirmation request, if arena gating was requested.
+    pub arena_confirmation: Option<DeltaQArenaConfirmationRequest>,
+    /// Arena confirmation decision, if arena gating ran.
+    pub arena_decision: Option<ArenaPromotionDecision>,
+    /// Arena confirmation report, if arena gating ran.
+    pub arena_report: Option<&'a DeltaQArenaReport>,
+    /// Offline DeltaQ promotion report.
+    pub report: &'a DeltaQPromotionReport,
+    /// Offline DeltaQ promotion result.
+    pub result: &'a DeltaQPromotionResult,
+    /// Policy-transfer report, if policy-transfer gating ran.
+    pub policy_transfer: Option<&'a DeltaQPolicyTransferReport>,
+    /// Policy-transfer result, if policy-transfer gating ran.
+    pub policy_transfer_result: Option<&'a DeltaQPolicyTransferResult>,
+}
+
+/// Writes a DeltaQ promotion artifact as pretty JSON using atomic sibling replacement.
+pub fn write_delta_q_promotion_artifact(
+    path: &Path,
+    artifact: &PersistedDeltaQPromotionArtifact<'_>,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(artifact)
+        .map_err(|err| format!("failed to serialize delta_q promotion artifact: {err}"))?;
+    atomic_write_text(path, &json, "delta_q promotion artifact")
 }
 
 /// RL preflight cache paths.

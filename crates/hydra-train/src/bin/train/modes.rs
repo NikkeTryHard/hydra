@@ -10,7 +10,8 @@ use hydra_train::eval::{PairedArenaEvalConfig, run_paired_delta_q_arena_confirma
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 use hydra_train::training::delta_q_promotion::{
-    DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPromotionRecommendation,
+    DeltaQArenaConfirmationRequest, DeltaQPromotionRecommendation,
+    delta_q_arena_report_from_paired_eval,
 };
 
 use super::TrainBackend;
@@ -476,7 +477,7 @@ pub(super) fn handle_delta_q_promotion_mode(
         )
     });
     let arena_report = arena_eval.as_ref().map(|outcome| {
-        DeltaQArenaReport::from_paired_eval(
+        delta_q_arena_report_from_paired_eval(
             &outcome.paired_result,
             outcome.lower_confidence_bound_mean_placement,
         )

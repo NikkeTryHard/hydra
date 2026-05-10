@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+use crate::eval::PairedArenaEvalResult;
+
 /// Per-state comparison between teacher-backed target action, baseline action,
 /// and candidate action for DeltaQ promotion metrics.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +72,67 @@ pub struct DeltaQPolicyTransferSliceInputs<'a> {
     pub legal_mask_width: usize,
 }
 
+/// Arena confirmation report persisted with DeltaQ promotion artifacts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeltaQArenaReport {
+    pub compared_games: usize,
+    pub baseline_mean_placement: f64,
+    pub candidate_mean_placement: f64,
+    pub delta_mean_placement: f64,
+    pub baseline_stable_dan: f64,
+    pub candidate_stable_dan: f64,
+    pub delta_stable_dan: f64,
+    pub lower_confidence_bound_mean_placement: f64,
+    pub upper_confidence_bound_mean_placement: f64,
+}
+
+impl DeltaQArenaReport {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "metric DTO constructor mirrors persisted arena report fields"
+    )]
+    pub fn from_arena_metrics(
+        compared_games: usize,
+        baseline_mean_placement: f64,
+        candidate_mean_placement: f64,
+        delta_mean_placement: f64,
+        baseline_stable_dan: f64,
+        candidate_stable_dan: f64,
+        delta_stable_dan: f64,
+        lower_confidence_bound_mean_placement: f64,
+        upper_confidence_bound_mean_placement: f64,
+    ) -> Self {
+        Self {
+            compared_games,
+            baseline_mean_placement,
+            candidate_mean_placement,
+            delta_mean_placement,
+            baseline_stable_dan,
+            candidate_stable_dan,
+            delta_stable_dan,
+            lower_confidence_bound_mean_placement,
+            upper_confidence_bound_mean_placement,
+        }
+    }
+
+    pub fn from_paired_eval(
+        result: &PairedArenaEvalResult,
+        lower_confidence_bound_mean_placement: f32,
+    ) -> Self {
+        Self::from_arena_metrics(
+            result.compared_games,
+            result.baseline_mean_placement as f64,
+            result.candidate_mean_placement as f64,
+            result.delta_mean_placement as f64,
+            result.baseline_stable_dan as f64,
+            result.candidate_stable_dan as f64,
+            result.delta_stable_dan as f64,
+            lower_confidence_bound_mean_placement as f64,
+            result.upper_confidence_bound_mean_placement as f64,
+        )
+    }
+}
+
 /// Offline DeltaQ promotion metrics accumulated over teacher-supported states.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeltaQPromotionReport {
@@ -118,6 +181,23 @@ impl Default for DeltaQPolicyTransferThresholds {
             max_candidate_policy_mean_teacher_regret_ratio: 0.95,
             max_negative_transfer_fraction: 0.45,
             min_candidate_beats_baseline_rate: 0.55,
+        }
+    }
+}
+/// Arena promotion decision produced by paired arena confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ArenaPromotionDecision {
+    Reject,
+    NonRegressionOnly,
+    StrongPromotion,
+}
+
+impl ArenaPromotionDecision {
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::Reject => "reject",
+            Self::NonRegressionOnly => "non_regression_only",
+            Self::StrongPromotion => "strong_promotion",
         }
     }
 }

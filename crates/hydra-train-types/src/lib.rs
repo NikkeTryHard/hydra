@@ -8,6 +8,7 @@
 
 pub mod checkpoint;
 pub mod delta_q_promotion;
+pub mod eval;
 pub mod head_gates;
 pub mod losses;
 pub mod orchestrator;

@@ -9,15 +9,9 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use tboard::EventWriter;
 
 use hydra_train::data::pipeline::{DataManifest, scan_data_sources_with_progress};
-use hydra_train::eval::ArenaPromotionDecision;
 use hydra_train::model::HydraModel;
 use hydra_train::preflight::{ManifestCacheEntry, PreflightCacheEntry};
 use hydra_train::training::bc::CheckpointMeta;
-use hydra_train::training::delta_q_promotion::{
-    DeltaQArenaConfirmationRequest, DeltaQArenaReport, DeltaQPolicyTransferReport,
-    DeltaQPolicyTransferResult, DeltaQPromotionRecommendation, DeltaQPromotionReport,
-    DeltaQPromotionResult,
-};
 
 #[cfg(test)]
 use super::advisory::AdvisoryEvent;
@@ -32,12 +26,13 @@ use super::resume::{
 };
 use super::validation::ValidationSummary;
 pub(crate) use hydra_train_exec::artifacts::{
-    BcArtifactPaths, JsonlAppender, PersistedValidationGateArtifact, PreflightBenchmarkPaths,
-    PreflightBenchmarkReport, PreflightPaths, RlArtifactPaths, RlPreflightPaths,
-    append_advisory_event_to_writer, append_rl_step_log_to_writer, append_step_log_to_writer,
-    append_training_log_to_writer, atomic_write_text, open_rl_step_log_appender,
-    open_step_log_appender, open_training_log_appender,
-    write_checkpoint_meta as write_checkpoint_meta_file, write_validation_gate_artifact,
+    BcArtifactPaths, JsonlAppender, PersistedDeltaQPromotionArtifact,
+    PersistedValidationGateArtifact, PreflightBenchmarkPaths, PreflightBenchmarkReport,
+    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_advisory_event_to_writer,
+    append_rl_step_log_to_writer, append_step_log_to_writer, append_training_log_to_writer,
+    atomic_write_text, open_rl_step_log_appender, open_step_log_appender,
+    open_training_log_appender, write_checkpoint_meta as write_checkpoint_meta_file,
+    write_delta_q_promotion_artifact, write_validation_gate_artifact,
 };
 
 pub(crate) struct LatestCheckpointState<'a> {
@@ -303,35 +298,6 @@ pub(crate) fn append_rl_step_log(path: &Path, entry: &RlStepLogEntry) -> Result<
     append_rl_step_log_to_writer(&mut file, entry)
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct PersistedDeltaQPromotionArtifact<'a> {
-    pub(crate) scope: &'a str,
-    pub(crate) step_or_epoch: usize,
-    pub(crate) recommendation: DeltaQPromotionRecommendation,
-    pub(crate) stage: &'a str,
-    pub(crate) arena_confirmation: Option<DeltaQArenaConfirmationRequest>,
-    pub(crate) arena_decision: Option<ArenaPromotionDecision>,
-    pub(crate) arena_report: Option<&'a DeltaQArenaReport>,
-    pub(crate) report: &'a DeltaQPromotionReport,
-    pub(crate) result: &'a DeltaQPromotionResult,
-    pub(crate) policy_transfer: Option<&'a DeltaQPolicyTransferReport>,
-    pub(crate) policy_transfer_result: Option<&'a DeltaQPolicyTransferResult>,
-}
-
-pub(crate) fn write_delta_q_promotion_artifact(
-    path: &Path,
-    artifact: &PersistedDeltaQPromotionArtifact<'_>,
-) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(artifact)
-        .map_err(|err| format!("failed to serialize delta_q promotion artifact: {err}"))?;
-    fs::write(path, json).map_err(|err| {
-        format!(
-            "failed to write delta_q promotion artifact {}: {err}",
-            path.display()
-        )
-    })
-}
-
 pub(crate) fn save_latest_rl_checkpoint_and_state<B, O>(
     artifacts: &RlArtifactPaths,
     model: &HydraModel<B>,
@@ -523,12 +489,19 @@ mod tests {
     use crate::validation::DeltaQPromotionSnapshot;
     use hydra_train::config::{PipelineState, TrainingPhase};
     use hydra_train::data::pipeline::{DataManifest, DataSource};
+    use hydra_train::eval::ArenaPromotionDecision;
     use hydra_train::preflight::{
         BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
         EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
         PreflightCacheKey, ProfilingEnvelope, SelectedRuntimeConfig, WorkloadFingerprint,
         default_cache_name, default_manifest_cache_name,
     };
+    use hydra_train::training::delta_q_promotion::{
+        DeltaQArenaConfirmationRequest, DeltaQPolicyTransferReport, DeltaQPolicyTransferResult,
+        DeltaQPromotionRecommendation, DeltaQPromotionReport, DeltaQPromotionResult,
+        delta_q_arena_report_from_paired_eval,
+    };
+
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tboard::SummaryReader;
@@ -1314,7 +1287,7 @@ mod tests {
             &[1, 2, 2, 3],
             0.02,
         );
-        let arena_report = DeltaQArenaReport::from_paired_eval(&paired, -0.01);
+        let arena_report = delta_q_arena_report_from_paired_eval(&paired, -0.01);
 
         write_delta_q_promotion_artifact(
             &path,

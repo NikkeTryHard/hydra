@@ -6,38 +6,11 @@ pub use hydra_train_types::delta_q_promotion::*;
 use crate::model::HydraOutput;
 use crate::training::losses::HydraTargets;
 
-/// Arena confirmation report built from paired arena evaluation results.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeltaQArenaReport {
-    pub compared_games: usize,
-    pub baseline_mean_placement: f64,
-    pub candidate_mean_placement: f64,
-    pub delta_mean_placement: f64,
-    pub baseline_stable_dan: f64,
-    pub candidate_stable_dan: f64,
-    pub delta_stable_dan: f64,
-    pub lower_confidence_bound_mean_placement: f64,
-    pub upper_confidence_bound_mean_placement: f64,
-}
-
-impl DeltaQArenaReport {
-    pub fn from_paired_eval(
-        result: &crate::eval::PairedArenaEvalResult,
-        lower_confidence_bound_mean_placement: f32,
-    ) -> Self {
-        Self {
-            compared_games: result.compared_games,
-            baseline_mean_placement: result.baseline_mean_placement as f64,
-            candidate_mean_placement: result.candidate_mean_placement as f64,
-            delta_mean_placement: result.delta_mean_placement as f64,
-            baseline_stable_dan: result.baseline_stable_dan as f64,
-            candidate_stable_dan: result.candidate_stable_dan as f64,
-            delta_stable_dan: result.delta_stable_dan as f64,
-            lower_confidence_bound_mean_placement: lower_confidence_bound_mean_placement as f64,
-            upper_confidence_bound_mean_placement: result.upper_confidence_bound_mean_placement
-                as f64,
-        }
-    }
+pub fn delta_q_arena_report_from_paired_eval(
+    result: &crate::eval::PairedArenaEvalResult,
+    lower_confidence_bound_mean_placement: f32,
+) -> DeltaQArenaReport {
+    DeltaQArenaReport::from_paired_eval(result, lower_confidence_bound_mean_placement)
 }
 
 pub fn collect_promotion_metrics_from_outputs<B: Backend>(

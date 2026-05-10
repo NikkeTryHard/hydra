@@ -6,8 +6,18 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::afbs::AfbsTree;
 use hydra_core::ct_smc::{CtSmc, CtSmcConfig};
 use hydra_core::encoder::NUM_CHANNELS;
+#[allow(
+    unused_imports,
+    reason = "compile coverage for old delta-q arena eval imports"
+)]
+use hydra_train::eval::PairedArenaEvalResult;
 use hydra_train::inference;
 use hydra_train::model::HydraModelConfig;
+#[allow(
+    unused_imports,
+    reason = "compile coverage for old delta-q arena report imports"
+)]
+use hydra_train::training::delta_q_promotion::DeltaQArenaReport;
 use hydra_train::training::drda;
 use hydra_train::training::exit;
 use hydra_train::training::gae;
@@ -69,6 +79,32 @@ fn no_nan_2d<B: Backend>(t: &Tensor<B, 2>, name: &str) {
     for (i, &v) in slice.iter().enumerate() {
         assert!(v.is_finite(), "{name}[{i}] = {v} (not finite)");
     }
+}
+
+#[test]
+fn delta_q_arena_report_old_constructor_path_compiles() {
+    let paired = PairedArenaEvalResult {
+        candidate_mean_placement: 2.0,
+        baseline_mean_placement: 2.25,
+        delta_mean_placement: -0.25,
+        candidate_stable_dan: 6.0,
+        baseline_stable_dan: 5.0,
+        delta_stable_dan: 1.0,
+        upper_confidence_bound_mean_placement: 0.02,
+        compared_games: 64,
+    };
+
+    let report = DeltaQArenaReport::from_paired_eval(&paired, -0.01);
+
+    assert_eq!(report.compared_games, 64);
+    assert_eq!(report.baseline_mean_placement, 2.25);
+    assert_eq!(report.candidate_mean_placement, 2.0);
+    assert_eq!(report.delta_mean_placement, -0.25);
+    assert_eq!(report.baseline_stable_dan, 5.0);
+    assert_eq!(report.candidate_stable_dan, 6.0);
+    assert_eq!(report.delta_stable_dan, 1.0);
+    assert!((report.lower_confidence_bound_mean_placement + 0.01).abs() < 1e-8);
+    assert!((report.upper_confidence_bound_mean_placement - 0.02).abs() < 1e-8);
 }
 
 #[test]
