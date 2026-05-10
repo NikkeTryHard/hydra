@@ -1,9 +1,9 @@
 pub(super) use hydra_train_exec::data_pipeline::TrainValidationLoader;
 #[cfg(test)]
 pub(super) use hydra_train_exec::validation::DeltaQPolicyTransferSnapshot;
-pub(super) use hydra_train_exec::validation::{
-    DeltaQPromotionSnapshot, ValidationGateDecision, ValidationSummary,
-};
+#[cfg(test)]
+pub(super) use hydra_train_exec::validation::DeltaQPromotionSnapshot;
+pub(super) use hydra_train_exec::validation::{ValidationGateDecision, ValidationSummary};
 pub(super) use hydra_train_exec::validation_runner::{
     ValidationContext, ValidationRuntime, materialize_validation_samples, run_validation,
 };

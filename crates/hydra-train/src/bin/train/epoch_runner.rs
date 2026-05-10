@@ -30,8 +30,8 @@ use super::advisory::{
 use super::artifacts::{
     BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
     PersistedValidationGateArtifact, append_advisory_event_to_writer, append_step_log_to_writer,
-    append_training_log_to_writer, save_checkpoint, save_latest_checkpoint_and_state,
-    write_delta_q_promotion_artifact, write_validation_gate_artifact,
+    save_checkpoint, save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
+    write_validation_gate_artifact,
 };
 use super::config::{TrainConfig, shard_prefetch_depth};
 
@@ -39,7 +39,7 @@ use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
 };
-use super::progress::{BatchStats, EpochLogEntry, ScalarAverages, StepLogEntry};
+use super::progress::{BatchStats, ScalarAverages, StepLogEntry};
 use super::resume::{
     BestValidation, EpochContinuation, RuntimeResumeContract, paused_training_message,
 };
@@ -1013,7 +1013,6 @@ fn finalize_epoch_outputs<W>(
 where
     W: Write,
 {
-    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
     let EpochFinalizeContext {
         config,
         train_cfg,
@@ -1023,107 +1022,23 @@ where
         val_summary,
         best_validation,
         final_lr,
-        mut profiling,
-    } = context;
-    let logging_started = Instant::now();
-    if let Some(ref mut tb_writer) = tb.as_mut() {
-        log_tensorboard(
-            tb_writer,
-            epoch + 1,
-            &train_stats,
-            val_summary.as_ref(),
-            final_lr,
-            best_validation,
-        )?;
-    }
-
-    let lr_message = lr_status_message(global_step, train_cfg.warmup_steps, final_lr);
-    if !benchmark_quiet() {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} {} {} {} {} {}",
-                phase_label("epoch", epoch, config.num_epochs).bold().cyan(),
-                format!("train_loss={:.4}", train_stats.total_loss).green(),
-                format!("train_agree={:.2}%", train_stats.policy_agreement * 100.0).green(),
-                if let Some(val_summary) = val_summary.as_ref() {
-                    format!(
-                        "val_ce={:.4} val_agree={:.2}% val_samples={}",
-                        val_summary.policy_loss,
-                        val_summary.agreement * 100.0,
-                        val_summary.samples
-                    )
-                } else {
-                    "val=skipped".to_string()
-                }
-                .bold()
-                .yellow(),
-                if let Some(best_validation) = best_validation {
-                    format!(
-                        "best_ce={:.4} best_agree={:.2}%",
-                        best_validation.policy_loss,
-                        best_validation.agreement * 100.0
-                    )
-                } else {
-                    "best=n/a".to_string()
-                }
-                .bold()
-                .magenta(),
-                lr_message.white(),
-            ))
-        );
-    }
-
-    let logging_seconds = logging_started.elapsed().as_secs_f64();
-    if let Some(existing) = profiling.as_mut() {
-        existing.merge_assign(&ProfilingEnvelope::from_children(
-            existing.stage.clone(),
-            vec![ProfilingEnvelope::leaf(
-                PROFILING_STAGE_LOGGING,
-                logging_seconds,
-            )],
-        ));
-    } else {
-        profiling = Some(ProfilingEnvelope::from_children(
-            PROFILING_STAGE_BC_EPOCH,
-            vec![ProfilingEnvelope::leaf(
-                PROFILING_STAGE_LOGGING,
-                logging_seconds,
-            )],
-        ));
-    }
-
-    let entry = EpochLogEntry {
-        epoch: epoch + 1,
-        global_step,
-        lr: final_lr,
-        train_total_loss: train_stats.total_loss,
-        train_policy_agreement: train_stats.policy_agreement,
-        train_loss_policy: train_stats.loss_policy,
-        train_loss_value: train_stats.loss_value,
-        train_loss_grp: train_stats.loss_grp,
-        train_loss_tenpai: train_stats.loss_tenpai,
-        train_loss_danger: train_stats.loss_danger,
-        train_loss_opp_next: train_stats.loss_opp_next,
-        train_loss_score_pdf: train_stats.loss_score_pdf,
-        train_loss_score_cdf: train_stats.loss_score_cdf,
-        train_rare_actions: train_stats.rare_actions,
-        val_rare_actions: val_summary.as_ref().map(|summary| summary.rare_actions),
-        val_total_loss: val_summary.as_ref().map(|summary| summary.total_loss),
-        val_policy_loss: val_summary.as_ref().map(|summary| summary.policy_loss),
-        val_policy_agreement: val_summary.as_ref().map(|summary| summary.agreement),
-        val_delta_q_promotion: val_summary
-            .as_ref()
-            .and_then(|summary| summary.delta_q_promotion_snapshot),
         profiling,
-        advisories: Vec::new(),
-        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
-        best_val_agreement: best_validation.map(|best| best.agreement),
-        num_batches: train_stats.num_batches,
-    };
-    append_training_log_to_writer(training_log, &entry)?;
-
-    Ok(())
+    } = context;
+    exec_epoch::finalize_epoch_outputs::<W, _, _, RuntimeAdvisory>(
+        tb,
+        training_log,
+        exec_epoch::EpochFinalizeContext::new(
+            config,
+            train_cfg,
+            epoch,
+            global_step,
+            train_stats,
+            val_summary,
+            best_validation,
+            final_lr,
+            profiling,
+        ),
+    )
 }
 
 pub(super) fn run_epoch<B, O, W>(

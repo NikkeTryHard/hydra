@@ -11,6 +11,7 @@ use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{Int, Tensor, TensorData};
+use colored::Colorize;
 use hydra_bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard_reader};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::NUM_CHANNELS;
@@ -33,11 +34,18 @@ use hydra_train_runtime::preflight::{
     PROFILING_STAGE_PRODUCER_WAIT, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
     ProfilingEnvelope,
 };
-use hydra_train_runtime::progress::{BatchStats, ScalarAverages, TrainSubStageTiming};
+use hydra_train_runtime::progress::{
+    BatchStats, RareActionMetrics, ScalarAverages, TrainSubStageTiming,
+};
+use hydra_train_runtime::schedule::lr_status_message;
 use hydra_train_types::head_gates::{AdvancedHead, TargetPresence};
 use hydra_train_types::losses::{HydraTargets, LossBreakdown};
+use tboard::EventWriter;
 
 use crate::advisory::IntervalTimingInput;
+use crate::artifacts::{JsonlAppender, append_training_log_to_writer, log_tensorboard};
+use crate::presentation::{phase_label, timestamped};
+use crate::progress::EpochLogEntry;
 use crate::resume::EpochContinuation;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
@@ -260,6 +268,292 @@ pub fn child_elapsed_seconds(profiling: &ProfilingEnvelope, stage: &str) -> f64 
         .find(|child| child.stage == stage)
         .map(|child| child.elapsed_seconds)
         .unwrap_or(0.0)
+}
+/// Config fields needed to emit epoch-finalization outputs.
+pub trait EpochFinalizeConfig {
+    /// Number of configured epochs in the BC training run.
+    fn num_epochs(&self) -> usize;
+}
+
+impl EpochFinalizeConfig for hydra_train_runtime::config::TrainConfig {
+    fn num_epochs(&self) -> usize {
+        self.num_epochs
+    }
+}
+
+/// Trainer fields needed to render final learning-rate status.
+pub trait EpochFinalizeTrainerConfig {
+    /// Number of warmup optimizer steps configured for BC training.
+    fn warmup_steps(&self) -> usize;
+}
+
+impl EpochFinalizeTrainerConfig for hydra_train_types::config::BCTrainerConfig {
+    fn warmup_steps(&self) -> usize {
+        self.warmup_steps
+    }
+}
+
+/// Inputs consumed when emitting final epoch logs and TensorBoard scalars.
+pub struct EpochFinalizeContext<
+    'a,
+    C,
+    T,
+    V,
+    D = crate::validation::DeltaQPromotionSnapshot,
+    A = crate::advisory::RuntimeAdvisory,
+> where
+    C: EpochFinalizeConfig,
+    T: EpochFinalizeTrainerConfig,
+{
+    /// Epoch-finalization config view.
+    pub config: &'a C,
+    /// BC trainer schedule config view.
+    pub train_cfg: &'a T,
+    /// Zero-based epoch index being finalized.
+    pub epoch: usize,
+    /// Global optimizer step after the epoch.
+    pub global_step: usize,
+    /// Aggregated train metrics for this epoch.
+    pub train_stats: ScalarAverages,
+    /// Optional validation summary for the epoch.
+    pub val_summary: Option<V>,
+    /// Best validation metrics after validation gates/checkpointing.
+    pub best_validation: Option<crate::resume::BestValidation>,
+    /// Effective learning rate at final `global_step`.
+    pub final_lr: f64,
+    /// Optional profiling tree to persist with the epoch log entry.
+    pub profiling: Option<ProfilingEnvelope>,
+    _delta_q: std::marker::PhantomData<D>,
+    _advisory: std::marker::PhantomData<A>,
+}
+
+impl<'a, C, T, V, D, A> EpochFinalizeContext<'a, C, T, V, D, A>
+where
+    C: EpochFinalizeConfig,
+    T: EpochFinalizeTrainerConfig,
+{
+    /// Constructs epoch-finalization inputs without exposing marker fields.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors immutable epoch-finalization DTO fields"
+    )]
+    pub fn new(
+        config: &'a C,
+        train_cfg: &'a T,
+        epoch: usize,
+        global_step: usize,
+        train_stats: ScalarAverages,
+        val_summary: Option<V>,
+        best_validation: Option<crate::resume::BestValidation>,
+        final_lr: f64,
+        profiling: Option<ProfilingEnvelope>,
+    ) -> Self {
+        Self {
+            config,
+            train_cfg,
+            epoch,
+            global_step,
+            train_stats,
+            val_summary,
+            best_validation,
+            final_lr,
+            profiling,
+            _delta_q: std::marker::PhantomData,
+            _advisory: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Validation summary view needed by epoch-finalization logging.
+pub trait EpochFinalValidationSummary<D> {
+    /// Validation rare-action metrics for JSONL output.
+    fn rare_actions(&self) -> Option<RareActionMetrics>;
+    /// Validation total loss for JSONL output.
+    fn total_loss(&self) -> f64;
+    /// Validation policy cross-entropy for JSONL/TensorBoard output.
+    fn policy_loss(&self) -> f64;
+    /// Validation policy agreement for JSONL/TensorBoard output.
+    fn agreement(&self) -> f64;
+    /// Validation sample count for human-readable epoch summary.
+    fn samples(&self) -> usize;
+    /// Delta-Q promotion snapshot for JSONL output.
+    fn delta_q_promotion_snapshot(&self) -> Option<D>;
+}
+
+fn benchmark_quiet() -> bool {
+    std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some()
+}
+
+impl EpochFinalValidationSummary<crate::validation::DeltaQPromotionSnapshot>
+    for crate::validation::ValidationSummary
+{
+    fn rare_actions(&self) -> Option<RareActionMetrics> {
+        Some(self.rare_actions)
+    }
+
+    fn total_loss(&self) -> f64 {
+        self.total_loss
+    }
+
+    fn policy_loss(&self) -> f64 {
+        self.policy_loss
+    }
+
+    fn agreement(&self) -> f64 {
+        self.agreement
+    }
+
+    fn samples(&self) -> usize {
+        self.samples
+    }
+
+    fn delta_q_promotion_snapshot(&self) -> Option<crate::validation::DeltaQPromotionSnapshot> {
+        self.delta_q_promotion_snapshot
+    }
+}
+
+/// Emits final epoch TensorBoard scalars, console summary, and epoch JSONL entry.
+pub fn finalize_epoch_outputs<W, C, T, A>(
+    tb: &mut Option<EventWriter<W>>,
+    training_log: &mut JsonlAppender,
+    context: EpochFinalizeContext<
+        '_,
+        C,
+        T,
+        crate::validation::ValidationSummary,
+        crate::validation::DeltaQPromotionSnapshot,
+        A,
+    >,
+) -> Result<(), String>
+where
+    W: std::io::Write,
+    C: EpochFinalizeConfig,
+    T: EpochFinalizeTrainerConfig,
+    A: serde::Serialize,
+{
+    let _logging_scope = nvtx::scope(PROFILING_STAGE_LOGGING);
+    let EpochFinalizeContext {
+        config,
+        train_cfg,
+        epoch,
+        global_step,
+        train_stats,
+        val_summary,
+        best_validation,
+        final_lr,
+        mut profiling,
+        _delta_q,
+        _advisory,
+    } = context;
+    let logging_started = Instant::now();
+    if let Some(ref mut tb_writer) = tb.as_mut() {
+        log_tensorboard(
+            tb_writer,
+            epoch + 1,
+            &train_stats,
+            val_summary.as_ref(),
+            final_lr,
+            best_validation,
+        )?;
+    }
+
+    let lr_message = lr_status_message(global_step, train_cfg.warmup_steps(), final_lr);
+    if !benchmark_quiet() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} {} {} {} {} {}",
+                phase_label("epoch", epoch, config.num_epochs())
+                    .bold()
+                    .cyan(),
+                format!("train_loss={:.4}", train_stats.total_loss).green(),
+                format!("train_agree={:.2}%", train_stats.policy_agreement * 100.0).green(),
+                if let Some(val_summary) = val_summary.as_ref() {
+                    format!(
+                        "val_ce={:.4} val_agree={:.2}% val_samples={}",
+                        val_summary.policy_loss(),
+                        val_summary.agreement() * 100.0,
+                        val_summary.samples()
+                    )
+                } else {
+                    "val=skipped".to_string()
+                }
+                .bold()
+                .yellow(),
+                if let Some(best_validation) = best_validation {
+                    format!(
+                        "best_ce={:.4} best_agree={:.2}%",
+                        best_validation.policy_loss,
+                        best_validation.agreement * 100.0
+                    )
+                } else {
+                    "best=n/a".to_string()
+                }
+                .bold()
+                .magenta(),
+                lr_message.white(),
+            ))
+        );
+    }
+
+    let logging_seconds = logging_started.elapsed().as_secs_f64();
+    if let Some(existing) = profiling.as_mut() {
+        existing.merge_assign(&ProfilingEnvelope::from_children(
+            existing.stage.clone(),
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    } else {
+        profiling = Some(ProfilingEnvelope::from_children(
+            PROFILING_STAGE_BC_EPOCH,
+            vec![ProfilingEnvelope::leaf(
+                PROFILING_STAGE_LOGGING,
+                logging_seconds,
+            )],
+        ));
+    }
+
+    let entry = EpochLogEntry::<crate::validation::DeltaQPromotionSnapshot, A> {
+        epoch: epoch + 1,
+        global_step,
+        lr: final_lr,
+        train_total_loss: train_stats.total_loss,
+        train_policy_agreement: train_stats.policy_agreement,
+        train_loss_policy: train_stats.loss_policy,
+        train_loss_value: train_stats.loss_value,
+        train_loss_grp: train_stats.loss_grp,
+        train_loss_tenpai: train_stats.loss_tenpai,
+        train_loss_danger: train_stats.loss_danger,
+        train_loss_opp_next: train_stats.loss_opp_next,
+        train_loss_score_pdf: train_stats.loss_score_pdf,
+        train_loss_score_cdf: train_stats.loss_score_cdf,
+        train_rare_actions: train_stats.rare_actions,
+        val_rare_actions: val_summary
+            .as_ref()
+            .and_then(EpochFinalValidationSummary::rare_actions),
+        val_total_loss: val_summary
+            .as_ref()
+            .map(EpochFinalValidationSummary::total_loss),
+        val_policy_loss: val_summary
+            .as_ref()
+            .map(EpochFinalValidationSummary::policy_loss),
+        val_policy_agreement: val_summary
+            .as_ref()
+            .map(EpochFinalValidationSummary::agreement),
+        val_delta_q_promotion: val_summary
+            .as_ref()
+            .and_then(EpochFinalValidationSummary::delta_q_promotion_snapshot),
+        profiling,
+        advisories: Vec::new(),
+        best_val_policy_loss: best_validation.map(|best| best.policy_loss),
+        best_val_agreement: best_validation.map(|best| best.agreement),
+        num_batches: train_stats.num_batches,
+    };
+    append_training_log_to_writer(training_log, &entry)?;
+
+    Ok(())
 }
 
 /// Returns elapsed seconds for a child under the train profiling node.

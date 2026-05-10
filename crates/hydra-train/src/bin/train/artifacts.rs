@@ -6,8 +6,8 @@ pub(crate) use hydra_train_exec::artifacts::log_tensorboard;
 pub(crate) use hydra_train_exec::artifacts::{
     BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
     PersistedValidationGateArtifact, append_advisory_event_to_writer, append_step_log_to_writer,
-    append_training_log_to_writer, save_checkpoint, save_latest_checkpoint_and_state,
-    write_delta_q_promotion_artifact, write_validation_gate_artifact,
+    save_checkpoint, save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
+    write_validation_gate_artifact,
 };
 #[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::{
@@ -21,8 +21,8 @@ pub(crate) use hydra_train_exec::artifacts::{
 };
 #[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::{
-    manifest_cache_matches, open_step_log_appender, read_manifest_cache,
-    scan_and_write_manifest_cache, write_manifest_cache,
+    append_training_log_to_writer, manifest_cache_matches, open_step_log_appender,
+    read_manifest_cache, scan_and_write_manifest_cache, write_manifest_cache,
 };
 
 #[cfg(test)]
