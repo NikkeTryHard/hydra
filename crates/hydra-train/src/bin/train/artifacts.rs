@@ -30,13 +30,14 @@ use super::resume::{
     BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
     read_resume_state, read_rl_resume_state, write_resume_state,
 };
-use super::validation::{ValidationGateDecision, ValidationSummary};
+use super::validation::ValidationSummary;
 pub(crate) use hydra_train_exec::artifacts::{
-    BcArtifactPaths, JsonlAppender, PreflightBenchmarkPaths, PreflightBenchmarkReport,
-    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_advisory_event_to_writer,
-    append_rl_step_log_to_writer, append_step_log_to_writer, append_training_log_to_writer,
-    atomic_write_text, open_rl_step_log_appender, open_step_log_appender,
-    open_training_log_appender, write_checkpoint_meta as write_checkpoint_meta_file,
+    BcArtifactPaths, JsonlAppender, PersistedValidationGateArtifact, PreflightBenchmarkPaths,
+    PreflightBenchmarkReport, PreflightPaths, RlArtifactPaths, RlPreflightPaths,
+    append_advisory_event_to_writer, append_rl_step_log_to_writer, append_step_log_to_writer,
+    append_training_log_to_writer, atomic_write_text, open_rl_step_log_appender,
+    open_step_log_appender, open_training_log_appender,
+    write_checkpoint_meta as write_checkpoint_meta_file, write_validation_gate_artifact,
 };
 
 pub(crate) struct LatestCheckpointState<'a> {
@@ -329,27 +330,6 @@ pub(crate) fn write_delta_q_promotion_artifact(
             path.display()
         )
     })
-}
-
-#[derive(serde::Serialize)]
-pub(crate) struct PersistedValidationGateArtifact<'a> {
-    pub(crate) scope: &'a str,
-    pub(crate) step_or_epoch: usize,
-    pub(crate) decision: &'a ValidationGateDecision,
-    pub(crate) samples: usize,
-    pub(crate) policy_loss: f64,
-    pub(crate) policy_agreement: f64,
-    pub(crate) best_policy_loss: Option<f64>,
-    pub(crate) best_policy_agreement: Option<f64>,
-}
-
-pub(crate) fn write_validation_gate_artifact(
-    path: &Path,
-    artifact: &PersistedValidationGateArtifact<'_>,
-) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(artifact)
-        .map_err(|err| format!("failed to serialize validation gate artifact: {err}"))?;
-    atomic_write_text(path, &json, "validation gate artifact")
 }
 
 pub(crate) fn save_latest_rl_checkpoint_and_state<B, O>(

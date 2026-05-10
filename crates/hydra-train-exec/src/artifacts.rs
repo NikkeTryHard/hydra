@@ -13,6 +13,7 @@ use hydra_train_types::checkpoint::CheckpointMeta;
 use crate::advisory::AdvisoryEvent;
 use crate::progress::{EpochLogEntry, RlStepLogEntry, StepLogEntry};
 use crate::resume::current_timestamp_s;
+use crate::validation::ValidationGateDecision;
 
 /// BC artifact paths rooted below the configured output directory.
 pub struct BcArtifactPaths {
@@ -81,6 +82,36 @@ pub struct PreflightBenchmarkReport {
     pub runtime: EffectiveRuntimeConfig,
     /// Benchmark result payload.
     pub benchmark: BenchmarkResult,
+}
+/// Persisted validation gate decision artifact.
+#[derive(serde::Serialize)]
+pub struct PersistedValidationGateArtifact<'a> {
+    /// Validation or promotion scope associated with the gate.
+    pub scope: &'a str,
+    /// Step or epoch associated with the gate.
+    pub step_or_epoch: usize,
+    /// Gate decision payload.
+    pub decision: &'a ValidationGateDecision,
+    /// Number of validation samples.
+    pub samples: usize,
+    /// Validation policy loss.
+    pub policy_loss: f64,
+    /// Validation policy agreement.
+    pub policy_agreement: f64,
+    /// Best prior policy loss, if present.
+    pub best_policy_loss: Option<f64>,
+    /// Best prior policy agreement, if present.
+    pub best_policy_agreement: Option<f64>,
+}
+
+/// Writes a validation gate artifact as pretty JSON using atomic sibling replacement.
+pub fn write_validation_gate_artifact(
+    path: &Path,
+    artifact: &PersistedValidationGateArtifact<'_>,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(artifact)
+        .map_err(|err| format!("failed to serialize validation gate artifact: {err}"))?;
+    atomic_write_text(path, &json, "validation gate artifact")
 }
 
 /// RL preflight cache paths.
