@@ -10,7 +10,9 @@ use tboard::EventWriter;
 
 use hydra_train::data::pipeline::{DataManifest, scan_data_sources_with_progress};
 use hydra_train::model::HydraModel;
-use hydra_train::preflight::{ManifestCacheEntry, PreflightCacheEntry};
+use hydra_train::preflight::ManifestCacheEntry;
+#[cfg(test)]
+use hydra_train::preflight::PreflightCacheEntry;
 use hydra_train::training::bc::CheckpointMeta;
 
 #[cfg(test)]
@@ -30,9 +32,11 @@ pub(crate) use hydra_train_exec::artifacts::{
     PersistedValidationGateArtifact, PreflightBenchmarkPaths, PreflightBenchmarkReport,
     PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_advisory_event_to_writer,
     append_rl_step_log_to_writer, append_step_log_to_writer, append_training_log_to_writer,
-    atomic_write_text, open_rl_step_log_appender, open_step_log_appender,
-    open_training_log_appender, write_checkpoint_meta as write_checkpoint_meta_file,
-    write_delta_q_promotion_artifact, write_validation_gate_artifact,
+    atomic_write_text, manifest_cache_matches, open_rl_step_log_appender, open_step_log_appender,
+    open_training_log_appender, read_manifest_cache, read_preflight_cache,
+    write_checkpoint_meta as write_checkpoint_meta_file, write_delta_q_promotion_artifact,
+    write_manifest_cache, write_preflight_benchmark_report, write_preflight_cache,
+    write_validation_gate_artifact,
 };
 
 pub(crate) struct LatestCheckpointState<'a> {
@@ -41,76 +45,6 @@ pub(crate) struct LatestCheckpointState<'a> {
     pub(crate) best_validation: Option<BestValidation>,
     pub(crate) continuation: &'a EpochContinuation,
     pub(crate) runtime: RuntimeResumeContract,
-}
-
-pub(crate) fn write_preflight_cache(
-    path: &Path,
-    entry: &PreflightCacheEntry,
-) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(entry).map_err(|err| {
-        format!(
-            "failed to serialize preflight cache {}: {err}",
-            path.display()
-        )
-    })?;
-    atomic_write_text(path, &json, "preflight cache")
-}
-
-pub(crate) fn write_preflight_benchmark_report(
-    path: &Path,
-    report: &PreflightBenchmarkReport,
-) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(report).map_err(|err| {
-        format!(
-            "failed to serialize preflight benchmark report {}: {err}",
-            path.display()
-        )
-    })?;
-    atomic_write_text(path, &json, "preflight benchmark report")
-}
-
-pub(crate) fn read_preflight_cache(path: &Path) -> Result<Option<PreflightCacheEntry>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read preflight cache {}: {err}", path.display()))?;
-    let entry: PreflightCacheEntry = serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse preflight cache {}: {err}", path.display()))?;
-    Ok(Some(entry))
-}
-
-pub(crate) fn write_manifest_cache(path: &Path, entry: &ManifestCacheEntry) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(entry).map_err(|err| {
-        format!(
-            "failed to serialize manifest cache {}: {err}",
-            path.display()
-        )
-    })?;
-    atomic_write_text(path, &json, "manifest cache")
-}
-
-pub(crate) fn read_manifest_cache(path: &Path) -> Result<Option<ManifestCacheEntry>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read manifest cache {}: {err}", path.display()))?;
-    let entry: ManifestCacheEntry = serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse manifest cache {}: {err}", path.display()))?;
-    Ok(Some(entry))
-}
-
-pub(crate) fn manifest_cache_matches(
-    cached: &ManifestCacheEntry,
-    data_dir: &Path,
-    train_fraction: f32,
-    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
-) -> bool {
-    cached.data_dir == data_dir
-        && cached.train_fraction_bits == train_fraction.to_bits()
-        && cached.include_source_patterns == source_filters.include_source_patterns
-        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
 }
 
 pub(crate) fn scan_and_write_manifest_cache(

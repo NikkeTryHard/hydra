@@ -544,6 +544,20 @@ pub fn read_manifest_cache(path: &Path) -> Result<Option<ManifestCacheEntry>, St
     Ok(Some(entry))
 }
 
+/// Returns true when a manifest cache entry matches the current scan inputs.
+#[must_use]
+pub fn manifest_cache_matches(
+    cached: &ManifestCacheEntry,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+) -> bool {
+    cached.data_dir == data_dir
+        && cached.train_fraction_bits == train_fraction.to_bits()
+        && cached.include_source_patterns == source_filters.include_source_patterns
+        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

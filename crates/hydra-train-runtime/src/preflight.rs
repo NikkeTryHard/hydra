@@ -594,7 +594,7 @@ pub struct ManifestCacheEntry {
     pub include_source_patterns: Vec<String>,
     #[serde(default)]
     pub exclude_source_patterns: Vec<String>,
-    pub manifest: serde_json::Value,
+    pub manifest: hydra_data_core::DataManifest,
 }
 
 #[cfg(test)]
