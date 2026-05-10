@@ -17,8 +17,12 @@ pub mod bootstrap;
 pub mod cuda_graph;
 /// Exec-owned streaming MJAI data pipeline for preflight and epoch runners.
 pub mod data_pipeline;
+/// Delta-Q promotion mode execution and paired arena helpers.
+pub mod delta_q_promotion;
 /// Epoch-runner execution helpers shared by train execution.
 pub mod epoch_runner;
+/// CUDA graph probe parent/child execution.
+pub mod graph_probe;
 /// Train binary mode dispatch facade.
 pub mod modes;
 /// CUDA pinned host staging and reusable device materialization for BC shards.

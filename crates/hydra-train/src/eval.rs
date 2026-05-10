@@ -1,13 +1,13 @@
 //! Evaluation harness: run N games and collect metrics.
 
 use burn::prelude::*;
-use hydra_core::arena::compute_placements;
 
+pub use hydra_train_exec::delta_q_promotion::{
+    DeltaQArenaEvalOutcome, compute_mean_placement, compute_stable_dan,
+    paired_arena_result_from_placements, run_paired_delta_q_arena_confirmation,
+};
 pub use hydra_train_types::delta_q_promotion::ArenaPromotionDecision;
 pub use hydra_train_types::eval::{PairedArenaEvalConfig, PairedArenaEvalResult};
-
-use hydra_model::model::HydraModel;
-use hydra_selfplay::run_mixed_policy_game_scores;
 
 #[derive(Config, Debug)]
 pub struct EvalConfig {
@@ -160,147 +160,6 @@ impl TrainingMetrics {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DeltaQArenaEvalOutcome {
-    pub paired_result: PairedArenaEvalResult,
-    pub lower_confidence_bound_mean_placement: f32,
-}
-
-pub fn run_paired_delta_q_arena_confirmation<B: Backend>(
-    candidate_model: &HydraModel<B>,
-    baseline_model: &HydraModel<B>,
-    device: &B::Device,
-    config: &PairedArenaEvalConfig,
-    temperature: f32,
-) -> DeltaQArenaEvalOutcome {
-    let mut candidate_placements = Vec::with_capacity(config.min_games);
-    let mut baseline_placements = Vec::with_capacity(config.min_games);
-
-    for game_idx in 0..config.min_games {
-        let challenger_seat = if config.same_seat_rotation_schedule {
-            (game_idx % 4) as u8
-        } else {
-            0
-        };
-        let game_seed = if config.same_seeds {
-            config.seed.wrapping_add(game_idx as u64)
-        } else {
-            config
-                .seed
-                .wrapping_add(game_idx as u64)
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        };
-        let rng_seed = game_seed ^ 0xA5A5_A5A5_5A5A_5A5A;
-
-        let baseline_seats = [
-            baseline_model,
-            baseline_model,
-            baseline_model,
-            baseline_model,
-        ];
-        let mut candidate_seats = baseline_seats;
-        candidate_seats[challenger_seat as usize] = candidate_model;
-
-        let candidate_scores =
-            run_mixed_policy_game_scores(game_seed, temperature, rng_seed, candidate_seats, device);
-        let baseline_scores = if std::ptr::eq(candidate_model, baseline_model) {
-            candidate_scores
-        } else {
-            run_mixed_policy_game_scores(game_seed, temperature, rng_seed, baseline_seats, device)
-        };
-
-        candidate_placements.push(compute_placements(candidate_scores)[challenger_seat as usize]);
-        baseline_placements.push(compute_placements(baseline_scores)[challenger_seat as usize]);
-    }
-
-    let (lower_ci, upper_ci) = paired_bootstrap_mean_placement_ci(
-        &candidate_placements,
-        &baseline_placements,
-        config.seed,
-        1024,
-    );
-
-    DeltaQArenaEvalOutcome {
-        paired_result: paired_arena_result_from_placements(
-            &candidate_placements,
-            &baseline_placements,
-            upper_ci,
-        ),
-        lower_confidence_bound_mean_placement: lower_ci,
-    }
-}
-
-fn paired_bootstrap_mean_placement_ci(
-    candidate_placements: &[u8],
-    baseline_placements: &[u8],
-    seed: u64,
-    resamples: usize,
-) -> (f32, f32) {
-    let count = candidate_placements.len().min(baseline_placements.len());
-    if count == 0 {
-        return (0.0, 0.0);
-    }
-
-    let deltas: Vec<f32> = candidate_placements
-        .iter()
-        .zip(baseline_placements.iter())
-        .take(count)
-        .map(|(&candidate, &baseline)| candidate as f32 - baseline as f32)
-        .collect();
-    if deltas.len() == 1 {
-        return (deltas[0], deltas[0]);
-    }
-
-    let mut rng = seed.max(1);
-    let mut means = Vec::with_capacity(resamples.max(1));
-    for _ in 0..resamples.max(1) {
-        let mut sample_sum = 0.0f32;
-        for _ in 0..deltas.len() {
-            let idx = next_bootstrap_index(&mut rng, deltas.len());
-            sample_sum += deltas[idx];
-        }
-        means.push(sample_sum / deltas.len() as f32);
-    }
-    means.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-    let lower_idx = ((means.len() as f32 - 1.0) * 0.025).floor() as usize;
-    let upper_idx = ((means.len() as f32 - 1.0) * 0.975).ceil() as usize;
-    let upper_idx = upper_idx.min(means.len() - 1);
-    (means[lower_idx], means[upper_idx])
-}
-
-fn next_bootstrap_index(state: &mut u64, len: usize) -> usize {
-    *state ^= *state << 13;
-    *state ^= *state >> 7;
-    *state ^= *state << 17;
-    (*state as usize) % len.max(1)
-}
-
-pub fn paired_arena_result_from_placements(
-    candidate_placements: &[u8],
-    baseline_placements: &[u8],
-    upper_confidence_bound_mean_placement: f32,
-) -> PairedArenaEvalResult {
-    let candidate_mean_placement = compute_mean_placement(candidate_placements);
-    let baseline_mean_placement = compute_mean_placement(baseline_placements);
-    let candidate_stable_dan = compute_stable_dan(candidate_mean_placement);
-    let baseline_stable_dan = compute_stable_dan(baseline_mean_placement);
-    PairedArenaEvalResult {
-        candidate_mean_placement,
-        baseline_mean_placement,
-        delta_mean_placement: candidate_mean_placement - baseline_mean_placement,
-        candidate_stable_dan,
-        baseline_stable_dan,
-        delta_stable_dan: candidate_stable_dan - baseline_stable_dan,
-        upper_confidence_bound_mean_placement,
-        compared_games: candidate_placements.len().min(baseline_placements.len()),
-    }
-}
-
-pub fn compute_stable_dan(mean_placement: f32) -> f32 {
-    (10.0 - (mean_placement - 1.0) * 4.0).clamp(0.0, 12.0)
-}
-
 pub fn avg_stable_dan(placements: &[u8]) -> f32 {
     compute_stable_dan(compute_mean_placement(placements))
 }
@@ -333,13 +192,6 @@ pub fn compute_4th_rate(placements: &[u8]) -> f32 {
     placements.iter().filter(|&&p| p == 3).count() as f32 / placements.len() as f32
 }
 
-pub fn compute_mean_placement(placements: &[u8]) -> f32 {
-    if placements.is_empty() {
-        return 2.5;
-    }
-    placements.iter().map(|&p| p as f32 + 1.0).sum::<f32>() / placements.len() as f32
-}
-
 pub fn compute_win_rate(placements: &[u8]) -> f32 {
     if placements.is_empty() {
         return 0.0;
@@ -366,10 +218,6 @@ pub fn evaluate_from_placements(placements: &[u8]) -> EvalResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::HydraModelConfig;
-    use burn::backend::NdArray;
-
-    type B = NdArray<f32>;
 
     #[test]
     fn stable_dan_formula() {
@@ -423,75 +271,6 @@ mod tests {
         let cfg = PairedArenaEvalConfig::new();
         assert!(cfg.summary().contains("paired_arena("));
         assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn paired_arena_result_recommends_non_regression_then_strong_promotion() {
-        let cfg = PairedArenaEvalConfig::new()
-            .with_max_mean_placement_regression(0.025)
-            .with_strong_promotion_mean_placement_target(0.0);
-        let candidate = vec![0, 1, 1, 2, 2, 2, 0, 1];
-        let baseline = vec![1, 2, 2, 3, 2, 3, 1, 2];
-
-        let result = paired_arena_result_from_placements(&candidate, &baseline, 0.02);
-        assert_eq!(
-            result.recommendation(&cfg),
-            ArenaPromotionDecision::NonRegressionOnly
-        );
-
-        let strong = paired_arena_result_from_placements(&candidate, &baseline, -0.01);
-        assert_eq!(
-            strong.recommendation(&cfg),
-            ArenaPromotionDecision::StrongPromotion
-        );
-    }
-
-    #[test]
-    fn paired_arena_result_rejects_regression() {
-        let cfg = PairedArenaEvalConfig::new().with_max_mean_placement_regression(0.025);
-        let candidate = vec![2, 2, 3, 3, 2, 3, 3, 2];
-        let baseline = vec![0, 1, 1, 2, 1, 2, 1, 2];
-        let result = paired_arena_result_from_placements(&candidate, &baseline, 0.05);
-        assert_eq!(result.recommendation(&cfg), ArenaPromotionDecision::Reject);
-    }
-
-    #[test]
-    fn paired_delta_q_arena_confirmation_is_zero_delta_for_identical_models() {
-        let device = Default::default();
-        let model = HydraModelConfig::new(1)
-            .with_hidden_channels(2)
-            .with_se_bottleneck(1)
-            .with_num_groups(1)
-            .init::<B>(&device);
-        let cfg = PairedArenaEvalConfig::new()
-            .with_min_games(2)
-            .with_seed(123);
-
-        let outcome = run_paired_delta_q_arena_confirmation(&model, &model, &device, &cfg, 1.0);
-
-        assert_eq!(outcome.paired_result.compared_games, 2);
-        assert!(outcome.paired_result.delta_mean_placement.abs() < 1e-6);
-        assert!(
-            outcome
-                .paired_result
-                .upper_confidence_bound_mean_placement
-                .abs()
-                < 1e-6
-        );
-        assert!(outcome.lower_confidence_bound_mean_placement.abs() < 1e-6);
-    }
-
-    #[test]
-    fn paired_bootstrap_ci_tracks_candidate_regression_direction() {
-        let candidate = [2, 2, 3, 3, 2, 3, 3, 2];
-        let baseline = [0, 1, 1, 2, 1, 2, 1, 2];
-
-        let (lower, upper) = paired_bootstrap_mean_placement_ci(&candidate, &baseline, 99, 128);
-
-        assert!(lower > 0.0);
-        assert!(upper > 0.0);
-        let result = paired_arena_result_from_placements(&candidate, &baseline, upper);
-        assert!(result.delta_mean_placement > 0.0);
     }
 
     #[test]
@@ -563,17 +342,11 @@ mod tests {
     }
 
     #[test]
-    fn paired_result_and_bootstrap_helpers_cover_empty_and_singleton_edges() {
+    fn paired_result_helper_covers_singleton_summary() {
         let cfg = PairedArenaEvalConfig::new();
         let single = paired_arena_result_from_placements(&[0], &[1], 0.1);
         assert_eq!(single.compared_games, 1);
         assert!(single.summary(&cfg).contains("decision="));
-
-        let (lower, upper) = paired_bootstrap_mean_placement_ci(&[], &[], 7, 0);
-        assert_eq!((lower, upper), (0.0, 0.0));
-
-        let (lower, upper) = paired_bootstrap_mean_placement_ci(&[0], &[1], 7, 0);
-        assert_eq!((lower, upper), (-1.0, -1.0));
     }
 
     #[test]

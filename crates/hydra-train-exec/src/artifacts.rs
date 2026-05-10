@@ -24,9 +24,12 @@ use hydra_train_types::delta_q_promotion::{
     DeltaQPolicyTransferReport, DeltaQPolicyTransferResult, DeltaQPromotionRecommendation,
     DeltaQPromotionReport, DeltaQPromotionResult,
 };
+use tboard::EventWriter;
 
 use crate::advisory::AdvisoryEvent;
-use crate::progress::{EpochLogEntry, RlStepLogEntry, StepLogEntry};
+use crate::progress::{
+    EpochLogEntry, RareActionMetrics, RlStepLogEntry, ScalarAverages, StepLogEntry,
+};
 use crate::resume::current_timestamp_s;
 use crate::resume::{
     BestValidation, EpochContinuation, RuntimeResumeContract, build_resume_state,
@@ -444,6 +447,158 @@ where
     W: Write,
 {
     append_jsonl_entry(writer, entry, "step log", "runtime advisory event")
+}
+
+/// Writes BC train, validation, LR, best-validation, and DeltaQ promotion scalars to TensorBoard.
+pub fn log_tensorboard<W: Write>(
+    tb: &mut EventWriter<W>,
+    epoch: usize,
+    train: &ScalarAverages,
+    val_summary: Option<&ValidationSummary>,
+    lr: f64,
+    best_validation: Option<BestValidation>,
+) -> Result<(), String> {
+    let step = epoch as i64;
+    tb.write_scalar(step, "train/total_loss", train.total_loss as f32)
+        .map_err(|err| format!("tensorboard write train/total_loss failed: {err}"))?;
+    tb.write_scalar(
+        step,
+        "train/policy_agreement",
+        train.policy_agreement as f32,
+    )
+    .map_err(|err| format!("tensorboard write train/policy_agreement failed: {err}"))?;
+    write_rare_action_tensorboard(tb, step, "train", &train.rare_actions)?;
+    if let Some(val_summary) = val_summary {
+        tb.write_scalar(step, "val/policy_agreement", val_summary.agreement as f32)
+            .map_err(|err| format!("tensorboard write val/policy_agreement failed: {err}"))?;
+        tb.write_scalar(step, "val/policy_loss", val_summary.policy_loss as f32)
+            .map_err(|err| format!("tensorboard write val/policy_loss failed: {err}"))?;
+        tb.write_scalar(step, "val/total_loss", val_summary.total_loss as f32)
+            .map_err(|err| format!("tensorboard write val/total_loss failed: {err}"))?;
+        write_rare_action_tensorboard(tb, step, "val", &val_summary.rare_actions)?;
+        if let Some(delta_q) = val_summary.delta_q_promotion_snapshot {
+            tb.write_scalar(
+                step,
+                "val/delta_q_candidate_top1_agreement",
+                delta_q.candidate_top1_agreement as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_candidate_top1_agreement failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_candidate_mean_regret",
+                delta_q.candidate_mean_regret as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_candidate_mean_regret failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_baseline_mean_regret",
+                delta_q.baseline_mean_regret as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_baseline_mean_regret failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_mean_decision_lift",
+                delta_q.mean_decision_lift as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_mean_decision_lift failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_negative_lift_fraction",
+                delta_q.negative_lift_fraction as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_negative_lift_fraction failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_regret_beats_baseline_rate",
+                delta_q.regret_beats_baseline_rate as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_regret_beats_baseline_rate failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_top1_beats_baseline_rate",
+                delta_q.top1_beats_baseline_rate as f32,
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_top1_beats_baseline_rate failed: {err}")
+            })?;
+            tb.write_scalar(
+                step,
+                "val/delta_q_offline_gate_passed",
+                if delta_q.passed { 1.0 } else { 0.0 },
+            )
+            .map_err(|err| {
+                format!("tensorboard write val/delta_q_offline_gate_passed failed: {err}")
+            })?;
+        }
+    }
+
+    tb.write_scalar(step, "lr", lr as f32)
+        .map_err(|err| format!("tensorboard write lr failed: {err}"))?;
+    if let Some(best_validation) = best_validation {
+        tb.write_scalar(
+            step,
+            "val/best_policy_loss",
+            best_validation.policy_loss as f32,
+        )
+        .map_err(|err| format!("tensorboard write val/best_policy_loss failed: {err}"))?;
+        tb.write_scalar(
+            step,
+            "val/best_policy_agreement",
+            best_validation.agreement as f32,
+        )
+        .map_err(|err| format!("tensorboard write val/best_policy_agreement failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn write_rare_action_tensorboard<W: Write>(
+    tb: &mut EventWriter<W>,
+    step: i64,
+    split: &str,
+    metrics: &RareActionMetrics,
+) -> Result<(), String> {
+    let buckets = [
+        ("discard", metrics.discard),
+        ("aka_discard", metrics.aka_discard),
+        ("riichi", metrics.riichi),
+        ("chi", metrics.chi),
+        ("pon", metrics.pon),
+        ("kan", metrics.kan),
+        ("agari", metrics.agari),
+        ("ryuukyoku", metrics.ryuukyoku),
+        ("pass", metrics.pass),
+    ];
+    for (name, bucket) in buckets {
+        tb.write_scalar(
+            step,
+            &format!("{split}/rare_action/{name}_count"),
+            bucket.count as f32,
+        )
+        .map_err(|err| {
+            format!("tensorboard write {split}/rare_action/{name}_count failed: {err}")
+        })?;
+        tb.write_scalar(
+            step,
+            &format!("{split}/rare_action/{name}_accuracy"),
+            bucket.accuracy as f32,
+        )
+        .map_err(|err| {
+            format!("tensorboard write {split}/rare_action/{name}_accuracy failed: {err}")
+        })?;
+    }
+    Ok(())
 }
 
 /// Appends an RL step training log entry as one JSONL line.

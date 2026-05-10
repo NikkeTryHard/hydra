@@ -10,8 +10,6 @@ mod config;
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]
 mod gpu_config;
-#[path = "train/graph_probe.rs"]
-mod graph_probe;
 #[cfg(test)]
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
@@ -51,8 +49,8 @@ use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
-use self::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use self::preflight_runtime::run_probe_child_mode;
+use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use hydra_train_exec::modes::{TrainModeHandlers, run_train_modes};
 use hydra_train_runtime::probe_request::ProbeRequest;
 use std::path::{Path, PathBuf};

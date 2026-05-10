@@ -1,11 +1,6 @@
 pub use hydra_train_runtime::delta_q_promotion::*;
 
-pub fn delta_q_arena_report_from_paired_eval(
-    result: &crate::eval::PairedArenaEvalResult,
-    lower_confidence_bound_mean_placement: f32,
-) -> DeltaQArenaReport {
-    DeltaQArenaReport::from_paired_eval(result, lower_confidence_bound_mean_placement)
-}
+pub use hydra_train_exec::delta_q_promotion::delta_q_arena_report_from_paired_eval;
 
 #[cfg(test)]
 mod tests {

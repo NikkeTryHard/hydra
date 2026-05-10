@@ -3,22 +3,14 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
-use burn::prelude::Module;
-use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
-use hydra_train::eval::{PairedArenaEvalConfig, run_paired_delta_q_arena_confirmation};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
-use hydra_train::training::delta_q_promotion::{
-    DeltaQArenaConfirmationRequest, DeltaQPromotionRecommendation,
-    delta_q_arena_report_from_paired_eval,
-};
+use hydra_train_exec::delta_q_promotion::handle_delta_q_promotion_mode as run_exec_delta_q_promotion_mode;
 
 use super::TrainBackend;
 use super::advisory::{AdvisoryDeduper, AdvisoryEvent, startup_runtime_advisories};
-use super::artifacts::{
-    BcArtifactPaths, PersistedDeltaQPromotionArtifact, write_delta_q_promotion_artifact,
-};
+use super::artifacts::BcArtifactPaths;
 use super::bootstrap::TrainingReaders;
 use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
 use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
@@ -32,12 +24,8 @@ use super::presentation::{
     format_warning_line, print_banner, print_preflight_banner, timestamped,
 };
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
-use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
-use super::validation::materialize_validation_samples;
-use super::validation::{
-    ValidationContext, ValidationRuntime, run_validation_with_policy_baseline, validation_loader,
-};
+use super::validation::{materialize_validation_samples, validation_loader};
 use hydra_train_runtime::probe_request::ProbeRequest;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
@@ -363,195 +351,7 @@ pub(super) fn handle_delta_q_promotion_mode(
     config: TrainConfig,
     baseline_checkpoint: Option<PathBuf>,
 ) -> Result<(), String> {
-    if matches!(
-        config.precision_mode,
-        crate::config::PrecisionMode::Bf16Autocast
-    ) {
-        return Err(
-            "precision_mode=bf16_autocast is not supported for delta_q promotion yet".to_string(),
-        );
-    }
-    let (bootstrap, runtime, _readers) = initialize_training_bootstrap(config_path, config)?;
-    let TrainingBootstrap {
-        config,
-        artifacts,
-        loader_config,
-        manifest,
-        model_config,
-        device_name,
-        train_device,
-        valid_loss_fn,
-        bc_exit_cfg,
-        ..
-    } = bootstrap;
-    let TrainingRuntime {
-        model,
-        mut head_controller,
-        ..
-    } = runtime;
-    let baseline_checkpoint = baseline_checkpoint.as_ref().ok_or_else(|| {
-        "delta_q promotion mode requires --delta-q-baseline-checkpoint for arena confirmation"
-            .to_string()
-    })?;
-    let checkpoint_base = checkpoint_base_from_path(baseline_checkpoint);
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    let baseline_model = HydraModelConfig::learner()
-        .init::<super::TrainBackend>(&train_device)
-        .load_file(&checkpoint_base, &recorder, &train_device)
-        .map_err(|err| {
-            format!(
-                "failed to load delta_q baseline checkpoint {}: {err}",
-                checkpoint_base.display()
-            )
-        })?;
-
-    println!(
-        "{}",
-        timestamped(format!(
-            "{} device={} artifacts={} model={}",
-            "Hydra DeltaQ offline/transfer gate".bold().cyan(),
-            device_name,
-            artifacts.root.display(),
-            if model_config.is_learner() {
-                "learner"
-            } else {
-                "actor"
-            },
-        ))
-    );
-
-    let summary = run_validation_with_policy_baseline(
-        &model,
-        &baseline_model,
-        ValidationContext {
-            config: &config,
-            loader: &validation_loader(&loader_config),
-            manifest: &manifest,
-            cached_samples: None,
-            device: &train_device,
-            loss_fn: &valid_loss_fn,
-            exit_cfg: &bc_exit_cfg,
-        },
-        ValidationRuntime {
-            head_controller: Some(&mut head_controller),
-            progress: None,
-        },
-    )?;
-
-    let (Some(report), Some(result), Some(snapshot), transfer_result) = (
-        summary.delta_q_promotion.as_ref(),
-        summary.delta_q_promotion_result.as_ref(),
-        summary.delta_q_promotion_snapshot,
-        summary.delta_q_policy_transfer_result.as_ref(),
-    ) else {
-        return Err(
-            "delta_q promotion mode requires active delta_q targets in validation batches"
-                .to_string(),
-        );
-    };
-    let pre_arena_recommendation =
-        pre_arena_recommendation(result.passed, transfer_result.map(|r| r.passed));
-
-    let arena_confirmation_request = default_arena_confirmation_request(pre_arena_recommendation);
-    let arena_config = arena_confirmation_request.as_ref().map(|request| {
-        PairedArenaEvalConfig::new()
-            .with_min_games(request.min_games as usize)
-            .with_seed(config.seed)
-            .with_same_seeds(request.same_seeds)
-            .with_same_seat_rotation_schedule(request.same_seat_rotation_schedule)
-            .with_same_search_budget(request.same_search_budget)
-            .with_same_temperature(request.same_temperature)
-            .with_same_frozen_opponent_pool(request.same_frozen_opponent_pool)
-    });
-    let arena_eval = arena_config.as_ref().map(|arena_config| {
-        run_paired_delta_q_arena_confirmation(
-            &model,
-            &baseline_model,
-            &train_device,
-            arena_config,
-            config.rl.as_ref().map(|rl| rl.temperature).unwrap_or(1.0),
-        )
-    });
-    let arena_report = arena_eval.as_ref().map(|outcome| {
-        delta_q_arena_report_from_paired_eval(
-            &outcome.paired_result,
-            outcome.lower_confidence_bound_mean_placement,
-        )
-    });
-    let arena_decision = arena_eval.as_ref().map(|outcome| {
-        outcome.paired_result.recommendation(
-            arena_config
-                .as_ref()
-                .expect("arena config exists when arena eval exists"),
-        )
-    });
-
-    write_delta_q_promotion_artifact(
-        &artifacts.delta_q_promotion_path,
-        &PersistedDeltaQPromotionArtifact {
-            scope: "promotion_mode",
-            step_or_epoch: 0,
-            recommendation: pre_arena_recommendation,
-            stage: delta_q_promotion_stage(arena_report.is_some()),
-            arena_confirmation: arena_confirmation_request.clone(),
-            arena_decision,
-            arena_report: arena_report.as_ref(),
-            report,
-            result,
-            policy_transfer: summary.delta_q_policy_transfer.as_ref(),
-            policy_transfer_result: transfer_result,
-        },
-    )?;
-
-    println!(
-        "{}",
-        format_delta_q_offline_gate_message(
-            summary.samples,
-            snapshot,
-            pre_arena_recommendation,
-            &delta_q_arena_requirement_summary(arena_confirmation_request.as_ref()),
-            &artifacts.delta_q_promotion_path,
-        )
-    );
-    if let Some(outcome) = arena_eval.as_ref() {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} {} lower_ci={:.3}",
-                "DeltaQ arena confirmation".bold().green(),
-                outcome.paired_result.summary(
-                    arena_config
-                        .as_ref()
-                        .expect("arena config exists when arena eval exists"),
-                ),
-                outcome.lower_confidence_bound_mean_placement,
-            ))
-        );
-        if let Some(decision) = arena_decision {
-            println!(
-                "{}",
-                timestamped(format!(
-                    "{} {}",
-                    "DeltaQ arena decision".bold().green(),
-                    decision.summary(),
-                ))
-            );
-        }
-    }
-    if let Some(transfer) = summary.delta_q_policy_transfer_snapshot {
-        println!("{}", format_delta_q_policy_holdout_message(transfer));
-    }
-    if let Some(transfer_result) = transfer_result {
-        println!(
-            "{}",
-            format_delta_q_policy_transfer_gate_message(
-                transfer_result.passed,
-                transfer_result.recommendation(),
-            )
-        );
-    }
-
-    Ok(())
+    run_exec_delta_q_promotion_mode::<TrainBackend>(config_path, config, baseline_checkpoint)
 }
 
 fn format_probe_only_status_detail(request: ProbeRequest) -> String {
@@ -606,89 +406,6 @@ fn format_best_validation_summary(
     }
 }
 
-fn pre_arena_recommendation(
-    offline_gate_passed: bool,
-    transfer_gate_passed: Option<bool>,
-) -> DeltaQPromotionRecommendation {
-    if offline_gate_passed && transfer_gate_passed.unwrap_or(true) {
-        DeltaQPromotionRecommendation::RequiresArenaConfirmation
-    } else {
-        DeltaQPromotionRecommendation::RejectAtOfflineGate
-    }
-}
-
-fn default_arena_confirmation_request(
-    recommendation: DeltaQPromotionRecommendation,
-) -> Option<DeltaQArenaConfirmationRequest> {
-    (recommendation == DeltaQPromotionRecommendation::RequiresArenaConfirmation)
-        .then_some(Default::default())
-}
-
-fn delta_q_promotion_stage(has_arena_report: bool) -> &'static str {
-    if has_arena_report {
-        "offline_transfer_and_arena_gate"
-    } else {
-        "offline_and_policy_transfer_gate"
-    }
-}
-
-fn delta_q_arena_requirement_summary(request: Option<&DeltaQArenaConfirmationRequest>) -> String {
-    request
-        .map(DeltaQArenaConfirmationRequest::summary)
-        .unwrap_or_else(|| "n/a".to_string())
-}
-
-fn format_delta_q_offline_gate_message(
-    samples: usize,
-    snapshot: super::validation::DeltaQPromotionSnapshot,
-    recommendation: DeltaQPromotionRecommendation,
-    arena_requirement: &str,
-    artifact_path: &std::path::Path,
-) -> String {
-    timestamped(format!(
-        "{} samples={} compared={} dq_lift={:.4} dq_regret={:.4}/{:.4} dq_win={:.2}% dq_offline_gate={} next={} arena_req='{}' artifact={}",
-        "DeltaQ offline gate".bold().magenta(),
-        samples,
-        snapshot.compared_states,
-        snapshot.mean_decision_lift,
-        snapshot.candidate_mean_regret,
-        snapshot.baseline_mean_regret,
-        snapshot.regret_beats_baseline_rate * 100.0,
-        snapshot.passed,
-        recommendation,
-        arena_requirement,
-        artifact_path.display(),
-    ))
-}
-
-fn format_delta_q_policy_holdout_message(
-    snapshot: super::validation::DeltaQPolicyTransferSnapshot,
-) -> String {
-    timestamped(format!(
-        "{} compared={} policy_regret={:.4}/{:.4} policy_top1={:.2}%/{:.2}% policy_beats_baseline={:.2}% candidate_worse_rate={:.2}%",
-        "DeltaQ policy-vs-teacher holdout".bold().blue(),
-        snapshot.compared_states,
-        snapshot.candidate_policy_mean_teacher_regret,
-        snapshot.baseline_policy_mean_teacher_regret,
-        snapshot.candidate_policy_top1_to_teacher * 100.0,
-        snapshot.baseline_policy_top1_to_teacher * 100.0,
-        snapshot.candidate_beats_baseline_rate * 100.0,
-        snapshot.negative_transfer_fraction * 100.0,
-    ))
-}
-
-fn format_delta_q_policy_transfer_gate_message(
-    passed: bool,
-    next: DeltaQPromotionRecommendation,
-) -> String {
-    timestamped(format!(
-        "{} pass={} next={}",
-        "DeltaQ policy transfer gate".bold().blue(),
-        passed,
-        next,
-    ))
-}
-
 fn format_probe_table_message(
     title: &str,
     kind: ProbeKind,
@@ -717,7 +434,14 @@ fn print_probe_table(
 #[cfg(test)]
 mod tests {
     use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
+    use hydra_train::training::delta_q_promotion::DeltaQArenaConfirmationRequest;
     use hydra_train::training::delta_q_promotion::DeltaQPromotionRecommendation;
+    use hydra_train_exec::delta_q_promotion::{
+        default_arena_confirmation_request, delta_q_arena_requirement_summary,
+        delta_q_promotion_stage, format_delta_q_offline_gate_message,
+        format_delta_q_policy_holdout_message, format_delta_q_policy_transfer_gate_message,
+        pre_arena_recommendation,
+    };
     use std::path::{Path, PathBuf};
 
     use super::super::config::{RlTrainConfig, TrainConfig};

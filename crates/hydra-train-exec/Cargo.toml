@@ -39,6 +39,9 @@ tar = "0.4"
 zstd = "0.13"
 tboard = "0.1.1"
 
+[dev-dependencies]
+burn = { version = "0.20", features = ["ndarray"] }
+
 
 [features]
 bootstrap-exec-in-progress = []

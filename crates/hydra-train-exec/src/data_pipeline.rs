@@ -1349,6 +1349,28 @@ pub fn stream_val_microbatches(
     StreamValMicrobatchIterator::new(stream_val_pass(manifest, config, progress), microbatch_size)
 }
 
+/// Validation data loader over exec-owned streaming configuration.
+pub struct TrainValidationLoader<'a> {
+    /// Streaming loader configuration.
+    pub config: &'a StreamingLoaderConfig,
+}
+
+impl crate::validation_runner::ValidationDataLoader for TrainValidationLoader<'_> {
+    fn stream_val_microbatches<'a>(
+        &'a self,
+        manifest: &'a DataManifest,
+        microbatch_size: usize,
+        progress: Option<&'a ProgressBar>,
+    ) -> Box<dyn Iterator<Item = io::Result<Vec<MjaiSample>>> + 'a> {
+        Box::new(stream_val_microbatches(
+            manifest,
+            self.config,
+            microbatch_size,
+            progress,
+        ))
+    }
+}
+
 fn is_mjai_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),

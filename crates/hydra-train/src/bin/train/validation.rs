@@ -1,41 +1,15 @@
-use std::io;
-
-use hydra_data_core::manifest::DataManifest;
-use hydra_train_runtime::data::sample::MjaiSample;
-use indicatif::ProgressBar;
-
+pub(super) use hydra_train_exec::data_pipeline::TrainValidationLoader;
+#[cfg(test)]
+pub(super) use hydra_train_exec::validation::DeltaQPolicyTransferSnapshot;
 pub(super) use hydra_train_exec::validation::{
-    DeltaQPolicyTransferSnapshot, DeltaQPromotionSnapshot, ValidationGateDecision,
-    ValidationSummary,
+    DeltaQPromotionSnapshot, ValidationGateDecision, ValidationSummary,
 };
-use hydra_train_exec::validation_runner::ValidationDataLoader;
 pub(super) use hydra_train_exec::validation_runner::{
     ValidationContext, ValidationRuntime, materialize_validation_samples, run_validation,
-    run_validation_with_policy_baseline,
 };
 use hydra_train_runtime::validation::ValidationRunConfig;
 
 use hydra_train_exec::resume::BestValidation;
-
-pub(super) struct TrainValidationLoader<'a> {
-    pub(super) config: &'a hydra_train_exec::data_pipeline::StreamingLoaderConfig,
-}
-
-impl ValidationDataLoader for TrainValidationLoader<'_> {
-    fn stream_val_microbatches<'b>(
-        &'b self,
-        manifest: &'b DataManifest,
-        microbatch_size: usize,
-        progress: Option<&'b ProgressBar>,
-    ) -> Box<dyn Iterator<Item = io::Result<Vec<MjaiSample>>> + 'b> {
-        Box::new(hydra_train_exec::data_pipeline::stream_val_microbatches(
-            manifest,
-            self.config,
-            microbatch_size,
-            progress,
-        ))
-    }
-}
 
 pub(super) fn validation_loader(
     config: &hydra_train_exec::data_pipeline::StreamingLoaderConfig,

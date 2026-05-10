@@ -1,7 +1,5 @@
 use super::validation::DeltaQPromotionSnapshot;
-pub(super) use hydra_train_exec::progress::{
-    BannerStats, BatchStats, RareActionMetrics, ScalarAverages,
-};
+pub(super) use hydra_train_exec::progress::{BannerStats, BatchStats, ScalarAverages};
 pub(super) type EpochLogEntry = hydra_train_exec::progress::EpochLogEntry<
     DeltaQPromotionSnapshot,
     hydra_train_exec::advisory::RuntimeAdvisory,
@@ -13,6 +11,8 @@ pub(super) type StepLogEntry = hydra_train_exec::progress::StepLogEntry<
 #[cfg(test)]
 pub(super) type RlStepLogEntry =
     hydra_train_exec::progress::RlStepLogEntry<hydra_train_exec::advisory::RuntimeAdvisory>;
+#[cfg(test)]
+pub(super) use hydra_train_exec::progress::RareActionMetrics;
 #[cfg(test)]
 pub(super) use hydra_train_runtime::bc_metrics::scalar1;
 pub(super) use hydra_train_runtime::bc_metrics::{
