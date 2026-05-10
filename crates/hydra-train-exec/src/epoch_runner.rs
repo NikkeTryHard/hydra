@@ -9,6 +9,10 @@ use std::time::Instant;
 use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
+use burn::tensor::{Int, Tensor, TensorData};
+use hydra_bc_shards::BcShardHostBatch;
+use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::encoder::NUM_CHANNELS;
 use hydra_model::amp::maybe_autocast;
 use hydra_train_runtime::bc_fixed_shape::{
     FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks,
@@ -17,7 +21,7 @@ use hydra_train_runtime::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
 };
 use hydra_train_runtime::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
-use hydra_train_runtime::data::sample::{MjaiSample, collate_samples_bc_owned};
+use hydra_train_runtime::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
 use hydra_train_runtime::head_gates::HeadActivationController;
 use hydra_train_runtime::losses::HydraLoss;
 use hydra_train_runtime::model::{HydraModel, HydraTrainModelExt};
@@ -32,7 +36,8 @@ use hydra_train_runtime::preflight::{
     ProfilingEnvelope,
 };
 use hydra_train_runtime::progress::{BatchStats, ScalarAverages, TrainSubStageTiming};
-use hydra_train_types::losses::LossBreakdown;
+use hydra_train_types::head_gates::{AdvancedHead, TargetPresence};
+use hydra_train_types::losses::{HydraTargets, LossBreakdown};
 
 use crate::advisory::IntervalTimingInput;
 use crate::resume::EpochContinuation;
@@ -342,6 +347,221 @@ pub fn interval_timing_input(
         steps: window_steps,
         is_cuda: device == "cuda" || device.starts_with("cuda:"),
     }
+}
+
+/// Device-resident BC shard batch materialized from a backend-agnostic host batch.
+pub struct BcShardDeviceBatch<B: Backend> {
+    /// Observation tensor, shape `[batch, 192, 34]`.
+    pub obs: Tensor<B, 3>,
+    /// Minimal BC batch targets consumed by ExIt-aware loss code.
+    pub batch: MjaiBcBatch<B>,
+    /// Full Hydra loss targets.
+    pub targets: HydraTargets<B>,
+}
+
+/// Materializes a backend-agnostic BC shard host batch onto a Burn device.
+#[must_use]
+pub fn materialize_host_batch_owned<B: Backend>(
+    host: BcShardHostBatch,
+    device: &B::Device,
+) -> BcShardDeviceBatch<B> {
+    let target_presence = target_presence_from_host_batch(&host, host.batch_size);
+    materialize_host_parts_owned::<B>(
+        host.batch_size,
+        host.obs_flat,
+        host.actions,
+        host.legal_mask_flat,
+        host.value_target,
+        host.grp_target_flat,
+        host.oracle_target_flat,
+        host.oracle_target_mask,
+        host.tenpai_flat,
+        host.danger_flat,
+        host.danger_mask_flat,
+        host.opp_next_flat,
+        host.score_pdf_flat,
+        host.score_cdf_flat,
+        host.safety_target_flat,
+        host.safety_mask_flat,
+        host.exit_target_flat,
+        host.exit_mask_flat,
+        host.delta_q_target_flat,
+        host.delta_q_mask_flat,
+        target_presence,
+        device,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "materializes a flat shard record without regrouping hot-path owned buffers"
+)]
+fn materialize_host_parts_owned<B: Backend>(
+    batch_size: usize,
+    obs_flat: Vec<f32>,
+    actions: Vec<i64>,
+    legal_mask_flat: Vec<f32>,
+    value_target: Vec<f32>,
+    grp_target_flat: Vec<f32>,
+    oracle_target_flat: Vec<f32>,
+    oracle_target_mask: Vec<f32>,
+    tenpai_flat: Vec<f32>,
+    danger_flat: Vec<f32>,
+    danger_mask_flat: Vec<f32>,
+    opp_next_flat: Vec<f32>,
+    score_pdf_flat: Vec<f32>,
+    score_cdf_flat: Vec<f32>,
+    safety_target_flat: Option<Vec<f32>>,
+    safety_mask_flat: Option<Vec<f32>>,
+    exit_target_flat: Option<Vec<f32>>,
+    exit_mask_flat: Option<Vec<f32>>,
+    delta_q_target_flat: Option<Vec<f32>>,
+    delta_q_mask_flat: Option<Vec<f32>>,
+    target_presence: TargetPresence,
+    device: &B::Device,
+) -> BcShardDeviceBatch<B> {
+    let b = batch_size;
+
+    let obs = Tensor::<B, 3>::from_data(TensorData::new(obs_flat, [b, NUM_CHANNELS, 34]), device);
+    let policy_target = policy_target_from_action_slice::<B>(actions.as_slice(), b, device);
+    let actions_tensor = Tensor::<B, 1, Int>::from_data(TensorData::new(actions, [b]), device);
+    let legal_mask = Tensor::<B, 2>::from_data(
+        TensorData::new(legal_mask_flat, [b, HYDRA_ACTION_SPACE]),
+        device,
+    );
+    let value_target = Tensor::<B, 1>::from_data(TensorData::new(value_target, [b]), device);
+    let grp_target = Tensor::<B, 2>::from_data(TensorData::new(grp_target_flat, [b, 24]), device);
+    let oracle_target =
+        Tensor::<B, 2>::from_data(TensorData::new(oracle_target_flat, [b, 4]), device);
+    let oracle_target_mask =
+        Tensor::<B, 1>::from_data(TensorData::new(oracle_target_mask, [b]), device);
+    let tenpai_target = Tensor::<B, 2>::from_data(TensorData::new(tenpai_flat, [b, 3]), device);
+    let danger_target = Tensor::<B, 3>::from_data(TensorData::new(danger_flat, [b, 3, 34]), device);
+    let danger_mask =
+        Tensor::<B, 3>::from_data(TensorData::new(danger_mask_flat, [b, 3, 34]), device);
+    let opp_next_target =
+        Tensor::<B, 3>::from_data(TensorData::new(opp_next_flat, [b, 3, 34]), device);
+    let score_pdf_target =
+        Tensor::<B, 2>::from_data(TensorData::new(score_pdf_flat, [b, 64]), device);
+    let score_cdf_target =
+        Tensor::<B, 2>::from_data(TensorData::new(score_cdf_flat, [b, 64]), device);
+
+    let exit_target_tensor = exit_target_flat.map(|buf| {
+        Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+    });
+    let exit_mask_tensor = exit_mask_flat.map(|buf| {
+        Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+    });
+
+    let batch = MjaiBcBatch {
+        actions: actions_tensor,
+        exit_target: exit_target_tensor,
+        exit_mask: exit_mask_tensor,
+    };
+
+    let targets = HydraTargets {
+        policy_target,
+        legal_mask,
+        value_target,
+        grp_target,
+        tenpai_target,
+        danger_target,
+        danger_mask,
+        opp_next_target,
+        score_pdf_target,
+        score_cdf_target,
+        oracle_target: Some(oracle_target),
+        belief_fields_target: None,
+        belief_fields_mask: None,
+        mixture_weight_target: None,
+        mixture_weight_mask: None,
+        opponent_hand_type_target: None,
+        delta_q_target: delta_q_target_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+        }),
+        delta_q_mask: delta_q_mask_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+        }),
+        safety_residual_target: safety_target_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+        }),
+        safety_residual_mask: safety_mask_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(TensorData::new(buf, [b, HYDRA_ACTION_SPACE]), device)
+        }),
+        oracle_guidance_mask: Some(oracle_target_mask),
+        target_presence: Some(target_presence),
+    };
+
+    BcShardDeviceBatch {
+        obs,
+        batch,
+        targets,
+    }
+}
+
+fn policy_target_from_action_slice<B: Backend>(
+    actions: &[i64],
+    batch_size: usize,
+    device: &B::Device,
+) -> Tensor<B, 2> {
+    let mut flat = vec![0.0f32; batch_size * HYDRA_ACTION_SPACE];
+    for (row, &action) in actions.iter().take(batch_size).enumerate() {
+        if action >= 0 {
+            let idx = action as usize;
+            if idx < HYDRA_ACTION_SPACE {
+                flat[row * HYDRA_ACTION_SPACE + idx] = 1.0;
+            }
+        }
+    }
+    Tensor::<B, 2>::from_data(
+        TensorData::new(flat, [batch_size, HYDRA_ACTION_SPACE]),
+        device,
+    )
+}
+
+fn target_presence_from_host_batch(host: &BcShardHostBatch, batch_size: usize) -> TargetPresence {
+    let mut presence = TargetPresence::with_batch_size(batch_size);
+    presence.counts[AdvancedHead::OracleCritic.index()] = host
+        .oracle_target_mask
+        .iter()
+        .take(batch_size)
+        .filter(|&&value| value > 0.0)
+        .count();
+    if let (Some(_target), Some(mask)) = (&host.safety_target_flat, &host.safety_mask_flat) {
+        presence.counts[AdvancedHead::SafetyResidual.index()] =
+            count_nonzero_action_rows(mask, batch_size, HYDRA_ACTION_SPACE);
+    }
+    if let (Some(_target), Some(mask)) = (&host.delta_q_target_flat, &host.delta_q_mask_flat) {
+        let (rows, actions) =
+            count_nonzero_action_rows_and_entries(mask, batch_size, HYDRA_ACTION_SPACE);
+        presence.counts[AdvancedHead::DeltaQ.index()] = rows;
+        presence.delta_q_actions_present = actions;
+    }
+    presence
+}
+
+fn count_nonzero_action_rows(mask: &[f32], batch_size: usize, action_space: usize) -> usize {
+    mask.chunks_exact(action_space)
+        .take(batch_size)
+        .filter(|row| row.iter().any(|&value| value > 0.0))
+        .count()
+}
+
+fn count_nonzero_action_rows_and_entries(
+    mask: &[f32],
+    batch_size: usize,
+    action_space: usize,
+) -> (usize, usize) {
+    let mut rows = 0usize;
+    let mut entries = 0usize;
+    for row in mask.chunks_exact(action_space).take(batch_size) {
+        let row_entries = row.iter().filter(|&&value| value > 0.0).count();
+        if row_entries > 0 {
+            rows += 1;
+            entries += row_entries;
+        }
+    }
+    (rows, entries)
 }
 
 /// Runs forward/backward/optimizer for one raw replay logical batch.

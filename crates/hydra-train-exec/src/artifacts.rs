@@ -28,8 +28,11 @@ use hydra_train_types::delta_q_promotion::{
 use crate::advisory::AdvisoryEvent;
 use crate::progress::{EpochLogEntry, RlStepLogEntry, StepLogEntry};
 use crate::resume::current_timestamp_s;
-use crate::resume::{read_resume_state, read_rl_resume_state};
-use crate::validation::ValidationGateDecision;
+use crate::resume::{
+    BestValidation, EpochContinuation, RuntimeResumeContract, build_resume_state,
+    read_resume_state, read_rl_resume_state, write_resume_state, write_rl_resume_state,
+};
+use crate::validation::{ValidationGateDecision, ValidationSummary};
 
 /// BC artifact paths rooted below the configured output directory.
 pub struct BcArtifactPaths {
@@ -532,6 +535,97 @@ pub fn checkpoint_meta(
         eval_policy_loss,
         eval_total_loss,
     )
+}
+
+/// Checkpoint/resume state needed when saving the latest BC checkpoint.
+pub struct LatestCheckpointState<'a> {
+    /// Resume-state global step.
+    pub global_step: usize,
+    /// Latest train loss persisted into checkpoint metadata.
+    pub train_loss: f64,
+    /// Best validation snapshot to preserve in resume state.
+    pub best_validation: Option<BestValidation>,
+    /// Epoch continuation cursor to persist.
+    pub continuation: &'a EpochContinuation,
+    /// Runtime contract to persist.
+    pub runtime: RuntimeResumeContract,
+}
+
+/// Writes the latest BC checkpoint payloads, metadata, and resume state.
+pub fn save_latest_checkpoint_and_state<B, O>(
+    artifacts: &BcArtifactPaths,
+    model: &HydraModel<B>,
+    optimizer: &O,
+    state: LatestCheckpointState<'_>,
+) -> Result<(), String>
+where
+    B: AutodiffBackend,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let LatestCheckpointState {
+        global_step,
+        train_loss,
+        best_validation,
+        continuation,
+        runtime,
+    } = state;
+    let skip_payload_write = latest_bc_payload_is_current(artifacts, global_step);
+    if !skip_payload_write {
+        save_model_payload(model, &artifacts.latest_model_base)?;
+        save_optimizer_payload(optimizer, &artifacts.latest_optimizer_base)?;
+    }
+    let meta = checkpoint_meta(global_step, train_loss, None, None, None);
+    write_checkpoint_meta(&artifacts.latest_model_base, &meta)?;
+    let state = build_resume_state(
+        continuation.next_epoch,
+        continuation.skip_optimizer_steps_in_epoch,
+        global_step,
+        best_validation,
+        runtime,
+    );
+    write_resume_state(&artifacts.latest_state_path, &state)
+}
+
+/// Saves a named BC checkpoint payload and metadata from validation metrics.
+pub fn save_checkpoint<B: Backend>(
+    model: &HydraModel<B>,
+    base: &Path,
+    epoch: usize,
+    loss: f64,
+    val_summary: Option<&ValidationSummary>,
+) -> Result<(), String> {
+    save_model_payload(model, base)?;
+    let meta = checkpoint_meta(
+        epoch,
+        loss,
+        val_summary.map(|summary| summary.agreement),
+        val_summary.map(|summary| summary.policy_loss),
+        val_summary.map(|summary| summary.total_loss),
+    );
+    write_checkpoint_meta(base, &meta)
+}
+
+/// Writes the latest RL checkpoint payloads, metadata, and resume state.
+pub fn save_latest_rl_checkpoint_and_state<B, O>(
+    artifacts: &RlArtifactPaths,
+    model: &HydraModel<B>,
+    optimizer: &O,
+    global_step: usize,
+    train_loss: f64,
+    state: &crate::resume::RlResumeState,
+) -> Result<(), String>
+where
+    B: AutodiffBackend,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let skip_payload_write = latest_rl_payload_is_current(artifacts, global_step);
+    if !skip_payload_write {
+        save_model_payload(model, &artifacts.latest_model_base)?;
+        save_optimizer_payload(optimizer, &artifacts.latest_optimizer_base)?;
+    }
+    let meta = checkpoint_meta(global_step, train_loss, None, None, None);
+    write_checkpoint_meta(&artifacts.latest_model_base, &meta)?;
+    write_rl_resume_state(&artifacts.latest_state_path, state)
 }
 
 fn latest_checkpoint_payload_exists(model_base: &Path, optimizer_base: &Path) -> bool {

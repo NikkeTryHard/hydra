@@ -355,6 +355,17 @@ pub fn write_resume_state(path: &Path, state: &BcResumeState) -> Result<(), Stri
     atomic_write_text(path, &yaml, "resume state")
 }
 
+/// Writes an RL resume state as YAML using atomic sibling replacement.
+pub fn write_rl_resume_state(path: &Path, state: &RlResumeState) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(state).map_err(|err| {
+        format!(
+            "failed to serialize RL resume state {}: {err}",
+            path.display()
+        )
+    })?;
+    atomic_write_text(path, &yaml, "RL resume state")
+}
+
 pub fn build_resume_state(
     next_epoch: usize,
     skip_optimizer_steps_in_epoch: usize,

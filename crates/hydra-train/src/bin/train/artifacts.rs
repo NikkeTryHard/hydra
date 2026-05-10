@@ -1,37 +1,20 @@
-use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use burn::optim::Optimizer;
-use burn::tensor::backend::{AutodiffBackend, Backend};
 use tboard::EventWriter;
 
-use hydra_train::model::HydraModel;
-#[cfg(test)]
-use hydra_train::preflight::PreflightCacheEntry;
-
-#[cfg(test)]
-use super::advisory::AdvisoryEvent;
-#[cfg(test)]
-use super::advisory::RuntimeAdvisory;
-#[cfg(test)]
-use super::progress::{EpochLogEntry, RlStepLogEntry};
 use super::progress::{ScalarAverages, StepLogEntry};
-use super::resume::{
-    BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
-    write_resume_state,
-};
+use super::resume::BestValidation;
 use super::validation::ValidationSummary;
 pub(crate) use hydra_train_exec::artifacts::{
-    BcArtifactPaths, JsonlAppender, PersistedDeltaQPromotionArtifact,
+    BcArtifactPaths, JsonlAppender, LatestCheckpointState, PersistedDeltaQPromotionArtifact,
     PersistedValidationGateArtifact, PreflightBenchmarkPaths, PreflightPaths, RlArtifactPaths,
     RlPreflightPaths, append_advisory_event_to_writer, append_rl_step_log_to_writer,
-    append_step_log_to_writer, append_training_log_to_writer,
-    checkpoint_meta as build_checkpoint_meta, latest_bc_payload_is_current,
-    latest_rl_payload_is_current, load_or_scan_manifest_cache, open_rl_step_log_appender,
-    open_step_log_appender, open_training_log_appender, read_manifest_cache, save_model_payload,
-    save_optimizer_payload, write_checkpoint_meta as write_checkpoint_meta_file,
-    write_delta_q_promotion_artifact, write_validation_gate_artifact,
+    append_step_log_to_writer, append_training_log_to_writer, load_or_scan_manifest_cache,
+    open_rl_step_log_appender, open_step_log_appender, open_training_log_appender,
+    read_manifest_cache, save_checkpoint, save_latest_checkpoint_and_state,
+    save_latest_rl_checkpoint_and_state, write_delta_q_promotion_artifact,
+    write_validation_gate_artifact,
 };
 #[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::{
@@ -43,123 +26,28 @@ pub(crate) use hydra_train_exec::artifacts::{
     manifest_cache_matches, scan_and_write_manifest_cache, write_manifest_cache,
 };
 
-pub(crate) struct LatestCheckpointState<'a> {
-    pub(crate) global_step: usize,
-    pub(crate) train_loss: f64,
-    pub(crate) best_validation: Option<BestValidation>,
-    pub(crate) continuation: &'a EpochContinuation,
-    pub(crate) runtime: RuntimeResumeContract,
-}
-
-pub(crate) fn save_latest_checkpoint_and_state<B, O>(
-    artifacts: &BcArtifactPaths,
-    model: &HydraModel<B>,
-    optimizer: &O,
-    state: LatestCheckpointState<'_>,
-) -> Result<(), String>
-where
-    B: AutodiffBackend,
-    O: Optimizer<HydraModel<B>, B>,
-{
-    let LatestCheckpointState {
-        global_step,
-        train_loss,
-        best_validation,
-        continuation,
-        runtime,
-    } = state;
-    let skip_payload_write = latest_bc_payload_is_current(artifacts, global_step);
-    if !skip_payload_write {
-        save_model_payload(model, &artifacts.latest_model_base)?;
-        save_optimizer_payload(optimizer, &artifacts.latest_optimizer_base)?;
-    }
-    write_checkpoint_meta(&artifacts.latest_model_base, global_step, train_loss, None)?;
-    let state = build_resume_state(
-        continuation.next_epoch,
-        continuation.skip_optimizer_steps_in_epoch,
-        global_step,
-        best_validation,
-        runtime,
-    );
-    write_resume_state(&artifacts.latest_state_path, &state)
-}
-
-pub(crate) fn save_checkpoint<B: Backend>(
-    model: &HydraModel<B>,
-    base: &Path,
-    epoch: usize,
-    loss: f64,
-    val_summary: Option<&ValidationSummary>,
-) -> Result<(), String> {
-    save_model_payload(model, base)?;
-    write_checkpoint_meta(base, epoch, loss, val_summary)
-}
-
-fn write_checkpoint_meta(
-    base: &Path,
-    epoch: usize,
-    loss: f64,
-    val_summary: Option<&ValidationSummary>,
-) -> Result<(), String> {
-    let meta = build_checkpoint_meta(
-        epoch,
-        loss,
-        val_summary.map(|summary| summary.agreement),
-        val_summary.map(|summary| summary.policy_loss),
-        val_summary.map(|summary| summary.total_loss),
-    );
-    write_checkpoint_meta_file(base, &meta)
-}
-
-#[cfg(test)]
-pub(crate) fn append_training_log(path: &Path, entry: &EpochLogEntry) -> Result<(), String> {
-    let mut file = open_training_log_appender(path)?;
-    append_training_log_to_writer(&mut file, entry)
-}
-
 pub(crate) fn append_step_log(path: &Path, entry: &StepLogEntry) -> Result<(), String> {
     let mut file = open_step_log_appender(path)?;
     append_step_log_to_writer(&mut file, entry)
 }
 
 #[cfg(test)]
-pub(crate) fn append_rl_step_log(path: &Path, entry: &RlStepLogEntry) -> Result<(), String> {
+pub(crate) fn append_training_log(
+    path: &Path,
+    entry: &super::progress::EpochLogEntry,
+) -> Result<(), String> {
+    let mut file = open_training_log_appender(path)?;
+    append_training_log_to_writer(&mut file, entry)
+}
+
+#[cfg(test)]
+pub(crate) fn append_rl_step_log(
+    path: &Path,
+    entry: &super::progress::RlStepLogEntry,
+) -> Result<(), String> {
     let mut file = open_rl_step_log_appender(path)?;
     append_rl_step_log_to_writer(&mut file, entry)
 }
-
-pub(crate) fn save_latest_rl_checkpoint_and_state<B, O>(
-    artifacts: &RlArtifactPaths,
-    model: &HydraModel<B>,
-    optimizer: &O,
-    global_step: usize,
-    train_loss: f64,
-    state: &RlResumeState,
-) -> Result<(), String>
-where
-    B: AutodiffBackend,
-    O: Optimizer<HydraModel<B>, B>,
-{
-    let skip_payload_write = latest_rl_payload_is_current(artifacts, global_step);
-    if !skip_payload_write {
-        save_model_payload(model, &artifacts.latest_model_base)?;
-        save_optimizer_payload(optimizer, &artifacts.latest_optimizer_base)?;
-    }
-    write_checkpoint_meta(&artifacts.latest_model_base, global_step, train_loss, None)?;
-    write_rl_resume_state(&artifacts.latest_state_path, state)
-}
-
-fn write_rl_resume_state(path: &Path, state: &RlResumeState) -> Result<(), String> {
-    let yaml = serde_yaml::to_string(state).map_err(|err| {
-        format!(
-            "failed to serialize RL resume state {}: {err}",
-            path.display()
-        )
-    })?;
-    fs::write(path, yaml)
-        .map_err(|err| format!("failed to write RL resume state {}: {err}", path.display()))
-}
-
 pub(crate) fn log_tensorboard<W: Write>(
     tb: &mut EventWriter<W>,
     epoch: usize,
@@ -315,7 +203,7 @@ fn write_rare_action_tensorboard<W: Write>(
 mod tests {
     use super::*;
     use crate::config::RlPhaseConfig;
-    use crate::resume::{RlResumeSemantics, RlRuntimeResumeContract};
+    use crate::resume::{RlResumeSemantics, RlResumeState, RlRuntimeResumeContract};
     use crate::validation::DeltaQPromotionSnapshot;
     use hydra_train::config::{PipelineState, TrainingPhase};
     use hydra_train::data::pipeline::{DataManifest, DataSource};
@@ -323,8 +211,8 @@ mod tests {
     use hydra_train::preflight::{
         BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
         EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
-        PreflightCacheKey, ProfilingEnvelope, SelectedRuntimeConfig, WorkloadFingerprint,
-        default_cache_name, default_manifest_cache_name,
+        PreflightCacheEntry, PreflightCacheKey, ProfilingEnvelope, SelectedRuntimeConfig,
+        WorkloadFingerprint, default_cache_name, default_manifest_cache_name,
     };
     use hydra_train::training::delta_q_promotion::{
         DeltaQArenaConfirmationRequest, DeltaQPolicyTransferReport, DeltaQPolicyTransferResult,
@@ -332,6 +220,10 @@ mod tests {
         delta_q_arena_report_from_paired_eval,
     };
 
+    use crate::advisory::{AdvisoryEvent, RuntimeAdvisory};
+    use crate::progress::{EpochLogEntry, RlStepLogEntry};
+    use crate::resume::write_rl_resume_state;
+    use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tboard::SummaryReader;
