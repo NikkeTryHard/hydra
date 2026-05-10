@@ -24,8 +24,8 @@ use hydra_train::preflight::{
 };
 use hydra_train::training::bc::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 use hydra_train::training::delta_q_promotion::{
-    DeltaQPolicyTransferReport, DeltaQPolicyTransferResult, DeltaQPolicyTransferThresholds,
-    DeltaQPromotionReport, DeltaQPromotionResult, DeltaQPromotionThresholds,
+    DeltaQPolicyTransferReport, DeltaQPolicyTransferThresholds, DeltaQPromotionReport,
+    DeltaQPromotionResult, DeltaQPromotionThresholds,
     collect_policy_transfer_metrics_from_policy_outputs, collect_promotion_metrics_from_outputs,
     evaluate_policy_transfer_report, evaluate_promotion_report,
 };
@@ -41,7 +41,7 @@ use super::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_su
 use super::resume::BestValidation;
 pub(super) use hydra_train_exec::validation::{
     DeltaQPolicyTransferSnapshot, DeltaQPromotionSnapshot, ValidationGateDecision,
-    ValidationScalarSummary,
+    ValidationSummary,
 };
 use hydra_train_runtime::validation::ValidationRunLimits;
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
@@ -62,36 +62,6 @@ pub(super) type ValidationCachedMicrobatches = Box<[Box<[MjaiSample]>]>;
 pub(super) struct ValidationRuntime<'a> {
     pub(super) head_controller: Option<&'a mut HeadActivationController>,
     pub(super) progress: Option<&'a ProgressBar>,
-}
-#[derive(Clone)]
-pub(super) struct ValidationSummary {
-    pub(super) total_loss: f64,
-    pub(super) policy_loss: f64,
-    pub(super) agreement: f64,
-    pub(super) samples: usize,
-    pub(super) rare_actions: RareActionMetrics,
-    pub(super) profiling: Option<ProfilingEnvelope>,
-    pub(super) delta_q_promotion: Option<DeltaQPromotionReport>,
-    pub(super) delta_q_promotion_result: Option<DeltaQPromotionResult>,
-    pub(super) delta_q_promotion_snapshot: Option<DeltaQPromotionSnapshot>,
-    pub(super) delta_q_policy_transfer: Option<DeltaQPolicyTransferReport>,
-    pub(super) delta_q_policy_transfer_result: Option<DeltaQPolicyTransferResult>,
-    pub(super) delta_q_policy_transfer_snapshot: Option<DeltaQPolicyTransferSnapshot>,
-    pub(super) saw_exit_targets: bool,
-    pub(super) saw_delta_q_targets: bool,
-}
-
-impl ValidationSummary {
-    fn scalar_summary(&self) -> ValidationScalarSummary {
-        ValidationScalarSummary {
-            total_loss: self.total_loss,
-            policy_loss: self.policy_loss,
-            agreement: self.agreement,
-            samples: self.samples,
-            saw_exit_targets: self.saw_exit_targets,
-            saw_delta_q_targets: self.saw_delta_q_targets,
-        }
-    }
 }
 
 fn delta_q_promotion_snapshot_from_report(

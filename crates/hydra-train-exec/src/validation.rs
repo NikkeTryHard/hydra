@@ -1,6 +1,12 @@
 //! Validation snapshot and gate DTOs shared across training execution seams.
 
 use hydra_train_runtime::config::{AdvancedLossConfig, ValidationGateConfig};
+use hydra_train_runtime::preflight::ProfilingEnvelope;
+use hydra_train_runtime::progress::RareActionMetrics;
+use hydra_train_types::delta_q_promotion::{
+    DeltaQPolicyTransferReport, DeltaQPolicyTransferResult, DeltaQPromotionReport,
+    DeltaQPromotionResult,
+};
 
 use crate::resume::BestValidation;
 
@@ -60,6 +66,54 @@ pub struct ValidationScalarSummary {
     pub saw_exit_targets: bool,
     /// Whether DeltaQ sidecar targets were present in validation.
     pub saw_delta_q_targets: bool,
+}
+
+/// Full validation summary produced by train validation passes.
+#[derive(Clone)]
+pub struct ValidationSummary {
+    /// Total validation loss.
+    pub total_loss: f64,
+    /// Validation policy loss used for best-checkpoint ordering.
+    pub policy_loss: f64,
+    /// Validation policy agreement used as best-checkpoint tiebreaker.
+    pub agreement: f64,
+    /// Number of validation samples consumed.
+    pub samples: usize,
+    /// Rare-action validation metrics.
+    pub rare_actions: RareActionMetrics,
+    /// Optional profiling tree for the validation pass.
+    pub profiling: Option<ProfilingEnvelope>,
+    /// Full DeltaQ promotion report when DeltaQ targets were present.
+    pub delta_q_promotion: Option<DeltaQPromotionReport>,
+    /// DeltaQ promotion gate result when DeltaQ targets were present.
+    pub delta_q_promotion_result: Option<DeltaQPromotionResult>,
+    /// Serializable DeltaQ promotion snapshot for logs/artifacts.
+    pub delta_q_promotion_snapshot: Option<DeltaQPromotionSnapshot>,
+    /// Full DeltaQ policy-transfer report when DeltaQ targets were present.
+    pub delta_q_policy_transfer: Option<DeltaQPolicyTransferReport>,
+    /// DeltaQ policy-transfer gate result when DeltaQ targets were present.
+    pub delta_q_policy_transfer_result: Option<DeltaQPolicyTransferResult>,
+    /// Serializable DeltaQ policy-transfer snapshot for logs/artifacts.
+    pub delta_q_policy_transfer_snapshot: Option<DeltaQPolicyTransferSnapshot>,
+    /// Whether ExIt sidecar targets were present in validation.
+    pub saw_exit_targets: bool,
+    /// Whether DeltaQ sidecar targets were present in validation.
+    pub saw_delta_q_targets: bool,
+}
+
+impl ValidationSummary {
+    /// Returns the scalar/core summary used by gate and best-validation logic.
+    #[must_use]
+    pub fn scalar_summary(&self) -> ValidationScalarSummary {
+        ValidationScalarSummary {
+            total_loss: self.total_loss,
+            policy_loss: self.policy_loss,
+            agreement: self.agreement,
+            samples: self.samples,
+            saw_exit_targets: self.saw_exit_targets,
+            saw_delta_q_targets: self.saw_delta_q_targets,
+        }
+    }
 }
 
 /// One validation gate criterion and its observed threshold comparison.

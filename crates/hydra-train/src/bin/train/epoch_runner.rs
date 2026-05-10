@@ -333,8 +333,8 @@ fn validation_delta_q_suffix(summary: &ValidationSummary) -> colored::ColoredStr
 
 fn finalize_completed_validation<B>(
     context: CompletedValidationContext<'_, B>,
-    summary: &ValidationSummary,
-) -> Result<(), String>
+    summary: ValidationSummary,
+) -> Result<ValidationSummary, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<
@@ -353,7 +353,7 @@ where
         delta_q_scope,
     } = context;
     let previous_best = *best_validation;
-    let gate_decision = evaluate_validation_gates(config, summary, previous_best);
+    let gate_decision = evaluate_validation_gates(config, &summary, previous_best);
     if gate_decision.enabled {
         write_validation_gate_artifact(
             &artifacts.validation_gate_path,
@@ -369,7 +369,7 @@ where
             },
         )?;
     }
-    if is_better_validation(summary, *best_validation) && gate_decision.passed {
+    if is_better_validation(&summary, *best_validation) && gate_decision.passed {
         *best_validation = Some(BestValidation {
             policy_loss: summary.policy_loss,
             agreement: summary.agreement,
@@ -380,7 +380,7 @@ where
             &artifacts.best_model_base,
             checkpoint_index,
             checkpoint_loss,
-            Some(summary),
+            Some(&summary),
         )?;
     } else if gate_decision.enabled
         && !gate_decision.passed
@@ -413,7 +413,7 @@ where
         )?;
     }
 
-    Ok(())
+    Ok(summary)
 }
 
 fn build_epoch_continuation(
@@ -727,7 +727,7 @@ where
             },
         )?
     };
-    finalize_completed_validation(
+    let summary = finalize_completed_validation(
         CompletedValidationContext {
             model,
             config,
@@ -737,7 +737,7 @@ where
             checkpoint_loss: step_window_total_loss,
             delta_q_scope: "step_validation",
         },
-        &summary,
+        summary,
     )?;
 
     multi
@@ -1135,7 +1135,7 @@ where
             },
         )?
     };
-    finalize_completed_validation(
+    let summary = finalize_completed_validation(
         CompletedValidationContext {
             model,
             config,
@@ -1145,7 +1145,7 @@ where
             checkpoint_loss: train_total_loss,
             delta_q_scope: "epoch_validation",
         },
-        &summary,
+        summary,
     )?;
     if !benchmark_quiet() {
         println!(
