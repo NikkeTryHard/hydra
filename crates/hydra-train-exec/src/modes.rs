@@ -5,9 +5,26 @@
 //! concrete handlers while execution internals continue moving into this crate.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-use hydra_train_runtime::config::{TrainCli, TrainConfig};
+use colored::Colorize;
+use hydra_model::model::HydraModelConfig;
+use hydra_train_runtime::config::{
+    TrainCli, TrainConfig, configure_threads, device_label, display_num_threads, train_device,
+    validate_config,
+};
+use hydra_train_runtime::preflight::{
+    EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult,
+};
 use hydra_train_runtime::probe_request::{ProbeRequest, probe_request_from_cli};
+
+use crate::artifacts::BcArtifactPaths;
+use crate::preflight_runtime::{run_preflight, run_rl_preflight};
+use crate::presentation::{
+    explicit_preflight_summary, format_advisory_line, format_preflight_selection_line,
+    format_preflight_summary_line, format_probe_results_table, format_timed_phase_message,
+    print_banner_field, print_header_block, timestamped,
+};
 
 /// Mode handlers supplied by the train binary during the cutover.
 ///
@@ -46,6 +63,173 @@ pub trait TrainModeHandlers {
     ) -> Result<(), String>;
 }
 
+/// Runs explicit preflight mode for BC or RL training.
+pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result<(), String> {
+    let preflight_wall_start = Instant::now();
+    validate_config(config)?;
+    configure_threads(config.num_threads)?;
+    if config.rl.is_some() {
+        let train_device = train_device(&config.device)?;
+        let device_name = device_label(&config.device);
+        print_preflight_banner("Hydra RL preflight", config, &device_name);
+        let preflight = run_rl_preflight(config_path, config, &train_device)?;
+        println!(
+            "{}",
+            format_rl_preflight_selection_message(
+                preflight.selected_games_per_batch,
+                preflight.selected_microbatch_size,
+            )
+        );
+        print_probe_table(
+            "RL preflight games table",
+            ProbeKind::RlGames,
+            &preflight.rl_games_probe_results,
+            preflight.selected_games_per_batch,
+        );
+        print_probe_table(
+            "RL preflight microbatch table",
+            ProbeKind::RlMicrobatch,
+            &preflight.rl_microbatch_probe_results,
+            preflight.selected_microbatch_size,
+        );
+        println!(
+            "{}",
+            format_timed_phase_message(
+                "preflight_wall_clock",
+                "total elapsed including output",
+                preflight_wall_start.elapsed().as_secs_f64(),
+            )
+        );
+        return Ok(());
+    }
+    let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
+    artifacts.create_root_dir()?;
+    let device_name = device_label(&config.device);
+    print_preflight_banner("Hydra preflight", config, &device_name);
+    let preflight = run_preflight(
+        config_path,
+        config,
+        &HydraModelConfig::learner(),
+        &device_name,
+        &artifacts,
+    )?;
+    println!(
+        "{}",
+        format_bc_preflight_selection_message(preflight.runtime, preflight.explicit)
+    );
+    if let Some(benchmark) = preflight.benchmark.as_ref() {
+        println!(
+            "{}",
+            format_preflight_selection_line(format!(
+                "benchmark winner mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?})",
+                benchmark.metadata.mode,
+                benchmark.score.wall_clock_samples_per_second,
+                benchmark.score.train_only_samples_per_second,
+                benchmark.runtime.train_microbatch_size,
+                benchmark.runtime.validation_microbatch_size,
+                benchmark.runtime.loader.archive_queue_bound,
+                benchmark.runtime.loader.buffer_samples,
+                benchmark.runtime.loader.buffer_games,
+                benchmark.runtime.loader.num_threads,
+            ))
+        );
+    }
+    for advisory in &preflight.advisories {
+        println!("{}", format_advisory_line(advisory));
+    }
+    print_probe_table(
+        "Preflight train table",
+        ProbeKind::Train,
+        &preflight.train_probe_results,
+        preflight.runtime.selected.train_microbatch_size,
+    );
+    print_probe_table(
+        "Preflight validation table",
+        ProbeKind::Validation,
+        &preflight.validation_probe_results,
+        preflight.runtime.selected.validation_microbatch_size,
+    );
+    println!(
+        "{}",
+        format_timed_phase_message(
+            "preflight_wall_clock",
+            "total elapsed including output",
+            preflight_wall_start.elapsed().as_secs_f64(),
+        )
+    );
+    Ok(())
+}
+
+/// Prints the preflight banner shared by BC, RL, and probe-only execution.
+pub fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &str) {
+    print_header_block(title);
+    print_banner_field("Device", device_name.green());
+    print_banner_field("Dataset", config.data_dir.display().to_string().green());
+    print_banner_field(
+        "Optimizer batch",
+        format!("{} samples", config.batch_size).yellow(),
+    );
+    print_banner_field(
+        "Runtime defaults",
+        format!(
+            "train_mb={} val_mb={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={}",
+            config.microbatch_size.unwrap_or(config.batch_size),
+            config
+                .validation_microbatch_size
+                .unwrap_or(config.microbatch_size.unwrap_or(config.batch_size)),
+            display_num_threads(config.num_threads),
+            config.buffer_games,
+            config.buffer_samples,
+            config.archive_queue_bound,
+        )
+        .yellow(),
+    );
+    println!();
+}
+
+/// Formats the RL preflight selected runtime line.
+pub fn format_rl_preflight_selection_message(
+    selected_games_per_batch: usize,
+    selected_microbatch_size: usize,
+) -> String {
+    format_preflight_summary_line(
+        "Preflight:",
+        format!(
+            "selected rl.games_per_batch={} rl.microbatch_size={}",
+            selected_games_per_batch, selected_microbatch_size,
+        ),
+    )
+}
+
+/// Formats the BC preflight selected runtime line.
+pub fn format_bc_preflight_selection_message(
+    runtime: EffectiveRuntimeConfig,
+    explicit: ExplicitSettings,
+) -> String {
+    format_preflight_summary_line("Preflight:", explicit_preflight_summary(runtime, explicit))
+}
+
+/// Formats a preflight/probe table with title and selected candidate marker.
+pub fn format_probe_table_message(
+    title: &str,
+    kind: ProbeKind,
+    results: &[ProbeResult],
+    selected: usize,
+) -> String {
+    timestamped(format!(
+        "{}\n{}",
+        title.bold().cyan(),
+        format_probe_results_table(kind, results, Some(selected))
+    ))
+}
+
+fn print_probe_table(title: &str, kind: ProbeKind, results: &[ProbeResult], selected: usize) {
+    println!(
+        "{}",
+        format_probe_table_message(title, kind, results, selected)
+    );
+}
+
 /// Dispatches the parsed train CLI into the selected execution mode.
 ///
 /// The order preserves the previous train binary behavior:
@@ -82,7 +266,10 @@ mod tests {
     use hydra_train_runtime::config::{
         BcHyperparamConfig, ProbeCliRequest, TrainConfig, ValidationGateConfig,
     };
-    use hydra_train_runtime::preflight::{PreflightConfig, ProbeKind};
+    use hydra_train_runtime::preflight::{
+        EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PreflightConfig, ProbeKind,
+        ProbeResult, ProbeStatus, SelectedRuntimeConfig,
+    };
 
     #[derive(Default)]
     struct RecordingHandlers {
@@ -193,6 +380,67 @@ mod tests {
             preflight: PreflightConfig::default(),
             precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         }
+    }
+
+    fn probe_result(kind: ProbeKind, candidate_microbatch: usize, selected: bool) -> ProbeResult {
+        ProbeResult {
+            kind,
+            candidate_microbatch,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: Some(if selected { 512.0 } else { 384.0 }),
+            elapsed_seconds: Some(if selected { 1.5 } else { 2.0 }),
+            detail: String::new(),
+        }
+    }
+
+    #[test]
+    fn formats_rl_and_bc_preflight_selection_messages() {
+        let rl_message = format_rl_preflight_selection_message(32, 8);
+        assert!(rl_message.contains("Preflight:"));
+        assert!(rl_message.contains("selected rl.games_per_batch=32 rl.microbatch_size=8"));
+
+        let bc_message = format_bc_preflight_selection_message(
+            EffectiveRuntimeConfig {
+                selected: SelectedRuntimeConfig {
+                    train_microbatch_size: 64,
+                    validation_microbatch_size: 32,
+                    accum_steps: 4,
+                },
+                loader: LoaderRuntimeConfig {
+                    num_threads: Some(6),
+                    buffer_games: 64,
+                    buffer_samples: 512,
+                    archive_queue_bound: 8,
+                },
+            },
+            ExplicitSettings {
+                train_microbatch_explicit: false,
+                validation_microbatch_explicit: true,
+            },
+        );
+        assert!(bc_message.contains("Preflight:"));
+        assert!(bc_message.contains("saved train_mb=64 val_mb=32"));
+        assert!(bc_message.contains("accum_steps=4"));
+        assert!(bc_message.contains("threads=6"));
+        assert!(bc_message.contains("explicit(train=false, val=true)"));
+    }
+
+    #[test]
+    fn formats_probe_table_message_with_selected_candidate() {
+        let message = format_probe_table_message(
+            "Probe final table",
+            ProbeKind::Train,
+            &[
+                probe_result(ProbeKind::Train, 64, true),
+                probe_result(ProbeKind::Train, 48, false),
+            ],
+            64,
+        );
+
+        assert!(message.contains("Probe final table"));
+        assert!(message.contains("candidate_mb"));
+        assert!(message.contains("train        yes       64"));
+        assert!(message.contains("train        no        48"));
     }
 
     #[test]

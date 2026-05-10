@@ -1,12 +1,13 @@
 use colored::Colorize;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::tensor::backend::{AutodiffBackend, Backend};
-use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::ProbeKind;
 use hydra_train_exec::delta_q_promotion::handle_delta_q_promotion_mode as run_exec_delta_q_promotion_mode;
+use hydra_train_exec::modes::{
+    format_probe_table_message, handle_preflight_mode as run_exec_preflight_mode,
+};
 
 use super::TrainBackend;
 use super::advisory::{AdvisoryDeduper, AdvisoryEvent, startup_runtime_advisories};
@@ -16,16 +17,16 @@ use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_tra
 use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
 use super::config::{TrainConfig, configure_threads, device_label, validate_config};
 use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use super::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
+use super::preflight_runtime::run_probe_ladder_only;
 use super::presentation::{
-    bc_hyperparam_summary_input, explicit_preflight_recommendation, explicit_preflight_summary,
-    format_advisory_line, format_preflight_selection_line, format_preflight_summary_line,
-    format_probe_results_table, format_status_line, format_timed_phase_message,
-    format_warning_line, print_banner, print_preflight_banner, timestamped,
+    bc_hyperparam_summary_input, explicit_preflight_recommendation, format_advisory_line,
+    format_preflight_selection_line, format_status_line, format_warning_line, print_banner,
+    print_preflight_banner, timestamped,
 };
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use super::rl_runner::run_rl_training_loop;
-use super::validation::{materialize_validation_samples, validation_loader};
+use hydra_train_exec::data_pipeline::TrainValidationLoader;
+use hydra_train_exec::validation_runner::materialize_validation_samples;
 use hydra_train_runtime::probe_request::ProbeRequest;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
@@ -100,7 +101,13 @@ where
     let cached_validation_samples = if config.bc_shards_manifest_path.is_some() {
         None
     } else {
-        materialize_validation_samples(&config, &validation_loader(&loader_config), &manifest)?
+        materialize_validation_samples(
+            &config,
+            &TrainValidationLoader {
+                config: &loader_config,
+            },
+            &manifest,
+        )?
     };
     let mut model = Some(model);
 
@@ -166,99 +173,7 @@ pub(super) fn handle_preflight_mode(
     config_path: &std::path::Path,
     config: &TrainConfig,
 ) -> Result<(), String> {
-    let preflight_wall_start = Instant::now();
-    validate_config(config)?;
-    configure_threads(config.num_threads)?;
-    if config.rl.is_some() {
-        let train_device = super::config::train_device(&config.device)?;
-        let device_name = device_label(&config.device);
-        print_preflight_banner("Hydra RL preflight", config, &device_name);
-        let preflight = run_rl_preflight(config_path, config, &train_device)?;
-        println!(
-            "{}",
-            format_rl_preflight_selection_message(
-                preflight.selected_games_per_batch,
-                preflight.selected_microbatch_size,
-            )
-        );
-        print_probe_table(
-            "RL preflight games table",
-            ProbeKind::RlGames,
-            &preflight.rl_games_probe_results,
-            preflight.selected_games_per_batch,
-        );
-        print_probe_table(
-            "RL preflight microbatch table",
-            ProbeKind::RlMicrobatch,
-            &preflight.rl_microbatch_probe_results,
-            preflight.selected_microbatch_size,
-        );
-        println!(
-            "{}",
-            format_timed_phase_message(
-                "preflight_wall_clock",
-                "total elapsed including output",
-                preflight_wall_start.elapsed().as_secs_f64(),
-            )
-        );
-        return Ok(());
-    }
-    let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
-    artifacts.create_root_dir()?;
-    let device_name = device_label(&config.device);
-    print_preflight_banner("Hydra preflight", config, &device_name);
-    let preflight = run_preflight(
-        config_path,
-        config,
-        &HydraModelConfig::learner(),
-        &device_name,
-        &artifacts,
-    )?;
-    println!(
-        "{}",
-        format_bc_preflight_selection_message(preflight.runtime, preflight.explicit)
-    );
-    if let Some(benchmark) = preflight.benchmark.as_ref() {
-        println!(
-            "{}",
-            format_preflight_selection_line(format!(
-                "benchmark winner mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?})",
-                benchmark.metadata.mode,
-                benchmark.score.wall_clock_samples_per_second,
-                benchmark.score.train_only_samples_per_second,
-                benchmark.runtime.train_microbatch_size,
-                benchmark.runtime.validation_microbatch_size,
-                benchmark.runtime.loader.archive_queue_bound,
-                benchmark.runtime.loader.buffer_samples,
-                benchmark.runtime.loader.buffer_games,
-                benchmark.runtime.loader.num_threads,
-            ))
-        );
-    }
-    for advisory in &preflight.advisories {
-        println!("{}", format_advisory_line(advisory));
-    }
-    print_probe_table(
-        "Preflight train table",
-        ProbeKind::Train,
-        &preflight.train_probe_results,
-        preflight.runtime.selected.train_microbatch_size,
-    );
-    print_probe_table(
-        "Preflight validation table",
-        ProbeKind::Validation,
-        &preflight.validation_probe_results,
-        preflight.runtime.selected.validation_microbatch_size,
-    );
-    println!(
-        "{}",
-        format_timed_phase_message(
-            "preflight_wall_clock",
-            "total elapsed including output",
-            preflight_wall_start.elapsed().as_secs_f64(),
-        )
-    );
-    Ok(())
+    run_exec_preflight_mode(config_path, config)
 }
 
 pub(super) fn handle_probe_mode(
@@ -293,7 +208,10 @@ pub(super) fn handle_probe_mode(
             format_probe_best_candidate_detail(request.kind, selected)
         )
     );
-    print_probe_table("Probe final table", request.kind, &results, selected);
+    println!(
+        "{}",
+        format_probe_table_message("Probe final table", request.kind, &results, selected)
+    );
     Ok(())
 }
 
@@ -368,26 +286,6 @@ fn format_probe_only_status_message(request: ProbeRequest) -> String {
     format_status_line("Probe-only:", format_probe_only_status_detail(request))
 }
 
-fn format_rl_preflight_selection_message(
-    selected_games_per_batch: usize,
-    selected_microbatch_size: usize,
-) -> String {
-    format_preflight_summary_line(
-        "Preflight:",
-        format!(
-            "selected rl.games_per_batch={} rl.microbatch_size={}",
-            selected_games_per_batch, selected_microbatch_size,
-        ),
-    )
-}
-
-fn format_bc_preflight_selection_message(
-    runtime: hydra_train::preflight::EffectiveRuntimeConfig,
-    explicit: hydra_train::preflight::ExplicitSettings,
-) -> String {
-    format_preflight_summary_line("Preflight:", explicit_preflight_summary(runtime, explicit))
-}
-
 fn format_probe_best_candidate_detail(kind: ProbeKind, selected: usize) -> String {
     format!("{}={}", probe_kind_name(kind), selected)
 }
@@ -406,31 +304,6 @@ fn format_best_validation_summary(
     }
 }
 
-fn format_probe_table_message(
-    title: &str,
-    kind: ProbeKind,
-    results: &[hydra_train::preflight::ProbeResult],
-    selected: usize,
-) -> String {
-    timestamped(format!(
-        "{}\n{}",
-        title.bold().cyan(),
-        format_probe_results_table(kind, results, Some(selected))
-    ))
-}
-
-fn print_probe_table(
-    title: &str,
-    kind: ProbeKind,
-    results: &[hydra_train::preflight::ProbeResult],
-    selected: usize,
-) {
-    println!(
-        "{}",
-        format_probe_table_message(title, kind, results, selected)
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
@@ -441,6 +314,9 @@ mod tests {
         delta_q_promotion_stage, format_delta_q_offline_gate_message,
         format_delta_q_policy_holdout_message, format_delta_q_policy_transfer_gate_message,
         pre_arena_recommendation,
+    };
+    use hydra_train_exec::modes::{
+        format_bc_preflight_selection_message, format_rl_preflight_selection_message,
     };
     use std::path::{Path, PathBuf};
 
