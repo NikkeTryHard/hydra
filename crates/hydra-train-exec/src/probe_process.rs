@@ -81,15 +81,11 @@ fn probe_child_executable() -> Result<PathBuf, String> {
         ));
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        let proc_self = PathBuf::from("/proc/self/exe");
-        if proc_self.exists() {
-            return Ok(proc_self);
-        }
+    let current = env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?;
+    if let Some(train_bin) = train_binary_sibling(&current) {
+        return Ok(train_bin);
     }
 
-    let current = env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?;
     if current.exists() {
         Ok(current)
     } else {
@@ -98,6 +94,16 @@ fn probe_child_executable() -> Result<PathBuf, String> {
             current.display()
         ))
     }
+}
+
+#[cfg(not(test))]
+fn train_binary_sibling(current: &Path) -> Option<PathBuf> {
+    let deps_dir = current.parent()?;
+    if deps_dir.file_name().and_then(|name| name.to_str()) != Some("deps") {
+        return None;
+    }
+    let train_bin = deps_dir.parent()?.join("train");
+    train_bin.exists().then_some(train_bin)
 }
 
 #[cfg(not(test))]
