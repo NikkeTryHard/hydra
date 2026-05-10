@@ -34,6 +34,8 @@ pub mod resume;
 /// RL training-loop execution helpers.
 #[cfg(feature = "rl-runner-exec-in-progress")]
 pub mod rl_runner;
+/// RL train-step wrapper below the train facade.
+pub mod rl_step;
 /// Heavy validation execution runner.
 pub mod validation_runner;
 

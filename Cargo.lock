@@ -3293,8 +3293,11 @@ dependencies = [
 name = "hydra-selfplay"
 version = "0.1.0"
 dependencies = [
+ "burn",
  "hydra-core",
  "hydra-engine",
+ "hydra-search-labels",
+ "hydra-train-algo",
  "hydra-train-types",
 ]
 

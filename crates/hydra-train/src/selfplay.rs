@@ -21,24 +21,24 @@ use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 
 use crate::model::HydraModel;
-use crate::selfplay_batch::{RlBatchScratch, finalize_rewards, trajectories_to_rl_batch_reuse};
 use crate::training::exit::{
     build_delta_q_from_afbs_tree, build_exit_from_afbs_tree, compatible_discard_state,
     is_hard_state,
 };
-use crate::training::gae::GaeConfig;
 use crate::training::live_exit::{
     ExitSearchAdapter, LiveExitConfig, SelfPlayExitAdapter, TrajectorySearchLabels,
     base_pi_from_logits, budget_from_legal_count, legal_discard_actions, make_live_exit_fn,
     seed_root_children_all_legal,
 };
-use crate::training::rl::RlBatch;
+use hydra_selfplay::batch::{RlBatchScratch, finalize_rewards, trajectories_to_rl_batch_reuse};
 use hydra_selfplay::cooperative_state::{
     ExitChildRequest, ExitSearchState, GameAdvance, PendingExitStep, PendingPolicyRequest,
     PendingTurnState, PreparedExitSearch,
 };
+use hydra_train_algo::gae::GaeConfig;
+use hydra_train_types::rl::RlBatch;
 
-pub use crate::selfplay_batch::{default_gae_config, trajectories_to_rl_batch};
+pub use hydra_selfplay::batch::{default_gae_config, trajectories_to_rl_batch};
 pub use hydra_train_types::selfplay::{RootDecisionContext, StepRecord};
 
 const DEFAULT_GAME_MODE: u8 = 0;

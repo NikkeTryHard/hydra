@@ -14,4 +14,5 @@ pub mod head_gates;
 pub mod losses;
 pub mod orchestrator;
 pub mod phase;
+pub mod rl;
 pub mod selfplay;

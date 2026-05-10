@@ -13,7 +13,8 @@ use crate::training::bc::{
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
 use crate::training::exit::ExitConfig;
-use crate::training::head_gates::HeadActivationController;
+use hydra_train_types::head_gates::HeadActivationController;
+
 use crate::training::live_exit::LiveExitConfig;
 use crate::training::losses::{HydraLoss, HydraTargets};
 use crate::training::rl::{

@@ -15,6 +15,10 @@ pub const DEFAULT_RL_MICROBATCH_SIZE: usize = 128;
 pub const DEFAULT_EXIT_WEIGHT: f32 = 0.5;
 /// Default auxiliary-loss weight for RL phases.
 pub const DEFAULT_AUX_WEIGHT: f32 = 0.1;
+/// Generalized Advantage Estimation gamma used by RL self-play collation.
+pub const GAE_GAMMA: f32 = 0.995;
+/// Generalized Advantage Estimation lambda used by RL self-play collation.
+pub const GAE_LAMBDA: f32 = 0.95;
 
 /// Behavioral-cloning trainer hyperparameters and model shape.
 #[derive(Config, Debug)]
