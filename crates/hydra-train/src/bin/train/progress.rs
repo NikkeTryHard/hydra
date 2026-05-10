@@ -15,9 +15,6 @@ pub(super) type RlStepLogEntry =
 pub(super) use hydra_train_exec::progress::RareActionMetrics;
 #[cfg(test)]
 pub(super) use hydra_train_runtime::bc_metrics::scalar1;
-pub(super) use hydra_train_runtime::bc_metrics::{
-    BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
-};
 #[cfg(test)]
 pub(super) use hydra_train_runtime::bc_metrics::{
     batch_stats_from_breakdown, batch_stats_from_outputs,

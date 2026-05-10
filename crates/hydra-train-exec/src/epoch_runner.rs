@@ -1,16 +1,13 @@
 //! Epoch-runner execution helpers shared by the train binary.
 //!
-//! This module owns the hot BC logical-batch execution step without depending on
-//! the `hydra-train` binary crate. Direct inspection shows the outer epoch loop still has
-//! train-bin-owned seams that block a safe full move in this slice.
+//! This module owns BC epoch execution seams without depending on the
+//! `hydra-train` binary crate.
 
 use std::sync::mpsc;
 use std::time::Instant;
 
 use crate::bc_fixed_shape::{FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks};
-use burn::backend::libtorch::LibTorchDevice;
-#[cfg(feature = "cuda-graph")]
-use burn::backend::libtorch::TchTensor;
+use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{Int, Tensor, TensorData};
@@ -43,7 +40,6 @@ use hydra_train_types::losses::{HydraTargets, LossBreakdown};
 use crate::advisory::IntervalTimingInput;
 use crate::resume::EpochContinuation;
 
-#[cfg(feature = "cuda-graph")]
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 /// Minimal config fields needed for session-relative epoch cadence decisions.
@@ -1083,6 +1079,245 @@ where
     let _grads = total.backward();
     sub_timing.backward_seconds += t.elapsed().as_secs_f64();
     Ok(sub_timing)
+}
+
+/// Runs the forward/backward/optimizer step from a pre-built host batch.
+///
+/// The host batch was already collated on the CPU producer thread. This function
+/// materializes it onto the device, then runs the same microbatch accumulation
+/// and optimizer step as the raw replay path.
+///
+/// When `staging` is `Some`, the host batch is staged into pinned memory and
+/// the H2D transfer is issued on a dedicated copy stream with event-based
+/// synchronization.
+pub fn train_logical_batch_from_host_batch<B, O>(
+    host_batch: BcShardHostBatch,
+    config: TrainLogicalBatchConfig<'_, B>,
+    head_controller: &mut HeadActivationController,
+    model_slot: &mut Option<HydraModel<B>>,
+    optimizer: &mut O,
+    #[cfg(feature = "cuda-graph")] staging: Option<&mut (
+        crate::pinned_transfer::PinnedStagingArea,
+        crate::pinned_transfer::AsyncH2DContext,
+        crate::pinned_transfer::PreallocatedDeviceTensors,
+    )>,
+) -> Result<
+    (
+        Vec<BatchStats>,
+        TrainSubStageTiming,
+        Option<BcShardHostBatch>,
+    ),
+    String,
+>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let TrainLogicalBatchConfig {
+        microbatch_size,
+        use_amp,
+        augment: _,
+        train_device,
+        loss_fn,
+        bc_exit_cfg,
+        lr,
+    } = config;
+
+    let mut sub_timing = TrainSubStageTiming::default();
+
+    let t = Instant::now();
+    let (shard_batch, recycled_host_batch) = {
+        let _h2d_scope = nvtx::scope(PROFILING_STAGE_H2D_TRANSFER);
+        #[cfg(feature = "cuda-graph")]
+        {
+            if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
+                let (shard_batch, h2d_timing) = crate::pinned_transfer::materialize_staged_reuse::<B>(
+                    &host_batch,
+                    pinned_staging,
+                    h2d_ctx,
+                    train_device,
+                    gpu_tensors,
+                );
+                sub_timing.h2d_pageable_to_pinned_seconds += h2d_timing.pageable_to_pinned_seconds;
+                sub_timing.h2d_tensor_materialize_seconds += h2d_timing.tensor_materialize_seconds;
+                sub_timing.h2d_stream_sync_seconds += h2d_timing.stream_sync_seconds;
+                (shard_batch, None)
+            } else {
+                let t_materialize = Instant::now();
+                let shard_batch = materialize_host_batch_owned::<B>(host_batch, train_device);
+                sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
+                (shard_batch, None)
+            }
+        }
+        #[cfg(not(feature = "cuda-graph"))]
+        {
+            let t_materialize = Instant::now();
+            let shard_batch = materialize_host_batch_owned::<B>(host_batch, train_device);
+            sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
+            (shard_batch, None)
+        }
+    };
+    sub_timing.h2d_transfer_seconds += t.elapsed().as_secs_f64();
+
+    let obs = shard_batch.obs;
+    let batch = shard_batch.batch;
+    let targets = shard_batch.targets;
+    let batch_size = batch.actions.dims()[0];
+
+    if batch_size == 0 {
+        return Ok((Vec::new(), sub_timing, recycled_host_batch));
+    }
+
+    let logical_batch_len = batch_size.max(1) as f32;
+    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
+    let mut total_samples = 0usize;
+    let mut microbatch_count = 0usize;
+    let mut metric_sums: Option<BatchMetricSums<B>> = None;
+    let effective_microbatch = microbatch_size.max(1);
+
+    if effective_microbatch >= batch_size {
+        let (active_loss_fn, warmup_heads) =
+            gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let model = epoch_model(model_slot)?;
+        let t = Instant::now();
+        let output = {
+            let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+            maybe_autocast(use_amp, || {
+                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
+            })
+        };
+        sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let (breakdown, total) = {
+            let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+            let breakdown = active_loss_fn.total_loss(&output, &targets);
+            let total = maybe_add_exit_loss(
+                breakdown.total.clone(),
+                output.policy_logits.clone(),
+                batch.exit_target.as_ref(),
+                batch.exit_mask.as_ref(),
+                bc_exit_cfg,
+            );
+            (breakdown, total)
+        };
+        sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+        metric_sums = Some(batch_metric_sums_from_outputs(
+            batch_size,
+            output.policy_logits.clone(),
+            targets.legal_mask.clone(),
+            batch.actions.clone(),
+            total.clone(),
+            &breakdown,
+        ));
+        total_samples = batch_size;
+        microbatch_count = 1;
+        let t = Instant::now();
+        {
+            let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let grads = total.backward();
+            let grads = GradientsParams::from_grads(grads, model);
+            accumulator.accumulate(model, grads);
+        }
+        sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+    } else {
+        for start in (0..batch_size).step_by(effective_microbatch) {
+            let end = (start + effective_microbatch).min(batch_size);
+            let chunk_len = end - start;
+            #[allow(
+                clippy::single_range_in_vec_init,
+                reason = "Burn slice API expects a one-element range slice"
+            )]
+            let r = [start..end];
+            let obs_chunk = obs.clone().slice(r.clone());
+            let batch_chunk = MjaiBcBatch {
+                actions: batch.actions.clone().slice(r.clone()),
+                exit_target: batch
+                    .exit_target
+                    .as_ref()
+                    .map(|t| t.clone().slice(r.clone())),
+                exit_mask: batch.exit_mask.as_ref().map(|t| t.clone().slice(r.clone())),
+            };
+            let targets_chunk = targets.slice_batch(start, end);
+            let (active_loss_fn, warmup_heads) =
+                gated_bc_context(Some(head_controller), loss_fn, &targets_chunk);
+            let model = epoch_model(model_slot)?;
+            let t = Instant::now();
+            let output = {
+                let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                maybe_autocast(use_amp, || {
+                    model.forward_with_warmup_train(
+                        obs_chunk,
+                        &active_loss_fn.config,
+                        &warmup_heads,
+                    )
+                })
+            };
+            sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let (breakdown, total) = {
+                let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+                let breakdown = active_loss_fn.total_loss(&output, &targets_chunk);
+                let total = maybe_add_exit_loss(
+                    breakdown.total.clone(),
+                    output.policy_logits.clone(),
+                    batch_chunk.exit_target.as_ref(),
+                    batch_chunk.exit_mask.as_ref(),
+                    bc_exit_cfg,
+                );
+                (breakdown, total)
+            };
+            sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+            let chunk_weight = chunk_len as f32 / logical_batch_len;
+            let weighted_total = total.clone() * chunk_weight;
+            let chunk_metric_sums = batch_metric_sums_from_outputs(
+                chunk_len,
+                output.policy_logits.clone(),
+                targets_chunk.legal_mask.clone(),
+                batch_chunk.actions.clone(),
+                total,
+                &breakdown,
+            );
+            metric_sums = Some(match metric_sums.take() {
+                Some(existing) => existing.accumulate(chunk_metric_sums),
+                None => chunk_metric_sums,
+            });
+            total_samples += chunk_len;
+            microbatch_count += 1;
+            let t = Instant::now();
+            {
+                let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+                let grads = weighted_total.backward();
+                let grads = GradientsParams::from_grads(grads, model);
+                accumulator.accumulate(model, grads);
+            }
+            sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+        }
+    }
+
+    let optimizer_started = Instant::now();
+    let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
+    let model = model_slot
+        .take()
+        .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
+    *model_slot = Some(optimizer.step(lr, model, accumulator.grads()));
+    head_controller.tick_warmup();
+    sub_timing.optimizer_step_seconds += optimizer_started.elapsed().as_secs_f64();
+
+    let stats = if let Some(metric_sums) = metric_sums {
+        let metric_started = Instant::now();
+        let stats = vec![batch_stats_from_metric_sums(
+            total_samples,
+            microbatch_count,
+            metric_sums,
+        )];
+        sub_timing.metric_readback_seconds += metric_started.elapsed().as_secs_f64();
+        stats
+    } else {
+        Vec::new()
+    };
+    Ok((stats, sub_timing, recycled_host_batch))
 }
 
 fn epoch_model<B>(model_slot: &Option<HydraModel<B>>) -> Result<&HydraModel<B>, String>
