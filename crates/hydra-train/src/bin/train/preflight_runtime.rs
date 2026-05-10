@@ -1207,6 +1207,20 @@ where
 
     Err("not enough train data to finish stage-2 benchmark train window".to_string())
 }
+fn execute_benchmark_validation_pass<RunValidation>(
+    materialization_seconds: f64,
+    run_validation_pass: RunValidation,
+) -> Result<(ValidationSummary, f64), String>
+where
+    RunValidation: FnOnce() -> Result<ValidationSummary, String>,
+{
+    let started = Instant::now();
+    let summary = run_validation_pass()?;
+    Ok((
+        summary,
+        started.elapsed().as_secs_f64() + materialization_seconds,
+    ))
+}
 
 fn benchmark_validation_pass<B>(
     config: &TrainConfig,
@@ -1236,28 +1250,25 @@ where
             archive_queue_bound: config.archive_queue_bound,
         },
     );
-    let started = Instant::now();
-    let summary = run_validation(
-        &outcome.model,
-        ValidationContext {
-            config,
-            loader_config: &loader,
-            manifest,
-            cached_samples,
-            shard_reader: None,
-            device: train_device,
-            loss_fn: &valid_loss_fn,
-            exit_cfg: &exit_cfg,
-        },
-        ValidationRuntime {
-            head_controller: Some(&mut outcome.head_controller),
-            progress: None,
-        },
-    )?;
-    Ok((
-        summary,
-        started.elapsed().as_secs_f64() + materialization_seconds,
-    ))
+    execute_benchmark_validation_pass(materialization_seconds, || {
+        run_validation(
+            &outcome.model,
+            ValidationContext {
+                config,
+                loader_config: &loader,
+                manifest,
+                cached_samples,
+                shard_reader: None,
+                device: train_device,
+                loss_fn: &valid_loss_fn,
+                exit_cfg: &exit_cfg,
+            },
+            ValidationRuntime {
+                head_controller: Some(&mut outcome.head_controller),
+                progress: None,
+            },
+        )
+    })
 }
 
 fn benchmark_checkpoint_cost<B>(
@@ -2254,6 +2265,22 @@ where
         microbatch_size
     ))
 }
+fn execute_shard_validation_probe<RunValidation>(
+    config: &TrainConfig,
+    _request: ProbeRequest,
+    sample_count: usize,
+    started_at: Instant,
+    run_validation_probe: RunValidation,
+) -> Result<f64, String>
+where
+    RunValidation: FnOnce() -> Result<ValidationSummary, String>,
+{
+    let _summary = run_validation_probe()?;
+    Ok(measure_samples_per_second(
+        ValidationRunLimits::from_config(config).bounded_total_rows(sample_count),
+        started_at.elapsed(),
+    ))
+}
 
 fn probe_validation_candidate_from_shards_for_backend<B>(
     config: &TrainConfig,
@@ -2290,54 +2317,57 @@ where
         loss_ms,
     )?;
 
-    let started_at = Instant::now();
-    let _ = run_validation_from_shards(
-        &model,
-        &baseline_model,
-        ValidationContext {
-            config,
-            loader_config: &StreamingLoaderConfig {
-                buffer_games: config.buffer_games,
-                buffer_samples: config.buffer_samples,
-                train_fraction: config.train_fraction,
-                seed: config.seed,
-                archive_queue_bound: config.archive_queue_bound,
-                max_skip_logs_per_source: config.max_skip_logs_per_source,
-                aggregate_skip_logs: true,
-                source_filters: config.source_filters.clone(),
-                replay_target_profile:
-                    hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
-                exit_sidecar: None,
-                exit_sidecar_source_net_hash: None,
-                exit_sidecar_source_version: None,
-                delta_q_sidecar: None,
-                delta_q_sidecar_source_net_hash: None,
-                delta_q_sidecar_source_version: None,
-                num_threads: config.num_threads,
-            },
-            manifest: &DataManifest {
-                sources: Vec::new(),
-                total_games: 0,
-                train_count: 0,
-                val_count: 0,
-                counts_exact: true,
-            },
-            cached_samples: None,
-            shard_reader: Some(reader),
-            device: train_device,
-            loss_fn: &loss_fn,
-            exit_cfg: &build_bc_exit_config(config.advanced_loss.as_ref()),
+    execute_shard_validation_probe(
+        config,
+        _request,
+        reader.sample_count(),
+        Instant::now(),
+        || {
+            run_validation_from_shards(
+                &model,
+                &baseline_model,
+                ValidationContext {
+                    config,
+                    loader_config: &StreamingLoaderConfig {
+                        buffer_games: config.buffer_games,
+                        buffer_samples: config.buffer_samples,
+                        train_fraction: config.train_fraction,
+                        seed: config.seed,
+                        archive_queue_bound: config.archive_queue_bound,
+                        max_skip_logs_per_source: config.max_skip_logs_per_source,
+                        aggregate_skip_logs: true,
+                        source_filters: config.source_filters.clone(),
+                        replay_target_profile:
+                            hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
+                        exit_sidecar: None,
+                        exit_sidecar_source_net_hash: None,
+                        exit_sidecar_source_version: None,
+                        delta_q_sidecar: None,
+                        delta_q_sidecar_source_net_hash: None,
+                        delta_q_sidecar_source_version: None,
+                        num_threads: config.num_threads,
+                    },
+                    manifest: &DataManifest {
+                        sources: Vec::new(),
+                        total_games: 0,
+                        train_count: 0,
+                        val_count: 0,
+                        counts_exact: true,
+                    },
+                    cached_samples: None,
+                    shard_reader: Some(reader),
+                    device: train_device,
+                    loss_fn: &loss_fn,
+                    exit_cfg: &build_bc_exit_config(config.advanced_loss.as_ref()),
+                },
+                ValidationRuntime {
+                    head_controller: None,
+                    progress: None,
+                },
+                reader,
+            )
         },
-        ValidationRuntime {
-            head_controller: None,
-            progress: None,
-        },
-        reader,
-    )?;
-    Ok(measure_samples_per_second(
-        ValidationRunLimits::from_config(config).bounded_total_rows(reader.sample_count()),
-        started_at.elapsed(),
-    ))
+    )
 }
 
 fn run_rl_probe_only(
@@ -3576,6 +3606,25 @@ mod tests {
         }
     }
 
+    fn validation_summary(samples: usize) -> ValidationSummary {
+        ValidationSummary {
+            total_loss: 0.0,
+            policy_loss: 0.0,
+            agreement: 0.0,
+            samples,
+            rare_actions: Default::default(),
+            saw_exit_targets: false,
+            saw_delta_q_targets: false,
+            profiling: None,
+            delta_q_promotion: None,
+            delta_q_promotion_result: None,
+            delta_q_promotion_snapshot: None,
+            delta_q_policy_transfer: None,
+            delta_q_policy_transfer_result: None,
+            delta_q_policy_transfer_snapshot: None,
+        }
+    }
+
     fn benchmark_finalist(runtime: BenchmarkRuntimeConfig) -> BenchmarkFinalist {
         BenchmarkFinalist {
             runtime,
@@ -4183,6 +4232,40 @@ mod tests {
 
         assert_eq!(summary.samples, 0);
         assert!(validation_seconds >= 0.75);
+    }
+
+    #[test]
+    fn benchmark_validation_executor_runs_callback_and_charges_materialization() {
+        let (summary, validation_seconds) =
+            execute_benchmark_validation_pass(0.5, || Ok(validation_summary(7)))
+                .expect("validation executor should return callback summary");
+
+        assert_eq!(summary.samples, 7);
+        assert!(validation_seconds >= 0.5);
+    }
+
+    #[test]
+    fn shard_validation_executor_runs_callback_and_uses_bounded_sample_count() {
+        let mut config = dummy_config();
+        config.max_validation_samples = Some(3);
+        let request = ProbeRequest {
+            kind: ProbeKind::Validation,
+            candidate_microbatch: 4,
+            warmup_steps: 1,
+            measure_steps: 1,
+        };
+
+        let throughput = execute_shard_validation_probe(
+            &config,
+            request,
+            10,
+            Instant::now() - Duration::from_secs(1),
+            || Ok(validation_summary(10)),
+        )
+        .expect("shard validation executor should run callback");
+
+        assert!(throughput > 0.0);
+        assert!(throughput <= 3.0);
     }
 
     #[test]

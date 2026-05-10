@@ -279,6 +279,44 @@ struct ValidationEvent {
     summary: ValidationSummary,
 }
 
+trait ValidationExecutor<B>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
+    fn run_validation(
+        &mut self,
+        model: &HydraModel<B>,
+        context: ValidationContext<'_, ValidBackendOf<B>>,
+        runtime: ValidationRuntime<'_>,
+    ) -> Result<ValidationSummary, String>;
+}
+
+struct DefaultValidationExecutor;
+
+impl<B> ValidationExecutor<B> for DefaultValidationExecutor
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
+    fn run_validation(
+        &mut self,
+        model: &HydraModel<B>,
+        context: ValidationContext<'_, ValidBackendOf<B>>,
+        runtime: ValidationRuntime<'_>,
+    ) -> Result<ValidationSummary, String> {
+        run_validation(model, context, runtime)
+    }
+}
+
 struct EpochFinalizeContext<'a> {
     config: &'a TrainConfig,
     train_cfg: &'a BCTrainerConfig,
@@ -673,6 +711,35 @@ where
             IntTensorPrimitive = TchTensor,
         >,
 {
+    maybe_run_interval_validation_with_executor(
+        context,
+        model,
+        head_controller,
+        best_validation,
+        global_step,
+        step_window_total_loss,
+        &mut DefaultValidationExecutor,
+    )
+}
+
+fn maybe_run_interval_validation_with_executor<B, E>(
+    context: ValidationStepContext<'_, B>,
+    model: &HydraModel<B>,
+    head_controller: Option<&mut HeadActivationController>,
+    best_validation: &mut Option<BestValidation>,
+    global_step: usize,
+    step_window_total_loss: f64,
+    validation_executor: &mut E,
+) -> Result<Option<ValidationSummary>, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    E: ValidationExecutor<B>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
     let ValidationStepContext {
         multi,
         config,
@@ -709,7 +776,7 @@ where
 
     let summary = {
         let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
-        run_validation(
+        validation_executor.run_validation(
             model,
             ValidationContext {
                 config,
@@ -1087,6 +1154,35 @@ where
             IntTensorPrimitive = TchTensor,
         >,
 {
+    run_epoch_end_validation_with_executor(
+        epoch,
+        model,
+        context,
+        head_controller,
+        best_validation,
+        train_total_loss,
+        &mut DefaultValidationExecutor,
+    )
+}
+
+fn run_epoch_end_validation_with_executor<B, E>(
+    epoch: usize,
+    model: &HydraModel<B>,
+    context: EpochEndValidationContext<'_, B>,
+    head_controller: Option<&mut HeadActivationController>,
+    best_validation: &mut Option<BestValidation>,
+    train_total_loss: f64,
+    validation_executor: &mut E,
+) -> Result<Option<ValidationSummary>, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    E: ValidationExecutor<B>,
+    ValidBackendOf<B>: Backend<
+            Device = LibTorchDevice,
+            FloatTensorPrimitive = TchTensor,
+            IntTensorPrimitive = TchTensor,
+        >,
+{
     let EpochEndValidationContext {
         config,
         loader_config,
@@ -1117,7 +1213,7 @@ where
     }
     let summary = {
         let _validation_scope = nvtx::scope(PROFILING_STAGE_VALIDATION);
-        run_validation(
+        validation_executor.run_validation(
             model,
             ValidationContext {
                 config,
@@ -2797,6 +2893,23 @@ mod tests {
         }
     }
 
+    struct FakeValidationExecutor {
+        calls: usize,
+        summary: ValidationSummary,
+    }
+
+    impl ValidationExecutor<TrainBackend> for FakeValidationExecutor {
+        fn run_validation(
+            &mut self,
+            _model: &HydraModel<TrainBackend>,
+            _context: ValidationContext<'_, ValidBackendOf<TrainBackend>>,
+            _runtime: ValidationRuntime<'_>,
+        ) -> Result<ValidationSummary, String> {
+            self.calls += 1;
+            Ok(self.summary.clone())
+        }
+    }
+
     fn dummy_runtime_resume_contract() -> RuntimeResumeContract {
         RuntimeResumeContract {
             batch_size: 16,
@@ -3220,6 +3333,93 @@ mod tests {
     }
 
     #[test]
+    fn epoch_end_validation_uses_injected_executor_on_boundary() {
+        let mut config = dummy_config();
+        config.num_epochs = 5;
+        config.validation_every_n_epochs = 2;
+        let loader_config = StreamingLoaderConfig::default();
+        let manifest = dummy_manifest(true);
+        let artifacts = test_artifacts("epoch_validation_executor_seam");
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let valid_loss_fn = dummy_valid_loss();
+        let mut best_validation = None;
+        let mut executor = FakeValidationExecutor {
+            calls: 0,
+            summary: dummy_validation_summary(0.33, 0.77),
+        };
+
+        let summary = run_epoch_end_validation_with_executor(
+            1,
+            &model,
+            EpochEndValidationContext {
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &manifest,
+                train_device: &device,
+                valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                artifacts: &artifacts,
+                cached_validation_samples: None,
+                validation_shard_reader: None,
+            },
+            None,
+            &mut best_validation,
+            2.5,
+            &mut executor,
+        )
+        .expect("epoch-end validation through fake executor")
+        .expect("epoch boundary returns validation summary");
+
+        assert_eq!(executor.calls, 1);
+        assert_eq!(summary.policy_loss, 0.33);
+        assert_eq!(best_validation.map(|best| best.policy_loss), Some(0.33));
+    }
+
+    #[test]
+    fn epoch_end_validation_skip_does_not_call_injected_executor() {
+        let mut config = dummy_config();
+        config.num_epochs = 5;
+        config.validation_every_n_epochs = 3;
+        let loader_config = StreamingLoaderConfig::default();
+        let manifest = dummy_manifest(true);
+        let artifacts = test_artifacts("epoch_validation_executor_skip");
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let valid_loss_fn = dummy_valid_loss();
+        let mut best_validation = None;
+        let mut executor = FakeValidationExecutor {
+            calls: 0,
+            summary: dummy_validation_summary(0.33, 0.77),
+        };
+
+        let summary = run_epoch_end_validation_with_executor(
+            0,
+            &model,
+            EpochEndValidationContext {
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &manifest,
+                train_device: &device,
+                valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                artifacts: &artifacts,
+                cached_validation_samples: None,
+                validation_shard_reader: None,
+            },
+            None,
+            &mut best_validation,
+            2.5,
+            &mut executor,
+        )
+        .expect("skip epoch-end validation through fake executor");
+
+        assert!(summary.is_none());
+        assert_eq!(executor.calls, 0);
+        assert_eq!(best_validation, None);
+    }
+
+    #[test]
     fn build_epoch_continuation_matches_completion_state() {
         let completed = build_epoch_continuation(2, true, 99);
         assert_eq!(completed.next_epoch, 3);
@@ -3318,6 +3518,98 @@ mod tests {
         }
     }
 
+    #[test]
+    fn interval_validation_uses_injected_executor_on_boundary() {
+        let config = dummy_config();
+        let loader_config = StreamingLoaderConfig::default();
+        let manifest = dummy_manifest(true);
+        let artifacts = test_artifacts("interval_validation_executor_seam");
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let valid_loss_fn = dummy_valid_loss();
+        let mut best_validation = Some(BestValidation {
+            policy_loss: 0.8,
+            agreement: 0.6,
+        });
+        let mut executor = FakeValidationExecutor {
+            calls: 0,
+            summary: dummy_validation_summary(0.25, 0.75),
+        };
+        let multi = MultiProgress::new();
+
+        let summary = maybe_run_interval_validation_with_executor(
+            ValidationStepContext {
+                multi: &multi,
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &manifest,
+                train_device: &device,
+                valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                artifacts: &artifacts,
+                session_start_global_step: 10,
+                cached_validation_samples: None,
+                validation_shard_reader: None,
+            },
+            &model,
+            None,
+            &mut best_validation,
+            14,
+            1.5,
+            &mut executor,
+        )
+        .expect("interval validation through fake executor")
+        .expect("boundary returns validation summary");
+
+        assert_eq!(executor.calls, 1);
+        assert_eq!(summary.samples, 64);
+        assert_eq!(summary.policy_loss, 0.25);
+        assert_eq!(best_validation.map(|best| best.policy_loss), Some(0.25));
+    }
+
+    #[test]
+    fn interval_validation_skip_does_not_call_injected_executor() {
+        let config = dummy_config();
+        let loader_config = StreamingLoaderConfig::default();
+        let manifest = dummy_manifest(true);
+        let artifacts = test_artifacts("interval_validation_executor_skip");
+        let device = LibTorchDevice::Cpu;
+        let model = tiny_dummy_model(&device);
+        let valid_loss_fn = dummy_valid_loss();
+        let mut best_validation = None;
+        let mut executor = FakeValidationExecutor {
+            calls: 0,
+            summary: dummy_validation_summary(0.25, 0.75),
+        };
+        let multi = MultiProgress::new();
+
+        let summary = maybe_run_interval_validation_with_executor(
+            ValidationStepContext {
+                multi: &multi,
+                config: &config,
+                loader_config: &loader_config,
+                manifest: &manifest,
+                train_device: &device,
+                valid_loss_fn: &valid_loss_fn,
+                bc_exit_cfg: &BcExitConfig::default(),
+                artifacts: &artifacts,
+                session_start_global_step: 10,
+                cached_validation_samples: None,
+                validation_shard_reader: None,
+            },
+            &model,
+            None,
+            &mut best_validation,
+            13,
+            1.5,
+            &mut executor,
+        )
+        .expect("skip interval validation through fake executor");
+
+        assert!(summary.is_none());
+        assert_eq!(executor.calls, 0);
+        assert_eq!(best_validation, None);
+    }
     #[test]
     fn maybe_run_interval_validation_skips_until_step_boundary() {
         let config = dummy_config();
