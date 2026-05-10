@@ -6,9 +6,7 @@ use burn::optim::Optimizer;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use tboard::EventWriter;
 
-use hydra_train::data::pipeline::{DataManifest, scan_data_sources_with_progress};
 use hydra_train::model::HydraModel;
-use hydra_train::preflight::ManifestCacheEntry;
 #[cfg(test)]
 use hydra_train::preflight::PreflightCacheEntry;
 
@@ -29,13 +27,16 @@ pub(crate) use hydra_train_exec::artifacts::{
     PersistedValidationGateArtifact, PreflightBenchmarkPaths, PreflightBenchmarkReport,
     PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_advisory_event_to_writer,
     append_rl_step_log_to_writer, append_step_log_to_writer, append_training_log_to_writer,
-    atomic_write_text, checkpoint_meta as build_checkpoint_meta, latest_bc_payload_is_current,
-    latest_rl_payload_is_current, manifest_cache_matches, open_rl_step_log_appender,
+    checkpoint_meta as build_checkpoint_meta, latest_bc_payload_is_current,
+    latest_rl_payload_is_current, load_or_scan_manifest_cache, open_rl_step_log_appender,
     open_step_log_appender, open_training_log_appender, read_manifest_cache, read_preflight_cache,
     save_model_payload, save_optimizer_payload,
     write_checkpoint_meta as write_checkpoint_meta_file, write_delta_q_promotion_artifact,
-    write_manifest_cache, write_preflight_benchmark_report, write_preflight_cache,
-    write_validation_gate_artifact,
+    write_preflight_benchmark_report, write_preflight_cache, write_validation_gate_artifact,
+};
+#[cfg(test)]
+pub(crate) use hydra_train_exec::artifacts::{
+    atomic_write_text, manifest_cache_matches, scan_and_write_manifest_cache, write_manifest_cache,
 };
 
 pub(crate) struct LatestCheckpointState<'a> {
@@ -44,63 +45,6 @@ pub(crate) struct LatestCheckpointState<'a> {
     pub(crate) best_validation: Option<BestValidation>,
     pub(crate) continuation: &'a EpochContinuation,
     pub(crate) runtime: RuntimeResumeContract,
-}
-
-pub(crate) fn scan_and_write_manifest_cache(
-    cache_path: &Path,
-    data_dir: &Path,
-    train_fraction: f32,
-    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
-    progress: Option<&indicatif::ProgressBar>,
-    scan_error_context: &str,
-) -> Result<DataManifest, String> {
-    let manifest =
-        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
-            .map_err(|err| {
-                format!(
-                    "failed to scan {scan_error_context} from {}: {err}",
-                    data_dir.display()
-                )
-            })?;
-    write_manifest_cache(
-        cache_path,
-        &ManifestCacheEntry {
-            data_dir: data_dir.to_path_buf(),
-            train_fraction_bits: train_fraction.to_bits(),
-            include_source_patterns: source_filters.include_source_patterns.clone(),
-            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
-            manifest: manifest.clone(),
-        },
-    )?;
-    Ok(manifest)
-}
-
-pub(crate) fn load_or_scan_manifest_cache<F>(
-    cache_path: &Path,
-    data_dir: &Path,
-    train_fraction: f32,
-    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
-    progress: Option<&indicatif::ProgressBar>,
-    scan_error_context: &str,
-    on_cache_hit: F,
-) -> Result<DataManifest, String>
-where
-    F: FnOnce(&ManifestCacheEntry),
-{
-    if let Some(cached) = read_manifest_cache(cache_path)?
-        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
-    {
-        on_cache_hit(&cached);
-        return Ok(cached.manifest);
-    }
-    scan_and_write_manifest_cache(
-        cache_path,
-        data_dir,
-        train_fraction,
-        source_filters,
-        progress,
-        scan_error_context,
-    )
 }
 
 pub(crate) fn save_latest_checkpoint_and_state<B, O>(

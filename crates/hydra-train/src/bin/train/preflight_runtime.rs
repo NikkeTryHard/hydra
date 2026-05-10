@@ -86,7 +86,7 @@ use super::runtime_autotune::{
 use super::schedule::effective_lr;
 use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, materialize_validation_samples,
-    run_validation, run_validation_from_shards,
+    run_validation, validation_loader,
 };
 use hydra_train_runtime::bc_metrics::batch_stats_from_outputs;
 use hydra_train_runtime::validation::ValidationRunLimits;
@@ -295,9 +295,12 @@ impl StageTwoBenchmarkValidationCache {
                 },
             );
             let started = Instant::now();
-            entry.cached_samples =
-                materialize_validation_samples(benchmark_config, &loader_config, manifest)?
-                    .map(Arc::<[Box<[MjaiSample]>]>::from);
+            entry.cached_samples = materialize_validation_samples(
+                benchmark_config,
+                &validation_loader(&loader_config),
+                manifest,
+            )?
+            .map(Arc::<[Box<[MjaiSample]>]>::from);
             entry.materialization_seconds = started.elapsed().as_secs_f64();
         }
         let cached_samples = entry.cached_samples.clone();
@@ -1256,10 +1259,9 @@ where
             &outcome.model,
             ValidationContext {
                 config,
-                loader_config: &loader,
+                loader: &validation_loader(&loader),
                 manifest,
                 cached_samples,
-                shard_reader: None,
                 device: train_device,
                 loss_fn: &valid_loss_fn,
                 exit_cfg: &exit_cfg,
@@ -2301,7 +2303,6 @@ where
     emit_probe_init_phase("validation", _request.candidate_microbatch, "init_model")?;
     let t0 = Instant::now();
     let model = model_config.init::<B>(train_device);
-    let baseline_model = model.clone();
     let model_ms = t0.elapsed().as_millis();
 
     emit_probe_init_phase("validation", _request.candidate_microbatch, "init_loss")?;
@@ -2324,12 +2325,11 @@ where
         reader.sample_count(),
         Instant::now(),
         || {
-            run_validation_from_shards(
+            run_validation(
                 &model,
-                &baseline_model,
                 ValidationContext {
                     config,
-                    loader_config: &StreamingLoaderConfig {
+                    loader: &validation_loader(&StreamingLoaderConfig {
                         buffer_games: config.buffer_games,
                         buffer_samples: config.buffer_samples,
                         train_fraction: config.train_fraction,
@@ -2347,7 +2347,7 @@ where
                         delta_q_sidecar_source_net_hash: None,
                         delta_q_sidecar_source_version: None,
                         num_threads: config.num_threads,
-                    },
+                    }),
                     manifest: &DataManifest {
                         sources: Vec::new(),
                         total_games: 0,
@@ -2356,7 +2356,6 @@ where
                         counts_exact: true,
                     },
                     cached_samples: None,
-                    shard_reader: Some(reader),
                     device: train_device,
                     loss_fn: &loss_fn,
                     exit_cfg: &build_bc_exit_config(config.advanced_loss.as_ref()),
@@ -2365,7 +2364,6 @@ where
                     head_controller: None,
                     progress: None,
                 },
-                reader,
             )
         },
     )
@@ -2966,6 +2964,7 @@ pub(super) fn run_probe_child_batch_mode_result(
     )?))
 }
 
+#[cfg(test)]
 pub(super) fn execute_probe_request(
     config_path: &Path,
     request: ProbeRequest,
@@ -2979,6 +2978,7 @@ pub(super) fn execute_probe_request(
     )
 }
 
+#[cfg(test)]
 pub(super) fn format_probe_attempt_message(
     kind: ProbeKind,
     candidate: usize,
@@ -2994,6 +2994,7 @@ pub(super) fn format_probe_attempt_message(
     )
 }
 
+#[cfg(test)]
 pub(super) fn format_probe_result_summary(result: &ProbeResult) -> String {
     format_probe_status_line(result)
 }
@@ -3030,6 +3031,7 @@ pub(super) fn run_probe_ladder_only(
     Ok(selected)
 }
 
+#[cfg(test)]
 pub(super) fn classify_probe_detail(detail: &str) -> ProbeStatus {
     let lowered = detail.to_ascii_lowercase();
     if lowered.contains("out of memory") || lowered.contains("oom") {

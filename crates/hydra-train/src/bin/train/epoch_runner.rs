@@ -13,20 +13,15 @@ use tboard::EventWriter;
 use hydra_train::amp::maybe_autocast;
 #[cfg(feature = "cuda-graph")]
 use hydra_train::data::bc_shards::BcShardBatch;
-use hydra_train::data::bc_shards::{
-    BcShardHostBatch, BcShardReader, BcShardSplit, load_bc_shard_reader,
-};
+use hydra_train::data::bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
-use hydra_train::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
+use hydra_train::data::sample::{MjaiBcBatch, MjaiSample};
 use hydra_train::model::{HydraModel, HydraTrainModelExt};
 use hydra_train::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,
-    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
-    PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED, PROFILING_STAGE_H2D_STREAM_SYNC,
-    PROFILING_STAGE_H2D_TENSOR_MATERIALIZE, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOGGING,
-    PROFILING_STAGE_LOSS, PROFILING_STAGE_METRIC_READBACK, PROFILING_STAGE_OPTIMIZER_STEP,
-    PROFILING_STAGE_PRODUCER_WAIT, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
-    ProfilingEnvelope,
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_FORWARD, PROFILING_STAGE_H2D_TRANSFER,
+    PROFILING_STAGE_LOGGING, PROFILING_STAGE_LOSS, PROFILING_STAGE_OPTIMIZER_STEP,
+    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
 };
 use hydra_train::training::bc::{
     BCTrainerConfig, BcExitConfig, gated_bc_context, maybe_add_exit_loss,
@@ -45,7 +40,6 @@ use super::artifacts::{
     save_latest_checkpoint_and_state, write_delta_q_promotion_artifact,
     write_validation_gate_artifact,
 };
-use super::bc_fixed_shape::{FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks};
 use super::config::{TrainConfig, shard_prefetch_depth};
 use super::nvtx;
 use super::presentation::{
@@ -65,8 +59,9 @@ use super::status::{
 };
 use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, evaluate_validation_gates,
-    is_better_validation, run_validation,
+    is_better_validation, run_validation, validation_loader,
 };
+use hydra_train_exec::epoch_runner as exec_epoch;
 pub(super) use hydra_train_exec::progress::TrainSubStageTiming;
 use hydra_train_runtime::validation::ValidationRunLimits;
 
@@ -100,7 +95,6 @@ where
     pub(super) run_start: &'a Instant,
     pub(super) head_controller: &'a mut HeadActivationController,
     pub(super) cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
-    pub(super) validation_shard_reader: Option<&'a BcShardReader>,
 }
 
 pub(super) struct EpochRuntimeMut<'a, O, W, B = TrainBackend>
@@ -124,18 +118,8 @@ pub(super) struct EpochRunOutcome {
     pub(super) stop_after_epoch: bool,
 }
 
-pub(super) struct TrainLogicalBatchConfig<'a, B = TrainBackend>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-{
-    pub(super) microbatch_size: usize,
-    pub(super) augment: bool,
-    pub(super) train_device: &'a LibTorchDevice,
-    pub(super) loss_fn: &'a HydraLoss<B>,
-    pub(super) bc_exit_cfg: &'a BcExitConfig,
-    pub(super) lr: f64,
-    pub(super) use_amp: bool,
-}
+pub(super) type TrainLogicalBatchConfig<'a, B = TrainBackend> =
+    exec_epoch::TrainLogicalBatchConfig<'a, B>;
 
 struct ValidationStepContext<'a, B = TrainBackend>
 where
@@ -156,7 +140,6 @@ where
     artifacts: &'a BcArtifactPaths,
     session_start_global_step: usize,
     cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
-    validation_shard_reader: Option<&'a BcShardReader>,
 }
 
 struct IntervalStepSummaryContext<'a> {
@@ -192,15 +175,25 @@ struct PeriodicCheckpointState {
     best_validation: Option<BestValidation>,
 }
 
+fn epoch_model<B>(model_slot: &Option<HydraModel<B>>) -> Result<&HydraModel<B>, String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+{
+    model_slot
+        .as_ref()
+        .ok_or_else(|| "epoch model missing after logical batch execution".to_string())
+}
+
 fn should_save_periodic_checkpoint(
     config: &TrainConfig,
     global_step: usize,
     session_start_global_step: usize,
 ) -> bool {
-    let interval = config.checkpoint_every_n_steps;
-    interval > 0
-        && session_steps_completed(global_step, session_start_global_step) > 0
-        && session_steps_completed(global_step, session_start_global_step).is_multiple_of(interval)
+    exec_epoch::should_save_periodic_checkpoint(
+        &exec_epoch::EpochCadenceInput::from(config),
+        global_step,
+        session_start_global_step,
+    )
 }
 
 fn should_refresh_train_progress_message(
@@ -208,20 +201,11 @@ fn should_refresh_train_progress_message(
     global_step: usize,
     session_start_global_step: usize,
 ) -> bool {
-    let session_step = session_steps_completed(global_step, session_start_global_step);
-    if session_step == 0 {
-        return false;
-    }
-    session_step == 1
-        || config.log_every_n_steps > 0 && session_step.is_multiple_of(config.log_every_n_steps)
-        || config.validate_every_n_steps > 0
-            && session_step.is_multiple_of(config.validate_every_n_steps)
-        || should_save_periodic_checkpoint(config, global_step, session_start_global_step)
-        || reached_session_step_budget(
-            global_step,
-            session_start_global_step,
-            config.max_train_steps,
-        )
+    exec_epoch::should_refresh_train_progress_message(
+        &exec_epoch::EpochCadenceInput::from(config),
+        global_step,
+        session_start_global_step,
+    )
 }
 
 #[allow(
@@ -270,7 +254,6 @@ where
     bc_exit_cfg: &'a BcExitConfig,
     artifacts: &'a BcArtifactPaths,
     cached_validation_samples: Option<&'a [Box<[MjaiSample]>]>,
-    validation_shard_reader: Option<&'a BcShardReader>,
 }
 
 #[derive(Clone)]
@@ -291,7 +274,12 @@ where
     fn run_validation(
         &mut self,
         model: &HydraModel<B>,
-        context: ValidationContext<'_, ValidBackendOf<B>>,
+        context: ValidationContext<
+            '_,
+            TrainConfig,
+            super::validation::TrainValidationLoader<'_>,
+            ValidBackendOf<B>,
+        >,
         runtime: ValidationRuntime<'_>,
     ) -> Result<ValidationSummary, String>;
 }
@@ -310,7 +298,12 @@ where
     fn run_validation(
         &mut self,
         model: &HydraModel<B>,
-        context: ValidationContext<'_, ValidBackendOf<B>>,
+        context: ValidationContext<
+            '_,
+            TrainConfig,
+            super::validation::TrainValidationLoader<'_>,
+            ValidBackendOf<B>,
+        >,
         runtime: ValidationRuntime<'_>,
     ) -> Result<ValidationSummary, String> {
         run_validation(model, context, runtime)
@@ -348,7 +341,7 @@ where
 }
 
 fn should_run_epoch_end_validation(epoch: usize, num_epochs: usize, every_n_epochs: usize) -> bool {
-    (epoch + 1).is_multiple_of(every_n_epochs) || epoch + 1 == num_epochs
+    exec_epoch::should_run_epoch_end_validation(epoch, num_epochs, every_n_epochs)
 }
 
 fn validation_delta_q_suffix(summary: &ValidationSummary) -> colored::ColoredString {
@@ -460,29 +453,14 @@ fn build_epoch_continuation(
     epoch_completed: bool,
     epoch_optimizer_steps: usize,
 ) -> EpochContinuation {
-    EpochContinuation {
-        next_epoch: if epoch_completed { epoch + 1 } else { epoch },
-        skip_optimizer_steps_in_epoch: if epoch_completed {
-            0
-        } else {
-            epoch_optimizer_steps
-        },
-        epoch_completed,
-    }
+    exec_epoch::build_epoch_continuation(epoch, epoch_completed, epoch_optimizer_steps)
 }
 
 fn merge_optional_profiling(
     target: &mut Option<ProfilingEnvelope>,
     source: Option<&ProfilingEnvelope>,
 ) {
-    let Some(source) = source.cloned() else {
-        return;
-    };
-    if let Some(target) = target.as_mut() {
-        target.merge_assign(&source);
-    } else {
-        *target = Some(source);
-    }
+    exec_epoch::merge_optional_profiling(target, source);
 }
 
 fn bc_interval_profiling(
@@ -491,18 +469,7 @@ fn bc_interval_profiling(
     validation: Option<ProfilingEnvelope>,
     checkpoint_seconds: f64,
 ) -> ProfilingEnvelope {
-    ProfilingEnvelope::from_children(
-        PROFILING_STAGE_BC_INTERVAL,
-        vec![
-            ProfilingEnvelope::nested(
-                PROFILING_STAGE_TRAIN,
-                train_seconds,
-                sub_timing.to_profiling_children(),
-            ),
-            validation.unwrap_or_else(|| ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 0.0)),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_CHECKPOINT, checkpoint_seconds),
-        ],
-    )
+    exec_epoch::bc_interval_profiling(train_seconds, sub_timing, validation, checkpoint_seconds)
 }
 
 fn bc_epoch_profiling(
@@ -512,33 +479,18 @@ fn bc_epoch_profiling(
     checkpoint_seconds: f64,
     logging_seconds: f64,
 ) -> ProfilingEnvelope {
-    ProfilingEnvelope::from_children(
-        PROFILING_STAGE_BC_EPOCH,
-        vec![
-            ProfilingEnvelope::nested(
-                PROFILING_STAGE_TRAIN,
-                train_seconds,
-                sub_timing.to_profiling_children(),
-            ),
-            validation.unwrap_or_else(|| ProfilingEnvelope::leaf(PROFILING_STAGE_VALIDATION, 0.0)),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_CHECKPOINT, checkpoint_seconds),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, logging_seconds),
-        ],
+    exec_epoch::bc_epoch_profiling(
+        train_seconds,
+        sub_timing,
+        validation,
+        checkpoint_seconds,
+        logging_seconds,
     )
-}
-
-fn epoch_model<B>(model_slot: &Option<HydraModel<B>>) -> Result<&HydraModel<B>, String>
-where
-    B: AutodiffBackend<Device = LibTorchDevice>,
-{
-    model_slot
-        .as_ref()
-        .ok_or_else(|| "epoch runner model slot should stay populated".to_string())
 }
 
 pub(super) fn train_logical_batch<B, O>(
     logical_batch: &[MjaiSample],
-    config: TrainLogicalBatchConfig<'_, B>,
+    config: exec_epoch::TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
     model_slot: &mut Option<HydraModel<B>>,
     optimizer: &mut O,
@@ -548,141 +500,13 @@ where
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
     O: Optimizer<HydraModel<B>, B>,
 {
-    let TrainLogicalBatchConfig {
-        microbatch_size,
-        use_amp,
-        augment,
-        train_device,
-        loss_fn,
-        bc_exit_cfg,
-        lr,
-    } = config;
-    if logical_batch.is_empty() {
-        return Ok((Vec::new(), TrainSubStageTiming::default()));
-    }
-
-    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
-    let logical_batch_len = logical_batch.len().max(1) as f32;
-    let mut total_samples = 0usize;
-    let mut microbatch_count = 0usize;
-    let mut metric_sums: Option<BatchMetricSums<B>> = None;
-
-    if let Some(fixed_shape) = run_train_logical_batch_fixed_chunks(FixedShapeTrainConfig {
+    exec_epoch::train_logical_batch(
         logical_batch,
-        augment,
-        microbatch_size: microbatch_size.max(1),
-        train_device,
-        loss_fn,
-        bc_exit_cfg,
+        config,
         head_controller,
-        model: epoch_model(model_slot)?,
-        use_amp,
-    })? {
-        let optimizer_started = Instant::now();
-        let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
-        let model = model_slot
-            .take()
-            .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
-        *model_slot = Some(optimizer.step(lr, model, fixed_shape.grads));
-        head_controller.tick_warmup();
-        let mut sub_timing = fixed_shape.sub_stage_timing;
-        sub_timing.optimizer_step_seconds += optimizer_started.elapsed().as_secs_f64();
-        return Ok((vec![fixed_shape.batch_stats], sub_timing));
-    }
-
-    let mut sub_timing_fallback = TrainSubStageTiming::default();
-
-    for chunk in logical_batch.chunks(microbatch_size.max(1)) {
-        let t = Instant::now();
-        let collated = {
-            let _collation_scope = nvtx::scope(PROFILING_STAGE_COLLATION);
-            collate_samples_bc_owned::<B>(chunk, augment, train_device)
-                .map_err(|err| format!("training collation failed: {err}"))?
-        };
-        sub_timing_fallback.collation_seconds += t.elapsed().as_secs_f64();
-        let Some((obs, batch, targets)) = collated else {
-            continue;
-        };
-        let (active_loss_fn, warmup_heads) =
-            gated_bc_context(Some(head_controller), loss_fn, &targets);
-        let model = epoch_model(model_slot)?;
-        let t = Instant::now();
-        let output = {
-            let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(use_amp, || {
-                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
-            })
-        };
-        sub_timing_fallback.forward_seconds += t.elapsed().as_secs_f64();
-        let t = Instant::now();
-        let (breakdown, total) = {
-            let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
-            let breakdown = active_loss_fn.total_loss(&output, &targets);
-            let total = maybe_add_exit_loss(
-                breakdown.total.clone(),
-                output.policy_logits.clone(),
-                batch.exit_target.as_ref(),
-                batch.exit_mask.as_ref(),
-                bc_exit_cfg,
-            );
-            (breakdown, total)
-        };
-        sub_timing_fallback.loss_seconds += t.elapsed().as_secs_f64();
-
-        let chunk_weight = chunk.len() as f32 / logical_batch_len;
-        let weighted_chunk_total = total.clone() * chunk_weight;
-        let chunk_metric_sums = batch_metric_sums_from_outputs(
-            chunk.len(),
-            output.policy_logits.clone(),
-            targets.legal_mask.clone(),
-            batch.actions.clone(),
-            total.clone(),
-            &breakdown,
-        );
-
-        metric_sums = Some(match metric_sums.take() {
-            Some(existing) => existing.accumulate(chunk_metric_sums),
-            None => chunk_metric_sums,
-        });
-        total_samples += chunk.len();
-        microbatch_count += 1;
-
-        {
-            let t = Instant::now();
-            let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
-            let grads = weighted_chunk_total.backward();
-            let grads = GradientsParams::from_grads(grads, model);
-            accumulator.accumulate(model, grads);
-            sub_timing_fallback.backward_seconds += t.elapsed().as_secs_f64();
-        }
-    }
-
-    let batch_stats = if let Some(metric_sums) = metric_sums {
-        let metric_started = Instant::now();
-        let stats = vec![batch_stats_from_metric_sums(
-            total_samples,
-            microbatch_count,
-            metric_sums,
-        )];
-        sub_timing_fallback.metric_readback_seconds += metric_started.elapsed().as_secs_f64();
-        stats
-    } else {
-        Vec::new()
-    };
-
-    if !batch_stats.is_empty() {
-        let t = Instant::now();
-        let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
-        let grads = accumulator.grads();
-        let model = model_slot
-            .take()
-            .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
-        *model_slot = Some(optimizer.step(lr, model, grads));
-        head_controller.tick_warmup();
-        sub_timing_fallback.optimizer_step_seconds += t.elapsed().as_secs_f64();
-    }
-
-    Ok((batch_stats, sub_timing_fallback))
+        model_slot,
+        optimizer,
+    )
 }
 
 fn record_drained_batch_stats(
@@ -690,10 +514,7 @@ fn record_drained_batch_stats(
     stats: &mut ScalarAverages,
     step_window: &mut ScalarAverages,
 ) {
-    for batch_stats in drained {
-        stats.record_batch(batch_stats);
-        step_window.record_batch(batch_stats);
-    }
+    exec_epoch::record_drained_batch_stats(drained, stats, step_window);
 }
 
 fn maybe_run_interval_validation<B>(
@@ -752,7 +573,6 @@ where
         artifacts,
         session_start_global_step,
         cached_validation_samples,
-        validation_shard_reader,
     } = context;
     let session_step = session_steps_completed(global_step, session_start_global_step);
     if session_step == 0 || !session_step.is_multiple_of(config.validate_every_n_steps) {
@@ -781,10 +601,9 @@ where
             model,
             ValidationContext {
                 config,
-                loader_config,
+                loader: &validation_loader(loader_config),
                 manifest,
                 cached_samples: cached_validation_samples,
-                shard_reader: validation_shard_reader,
                 device: train_device,
                 loss_fn: valid_loss_fn,
                 exit_cfg: bc_exit_cfg,
@@ -829,41 +648,9 @@ where
     Ok(Some(summary))
 }
 
+#[cfg(test)]
 fn child_elapsed_seconds(profiling: &ProfilingEnvelope, stage: &str) -> f64 {
-    profiling
-        .children
-        .iter()
-        .find(|child| child.stage == stage)
-        .map(|child| child.elapsed_seconds)
-        .unwrap_or(0.0)
-}
-
-fn train_child_elapsed_seconds(profiling: &ProfilingEnvelope, stage: &str) -> f64 {
-    profiling
-        .children
-        .iter()
-        .find(|child| child.stage == PROFILING_STAGE_TRAIN)
-        .map(|train| child_elapsed_seconds(train, stage))
-        .unwrap_or(0.0)
-}
-
-fn train_nested_child_elapsed_seconds(
-    profiling: &ProfilingEnvelope,
-    parent_stage: &str,
-    child_stage: &str,
-) -> f64 {
-    profiling
-        .children
-        .iter()
-        .find(|child| child.stage == PROFILING_STAGE_TRAIN)
-        .and_then(|train| {
-            train
-                .children
-                .iter()
-                .find(|child| child.stage == parent_stage)
-        })
-        .map(|parent| child_elapsed_seconds(parent, child_stage))
-        .unwrap_or(0.0)
+    exec_epoch::child_elapsed_seconds(profiling, stage)
 }
 
 fn interval_timing_input(
@@ -871,58 +658,23 @@ fn interval_timing_input(
     profiling: &ProfilingEnvelope,
     window_steps: usize,
 ) -> IntervalTimingInput {
-    let device = config.device.trim().to_ascii_lowercase();
-    IntervalTimingInput {
-        producer_wait_seconds: train_child_elapsed_seconds(
-            profiling,
-            PROFILING_STAGE_PRODUCER_WAIT,
-        ),
-        collation_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_COLLATION),
-        h2d_transfer_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_H2D_TRANSFER),
-        h2d_pageable_to_pinned_seconds: train_nested_child_elapsed_seconds(
-            profiling,
-            PROFILING_STAGE_H2D_TRANSFER,
-            PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED,
-        ),
-        h2d_tensor_materialize_seconds: train_nested_child_elapsed_seconds(
-            profiling,
-            PROFILING_STAGE_H2D_TRANSFER,
-            PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
-        ),
-        h2d_stream_sync_seconds: train_nested_child_elapsed_seconds(
-            profiling,
-            PROFILING_STAGE_H2D_TRANSFER,
-            PROFILING_STAGE_H2D_STREAM_SYNC,
-        ),
-        metric_readback_seconds: train_child_elapsed_seconds(
-            profiling,
-            PROFILING_STAGE_METRIC_READBACK,
-        ),
-        forward_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_FORWARD),
-        backward_seconds: train_child_elapsed_seconds(profiling, PROFILING_STAGE_BACKWARD),
-        optimizer_step_seconds: train_child_elapsed_seconds(
-            profiling,
-            PROFILING_STAGE_OPTIMIZER_STEP,
-        ),
-        kernel_launch_count: config
+    exec_epoch::interval_timing_input(
+        &config.device,
+        config
             .nsight_trace
             .as_ref()
             .and_then(|trace| trace.kernel_launch_count),
-        tiny_kernel_fraction: config
+        config
             .nsight_trace
             .as_ref()
             .and_then(|trace| trace.tiny_kernel_fraction),
-        cuda_runtime_launch_seconds: config
+        config
             .nsight_trace
             .as_ref()
             .and_then(|trace| trace.cuda_runtime_launch_seconds),
-        validation_seconds: child_elapsed_seconds(profiling, PROFILING_STAGE_VALIDATION),
-        checkpoint_seconds: child_elapsed_seconds(profiling, PROFILING_STAGE_CHECKPOINT),
-        logging_seconds: child_elapsed_seconds(profiling, PROFILING_STAGE_LOGGING),
-        total_seconds: profiling.elapsed_seconds,
-        steps: window_steps,
-        is_cuda: device == "cuda" || device.starts_with("cuda:"),
-    }
+        profiling,
+        window_steps,
+    )
 }
 
 fn emit_interval_step_summary<W>(
@@ -1193,7 +945,6 @@ where
         bc_exit_cfg,
         artifacts,
         cached_validation_samples,
-        validation_shard_reader,
     } = context;
     if !should_run_epoch_end_validation(epoch, config.num_epochs, config.validation_every_n_epochs)
     {
@@ -1218,10 +969,9 @@ where
             model,
             ValidationContext {
                 config,
-                loader_config,
+                loader: &validation_loader(loader_config),
                 manifest,
                 cached_samples: cached_validation_samples,
-                shard_reader: validation_shard_reader,
                 device: train_device,
                 loss_fn: valid_loss_fn,
                 exit_cfg: bc_exit_cfg,
@@ -1417,7 +1167,6 @@ where
         run_start,
         head_controller,
         cached_validation_samples,
-        validation_shard_reader,
     } = context;
     let EpochRuntimeMut {
         model: model_slot,
@@ -1574,7 +1323,6 @@ where
                     artifacts,
                     session_start_global_step,
                     cached_validation_samples,
-                    validation_shard_reader,
                 },
                 epoch_model(model_slot)?,
                 Some(head_controller),
@@ -1787,7 +1535,6 @@ where
                 bc_exit_cfg,
                 artifacts,
                 cached_validation_samples,
-                validation_shard_reader,
             },
             Some(head_controller),
             best_validation,
@@ -1873,7 +1620,6 @@ where
         run_start,
         head_controller,
         cached_validation_samples,
-        validation_shard_reader,
     } = context;
     let EpochRuntimeMut {
         model: model_slot,
@@ -2054,7 +1800,6 @@ where
                 artifacts,
                 session_start_global_step,
                 cached_validation_samples,
-                validation_shard_reader,
             },
             epoch_model(model_slot)?,
             Some(head_controller),
@@ -2216,7 +1961,6 @@ where
                 bc_exit_cfg,
                 artifacts,
                 cached_validation_samples,
-                validation_shard_reader,
             },
             Some(head_controller),
             best_validation,
@@ -2903,7 +2647,12 @@ mod tests {
         fn run_validation(
             &mut self,
             _model: &HydraModel<TrainBackend>,
-            _context: ValidationContext<'_, ValidBackendOf<TrainBackend>>,
+            _context: ValidationContext<
+                '_,
+                TrainConfig,
+                crate::validation::TrainValidationLoader<'_>,
+                ValidBackendOf<TrainBackend>,
+            >,
             _runtime: ValidationRuntime<'_>,
         ) -> Result<ValidationSummary, String> {
             self.calls += 1;
@@ -3362,7 +3111,6 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             None,
             &mut best_validation,
@@ -3406,7 +3154,6 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             None,
             &mut best_validation,
@@ -3550,7 +3297,6 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             &model,
             None,
@@ -3596,7 +3342,6 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             &model,
             None,
@@ -3638,7 +3383,6 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             &model,
             None,
@@ -3660,7 +3404,6 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             &model,
             None,
@@ -3881,7 +3624,6 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             &model,
             None,
@@ -3939,7 +3681,6 @@ mod tests {
                 artifacts: &artifacts,
                 session_start_global_step: 10,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             &model,
             None,
@@ -4121,7 +3862,6 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             None,
             &mut best_validation,
@@ -4166,7 +3906,6 @@ mod tests {
                 bc_exit_cfg: &BcExitConfig::default(),
                 artifacts: &artifacts,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             None,
             &mut best_validation,
@@ -4473,7 +4212,6 @@ mod tests {
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -4578,7 +4316,6 @@ mod tests {
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -4665,7 +4402,6 @@ mod tests {
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: None,
-                validation_shard_reader: None,
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -4824,7 +4560,6 @@ mod tests {
                     run_start: &run_start,
                     head_controller: &mut head_controller,
                     cached_validation_samples: None,
-                    validation_shard_reader: None,
                 },
                 EpochRuntimeMut {
                     model: &mut model,

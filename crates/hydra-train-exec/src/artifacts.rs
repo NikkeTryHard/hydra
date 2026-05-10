@@ -1,6 +1,7 @@
 //! Artifact path and log-only helpers shared across training execution seams.
 
 use std::fs;
+use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,10 @@ use burn::optim::Optimizer;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
+use hydra_data_core::{DataManifest, DataSource};
+use hydra_sample_cache::{
+    ParsedSampleCacheMetadata, is_parsed_sample_cache_file, read_parsed_sample_cache_metadata,
+};
 use hydra_train_runtime::model::HydraModel;
 use hydra_train_runtime::preflight::{
     BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
@@ -629,6 +634,268 @@ pub fn manifest_cache_matches(
         && cached.train_fraction_bits == train_fraction.to_bits()
         && cached.include_source_patterns == source_filters.include_source_patterns
         && cached.exclude_source_patterns == source_filters.exclude_source_patterns
+}
+
+/// Scans data sources and persists the resulting manifest cache entry.
+pub fn scan_and_write_manifest_cache(
+    cache_path: &Path,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+    scan_error_context: &str,
+) -> Result<DataManifest, String> {
+    let manifest =
+        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
+            .map_err(|err| {
+                format!(
+                    "failed to scan {scan_error_context} from {}: {err}",
+                    data_dir.display()
+                )
+            })?;
+    write_manifest_cache(
+        cache_path,
+        &ManifestCacheEntry {
+            data_dir: data_dir.to_path_buf(),
+            train_fraction_bits: train_fraction.to_bits(),
+            include_source_patterns: source_filters.include_source_patterns.clone(),
+            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
+            manifest: manifest.clone(),
+        },
+    )?;
+    Ok(manifest)
+}
+
+/// Loads a matching manifest cache entry, or scans and rewrites it.
+pub fn load_or_scan_manifest_cache<F>(
+    cache_path: &Path,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+    scan_error_context: &str,
+    on_cache_hit: F,
+) -> Result<DataManifest, String>
+where
+    F: FnOnce(&ManifestCacheEntry),
+{
+    if let Some(cached) = read_manifest_cache(cache_path)?
+        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
+    {
+        on_cache_hit(&cached);
+        return Ok(cached.manifest);
+    }
+    scan_and_write_manifest_cache(
+        cache_path,
+        data_dir,
+        train_fraction,
+        source_filters,
+        progress,
+        scan_error_context,
+    )
+}
+
+/// Scan data_dir and return all source locators without loading replay payloads.
+pub fn scan_data_sources_with_progress(
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+) -> io::Result<DataManifest> {
+    let sources = if data_dir.is_file() {
+        if is_tar_zst_file(data_dir) || is_tar_file(data_dir) {
+            vec![DataSource::Archive(data_dir.to_path_buf())]
+        } else if is_mjai_file(data_dir) {
+            vec![DataSource::LooseFile(data_dir.to_path_buf())]
+        } else if is_parsed_sample_cache_file(data_dir) {
+            vec![data_source_for_cache_path(data_dir)?]
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "expected directory, MJAI file, parsed-sample cache file, or .tar/.tar.zst archive, got {}",
+                    data_dir.display()
+                ),
+            ));
+        }
+    } else {
+        scan_directory_sources(data_dir)?
+    };
+    let sources: Vec<DataSource> = sources
+        .into_iter()
+        .filter(|source| source_matches_filters(source, source_filters))
+        .collect();
+
+    let mut total_games = 0usize;
+    let mut train_count = 0usize;
+    let mut counts_exact = true;
+    for source in &sources {
+        match source {
+            DataSource::LooseFile(path) => {
+                total_games += 1;
+                let identity = identity_for_loose_file(path)?;
+                if is_train_game(&identity, train_fraction) {
+                    train_count += 1;
+                }
+            }
+            DataSource::ParsedSampleCache {
+                original_identity, ..
+            } => {
+                total_games += 1;
+                if is_train_game(original_identity, train_fraction) {
+                    train_count += 1;
+                }
+            }
+            DataSource::Archive(_) => {
+                counts_exact = false;
+            }
+        }
+        if let Some(pb) = progress {
+            pb.inc(1);
+        }
+    }
+
+    Ok(DataManifest {
+        sources,
+        total_games,
+        train_count,
+        val_count: total_games.saturating_sub(train_count),
+        counts_exact,
+    })
+}
+
+fn scan_directory_sources(dir: &Path) -> io::Result<Vec<DataSource>> {
+    let mut sources = Vec::new();
+    scan_directory_sources_recursive(dir, &mut sources)?;
+    sources.sort_by(|a, b| a.path().cmp(b.path()));
+    Ok(sources)
+}
+
+fn scan_directory_sources_recursive(dir: &Path, sources: &mut Vec<DataSource>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            scan_directory_sources_recursive(&path, sources)?;
+        } else if file_type.is_file() {
+            if is_mjai_file(&path) {
+                sources.push(DataSource::LooseFile(path));
+            } else if is_parsed_sample_cache_file(&path) {
+                sources.push(data_source_for_cache_path(&path)?);
+            } else if is_tar_zst_file(&path) || is_tar_file(&path) {
+                sources.push(DataSource::Archive(path));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn data_source_for_cache_path(path: &Path) -> io::Result<DataSource> {
+    let ParsedSampleCacheMetadata {
+        original_identity,
+        original_source_path,
+        ..
+    } = read_parsed_sample_cache_metadata(path)?;
+    Ok(DataSource::ParsedSampleCache {
+        path: path.to_path_buf(),
+        original_identity,
+        original_source_path,
+    })
+}
+
+fn source_matches_filters(
+    source: &DataSource,
+    filters: &hydra_train_runtime::config::SourceFilterConfig,
+) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    let path = match source {
+        DataSource::ParsedSampleCache {
+            original_source_path,
+            ..
+        } => original_source_path.to_string_lossy(),
+        _ => source.path().to_string_lossy(),
+    };
+    let included = filters.include_source_patterns.is_empty()
+        || filters
+            .include_source_patterns
+            .iter()
+            .any(|pattern| path.contains(pattern));
+    included
+        && !filters
+            .exclude_source_patterns
+            .iter()
+            .any(|pattern| path.contains(pattern))
+}
+
+fn identity_for_loose_file(path: &Path) -> io::Result<String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "loose file path does not have a recognizable filename: {}",
+                    path.display()
+                ),
+            )
+        })?;
+    if let Some(parent) = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+    {
+        Ok(format!("{parent}/{file_name}"))
+    } else {
+        Ok(file_name.to_owned())
+    }
+}
+
+/// Deterministic train/val assignment by hashing game identity.
+#[must_use]
+pub fn is_train_game(identity: &str, train_fraction: f32) -> bool {
+    let threshold = (normalized_train_fraction(train_fraction) * 1000.0).round() as u64;
+    fnv1a_hash(identity.as_bytes()) % 1000 < threshold
+}
+
+fn normalized_train_fraction(train_fraction: f32) -> f32 {
+    train_fraction.clamp(0.0, 1.0)
+}
+
+fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn is_mjai_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name)
+            if name.ends_with(".json")
+                || name.ends_with(".json.gz")
+                || name.ends_with(".json.zst")
+    )
+}
+
+fn is_tar_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name) if name.ends_with(".tar")
+    )
+}
+
+fn is_tar_zst_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(name) if name.ends_with(".tar.zst") || name.contains(".tar-") && name.ends_with(".zst")
+    )
 }
 
 #[cfg(test)]

@@ -12,15 +12,15 @@ use super::progress::BannerStats;
 
 pub(crate) use hydra_train_exec::presentation::{
     explicit_preflight_recommendation, explicit_preflight_summary, format_advisory_line,
-    format_preflight_selection_line, format_preflight_summary_line, format_probe_progress_line,
-    format_probe_results_table, format_probe_spinner_message, format_probe_status_line,
-    format_progress_message, format_runtime_tuning_message, format_status_line,
-    format_timed_phase_message, format_warning_line, make_bar, make_spinner, phase_label,
-    preflight_phase_label, timestamped,
+    format_preflight_selection_line, format_preflight_summary_line, format_probe_results_table,
+    format_probe_status_line, format_progress_message, format_runtime_tuning_message,
+    format_status_line, format_timed_phase_message, format_warning_line, make_bar, make_spinner,
+    phase_label, preflight_phase_label, timestamped,
 };
-
-#[cfg(not(test))]
-pub(crate) use hydra_train_exec::presentation::format_probe_spinner_finish_message;
+#[cfg(test)]
+pub(crate) use hydra_train_exec::presentation::{
+    format_probe_progress_line, format_probe_spinner_finish_message, format_probe_spinner_message,
+};
 
 pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {
     if config.is_learner() {

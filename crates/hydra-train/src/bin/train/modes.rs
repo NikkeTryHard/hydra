@@ -37,7 +37,7 @@ use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
 use super::validation::materialize_validation_samples;
 use super::validation::{
-    ValidationContext, ValidationRuntime, run_validation_with_policy_baseline,
+    ValidationContext, ValidationRuntime, run_validation_with_policy_baseline, validation_loader,
 };
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
@@ -86,9 +86,7 @@ where
         mut step_log,
         mut head_controller,
     } = runtime;
-    let TrainingReaders {
-        validation_shard_reader,
-    } = readers;
+    let TrainingReaders = readers;
 
     print_banner(
         &model_config,
@@ -114,7 +112,7 @@ where
     let cached_validation_samples = if config.bc_shards_manifest_path.is_some() {
         None
     } else {
-        materialize_validation_samples(&config, &loader_config, &manifest)?
+        materialize_validation_samples(&config, &validation_loader(&loader_config), &manifest)?
     };
     let mut model = Some(model);
 
@@ -140,7 +138,6 @@ where
                 run_start: &run_start,
                 head_controller: &mut head_controller,
                 cached_validation_samples: cached_validation_samples.as_deref(),
-                validation_shard_reader: validation_shard_reader.as_ref(),
             },
             EpochRuntimeMut {
                 model: &mut model,
@@ -428,10 +425,9 @@ pub(super) fn handle_delta_q_promotion_mode(
         &baseline_model,
         ValidationContext {
             config: &config,
-            loader_config: &loader_config,
+            loader: &validation_loader(&loader_config),
             manifest: &manifest,
             cached_samples: None,
-            shard_reader: None,
             device: &train_device,
             loss_fn: &valid_loss_fn,
             exit_cfg: &bc_exit_cfg,

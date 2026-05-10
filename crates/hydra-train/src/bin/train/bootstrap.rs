@@ -13,7 +13,6 @@ use colored::Colorize;
 use tboard::EventWriter;
 
 use hydra_train::config::PipelineState;
-use hydra_train::data::bc_shards::{BcShardReader, BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
 use hydra_train::model::{HydraModel, HydraModelConfig};
 #[cfg(test)]
@@ -187,9 +186,7 @@ where
     pub(super) head_controller: HeadActivationController,
 }
 
-pub(super) struct TrainingReaders {
-    pub(super) validation_shard_reader: Option<BcShardReader>,
-}
+pub(super) struct TrainingReaders;
 
 pub(super) struct RlTrainingBootstrap {
     pub(super) config: TrainConfig,
@@ -452,13 +449,7 @@ where
         counts_exact: manifest.counts_exact,
     };
 
-    let readers = TrainingReaders {
-        validation_shard_reader: config
-            .bc_shards_manifest_path
-            .as_ref()
-            .map(|manifest_path| load_bc_shard_reader(manifest_path, BcShardSplit::Validation))
-            .transpose()?,
-    };
+    let readers = TrainingReaders;
 
     Ok((
         TrainingBootstrap {

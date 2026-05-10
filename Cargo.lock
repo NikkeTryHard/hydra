@@ -3354,8 +3354,12 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "colored",
+ "ctrlc",
  "hydra-bc-shards",
+ "hydra-core",
  "hydra-data-core",
+ "hydra-model",
+ "hydra-sample-cache",
  "hydra-train-runtime",
  "hydra-train-types",
  "indicatif",

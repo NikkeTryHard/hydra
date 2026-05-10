@@ -578,6 +578,82 @@ pub fn resolve_runtime_config(
     }
 }
 
+pub fn measure_samples_per_second(samples: usize, elapsed: std::time::Duration) -> f64 {
+    if samples == 0 {
+        return 0.0;
+    }
+    let seconds = elapsed.as_secs_f64();
+    if seconds <= f64::EPSILON {
+        0.0
+    } else {
+        samples as f64 / seconds
+    }
+}
+
+pub fn classify_probe_detail(detail: &str) -> ProbeStatus {
+    let lowered = detail.to_ascii_lowercase();
+    if lowered.contains("out of memory") || lowered.contains("oom") {
+        ProbeStatus::Oom
+    } else if lowered.contains("cuda") || lowered.contains("cudnn") || lowered.contains("libtorch")
+    {
+        ProbeStatus::BackendError
+    } else if lowered.contains("data") || lowered.contains("collate") || lowered.contains("replay")
+    {
+        ProbeStatus::DataError
+    } else {
+        ProbeStatus::BackendError
+    }
+}
+
+pub fn format_probe_attempt_message(
+    kind: ProbeKind,
+    candidate: usize,
+    attempt: usize,
+    total_attempts: usize,
+) -> String {
+    format!(
+        "[preflight:{}] candidate_mb={} attempt {}/{}",
+        probe_kind_name(kind),
+        candidate,
+        attempt,
+        total_attempts.max(1)
+    )
+}
+
+pub fn probe_kind_name(kind: ProbeKind) -> &'static str {
+    match kind {
+        ProbeKind::Train => "train",
+        ProbeKind::Validation => "validation",
+        ProbeKind::RlGames => "rl_games",
+        ProbeKind::RlMicrobatch => "rl_microbatch",
+    }
+}
+
+pub fn format_probe_result_summary(result: &ProbeResult) -> String {
+    let status = match result.status {
+        ProbeStatus::Success => "success",
+        ProbeStatus::Oom => "oom",
+        ProbeStatus::BackendError => "backend_error",
+        ProbeStatus::DataError => "data_error",
+    };
+    let throughput = result
+        .measured_samples_per_second
+        .map(|value| format!(" samples_per_second={value:.2}"))
+        .unwrap_or_default();
+    let elapsed = result
+        .elapsed_seconds
+        .map(|value| format!(" elapsed={value:.2}s"))
+        .unwrap_or_default();
+    format!(
+        "[preflight:{}] candidate_mb={} status={}{}{} detail={}",
+        probe_kind_name(result.kind),
+        result.candidate_microbatch,
+        status,
+        throughput,
+        elapsed,
+        result.detail
+    )
+}
 pub fn default_cache_name() -> PathBuf {
     PathBuf::from("preflight_cache.json")
 }

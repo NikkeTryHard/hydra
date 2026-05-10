@@ -4,14 +4,26 @@
 
 /// Runtime advisory formatting and selection helpers.
 pub mod advisory;
+/// Epoch-runner execution helpers shared by train execution.
+pub mod epoch_runner;
 /// Pure presentation formatting helpers shared by train execution seams.
 pub mod presentation;
+/// Probe candidate ladder helpers shared by preflight search.
+pub mod probe_ladder;
+/// Probe child process transport helpers.
+pub mod probe_process;
+/// Probe search orchestration helpers.
+pub mod probe_search;
 /// Probe result summary helpers shared by execution support modules.
 pub mod probe_summary;
+/// Probe artifact transport helpers.
+pub mod probe_transport;
 /// Progress DTOs and scalar accumulation helpers shared by train execution.
 pub mod progress;
 /// Resume state contracts and helpers.
 pub mod resume;
+/// Heavy validation execution runner.
+pub mod validation_runner;
 
 /// Artifact path and log-only helpers shared across training execution seams.
 pub mod artifacts;
