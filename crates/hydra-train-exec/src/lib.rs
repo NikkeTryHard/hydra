@@ -4,6 +4,12 @@
 
 /// Runtime advisory formatting and selection helpers.
 pub mod advisory;
+#[allow(
+    missing_docs,
+    reason = "migrated fixed-shape BC executor API preserves runtime compatibility"
+)]
+/// Fixed-shape behavioral-cloning train/probe execution helpers.
+pub mod bc_fixed_shape;
 /// Training bootstrap initialization and prepared runtime state.
 pub mod bootstrap;
 /// CUDA graph and pinned-memory FFI wrappers for exec-owned GPU adapters.

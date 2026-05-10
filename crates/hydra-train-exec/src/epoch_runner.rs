@@ -7,6 +7,7 @@
 use std::sync::mpsc;
 use std::time::Instant;
 
+use crate::bc_fixed_shape::{FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks};
 use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
@@ -15,9 +16,6 @@ use hydra_bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard_reader};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::NUM_CHANNELS;
 use hydra_model::amp::maybe_autocast;
-use hydra_train_runtime::bc_fixed_shape::{
-    FixedShapeTrainConfig, run_train_logical_batch_fixed_chunks,
-};
 use hydra_train_runtime::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
 };

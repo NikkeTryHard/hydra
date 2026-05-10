@@ -45,6 +45,10 @@ use crate::artifacts::{
     load_or_scan_manifest_cache, open_step_log_appender, read_manifest_cache, read_preflight_cache,
     save_latest_checkpoint_and_state, write_preflight_benchmark_report, write_preflight_cache,
 };
+use crate::bc_fixed_shape::{
+    FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
+    probe_train_fixed_chunks,
+};
 #[cfg(test)]
 use crate::data_pipeline::DataSource;
 use crate::epoch_runner::{
@@ -82,10 +86,6 @@ use crate::validation_runner::{
     run_validation,
 };
 use hydra_data_core::manifest::DataManifest as CoreDataManifest;
-use hydra_train_runtime::bc_fixed_shape::{
-    FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
-    probe_train_fixed_chunks,
-};
 use hydra_train_runtime::bc_metrics::batch_stats_from_outputs;
 use hydra_train_runtime::config::{
     ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system, train_device,
