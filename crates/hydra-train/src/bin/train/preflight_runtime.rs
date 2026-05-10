@@ -530,6 +530,10 @@ fn search_train_microbatch(
             &progress,
         )?;
         if !passed {
+            if let Some(err) = fatal_probe_backend_error(&results) {
+                progress.finish_with_message("preflight train ladder failed".red().to_string());
+                return Err(err);
+            }
             if use_explicit_only {
                 progress.finish_with_message("preflight train ladder complete".green().to_string());
                 return Err(format!(
@@ -553,6 +557,9 @@ fn search_train_microbatch(
         }
     }
 
+    if let Some(err) = fatal_probe_backend_error(&results) {
+        return Err(err);
+    }
     progress.finish_with_message("preflight train ladder complete".green().to_string());
     let standard_attempts_len = results.len();
     refine_probe_winner_locally(
@@ -579,6 +586,9 @@ fn search_train_microbatch(
         &mut results,
         &progress,
     )?;
+    if let Some(err) = fatal_probe_backend_error(&results) {
+        return Err(err);
+    }
     let selected_summary = best_probe_summary(&results)
         .ok_or_else(|| "no stable train microbatch found in preflight".to_string())?;
     let baseline_seed = exact_train_probe_runtime_seed(
@@ -1667,6 +1677,25 @@ struct ProbeSearchOutcome {
     selected_summary: ProbeCandidateSummary,
     results: Vec<ProbeResult>,
 }
+const UNSUPPORTED_DEVICE_PREFIX: &str = "unsupported HYDRA_TRAIN_DEVICE=";
+
+fn fatal_probe_backend_error(results: &[ProbeResult]) -> Option<String> {
+    results
+        .iter()
+        .find(|result| {
+            result.status == ProbeStatus::BackendError
+                && result.detail.contains(UNSUPPORTED_DEVICE_PREFIX)
+        })
+        .and_then(|result| {
+            result
+                .detail
+                .rsplit_once("detail=")
+                .map(|(_, detail)| detail)
+                .map(str::trim)
+                .filter(|detail| detail.starts_with(UNSUPPORTED_DEVICE_PREFIX))
+                .map(str::to_string)
+        })
+}
 
 fn search_probe_candidate_ladder<F>(
     config_path: &Path,
@@ -1744,6 +1773,14 @@ where
             &progress,
         )?;
         if !passed {
+            if let Some(err) = fatal_probe_backend_error(&results) {
+                progress.finish_with_message(
+                    format!("preflight {} ladder failed", probe_kind_name(spec.kind))
+                        .red()
+                        .to_string(),
+                );
+                return Err(err);
+            }
             if use_explicit_only {
                 progress.finish_with_message(
                     format!("preflight {} ladder complete", probe_kind_name(spec.kind))
@@ -1804,6 +1841,9 @@ where
         index += 1;
     }
 
+    if let Some(err) = fatal_probe_backend_error(&results) {
+        return Err(err);
+    }
     progress.finish_with_message(
         format!("preflight {} ladder complete", probe_kind_name(spec.kind))
             .green()
@@ -5512,6 +5552,35 @@ mod tests {
 
         let err = search_train_microbatch(&config_path, &config, &artifacts, 64)
             .expect_err("all-failing train search should report no stable result");
+
+        assert_eq!(
+            err,
+            "unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device; expected cpu, cuda, or cuda:<index>"
+        );
+        let _ = fs::remove_dir_all(data_dir);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn search_train_microbatch_propagates_fatal_backend_error_without_extra_refinement() {
+        let data_dir = unique_test_path("train-fatal-backend-data");
+        fs::create_dir_all(&data_dir).expect("create empty train data dir");
+        let output_dir = unique_test_path("train-fatal-backend-out");
+        let artifacts = BcArtifactPaths::new(&output_dir, 0);
+        let mut config = dummy_config();
+        config.data_dir = data_dir.clone();
+        config.output_dir = output_dir;
+        config.device = "definitely-not-a-device".to_string();
+        config.preflight.allow_override_explicit_microbatch = true;
+        config.preflight.required_successes = 1;
+        config.preflight.candidate_microbatches = vec![64];
+        config.preflight.validation_growth_max_steps = 1;
+        let config_path = unique_test_path("train-fatal-backend-config").with_extension("yaml");
+        let config_yaml = serde_yaml::to_string(&config).expect("serialize valid train config");
+        fs::write(&config_path, config_yaml).expect("write valid train config yaml");
+
+        let err = search_train_microbatch(&config_path, &config, &artifacts, 64)
+            .expect_err("fatal backend errors should be propagated");
 
         assert_eq!(
             err,

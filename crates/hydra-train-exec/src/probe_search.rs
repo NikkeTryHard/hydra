@@ -21,6 +21,26 @@ use super::probe_summary::{
 use super::probe_transport::{probe_batch_results_path, probe_result_path};
 use hydra_train_runtime::probe_request::{ProbeBatchRequest, ProbeRequest};
 
+const UNSUPPORTED_DEVICE_PREFIX: &str = "unsupported HYDRA_TRAIN_DEVICE=";
+
+fn fatal_probe_backend_error(results: &[ProbeResult]) -> Option<String> {
+    results
+        .iter()
+        .find(|result| {
+            result.status == ProbeStatus::BackendError
+                && result.detail.contains(UNSUPPORTED_DEVICE_PREFIX)
+        })
+        .and_then(|result| {
+            result
+                .detail
+                .rsplit_once("detail=")
+                .map(|(_, detail)| detail)
+                .map(str::trim)
+                .filter(|detail| detail.starts_with(UNSUPPORTED_DEVICE_PREFIX))
+                .map(str::to_string)
+        })
+}
+
 pub struct ProbeRunSpec {
     pub kind: ProbeKind,
     pub candidate: usize,
@@ -488,6 +508,9 @@ where
     if config.bc_shards_manifest_path.is_some() {
         return best_probe_summary(results).ok_or(missing_error);
     }
+    if let Some(err) = fatal_probe_backend_error(results) {
+        return Err(err);
+    }
     refine_probe_winner_locally(
         config_path,
         result_path_for,
@@ -512,6 +535,9 @@ where
         results,
         progress,
     )?;
+    if let Some(err) = fatal_probe_backend_error(results) {
+        return Err(err);
+    }
     best_probe_summary(results).ok_or(missing_error)
 }
 
@@ -620,6 +646,9 @@ pub fn probe_candidate_ladder(
         }
         if stable && use_explicit_only {
             return Ok((candidate, results));
+        }
+        if let Some(err) = fatal_probe_backend_error(&results) {
+            return Err(err);
         }
     }
     progress.finish_with_message(

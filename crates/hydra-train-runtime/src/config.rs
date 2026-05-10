@@ -403,7 +403,10 @@ where
 {
     let mut args = args.into_iter();
     let program = args.next().unwrap_or_else(|| "train".to_string());
-    let first = args.next().ok_or_else(|| usage(&program))?;
+    let mut first = args.next().ok_or_else(|| usage(&program))?;
+    if first == "--" {
+        first = args.next().ok_or_else(|| usage(&program))?;
+    }
     match first.as_str() {
         "--help" | "-h" => return Err(usage(&program)),
         "--version" | "-V" => return Err(version(&program)),

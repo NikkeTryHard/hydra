@@ -66,7 +66,21 @@ use super::probe_transport::{build_probe_failure_result, read_probe_result};
 use hydra_train_runtime::probe_request::{ProbeBatchRequest, ProbeRequest};
 
 #[cfg(not(test))]
+const HYDRA_PROBE_CHILD_EXE: &str = "HYDRA_PROBE_CHILD_EXE";
+
+#[cfg(not(test))]
 fn probe_child_executable() -> Result<PathBuf, String> {
+    if let Ok(path) = env::var(HYDRA_PROBE_CHILD_EXE) {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(format!(
+            "{HYDRA_PROBE_CHILD_EXE} points to missing executable: {}",
+            path.display()
+        ));
+    }
+
     #[cfg(target_os = "linux")]
     {
         let proc_self = PathBuf::from("/proc/self/exe");

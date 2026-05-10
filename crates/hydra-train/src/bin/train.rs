@@ -280,6 +280,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_accepts_probe_child_flags_after_libtest_separator() {
+        let args = vec![
+            "train".to_string(),
+            "--".to_string(),
+            "config.yaml".to_string(),
+            "--probe-kind".to_string(),
+            "validation".to_string(),
+            "--probe-candidate-microbatch".to_string(),
+            "192".to_string(),
+            "--probe-warmup-steps".to_string(),
+            "4".to_string(),
+            "--probe-measure-steps".to_string(),
+            "8".to_string(),
+            "--probe-result-path".to_string(),
+            "/tmp/probe.json".to_string(),
+            "--probe-manifest-cache-path".to_string(),
+            "/tmp/manifest.json".to_string(),
+        ];
+
+        let parsed = parse_args(args).expect("libtest-separated probe child args should parse");
+        assert_eq!(parsed.config_path, PathBuf::from("config.yaml"));
+        assert!(parsed.probe_only.is_none());
+        match parsed.probe_child.expect("probe child should be present") {
+            crate::config::ProbeChildRequest::Single(child) => {
+                assert_eq!(
+                    child.request.kind,
+                    hydra_train::preflight::ProbeKind::Validation
+                );
+                assert_eq!(child.request.candidate_microbatch, 192);
+                assert_eq!(child.result_path, PathBuf::from("/tmp/probe.json"));
+            }
+            crate::config::ProbeChildRequest::Batch(_) => {
+                panic!("single probe child flags should stay on the single-request path")
+            }
+        }
+    }
+
+    #[test]
     fn parse_args_accepts_single_probe_child_flags_unchanged() {
         let args = vec![
             "train".to_string(),
