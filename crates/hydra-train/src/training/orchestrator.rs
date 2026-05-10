@@ -13,26 +13,16 @@ use crate::training::bc::{
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
 use crate::training::exit::ExitConfig;
-use hydra_train_types::head_gates::HeadActivationController;
+pub use hydra_train_exec::rl_step::RlPhaseTrainRequest;
 
 use crate::training::live_exit::LiveExitConfig;
 use crate::training::losses::{HydraLoss, HydraTargets};
-use crate::training::rl::{
-    RlBatch, RlConfig, RlStepRequest, rl_step_with_phase_progress_and_controller,
-};
+use crate::training::rl::{RlBatch, RlConfig};
 pub use hydra_train_types::orchestrator::{
     BenchmarkGateMetrics, GateReport, MaintenancePlan, OrchestratorPlanInputs, PhaseTrainReport,
     ValidationGateMetrics, evaluate_benchmark_gates, evaluate_validation_gates,
     maintenance_plan_from_inputs, maybe_advance_phase, phase_advance_report,
 };
-
-pub struct RlPhaseTrainRequest<'a, B: Backend> {
-    pub state: &'a PipelineState,
-    pub batch: &'a RlBatch<B>,
-    pub cfg: &'a RlConfig,
-    pub loss_fn: &'a HydraLoss<B>,
-    pub controller: Option<&'a mut HeadActivationController>,
-}
 
 pub struct SupervisedPhaseTrainRequest<'a, B: Backend> {
     pub state: &'a PipelineState,
@@ -200,17 +190,7 @@ pub fn rl_phase_train_step<B: AutodiffBackend>(
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
-    rl_phase_train_step_with_controller(
-        model,
-        RlPhaseTrainRequest {
-            state,
-            batch,
-            cfg,
-            loss_fn,
-            controller: None,
-        },
-        optimizer,
-    )
+    hydra_train_exec::rl_step::rl_phase_train_step(state, model, batch, cfg, loss_fn, optimizer)
 }
 
 pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
@@ -218,38 +198,7 @@ pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
     request: RlPhaseTrainRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
-    match request.state.phase {
-        TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
-            let exit_phase = request.state.phase.exit_schedule_phase();
-            let progress = request.state.phase_progress();
-            let exit_weight = request.cfg.effective_exit_weight(exit_phase, progress);
-            let (model, loss) = rl_step_with_phase_progress_and_controller(
-                model,
-                RlStepRequest {
-                    batch: request.batch,
-                    cfg: request.cfg,
-                    phase: exit_phase,
-                    progress,
-                    loss_fn: request.loss_fn,
-                    controller: request.controller,
-                },
-                optimizer,
-            );
-            Ok((
-                model,
-                PhaseTrainReport {
-                    phase: request.state.phase,
-                    skipped: false,
-                    loss: Some(loss),
-                    effective_lr: request.cfg.lr,
-                    oracle_keep_prob: None,
-                    kept_oracle_fraction: None,
-                    exit_weight: Some(exit_weight),
-                },
-            ))
-        }
-        _ => Err("rl_phase_train_step only supports self-play phases"),
-    }
+    hydra_train_exec::rl_step::rl_phase_train_step_with_controller(model, request, optimizer)
 }
 
 #[cfg(test)]

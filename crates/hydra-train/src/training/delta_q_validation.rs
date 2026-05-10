@@ -8,8 +8,8 @@ use burn::prelude::Backend;
 use hydra_search_labels::exit::ExitConfig;
 use hydra_search_labels::live_exit::LiveExitConfig;
 
-use crate::model::HydraModel;
-use crate::selfplay::generate_self_play_batch_source_cooperative;
+use hydra_model::model::HydraModel;
+use hydra_selfplay::generate_self_play_batch_source_cooperative;
 
 pub use hydra_search_labels::delta_q_validation::*;
 

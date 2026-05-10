@@ -10,8 +10,11 @@ use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::{Adam, GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
+use hydra_bc_shards::{
+    BcShardReader as ExtractedBcShardReader, BcShardSplit as ExtractedBcShardSplit,
+    load_bc_shard_reader as load_extracted_bc_shard_reader,
+};
 use hydra_replay_loader::ReplayTargetProfile;
-use hydra_train::data::bc_shards::{BcShardSplit, load_bc_shard_reader};
 use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train::model::{HydraModel, HydraModelConfig, HydraTrainModelExt};
 #[cfg(test)]
@@ -2106,7 +2109,7 @@ fn probe_train_candidate_from_shards_for_backend<B>(
     model_config: &HydraModelConfig,
     request: ProbeRequest,
     train_device: &LibTorchDevice,
-    reader: &hydra_train::data::bc_shards::BcShardReader,
+    reader: &ExtractedBcShardReader,
 ) -> Result<f64, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
@@ -2320,7 +2323,7 @@ fn probe_validation_candidate_from_shards_for_backend<B>(
     model_config: &HydraModelConfig,
     _request: ProbeRequest,
     train_device: &LibTorchDevice,
-    reader: &hydra_train::data::bc_shards::BcShardReader,
+    reader: &ExtractedBcShardReader,
 ) -> Result<f64, String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
@@ -2443,8 +2446,8 @@ fn run_probe_attempt_result(
 
 struct ProbeDataContext {
     manifest: Option<DataManifest>,
-    train_reader: Option<hydra_train::data::bc_shards::BcShardReader>,
-    validation_reader: Option<hydra_train::data::bc_shards::BcShardReader>,
+    train_reader: Option<ExtractedBcShardReader>,
+    validation_reader: Option<ExtractedBcShardReader>,
 }
 
 impl ProbeDataContext {
@@ -2452,11 +2455,11 @@ impl ProbeDataContext {
         self.manifest.as_ref()
     }
 
-    fn train_reader_ref(&self) -> Option<&hydra_train::data::bc_shards::BcShardReader> {
+    fn train_reader_ref(&self) -> Option<&ExtractedBcShardReader> {
         self.train_reader.as_ref()
     }
 
-    fn validation_reader_ref(&self) -> Option<&hydra_train::data::bc_shards::BcShardReader> {
+    fn validation_reader_ref(&self) -> Option<&ExtractedBcShardReader> {
         self.validation_reader.as_ref()
     }
 }
@@ -2482,17 +2485,17 @@ fn resolve_probe_data_context(
             .as_ref()
             .ok_or_else(|| "bc_shards_manifest_path missing for shard probe".to_string())?;
         let train_reader = if matches!(kind, ProbeKind::Train) {
-            Some(load_bc_shard_reader(
+            Some(load_extracted_bc_shard_reader(
                 shard_manifest_path,
-                BcShardSplit::Train,
+                ExtractedBcShardSplit::Train,
             )?)
         } else {
             None
         };
         let validation_reader = if matches!(kind, ProbeKind::Validation) {
-            Some(load_bc_shard_reader(
+            Some(load_extracted_bc_shard_reader(
                 shard_manifest_path,
-                BcShardSplit::Validation,
+                ExtractedBcShardSplit::Validation,
             )?)
         } else {
             None
@@ -2533,8 +2536,8 @@ fn run_probe_attempt_with_data_context(
 fn run_probe_attempt_with_shard_readers_result(
     config: &TrainConfig,
     model_config: &HydraModelConfig,
-    train_reader: Option<&hydra_train::data::bc_shards::BcShardReader>,
-    validation_reader: Option<&hydra_train::data::bc_shards::BcShardReader>,
+    train_reader: Option<&ExtractedBcShardReader>,
+    validation_reader: Option<&ExtractedBcShardReader>,
     request: ProbeRequest,
 ) -> Result<ProbeResult, String> {
     let train_device = train_device(&config.device)?;

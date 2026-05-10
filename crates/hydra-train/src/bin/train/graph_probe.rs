@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::Instant;
 
 #[cfg(feature = "cuda-graph")]
-use hydra_train::data::bc_shards::{BcShardSplit, load_bc_shard_reader};
+use hydra_bc_shards::{BcShardSplit, load_bc_shard_reader};
 #[cfg(feature = "cuda-graph")]
 use hydra_train::model::HydraModel;
 #[cfg(feature = "cuda-graph")]
@@ -381,8 +381,8 @@ fn take_model(
     reason = "probe mirrors train step contract"
 )]
 fn guarded_capture_attempt(
-    host_batch: hydra_train::data::bc_shards::BcShardHostBatch,
-    post_replay_host_batch: Option<hydra_train::data::bc_shards::BcShardHostBatch>,
+    host_batch: hydra_bc_shards::BcShardHostBatch,
+    post_replay_host_batch: Option<hydra_bc_shards::BcShardHostBatch>,
     microbatch_size: usize,
     use_amp: bool,
     augment: bool,
@@ -394,7 +394,10 @@ fn guarded_capture_attempt(
     model: &HydraModel<TrainBackend>,
     reference_stats: &[crate::progress::BatchStats],
 ) -> CudaGraphCaptureSummary {
-    let shard_batch = host_batch.materialize_owned::<TrainBackend>(train_device);
+    let shard_batch = hydra_train::data::bc_shards::materialize_extracted_host_batch::<TrainBackend>(
+        host_batch,
+        train_device,
+    );
     let graph = crate::cuda_graph::CudaGraph::new(false);
     let previous_stream = crate::cuda_graph::CudaStream::current(0);
     let capture_stream = crate::cuda_graph::CudaStream::from_pool(0);

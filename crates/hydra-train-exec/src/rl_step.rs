@@ -19,6 +19,8 @@ use hydra_train_types::head_gates::{
     AdvancedHead, HeadActivationController, borrow_or_extract_target_presence,
 };
 use hydra_train_types::losses::{HydraLossConfig, HydraTargets};
+use hydra_train_types::orchestrator::PhaseTrainReport;
+use hydra_train_types::phase::{PipelineState, TrainingPhase};
 pub use hydra_train_types::rl::RlBatch;
 
 pub const MAX_RL_BATCH_SIZE: usize = 512;
@@ -98,6 +100,13 @@ pub fn apply_head_gating_to_batch<B: Backend>(
     let effective_loss = controller.approved_loss_config(base_loss);
     Ok((effective_loss, delta_q_stats))
 }
+pub struct RlPhaseTrainRequest<'a, B: Backend> {
+    pub state: &'a PipelineState,
+    pub batch: &'a RlBatch<B>,
+    pub cfg: &'a RlConfig,
+    pub loss_fn: &'a HydraLoss<B>,
+    pub controller: Option<&'a mut HeadActivationController>,
+}
 
 pub struct RlStepRequest<'a, B: Backend> {
     pub batch: &'a RlBatch<B>,
@@ -159,6 +168,65 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
         },
         optimizer,
     )
+}
+pub fn rl_phase_train_step<B: AutodiffBackend>(
+    state: &PipelineState,
+    model: HydraModel<B>,
+    batch: &RlBatch<B>,
+    cfg: &RlConfig,
+    loss_fn: &HydraLoss<B>,
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
+    rl_phase_train_step_with_controller(
+        model,
+        RlPhaseTrainRequest {
+            state,
+            batch,
+            cfg,
+            loss_fn,
+            controller: None,
+        },
+        optimizer,
+    )
+}
+
+pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
+    model: HydraModel<B>,
+    request: RlPhaseTrainRequest<'_, B>,
+    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
+) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
+    match request.state.phase {
+        TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
+            let exit_phase = request.state.phase.exit_schedule_phase();
+            let progress = request.state.phase_progress();
+            let exit_weight = request.cfg.effective_exit_weight(exit_phase, progress);
+            let (model, loss) = rl_step_with_phase_progress_and_controller(
+                model,
+                RlStepRequest {
+                    batch: request.batch,
+                    cfg: request.cfg,
+                    phase: exit_phase,
+                    progress,
+                    loss_fn: request.loss_fn,
+                    controller: request.controller,
+                },
+                optimizer,
+            );
+            Ok((
+                model,
+                PhaseTrainReport {
+                    phase: request.state.phase,
+                    skipped: false,
+                    loss: Some(loss),
+                    effective_lr: request.cfg.lr,
+                    oracle_keep_prob: None,
+                    kept_oracle_fraction: None,
+                    exit_weight: Some(exit_weight),
+                },
+            ))
+        }
+        _ => Err("rl_phase_train_step only supports self-play phases"),
+    }
 }
 
 /// Single RL training step with gradient accumulation across microbatches.

@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 hydra-train-types = { path = "../hydra-train-types" }
+hydra-model = { path = "../hydra-model" }
 hydra-train-algo = { path = "../hydra-train-algo" }
 hydra-search-labels = { path = "../hydra-search-labels" }
 burn = { version = "0.20" }

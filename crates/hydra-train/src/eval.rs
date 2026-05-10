@@ -6,8 +6,8 @@ use hydra_core::arena::compute_placements;
 pub use hydra_train_types::delta_q_promotion::ArenaPromotionDecision;
 pub use hydra_train_types::eval::{PairedArenaEvalConfig, PairedArenaEvalResult};
 
-use crate::model::HydraModel;
-use crate::selfplay::run_mixed_policy_game_scores;
+use hydra_model::model::HydraModel;
+use hydra_selfplay::run_mixed_policy_game_scores;
 
 #[derive(Config, Debug)]
 pub struct EvalConfig {

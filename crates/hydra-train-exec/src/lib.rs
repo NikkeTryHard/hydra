@@ -30,9 +30,7 @@ pub mod probe_transport;
 pub mod progress;
 /// Resume state contracts and helpers.
 pub mod resume;
-#[cfg(feature = "rl-runner-exec-in-progress")]
 /// RL training-loop execution helpers.
-#[cfg(feature = "rl-runner-exec-in-progress")]
 pub mod rl_runner;
 /// RL train-step wrapper below the train facade.
 pub mod rl_step;

@@ -4,13 +4,14 @@
 //! the `hydra-train` binary crate. Direct inspection shows the outer epoch loop still has
 //! train-bin-owned seams that block a safe full move in this slice.
 
+use std::sync::mpsc;
 use std::time::Instant;
 
 use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{Int, Tensor, TensorData};
-use hydra_bc_shards::BcShardHostBatch;
+use hydra_bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard_reader};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::NUM_CHANNELS;
 use hydra_model::amp::maybe_autocast;
@@ -732,5 +733,103 @@ pub fn record_drained_batch_stats(
     for batch_stats in drained {
         stats.record_batch(batch_stats);
         step_window.record_batch(batch_stats);
+    }
+}
+
+/// One host batch received from the BC shard prefetch producer.
+pub struct BcShardPrefetchBatch {
+    /// Collated host batch ready for device materialization.
+    pub host_batch: BcShardHostBatch,
+    /// Number of samples collated into this batch.
+    pub sample_count: usize,
+    /// Seconds spent waiting for the producer to provide this batch.
+    pub producer_wait_seconds: f64,
+}
+
+/// Producer/consumer prefetcher for contiguous BC shard training batches.
+pub struct BcShardPrefetcher {
+    rx: mpsc::Receiver<Result<(BcShardHostBatch, usize), String>>,
+    recycle_tx: mpsc::SyncSender<BcShardHostBatch>,
+    producer_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BcShardPrefetcher {
+    /// Starts a bounded producer thread reading train-split shard batches.
+    pub fn spawn(
+        manifest_path: &std::path::Path,
+        batch_size: usize,
+        augment: bool,
+        start_index: usize,
+        total_rows: usize,
+        prefetch_depth: usize,
+    ) -> Result<Self, String> {
+        let reader = load_bc_shard_reader(manifest_path, BcShardSplit::Train)?;
+        let producer_start_index = start_index.min(total_rows);
+        let (tx, rx) =
+            mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(prefetch_depth);
+        let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(prefetch_depth + 1);
+        let producer_handle = std::thread::Builder::new()
+            .name("bc-shard-prefetch".into())
+            .spawn(move || {
+                let mut scratch = reader.new_scratch(batch_size);
+                let mut idx = producer_start_index;
+                while idx < total_rows {
+                    let take = batch_size.min(total_rows - idx);
+                    let result = reader
+                        .collate_host_batch_range_into(idx, take, augment, &mut scratch)
+                        .map(|()| {
+                            let batch = if let Ok(mut recycled) = recycle_rx.try_recv() {
+                                scratch.swap_batch(&mut recycled)
+                            } else {
+                                scratch.take_batch()
+                            };
+                            (batch, take)
+                        });
+                    if tx.send(result).is_err() {
+                        break;
+                    }
+                    idx += take;
+                }
+            })
+            .map_err(|err| format!("failed to spawn bc-shard-prefetch thread: {err}"))?;
+
+        Ok(Self {
+            rx,
+            recycle_tx,
+            producer_handle: Some(producer_handle),
+        })
+    }
+
+    /// Receives the next prefetched host batch, including producer wait timing.
+    pub fn recv(&self) -> Result<Option<BcShardPrefetchBatch>, String> {
+        let recv_started = Instant::now();
+        let recv_result = match self.rx.recv() {
+            Ok(result) => result,
+            Err(_) => return Ok(None),
+        };
+        let producer_wait_seconds = recv_started.elapsed().as_secs_f64();
+        let (host_batch, sample_count) = recv_result?;
+        Ok(Some(BcShardPrefetchBatch {
+            host_batch,
+            sample_count,
+            producer_wait_seconds,
+        }))
+    }
+
+    /// Returns a consumed host batch to the producer for allocation reuse.
+    pub fn recycle(&self, host_batch: BcShardHostBatch) {
+        let _ = self.recycle_tx.try_send(host_batch);
+    }
+
+    /// Stops the prefetcher and propagates producer panics.
+    pub fn join(mut self) -> Result<(), String> {
+        drop(self.rx);
+        drop(self.recycle_tx);
+        if let Some(handle) = self.producer_handle.take() {
+            handle
+                .join()
+                .map_err(|_| "bc-shard-prefetch thread panicked".to_string())?;
+        }
+        Ok(())
     }
 }
