@@ -18,7 +18,7 @@ use hydra_train_runtime::validation::ValidationRunConfig;
 use hydra_train_exec::resume::BestValidation;
 
 pub(super) struct TrainValidationLoader<'a> {
-    pub(super) config: &'a hydra_train::data::pipeline::StreamingLoaderConfig,
+    pub(super) config: &'a hydra_train_exec::data_pipeline::StreamingLoaderConfig,
 }
 
 impl ValidationDataLoader for TrainValidationLoader<'_> {
@@ -28,7 +28,7 @@ impl ValidationDataLoader for TrainValidationLoader<'_> {
         microbatch_size: usize,
         progress: Option<&'b ProgressBar>,
     ) -> Box<dyn Iterator<Item = io::Result<Vec<MjaiSample>>> + 'b> {
-        Box::new(hydra_train::data::pipeline::stream_val_microbatches(
+        Box::new(hydra_train_exec::data_pipeline::stream_val_microbatches(
             manifest,
             self.config,
             microbatch_size,
@@ -38,7 +38,7 @@ impl ValidationDataLoader for TrainValidationLoader<'_> {
 }
 
 pub(super) fn validation_loader(
-    config: &hydra_train::data::pipeline::StreamingLoaderConfig,
+    config: &hydra_train_exec::data_pipeline::StreamingLoaderConfig,
 ) -> TrainValidationLoader<'_> {
     TrainValidationLoader { config }
 }

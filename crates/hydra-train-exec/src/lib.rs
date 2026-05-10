@@ -4,6 +4,10 @@
 
 /// Runtime advisory formatting and selection helpers.
 pub mod advisory;
+/// Training bootstrap initialization and prepared runtime state.
+pub mod bootstrap;
+/// Exec-owned streaming MJAI data pipeline for preflight and epoch runners.
+pub mod data_pipeline;
 /// Epoch-runner execution helpers shared by train execution.
 pub mod epoch_runner;
 /// Train binary mode dispatch facade.
@@ -26,6 +30,10 @@ pub mod probe_transport;
 pub mod progress;
 /// Resume state contracts and helpers.
 pub mod resume;
+#[cfg(feature = "rl-runner-exec-in-progress")]
+/// RL training-loop execution helpers.
+#[cfg(feature = "rl-runner-exec-in-progress")]
+pub mod rl_runner;
 /// Heavy validation execution runner.
 pub mod validation_runner;
 

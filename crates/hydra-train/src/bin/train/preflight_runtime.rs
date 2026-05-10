@@ -10,10 +10,8 @@ use burn::optim::adaptor::OptimizerAdaptor;
 use burn::optim::{Adam, GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
+use hydra_replay_loader::ReplayTargetProfile;
 use hydra_train::data::bc_shards::{BcShardSplit, load_bc_shard_reader};
-use hydra_train::data::pipeline::{
-    DataManifest, StreamingLoaderConfig, stream_train_epoch, stream_val_microbatches,
-};
 use hydra_train::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train::model::{HydraModel, HydraModelConfig, HydraTrainModelExt};
 #[cfg(test)]
@@ -28,6 +26,9 @@ use hydra_train::preflight::{
 use hydra_train::training::bc::gated_bc_context;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train::training::losses::HydraLoss;
+use hydra_train_exec::data_pipeline::{
+    DataManifest, StreamingLoaderConfig, stream_train_epoch, stream_val_microbatches,
+};
 use tboard::EventWriter;
 
 use super::TrainBackend;
@@ -88,6 +89,8 @@ use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, materialize_validation_samples,
     run_validation, validation_loader,
 };
+#[cfg(test)]
+use hydra_train_exec::data_pipeline::DataSource;
 use hydra_train_runtime::bc_metrics::batch_stats_from_outputs;
 use hydra_train_runtime::validation::ValidationRunLimits;
 
@@ -855,7 +858,7 @@ fn benchmark_loader_config(
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
         source_filters: config.source_filters.clone(),
-        replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
+        replay_target_profile: ReplayTargetProfile::minimal_bc(),
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
@@ -2365,8 +2368,7 @@ where
                         max_skip_logs_per_source: config.max_skip_logs_per_source,
                         aggregate_skip_logs: true,
                         source_filters: config.source_filters.clone(),
-                        replay_target_profile:
-                            hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
+                        replay_target_profile: ReplayTargetProfile::minimal_bc(),
                         exit_sidecar: None,
                         exit_sidecar_source_net_hash: None,
                         exit_sidecar_source_version: None,
@@ -2744,7 +2746,7 @@ fn run_probe_only_with_model_config_result(
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         aggregate_skip_logs: true,
         source_filters: config.source_filters.clone(),
-        replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(),
+        replay_target_profile: ReplayTargetProfile::minimal_bc(),
         exit_sidecar: None,
         exit_sidecar_source_net_hash: None,
         exit_sidecar_source_version: None,
@@ -4738,9 +4740,7 @@ mod tests {
                 include_source_patterns: Vec::new(),
                 exclude_source_patterns: Vec::new(),
                 manifest: DataManifest {
-                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
-                        replay_path,
-                    )],
+                    sources: vec![DataSource::LooseFile(replay_path)],
                     total_games: 1,
                     train_count: 0,
                     val_count: 1,
@@ -4797,9 +4797,7 @@ mod tests {
                 include_source_patterns: Vec::new(),
                 exclude_source_patterns: Vec::new(),
                 manifest: DataManifest {
-                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
-                        replay_path,
-                    )],
+                    sources: vec![DataSource::LooseFile(replay_path)],
                     total_games: 1,
                     train_count: 0,
                     val_count: 1,
@@ -5181,9 +5179,7 @@ mod tests {
                 include_source_patterns: Vec::new(),
                 exclude_source_patterns: Vec::new(),
                 manifest: DataManifest {
-                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
-                        replay_path,
-                    )],
+                    sources: vec![DataSource::LooseFile(replay_path)],
                     total_games: 1,
                     train_count: 1,
                     val_count: 0,
@@ -5236,9 +5232,7 @@ mod tests {
                 include_source_patterns: Vec::new(),
                 exclude_source_patterns: Vec::new(),
                 manifest: DataManifest {
-                    sources: vec![hydra_train::data::pipeline::DataSource::LooseFile(
-                        replay_path,
-                    )],
+                    sources: vec![DataSource::LooseFile(replay_path)],
                     total_games: 1,
                     train_count: 0,
                     val_count: 1,

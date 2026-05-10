@@ -2,7 +2,6 @@ use burn::backend::libtorch::LibTorchDevice;
 use burn::tensor::backend::AutodiffBackend;
 use colored::Colorize;
 use hydra_train::config::PipelineState;
-use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig};
 use hydra_train::model::HydraModelConfig;
 use hydra_train::preflight::LoaderRuntimeConfig;
 use hydra_train::selfplay::{
@@ -15,6 +14,7 @@ use hydra_train::training::orchestrator::{
     RlPhaseTrainRequest, live_exit_config_from_plan, maintenance_plan,
     rl_phase_train_step_with_controller,
 };
+use hydra_train_exec::data_pipeline::{DataManifest, StreamingLoaderConfig};
 use std::collections::BTreeMap;
 #[cfg(not(test))]
 use std::sync::atomic::Ordering;
@@ -245,7 +245,7 @@ fn runtime_probe_model_config() -> HydraModelConfig {
 
 fn measure_train_runtime_throughput_for_backend<B>(
     config: &TrainConfig,
-    loader_config: &hydra_train::data::pipeline::StreamingLoaderConfig,
+    loader_config: &StreamingLoaderConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
 ) -> Result<f64, String>
@@ -274,7 +274,7 @@ where
 
 pub(super) fn measure_train_runtime_throughput(
     config: &TrainConfig,
-    loader_config: &hydra_train::data::pipeline::StreamingLoaderConfig,
+    loader_config: &StreamingLoaderConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
 ) -> Result<f64, String> {

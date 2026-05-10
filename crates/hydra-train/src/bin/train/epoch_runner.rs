@@ -14,7 +14,6 @@ use hydra_train::amp::maybe_autocast;
 #[cfg(feature = "cuda-graph")]
 use hydra_train::data::bc_shards::BcShardBatch;
 use hydra_train::data::bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard_reader};
-use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
 use hydra_train::data::sample::{MjaiBcBatch, MjaiSample};
 use hydra_train::model::{HydraModel, HydraTrainModelExt};
 #[cfg(test)]
@@ -28,6 +27,7 @@ use hydra_train::preflight::{
 use hydra_train::training::bc::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
+use hydra_train_exec::data_pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
 use hydra_train_types::config::BCTrainerConfig;
 
 use super::TrainBackend;

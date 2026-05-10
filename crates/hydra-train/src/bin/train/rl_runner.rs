@@ -6,7 +6,9 @@ use hydra_train::preflight::{
     PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_RL_STEP,
     PROFILING_STAGE_SELF_PLAY, PROFILING_STAGE_TRAIN, ProfilingEnvelope,
 };
-use hydra_train::selfplay::{CooperativeSelfPlayRequest, generate_self_play_rl_batch_reuse};
+use hydra_train::selfplay::{
+    CooperativeSelfPlayCoordinator, CooperativeSelfPlayRequest, generate_self_play_rl_batch_reuse,
+};
 use hydra_train::training::distill::{DistillConfig, DistillState};
 use hydra_train::training::drda::RebaseTracker;
 use hydra_train::training::head_gates::{AdvancedHead, HeadState};
@@ -362,6 +364,7 @@ pub(super) fn run_rl_training_loop(
     let mut rebase_tracker = RebaseTracker::default_phase2();
     let distill_state = DistillState::default();
     let distill_cfg = DistillConfig::fast_distill();
+    let mut self_play_coordinator = CooperativeSelfPlayCoordinator::new();
 
     while runtime.global_step < total_steps {
         let _rl_step_scope = nvtx::scope(PROFILING_STAGE_RL_STEP);
@@ -381,7 +384,7 @@ pub(super) fn run_rl_training_loop(
             let base_seed = base_seed_for_step(config.seed, runtime.global_step);
             let game_seeds = game_seeds_for_batch(base_seed, rl_config.games_per_batch);
             generate_self_play_rl_batch_reuse(
-                &mut runtime.self_play_coordinator,
+                &mut self_play_coordinator,
                 CooperativeSelfPlayRequest {
                     game_seeds: &game_seeds,
                     temperature: rl_config.temperature,

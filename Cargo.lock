@@ -3360,15 +3360,22 @@ dependencies = [
  "hydra-data-core",
  "hydra-model",
  "hydra-replay-loader",
+ "hydra-replay-sidecar",
  "hydra-sample-cache",
+ "hydra-search-labels",
+ "hydra-selfplay",
  "hydra-train-algo",
  "hydra-train-runtime",
  "hydra-train-types",
  "indicatif",
+ "rayon",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tar",
+ "tboard",
  "time",
+ "zstd 0.13.3",
 ]
 
 [[package]]

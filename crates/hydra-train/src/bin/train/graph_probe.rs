@@ -6,9 +6,9 @@ use std::time::Instant;
 #[cfg(feature = "cuda-graph")]
 use hydra_train::data::bc_shards::{BcShardSplit, load_bc_shard_reader};
 #[cfg(feature = "cuda-graph")]
-use hydra_train::data::pipeline::stream_train_epoch;
-#[cfg(feature = "cuda-graph")]
 use hydra_train::model::HydraModel;
+#[cfg(feature = "cuda-graph")]
+use hydra_train_exec::data_pipeline::stream_train_epoch;
 
 #[cfg(feature = "cuda-graph")]
 use crate::TrainBackend;
