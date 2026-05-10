@@ -11,9 +11,10 @@ use super::config::{TrainConfig, display_num_threads};
 use super::progress::BannerStats;
 
 pub(crate) use hydra_train_exec::presentation::{
-    explicit_preflight_recommendation, format_advisory_line, format_progress_message,
-    format_warning_line, make_bar, make_spinner, phase_label, timestamped,
+    explicit_preflight_recommendation, format_advisory_line, format_warning_line, timestamped,
 };
+#[cfg(test)]
+pub(crate) use hydra_train_exec::presentation::{format_progress_message, phase_label};
 
 pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {
     if config.is_learner() {

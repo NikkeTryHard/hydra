@@ -5,10 +5,7 @@ use std::path::Path;
 use hydra_train_exec::artifacts::append_step_log_to_writer;
 #[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::log_tensorboard;
-pub(crate) use hydra_train_exec::artifacts::{
-    BcArtifactPaths, JsonlAppender, LatestCheckpointState, append_advisory_event_to_writer,
-    save_latest_checkpoint_and_state,
-};
+pub(crate) use hydra_train_exec::artifacts::{BcArtifactPaths, append_advisory_event_to_writer};
 #[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::{
     PersistedDeltaQPromotionArtifact, write_delta_q_promotion_artifact,

@@ -1,4 +1,6 @@
-pub(super) use hydra_train_exec::progress::{BannerStats, BatchStats, ScalarAverages};
+pub(super) use hydra_train_exec::progress::BannerStats;
+#[cfg(test)]
+pub(super) use hydra_train_exec::progress::{BatchStats, ScalarAverages};
 #[cfg(test)]
 pub(super) type EpochLogEntry = hydra_train_exec::progress::EpochLogEntry<
     hydra_train_exec::validation::DeltaQPromotionSnapshot,

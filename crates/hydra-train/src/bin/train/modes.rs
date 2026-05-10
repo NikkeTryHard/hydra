@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use hydra_train_exec::delta_q_promotion::handle_delta_q_promotion_mode as run_exec_delta_q_promotion_mode;
+use hydra_train_exec::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use hydra_train_exec::modes::{
     handle_preflight_mode as run_exec_preflight_mode, handle_probe_mode as run_exec_probe_mode,
 };
@@ -14,7 +15,6 @@ use super::bootstrap::TrainingReaders;
 use super::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime, initialize_rl_training_bootstrap};
 use super::bootstrap::{TrainingBootstrap, TrainingRuntime, initialize_training_bootstrap};
 use super::config::TrainConfig;
-use super::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use super::presentation::{
     bc_hyperparam_summary_input, explicit_preflight_recommendation, format_advisory_line,
     format_warning_line, print_banner, timestamped,

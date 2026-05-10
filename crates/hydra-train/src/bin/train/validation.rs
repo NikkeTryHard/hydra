@@ -4,6 +4,7 @@ use hydra_train_exec::resume::BestValidation;
 pub(super) use hydra_train_exec::validation::DeltaQPolicyTransferSnapshot;
 #[cfg(test)]
 pub(super) use hydra_train_exec::validation::DeltaQPromotionSnapshot;
+#[cfg(test)]
 pub(super) use hydra_train_exec::validation::ValidationSummary;
 
 #[cfg(test)]
