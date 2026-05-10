@@ -16,6 +16,8 @@ pub mod bc_metrics;
 pub mod bc_runtime;
 /// Training bootstrap initialization and prepared runtime state.
 pub mod bootstrap;
+/// LibTorch/Rayon runtime helpers for execution-owned config materialization.
+pub mod config_runtime;
 /// CUDA graph and pinned-memory FFI wrappers for exec-owned GPU adapters.
 #[cfg(feature = "cuda-graph")]
 pub mod cuda_graph;

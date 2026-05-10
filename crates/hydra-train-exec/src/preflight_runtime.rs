@@ -50,6 +50,7 @@ use crate::bc_fixed_shape::{
     probe_train_fixed_chunks,
 };
 use crate::bc_metrics::batch_stats_from_outputs;
+use crate::config_runtime::{configure_threads, train_device, trainer_config_from_train_config};
 #[cfg(test)]
 use crate::data_pipeline::DataSource;
 use crate::epoch_runner::{
@@ -88,10 +89,7 @@ use crate::validation_runner::{
     run_validation,
 };
 use hydra_data_core::manifest::DataManifest as CoreDataManifest;
-use hydra_train_runtime::config::{
-    ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system, train_device,
-};
-use hydra_train_runtime::config_runtime::trainer_config_from_train_config;
+use hydra_train_runtime::config::{ProbeChildRequest, TrainConfig, default_num_threads_for_system};
 use hydra_train_runtime::loss_policy::{build_bc_exit_config, build_loss_config};
 use hydra_train_runtime::probe_request::{
     ProbeBatchRequest, ProbeRequest, probe_batch_child_request_from_cli,

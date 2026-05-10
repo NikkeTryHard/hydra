@@ -26,14 +26,16 @@ use hydra_replay_sidecar::{
 };
 use hydra_train_algo::gae::GaeConfig;
 use hydra_train_runtime::config::{RlTrainConfig, TrainConfig};
-use hydra_train_runtime::config_runtime::{
-    configure_threads, device_label, rl_config_from_train_config, train_device,
-    train_microbatch_size, trainer_config_from_train_config, validate_config,
-};
-use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
+use hydra_train_runtime::config_runtime::train_microbatch_size;
 use hydra_train_runtime::loss_policy::{
     build_bc_exit_config, build_loss_config, build_rl_loss_config,
 };
+
+use crate::config_runtime::{
+    configure_threads, device_label, rl_config_from_train_config, train_device,
+    trainer_config_from_train_config, validate_config,
+};
+use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train_runtime::progress::BannerStats;
 use hydra_train_runtime::schedule::schedule_total_steps;
 use hydra_train_types::config::BCTrainerConfig;

@@ -7,9 +7,9 @@ pub use hydra_data_core::SourceFilterConfig;
 use hydra_train_types::phase::TrainingPhase as PipelineTrainingPhase;
 
 pub use super::config_runtime::{
-    configure_threads, default_num_threads_for_system, device_label, display_num_threads,
-    loader_runtime_config, shard_prefetch_depth, train_device, train_microbatch_size,
-    validate_config, validation_microbatch_size, validation_sample_limit,
+    default_num_threads_for_system, display_num_threads, loader_runtime_config,
+    shard_prefetch_depth, train_microbatch_size, validate_config, validation_microbatch_size,
+    validation_sample_limit,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

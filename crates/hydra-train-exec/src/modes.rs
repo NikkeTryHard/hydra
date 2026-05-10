@@ -10,10 +10,9 @@ use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
-use hydra_train_runtime::config::{
-    PrecisionMode, TrainCli, TrainConfig, configure_threads, device_label, display_num_threads,
-    train_device, validate_config,
-};
+use hydra_train_runtime::config::{PrecisionMode, TrainCli, TrainConfig, display_num_threads};
+
+use crate::config_runtime::{configure_threads, device_label, train_device, validate_config};
 use hydra_train_runtime::preflight::{
     EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult,
 };

@@ -108,7 +108,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::artifacts::BcArtifactPaths;
-    use crate::config::{train_device, train_microbatch_size, validate_config};
+    use crate::config::{train_microbatch_size, validate_config};
     use crate::loss_policy::build_loss_config;
     use crate::presentation::{format_progress_message, phase_label};
     use crate::resume::{
@@ -122,6 +122,7 @@ mod tests {
         reached_session_step_budget, session_steps_completed,
     };
     use crate::validation::{ValidationSummary, is_better_validation};
+    use hydra_train_exec::config_runtime::train_device;
 
     #[test]
     fn parse_args_accepts_single_config_path() {

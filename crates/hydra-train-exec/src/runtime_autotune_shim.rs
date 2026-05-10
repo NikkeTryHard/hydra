@@ -28,8 +28,9 @@ use crate::presentation::{
     make_bar,
 };
 use hydra_train_runtime::config::{RlTrainConfig, TrainConfig, loader_runtime_config};
-use hydra_train_runtime::config_runtime::rl_config_from_train_config;
 use hydra_train_runtime::loss_policy::build_rl_loss_config;
+
+use crate::config_runtime::{rl_config_from_train_config, trainer_config_from_train_config};
 
 pub type RuntimeTuple = (usize, usize, usize);
 
@@ -322,10 +323,9 @@ where
 {
     let model_config = HydraModelConfig::learner();
     let mut model = model_config.init::<B>(train_device);
-    let mut optimizer =
-        hydra_train_runtime::config_runtime::trainer_config_from_train_config(config)
-            .optimizer_config()
-            .init();
+    let mut optimizer = trainer_config_from_train_config(config)
+        .optimizer_config()
+        .init();
     let loss_fn =
         crate::losses::HydraLoss::<B>::new(build_rl_loss_config(config.advanced_loss.as_ref())?);
     let rl_cfg = rl_config_from_train_config(rl);
