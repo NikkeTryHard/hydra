@@ -30,10 +30,10 @@ use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
+use crate::data::sample::MjaiBcBatch;
 use hydra_bc_shards::BcShardHostBatch;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-use hydra_train_runtime::data::sample::MjaiBcBatch;
 use hydra_train_types::losses::HydraTargets;
 
 use crate::epoch_runner::BcShardDeviceBatch;

@@ -19,6 +19,12 @@ pub mod bootstrap;
 /// CUDA graph and pinned-memory FFI wrappers for exec-owned GPU adapters.
 #[cfg(feature = "cuda-graph")]
 pub mod cuda_graph;
+#[allow(
+    missing_docs,
+    reason = "migrated MJAI data adapter API preserves train facade compatibility"
+)]
+/// Burn-facing MJAI sample collation and validation data adapters.
+pub mod data;
 /// Exec-owned streaming MJAI data pipeline for preflight and epoch runners.
 pub mod data_pipeline;
 /// Delta-Q promotion mode execution and paired arena helpers.

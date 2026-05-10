@@ -2,6 +2,10 @@ use crate::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
 };
 use crate::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
+use crate::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
+use crate::delta_q_promotion::{
+    collect_policy_transfer_metrics_from_policy_outputs, collect_promotion_metrics_from_outputs,
+};
 use crate::losses::HydraLoss;
 use crate::model::{HydraModel, HydraTrainModelExt};
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
@@ -13,10 +17,6 @@ use hydra_bc_shards::{
     BcShardSplit as ExtractedBcShardSplit, load_bc_shard_reader as load_extracted_bc_shard_reader,
 };
 use hydra_data_core::manifest::DataManifest;
-use hydra_train_runtime::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
-use hydra_train_runtime::delta_q_promotion::{
-    collect_policy_transfer_metrics_from_policy_outputs, collect_promotion_metrics_from_outputs,
-};
 use hydra_train_runtime::head_gates::HeadActivationController;
 use hydra_train_runtime::nvtx;
 use hydra_train_runtime::preflight::{
@@ -916,12 +916,12 @@ mod tests {
     use super::*;
 
     use crate::bc_runtime::bc_total_with_exit_from_breakdown;
+    use crate::data::sample::MjaiBatch;
     use crate::model::HydraModelConfig;
     use burn::backend::libtorch::LibTorchDevice;
     use burn::tensor::Tensor;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
-    use hydra_train_runtime::data::sample::MjaiBatch;
     use hydra_train_types::losses::HydraLossConfig;
 
     type TrainBackend = burn::backend::Autodiff<burn::backend::LibTorch>;

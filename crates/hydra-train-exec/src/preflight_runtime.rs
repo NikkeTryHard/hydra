@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::bc_runtime::gated_bc_context;
+use crate::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use crate::data_pipeline::{
     DataManifest, StreamingLoaderConfig, stream_train_epoch, stream_val_microbatches,
 };
@@ -21,7 +22,6 @@ use hydra_bc_shards::{
     load_bc_shard_reader as load_extracted_bc_shard_reader,
 };
 use hydra_replay_loader::ReplayTargetProfile;
-use hydra_train_runtime::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
 #[cfg(test)]
 use hydra_train_runtime::preflight::ManifestCacheEntry;
@@ -2614,13 +2614,12 @@ where
     {
         let microbatch = microbatch_result
             .map_err(|err| format!("preflight validation stream failed: {err}"))?;
-        let Some((obs, batch, targets)) =
-            hydra_train_runtime::data::sample::collate_samples_bc_owned::<ValidBackendOf<B>>(
-                microbatch.as_slice(),
-                false,
-                train_device,
-            )
-            .map_err(|err| format!("preflight validation collation failed: {err}"))?
+        let Some((obs, batch, targets)) = collate_samples_bc_owned::<ValidBackendOf<B>>(
+            microbatch.as_slice(),
+            false,
+            train_device,
+        )
+        .map_err(|err| format!("preflight validation collation failed: {err}"))?
         else {
             continue;
         };

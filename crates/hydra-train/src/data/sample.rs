@@ -1,1 +1,1 @@
-pub use hydra_train_runtime::data::sample::*;
+pub use hydra_train_exec::data::sample::*;

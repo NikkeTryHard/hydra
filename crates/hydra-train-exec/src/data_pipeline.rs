@@ -21,6 +21,7 @@ use rayon::prelude::*;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+pub use crate::data::validation_stream::StreamValMicrobatchIterator;
 use hydra_data_core::MjaiSample;
 pub use hydra_replay_loader::ReplayTargetProfile;
 use hydra_replay_loader::{
@@ -32,7 +33,6 @@ use hydra_sample_cache::{
     ParsedSampleCacheMetadata, is_parsed_sample_cache_file, load_parsed_sample_cache,
     read_parsed_sample_cache_metadata,
 };
-pub use hydra_train_runtime::data::validation_stream::StreamValMicrobatchIterator;
 
 fn compact_identity(identity: &str) -> &str {
     identity.rsplit('/').next().unwrap_or(identity)

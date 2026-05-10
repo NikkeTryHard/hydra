@@ -2,11 +2,11 @@ use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
+use crate::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use crate::losses::HydraLoss;
 use crate::model::{HydraModel, HydraTrainModelExt};
 use hydra_model::amp::maybe_autocast;
 use hydra_train_algo::bc::{BcExitConfig, maybe_add_exit_loss};
-use hydra_train_runtime::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
 use hydra_train_runtime::head_gates::HeadActivationController;
 use hydra_train_runtime::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
@@ -448,12 +448,10 @@ where
 mod tests {
     use super::*;
     use crate::bc_runtime::bc_total_with_exit_from_breakdown;
+    use crate::data::sample::{collate_batch_samples, collate_samples, collate_samples_owned};
     use burn::backend::{Autodiff, LibTorch};
     use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams, Optimizer};
     use hydra_core::encoder::NUM_CHANNELS;
-    use hydra_train_runtime::data::sample::{
-        collate_batch_samples, collate_samples, collate_samples_owned,
-    };
     use hydra_train_runtime::head_gates::HeadActivationConfig;
     use hydra_train_types::losses::HydraLossConfig;
 

@@ -28,7 +28,7 @@ use crate::data::parsed_sample_cache::{
     read_parsed_sample_cache_metadata,
 };
 use crate::data::sample::{MjaiSample, collate_sample_refs};
-pub use hydra_train_runtime::data::validation_stream::StreamValMicrobatchIterator;
+pub use hydra_train_exec::data::validation_stream::StreamValMicrobatchIterator;
 
 type CollatedTrainBatch<B> = Vec<(Tensor<B, 3>, HydraTargets<B>)>;
 use crate::training::losses::HydraTargets;

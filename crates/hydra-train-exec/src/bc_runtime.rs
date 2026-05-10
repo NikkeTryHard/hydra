@@ -1,8 +1,8 @@
 //! Behavioral-cloning execution adapters.
 
+use crate::data::sample::MjaiBatch;
 use burn::prelude::*;
 use hydra_model::model::HydraOutput;
-use hydra_train_runtime::data::sample::MjaiBatch;
 use hydra_train_runtime::head_gates::HeadActivationController;
 use hydra_train_types::head_gates::{AdvancedHead, borrow_or_extract_target_presence};
 use hydra_train_types::losses::{HydraTargets, LossBreakdown};

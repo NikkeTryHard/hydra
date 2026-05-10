@@ -11,10 +11,10 @@ pub use hydra_data_core::sample::{
 };
 use std::cell::RefCell;
 
+use crate::data::sample_targets::collate_action_targets;
 use crate::data::sample_targets::{
     cloned_hydra_targets, into_bc_batch_and_hydra_targets_inner, into_hydra_targets_inner,
 };
-use crate::exit::collate_exit_targets;
 use hydra_train_types::head_gates::{AdvancedHead, TargetPresence};
 use hydra_train_types::losses::HydraTargets;
 
@@ -490,9 +490,9 @@ impl CollateBuffers {
 
     fn to_batch<B: Backend>(&self, batch: usize, device: &B::Device) -> MjaiBatch<B> {
         let (exit_target, exit_mask) =
-            collate_exit_targets::<B>(&self.exit_samples[..batch], device);
+            collate_action_targets::<B>(&self.exit_samples[..batch], device);
         let (delta_q_target, delta_q_mask) =
-            crate::exit::collate_delta_q_targets::<B>(&self.delta_q_samples[..batch], device);
+            collate_action_targets::<B>(&self.delta_q_samples[..batch], device);
         MjaiBatch {
             obs: Tensor::<B, 1>::from_floats(&self.obs_flat[..batch * OBS_SIZE], device).reshape([
                 batch,
