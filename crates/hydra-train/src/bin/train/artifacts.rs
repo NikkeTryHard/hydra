@@ -19,10 +19,13 @@ use hydra_train::training::delta_q_promotion::{
     DeltaQPromotionResult,
 };
 
+#[cfg(test)]
 use super::advisory::AdvisoryEvent;
 #[cfg(test)]
 use super::advisory::RuntimeAdvisory;
-use super::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
+#[cfg(test)]
+use super::progress::{EpochLogEntry, RlStepLogEntry};
+use super::progress::{ScalarAverages, StepLogEntry};
 use super::resume::{
     BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
     read_resume_state, read_rl_resume_state, write_resume_state,
@@ -30,7 +33,10 @@ use super::resume::{
 use super::validation::{ValidationGateDecision, ValidationSummary};
 pub(crate) use hydra_train_exec::artifacts::{
     BcArtifactPaths, JsonlAppender, PreflightBenchmarkPaths, PreflightBenchmarkReport,
-    PreflightPaths, RlArtifactPaths, RlPreflightPaths, atomic_write_text,
+    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_advisory_event_to_writer,
+    append_rl_step_log_to_writer, append_step_log_to_writer, append_training_log_to_writer,
+    atomic_write_text, open_rl_step_log_appender, open_step_log_appender,
+    open_training_log_appender, write_checkpoint_meta as write_checkpoint_meta_file,
 };
 
 pub(crate) struct LatestCheckpointState<'a> {
@@ -234,19 +240,6 @@ fn checkpoint_meta(
     )
 }
 
-fn checkpoint_meta_semantically_matches(
-    existing: &CheckpointMeta,
-    candidate: &CheckpointMeta,
-) -> bool {
-    existing.epoch == candidate.epoch
-        && existing.train_loss == candidate.train_loss
-        && existing.eval_agreement == candidate.eval_agreement
-        && existing.eval_policy_loss == candidate.eval_policy_loss
-        && existing.eval_total_loss == candidate.eval_total_loss
-        && existing.num_blocks == candidate.num_blocks
-        && existing.hidden_channels == candidate.hidden_channels
-}
-
 fn write_checkpoint_meta(
     base: &Path,
     epoch: usize,
@@ -254,22 +247,7 @@ fn write_checkpoint_meta(
     val_summary: Option<&ValidationSummary>,
 ) -> Result<(), String> {
     let meta = checkpoint_meta(epoch, loss, val_summary);
-    let meta_path = base.with_extension("meta.json");
-    if let Ok(raw) = fs::read_to_string(&meta_path)
-        && let Ok(existing) = serde_json::from_str::<CheckpointMeta>(&raw)
-        && checkpoint_meta_semantically_matches(&existing, &meta)
-    {
-        return Ok(());
-    }
-    let meta_json = serde_json::to_string_pretty(&meta).map_err(|err| {
-        format!("failed to serialize checkpoint metadata for epoch {epoch}: {err}")
-    })?;
-    fs::write(&meta_path, meta_json).map_err(|err| {
-        format!(
-            "failed to write checkpoint metadata {}: {err}",
-            meta_path.display()
-        )
-    })
+    write_checkpoint_meta_file(base, &meta)
 }
 
 fn save_optimizer_payload<B, O>(optimizer: &O, base: &Path) -> Result<(), String>
@@ -307,114 +285,21 @@ fn latest_rl_payload_is_current(artifacts: &RlArtifactPaths, global_step: usize)
         .unwrap_or(false)
 }
 
-fn open_jsonl_appender(path: &Path, log_name: &str) -> Result<JsonlAppender, String> {
-    fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|err| format!("failed to open {log_name} {}: {err}", path.display()))
-}
-
-fn append_jsonl_entry<W, T>(
-    writer: &mut W,
-    entry: &T,
-    target: &str,
-    entry_name: &str,
-) -> Result<(), String>
-where
-    W: Write,
-    T: serde::Serialize,
-{
-    let line = serde_json::to_string(entry)
-        .map_err(|err| format!("failed to serialize {entry_name}: {err}"))?;
-    writeln!(writer, "{line}").map_err(|err| format!("failed to append {target}: {err}"))?;
-    writer
-        .flush()
-        .map_err(|err| format!("failed to flush {target}: {err}"))
-}
-
-pub(crate) fn open_training_log_appender(path: &Path) -> Result<JsonlAppender, String> {
-    open_jsonl_appender(path, "training log")
-}
-
-pub(crate) fn open_step_log_appender(path: &Path) -> Result<JsonlAppender, String> {
-    open_jsonl_appender(path, "step log")
-}
-
-pub(crate) fn open_rl_step_log_appender(path: &Path) -> Result<JsonlAppender, String> {
-    open_jsonl_appender(path, "RL step log")
-}
-
-pub(crate) fn append_training_log_to_writer<W>(
-    writer: &mut W,
-    entry: &EpochLogEntry,
-) -> Result<(), String>
-where
-    W: Write,
-{
-    append_jsonl_entry(writer, entry, "training log", "training log entry")
-}
-
-pub(crate) fn append_step_log_to_writer<W>(
-    writer: &mut W,
-    entry: &StepLogEntry,
-) -> Result<(), String>
-where
-    W: Write,
-{
-    append_jsonl_entry(writer, entry, "step log", "step log entry")
-}
-
-pub(crate) fn append_advisory_event_to_writer<W>(
-    writer: &mut W,
-    entry: &AdvisoryEvent<'_>,
-) -> Result<(), String>
-where
-    W: Write,
-{
-    append_jsonl_entry(writer, entry, "step log", "runtime advisory event")
-}
-
-pub(crate) fn append_rl_step_log_to_writer<W>(
-    writer: &mut W,
-    entry: &RlStepLogEntry,
-) -> Result<(), String>
-where
-    W: Write,
-{
-    append_jsonl_entry(writer, entry, "RL step log", "RL step log entry")
-}
-
 #[cfg(test)]
 pub(crate) fn append_training_log(path: &Path, entry: &EpochLogEntry) -> Result<(), String> {
     let mut file = open_training_log_appender(path)?;
-    append_jsonl_entry(
-        &mut file,
-        entry,
-        &format!("training log {}", path.display()),
-        "training log entry",
-    )
+    append_training_log_to_writer(&mut file, entry)
 }
 
 pub(crate) fn append_step_log(path: &Path, entry: &StepLogEntry) -> Result<(), String> {
     let mut file = open_step_log_appender(path)?;
-    append_jsonl_entry(
-        &mut file,
-        entry,
-        &format!("step log {}", path.display()),
-        "step log entry",
-    )
+    append_step_log_to_writer(&mut file, entry)
 }
 
 #[cfg(test)]
 pub(crate) fn append_rl_step_log(path: &Path, entry: &RlStepLogEntry) -> Result<(), String> {
     let mut file = open_rl_step_log_appender(path)?;
-    append_jsonl_entry(
-        &mut file,
-        entry,
-        &format!("RL step log {}", path.display()),
-        "RL step log entry",
-    )
+    append_rl_step_log_to_writer(&mut file, entry)
 }
 
 #[derive(serde::Serialize)]

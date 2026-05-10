@@ -6,6 +6,7 @@
 //! and orchestration code so it can sit below `hydra-train` in the dependency
 //! graph without creating cycles.
 
+pub mod checkpoint;
 pub mod delta_q_promotion;
 pub mod head_gates;
 pub mod losses;

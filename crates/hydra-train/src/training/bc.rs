@@ -466,59 +466,7 @@ where
     (m, stats)
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct CheckpointMeta {
-    pub epoch: u32,
-    pub train_loss: f64,
-    pub eval_agreement: Option<f64>,
-    pub eval_policy_loss: Option<f64>,
-    pub eval_total_loss: Option<f64>,
-    pub timestamp: u64,
-    pub num_blocks: usize,
-    pub hidden_channels: usize,
-}
-
-impl CheckpointMeta {
-    pub fn new(
-        epoch: u32,
-        train_loss: f64,
-        eval_agreement: Option<f64>,
-        eval_policy_loss: Option<f64>,
-        eval_total_loss: Option<f64>,
-    ) -> Self {
-        Self {
-            epoch,
-            train_loss,
-            eval_agreement,
-            eval_policy_loss,
-            eval_total_loss,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            num_blocks: 24,
-            hidden_channels: 256,
-        }
-    }
-
-    pub fn summary(&self) -> String {
-        let eval_summary = match (
-            self.eval_policy_loss,
-            self.eval_total_loss,
-            self.eval_agreement,
-        ) {
-            (Some(policy_loss), Some(total_loss), Some(agreement)) => format!(
-                "policy_ce={policy_loss:.4} total={total_loss:.4} agree={:.2}%",
-                agreement * 100.0
-            ),
-            _ => "eval=n/a".to_string(),
-        };
-        format!(
-            "epoch={} loss={:.4} {}",
-            self.epoch, self.train_loss, eval_summary
-        )
-    }
-}
+pub use hydra_train_types::checkpoint::CheckpointMeta;
 
 #[cfg(test)]
 mod tests {
@@ -1063,6 +1011,21 @@ mod tests {
         assert_eq!(
             meta.summary(),
             "epoch=10 loss=2.5000 policy_ce=1.7500 total=2.2500 agree=37.50%"
+        );
+    }
+
+    #[test]
+    fn checkpoint_meta_old_path_remains_available() {
+        let meta: CheckpointMeta = hydra_train_types::checkpoint::CheckpointMeta::new(
+            1,
+            0.5,
+            Some(0.25),
+            Some(0.75),
+            Some(1.25),
+        );
+        assert_eq!(
+            meta.summary(),
+            "epoch=1 loss=0.5000 policy_ce=0.7500 total=1.2500 agree=25.00%"
         );
     }
 

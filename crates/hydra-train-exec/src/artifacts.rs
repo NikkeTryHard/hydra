@@ -8,7 +8,10 @@ use hydra_train_runtime::preflight::{
     BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
     PreflightCacheKey, default_cache_name, default_manifest_cache_name,
 };
+use hydra_train_types::checkpoint::CheckpointMeta;
 
+use crate::advisory::AdvisoryEvent;
+use crate::progress::{EpochLogEntry, RlStepLogEntry, StepLogEntry};
 use crate::resume::current_timestamp_s;
 
 /// BC artifact paths rooted below the configured output directory.
@@ -305,6 +308,104 @@ where
         .map_err(|err| format!("failed to flush {target}: {err}"))
 }
 
+/// Opens the BC epoch training log JSONL appender.
+pub fn open_training_log_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "training log")
+}
+
+/// Opens the BC step training log JSONL appender.
+pub fn open_step_log_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "step log")
+}
+
+/// Opens the RL step training log JSONL appender.
+pub fn open_rl_step_log_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "RL step log")
+}
+
+/// Appends a BC epoch training log entry as one JSONL line.
+pub fn append_training_log_to_writer<W, DeltaQPromotionSnapshot>(
+    writer: &mut W,
+    entry: &EpochLogEntry<DeltaQPromotionSnapshot>,
+) -> Result<(), String>
+where
+    W: Write,
+    DeltaQPromotionSnapshot: serde::Serialize,
+{
+    append_jsonl_entry(writer, entry, "training log", "training log entry")
+}
+
+/// Appends a BC step training log entry as one JSONL line.
+pub fn append_step_log_to_writer<W, DeltaQPromotionSnapshot>(
+    writer: &mut W,
+    entry: &StepLogEntry<DeltaQPromotionSnapshot>,
+) -> Result<(), String>
+where
+    W: Write,
+    DeltaQPromotionSnapshot: serde::Serialize,
+{
+    append_jsonl_entry(writer, entry, "step log", "step log entry")
+}
+
+/// Appends a runtime advisory event as one JSONL line in the step log schema.
+pub fn append_advisory_event_to_writer<W>(
+    writer: &mut W,
+    entry: &AdvisoryEvent<'_>,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(writer, entry, "step log", "runtime advisory event")
+}
+
+/// Appends an RL step training log entry as one JSONL line.
+pub fn append_rl_step_log_to_writer<W>(writer: &mut W, entry: &RlStepLogEntry) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(writer, entry, "RL step log", "RL step log entry")
+}
+
+/// Returns true when persisted checkpoint metadata is semantically identical to a candidate.
+///
+/// `timestamp` is intentionally ignored: it records write time, not checkpoint identity.
+#[must_use]
+pub fn checkpoint_meta_semantically_matches(
+    existing: &CheckpointMeta,
+    candidate: &CheckpointMeta,
+) -> bool {
+    existing.epoch == candidate.epoch
+        && existing.train_loss == candidate.train_loss
+        && existing.eval_agreement == candidate.eval_agreement
+        && existing.eval_policy_loss == candidate.eval_policy_loss
+        && existing.eval_total_loss == candidate.eval_total_loss
+        && existing.num_blocks == candidate.num_blocks
+        && existing.hidden_channels == candidate.hidden_channels
+}
+
+/// Writes checkpoint metadata next to a checkpoint base path, preserving existing semantic matches.
+pub fn write_checkpoint_meta(base: &Path, meta: &CheckpointMeta) -> Result<(), String> {
+    let meta_path = base.with_extension("meta.json");
+    if let Ok(raw) = fs::read_to_string(&meta_path)
+        && let Ok(existing) = serde_json::from_str::<CheckpointMeta>(&raw)
+        && checkpoint_meta_semantically_matches(&existing, meta)
+    {
+        return Ok(());
+    }
+    let meta_json = serde_json::to_string_pretty(meta).map_err(|err| {
+        format!(
+            "failed to serialize checkpoint metadata for epoch {}: {err}",
+            meta.epoch
+        )
+    })?;
+    fs::write(&meta_path, meta_json).map_err(|err| {
+        format!(
+            "failed to write checkpoint metadata {}: {err}",
+            meta_path.display()
+        )
+    })
+}
+
 /// Writes a preflight cache entry.
 pub fn write_preflight_cache(path: &Path, entry: &PreflightCacheEntry) -> Result<(), String> {
     let json = serde_json::to_string_pretty(entry).map_err(|err| {
@@ -363,4 +464,50 @@ pub fn read_manifest_cache(path: &Path) -> Result<Option<ManifestCacheEntry>, St
     let entry: ManifestCacheEntry = serde_json::from_str(&raw)
         .map_err(|err| format!("failed to parse manifest cache {}: {err}", path.display()))?;
     Ok(Some(entry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_checkpoint_base(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hydra_exec_{label}_{unique}"))
+    }
+
+    #[test]
+    fn checkpoint_meta_semantic_match_ignores_timestamp_only() {
+        let mut existing = CheckpointMeta::new(3, 1.25, Some(0.5), Some(1.0), Some(2.0));
+        let mut candidate = existing.clone();
+        candidate.timestamp = existing.timestamp.saturating_add(10);
+
+        assert!(checkpoint_meta_semantically_matches(&existing, &candidate));
+
+        existing.hidden_channels += 1;
+        assert!(!checkpoint_meta_semantically_matches(&existing, &candidate));
+    }
+
+    #[test]
+    fn write_checkpoint_meta_preserves_existing_semantic_match() {
+        let base = temp_checkpoint_base("checkpoint_meta_preserve");
+        let meta_path = base.with_extension("meta.json");
+        let meta = CheckpointMeta::new(4, 2.5, None, None, None);
+
+        write_checkpoint_meta(&base, &meta).expect("write checkpoint metadata");
+        let first_raw = fs::read_to_string(&meta_path).expect("read checkpoint metadata");
+        let mut same_semantics = meta.clone();
+        same_semantics.timestamp = meta.timestamp.saturating_add(60);
+        write_checkpoint_meta(&base, &same_semantics)
+            .expect("rewrite matching checkpoint metadata");
+
+        assert_eq!(
+            fs::read_to_string(&meta_path).expect("read preserved checkpoint metadata"),
+            first_raw
+        );
+        let _ = fs::remove_file(meta_path);
+    }
 }
