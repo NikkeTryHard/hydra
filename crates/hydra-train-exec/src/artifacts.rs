@@ -4,6 +4,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use burn::optim::Optimizer;
+use burn::prelude::Module;
+use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
+use burn::tensor::backend::{AutodiffBackend, Backend};
+use hydra_train_runtime::model::HydraModel;
 use hydra_train_runtime::preflight::{
     BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
     PreflightCacheKey, default_cache_name, default_manifest_cache_name,
@@ -18,6 +23,7 @@ use hydra_train_types::delta_q_promotion::{
 use crate::advisory::AdvisoryEvent;
 use crate::progress::{EpochLogEntry, RlStepLogEntry, StepLogEntry};
 use crate::resume::current_timestamp_s;
+use crate::resume::{read_resume_state, read_rl_resume_state};
 use crate::validation::ValidationGateDecision;
 
 /// BC artifact paths rooted below the configured output directory.
@@ -482,6 +488,73 @@ pub fn write_checkpoint_meta(base: &Path, meta: &CheckpointMeta) -> Result<(), S
             meta_path.display()
         )
     })
+}
+
+/// Saves a model checkpoint payload at the provided base path.
+pub fn save_model_payload<B: Backend>(model: &HydraModel<B>, base: &Path) -> Result<(), String> {
+    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+    model
+        .clone()
+        .save_file(base, &recorder)
+        .map_err(|err| format!("failed to save checkpoint {}: {err}", base.display()))
+}
+
+/// Saves an optimizer checkpoint payload at the provided base path.
+pub fn save_optimizer_payload<B, O>(optimizer: &O, base: &Path) -> Result<(), String>
+where
+    B: AutodiffBackend,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
+    optimizer_recorder
+        .record(optimizer.to_record(), base.to_path_buf())
+        .map_err(|err| format!("failed to save optimizer state {}: {err}", base.display()))
+}
+
+/// Builds checkpoint metadata from train/eval metrics.
+#[must_use]
+pub fn checkpoint_meta(
+    epoch: usize,
+    loss: f64,
+    eval_agreement: Option<f64>,
+    eval_policy_loss: Option<f64>,
+    eval_total_loss: Option<f64>,
+) -> CheckpointMeta {
+    CheckpointMeta::new(
+        epoch as u32,
+        loss,
+        eval_agreement,
+        eval_policy_loss,
+        eval_total_loss,
+    )
+}
+
+fn latest_checkpoint_payload_exists(model_base: &Path, optimizer_base: &Path) -> bool {
+    model_base.with_extension("mpk").exists()
+        && model_base.with_extension("meta.json").exists()
+        && optimizer_base.with_extension("bin").exists()
+}
+
+/// Returns true when latest BC checkpoint payload files match the resume state's global step.
+#[must_use]
+pub fn latest_bc_payload_is_current(artifacts: &BcArtifactPaths, global_step: usize) -> bool {
+    latest_checkpoint_payload_exists(
+        &artifacts.latest_model_base,
+        &artifacts.latest_optimizer_base,
+    ) && read_resume_state(&artifacts.latest_state_path)
+        .map(|state| state.global_step == global_step)
+        .unwrap_or(false)
+}
+
+/// Returns true when latest RL checkpoint payload files match the resume state's global step.
+#[must_use]
+pub fn latest_rl_payload_is_current(artifacts: &RlArtifactPaths, global_step: usize) -> bool {
+    latest_checkpoint_payload_exists(
+        &artifacts.latest_model_base,
+        &artifacts.latest_optimizer_base,
+    ) && read_rl_resume_state(&artifacts.latest_state_path)
+        .map(|state| state.global_step == global_step)
+        .unwrap_or(false)
 }
 
 /// Writes a preflight cache entry.

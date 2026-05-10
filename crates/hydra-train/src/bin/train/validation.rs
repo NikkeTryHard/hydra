@@ -10,10 +10,15 @@ use hydra_bc_shards::{
     BcShardHostBatch as ExtractedBcShardHostBatch, BcShardReader as ExtractedBcShardReader,
     BcShardSplit as ExtractedBcShardSplit, load_bc_shard_reader as load_extracted_bc_shard_reader,
 };
+use hydra_data_core::manifest::DataManifest;
+#[cfg(test)]
+use hydra_data_core::manifest::DataSource;
+#[cfg(test)]
+use hydra_replay_loader::mjai_loader::ReplayTargetProfile;
 use hydra_train::data::bc_shards::{
     BcShardBatch, BcShardHostBatch, BcShardReader, materialize_extracted_host_batch,
 };
-use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_microbatches};
+use hydra_train::data::pipeline::{StreamingLoaderConfig, stream_val_microbatches};
 use hydra_train_runtime::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 #[cfg(test)]
 use hydra_train_runtime::data::sample::MjaiBatch;
@@ -762,7 +767,7 @@ mod tests {
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::encoder::NUM_CHANNELS;
     use hydra_core::encoder::OBS_SIZE;
-    use hydra_train::data::pipeline::{DataSource, stream_val_pass};
+    use hydra_train::data::pipeline::stream_val_pass;
     use hydra_train_runtime::bc_runtime::bc_total_with_exit_from_breakdown;
     use hydra_train_runtime::data::sample::MjaiSample;
     use hydra_train_runtime::model::HydraModelConfig;
@@ -1243,8 +1248,7 @@ mod tests {
             seed: 0,
             archive_queue_bound: 1,
             max_skip_logs_per_source: 1,
-            replay_target_profile: hydra_train::data::mjai_loader::ReplayTargetProfile::minimal_bc(
-            ),
+            replay_target_profile: ReplayTargetProfile::minimal_bc(),
             ..StreamingLoaderConfig::default()
         };
         let streamed_buffers = stream_val_pass(&manifest, &loader_config, None)

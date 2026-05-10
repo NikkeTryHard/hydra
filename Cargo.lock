@@ -3352,6 +3352,7 @@ dependencies = [
 name = "hydra-train-exec"
 version = "0.1.0"
 dependencies = [
+ "burn",
  "colored",
  "hydra-bc-shards",
  "hydra-data-core",

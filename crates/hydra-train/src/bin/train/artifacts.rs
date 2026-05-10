@@ -3,8 +3,6 @@ use std::io::Write;
 use std::path::Path;
 
 use burn::optim::Optimizer;
-use burn::prelude::Module;
-use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use tboard::EventWriter;
 
@@ -13,7 +11,6 @@ use hydra_train::model::HydraModel;
 use hydra_train::preflight::ManifestCacheEntry;
 #[cfg(test)]
 use hydra_train::preflight::PreflightCacheEntry;
-use hydra_train::training::bc::CheckpointMeta;
 
 #[cfg(test)]
 use super::advisory::AdvisoryEvent;
@@ -24,7 +21,7 @@ use super::progress::{EpochLogEntry, RlStepLogEntry};
 use super::progress::{ScalarAverages, StepLogEntry};
 use super::resume::{
     BestValidation, EpochContinuation, RlResumeState, RuntimeResumeContract, build_resume_state,
-    read_resume_state, read_rl_resume_state, write_resume_state,
+    write_resume_state,
 };
 use super::validation::ValidationSummary;
 pub(crate) use hydra_train_exec::artifacts::{
@@ -32,8 +29,10 @@ pub(crate) use hydra_train_exec::artifacts::{
     PersistedValidationGateArtifact, PreflightBenchmarkPaths, PreflightBenchmarkReport,
     PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_advisory_event_to_writer,
     append_rl_step_log_to_writer, append_step_log_to_writer, append_training_log_to_writer,
-    atomic_write_text, manifest_cache_matches, open_rl_step_log_appender, open_step_log_appender,
-    open_training_log_appender, read_manifest_cache, read_preflight_cache,
+    atomic_write_text, checkpoint_meta as build_checkpoint_meta, latest_bc_payload_is_current,
+    latest_rl_payload_is_current, manifest_cache_matches, open_rl_step_log_appender,
+    open_step_log_appender, open_training_log_appender, read_manifest_cache, read_preflight_cache,
+    save_model_payload, save_optimizer_payload,
     write_checkpoint_meta as write_checkpoint_meta_file, write_delta_q_promotion_artifact,
     write_manifest_cache, write_preflight_benchmark_report, write_preflight_cache,
     write_validation_gate_artifact,
@@ -148,71 +147,20 @@ pub(crate) fn save_checkpoint<B: Backend>(
     write_checkpoint_meta(base, epoch, loss, val_summary)
 }
 
-fn save_model_payload<B: Backend>(model: &HydraModel<B>, base: &Path) -> Result<(), String> {
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    model
-        .clone()
-        .save_file(base, &recorder)
-        .map_err(|err| format!("failed to save checkpoint {}: {err}", base.display()))
-}
-
-fn checkpoint_meta(
-    epoch: usize,
-    loss: f64,
-    val_summary: Option<&ValidationSummary>,
-) -> CheckpointMeta {
-    CheckpointMeta::new(
-        epoch as u32,
-        loss,
-        val_summary.map(|summary| summary.agreement),
-        val_summary.map(|summary| summary.policy_loss),
-        val_summary.map(|summary| summary.total_loss),
-    )
-}
-
 fn write_checkpoint_meta(
     base: &Path,
     epoch: usize,
     loss: f64,
     val_summary: Option<&ValidationSummary>,
 ) -> Result<(), String> {
-    let meta = checkpoint_meta(epoch, loss, val_summary);
+    let meta = build_checkpoint_meta(
+        epoch,
+        loss,
+        val_summary.map(|summary| summary.agreement),
+        val_summary.map(|summary| summary.policy_loss),
+        val_summary.map(|summary| summary.total_loss),
+    );
     write_checkpoint_meta_file(base, &meta)
-}
-
-fn save_optimizer_payload<B, O>(optimizer: &O, base: &Path) -> Result<(), String>
-where
-    B: AutodiffBackend,
-    O: Optimizer<HydraModel<B>, B>,
-{
-    let optimizer_recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-    optimizer_recorder
-        .record(optimizer.to_record(), base.to_path_buf())
-        .map_err(|err| format!("failed to save optimizer state {}: {err}", base.display()))
-}
-
-fn latest_checkpoint_payload_exists(model_base: &Path, optimizer_base: &Path) -> bool {
-    model_base.with_extension("mpk").exists()
-        && model_base.with_extension("meta.json").exists()
-        && optimizer_base.with_extension("bin").exists()
-}
-
-fn latest_bc_payload_is_current(artifacts: &BcArtifactPaths, global_step: usize) -> bool {
-    latest_checkpoint_payload_exists(
-        &artifacts.latest_model_base,
-        &artifacts.latest_optimizer_base,
-    ) && read_resume_state(&artifacts.latest_state_path)
-        .map(|state| state.global_step == global_step)
-        .unwrap_or(false)
-}
-
-fn latest_rl_payload_is_current(artifacts: &RlArtifactPaths, global_step: usize) -> bool {
-    latest_checkpoint_payload_exists(
-        &artifacts.latest_model_base,
-        &artifacts.latest_optimizer_base,
-    ) && read_rl_resume_state(&artifacts.latest_state_path)
-        .map(|state| state.global_step == global_step)
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
