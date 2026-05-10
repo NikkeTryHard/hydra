@@ -5,7 +5,6 @@
 pub mod config;
 pub mod config_runtime;
 pub mod delta_q_promotion;
-pub mod exit;
 pub mod gpu_config;
 pub mod head_gates;
 pub mod loss_policy;
