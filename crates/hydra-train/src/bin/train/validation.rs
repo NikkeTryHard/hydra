@@ -40,8 +40,8 @@ use super::progress::{BatchStats, batch_stats_from_outputs};
 use super::progress::{batch_metric_sums_from_outputs, batch_stats_from_metric_sums};
 use super::resume::BestValidation;
 pub(super) use hydra_train_exec::validation::{
-    DeltaQPolicyTransferSnapshot, DeltaQPromotionSnapshot, ValidationGateCriterion,
-    ValidationGateDecision,
+    DeltaQPolicyTransferSnapshot, DeltaQPromotionSnapshot, ValidationGateDecision,
+    ValidationScalarSummary,
 };
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -80,6 +80,19 @@ pub(super) struct ValidationSummary {
     pub(super) saw_delta_q_targets: bool,
 }
 
+impl ValidationSummary {
+    fn scalar_summary(&self) -> ValidationScalarSummary {
+        ValidationScalarSummary {
+            total_loss: self.total_loss,
+            policy_loss: self.policy_loss,
+            agreement: self.agreement,
+            samples: self.samples,
+            saw_exit_targets: self.saw_exit_targets,
+            saw_delta_q_targets: self.saw_delta_q_targets,
+        }
+    }
+}
+
 fn delta_q_promotion_snapshot_from_report(
     report: &DeltaQPromotionReport,
     result: &DeltaQPromotionResult,
@@ -116,90 +129,12 @@ pub(super) fn evaluate_validation_gates(
     summary: &ValidationSummary,
     best: Option<BestValidation>,
 ) -> ValidationGateDecision {
-    if !config.validation_gates.enabled {
-        return ValidationGateDecision::disabled();
-    }
-    let mut criteria = Vec::new();
-    if let Some(min_samples) = config.validation_gates.min_validation_samples {
-        let observed = summary.samples as f64;
-        criteria.push(ValidationGateCriterion {
-            name: "min_validation_samples".to_string(),
-            passed: summary.samples >= min_samples,
-            observed: Some(observed),
-            threshold: Some(min_samples as f64),
-            message: format!("validation samples {observed} >= {min_samples}"),
-        });
-    }
-    if let (Some(best), Some(max_regression)) =
-        (best, config.validation_gates.max_policy_loss_regression)
-    {
-        let threshold = best.policy_loss + max_regression;
-        criteria.push(ValidationGateCriterion {
-            name: "max_policy_loss_regression".to_string(),
-            passed: summary.policy_loss <= threshold,
-            observed: Some(summary.policy_loss),
-            threshold: Some(threshold),
-            message: format!("policy loss {:.6} <= {:.6}", summary.policy_loss, threshold),
-        });
-    }
-    if let (Some(best), Some(min_delta)) =
-        (best, config.validation_gates.min_policy_agreement_delta)
-    {
-        let threshold = best.agreement + min_delta;
-        criteria.push(ValidationGateCriterion {
-            name: "min_policy_agreement_delta".to_string(),
-            passed: summary.agreement >= threshold,
-            observed: Some(summary.agreement),
-            threshold: Some(threshold),
-            message: format!(
-                "policy agreement {:.6} >= {:.6}",
-                summary.agreement, threshold
-            ),
-        });
-    }
-    if config
-        .validation_gates
-        .require_sidecar_coverage_when_weighted
-    {
-        if config
-            .advanced_loss
-            .as_ref()
-            .and_then(|loss| loss.exit)
-            .is_some_and(|weight| weight > 0.0)
-        {
-            criteria.push(ValidationGateCriterion {
-                name: "exit_sidecar_coverage".to_string(),
-                passed: summary.saw_exit_targets,
-                observed: Some(if summary.saw_exit_targets { 1.0 } else { 0.0 }),
-                threshold: Some(1.0),
-                message: "ExIt sidecar targets present in validation".to_string(),
-            });
-        }
-        if config
-            .advanced_loss
-            .as_ref()
-            .and_then(|loss| loss.delta_q)
-            .is_some_and(|weight| weight > 0.0)
-        {
-            criteria.push(ValidationGateCriterion {
-                name: "delta_q_sidecar_coverage".to_string(),
-                passed: summary.saw_delta_q_targets,
-                observed: Some(if summary.saw_delta_q_targets {
-                    1.0
-                } else {
-                    0.0
-                }),
-                threshold: Some(1.0),
-                message: "DeltaQ sidecar targets present in validation".to_string(),
-            });
-        }
-    }
-    let passed = criteria.iter().all(|criterion| criterion.passed);
-    ValidationGateDecision {
-        enabled: true,
-        passed,
-        criteria,
-    }
+    hydra_train_exec::validation::evaluate_validation_gates(
+        &config.validation_gates,
+        config.advanced_loss.as_ref(),
+        &summary.scalar_summary(),
+        best,
+    )
 }
 
 struct ValidationAccumulator<B: Backend> {
@@ -470,14 +405,7 @@ pub(super) fn is_better_validation(
     summary: &ValidationSummary,
     best: Option<BestValidation>,
 ) -> bool {
-    match best {
-        None => true,
-        Some(best) => {
-            summary.policy_loss < best.policy_loss
-                || ((summary.policy_loss - best.policy_loss).abs() <= f64::EPSILON
-                    && summary.agreement > best.agreement)
-        }
-    }
+    hydra_train_exec::validation::is_better_validation(&summary.scalar_summary(), best)
 }
 
 pub(super) fn run_validation<TB>(

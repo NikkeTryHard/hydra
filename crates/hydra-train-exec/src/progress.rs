@@ -3,10 +3,94 @@
     reason = "moved train progress DTOs preserve existing public surface"
 )]
 
-use hydra_train_runtime::preflight::ProfilingEnvelope;
+use hydra_train_runtime::preflight::{
+    PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
+    PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED, PROFILING_STAGE_H2D_STREAM_SYNC,
+    PROFILING_STAGE_H2D_TENSOR_MATERIALIZE, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOSS,
+    PROFILING_STAGE_METRIC_READBACK, PROFILING_STAGE_OPTIMIZER_STEP, PROFILING_STAGE_PRODUCER_WAIT,
+    ProfilingEnvelope,
+};
 use serde::Serialize;
 
 use crate::advisory::RuntimeAdvisory;
+
+/// Scalar train sub-stage timings used to build profiling envelopes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TrainSubStageTiming {
+    /// Time spent waiting for producer batches, in seconds.
+    pub producer_wait_seconds: f64,
+    /// Time spent collating CPU samples, in seconds.
+    pub collation_seconds: f64,
+    /// Total host-to-device transfer wall time, in seconds.
+    pub h2d_transfer_seconds: f64,
+    /// Time spent copying pageable host memory to pinned staging, in seconds.
+    pub h2d_pageable_to_pinned_seconds: f64,
+    /// Time spent materializing device tensors, in seconds.
+    pub h2d_tensor_materialize_seconds: f64,
+    /// Time spent synchronizing H2D streams, in seconds.
+    pub h2d_stream_sync_seconds: f64,
+    /// Forward-pass time, in seconds.
+    pub forward_seconds: f64,
+    /// Loss computation time, in seconds.
+    pub loss_seconds: f64,
+    /// Backward-pass time, in seconds.
+    pub backward_seconds: f64,
+    /// Metric readback time, in seconds.
+    pub metric_readback_seconds: f64,
+    /// Optimizer step time, in seconds.
+    pub optimizer_step_seconds: f64,
+}
+
+impl TrainSubStageTiming {
+    /// Adds another timing sample into this accumulator.
+    pub fn accumulate(&mut self, other: &TrainSubStageTiming) {
+        self.producer_wait_seconds += other.producer_wait_seconds;
+        self.h2d_transfer_seconds += other.h2d_transfer_seconds;
+        self.h2d_pageable_to_pinned_seconds += other.h2d_pageable_to_pinned_seconds;
+        self.h2d_tensor_materialize_seconds += other.h2d_tensor_materialize_seconds;
+        self.h2d_stream_sync_seconds += other.h2d_stream_sync_seconds;
+        self.collation_seconds += other.collation_seconds;
+        self.forward_seconds += other.forward_seconds;
+        self.loss_seconds += other.loss_seconds;
+        self.backward_seconds += other.backward_seconds;
+        self.metric_readback_seconds += other.metric_readback_seconds;
+        self.optimizer_step_seconds += other.optimizer_step_seconds;
+    }
+
+    /// Converts this scalar timing snapshot into profiling envelope children.
+    pub fn to_profiling_children(&self) -> Vec<ProfilingEnvelope> {
+        vec![
+            ProfilingEnvelope::leaf(PROFILING_STAGE_PRODUCER_WAIT, self.producer_wait_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_COLLATION, self.collation_seconds),
+            ProfilingEnvelope::nested(
+                PROFILING_STAGE_H2D_TRANSFER,
+                self.h2d_transfer_seconds,
+                vec![
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED,
+                        self.h2d_pageable_to_pinned_seconds,
+                    ),
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
+                        self.h2d_tensor_materialize_seconds,
+                    ),
+                    ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_H2D_STREAM_SYNC,
+                        self.h2d_stream_sync_seconds,
+                    ),
+                ],
+            ),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_FORWARD, self.forward_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_LOSS, self.loss_seconds),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_METRIC_READBACK,
+                self.metric_readback_seconds,
+            ),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_BACKWARD, self.backward_seconds),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_OPTIMIZER_STEP, self.optimizer_step_seconds),
+        ]
+    }
+}
 
 #[derive(Default, Serialize, Clone, Copy)]
 pub struct ScalarAverages {

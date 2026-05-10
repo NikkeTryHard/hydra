@@ -14,12 +14,11 @@ use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::{HydraLoss, LossBreakdown};
 
 use crate::progress::{
-    BatchMetricSums, BatchStats, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
+    BatchMetricSums, BatchStats, TrainSubStageTiming, batch_metric_sums_from_outputs,
+    batch_stats_from_metric_sums,
 };
 
 use std::time::Instant;
-
-use crate::epoch_runner::TrainSubStageTiming;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 

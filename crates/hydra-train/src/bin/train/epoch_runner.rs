@@ -67,6 +67,7 @@ use super::validation::{
     ValidationContext, ValidationRuntime, ValidationSummary, evaluate_validation_gates,
     is_better_validation, run_validation,
 };
+pub(super) use hydra_train_exec::progress::TrainSubStageTiming;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -493,70 +494,6 @@ where
     model_slot
         .as_ref()
         .ok_or_else(|| "epoch runner model slot should stay populated".to_string())
-}
-
-#[derive(Default)]
-pub(super) struct TrainSubStageTiming {
-    pub(super) producer_wait_seconds: f64,
-    pub(super) collation_seconds: f64,
-    pub(super) h2d_transfer_seconds: f64,
-    pub(super) h2d_pageable_to_pinned_seconds: f64,
-    pub(super) h2d_tensor_materialize_seconds: f64,
-    pub(super) h2d_stream_sync_seconds: f64,
-    pub(super) forward_seconds: f64,
-    pub(super) loss_seconds: f64,
-    pub(super) backward_seconds: f64,
-    pub(super) metric_readback_seconds: f64,
-    pub(super) optimizer_step_seconds: f64,
-}
-
-impl TrainSubStageTiming {
-    fn accumulate(&mut self, other: &TrainSubStageTiming) {
-        self.producer_wait_seconds += other.producer_wait_seconds;
-        self.h2d_transfer_seconds += other.h2d_transfer_seconds;
-        self.h2d_pageable_to_pinned_seconds += other.h2d_pageable_to_pinned_seconds;
-        self.h2d_tensor_materialize_seconds += other.h2d_tensor_materialize_seconds;
-        self.h2d_stream_sync_seconds += other.h2d_stream_sync_seconds;
-        self.collation_seconds += other.collation_seconds;
-        self.forward_seconds += other.forward_seconds;
-        self.loss_seconds += other.loss_seconds;
-        self.backward_seconds += other.backward_seconds;
-        self.metric_readback_seconds += other.metric_readback_seconds;
-        self.optimizer_step_seconds += other.optimizer_step_seconds;
-    }
-
-    fn to_profiling_children(&self) -> Vec<ProfilingEnvelope> {
-        vec![
-            ProfilingEnvelope::leaf(PROFILING_STAGE_PRODUCER_WAIT, self.producer_wait_seconds),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_COLLATION, self.collation_seconds),
-            ProfilingEnvelope::nested(
-                PROFILING_STAGE_H2D_TRANSFER,
-                self.h2d_transfer_seconds,
-                vec![
-                    ProfilingEnvelope::leaf(
-                        PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED,
-                        self.h2d_pageable_to_pinned_seconds,
-                    ),
-                    ProfilingEnvelope::leaf(
-                        PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
-                        self.h2d_tensor_materialize_seconds,
-                    ),
-                    ProfilingEnvelope::leaf(
-                        PROFILING_STAGE_H2D_STREAM_SYNC,
-                        self.h2d_stream_sync_seconds,
-                    ),
-                ],
-            ),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_FORWARD, self.forward_seconds),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_LOSS, self.loss_seconds),
-            ProfilingEnvelope::leaf(
-                PROFILING_STAGE_METRIC_READBACK,
-                self.metric_readback_seconds,
-            ),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_BACKWARD, self.backward_seconds),
-            ProfilingEnvelope::leaf(PROFILING_STAGE_OPTIMIZER_STEP, self.optimizer_step_seconds),
-        ]
-    }
 }
 
 pub(super) fn train_logical_batch<B, O>(

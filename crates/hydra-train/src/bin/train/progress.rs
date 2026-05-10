@@ -1,7 +1,7 @@
 use super::validation::DeltaQPromotionSnapshot;
 pub(super) use hydra_train_exec::progress::{
     BannerStats, BatchStats, RareActionBucketMetrics, RareActionMetrics, RlStepLogEntry,
-    ScalarAverages,
+    ScalarAverages, TrainSubStageTiming,
 };
 pub(super) type EpochLogEntry = hydra_train_exec::progress::EpochLogEntry<DeltaQPromotionSnapshot>;
 pub(super) type StepLogEntry = hydra_train_exec::progress::StepLogEntry<DeltaQPromotionSnapshot>;
