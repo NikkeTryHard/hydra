@@ -11,8 +11,6 @@ use tboard::EventWriter;
 
 use hydra_bc_shards::BcShardHostBatch;
 use hydra_train::amp::maybe_autocast;
-#[cfg(feature = "cuda-graph")]
-use hydra_train::data::bc_shards::BcShardBatch;
 use hydra_train::data::sample::{MjaiBcBatch, MjaiSample};
 use hydra_train::model::{HydraModel, HydraTrainModelExt};
 #[cfg(test)]
@@ -27,6 +25,8 @@ use hydra_train::training::bc::{BcExitConfig, gated_bc_context, maybe_add_exit_l
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
 use hydra_train_exec::data_pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
+#[cfg(feature = "cuda-graph")]
+use hydra_train_exec::epoch_runner::BcShardDeviceBatch;
 use hydra_train_types::config::BCTrainerConfig;
 
 use super::TrainBackend;
@@ -42,67 +42,6 @@ use super::artifacts::{
 };
 use super::config::{TrainConfig, shard_prefetch_depth};
 
-#[cfg(feature = "cuda-graph")]
-fn extracted_host_to_train_host(
-    host: BcShardHostBatch,
-) -> hydra_train::data::bc_shards::BcShardHostBatch {
-    let mut target_presence =
-        hydra_train::training::head_gates::TargetPresence::with_batch_size(host.batch_size);
-    target_presence.counts[hydra_train::training::head_gates::AdvancedHead::OracleCritic.index()] =
-        host.oracle_target_mask
-            .iter()
-            .take(host.batch_size)
-            .filter(|&&value| value > 0.0)
-            .count();
-    if let (Some(_target), Some(mask)) = (&host.safety_target_flat, &host.safety_mask_flat) {
-        target_presence.counts
-            [hydra_train::training::head_gates::AdvancedHead::SafetyResidual.index()] = mask
-            .chunks_exact(hydra_core::action::HYDRA_ACTION_SPACE)
-            .take(host.batch_size)
-            .filter(|row| row.iter().any(|&value| value > 0.0))
-            .count();
-    }
-    if let (Some(_target), Some(mask)) = (&host.delta_q_target_flat, &host.delta_q_mask_flat) {
-        let mut rows = 0usize;
-        let mut entries = 0usize;
-        for row in mask
-            .chunks_exact(hydra_core::action::HYDRA_ACTION_SPACE)
-            .take(host.batch_size)
-        {
-            let row_entries = row.iter().filter(|&&value| value > 0.0).count();
-            if row_entries > 0 {
-                rows += 1;
-                entries += row_entries;
-            }
-        }
-        target_presence.counts[hydra_train::training::head_gates::AdvancedHead::DeltaQ.index()] =
-            rows;
-        target_presence.delta_q_actions_present = entries;
-    }
-    hydra_train::data::bc_shards::BcShardHostBatch {
-        batch_size: host.batch_size,
-        obs_flat: host.obs_flat,
-        actions: host.actions,
-        legal_mask_flat: host.legal_mask_flat,
-        value_target: host.value_target,
-        grp_target_flat: host.grp_target_flat,
-        oracle_target_flat: host.oracle_target_flat,
-        oracle_target_mask: host.oracle_target_mask,
-        tenpai_flat: host.tenpai_flat,
-        danger_flat: host.danger_flat,
-        danger_mask_flat: host.danger_mask_flat,
-        opp_next_flat: host.opp_next_flat,
-        score_pdf_flat: host.score_pdf_flat,
-        score_cdf_flat: host.score_cdf_flat,
-        safety_target_flat: host.safety_target_flat,
-        safety_mask_flat: host.safety_mask_flat,
-        exit_target_flat: host.exit_target_flat,
-        exit_mask_flat: host.exit_mask_flat,
-        delta_q_target_flat: host.delta_q_target_flat,
-        delta_q_mask_flat: host.delta_q_mask_flat,
-        target_presence,
-    }
-}
 use super::nvtx;
 use super::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
@@ -1745,9 +1684,9 @@ where
         LibTorchDevice::Cuda(idx) => {
             let device_index = *idx as i64;
             Some((
-                super::pinned_transfer::PinnedStagingArea::new(config.batch_size),
-                super::pinned_transfer::AsyncH2DContext::new(device_index),
-                super::pinned_transfer::PreallocatedDeviceTensors::new(
+                hydra_train_exec::pinned_transfer::PinnedStagingArea::new(config.batch_size),
+                hydra_train_exec::pinned_transfer::AsyncH2DContext::new(device_index),
+                hydra_train_exec::pinned_transfer::PreallocatedDeviceTensors::new(
                     config.batch_size,
                     train_device,
                 ),
@@ -2052,9 +1991,9 @@ pub(super) fn train_logical_batch_from_host_batch<B, O>(
     model_slot: &mut Option<HydraModel<B>>,
     optimizer: &mut O,
     #[cfg(feature = "cuda-graph")] staging: Option<&mut (
-        super::pinned_transfer::PinnedStagingArea,
-        super::pinned_transfer::AsyncH2DContext,
-        super::pinned_transfer::PreallocatedDeviceTensors,
+        hydra_train_exec::pinned_transfer::PinnedStagingArea,
+        hydra_train_exec::pinned_transfer::AsyncH2DContext,
+        hydra_train_exec::pinned_transfer::PreallocatedDeviceTensors,
     )>,
 ) -> Result<
     (
@@ -2088,21 +2027,21 @@ where
         #[cfg(feature = "cuda-graph")]
         {
             if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
-                let train_host_batch = extracted_host_to_train_host(host_batch);
-                let (shard_batch, h2d_timing) = super::pinned_transfer::materialize_staged_reuse::<B>(
-                    &train_host_batch,
-                    pinned_staging,
-                    h2d_ctx,
-                    train_device,
-                    gpu_tensors,
-                );
+                let (shard_batch, h2d_timing) =
+                    hydra_train_exec::pinned_transfer::materialize_staged_reuse::<B>(
+                        &host_batch,
+                        pinned_staging,
+                        h2d_ctx,
+                        train_device,
+                        gpu_tensors,
+                    );
                 sub_timing.h2d_pageable_to_pinned_seconds += h2d_timing.pageable_to_pinned_seconds;
                 sub_timing.h2d_tensor_materialize_seconds += h2d_timing.tensor_materialize_seconds;
                 sub_timing.h2d_stream_sync_seconds += h2d_timing.stream_sync_seconds;
                 (shard_batch, None)
             } else {
                 let t_materialize = Instant::now();
-                let shard_batch = hydra_train::data::bc_shards::materialize_extracted_host_batch::<B>(
+                let shard_batch = hydra_train_exec::epoch_runner::materialize_host_batch_owned::<B>(
                     host_batch,
                     train_device,
                 );
@@ -2113,7 +2052,7 @@ where
         #[cfg(not(feature = "cuda-graph"))]
         {
             let t_materialize = Instant::now();
-            let shard_batch = hydra_train::data::bc_shards::materialize_extracted_host_batch::<B>(
+            let shard_batch = hydra_train_exec::epoch_runner::materialize_host_batch_owned::<B>(
                 host_batch,
                 train_device,
             );
@@ -2289,9 +2228,9 @@ pub(super) fn probe_logical_batch_from_host_batch<B>(
     head_controller: &mut HeadActivationController,
     model: &HydraModel<B>,
     #[cfg(feature = "cuda-graph")] staging: Option<&mut (
-        super::pinned_transfer::PinnedStagingArea,
-        super::pinned_transfer::AsyncH2DContext,
-        super::pinned_transfer::PreallocatedDeviceTensors,
+        hydra_train_exec::pinned_transfer::PinnedStagingArea,
+        hydra_train_exec::pinned_transfer::AsyncH2DContext,
+        hydra_train_exec::pinned_transfer::PreallocatedDeviceTensors,
     )>,
 ) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
 where
@@ -2316,21 +2255,21 @@ where
         #[cfg(feature = "cuda-graph")]
         {
             if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
-                let train_host_batch = extracted_host_to_train_host(host_batch);
-                let (shard_batch, h2d_timing) = super::pinned_transfer::materialize_staged_reuse::<B>(
-                    &train_host_batch,
-                    pinned_staging,
-                    h2d_ctx,
-                    train_device,
-                    gpu_tensors,
-                );
+                let (shard_batch, h2d_timing) =
+                    hydra_train_exec::pinned_transfer::materialize_staged_reuse::<B>(
+                        &host_batch,
+                        pinned_staging,
+                        h2d_ctx,
+                        train_device,
+                        gpu_tensors,
+                    );
                 sub_timing.h2d_pageable_to_pinned_seconds += h2d_timing.pageable_to_pinned_seconds;
                 sub_timing.h2d_tensor_materialize_seconds += h2d_timing.tensor_materialize_seconds;
                 sub_timing.h2d_stream_sync_seconds += h2d_timing.stream_sync_seconds;
                 shard_batch
             } else {
                 let t_materialize = Instant::now();
-                let shard_batch = hydra_train::data::bc_shards::materialize_extracted_host_batch::<B>(
+                let shard_batch = hydra_train_exec::epoch_runner::materialize_host_batch_owned::<B>(
                     host_batch,
                     train_device,
                 );
@@ -2341,7 +2280,7 @@ where
         #[cfg(not(feature = "cuda-graph"))]
         {
             let t_materialize = Instant::now();
-            let shard_batch = hydra_train::data::bc_shards::materialize_extracted_host_batch::<B>(
+            let shard_batch = hydra_train_exec::epoch_runner::materialize_host_batch_owned::<B>(
                 host_batch,
                 train_device,
             );
@@ -2369,7 +2308,7 @@ where
 
 #[cfg(feature = "cuda-graph")]
 pub(super) fn probe_device_batch_compute<B>(
-    shard_batch: BcShardBatch<B>,
+    shard_batch: BcShardDeviceBatch<B>,
     microbatch_size: usize,
     use_amp: bool,
     loss_fn: &HydraLoss<B>,
@@ -2520,7 +2459,7 @@ where
 
 #[cfg(feature = "cuda-graph")]
 pub(super) fn probe_device_batch_compute_no_stats<B>(
-    shard_batch: BcShardBatch<B>,
+    shard_batch: BcShardDeviceBatch<B>,
     microbatch_size: usize,
     use_amp: bool,
     loss_fn: &HydraLoss<B>,

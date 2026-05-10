@@ -10,6 +10,7 @@ pub(super) type StepLogEntry = hydra_train_exec::progress::StepLogEntry<
     DeltaQPromotionSnapshot,
     hydra_train_exec::advisory::RuntimeAdvisory,
 >;
+#[cfg(test)]
 pub(super) type RlStepLogEntry =
     hydra_train_exec::progress::RlStepLogEntry<hydra_train_exec::advisory::RuntimeAdvisory>;
 #[cfg(test)]

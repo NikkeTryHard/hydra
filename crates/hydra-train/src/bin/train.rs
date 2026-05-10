@@ -2,65 +2,41 @@
 mod advisory;
 #[path = "train/artifacts.rs"]
 mod artifacts;
-#[path = "train/bc_fixed_shape.rs"]
-mod bc_fixed_shape;
 #[path = "train/bootstrap.rs"]
 mod bootstrap;
 #[path = "train/config.rs"]
 mod config;
-#[path = "train/config_runtime.rs"]
-mod config_runtime;
-#[cfg(feature = "cuda-graph")]
-#[path = "train/cuda_graph.rs"]
-mod cuda_graph;
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]
 mod gpu_config;
 #[path = "train/graph_probe.rs"]
 mod graph_probe;
+#[cfg(test)]
 #[path = "train/loss_policy.rs"]
 mod loss_policy;
 #[path = "train/modes.rs"]
 mod modes;
 #[path = "train/nvtx.rs"]
 mod nvtx;
-#[cfg(feature = "cuda-graph")]
-#[path = "train/pinned_transfer.rs"]
-mod pinned_transfer;
 #[path = "train/preflight_fingerprint.rs"]
 mod preflight_fingerprint;
 #[path = "train/preflight_runtime.rs"]
 mod preflight_runtime;
 #[path = "train/presentation.rs"]
 mod presentation;
-#[path = "train/probe_ladder.rs"]
-mod probe_ladder;
-#[path = "train/probe_process.rs"]
-mod probe_process;
-#[path = "train/probe_request.rs"]
-mod probe_request;
-#[path = "train/probe_search.rs"]
-mod probe_search;
 #[path = "train/probe_summary.rs"]
 mod probe_summary;
-#[path = "train/probe_transport.rs"]
-mod probe_transport;
 #[path = "train/progress.rs"]
 mod progress;
 #[path = "train/resume.rs"]
 mod resume;
 #[path = "train/rl_runner.rs"]
 mod rl_runner;
-#[path = "train/runtime_autotune.rs"]
-mod runtime_autotune;
 #[path = "train/schedule.rs"]
 mod schedule;
 #[path = "train/status.rs"]
 mod status;
-#[cfg(test)]
-#[path = "train/test_loose_replay_fixtures.rs"]
-mod test_loose_replay_fixtures;
 #[cfg(test)]
 #[path = "train/test_support.rs"]
 mod test_support;

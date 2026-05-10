@@ -394,17 +394,17 @@ fn guarded_capture_attempt(
     model: &HydraModel<TrainBackend>,
     reference_stats: &[crate::progress::BatchStats],
 ) -> CudaGraphCaptureSummary {
-    let shard_batch = hydra_train::data::bc_shards::materialize_extracted_host_batch::<TrainBackend>(
+    let shard_batch = hydra_train_exec::epoch_runner::materialize_host_batch_owned::<TrainBackend>(
         host_batch,
         train_device,
     );
-    let graph = crate::cuda_graph::CudaGraph::new(false);
-    let previous_stream = crate::cuda_graph::CudaStream::current(0);
-    let capture_stream = crate::cuda_graph::CudaStream::from_pool(0);
+    let graph = hydra_train_exec::cuda_graph::CudaGraph::new(false);
+    let previous_stream = hydra_train_exec::cuda_graph::CudaStream::current(0);
+    let capture_stream = hydra_train_exec::cuda_graph::CudaStream::from_pool(0);
     capture_stream.set_current();
-    let current_stream = crate::cuda_graph::CudaStream::current(0);
+    let current_stream = hydra_train_exec::cuda_graph::CudaStream::current(0);
     current_stream.synchronize();
-    if let Err(err) = crate::cuda_graph::synchronize_device() {
+    if let Err(err) = hydra_train_exec::cuda_graph::synchronize_device() {
         previous_stream.set_current();
         return capture_summary_failure("pre_capture_sync", err);
     }
@@ -431,7 +431,7 @@ fn guarded_capture_attempt(
                     let capture_seconds = capture_started.elapsed().as_secs_f64();
                     let replay_repeats = graph_probe_replay_repeats();
                     let post_replay_parity_enabled = graph_probe_post_replay_parity_enabled();
-                    if let Err(err) = crate::cuda_graph::synchronize_device() {
+                    if let Err(err) = hydra_train_exec::cuda_graph::synchronize_device() {
                         return capture_summary_failure("pre_replay_sync", err);
                     }
                     let replay_started = Instant::now();
@@ -443,7 +443,7 @@ fn guarded_capture_attempt(
                         }
                     }
                     if replay_error.is_none()
-                        && let Err(err) = crate::cuda_graph::synchronize_device()
+                        && let Err(err) = hydra_train_exec::cuda_graph::synchronize_device()
                     {
                         replay_error = Some(err);
                     }

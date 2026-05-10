@@ -6,12 +6,22 @@
 pub mod advisory;
 /// Training bootstrap initialization and prepared runtime state.
 pub mod bootstrap;
+/// CUDA graph and pinned-memory FFI wrappers for exec-owned GPU adapters.
+#[cfg(feature = "cuda-graph")]
+pub mod cuda_graph;
 /// Exec-owned streaming MJAI data pipeline for preflight and epoch runners.
 pub mod data_pipeline;
 /// Epoch-runner execution helpers shared by train execution.
 pub mod epoch_runner;
 /// Train binary mode dispatch facade.
 pub mod modes;
+/// CUDA pinned host staging and reusable device materialization for BC shards.
+#[cfg(feature = "cuda-graph")]
+pub mod pinned_transfer;
+#[allow(
+    missing_docs,
+    reason = "migrated train preflight API is still a compatibility seam"
+)]
 /// Heavy preflight and probe execution runner.
 pub mod preflight_runtime;
 /// Pure presentation formatting helpers shared by train execution seams.
@@ -34,6 +44,12 @@ pub mod resume;
 pub mod rl_runner;
 /// RL train-step wrapper below the train facade.
 pub mod rl_step;
+#[allow(
+    missing_docs,
+    reason = "migrated runtime autotune API is still a compatibility seam"
+)]
+/// Loader runtime autotune support used by migrated preflight execution.
+pub mod runtime_autotune_shim;
 /// Heavy validation execution runner.
 pub mod validation_runner;
 
@@ -41,6 +57,10 @@ pub mod validation_runner;
 pub mod artifacts;
 /// BC shard manifest adapters shared by train bootstrap.
 pub mod bc_shard_adapter;
+#[cfg(test)]
+mod test_loose_replay_fixtures;
+#[cfg(test)]
+mod test_support;
 /// Validation snapshot and gate DTOs shared across training execution seams.
 pub mod validation;
 

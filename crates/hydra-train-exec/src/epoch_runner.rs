@@ -520,7 +520,11 @@ fn policy_target_from_action_slice<B: Backend>(
     )
 }
 
-fn target_presence_from_host_batch(host: &BcShardHostBatch, batch_size: usize) -> TargetPresence {
+/// Derives advanced-head target presence counts from a backend-agnostic host batch.
+pub fn target_presence_from_host_batch(
+    host: &BcShardHostBatch,
+    batch_size: usize,
+) -> TargetPresence {
     let mut presence = TargetPresence::with_batch_size(batch_size);
     presence.counts[AdvancedHead::OracleCritic.index()] = host
         .oracle_target_mask
@@ -713,6 +717,93 @@ where
     }
 
     Ok((batch_stats, sub_timing_fallback))
+}
+
+/// Runs forward/backward/optimizer for one device-resident BC shard batch.
+pub fn train_device_batch<B, O>(
+    device_batch: BcShardDeviceBatch<B>,
+    sample_count: usize,
+    mut sub_timing: TrainSubStageTiming,
+    config: TrainLogicalBatchConfig<'_, B>,
+    head_controller: &mut HeadActivationController,
+    model_slot: &mut Option<HydraModel<B>>,
+    optimizer: &mut O,
+) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    <B as AutodiffBackend>::InnerBackend: Backend<Device = LibTorchDevice>,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    let TrainLogicalBatchConfig {
+        microbatch_size: _,
+        use_amp,
+        augment: _,
+        train_device: _,
+        loss_fn,
+        bc_exit_cfg,
+        lr,
+    } = config;
+    let batch_size = device_batch.batch.actions.dims()[0];
+    if batch_size == 0 {
+        return Ok((Vec::new(), sub_timing));
+    }
+
+    let (active_loss_fn, warmup_heads) =
+        gated_bc_context(Some(head_controller), loss_fn, &device_batch.targets);
+    let model = epoch_model(model_slot)?;
+    let t = Instant::now();
+    let output = {
+        let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+        maybe_autocast(use_amp, || {
+            model.forward_with_warmup_train(device_batch.obs, &active_loss_fn.config, &warmup_heads)
+        })
+    };
+    sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+
+    let t = Instant::now();
+    let (breakdown, total) = {
+        let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+        let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &device_batch.targets);
+        let total = maybe_add_exit_loss(
+            breakdown.total.clone(),
+            output.policy_logits.clone(),
+            device_batch.batch.exit_target.as_ref(),
+            device_batch.batch.exit_mask.as_ref(),
+            bc_exit_cfg,
+        );
+        (breakdown, total)
+    };
+    sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+
+    let metric_sums = batch_metric_sums_from_outputs(
+        sample_count,
+        output.policy_logits.clone(),
+        device_batch.targets.legal_mask.clone(),
+        device_batch.batch.actions.clone(),
+        total.clone(),
+        &breakdown,
+    );
+
+    let t = Instant::now();
+    let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+    let grads = total.backward();
+    let grads = GradientsParams::from_grads(grads, model);
+    sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+
+    let t = Instant::now();
+    let stats = vec![batch_stats_from_metric_sums(sample_count, 1, metric_sums)];
+    sub_timing.metric_readback_seconds += t.elapsed().as_secs_f64();
+
+    let t = Instant::now();
+    let _optimizer_scope = nvtx::scope(PROFILING_STAGE_OPTIMIZER_STEP);
+    let model = model_slot
+        .take()
+        .ok_or_else(|| "epoch runner model slot should stay populated".to_string())?;
+    *model_slot = Some(optimizer.step(lr, model, grads));
+    head_controller.tick_warmup();
+    sub_timing.optimizer_step_seconds += t.elapsed().as_secs_f64();
+
+    Ok((stats, sub_timing))
 }
 
 fn epoch_model<B>(model_slot: &Option<HydraModel<B>>) -> Result<&HydraModel<B>, String>

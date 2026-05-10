@@ -31,7 +31,6 @@ use super::presentation::{
     format_probe_results_table, format_status_line, format_timed_phase_message,
     format_warning_line, print_banner, print_preflight_banner, timestamped,
 };
-use super::probe_request::ProbeRequest;
 use super::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use super::resume::checkpoint_base_from_path;
 use super::rl_runner::run_rl_training_loop;
@@ -39,6 +38,7 @@ use super::validation::materialize_validation_samples;
 use super::validation::{
     ValidationContext, ValidationRuntime, run_validation_with_policy_baseline, validation_loader,
 };
+use hydra_train_runtime::probe_request::ProbeRequest;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 

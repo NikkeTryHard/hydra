@@ -3378,6 +3378,7 @@ dependencies = [
  "serde_yaml",
  "tar",
  "tboard",
+ "tch",
  "time",
  "zstd 0.13.3",
 ]

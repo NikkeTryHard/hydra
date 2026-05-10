@@ -13,7 +13,7 @@ workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-hydra-train-runtime = { path = "../hydra-train-runtime" }
+hydra-train-runtime = { path = "../hydra-train-runtime", features = ["test-nvtx-recorder"] }
 hydra-model = { path = "../hydra-model" }
 hydra-replay-loader = { path = "../hydra-replay-loader" }
 hydra-bc-shards = { path = "../hydra-bc-shards" }
@@ -26,6 +26,7 @@ hydra-replay-sidecar = { path = "../hydra-replay-sidecar" }
 hydra-search-labels = { path = "../hydra-search-labels" }
 hydra-selfplay = { path = "../hydra-selfplay" }
 burn = { version = "0.20", features = ["train"] }
+tch = "0.22"
 colored = "3"
 indicatif = "0.17"
 serde = { version = "1.0", features = ["derive"] }
