@@ -17,10 +17,6 @@ pub(crate) use hydra_train_exec::presentation::{
     format_status_line, format_timed_phase_message, format_warning_line, make_bar, make_spinner,
     phase_label, preflight_phase_label, timestamped,
 };
-#[cfg(test)]
-pub(crate) use hydra_train_exec::presentation::{
-    format_probe_progress_line, format_probe_spinner_finish_message, format_probe_spinner_message,
-};
 
 pub(super) fn model_kind(config: &HydraModelConfig) -> &'static str {
     if config.is_learner() {

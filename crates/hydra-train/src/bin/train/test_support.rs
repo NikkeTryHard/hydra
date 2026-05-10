@@ -62,12 +62,3 @@ pub(crate) fn unique_test_path(prefix: &str, label: &str) -> PathBuf {
         .as_nanos();
     base.join(format!("{prefix}-{label}-{}-{nanos}", std::process::id()))
 }
-
-#[cfg(test)]
-pub(crate) fn unique_test_path_with_extension(
-    prefix: &str,
-    label: &str,
-    extension: &str,
-) -> PathBuf {
-    unique_test_path(prefix, label).with_extension(extension)
-}

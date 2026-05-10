@@ -17,6 +17,8 @@ use hydra_train::data::bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_train_epoch};
 use hydra_train::data::sample::{MjaiBcBatch, MjaiSample};
 use hydra_train::model::{HydraModel, HydraTrainModelExt};
+#[cfg(test)]
+use hydra_train::preflight::PROFILING_STAGE_PRODUCER_WAIT;
 use hydra_train::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_BC_EPOCH, PROFILING_STAGE_BC_INTERVAL,
     PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_FORWARD, PROFILING_STAGE_H2D_TRANSFER,

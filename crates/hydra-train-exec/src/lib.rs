@@ -6,6 +6,10 @@
 pub mod advisory;
 /// Epoch-runner execution helpers shared by train execution.
 pub mod epoch_runner;
+/// Train binary mode dispatch facade.
+pub mod modes;
+/// Heavy preflight and probe execution runner.
+pub mod preflight_runtime;
 /// Pure presentation formatting helpers shared by train execution seams.
 pub mod presentation;
 /// Probe candidate ladder helpers shared by preflight search.

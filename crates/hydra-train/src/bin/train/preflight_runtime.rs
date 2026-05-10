@@ -22,8 +22,8 @@ use hydra_train::preflight::{
     BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
     EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PROFILING_STAGE_CHECKPOINT,
     PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK, PROFILING_STAGE_TRAIN,
-    PROFILING_STAGE_VALIDATION, PreflightCacheEntry, PreflightConfig, ProbeKind, ProbeResult,
-    ProbeStatus, ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
+    PROFILING_STAGE_VALIDATION, PreflightConfig, ProbeKind, ProbeResult, ProbeStatus,
+    ProfilingEnvelope, candidate_ladder, resolve_runtime_config,
 };
 use hydra_train::training::bc::gated_bc_context;
 use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
@@ -35,24 +35,24 @@ use super::advisory::{RuntimeAdvisory, selected_runtime_probe_advisories};
 #[cfg(test)]
 use super::artifacts::write_manifest_cache;
 use super::artifacts::{
-    BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightBenchmarkReport,
-    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_step_log,
-    load_or_scan_manifest_cache, log_tensorboard, read_manifest_cache, read_preflight_cache,
-    save_latest_checkpoint_and_state, write_preflight_benchmark_report, write_preflight_cache,
+    BcArtifactPaths, LatestCheckpointState, PreflightBenchmarkPaths, PreflightPaths,
+    RlArtifactPaths, append_step_log, load_or_scan_manifest_cache, log_tensorboard,
+    read_manifest_cache, save_latest_checkpoint_and_state,
 };
 use super::bc_fixed_shape::{
     FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
     probe_train_fixed_chunks,
 };
 use super::config::{
-    ProbeChildRequest, TrainConfig, configure_threads, default_num_threads_for_system,
-    train_device, trainer_config_from_train_config,
+    ProbeChildRequest, TrainConfig, configure_threads, train_device,
+    trainer_config_from_train_config,
 };
 use super::epoch_runner::{TrainLogicalBatchConfig, train_logical_batch_from_host_batch};
 use super::loss_policy::{build_bc_exit_config, build_loss_config};
 use super::nvtx;
 #[cfg(feature = "cuda-graph")]
 use super::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
+#[cfg(test)]
 use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::{
     format_preflight_selection_line, format_preflight_summary_line, format_probe_status_line,
@@ -2853,41 +2853,11 @@ pub(super) fn run_probe_only(
     )
 }
 
-#[cfg(test)]
-pub(super) fn run_probe_only_with_test_model_config_result(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-    request: ProbeRequest,
-) -> Result<ProbeResult, String> {
-    configure_probe_threads(config)?;
-    run_probe_only_with_model_config_result(config, model_config, None, request)
-}
-
 pub(super) fn run_probe_child_mode(
     config: &TrainConfig,
     child: Option<ProbeChildRequest>,
 ) -> Result<bool, String> {
     run_probe_child_mode_with_model_config(config, child, &HydraModelConfig::learner())
-}
-
-#[cfg(test)]
-fn run_probe_child_mode_with_model_config_output(
-    config: &TrainConfig,
-    child: Option<ProbeChildRequest>,
-    model_config: &HydraModelConfig,
-) -> Result<Option<(std::path::PathBuf, ProbeResult)>, String> {
-    let Some((request, result_path, manifest_cache_path)) = probe_child_request_from_cli(child)?
-    else {
-        return Ok(None);
-    };
-    configure_probe_threads(config)?;
-    let manifest = load_probe_child_manifest(config, request.kind, manifest_cache_path.as_deref())?;
-    let result = if matches!(request.kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
-        run_rl_probe_only_result(config, request)?
-    } else {
-        run_probe_only_with_model_config_result(config, model_config, manifest.as_ref(), request)?
-    };
-    Ok(Some((result_path, result)))
 }
 
 pub(super) fn run_probe_child_mode_with_model_config(
@@ -2921,23 +2891,6 @@ pub(super) fn run_probe_child_mode_with_model_config(
         &result_path,
     )?;
     Ok(true)
-}
-
-#[cfg(test)]
-pub(super) fn run_probe_child_mode_result(
-    config: &TrainConfig,
-    child: Option<ProbeChildRequest>,
-) -> Result<Option<ProbeResult>, String> {
-    // Use a tiny model for test speed instead of the full learner() model.
-    let tiny = HydraModelConfig::new(1)
-        .with_input_channels(hydra_train::config::INPUT_CHANNELS)
-        .with_hidden_channels(4)
-        .with_num_groups(4)
-        .with_se_bottleneck(1);
-    Ok(
-        run_probe_child_mode_with_model_config_output(config, child, &tiny)?
-            .map(|(_, result)| result),
-    )
 }
 
 #[cfg(test)]
@@ -3055,17 +3008,15 @@ pub(super) fn run_preflight(
     artifacts: &BcArtifactPaths,
 ) -> Result<PreflightRuntime, String> {
     let preflight_started = Instant::now();
-    let cache_key = preflight_cache_key(
+    let cache_context = hydra_train_exec::preflight_runtime::bc_preflight_cache_context(
         config,
         model_config,
         device_label,
-        default_num_threads_for_system(),
+        artifacts,
     );
-    let paths = PreflightPaths::new(artifacts);
-    let explicit = ExplicitSettings {
-        train_microbatch_explicit: config.microbatch_size.is_some(),
-        validation_microbatch_explicit: config.validation_microbatch_size.is_some(),
-    };
+    let cache_key = cache_context.cache_key.clone();
+    let paths = cache_context.paths;
+    let explicit = cache_context.explicit;
 
     // Phase 1-3: Probe search (or cache hit -- skip probes, keep cached selections)
     let (
@@ -3079,20 +3030,16 @@ pub(super) fn run_preflight(
         probe_train_secs,
         probe_val_secs,
         resolve_secs,
-    ) = if let Some(cached) = read_preflight_cache(&paths.cache_path)?
-        && cached.cache_key == cache_key
-    {
-        println!(
-            "{}",
-            format_preflight_summary_line(
-                "Preflight cache hit:",
-                format!(
-                    "reusing cached probe results train_mb={} val_mb={} -- re-benchmarking to verify",
-                    cached.runtime.selected.train_microbatch_size,
-                    cached.runtime.selected.validation_microbatch_size,
-                ),
-            )
-        );
+    ) = if let Some(cached) = hydra_train_exec::preflight_runtime::matching_bc_preflight_cache(
+        &hydra_train_exec::preflight_runtime::BcPreflightCacheContext {
+            cache_key: cache_key.clone(),
+            paths: PreflightPaths {
+                cache_path: paths.cache_path.clone(),
+                manifest_cache_path: paths.manifest_cache_path.clone(),
+            },
+            explicit,
+        },
+    )? {
         let selected = cached.runtime.selected;
         (
             selected.train_microbatch_size,
@@ -3316,26 +3263,13 @@ pub(super) fn run_preflight(
     }
 
     // Atomic cache write: only update cache after ALL work completes successfully
-    write_preflight_cache(
-        &paths.cache_path,
-        &PreflightCacheEntry {
-            cache_key: cache_key.clone(),
-            runtime,
-            benchmark: benchmark.clone(),
-        },
+    hydra_train_exec::preflight_runtime::persist_bc_preflight_runtime(
+        cache_key,
+        runtime,
+        benchmark.clone(),
+        &paths,
+        artifacts,
     )?;
-    if let Some(benchmark) = benchmark.clone() {
-        let benchmark_paths = PreflightBenchmarkPaths::new(artifacts);
-        benchmark_paths.create_root_dir()?;
-        write_preflight_benchmark_report(
-            &benchmark_paths.report_path(),
-            &PreflightBenchmarkReport {
-                cache_key,
-                runtime,
-                benchmark,
-            },
-        )?;
-    }
 
     // Timing summary
     let total_secs = preflight_started.elapsed().as_secs_f64();
@@ -3412,17 +3346,12 @@ pub(super) fn run_rl_preflight(
     let started = Instant::now();
     let artifacts = RlArtifactPaths::new(&config.output_dir, 0);
     artifacts.create_root_dir()?;
-    let paths = RlPreflightPaths::new(&artifacts);
-    let cache_key = preflight_cache_key(
+
+    if let Some(cached) = hydra_train_exec::preflight_runtime::matching_rl_preflight_cache(
         config,
         &HydraModelConfig::learner(),
-        &config.device,
-        default_num_threads_for_system(),
-    );
-
-    if let Some(cached) = read_preflight_cache(&paths.cache_path)?
-        && cached.cache_key == cache_key
-    {
+        &artifacts,
+    )? {
         let tuned_games = cached.runtime.loader.buffer_games;
         let tuned_microbatch = cached.runtime.selected.train_microbatch_size;
         println!(
@@ -3474,29 +3403,26 @@ pub(super) fn run_rl_preflight(
         ProbeKind::RlMicrobatch,
         microbatch_seed,
     )?;
-    write_preflight_cache(
-        &paths.cache_path,
-        &PreflightCacheEntry {
-            cache_key,
-            runtime: EffectiveRuntimeConfig {
-                selected: hydra_train::preflight::SelectedRuntimeConfig {
-                    train_microbatch_size: selected_microbatch_size,
-                    validation_microbatch_size: config
-                        .validation_microbatch_size
-                        .unwrap_or(selected_microbatch_size),
-                    accum_steps: config
-                        .batch_size
-                        .div_ceil(selected_microbatch_size.max(1))
-                        .max(1),
-                },
-                loader: hydra_train::preflight::LoaderRuntimeConfig {
-                    num_threads: config.num_threads,
-                    buffer_games: selected_games_per_batch,
-                    buffer_samples: config.buffer_samples,
-                    archive_queue_bound: config.archive_queue_bound,
-                },
+    hydra_train_exec::preflight_runtime::persist_rl_preflight_runtime(
+        config,
+        &artifacts,
+        EffectiveRuntimeConfig {
+            selected: hydra_train::preflight::SelectedRuntimeConfig {
+                train_microbatch_size: selected_microbatch_size,
+                validation_microbatch_size: config
+                    .validation_microbatch_size
+                    .unwrap_or(selected_microbatch_size),
+                accum_steps: config
+                    .batch_size
+                    .div_ceil(selected_microbatch_size.max(1))
+                    .max(1),
             },
-            benchmark: None,
+            loader: hydra_train::preflight::LoaderRuntimeConfig {
+                num_threads: config.num_threads,
+                buffer_games: selected_games_per_batch,
+                buffer_samples: config.buffer_samples,
+                archive_queue_bound: config.archive_queue_bound,
+            },
         },
     )?;
     println!(

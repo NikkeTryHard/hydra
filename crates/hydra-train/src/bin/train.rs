@@ -76,11 +76,10 @@ use colored::control as color_control;
 
 use self::config::{parse_args, read_config};
 use self::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
-use self::modes::{
-    handle_delta_q_promotion_mode, handle_preflight_mode, handle_probe_mode, handle_training_mode,
-};
 use self::preflight_runtime::run_probe_child_mode;
-use self::probe_request::probe_request_from_cli;
+use hydra_train_exec::modes::{TrainModeHandlers, run_train_modes};
+use hydra_train_runtime::probe_request::ProbeRequest;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use self::config::{
@@ -112,20 +111,46 @@ fn run() -> Result<(), String> {
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
         return Ok(());
     }
-    if cli.preflight {
-        return handle_preflight_mode(&cli.config_path, &config);
+    let mut handlers = BinModeHandlers;
+    run_train_modes(cli, config, &mut handlers)
+}
+
+struct BinModeHandlers;
+
+impl TrainModeHandlers for BinModeHandlers {
+    fn handle_preflight_mode(
+        &mut self,
+        config_path: &Path,
+        config: &config::TrainConfig,
+    ) -> Result<(), String> {
+        modes::handle_preflight_mode(config_path, config)
     }
-    if cli.delta_q_promotion {
-        return handle_delta_q_promotion_mode(
-            &cli.config_path,
-            config,
-            cli.delta_q_baseline_checkpoint,
-        );
+
+    fn handle_probe_mode(
+        &mut self,
+        config_path: &Path,
+        config: &config::TrainConfig,
+        request: ProbeRequest,
+    ) -> Result<(), String> {
+        modes::handle_probe_mode(config_path, config, request)
     }
-    if let Some(request) = probe_request_from_cli(&config, cli.probe_only.clone())? {
-        return handle_probe_mode(&cli.config_path, &config, request);
+
+    fn handle_delta_q_promotion_mode(
+        &mut self,
+        config_path: &Path,
+        config: config::TrainConfig,
+        baseline_checkpoint: Option<PathBuf>,
+    ) -> Result<(), String> {
+        modes::handle_delta_q_promotion_mode(config_path, config, baseline_checkpoint)
     }
-    handle_training_mode(&cli.config_path, config)
+
+    fn handle_training_mode(
+        &mut self,
+        config_path: &Path,
+        config: config::TrainConfig,
+    ) -> Result<(), String> {
+        modes::handle_training_mode(config_path, config)
+    }
 }
 
 fn main() {

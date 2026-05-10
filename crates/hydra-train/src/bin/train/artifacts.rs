@@ -24,19 +24,23 @@ use super::resume::{
 use super::validation::ValidationSummary;
 pub(crate) use hydra_train_exec::artifacts::{
     BcArtifactPaths, JsonlAppender, PersistedDeltaQPromotionArtifact,
-    PersistedValidationGateArtifact, PreflightBenchmarkPaths, PreflightBenchmarkReport,
-    PreflightPaths, RlArtifactPaths, RlPreflightPaths, append_advisory_event_to_writer,
-    append_rl_step_log_to_writer, append_step_log_to_writer, append_training_log_to_writer,
+    PersistedValidationGateArtifact, PreflightBenchmarkPaths, PreflightPaths, RlArtifactPaths,
+    RlPreflightPaths, append_advisory_event_to_writer, append_rl_step_log_to_writer,
+    append_step_log_to_writer, append_training_log_to_writer,
     checkpoint_meta as build_checkpoint_meta, latest_bc_payload_is_current,
     latest_rl_payload_is_current, load_or_scan_manifest_cache, open_rl_step_log_appender,
-    open_step_log_appender, open_training_log_appender, read_manifest_cache, read_preflight_cache,
-    save_model_payload, save_optimizer_payload,
-    write_checkpoint_meta as write_checkpoint_meta_file, write_delta_q_promotion_artifact,
-    write_preflight_benchmark_report, write_preflight_cache, write_validation_gate_artifact,
+    open_step_log_appender, open_training_log_appender, read_manifest_cache, save_model_payload,
+    save_optimizer_payload, write_checkpoint_meta as write_checkpoint_meta_file,
+    write_delta_q_promotion_artifact, write_validation_gate_artifact,
 };
 #[cfg(test)]
 pub(crate) use hydra_train_exec::artifacts::{
-    atomic_write_text, manifest_cache_matches, scan_and_write_manifest_cache, write_manifest_cache,
+    PreflightBenchmarkReport, read_preflight_cache, write_preflight_benchmark_report,
+    write_preflight_cache,
+};
+#[cfg(test)]
+pub(crate) use hydra_train_exec::artifacts::{
+    manifest_cache_matches, scan_and_write_manifest_cache, write_manifest_cache,
 };
 
 pub(crate) struct LatestCheckpointState<'a> {

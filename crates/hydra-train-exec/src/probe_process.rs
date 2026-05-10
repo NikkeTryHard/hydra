@@ -7,8 +7,7 @@
 use colored::Colorize;
 #[cfg(not(test))]
 use std::env;
-#[cfg(not(test))]
-#[cfg(any(not(test), feature = "cuda-graph"))]
+#[cfg(any(not(test), feature = "cuda-graph", target_os = "linux"))]
 use std::fs;
 #[cfg(not(test))]
 use std::io::{BufRead, BufReader, Read};
@@ -143,6 +142,13 @@ pub fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
 }
 
 #[cfg(all(test, feature = "cuda-graph"))]
+#[cfg_attr(
+    all(test, feature = "cuda-graph"),
+    allow(
+        dead_code,
+        reason = "feature-gated output normalizer is exercised by train-bin tests"
+    )
+)]
 fn normalized_probe_output_line(line: &str) -> Option<String> {
     if let Some(formatted) = format_probe_progress_line(line) {
         return Some(formatted);

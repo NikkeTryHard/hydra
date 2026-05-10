@@ -39,7 +39,6 @@ use super::advisory::MicrobatchExplicitness;
 use super::artifacts::write_manifest_cache;
 use super::artifacts::{
     BcArtifactPaths, RlArtifactPaths, RlPreflightPaths, load_or_scan_manifest_cache,
-    read_preflight_cache,
 };
 use super::config::{
     RlTrainConfig, TrainConfig, configure_threads, device_label, train_device,
@@ -47,7 +46,6 @@ use super::config::{
 };
 use super::config_runtime::rl_config_from_train_config;
 use super::loss_policy::{build_bc_exit_config, build_loss_config, build_rl_loss_config};
-use super::preflight_fingerprint::preflight_cache_key;
 use super::presentation::timestamped;
 use super::progress::BannerStats;
 use super::resume::{
@@ -85,63 +83,12 @@ fn apply_cached_bc_runtime_if_matching(
     artifacts: &BcArtifactPaths,
     model_config: &HydraModelConfig,
 ) -> Result<(), String> {
-    let is_epoch_boundary_resume = resume
-        .state
-        .as_ref()
-        .is_some_and(|state| state.skip_optimizer_steps_in_epoch == 0);
-    if !is_epoch_boundary_resume {
-        return Ok(());
-    }
-
-    let preflight_paths = crate::artifacts::PreflightPaths::new(artifacts);
-    let cache_key = preflight_cache_key(
+    hydra_train_exec::preflight_runtime::apply_cached_bc_runtime_if_matching(
         config,
+        resume,
+        artifacts,
         model_config,
-        &config.device,
-        super::config::default_num_threads_for_system(),
-    );
-    let Some(cached) = read_preflight_cache(&preflight_paths.cache_path)? else {
-        return Ok(());
-    };
-    if cached.cache_key != cache_key {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} cache fingerprint mismatch, using config train_microbatch_size={:?} validation_microbatch_size={:?} buffer_games={} buffer_samples={} archive_queue_bound={} num_threads={:?}",
-                "BC preflight skip:".bold().yellow(),
-                config.microbatch_size,
-                config.validation_microbatch_size,
-                config.buffer_games,
-                config.buffer_samples,
-                config.archive_queue_bound,
-                config.num_threads,
-            ))
-        );
-        return Ok(());
-    }
-    let tuned_selected = cached.runtime.selected;
-    let original_train = config.microbatch_size;
-    let original_validation = config.validation_microbatch_size;
-    if original_train != Some(tuned_selected.train_microbatch_size)
-        || original_validation != Some(tuned_selected.validation_microbatch_size)
-    {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} train_microbatch_size={:?} -> {} validation_microbatch_size={:?} -> {} accum_steps={} (epoch-boundary selected-runtime from preflight cache)",
-                "BC preflight override:".bold().cyan(),
-                original_train,
-                tuned_selected.train_microbatch_size,
-                original_validation,
-                tuned_selected.validation_microbatch_size,
-                tuned_selected.accum_steps,
-            ))
-        );
-    }
-
-    config.microbatch_size = Some(tuned_selected.train_microbatch_size);
-    config.validation_microbatch_size = Some(tuned_selected.validation_microbatch_size);
-    Ok(())
+    )
 }
 
 pub(super) struct TrainingBootstrap<B>
@@ -537,52 +484,47 @@ pub(super) fn initialize_rl_training_bootstrap(
     let device_name = device_label(&config.device);
     let model_config = HydraModelConfig::learner();
 
-    let preflight_paths = RlPreflightPaths::new(&artifacts);
-    let cache_key = preflight_cache_key(
+    if let Some(cached) = hydra_train_exec::preflight_runtime::matching_rl_preflight_cache(
         &config,
         &model_config,
-        &config.device,
-        super::config::default_num_threads_for_system(),
-    );
-    if let Some(cached) = read_preflight_cache(&preflight_paths.cache_path)? {
-        if cached.cache_key == cache_key {
-            let tuned_games = cached.runtime.loader.buffer_games;
-            let tuned_microbatch = cached.runtime.selected.train_microbatch_size;
-            if tuned_games != rl_config.games_per_batch {
-                println!(
-                    "{}",
-                    timestamped(format!(
-                        "{} games_per_batch={} -> {} (from preflight cache)",
-                        "RL preflight override:".bold().cyan(),
-                        rl_config.games_per_batch,
-                        tuned_games,
-                    ))
-                );
-                rl_config.games_per_batch = tuned_games;
-            }
-            if rl_config.microbatch_size != Some(tuned_microbatch) {
-                println!(
-                    "{}",
-                    timestamped(format!(
-                        "{} rl.microbatch_size={:?} -> {} (from preflight cache)",
-                        "RL preflight override:".bold().cyan(),
-                        rl_config.microbatch_size,
-                        tuned_microbatch,
-                    ))
-                );
-                rl_config.microbatch_size = Some(tuned_microbatch);
-            }
-        } else {
+        &artifacts,
+    )? {
+        let tuned_games = cached.runtime.loader.buffer_games;
+        let tuned_microbatch = cached.runtime.selected.train_microbatch_size;
+        if tuned_games != rl_config.games_per_batch {
             println!(
                 "{}",
                 timestamped(format!(
-                    "{} cache fingerprint mismatch, using config games_per_batch={} rl.microbatch_size={:?}",
-                    "RL preflight skip:".bold().yellow(),
+                    "{} games_per_batch={} -> {} (from preflight cache)",
+                    "RL preflight override:".bold().cyan(),
                     rl_config.games_per_batch,
-                    rl_config.microbatch_size,
+                    tuned_games,
                 ))
             );
+            rl_config.games_per_batch = tuned_games;
         }
+        if rl_config.microbatch_size != Some(tuned_microbatch) {
+            println!(
+                "{}",
+                timestamped(format!(
+                    "{} rl.microbatch_size={:?} -> {} (from preflight cache)",
+                    "RL preflight override:".bold().cyan(),
+                    rl_config.microbatch_size,
+                    tuned_microbatch,
+                ))
+            );
+            rl_config.microbatch_size = Some(tuned_microbatch);
+        }
+    } else if RlPreflightPaths::new(&artifacts).cache_path.exists() {
+        println!(
+            "{}",
+            timestamped(format!(
+                "{} cache fingerprint mismatch, using config games_per_batch={} rl.microbatch_size={:?}",
+                "RL preflight skip:".bold().yellow(),
+                rl_config.games_per_batch,
+                rl_config.microbatch_size,
+            ))
+        );
     }
 
     let current_runtime = rl_runtime_resume_contract(&rl_config);

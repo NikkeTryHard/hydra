@@ -15,11 +15,13 @@ crate-type = ["rlib"]
 [dependencies]
 hydra-train-runtime = { path = "../hydra-train-runtime" }
 hydra-model = { path = "../hydra-model" }
+hydra-replay-loader = { path = "../hydra-replay-loader" }
 hydra-bc-shards = { path = "../hydra-bc-shards" }
 hydra-data-core = { path = "../hydra-data-core" }
 hydra-core = { path = "../hydra-core" }
 hydra-sample-cache = { path = "../hydra-sample-cache" }
 hydra-train-types = { path = "../hydra-train-types" }
+hydra-train-algo = { path = "../hydra-train-algo" }
 burn = { version = "0.20", features = ["train"] }
 colored = "3"
 indicatif = "0.17"

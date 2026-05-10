@@ -1,8 +1,8 @@
 //! Epoch-runner execution helpers shared by the train binary.
 //!
-//! This module intentionally owns the hot BC logical-batch execution step without depending on
-//! the `hydra-train` binary crate. The outer epoch orchestration still lives in the train binary
-//! while data streaming and validation seams finish moving behind runtime-owned contracts.
+//! This module owns the hot BC logical-batch execution step without depending on
+//! the `hydra-train` binary crate. Direct inspection shows the outer epoch loop still has
+//! train-bin-owned seams that block a safe full move in this slice.
 
 use std::time::Instant;
 

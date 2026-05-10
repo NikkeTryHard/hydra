@@ -1,102 +1,17 @@
-use std::fs;
-
-use hydra_model::model::HydraModelConfig;
-use hydra_train_runtime::preflight::{HardwareFingerprint, PreflightCacheKey, WorkloadFingerprint};
-
-use super::config::{AdvancedLossConfig, PrecisionMode, TrainConfig};
-
-fn total_memory_bytes() -> Option<u64> {
-    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
-    let line = meminfo.lines().find(|line| line.starts_with("MemTotal:"))?;
-    let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
-    Some(kb.saturating_mul(1024))
-}
-
-pub(super) fn precision_mode_signature(mode: PrecisionMode) -> String {
-    match mode {
-        PrecisionMode::Fp32 => "fp32".to_string(),
-        PrecisionMode::Bf16Autocast => "bf16_autocast".to_string(),
-    }
-}
-
-pub(super) fn advanced_loss_signature(config: Option<&AdvancedLossConfig>) -> String {
-    match config {
-        Some(config) => serde_json::to_string(config)
-            .unwrap_or_else(|_| "advanced_loss:unserializable".to_string()),
-        None => "advanced_loss:none".to_string(),
-    }
-}
-
-pub(super) fn preflight_config_signature(config: &TrainConfig) -> String {
-    serde_json::to_string(&config.preflight)
-        .unwrap_or_else(|_| "preflight_config:unserializable".to_string())
-}
-
-pub(super) fn workload_fingerprint(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-) -> WorkloadFingerprint {
-    WorkloadFingerprint {
-        batch_size: config.batch_size,
-        augment: config.augment,
-        precision_mode: precision_mode_signature(config.precision_mode),
-        train_fraction_bits: config.train_fraction.to_bits(),
-        max_skip_logs_per_source: config.max_skip_logs_per_source,
-        max_validation_batches: config.max_validation_batches,
-        max_validation_samples: config.max_validation_samples,
-        model_signature: format!(
-            "blocks:{} input:{} hidden:{} groups:{} action:{} score_bins:{}",
-            model_config.num_blocks,
-            model_config.input_channels,
-            model_config.hidden_channels,
-            model_config.num_groups,
-            model_config.action_space,
-            model_config.score_bins,
-        ),
-        code_signature: format!(
-            "hydra-train:{}:{}:preflight-v4",
-            env!("CARGO_PKG_VERSION"),
-            env!("CARGO_PKG_NAME")
-        ),
-        advanced_loss_signature: advanced_loss_signature(config.advanced_loss.as_ref()),
-        preflight_config_signature: preflight_config_signature(config),
-        explicit_train_microbatch: config.microbatch_size,
-        explicit_validation_microbatch: config.validation_microbatch_size,
-    }
-}
-
-pub(super) fn hardware_fingerprint(
-    device_label: &str,
-    cpu_logical_cores: usize,
-) -> HardwareFingerprint {
-    HardwareFingerprint {
-        device_label: device_label.to_string(),
-        backend: "burn-libtorch".to_string(),
-        cpu_logical_cores,
-        total_memory_bytes: total_memory_bytes(),
-    }
-}
-
-pub(super) fn preflight_cache_key(
-    config: &TrainConfig,
-    model_config: &HydraModelConfig,
-    device_label: &str,
-    cpu_logical_cores: usize,
-) -> PreflightCacheKey {
-    PreflightCacheKey {
-        hardware: hardware_fingerprint(device_label, cpu_logical_cores),
-        workload: workload_fingerprint(config, model_config),
-    }
-}
+#[cfg(test)]
+pub(super) use hydra_train_runtime::preflight::{preflight_cache_key, workload_fingerprint};
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use hydra_train_runtime::preflight::PreflightConfig;
+    use hydra_model::model::HydraModelConfig;
+    use hydra_train_runtime::preflight::{
+        PreflightConfig, advanced_loss_signature, hardware_fingerprint,
+    };
 
-    use crate::config::{AdvancedLossConfig, BcHyperparamConfig, PrecisionMode};
+    use crate::config::{AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, TrainConfig};
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -328,7 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn total_memory_bytes_is_optional_but_never_negative() {
-        assert!(total_memory_bytes().map(|bytes| bytes > 0).unwrap_or(true));
+    fn hardware_fingerprint_memory_probe_is_optional() {
+        let hardware = hardware_fingerprint("cpu", 1);
+        assert!(
+            hardware
+                .total_memory_bytes
+                .map(|bytes| bytes > 0)
+                .unwrap_or(true)
+        );
     }
 }
