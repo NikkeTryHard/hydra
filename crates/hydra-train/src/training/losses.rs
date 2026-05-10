@@ -13,7 +13,7 @@ pub use hydra_train_algo::losses::{
     soft_target_from_exit, tenpai_bce, value_mse, value_target_from_gae,
 };
 pub use hydra_train_algo::losses::{combine_sample_masks, masked_action_mse, masked_mean};
-pub use hydra_train_types::losses::{HydraLossConfig, HydraTargets};
+pub use hydra_train_types::losses::{HydraLossConfig, HydraTargets, LossBreakdown};
 
 pub struct HydraLoss<B: Backend> {
     pub config: HydraLossConfig,
@@ -26,56 +26,6 @@ impl<B: Backend> HydraLoss<B> {
             config,
             _backend: PhantomData,
         }
-    }
-}
-
-pub struct LossBreakdown<B: Backend> {
-    pub policy: Tensor<B, 1>,
-    pub value: Tensor<B, 1>,
-    pub grp: Tensor<B, 1>,
-    pub tenpai: Tensor<B, 1>,
-    pub danger: Tensor<B, 1>,
-    pub opp_next: Tensor<B, 1>,
-    pub score_pdf: Tensor<B, 1>,
-    pub score_cdf: Tensor<B, 1>,
-    pub oracle_critic: Tensor<B, 1>,
-    pub belief_fields: Tensor<B, 1>,
-    pub mixture_weight: Tensor<B, 1>,
-    pub opponent_hand_type: Tensor<B, 1>,
-    pub delta_q: Tensor<B, 1>,
-    pub safety_residual: Tensor<B, 1>,
-    pub total: Tensor<B, 1>,
-}
-
-impl<B: Backend> LossBreakdown<B> {
-    pub fn all_finite(&self) -> bool {
-        let metrics = Tensor::cat(
-            vec![
-                self.policy.clone(),
-                self.value.clone(),
-                self.grp.clone(),
-                self.tenpai.clone(),
-                self.danger.clone(),
-                self.opp_next.clone(),
-                self.score_pdf.clone(),
-                self.score_cdf.clone(),
-                self.oracle_critic.clone(),
-                self.belief_fields.clone(),
-                self.mixture_weight.clone(),
-                self.opponent_hand_type.clone(),
-                self.delta_q.clone(),
-                self.safety_residual.clone(),
-                self.total.clone(),
-            ],
-            0,
-        )
-        .into_data()
-        .convert::<f32>();
-        metrics
-            .as_slice::<f32>()
-            .expect("loss breakdown scalars should be readable as f32")
-            .iter()
-            .all(|v| v.is_finite())
     }
 }
 

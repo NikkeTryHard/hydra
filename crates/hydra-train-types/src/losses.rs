@@ -9,6 +9,61 @@ use burn::prelude::*;
 
 use crate::head_gates::TargetPresence;
 
+/// Scalar loss components produced by Hydra's loss function.
+///
+/// Fields are one-element tensors so callers can preserve backend placement,
+/// combine losses before synchronization, and report metrics without changing
+/// historical names or ordering.
+pub struct LossBreakdown<B: Backend> {
+    pub policy: Tensor<B, 1>,
+    pub value: Tensor<B, 1>,
+    pub grp: Tensor<B, 1>,
+    pub tenpai: Tensor<B, 1>,
+    pub danger: Tensor<B, 1>,
+    pub opp_next: Tensor<B, 1>,
+    pub score_pdf: Tensor<B, 1>,
+    pub score_cdf: Tensor<B, 1>,
+    pub oracle_critic: Tensor<B, 1>,
+    pub belief_fields: Tensor<B, 1>,
+    pub mixture_weight: Tensor<B, 1>,
+    pub opponent_hand_type: Tensor<B, 1>,
+    pub delta_q: Tensor<B, 1>,
+    pub safety_residual: Tensor<B, 1>,
+    pub total: Tensor<B, 1>,
+}
+
+impl<B: Backend> LossBreakdown<B> {
+    pub fn all_finite(&self) -> bool {
+        let metrics = Tensor::cat(
+            vec![
+                self.policy.clone(),
+                self.value.clone(),
+                self.grp.clone(),
+                self.tenpai.clone(),
+                self.danger.clone(),
+                self.opp_next.clone(),
+                self.score_pdf.clone(),
+                self.score_cdf.clone(),
+                self.oracle_critic.clone(),
+                self.belief_fields.clone(),
+                self.mixture_weight.clone(),
+                self.opponent_hand_type.clone(),
+                self.delta_q.clone(),
+                self.safety_residual.clone(),
+                self.total.clone(),
+            ],
+            0,
+        )
+        .into_data()
+        .convert::<f32>();
+        metrics
+            .as_slice::<f32>()
+            .expect("loss breakdown scalars should be readable as f32")
+            .iter()
+            .all(|v| v.is_finite())
+    }
+}
+
 /// Batched supervised targets consumed by Hydra loss functions.
 ///
 /// All tensor fields are batched on dimension 0. Optional advanced-head targets

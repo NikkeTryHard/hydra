@@ -1,9 +1,13 @@
-//! Scalar head activation gate types and pure helpers.
+//! Scalar and tensor-aware head activation gate helpers.
 //!
-//! The tensor-specific target extraction and loss-config adapters remain in
-//! `hydra-train`; this module owns only backend-independent state machines,
-//! counters, thresholds, and gradient-vector math.
+//! This module owns backend-independent state machines, counters, thresholds,
+//! gradient-vector math, tensor target-presence extraction, and loss-weight
+//! gating helpers shared across training crates.
 
+use crate::losses::{HydraLossConfig, HydraTargets};
+use std::borrow::Cow;
+
+use burn::prelude::*;
 // ---------------------------------------------------------------------------
 // Constants (archive-recommended defaults from answer_13_combined.md)
 // ---------------------------------------------------------------------------
@@ -169,6 +173,161 @@ impl TargetPresence {
     pub fn count(&self, head: AdvancedHead) -> usize {
         self.counts[head.index()]
     }
+}
+
+/// Extracts per-head target presence from a batch of [`HydraTargets`].
+///
+/// For targets with per-sample masks (`belief_fields`, `mixture_weight`),
+/// counts the number of samples where the mask is nonzero. For targets
+/// without per-sample masks, counts `batch_size` when the target is present.
+pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetPresence {
+    if let Some(presence) = targets.target_presence {
+        return presence;
+    }
+    let batch_size = targets.policy_target.dims()[0];
+    let mut counts = [0usize; NUM_ADVANCED_HEADS];
+
+    // Oracle critic: uses oracle_guidance_mask for per-sample gating.
+    if targets.oracle_target.is_some() {
+        counts[AdvancedHead::OracleCritic.index()] = match &targets.oracle_guidance_mask {
+            Some(mask) => count_nonzero_1d(mask),
+            None => batch_size,
+        };
+    }
+
+    // Belief fields: per-sample mask.
+    if targets.belief_fields_target.is_some() {
+        counts[AdvancedHead::BeliefFields.index()] = match &targets.belief_fields_mask {
+            Some(mask) => {
+                count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref())
+            }
+            None => batch_size,
+        };
+    }
+
+    // Mixture weight: per-sample mask.
+    if targets.mixture_weight_target.is_some() {
+        counts[AdvancedHead::MixtureWeight.index()] = match &targets.mixture_weight_mask {
+            Some(mask) => {
+                count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref())
+            }
+            None => batch_size,
+        };
+    }
+
+    // Opponent hand type: shares oracle_guidance_mask.
+    if targets.opponent_hand_type_target.is_some() {
+        counts[AdvancedHead::OpponentHandType.index()] = match &targets.oracle_guidance_mask {
+            Some(mask) => count_nonzero_1d(mask),
+            None => batch_size,
+        };
+    }
+
+    counts[AdvancedHead::DeltaQ.index()] = match (&targets.delta_q_target, &targets.delta_q_mask) {
+        (Some(_), Some(mask)) => count_nonzero_rows_2d(mask),
+        _ => 0,
+    };
+
+    counts[AdvancedHead::SafetyResidual.index()] = match (
+        &targets.safety_residual_target,
+        &targets.safety_residual_mask,
+    ) {
+        (Some(_), Some(mask)) => count_nonzero_rows_2d(mask),
+        _ => 0,
+    };
+
+    TargetPresence {
+        counts,
+        delta_q_actions_present: 0,
+        batch_size,
+    }
+}
+
+pub fn borrow_or_extract_target_presence<B: Backend>(
+    targets: &HydraTargets<B>,
+) -> Cow<'_, TargetPresence> {
+    if let Some(presence) = targets.target_presence.as_ref() {
+        Cow::Borrowed(presence)
+    } else {
+        Cow::Owned(extract_target_presence(targets))
+    }
+}
+
+/// Counts nonzero entries in a 1-D tensor.
+fn count_nonzero_1d<B: Backend>(tensor: &Tensor<B, 1>) -> usize {
+    match tensor.to_data().convert::<f32>().as_slice::<f32>() {
+        Ok(data) => data.iter().filter(|&&v| v > 0.0).count(),
+        Err(_) => 0,
+    }
+}
+
+fn count_nonzero_1d_with_optional_gate<B: Backend>(
+    tensor: &Tensor<B, 1>,
+    gate: Option<&Tensor<B, 1>>,
+) -> usize {
+    let tensor_data = tensor.to_data().convert::<f32>();
+    let Ok(data) = tensor_data.as_slice::<f32>() else {
+        return 0;
+    };
+    let gate_data = gate.map(|gate| gate.to_data().convert::<f32>());
+    let gate_slice = gate_data
+        .as_ref()
+        .and_then(|data| data.as_slice::<f32>().ok());
+    data.iter()
+        .enumerate()
+        .filter(|(idx, value)| {
+            **value > 0.0
+                && gate_slice.is_none_or(|gate| gate.get(*idx).copied().unwrap_or(0.0) > 0.0)
+        })
+        .count()
+}
+
+fn count_nonzero_rows_2d<B: Backend>(tensor: &Tensor<B, 2>) -> usize {
+    let [_rows, cols] = tensor.dims();
+    match tensor.to_data().convert::<f32>().as_slice::<f32>() {
+        Ok(data) => data
+            .chunks(cols)
+            .filter(|row| row.iter().any(|&v| v > 0.0))
+            .count(),
+        Err(_) => 0,
+    }
+}
+
+/// Returns a [`HydraLossConfig`] with unapproved heads zeroed out.
+///
+/// - [`HeadState::Off`] heads get weight `0.0`.
+/// - [`HeadState::Warmup`] and [`HeadState::Active`] heads keep
+///   their weight from `base`.
+///
+/// Baseline heads (policy, value, grp, tenpai, danger, opp_next, score)
+/// are always passed through unchanged.
+pub fn approved_loss_config(
+    controller: &HeadActivationController,
+    base: &HydraLossConfig,
+) -> HydraLossConfig {
+    let gate = |head: AdvancedHead, w: f32| -> f32 {
+        match controller.head_state(head) {
+            HeadState::Off => 0.0,
+            HeadState::Warmup | HeadState::Active => w,
+        }
+    };
+    HydraLossConfig::new()
+        .with_w_pi(base.w_pi)
+        .with_w_v(base.w_v)
+        .with_w_grp(base.w_grp)
+        .with_w_tenpai(base.w_tenpai)
+        .with_w_danger(base.w_danger)
+        .with_w_opp(base.w_opp)
+        .with_w_score(base.w_score)
+        .with_w_oracle_critic(gate(AdvancedHead::OracleCritic, base.w_oracle_critic))
+        .with_w_belief_fields(gate(AdvancedHead::BeliefFields, base.w_belief_fields))
+        .with_w_mixture_weight(gate(AdvancedHead::MixtureWeight, base.w_mixture_weight))
+        .with_w_opponent_hand_type(gate(
+            AdvancedHead::OpponentHandType,
+            base.w_opponent_hand_type,
+        ))
+        .with_w_delta_q(gate(AdvancedHead::DeltaQ, base.w_delta_q))
+        .with_w_safety_residual(gate(AdvancedHead::SafetyResidual, base.w_safety_residual))
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +645,11 @@ impl HeadActivationController {
         &self.conflict
     }
 
+    /// Returns a [`HydraLossConfig`] with unapproved heads zeroed out.
+    pub fn approved_loss_config(&self, base: &HydraLossConfig) -> HydraLossConfig {
+        approved_loss_config(self, base)
+    }
+
     /// Evaluates all applicable gates for `head` without changing state.
     pub fn evaluate(&self, head: AdvancedHead) -> HeadGateReport {
         let mut failures = Vec::new();
@@ -648,6 +812,9 @@ impl HeadActivationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn::backend::NdArray;
+
+    type B = NdArray<f32>;
 
     #[test]
     fn head_indices_are_unique_and_complete() {
@@ -996,6 +1163,250 @@ mod tests {
             ctrl.head_state(AdvancedHead::SafetyResidual),
             HeadState::Off
         );
+    }
+
+    #[test]
+    fn approved_config_zeros_off_heads() {
+        let ctrl = HeadActivationController::new(test_config());
+        let base = HydraLossConfig::new()
+            .with_w_safety_residual(0.5)
+            .with_w_oracle_critic(1.0)
+            .with_w_delta_q(0.2);
+        let gated = ctrl.approved_loss_config(&base);
+
+        assert_eq!(gated.w_safety_residual, 0.0);
+        assert_eq!(gated.w_oracle_critic, 0.0);
+        assert_eq!(gated.w_delta_q, 0.0);
+        assert!((gated.w_pi - 1.0).abs() < 1e-6);
+        assert!((gated.w_v - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn approved_config_preserves_warmup_weights() {
+        let mut ctrl = HeadActivationController::new(test_config());
+        fill_density(&mut ctrl, AdvancedHead::SafetyResidual, 0.9);
+        ctrl.try_activate(AdvancedHead::SafetyResidual);
+
+        let base = HydraLossConfig::new().with_w_safety_residual(0.5);
+        let gated = ctrl.approved_loss_config(&base);
+        assert!((gated.w_safety_residual - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn approved_config_preserves_active_weights() {
+        let mut ctrl = HeadActivationController::new(test_config());
+        fill_density(&mut ctrl, AdvancedHead::SafetyResidual, 0.9);
+        ctrl.try_activate(AdvancedHead::SafetyResidual);
+
+        for _ in 0..3 {
+            ctrl.record_grad_cosine(AdvancedHead::SafetyResidual, 0.5);
+        }
+        for _ in 0..3 {
+            ctrl.tick_warmup();
+        }
+        assert_eq!(
+            ctrl.head_state(AdvancedHead::SafetyResidual),
+            HeadState::Active
+        );
+
+        let base = HydraLossConfig::new().with_w_safety_residual(0.5);
+        let gated = ctrl.approved_loss_config(&base);
+        assert!((gated.w_safety_residual - 0.5).abs() < 1e-6);
+    }
+
+    fn dummy_targets(batch: usize) -> HydraTargets<B> {
+        let device = Default::default();
+        HydraTargets {
+            policy_target: Tensor::ones([batch, 46], &device) / 46.0,
+            legal_mask: Tensor::ones([batch, 46], &device),
+            value_target: Tensor::zeros([batch], &device),
+            grp_target: Tensor::ones([batch, 24], &device) / 24.0,
+            tenpai_target: Tensor::ones([batch, 3], &device) / 3.0,
+            danger_target: Tensor::zeros([batch, 3, 34], &device),
+            danger_mask: Tensor::ones([batch, 3, 34], &device),
+            opp_next_target: Tensor::ones([batch, 3, 34], &device) / 34.0,
+            score_pdf_target: Tensor::ones([batch, 64], &device) / 64.0,
+            score_cdf_target: Tensor::zeros([batch, 64], &device),
+            oracle_target: None,
+            belief_fields_target: None,
+            belief_fields_mask: None,
+            mixture_weight_target: None,
+            mixture_weight_mask: None,
+            opponent_hand_type_target: None,
+            delta_q_target: None,
+            delta_q_mask: None,
+            safety_residual_target: None,
+            safety_residual_mask: None,
+            oracle_guidance_mask: None,
+            target_presence: None,
+        }
+    }
+
+    #[test]
+    fn extract_presence_all_none() {
+        let targets = dummy_targets(4);
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.batch_size, 4);
+        for &head in &AdvancedHead::ALL {
+            assert_eq!(presence.count(head), 0);
+        }
+    }
+
+    #[test]
+    fn extract_presence_safety_residual() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.safety_residual_target = Some(Tensor::zeros([4, 46], &device));
+        targets.safety_residual_mask = Some(Tensor::ones([4, 46], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::SafetyResidual), 4);
+    }
+
+    #[test]
+    fn extract_presence_safety_residual_counts_only_nonzero_mask_rows() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.safety_residual_target = Some(Tensor::zeros([4, 46], &device));
+        let mut mask = [[0.0f32; 46]; 4];
+        mask[0][0] = 1.0;
+        mask[2][7] = 1.0;
+        targets.safety_residual_mask = Some(Tensor::from_floats(mask, &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::SafetyResidual), 2);
+    }
+
+    #[test]
+    fn extract_presence_oracle_with_mask() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.oracle_target = Some(Tensor::ones([4, 4], &device));
+        targets.oracle_guidance_mask = Some(Tensor::from_floats([1.0, 0.0, 1.0, 0.0], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::OracleCritic), 2);
+    }
+
+    #[test]
+    fn extract_presence_belief_with_mask() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.belief_fields_target = Some(Tensor::zeros([4, 4, 34], &device));
+        targets.belief_fields_mask = Some(Tensor::from_floats([1.0, 1.0, 0.0, 1.0], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::BeliefFields), 3);
+    }
+
+    #[test]
+    fn extract_presence_belief_respects_oracle_guidance_gate() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.belief_fields_target = Some(Tensor::zeros([4, 4, 34], &device));
+        targets.belief_fields_mask = Some(Tensor::from_floats([1.0, 1.0, 0.0, 1.0], &device));
+        targets.oracle_guidance_mask = Some(Tensor::from_floats([1.0, 0.0, 1.0, 0.0], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::BeliefFields), 1);
+    }
+
+    #[test]
+    fn extract_presence_mixture_respects_oracle_guidance_gate() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.mixture_weight_target = Some(Tensor::zeros([4, 4], &device));
+        targets.mixture_weight_mask = Some(Tensor::from_floats([1.0, 0.0, 1.0, 1.0], &device));
+        targets.oracle_guidance_mask = Some(Tensor::from_floats([0.0, 1.0, 1.0, 0.0], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::MixtureWeight), 1);
+    }
+
+    #[test]
+    fn extract_presence_delta_q_counts_only_nonzero_mask_rows() {
+        let device = Default::default();
+        let mut targets = dummy_targets(8);
+        targets.delta_q_target = Some(Tensor::zeros([8, 46], &device));
+        let mut mask = [[0.0f32; 46]; 8];
+        mask[0][1] = 1.0;
+        mask[2][3] = 1.0;
+        mask[7][10] = 1.0;
+        targets.delta_q_mask = Some(Tensor::from_floats(mask, &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::DeltaQ), 3);
+    }
+
+    #[test]
+    fn extract_presence_delta_q_invalid_pair_counts_zero() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.delta_q_target = Some(Tensor::zeros([4, 46], &device));
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::DeltaQ), 0);
+    }
+
+    #[test]
+    fn extract_presence_prefers_cached_metadata() {
+        let device = Default::default();
+        let mut targets = dummy_targets(4);
+        targets.delta_q_target = Some(Tensor::zeros([4, 46], &device));
+        targets.delta_q_mask = Some(Tensor::ones([4, 46], &device));
+        targets.target_presence = Some(TargetPresence {
+            counts: [0, 0, 0, 0, 1, 0],
+            delta_q_actions_present: 9,
+            batch_size: 4,
+        });
+
+        let presence = extract_target_presence(&targets);
+        assert_eq!(presence.count(AdvancedHead::DeltaQ), 1);
+        assert_eq!(presence.delta_q_actions_present, 9);
+        assert_eq!(presence.batch_size, 4);
+    }
+
+    #[test]
+    fn controller_full_lifecycle_with_extracted_presence() {
+        let mut ctrl = HeadActivationController::new(test_config());
+        let device: <B as Backend>::Device = Default::default();
+
+        for _ in 0..200 {
+            let mut targets = dummy_targets(4);
+            targets.safety_residual_target = Some(Tensor::zeros([4, 46], &device));
+            targets.safety_residual_mask = Some(Tensor::ones([4, 46], &device));
+            let presence = extract_target_presence(&targets);
+            ctrl.record_batch(&presence);
+        }
+
+        assert!((ctrl.coverage().rho(AdvancedHead::SafetyResidual) - 1.0).abs() < 1e-6);
+
+        let report = ctrl.try_activate(AdvancedHead::SafetyResidual);
+        assert!(report.approved);
+        assert_eq!(
+            ctrl.head_state(AdvancedHead::SafetyResidual),
+            HeadState::Warmup
+        );
+
+        ctrl.record_grad_cosine(AdvancedHead::SafetyResidual, 0.4);
+        ctrl.record_grad_cosine(AdvancedHead::SafetyResidual, 0.2);
+        ctrl.record_grad_cosine(AdvancedHead::SafetyResidual, 0.6);
+
+        for _ in 0..3 {
+            ctrl.tick_warmup();
+        }
+        assert_eq!(
+            ctrl.head_state(AdvancedHead::SafetyResidual),
+            HeadState::Active
+        );
+
+        let base = HydraLossConfig::new().with_w_safety_residual(0.5);
+        let gated = ctrl.approved_loss_config(&base);
+        assert!((gated.w_safety_residual - 0.5).abs() < 1e-6);
+
+        let summary = ctrl.summary();
+        assert!(summary.contains("safety_residual"));
+        assert!(summary.contains("Active"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod config;
 pub mod config_runtime;
 pub mod gpu_config;
 pub mod loss_policy;
+pub mod model;
 pub mod nvtx;
 pub mod preflight;
 pub mod probe_request;

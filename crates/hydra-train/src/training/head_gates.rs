@@ -47,16 +47,15 @@
 //! not a true parameter-gradient norm. Use [`grad_cosine_from_flat`] with
 //! real flattened shared-trunk gradients instead.
 
-use crate::training::losses::{HydraLossConfig, HydraTargets};
-use std::borrow::Cow;
+use crate::training::losses::HydraLossConfig;
 use std::ops::{Deref, DerefMut};
 
-use burn::prelude::*;
 pub use hydra_train_types::head_gates::{
     AdvancedHead, DEFAULT_MAX_NEGATIVE_FRAC, DEFAULT_MIN_CONFLICT_CHECKS, DEFAULT_MIN_DENSE_RHO,
     DEFAULT_MIN_EVAL_SAMPLES, DEFAULT_MIN_SPARSE_SPP, DEFAULT_WARMUP_STEPS, GradConflictTracker,
     HeadActivationConfig, HeadCoverage, HeadGateReport, HeadKind, HeadState, NUM_ADVANCED_HEADS,
-    TargetPresence, grad_cosine_from_flat,
+    TargetPresence, borrow_or_extract_target_presence, extract_target_presence,
+    grad_cosine_from_flat,
 };
 
 /// Head activation controller with Hydra loss-config adapter methods.
@@ -71,7 +70,7 @@ impl HeadActivationController {
 
     /// Returns a [`HydraLossConfig`] with unapproved heads zeroed out.
     pub fn approved_loss_config(&self, base: &HydraLossConfig) -> HydraLossConfig {
-        approved_loss_config(self, base)
+        hydra_train_types::head_gates::approved_loss_config(&self.0, base)
     }
 }
 
@@ -88,163 +87,6 @@ impl DerefMut for HeadActivationController {
         &mut self.0
     }
 }
-/// Extracts per-head target presence from a batch of [`HydraTargets`].
-///
-/// For targets with per-sample masks (`belief_fields`, `mixture_weight`),
-/// counts the number of samples where the mask is nonzero. For targets
-/// without per-sample masks, counts `batch_size` when the target is present.
-pub fn extract_target_presence<B: Backend>(targets: &HydraTargets<B>) -> TargetPresence {
-    if let Some(presence) = targets.target_presence {
-        return presence;
-    }
-    let batch_size = targets.policy_target.dims()[0];
-    let mut counts = [0usize; NUM_ADVANCED_HEADS];
-
-    // Oracle critic: uses oracle_guidance_mask for per-sample gating.
-    if targets.oracle_target.is_some() {
-        counts[AdvancedHead::OracleCritic.index()] = match &targets.oracle_guidance_mask {
-            Some(mask) => count_nonzero_1d(mask),
-            None => batch_size,
-        };
-    }
-
-    // Belief fields: per-sample mask.
-    if targets.belief_fields_target.is_some() {
-        counts[AdvancedHead::BeliefFields.index()] = match &targets.belief_fields_mask {
-            Some(mask) => {
-                count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref())
-            }
-            None => batch_size,
-        };
-    }
-
-    // Mixture weight: per-sample mask.
-    if targets.mixture_weight_target.is_some() {
-        counts[AdvancedHead::MixtureWeight.index()] = match &targets.mixture_weight_mask {
-            Some(mask) => {
-                count_nonzero_1d_with_optional_gate(mask, targets.oracle_guidance_mask.as_ref())
-            }
-            None => batch_size,
-        };
-    }
-
-    // Opponent hand type: shares oracle_guidance_mask.
-    if targets.opponent_hand_type_target.is_some() {
-        counts[AdvancedHead::OpponentHandType.index()] = match &targets.oracle_guidance_mask {
-            Some(mask) => count_nonzero_1d(mask),
-            None => batch_size,
-        };
-    }
-
-    counts[AdvancedHead::DeltaQ.index()] = match (&targets.delta_q_target, &targets.delta_q_mask) {
-        (Some(_), Some(mask)) => count_nonzero_rows_2d(mask),
-        _ => 0,
-    };
-
-    counts[AdvancedHead::SafetyResidual.index()] = match (
-        &targets.safety_residual_target,
-        &targets.safety_residual_mask,
-    ) {
-        (Some(_), Some(mask)) => count_nonzero_rows_2d(mask),
-        _ => 0,
-    };
-
-    TargetPresence {
-        counts,
-        delta_q_actions_present: 0,
-        batch_size,
-    }
-}
-
-pub fn borrow_or_extract_target_presence<B: Backend>(
-    targets: &HydraTargets<B>,
-) -> Cow<'_, TargetPresence> {
-    if let Some(presence) = targets.target_presence.as_ref() {
-        Cow::Borrowed(presence)
-    } else {
-        Cow::Owned(extract_target_presence(targets))
-    }
-}
-
-/// Counts nonzero entries in a 1-D tensor.
-fn count_nonzero_1d<B: Backend>(tensor: &Tensor<B, 1>) -> usize {
-    match tensor.to_data().convert::<f32>().as_slice::<f32>() {
-        Ok(data) => data.iter().filter(|&&v| v > 0.0).count(),
-        Err(_) => 0,
-    }
-}
-
-fn count_nonzero_1d_with_optional_gate<B: Backend>(
-    tensor: &Tensor<B, 1>,
-    gate: Option<&Tensor<B, 1>>,
-) -> usize {
-    let tensor_data = tensor.to_data().convert::<f32>();
-    let Ok(data) = tensor_data.as_slice::<f32>() else {
-        return 0;
-    };
-    let gate_data = gate.map(|gate| gate.to_data().convert::<f32>());
-    let gate_slice = gate_data
-        .as_ref()
-        .and_then(|data| data.as_slice::<f32>().ok());
-    data.iter()
-        .enumerate()
-        .filter(|(idx, value)| {
-            **value > 0.0
-                && gate_slice.is_none_or(|gate| gate.get(*idx).copied().unwrap_or(0.0) > 0.0)
-        })
-        .count()
-}
-
-fn count_nonzero_rows_2d<B: Backend>(tensor: &Tensor<B, 2>) -> usize {
-    let [_rows, cols] = tensor.dims();
-    match tensor.to_data().convert::<f32>().as_slice::<f32>() {
-        Ok(data) => data
-            .chunks(cols)
-            .filter(|row| row.iter().any(|&v| v > 0.0))
-            .count(),
-        Err(_) => 0,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Loss config integration
-// ---------------------------------------------------------------------------
-/// Returns a [`HydraLossConfig`] with unapproved heads zeroed out.
-///
-/// - [`HeadState::Off`] heads get weight `0.0`.
-/// - [`HeadState::Warmup`] and [`HeadState::Active`] heads keep
-///   their weight from `base`.
-///
-/// Baseline heads (policy, value, grp, tenpai, danger, opp_next, score)
-/// are always passed through unchanged.
-pub fn approved_loss_config(
-    controller: &HeadActivationController,
-    base: &HydraLossConfig,
-) -> HydraLossConfig {
-    let gate = |head: AdvancedHead, w: f32| -> f32 {
-        match controller.head_state(head) {
-            HeadState::Off => 0.0,
-            HeadState::Warmup | HeadState::Active => w,
-        }
-    };
-    HydraLossConfig::new()
-        .with_w_pi(base.w_pi)
-        .with_w_v(base.w_v)
-        .with_w_grp(base.w_grp)
-        .with_w_tenpai(base.w_tenpai)
-        .with_w_danger(base.w_danger)
-        .with_w_opp(base.w_opp)
-        .with_w_score(base.w_score)
-        .with_w_oracle_critic(gate(AdvancedHead::OracleCritic, base.w_oracle_critic))
-        .with_w_belief_fields(gate(AdvancedHead::BeliefFields, base.w_belief_fields))
-        .with_w_mixture_weight(gate(AdvancedHead::MixtureWeight, base.w_mixture_weight))
-        .with_w_opponent_hand_type(gate(
-            AdvancedHead::OpponentHandType,
-            base.w_opponent_hand_type,
-        ))
-        .with_w_delta_q(gate(AdvancedHead::DeltaQ, base.w_delta_q))
-        .with_w_safety_residual(gate(AdvancedHead::SafetyResidual, base.w_safety_residual))
-}
 
 // ===========================================================================
 // Tests
@@ -253,7 +95,9 @@ pub fn approved_loss_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::training::losses::HydraTargets;
     use burn::backend::NdArray;
+    use burn::prelude::*;
 
     type B = NdArray<f32>;
 
