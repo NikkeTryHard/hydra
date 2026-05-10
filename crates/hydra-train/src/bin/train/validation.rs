@@ -14,23 +14,28 @@ use hydra_train::data::bc_shards::{
     BcShardBatch, BcShardHostBatch, BcShardReader, materialize_extracted_host_batch,
 };
 use hydra_train::data::pipeline::{DataManifest, StreamingLoaderConfig, stream_val_microbatches};
-use hydra_train::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
+use hydra_train_runtime::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 #[cfg(test)]
-use hydra_train::model::HydraOutput;
-use hydra_train::model::{HydraModel, HydraTrainModelExt};
-use hydra_train::preflight::{
+use hydra_train_runtime::data::sample::MjaiBatch;
+use hydra_train_runtime::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
+use hydra_train_runtime::delta_q_promotion::{
+    collect_policy_transfer_metrics_from_policy_outputs, collect_promotion_metrics_from_outputs,
+};
+use hydra_train_runtime::head_gates::HeadActivationController;
+use hydra_train_runtime::losses::HydraLoss;
+#[cfg(test)]
+use hydra_train_runtime::model::HydraOutput;
+use hydra_train_runtime::model::{HydraModel, HydraTrainModelExt};
+use hydra_train_runtime::preflight::{
     PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
     PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
 };
-use hydra_train::training::bc::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
-use hydra_train::training::delta_q_promotion::{
+use hydra_train_types::delta_q_promotion::{
     DeltaQPolicyTransferReport, DeltaQPolicyTransferThresholds, DeltaQPromotionReport,
-    DeltaQPromotionResult, DeltaQPromotionThresholds,
-    collect_policy_transfer_metrics_from_policy_outputs, collect_promotion_metrics_from_outputs,
-    evaluate_policy_transfer_report, evaluate_promotion_report,
+    DeltaQPromotionResult, DeltaQPromotionThresholds, evaluate_policy_transfer_report,
+    evaluate_promotion_report,
 };
-use hydra_train::training::head_gates::HeadActivationController;
-use hydra_train::training::losses::{HydraLoss, HydraTargets};
+use hydra_train_types::losses::HydraTargets;
 
 use super::config::{TrainConfig, shard_prefetch_depth};
 use super::nvtx;
@@ -357,9 +362,9 @@ fn finalize_validation_summary<B: Backend>(
 pub(super) fn validation_batch_stats<B: Backend>(
     sample_count: usize,
     output: &HydraOutput<B>,
-    batch: &hydra_train::data::sample::MjaiBatch<B>,
+    batch: &MjaiBatch<B>,
     targets: &HydraTargets<B>,
-    breakdown: &hydra_train::training::losses::LossBreakdown<B>,
+    breakdown: &hydra_train_types::losses::LossBreakdown<B>,
     total_loss: &Tensor<B, 1>,
 ) -> BatchStats {
     batch_stats_from_outputs(
@@ -749,13 +754,13 @@ mod tests {
     use burn::backend::libtorch::LibTorchDevice;
     use burn::tensor::Tensor;
     use hydra_core::action::HYDRA_ACTION_SPACE;
+    use hydra_core::encoder::NUM_CHANNELS;
     use hydra_core::encoder::OBS_SIZE;
     use hydra_train::data::pipeline::{DataSource, stream_val_pass};
-    use hydra_train::data::sample::MjaiBatch;
-    use hydra_train::data::sample::MjaiSample;
-    use hydra_train::model::HydraModelConfig;
-    use hydra_train::training::bc::{BcExitConfig, bc_total_with_exit};
-    use hydra_train::training::losses::HydraLossConfig;
+    use hydra_train_runtime::bc_runtime::bc_total_with_exit_from_breakdown;
+    use hydra_train_runtime::data::sample::MjaiSample;
+    use hydra_train_runtime::model::HydraModelConfig;
+    use hydra_train_types::losses::HydraLossConfig;
 
     use super::super::TrainBackend;
     use crate::config::{BcHyperparamConfig, TrainConfig};
@@ -817,7 +822,7 @@ mod tests {
 
     fn tiny_validation_model_config() -> HydraModelConfig {
         HydraModelConfig::new(1)
-            .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+            .with_input_channels(NUM_CHANNELS)
             .with_hidden_channels(4)
             .with_num_groups(4)
             .with_se_bottleneck(1)
@@ -825,7 +830,7 @@ mod tests {
 
     fn empty_batch(device: &LibTorchDevice, batch: usize) -> MjaiBatch<TestValidBackend> {
         MjaiBatch {
-            obs: Tensor::zeros([batch, hydra_train::config::INPUT_CHANNELS, 34], device),
+            obs: Tensor::zeros([batch, NUM_CHANNELS, 34], device),
             actions: Tensor::zeros([batch], device),
             legal_mask: Tensor::ones([batch, 46], device),
             value_target: Tensor::zeros([batch], device),
@@ -1002,10 +1007,7 @@ mod tests {
         let device = LibTorchDevice::Cpu;
         let batch = empty_batch(&device, 3);
 
-        assert_eq!(
-            batch.obs.dims(),
-            [3, hydra_train::config::INPUT_CHANNELS, 34]
-        );
+        assert_eq!(batch.obs.dims(), [3, NUM_CHANNELS, 34]);
         assert_eq!(batch.actions.dims(), [3]);
         assert_eq!(batch.legal_mask.dims(), [3, 46]);
         assert_eq!(batch.grp_target.dims(), [3, 24]);
@@ -1080,7 +1082,7 @@ mod tests {
         let exit_cfg = BcExitConfig::default();
 
         let breakdown = loss_fn.total_loss(&output, &targets);
-        let total = bc_total_with_exit(&output, &batch, &targets, &loss_fn, &exit_cfg);
+        let total = bc_total_with_exit_from_breakdown(&output, &batch, &breakdown, &exit_cfg);
         let stats = validation_batch_stats(2, &output, &batch, &targets, &breakdown, &total);
         let expected_total: f64 = total.clone().into_scalar().elem();
 
@@ -1379,7 +1381,7 @@ mod tests {
             .expect("baseline child stage should exist");
         assert_eq!(baseline_stage.elapsed_seconds, 0.0);
 
-        let obs = Tensor::zeros([1, hydra_train::config::INPUT_CHANNELS, 34], &device);
+        let obs = Tensor::zeros([1, NUM_CHANNELS, 34], &device);
         let (policy_only_logits, _) = valid.forward_policy_value(obs.clone());
         let full_logits = valid.forward(obs).policy_logits;
         let policy_only_rows = tensor_rows_f32(policy_only_logits);
@@ -1421,7 +1423,7 @@ mod tests {
         assert!(summary.delta_q_promotion.is_some());
         assert!(summary.delta_q_policy_transfer.is_some());
 
-        let obs = Tensor::zeros([1, hydra_train::config::INPUT_CHANNELS, 34], &device);
+        let obs = Tensor::zeros([1, NUM_CHANNELS, 34], &device);
         let (policy_only_logits, _) = baseline_valid.forward_policy_value(obs.clone());
         let full_logits = baseline_valid.forward(obs).policy_logits;
         let policy_only_rows = tensor_rows_f32(policy_only_logits);

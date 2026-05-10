@@ -1,20 +1,105 @@
-pub use hydra_train_runtime::delta_q_promotion::*;
+use burn::prelude::Backend;
+use burn::tensor::Tensor;
 
-pub fn delta_q_arena_report_from_paired_eval(
-    result: &crate::eval::PairedArenaEvalResult,
-    lower_confidence_bound_mean_placement: f32,
-) -> DeltaQArenaReport {
-    DeltaQArenaReport::from_paired_eval(result, lower_confidence_bound_mean_placement)
+pub use hydra_train_types::delta_q_promotion::*;
+use hydra_train_types::losses::HydraTargets;
+
+use crate::model::HydraOutput;
+
+pub fn collect_promotion_metrics_from_outputs<B: Backend>(
+    output: &HydraOutput<B>,
+    targets: &HydraTargets<B>,
+    high_gap_quantile: f64,
+) -> DeltaQPromotionReport {
+    let Some(delta_q_target) = &targets.delta_q_target else {
+        return DeltaQPromotionReport::new();
+    };
+    let Some(delta_q_mask) = &targets.delta_q_mask else {
+        return DeltaQPromotionReport::new();
+    };
+
+    let (policy, policy_rows, policy_width) = tensor_flat_f32(output.policy_logits.clone());
+    let (delta_q, delta_q_rows, delta_q_width) = tensor_flat_f32(output.delta_q.clone());
+    let (target, target_rows, target_width) = tensor_flat_f32(delta_q_target.clone());
+    let (mask, mask_rows, mask_width) = tensor_flat_f32(delta_q_mask.clone());
+    let (legal, legal_rows, legal_width) = tensor_flat_f32(targets.legal_mask.clone());
+
+    collect_promotion_metrics_from_slices(
+        DeltaQPromotionSliceInputs {
+            policy_logits: &policy,
+            policy_rows,
+            policy_width,
+            candidate_delta_q: &delta_q,
+            candidate_delta_q_rows: delta_q_rows,
+            candidate_delta_q_width: delta_q_width,
+            teacher_target: &target,
+            teacher_target_rows: target_rows,
+            teacher_target_width: target_width,
+            teacher_mask: &mask,
+            teacher_mask_rows: mask_rows,
+            teacher_mask_width: mask_width,
+            legal_mask: &legal,
+            legal_mask_rows: legal_rows,
+            legal_mask_width: legal_width,
+        },
+        high_gap_quantile,
+    )
+}
+
+pub fn collect_policy_transfer_metrics_from_policy_outputs<B: Backend>(
+    candidate_policy_logits: Tensor<B, 2>,
+    baseline_policy_logits: Tensor<B, 2>,
+    targets: &HydraTargets<B>,
+) -> DeltaQPolicyTransferReport {
+    let Some(delta_q_target) = &targets.delta_q_target else {
+        return DeltaQPolicyTransferReport::new();
+    };
+    let Some(delta_q_mask) = &targets.delta_q_mask else {
+        return DeltaQPolicyTransferReport::new();
+    };
+
+    let (candidate, candidate_rows, candidate_width) = tensor_flat_f32(candidate_policy_logits);
+    let (baseline, baseline_rows, baseline_width) = tensor_flat_f32(baseline_policy_logits);
+    let (target, target_rows, target_width) = tensor_flat_f32(delta_q_target.clone());
+    let (mask, mask_rows, mask_width) = tensor_flat_f32(delta_q_mask.clone());
+    let (legal, legal_rows, legal_width) = tensor_flat_f32(targets.legal_mask.clone());
+
+    collect_policy_transfer_metrics_from_slices(DeltaQPolicyTransferSliceInputs {
+        candidate_policy_logits: &candidate,
+        candidate_policy_rows: candidate_rows,
+        candidate_policy_width: candidate_width,
+        baseline_policy_logits: &baseline,
+        baseline_policy_rows: baseline_rows,
+        baseline_policy_width: baseline_width,
+        teacher_target: &target,
+        teacher_target_rows: target_rows,
+        teacher_target_width: target_width,
+        teacher_mask: &mask,
+        teacher_mask_rows: mask_rows,
+        teacher_mask_width: mask_width,
+        legal_mask: &legal,
+        legal_mask_rows: legal_rows,
+        legal_mask_width: legal_width,
+    })
+}
+
+fn tensor_flat_f32<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> (Vec<f32>, usize, usize) {
+    let data = tensor.to_data().convert::<f32>();
+    let values = data
+        .as_slice::<f32>()
+        .expect("promotion metrics require f32 tensor data")
+        .to_vec();
+    let dims = data.shape;
+    let rows = dims.first().copied().unwrap_or(0);
+    let row_width = dims.iter().skip(1).product::<usize>();
+    (values, rows, row_width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use burn::backend::NdArray;
-    use burn::tensor::Tensor;
     use burn::tensor::TensorData;
-    use hydra_train_runtime::model::HydraOutput;
-    use hydra_train_types::losses::HydraTargets;
 
     type B = NdArray<f32>;
 
@@ -159,16 +244,6 @@ mod tests {
         assert_eq!(report.candidate_beats_baseline_count, 2);
         assert_eq!(report.negative_transfer_count, 0);
         assert!(report.mean_regret_improvement() > 0.0);
-    }
-
-    #[test]
-    fn delta_q_arena_report_maps_from_paired_eval() {
-        let paired =
-            crate::eval::paired_arena_result_from_placements(&[0, 1, 1, 2], &[1, 2, 2, 3], 0.02);
-        let report = DeltaQArenaReport::from_paired_eval(&paired, -0.01);
-        assert_eq!(report.compared_games, 4);
-        assert!((report.lower_confidence_bound_mean_placement + 0.01).abs() < 1e-9);
-        assert!((report.upper_confidence_bound_mean_placement - 0.02).abs() < 1e-9);
     }
 
     #[test]

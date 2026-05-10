@@ -8,6 +8,7 @@ pub mod bc_runtime;
 pub mod config;
 pub mod config_runtime;
 pub mod data;
+pub mod delta_q_promotion;
 pub mod exit;
 pub mod gpu_config;
 pub mod head_gates;
