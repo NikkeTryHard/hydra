@@ -761,17 +761,38 @@ pub fn should_refresh_train_progress_message(
         )
 }
 
+/// Inputs needed to update the epoch progress-bar message.
+pub struct TrainProgressMessageContext<'a> {
+    /// Progress bar whose message is updated.
+    pub train_pb: &'a ProgressBar,
+    /// Runtime cadence/configuration values.
+    pub config: &'a hydra_train_runtime::config::TrainConfig,
+    /// BC trainer schedule configuration.
+    pub train_cfg: &'a hydra_train_types::config::BCTrainerConfig,
+    /// Current global optimizer step.
+    pub global_step: usize,
+    /// Global optimizer step at the start of this training session.
+    pub session_start_global_step: usize,
+    /// Instant when the current run started.
+    pub run_start: Instant,
+    /// Effective learning rate at `global_step`.
+    pub lr: f64,
+    /// Aggregated training statistics to display.
+    pub stats: ScalarAverages,
+}
+
 /// Updates the progress-bar train message on display boundaries.
-pub fn update_train_progress_message(
-    train_pb: &ProgressBar,
-    config: &hydra_train_runtime::config::TrainConfig,
-    train_cfg: &hydra_train_types::config::BCTrainerConfig,
-    global_step: usize,
-    session_start_global_step: usize,
-    run_start: Instant,
-    lr: f64,
-    stats: ScalarAverages,
-) {
+pub fn update_train_progress_message(context: TrainProgressMessageContext<'_>) {
+    let TrainProgressMessageContext {
+        train_pb,
+        config,
+        train_cfg,
+        global_step,
+        session_start_global_step,
+        run_start,
+        lr,
+        stats,
+    } = context;
     if !should_refresh_train_progress_message(
         &EpochCadenceInput::from(config),
         global_step,

@@ -46,11 +46,11 @@ use super::status::{
 use super::validation::ValidationSummary;
 use hydra_train_exec::epoch_runner::{
     self as exec_epoch, BcShardPrefetcher, EpochEndValidationContext, IntervalStepSummaryContext,
-    PeriodicCheckpointContext, PeriodicCheckpointState, ValidationEvent, ValidationStepContext,
-    emit_interval_step_summary, interval_timing_input_for_config as interval_timing_input,
-    maybe_run_interval_validation, maybe_save_periodic_checkpoint, run_epoch_end_validation,
-    should_run_epoch_end_validation, train_logical_batch_from_host_batch,
-    update_train_progress_message,
+    PeriodicCheckpointContext, PeriodicCheckpointState, TrainProgressMessageContext,
+    ValidationEvent, ValidationStepContext, emit_interval_step_summary,
+    interval_timing_input_for_config as interval_timing_input, maybe_run_interval_validation,
+    maybe_save_periodic_checkpoint, run_epoch_end_validation, should_run_epoch_end_validation,
+    train_logical_batch_from_host_batch, update_train_progress_message,
 };
 #[cfg(test)]
 use hydra_train_exec::epoch_runner::{
@@ -431,16 +431,16 @@ where
                 *global_step,
                 session_start_global_step,
             ) {
-                update_train_progress_message(
-                    &train_pb,
+                update_train_progress_message(TrainProgressMessageContext {
+                    train_pb: &train_pb,
                     config,
                     train_cfg,
-                    *global_step,
+                    global_step: *global_step,
                     session_start_global_step,
-                    *run_start,
+                    run_start: *run_start,
                     lr,
-                    stats.finalize(),
-                );
+                    stats: stats.finalize(),
+                });
             }
 
             let session_step = session_steps_completed(*global_step, session_start_global_step);
@@ -887,16 +887,16 @@ where
             *global_step,
             session_start_global_step,
         ) {
-            update_train_progress_message(
-                &train_pb,
+            update_train_progress_message(TrainProgressMessageContext {
+                train_pb: &train_pb,
                 config,
                 train_cfg,
-                *global_step,
+                global_step: *global_step,
                 session_start_global_step,
-                *run_start,
+                run_start: *run_start,
                 lr,
-                stats.finalize(),
-            );
+                stats: stats.finalize(),
+            });
         }
 
         let session_step = session_steps_completed(*global_step, session_start_global_step);
