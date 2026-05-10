@@ -7,4 +7,3 @@ pub mod mjai_loader;
 pub mod parsed_sample_cache;
 pub mod pipeline;
 pub mod sample;
-mod sample_targets;

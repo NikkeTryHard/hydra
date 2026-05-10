@@ -3368,6 +3368,7 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "cc",
+ "hydra-core",
  "hydra-data-core",
  "hydra-model",
  "hydra-train-algo",
