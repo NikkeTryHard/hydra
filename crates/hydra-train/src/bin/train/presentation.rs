@@ -1,10 +1,10 @@
 use colored::Colorize;
 
 use hydra_train::model::HydraModelConfig;
-use hydra_train::training::bc::BCTrainerConfig;
 use hydra_train_exec::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary as exec_bc_hyperparam_summary,
 };
+use hydra_train_types::config::BCTrainerConfig;
 
 use super::artifacts::BcArtifactPaths;
 use super::config::{TrainConfig, display_num_threads};

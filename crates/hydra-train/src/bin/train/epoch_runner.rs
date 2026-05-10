@@ -25,11 +25,10 @@ use hydra_train::preflight::{
     PROFILING_STAGE_LOGGING, PROFILING_STAGE_LOSS, PROFILING_STAGE_OPTIMIZER_STEP,
     PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
 };
-use hydra_train::training::bc::{
-    BCTrainerConfig, BcExitConfig, gated_bc_context, maybe_add_exit_loss,
-};
+use hydra_train::training::bc::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 use hydra_train::training::head_gates::HeadActivationController;
 use hydra_train::training::losses::HydraLoss;
+use hydra_train_types::config::BCTrainerConfig;
 
 use super::TrainBackend;
 use super::advisory::{

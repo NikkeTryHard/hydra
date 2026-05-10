@@ -1,4 +1,4 @@
-use hydra_train::training::bc::BCTrainerConfig;
+use hydra_train_types::config::BCTrainerConfig;
 
 pub(crate) use hydra_train_runtime::schedule::{
     TrainerScheduleConfig, lr_status_message, schedule_total_steps, steps_per_second,

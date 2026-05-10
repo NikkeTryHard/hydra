@@ -109,6 +109,22 @@ pub fn matching_bc_preflight_cache(
     }
 }
 
+/// Resolves selected BC runtime from a matching preflight cache, preserving probe-skip and explicit-setting semantics.
+#[must_use]
+pub fn bc_cached_runtime(
+    cached: PreflightCacheEntry,
+    explicit: ExplicitSettings,
+) -> PreflightRuntime {
+    PreflightRuntime {
+        runtime: cached.runtime,
+        train_probe_results: Vec::new(),
+        validation_probe_results: Vec::new(),
+        benchmark: cached.benchmark,
+        advisories: Vec::new(),
+        explicit,
+    }
+}
+
 /// Writes the BC preflight cache and optional benchmark report atomically.
 pub fn persist_bc_preflight_runtime(
     cache_key: PreflightCacheKey,
@@ -246,4 +262,88 @@ pub fn persist_rl_preflight_runtime(
 /// Returns true when `path` exists; small test helper for migrated cache-path checks.
 pub fn preflight_cache_exists(path: &Path) -> bool {
     path.exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hydra_train_runtime::preflight::{
+        LoaderRuntimeConfig, SelectedRuntimeConfig, preflight_cache_key,
+    };
+
+    #[test]
+    fn bc_cached_runtime_preserves_explicit_settings_and_skips_probes() {
+        let config = TrainConfig {
+            data_dir: "data".into(),
+            output_dir: "out".into(),
+            num_epochs: 1,
+            batch_size: 128,
+            microbatch_size: Some(64),
+            validation_microbatch_size: None,
+            exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
+            shard_prefetch_depth: None,
+            train_fraction: 0.9,
+            source_filters: Default::default(),
+            augment: true,
+            resume_checkpoint: None,
+            seed: 0,
+            advanced_loss: None,
+            validation_gates: Default::default(),
+            rl: None,
+            bc: Default::default(),
+            nsight_trace: None,
+            device: "cpu".to_string(),
+            precision_mode: Default::default(),
+            buffer_games: 50_000,
+            buffer_samples: 32_768,
+            num_threads: None,
+            tensorboard: true,
+            archive_queue_bound: 128,
+            validation_every_n_epochs: 1,
+            max_skip_logs_per_source: 32,
+            log_every_n_steps: 50,
+            validate_every_n_steps: 200,
+            checkpoint_every_n_steps: 200,
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: Some(8_192),
+            preflight: Default::default(),
+        };
+        let runtime = EffectiveRuntimeConfig {
+            selected: SelectedRuntimeConfig {
+                train_microbatch_size: 64,
+                validation_microbatch_size: 32,
+                accum_steps: 2,
+            },
+            loader: LoaderRuntimeConfig {
+                num_threads: Some(4),
+                buffer_games: 8,
+                buffer_samples: 1024,
+                archive_queue_bound: 2,
+            },
+        };
+        let cached = PreflightCacheEntry {
+            cache_key: preflight_cache_key(
+                &config,
+                &HydraModelConfig::actor(),
+                "cpu",
+                default_num_threads_for_system(),
+            ),
+            runtime,
+            benchmark: None,
+        };
+        let explicit = ExplicitSettings {
+            train_microbatch_explicit: true,
+            validation_microbatch_explicit: false,
+        };
+
+        let selected = bc_cached_runtime(cached, explicit);
+
+        assert_eq!(selected.runtime, runtime);
+        assert!(selected.train_probe_results.is_empty());
+        assert!(selected.validation_probe_results.is_empty());
+        assert_eq!(selected.explicit, explicit);
+    }
 }

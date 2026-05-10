@@ -5,18 +5,18 @@ use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
 use crate::model::{HydraModel, HydraTrainModelExt};
-use crate::training::ach::{AchConfig, ach_policy_loss};
+use crate::training::ach::ach_policy_loss;
 use crate::training::drda;
 use crate::training::head_gates::{
     AdvancedHead, HeadActivationController, borrow_or_extract_target_presence,
 };
 use crate::training::losses::{HydraLoss, HydraTargets};
+pub use hydra_train_types::config::{
+    DEFAULT_AUX_WEIGHT, DEFAULT_EXIT_WEIGHT, DEFAULT_RL_MICROBATCH_SIZE, RlConfig,
+};
 
 pub const MAX_RL_BATCH_SIZE: usize = 512;
-pub const DEFAULT_RL_MICROBATCH_SIZE: usize = 128;
 pub const ONE_EPOCH_ONLY: bool = true;
-pub const DEFAULT_EXIT_WEIGHT: f32 = 0.5;
-pub const DEFAULT_AUX_WEIGHT: f32 = 0.1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeltaQBatchStats {
@@ -138,74 +138,6 @@ impl<B: Backend> RlBatch<B> {
                 .map(|t| t.clone().slice(r1.clone())),
             exit_mask: self.exit_mask.as_ref().map(|t| t.clone().slice(r1)),
         }
-    }
-}
-
-pub struct RlConfig {
-    pub tau_drda: f32,
-    pub ach_cfg: AchConfig,
-    pub lr: f64,
-    pub exit_weight: f32,
-    pub aux_weight: f32,
-    pub microbatch_size: Option<usize>,
-}
-
-impl RlConfig {
-    pub fn default_phase2() -> Self {
-        Self {
-            tau_drda: 4.0,
-            ach_cfg: AchConfig::new(),
-            lr: 2.5e-4,
-            exit_weight: DEFAULT_EXIT_WEIGHT,
-            aux_weight: 0.1,
-            microbatch_size: None,
-        }
-    }
-
-    pub fn with_lr(mut self, lr: f64) -> Self {
-        self.lr = lr;
-        self
-    }
-    pub fn with_exit_weight(mut self, w: f32) -> Self {
-        self.exit_weight = w;
-        self
-    }
-    pub fn with_aux_weight(mut self, w: f32) -> Self {
-        self.aux_weight = w;
-        self
-    }
-
-    pub fn default_phase3() -> Self {
-        Self {
-            tau_drda: 4.0,
-            ach_cfg: AchConfig::new(),
-            lr: 1e-4,
-            exit_weight: 0.5,
-            aux_weight: 0.1,
-            microbatch_size: None,
-        }
-    }
-
-    pub fn summary(&self) -> String {
-        format!(
-            "rl(tau={:.1}, lr={:.1e}, exit_w={:.2}, aux_w={:.2})",
-            self.tau_drda, self.lr, self.exit_weight, self.aux_weight
-        )
-    }
-
-    pub fn effective_exit_weight(&self, phase: u8, progress: f32) -> f32 {
-        crate::training::exit::anneal_exit_weight(self.exit_weight, phase, progress)
-    }
-
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.tau_drda < crate::training::drda::MIN_TAU_DRDA {
-            return Err("tau_drda below minimum");
-        }
-        self.ach_cfg.validate()?;
-        if self.lr <= 0.0 {
-            return Err("lr must be positive");
-        }
-        Ok(())
     }
 }
 
@@ -441,6 +373,7 @@ fn rl_microbatch_forward<B: AutodiffBackend>(
 mod tests {
     use super::*;
     use crate::model::HydraModelConfig;
+    use crate::training::ach::AchConfig;
     use crate::training::head_gates::{AdvancedHead, HeadActivationConfig};
     use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::{Autodiff, NdArray};

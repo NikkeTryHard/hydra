@@ -7,6 +7,7 @@
 //! graph without creating cycles.
 
 pub mod checkpoint;
+pub mod config;
 pub mod delta_q_promotion;
 pub mod eval;
 pub mod head_gates;

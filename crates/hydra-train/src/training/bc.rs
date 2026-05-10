@@ -3,11 +3,10 @@
 use crate::amp::maybe_autocast;
 use crate::config::OracleGuidingConfig;
 use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_bc_owned};
-use crate::model::{HydraModel, HydraModelConfig};
+use crate::model::HydraModel;
 use crate::training::losses::{HydraLoss, HydraTargets};
-use burn::grad_clipping::GradientClippingConfig;
 use burn::module::AutodiffModule;
-use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams};
+use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 pub use hydra_train_runtime::bc_runtime::{
@@ -33,22 +32,7 @@ pub fn phase_learning_rate(
     cosine_annealing_lr(step, total_steps, lr_max, lr_min)
 }
 
-#[derive(Config, Debug)]
-pub struct BCTrainerConfig {
-    pub model_config: HydraModelConfig,
-    #[config(default = "2.5e-4")]
-    pub lr: f64,
-    #[config(default = "1e-6")]
-    pub min_learning_rate: f64,
-    #[config(default = "2048")]
-    pub batch_size: usize,
-    #[config(default = "1.0")]
-    pub grad_clip_norm: f32,
-    #[config(default = "1e-5")]
-    pub weight_decay: f32,
-    #[config(default = "1000")]
-    pub warmup_steps: usize,
-}
+pub use hydra_train_types::config::BCTrainerConfig;
 
 pub struct EpochStats {
     pub avg_loss: f64,
@@ -236,97 +220,6 @@ pub fn oracle_guiding_train_step<B: AutodiffBackend>(
     )
 }
 
-impl BCTrainerConfig {
-    pub fn summary(&self) -> String {
-        format!(
-            "lr={:.1e} min_lr={:.1e} batch={} clip={:.1} wd={:.1e}",
-            self.lr,
-            self.min_learning_rate,
-            self.batch_size,
-            self.grad_clip_norm,
-            self.weight_decay
-        )
-    }
-
-    pub fn default_actor() -> Self {
-        Self::new(crate::model::HydraModelConfig::actor())
-    }
-
-    pub fn estimated_training_time_hours(&self, num_samples: usize, samples_per_sec: f32) -> f32 {
-        if samples_per_sec <= 0.0 {
-            return 0.0;
-        }
-        num_samples as f32 / samples_per_sec / 3600.0
-    }
-
-    pub fn num_epochs_for(&self, num_samples: usize) -> usize {
-        let batches = self.total_batches(num_samples);
-        if batches == 0 {
-            return 0;
-        }
-        batches
-    }
-
-    pub fn default_learner() -> Self {
-        Self::new(crate::model::HydraModelConfig::learner())
-    }
-
-    pub fn is_warmup(&self, step: usize) -> bool {
-        step < self.warmup_steps
-    }
-
-    pub fn effective_lr(&self, step: usize, total_steps: usize) -> f64 {
-        warmup_then_cosine_lr(
-            step,
-            self.warmup_steps,
-            total_steps,
-            self.lr,
-            self.min_learning_rate,
-        )
-    }
-
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.lr <= 0.0 {
-            return Err("lr must be positive");
-        }
-        if self.min_learning_rate <= 0.0 {
-            return Err("min_learning_rate must be positive");
-        }
-        if self.min_learning_rate > self.lr {
-            return Err("min_learning_rate must be <= lr");
-        }
-        if self.batch_size == 0 {
-            return Err("batch_size must be > 0");
-        }
-        if self.grad_clip_norm <= 0.0 {
-            return Err("grad_clip_norm must be positive");
-        }
-        if self.weight_decay < 0.0 {
-            return Err("weight_decay must be non-negative");
-        }
-        if self.warmup_steps == 0 {
-            return Err("warmup_steps must be > 0");
-        }
-        Ok(())
-    }
-
-    pub fn total_batches(&self, num_samples: usize) -> usize {
-        if self.batch_size == 0 {
-            return 0;
-        }
-        num_samples / self.batch_size
-    }
-
-    pub fn optimizer_config(&self) -> AdamConfig {
-        AdamConfig::new()
-            .with_epsilon(1e-8)
-            .with_weight_decay(Some(burn::optim::decay::WeightDecayConfig::new(
-                self.weight_decay,
-            )))
-            .with_grad_clipping(Some(GradientClippingConfig::Norm(self.grad_clip_norm)))
-    }
-}
-
 /// Run one epoch of behavioral cloning with optional gradient accumulation.
 ///
 /// `microbatch_size` is the physical batch size that goes through forward/backward
@@ -434,6 +327,7 @@ pub use hydra_train_types::checkpoint::CheckpointMeta;
 mod tests {
     use super::*;
     use crate::data::sample::MjaiBatch;
+    use crate::model::HydraModelConfig;
     use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
