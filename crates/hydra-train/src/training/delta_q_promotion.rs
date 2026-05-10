@@ -1,3 +1,6 @@
+pub use hydra_train_exec::delta_q_promotion::{
+    collect_policy_transfer_metrics_from_policy_outputs, collect_promotion_metrics_from_outputs,
+};
 pub use hydra_train_runtime::delta_q_promotion::*;
 
 pub use hydra_train_exec::delta_q_promotion::delta_q_arena_report_from_paired_eval;
