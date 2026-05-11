@@ -109,6 +109,7 @@ fn main() {
             )
         });
         require_libtorch_cuda_component(&libtorch_cuda_lib, "c10_cuda");
+        require_libtorch_cuda_component(&libtorch_cuda_lib, "torch_cuda");
 
         build.define("HYDRA_ENABLE_CUDA_GRAPH_FFI", None);
         build.define("HYDRA_USE_CUDA_GRAPH", None);
@@ -124,6 +125,7 @@ fn main() {
         );
         println!("cargo:rustc-link-lib=dylib=cudart");
         println!("cargo:rustc-link-lib=dylib=c10_cuda");
+        println!("cargo:rustc-link-lib=dylib=torch_cuda");
         println!(
             "cargo:rustc-link-arg=-Wl,-rpath={}",
             cuda_paths.lib_dir.display()
