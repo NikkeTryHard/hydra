@@ -1,6 +1,7 @@
 //! Behavioral cloning helper algorithms.
 
 use burn::prelude::*;
+pub use hydra_train_types::config::{cosine_annealing_lr, warmup_then_cosine_lr};
 
 /// Behavioral-cloning ExIt loss weighting.
 #[derive(Debug, Clone, Copy)]
@@ -11,35 +12,6 @@ pub struct BcExitConfig {
 impl Default for BcExitConfig {
     fn default() -> Self {
         Self { exit_weight: 0.0 }
-    }
-}
-
-/// Computes a cosine-annealed learning rate clamped to the configured floor.
-pub fn cosine_annealing_lr(step: usize, total_steps: usize, lr_max: f64, lr_min: f64) -> f64 {
-    if total_steps == 0 {
-        return lr_max;
-    }
-    let t = (step as f64 / total_steps as f64).min(1.0);
-    lr_min + 0.5 * (lr_max - lr_min) * (1.0 + (std::f64::consts::PI * t).cos())
-}
-
-/// Computes a linear warmup followed by cosine annealing.
-pub fn warmup_then_cosine_lr(
-    step: usize,
-    warmup_steps: usize,
-    total_steps: usize,
-    lr_max: f64,
-    lr_min: f64,
-) -> f64 {
-    if step < warmup_steps {
-        lr_max * (step as f64 / warmup_steps as f64)
-    } else {
-        cosine_annealing_lr(
-            step - warmup_steps,
-            total_steps - warmup_steps,
-            lr_max,
-            lr_min,
-        )
     }
 }
 

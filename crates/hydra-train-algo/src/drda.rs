@@ -2,6 +2,7 @@
 
 use burn::prelude::*;
 use burn::tensor::activation;
+pub use hydra_train_types::config::MIN_TAU_DRDA;
 
 #[derive(Config, Debug)]
 pub struct DrdaConfig {
@@ -9,7 +10,6 @@ pub struct DrdaConfig {
     pub tau_drda: f32,
 }
 
-pub const MIN_TAU_DRDA: f32 = 2.0;
 pub const MIN_REBASE_INTERVAL_HOURS: f32 = 25.0;
 
 impl DrdaConfig {

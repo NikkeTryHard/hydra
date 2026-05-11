@@ -7,7 +7,6 @@ use burn::config::Config;
 use burn::grad_clipping::GradientClippingConfig;
 use burn::optim::AdamConfig;
 use hydra_model::model::HydraModelConfig;
-use hydra_train_algo::ach::AchConfig;
 
 /// Default RL physical microbatch size used when the train YAML omits one.
 pub const DEFAULT_RL_MICROBATCH_SIZE: usize = 128;
@@ -19,6 +18,71 @@ pub const DEFAULT_AUX_WEIGHT: f32 = 0.1;
 pub const GAE_GAMMA: f32 = 0.995;
 /// Generalized Advantage Estimation lambda used by RL self-play collation.
 pub const GAE_LAMBDA: f32 = 0.95;
+
+#[derive(Config, Debug)]
+pub struct AchConfig {
+    #[config(default = "1.0")]
+    pub eta: f32,
+    #[config(default = "0.5")]
+    pub eps: f32,
+    #[config(default = "8.0")]
+    pub l_th: f32,
+    #[config(default = "5e-4")]
+    pub beta_ent: f32,
+}
+
+impl AchConfig {
+    pub fn summary(&self) -> String {
+        format!(
+            "ach(eta={:.1}, eps={:.1}, l_th={:.0}, ent={:.1e})",
+            self.eta, self.eps, self.l_th, self.beta_ent
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.eta <= 0.0 {
+            return Err("eta must be positive");
+        }
+        if self.eps <= 0.0 || self.eps >= 1.0 {
+            return Err("eps must be in (0,1)");
+        }
+        if self.l_th <= 0.0 {
+            return Err("l_th must be positive");
+        }
+        Ok(())
+    }
+}
+
+pub const MIN_TAU_DRDA: f32 = 2.0;
+
+/// Computes a cosine-annealed learning rate clamped to the configured floor.
+pub fn cosine_annealing_lr(step: usize, total_steps: usize, lr_max: f64, lr_min: f64) -> f64 {
+    if total_steps == 0 {
+        return lr_max;
+    }
+    let t = (step as f64 / total_steps as f64).min(1.0);
+    lr_min + 0.5 * (lr_max - lr_min) * (1.0 + (std::f64::consts::PI * t).cos())
+}
+
+/// Computes a linear warmup followed by cosine annealing.
+pub fn warmup_then_cosine_lr(
+    step: usize,
+    warmup_steps: usize,
+    total_steps: usize,
+    lr_max: f64,
+    lr_min: f64,
+) -> f64 {
+    if step < warmup_steps {
+        lr_max * (step as f64 / warmup_steps as f64)
+    } else {
+        cosine_annealing_lr(
+            step - warmup_steps,
+            total_steps - warmup_steps,
+            lr_max,
+            lr_min,
+        )
+    }
+}
 
 /// Behavioral-cloning trainer hyperparameters and model shape.
 #[derive(Config, Debug)]
@@ -110,7 +174,7 @@ impl BCTrainerConfig {
     }
 
     pub fn effective_lr(&self, step: usize, total_steps: usize) -> f64 {
-        hydra_train_algo::bc::warmup_then_cosine_lr(
+        warmup_then_cosine_lr(
             step,
             self.warmup_steps,
             total_steps,
@@ -185,7 +249,7 @@ impl RlConfig {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.tau_drda < hydra_train_algo::drda::MIN_TAU_DRDA {
+        if self.tau_drda < MIN_TAU_DRDA {
             return Err("tau_drda below minimum");
         }
         self.ach_cfg.validate()?;
@@ -239,5 +303,40 @@ mod tests {
         assert!((phase3.exit_weight - DEFAULT_EXIT_WEIGHT).abs() < f32::EPSILON);
         assert!((phase3.aux_weight - DEFAULT_AUX_WEIGHT).abs() < f32::EPSILON);
         assert!(phase3.validate().is_ok());
+    }
+
+    #[test]
+    fn ach_config_defaults_and_validation_match_algo_contract() {
+        let cfg = AchConfig::new();
+        assert!((cfg.eta - 1.0).abs() < 1e-6);
+        assert!((cfg.eps - 0.5).abs() < 1e-6);
+        assert!((cfg.l_th - 8.0).abs() < 1e-6);
+        assert!((cfg.beta_ent - 5e-4).abs() < 1e-8);
+        assert!(cfg.validate().is_ok());
+
+        assert_eq!(
+            AchConfig::new().with_eta(0.0).validate(),
+            Err("eta must be positive")
+        );
+        assert_eq!(
+            AchConfig::new().with_eps(1.0).validate(),
+            Err("eps must be in (0,1)")
+        );
+        assert_eq!(
+            AchConfig::new().with_l_th(0.0).validate(),
+            Err("l_th must be positive")
+        );
+    }
+
+    #[test]
+    fn learning_rate_helpers_cover_zero_total_and_post_warmup_edges() {
+        assert!((cosine_annealing_lr(3, 0, 1e-3, 1e-5) - 1e-3).abs() < 1e-12);
+
+        let warmup_lr = warmup_then_cosine_lr(1, 4, 10, 1e-3, 1e-5);
+        assert!((warmup_lr - 2.5e-4).abs() < 1e-12);
+
+        let post_warmup_lr = warmup_then_cosine_lr(7, 4, 10, 1e-3, 1e-5);
+        let expected = cosine_annealing_lr(3, 6, 1e-3, 1e-5);
+        assert!((post_warmup_lr - expected).abs() < 1e-12);
     }
 }

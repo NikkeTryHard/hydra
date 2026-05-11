@@ -2,40 +2,7 @@
 
 use burn::prelude::*;
 use burn::tensor::activation;
-
-#[derive(Config, Debug)]
-pub struct AchConfig {
-    #[config(default = "1.0")]
-    pub eta: f32,
-    #[config(default = "0.5")]
-    pub eps: f32,
-    #[config(default = "8.0")]
-    pub l_th: f32,
-    #[config(default = "5e-4")]
-    pub beta_ent: f32,
-}
-
-impl AchConfig {
-    pub fn summary(&self) -> String {
-        format!(
-            "ach(eta={:.1}, eps={:.1}, l_th={:.0}, ent={:.1e})",
-            self.eta, self.eps, self.l_th, self.beta_ent
-        )
-    }
-
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.eta <= 0.0 {
-            return Err("eta must be positive");
-        }
-        if self.eps <= 0.0 || self.eps >= 1.0 {
-            return Err("eps must be in (0,1)");
-        }
-        if self.l_th <= 0.0 {
-            return Err("l_th must be positive");
-        }
-        Ok(())
-    }
-}
+pub use hydra_train_types::config::AchConfig;
 
 pub fn ach_policy_loss<B: Backend>(
     logits: Tensor<B, 2>,

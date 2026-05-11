@@ -3348,6 +3348,7 @@ name = "hydra-train-algo"
 version = "0.1.0"
 dependencies = [
  "burn",
+ "hydra-train-types",
 ]
 
 [[package]]
@@ -3405,7 +3406,6 @@ dependencies = [
  "burn",
  "hydra-core",
  "hydra-model",
- "hydra-train-algo",
  "serde",
 ]
 

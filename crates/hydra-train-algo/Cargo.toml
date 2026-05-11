@@ -13,6 +13,7 @@ workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
+hydra-train-types = { path = "../hydra-train-types" }
 burn = { version = "0.20" }
 
 [dev-dependencies]
