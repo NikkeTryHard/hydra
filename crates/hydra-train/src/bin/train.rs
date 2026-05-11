@@ -12,9 +12,6 @@ mod gpu_config;
 #[path = "train/modes.rs"]
 mod modes;
 #[cfg(test)]
-#[path = "train/nvtx.rs"]
-mod nvtx;
-#[cfg(test)]
 #[path = "train/presentation.rs"]
 mod presentation;
 #[cfg(test)]

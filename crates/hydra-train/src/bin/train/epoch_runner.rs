@@ -427,7 +427,7 @@ mod tests {
         let train_loss_fn = dummy_train_loss();
         let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
 
-        let (_, events) = crate::nvtx::with_test_recorder(|| {
+        let (_, events) = hydra_train_exec::nvtx::with_test_recorder(|| {
             train_logical_batch(
                 &logical_batch,
                 TrainLogicalBatchConfig {
@@ -555,7 +555,7 @@ mod tests {
         let manifest = dummy_manifest(true);
         let validation_summary = dummy_validation_summary(0.4, 0.7);
 
-        let (_, events) = crate::nvtx::with_test_recorder(|| {
+        let (_, events) = hydra_train_exec::nvtx::with_test_recorder(|| {
             emit_interval_step_summary(
                 &multi,
                 &mut tb,
@@ -2107,7 +2107,7 @@ mod tests {
         let mut head_controller =
             HeadActivationController::new(HeadActivationConfig::default_with_params(1));
 
-        let (_, events) = crate::nvtx::with_test_recorder(|| {
+        let (_, events) = hydra_train_exec::nvtx::with_test_recorder(|| {
             run_epoch(
                 EpochRunnerContext {
                     epoch: 1,
