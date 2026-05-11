@@ -6,22 +6,18 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::afbs::AfbsTree;
 use hydra_core::ct_smc::{CtSmc, CtSmcConfig};
 use hydra_core::encoder::NUM_CHANNELS;
-use hydra_search_labels::exit;
 #[allow(
     unused_imports,
     reason = "compile coverage for old delta-q arena eval imports"
 )]
-use hydra_train::eval::PairedArenaEvalResult;
-use hydra_train::inference;
-use hydra_train::model::{HydraModelConfig, HydraModelInit};
-#[allow(
-    unused_imports,
-    reason = "compile coverage for old delta-q arena report imports"
-)]
-use hydra_train::training::delta_q_promotion::DeltaQArenaReport;
-use hydra_train::training::drda;
-use hydra_train::training::gae;
-use hydra_train::training::losses::*;
+use hydra_model::inference;
+use hydra_model::model::{HydraModelConfig, HydraModelInit};
+use hydra_search_labels::exit;
+use hydra_train_algo::{distill, drda, gae};
+use hydra_train_exec::losses::HydraLoss;
+use hydra_train_types::delta_q_promotion::DeltaQArenaReport;
+use hydra_train_types::eval::PairedArenaEvalResult;
+use hydra_train_types::losses::{HydraLossConfig, HydraTargets};
 
 #[allow(
     unused_imports,
@@ -136,7 +132,6 @@ fn model_loss_and_distill_pipeline_smoke() {
     let mut optim = AdamConfig::new().init();
     let _learner_model = optim.step(1e-4, learner_model, grads);
 
-    use hydra_train::training::distill;
     let learner = small_learner_model_config().init::<InferBackend>(&device);
     let x_distill = Tensor::<InferBackend, 3>::zeros([1, NUM_CHANNELS, 34], &device);
     let l_out = learner.forward(x_distill.clone());
@@ -254,7 +249,7 @@ fn ctsmc_search_and_inference_pipeline_smoke() {
 fn arena_and_rl_batch_pipeline_smoke() {
     use hydra_core::arena::{Arena, ArenaConfig, Trajectory, TrajectoryExitLabel, TrajectoryStep};
     use hydra_core::encoder::OBS_SIZE;
-    use hydra_train::selfplay::{default_gae_config, trajectories_to_rl_batch};
+    use hydra_selfplay::{default_gae_config, trajectories_to_rl_batch};
 
     let device = Default::default();
     let mut arena = Arena::new(ArenaConfig::default());
@@ -470,7 +465,8 @@ fn determinism_same_seed_same_particles() {
 
 #[test]
 fn ach_rl_step_integration() {
-    use hydra_train::training::rl::{RlBatch, RlConfig};
+    use hydra_train_exec::rl_step::{RlBatch, rl_step};
+    use hydra_train_types::config::RlConfig;
 
     let device = Default::default();
     let batch = 2;
@@ -496,15 +492,15 @@ fn ach_rl_step_integration() {
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
     let cfg = RlConfig::default_phase2();
     let mut optim = AdamConfig::new().init();
-    let (_, loss) =
-        hydra_train::training::rl::rl_step(model, &rl_batch, &cfg, &loss_fn, &mut optim);
+    let (_, loss) = rl_step(model, &rl_batch, &cfg, &loss_fn, &mut optim);
     assert!(loss.is_finite(), "rl_step loss not finite: {loss}");
 }
 
 #[test]
 fn exit_rl_step_with_target() {
     use hydra_search_labels::exit::{build_exit_from_afbs_tree, collate_exit_targets};
-    use hydra_train::training::rl::{RlBatch, RlConfig};
+    use hydra_train_exec::rl_step::{RlBatch, rl_step};
+    use hydra_train_types::config::RlConfig;
 
     let device = Default::default();
     let batch = 2;
@@ -583,8 +579,7 @@ fn exit_rl_step_with_target() {
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
     let cfg = RlConfig::default_phase3();
     let mut optim = AdamConfig::new().init();
-    let (_, loss) =
-        hydra_train::training::rl::rl_step(model, &rl_batch, &cfg, &loss_fn, &mut optim);
+    let (_, loss) = rl_step(model, &rl_batch, &cfg, &loss_fn, &mut optim);
     assert!(loss.is_finite(), "exit rl_step loss not finite: {loss}");
 }
 

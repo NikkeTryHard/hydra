@@ -1,5 +1,6 @@
 pub mod batch;
 mod cooperative_state;
+pub mod validation;
 
 use burn::module::AutodiffModule;
 use burn::prelude::*;
@@ -44,6 +45,7 @@ use hydra_train_types::rl::RlBatch;
 pub use crate::batch::{default_gae_config, trajectories_to_rl_batch};
 pub use hydra_train_types::selfplay::{RootDecisionContext, StepRecord};
 
+pub use crate::validation::{run_delta_q_validation, run_exit_validation};
 const DEFAULT_GAME_MODE: u8 = 0;
 #[cfg(not(test))]
 const MAX_SELF_PLAY_STEPS: u32 = 50_000;

@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
 use hydra_train::data::bc_shards::{
     BcShardBuildOutput, BcShardSplitMode, BuildBcShardsConfig, build_bc_shards,
 };
 use hydra_train::data::mjai_loader::SidecarProvenance;
 use hydra_train::data::pipeline::scan_data_sources_with_progress;
-use hydra_train::training::replay_delta_q::DeltaQSidecarIndex;
-use hydra_train::training::replay_exit::ExitSidecarIndex;
 use indicatif::{ProgressBar, ProgressStyle};
 
 #[derive(Debug)]

@@ -31,9 +31,6 @@ pub(super) fn handle_delta_q_promotion_mode(
 
 #[cfg(test)]
 mod tests {
-    use hydra_train::preflight::{ProbeKind, ProbeResult, ProbeStatus};
-    use hydra_train::training::delta_q_promotion::DeltaQArenaConfirmationRequest;
-    use hydra_train::training::delta_q_promotion::DeltaQPromotionRecommendation;
     use hydra_train_exec::delta_q_promotion::{
         default_arena_confirmation_request, delta_q_arena_requirement_summary,
         delta_q_promotion_stage, format_delta_q_offline_gate_message,
@@ -45,6 +42,9 @@ mod tests {
         format_probe_only_status_detail, format_probe_only_status_message,
         format_probe_table_message, format_rl_preflight_selection_message,
     };
+    use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
+    use hydra_train_types::delta_q_promotion::DeltaQArenaConfirmationRequest;
+    use hydra_train_types::delta_q_promotion::DeltaQPromotionRecommendation;
     use std::path::{Path, PathBuf};
 
     use super::super::config::{RlTrainConfig, TrainConfig};
@@ -423,20 +423,20 @@ mod tests {
         assert!(rl_message.contains("Preflight:"));
         assert!(rl_message.contains("selected rl.games_per_batch=64 rl.microbatch_size=16"));
 
-        let runtime = hydra_train::preflight::EffectiveRuntimeConfig {
-            selected: hydra_train::preflight::SelectedRuntimeConfig {
+        let runtime = hydra_train_runtime::preflight::EffectiveRuntimeConfig {
+            selected: hydra_train_runtime::preflight::SelectedRuntimeConfig {
                 train_microbatch_size: 64,
                 validation_microbatch_size: 32,
                 accum_steps: 4,
             },
-            loader: hydra_train::preflight::LoaderRuntimeConfig {
+            loader: hydra_train_runtime::preflight::LoaderRuntimeConfig {
                 num_threads: Some(6),
                 buffer_games: 16,
                 buffer_samples: 128,
                 archive_queue_bound: 8,
             },
         };
-        let explicit = hydra_train::preflight::ExplicitSettings {
+        let explicit = hydra_train_runtime::preflight::ExplicitSettings {
             train_microbatch_explicit: false,
             validation_microbatch_explicit: true,
         };
@@ -869,20 +869,20 @@ mod tests {
         let rl_message = format_rl_preflight_selection_message(1, 2);
         assert!(rl_message.contains("selected rl.games_per_batch=1 rl.microbatch_size=2"));
 
-        let runtime = hydra_train::preflight::EffectiveRuntimeConfig {
-            selected: hydra_train::preflight::SelectedRuntimeConfig {
+        let runtime = hydra_train_runtime::preflight::EffectiveRuntimeConfig {
+            selected: hydra_train_runtime::preflight::SelectedRuntimeConfig {
                 train_microbatch_size: 8,
                 validation_microbatch_size: 4,
                 accum_steps: 1,
             },
-            loader: hydra_train::preflight::LoaderRuntimeConfig {
+            loader: hydra_train_runtime::preflight::LoaderRuntimeConfig {
                 num_threads: None,
                 buffer_games: 2,
                 buffer_samples: 16,
                 archive_queue_bound: 1,
             },
         };
-        let explicit = hydra_train::preflight::ExplicitSettings {
+        let explicit = hydra_train_runtime::preflight::ExplicitSettings {
             train_microbatch_explicit: true,
             validation_microbatch_explicit: false,
         };

@@ -59,20 +59,22 @@ mod tests {
     use crate::config::RlPhaseConfig;
     use crate::resume::{RlResumeSemantics, RlResumeState, RlRuntimeResumeContract};
     use crate::validation::DeltaQPromotionSnapshot;
-    use hydra_train::config::{PipelineState, TrainingPhase};
-    use hydra_train::data::pipeline::{DataManifest, DataSource};
-    use hydra_train::eval::ArenaPromotionDecision;
-    use hydra_train::preflight::{
+    use hydra_data_core::{DataManifest, DataSource};
+    use hydra_train_exec::delta_q_promotion::{
+        delta_q_arena_report_from_paired_eval, paired_arena_result_from_placements,
+    };
+    use hydra_train_runtime::preflight::{
         BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
         EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
         PreflightCacheEntry, PreflightCacheKey, ProfilingEnvelope, SelectedRuntimeConfig,
         WorkloadFingerprint, default_cache_name, default_manifest_cache_name,
     };
-    use hydra_train::training::delta_q_promotion::{
+    use hydra_train_types::delta_q_promotion::ArenaPromotionDecision;
+    use hydra_train_types::delta_q_promotion::{
         DeltaQArenaConfirmationRequest, DeltaQPolicyTransferReport, DeltaQPolicyTransferResult,
         DeltaQPromotionRecommendation, DeltaQPromotionReport, DeltaQPromotionResult,
-        delta_q_arena_report_from_paired_eval,
     };
+    use hydra_train_types::phase::{PipelineState, TrainingPhase};
 
     use crate::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
     use crate::resume::{BestValidation, write_rl_resume_state};
@@ -625,19 +627,19 @@ mod tests {
         let output_dir = temp_dir_path("preflight_benchmark_report_roundtrip");
         fs::create_dir_all(&output_dir).expect("create temp dir");
         let path = output_dir.join("preflight_benchmark/report.json");
-        let benchmark = hydra_train::preflight::BenchmarkResult {
-            runtime: hydra_train::preflight::BenchmarkRuntimeConfig {
+        let benchmark = BenchmarkResult {
+            runtime: BenchmarkRuntimeConfig {
                 train_microbatch_size: 8,
                 validation_microbatch_size: 4,
                 accum_steps: 2,
-                loader: hydra_train::preflight::LoaderRuntimeConfig {
+                loader: LoaderRuntimeConfig {
                     num_threads: Some(2),
                     buffer_games: 32,
                     buffer_samples: 128,
                     archive_queue_bound: 4,
                 },
             },
-            score: hydra_train::preflight::BenchmarkScore {
+            score: BenchmarkScore {
                 wall_clock_samples_per_second: 123.456,
                 train_only_samples_per_second: 200.0,
                 train_seconds: 1.0,
@@ -648,14 +650,11 @@ mod tests {
                 train_steps: 10,
                 validation_samples: 50,
             },
-            metadata: hydra_train::preflight::BenchmarkMetadata {
-                mode: hydra_train::preflight::BenchmarkMode::CadenceAwareProjection,
+            metadata: BenchmarkMetadata {
+                mode: BenchmarkMode::CadenceAwareProjection,
                 ..Default::default()
             },
-            profiling: Some(hydra_train::preflight::ProfilingEnvelope::leaf(
-                "stage_2_benchmark",
-                1.5,
-            )),
+            profiling: Some(ProfilingEnvelope::leaf("stage_2_benchmark", 1.5)),
         };
         let report = PreflightBenchmarkReport {
             cache_key: sample_preflight_cache_entry().cache_key,
@@ -859,11 +858,7 @@ mod tests {
             criteria: Vec::new(),
         };
         let arena_request = DeltaQArenaConfirmationRequest::default();
-        let paired = hydra_train::eval::paired_arena_result_from_placements(
-            &[0, 1, 1, 2],
-            &[1, 2, 2, 3],
-            0.02,
-        );
+        let paired = paired_arena_result_from_placements(&[0, 1, 1, 2], &[1, 2, 2, 3], 0.02);
         let arena_report = delta_q_arena_report_from_paired_eval(&paired, -0.01);
 
         write_delta_q_promotion_artifact(

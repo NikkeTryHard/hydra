@@ -18,26 +18,26 @@ pub(super) use hydra_train_exec::epoch_runner::{
 pub(super) use hydra_train_exec::progress::TrainSubStageTiming;
 
 #[cfg(test)]
-pub(super) use hydra_train::data::sample::MjaiSample;
+pub(super) use hydra_train_algo::bc::BcExitConfig;
 #[cfg(test)]
-pub(super) use hydra_train::model::HydraModel;
-#[cfg(test)]
-pub(super) use hydra_train::preflight::{
-    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOGGING,
-    PROFILING_STAGE_PRODUCER_WAIT,
-};
-#[cfg(test)]
-pub(super) use hydra_train::training::bc::BcExitConfig;
-#[cfg(test)]
-pub(super) use hydra_train::training::losses::HydraLoss;
+pub(super) use hydra_train_exec::data::sample::MjaiSample;
 #[cfg(test)]
 pub(super) use hydra_train_exec::data_pipeline::{DataManifest, StreamingLoaderConfig};
+#[cfg(test)]
+pub(super) use hydra_train_exec::losses::HydraLoss;
+#[cfg(test)]
+pub(super) use hydra_train_exec::model::HydraModel;
 #[cfg(test)]
 pub(super) use hydra_train_exec::resume::{
     BestValidation, EpochContinuation, RuntimeResumeContract,
 };
 #[cfg(test)]
 pub(super) use hydra_train_exec::validation::ValidationSummary;
+#[cfg(test)]
+pub(super) use hydra_train_runtime::preflight::{
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOGGING,
+    PROFILING_STAGE_PRODUCER_WAIT,
+};
 #[cfg(test)]
 pub(super) use hydra_train_runtime::progress::{BatchStats, ScalarAverages};
 
@@ -55,11 +55,11 @@ mod tests {
     use burn::backend::libtorch::LibTorchDevice;
     use burn::optim::AdamConfig;
     use burn::tensor::backend::AutodiffBackend;
-    use hydra_train::model::{HydraModelConfig, HydraModelInit};
-    use hydra_train::preflight::PreflightConfig;
-    use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
-    use hydra_train::training::losses::HydraLossConfig;
+    use hydra_train_exec::model::{HydraModelConfig, HydraModelInit};
     use hydra_train_exec::validation_runner::{ValidationContext, ValidationRuntime};
+    use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
+    use hydra_train_runtime::preflight::PreflightConfig;
+    use hydra_train_types::losses::HydraLossConfig;
     use indicatif::MultiProgress;
     use tboard::EventWriter;
 
@@ -209,7 +209,7 @@ mod tests {
 
     fn tiny_dummy_model(device: &LibTorchDevice) -> HydraModel<TrainBackend> {
         HydraModelConfig::new(1)
-            .with_input_channels(hydra_train::config::INPUT_CHANNELS)
+            .with_input_channels(hydra_core::encoder::NUM_CHANNELS)
             .with_hidden_channels(4)
             .with_num_groups(4)
             .with_se_bottleneck(1)

@@ -78,11 +78,14 @@ pub const PONDER_BEAM_W: usize = 256;
 pub const PONDER_DEPTH: u8 = 10;
 pub const PONDER_PARTICLES: usize = 1024;
 
+use hydra_train_algo::{ach::AchConfig, distill::DistillConfig, drda::DrdaConfig, gae::GaeConfig};
+pub use hydra_train_types::config::BCTrainerConfig;
 pub use hydra_train_types::config::OracleGuidingConfig;
+use hydra_train_types::losses::HydraLossConfig;
 
 pub fn validate_training_config(
-    model_cfg: &crate::model::HydraModelConfig,
-    ach_cfg: &crate::training::ach::AchConfig,
+    model_cfg: &hydra_model::model::HydraModelConfig,
+    ach_cfg: &AchConfig,
     exit_cfg: &crate::training::exit::ExitConfig,
 ) -> Result<(), &'static str> {
     model_cfg.validate()?;
@@ -93,13 +96,13 @@ pub fn validate_training_config(
 
 /// Validate all training configs at pipeline startup.
 pub fn validate_all_configs(
-    model_cfg: &crate::model::HydraModelConfig,
-    loss_cfg: &crate::training::losses::HydraLossConfig,
-    ach_cfg: &crate::training::ach::AchConfig,
+    model_cfg: &hydra_model::model::HydraModelConfig,
+    loss_cfg: &HydraLossConfig,
+    ach_cfg: &AchConfig,
     exit_cfg: &crate::training::exit::ExitConfig,
-    drda_cfg: &crate::training::drda::DrdaConfig,
-    gae_cfg: &crate::training::gae::GaeConfig,
-    distill_cfg: &crate::training::distill::DistillConfig,
+    drda_cfg: &DrdaConfig,
+    gae_cfg: &GaeConfig,
+    distill_cfg: &DistillConfig,
 ) -> Result<(), String> {
     model_cfg.validate().map_err(|e| format!("model: {e}"))?;
     loss_cfg.validate().map_err(|e| format!("loss: {e}"))?;
@@ -259,8 +262,8 @@ mod tests {
 
     #[test]
     fn test_all_defaults_match_roadmap() {
-        use crate::model::HydraModelConfig;
-        use crate::training::{ach, bc, distill, drda, exit, gae, losses};
+        use crate::training::exit;
+        use hydra_model::model::HydraModelConfig;
 
         // -- Model configs --
         let learner = HydraModelConfig::learner();
@@ -276,7 +279,7 @@ mod tests {
         assert_eq!(learner.se_bottleneck, 64, "se_bottleneck should be 64");
 
         // -- Loss weights --
-        let loss = losses::HydraLossConfig::new();
+        let loss = HydraLossConfig::new();
         assert!(
             (loss.w_pi - 1.0).abs() < 1e-6,
             "w_pi should be 1.0, got {}",
@@ -319,7 +322,7 @@ mod tests {
         );
 
         // -- ACH config --
-        let ach = ach::AchConfig::new();
+        let ach = AchConfig::new();
         assert!(
             (ach.eta - 1.0).abs() < 1e-6,
             "ACH eta should be 1.0, got {}",
@@ -365,7 +368,7 @@ mod tests {
         );
 
         // -- DRDA config --
-        let drda = drda::DrdaConfig::new();
+        let drda = DrdaConfig::new();
         assert!(
             (drda.tau_drda - 4.0).abs() < 1e-6,
             "tau_drda should be 4.0, got {}",
@@ -373,7 +376,7 @@ mod tests {
         );
 
         // -- GAE config --
-        let gae = gae::GaeConfig::default();
+        let gae = GaeConfig::default();
         assert!(
             (gae.gamma - 0.995).abs() < 1e-6,
             "GAE gamma should be 0.995, got {}",
@@ -386,7 +389,7 @@ mod tests {
         );
 
         // -- BC trainer config --
-        let bc = bc::BCTrainerConfig::new(HydraModelConfig::learner());
+        let bc = BCTrainerConfig::new(HydraModelConfig::learner());
         assert!(
             (bc.lr - 2.5e-4).abs() < 1e-10,
             "BC lr should be 2.5e-4, got {}",
@@ -414,7 +417,7 @@ mod tests {
         );
 
         // -- Distill config --
-        let dist = distill::DistillConfig::new();
+        let dist = DistillConfig::new();
         assert!(
             (dist.kd_kl_weight - 1.0).abs() < 1e-6,
             "kd_kl_weight should be 1.0, got {}",
@@ -445,33 +448,33 @@ mod tests {
 
     #[test]
     fn validate_all_configs_defaults_pass() {
-        use crate::model::HydraModelConfig;
-        use crate::training::{ach, distill, drda, exit, gae, losses};
+        use crate::training::exit;
+        use hydra_model::model::HydraModelConfig;
         let result = validate_all_configs(
             &HydraModelConfig::learner(),
-            &losses::HydraLossConfig::new(),
-            &ach::AchConfig::new(),
+            &HydraLossConfig::new(),
+            &AchConfig::new(),
             &exit::ExitConfig::new(),
-            &drda::DrdaConfig::new(),
-            &gae::GaeConfig::default(),
-            &distill::DistillConfig::new(),
+            &DrdaConfig::new(),
+            &GaeConfig::default(),
+            &DistillConfig::new(),
         );
         assert!(result.is_ok(), "default configs should pass: {result:?}");
     }
 
     #[test]
     fn validate_all_configs_catches_bad_ach() {
-        use crate::model::HydraModelConfig;
-        use crate::training::{ach, distill, drda, exit, gae, losses};
-        let bad_ach = ach::AchConfig::new().with_eta(0.0);
+        use crate::training::exit;
+        use hydra_model::model::HydraModelConfig;
+        let bad_ach = AchConfig::new().with_eta(0.0);
         let result = validate_all_configs(
             &HydraModelConfig::learner(),
-            &losses::HydraLossConfig::new(),
+            &HydraLossConfig::new(),
             &bad_ach,
             &exit::ExitConfig::new(),
-            &drda::DrdaConfig::new(),
-            &gae::GaeConfig::default(),
-            &distill::DistillConfig::new(),
+            &DrdaConfig::new(),
+            &GaeConfig::default(),
+            &DistillConfig::new(),
         );
         assert!(result.is_err(), "zero eta should fail validation");
         assert!(result.unwrap_err().contains("ach"));

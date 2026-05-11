@@ -6,7 +6,7 @@ use self::replay_sidecar_common::{
     ReplaySidecarWriteRequest, build_exit_config, load_model, parse_args, read_events, write_jsonl,
     write_report, write_sidecar_with,
 };
-use hydra_train::training::replay_exit::replay_exit_records_for_identity;
+use hydra_search_labels::replay_exit::replay_exit_records_for_identity;
 
 fn run() -> Result<(), String> {
     let cli = parse_args("build_replay_exit_sidecar", std::env::args())?;

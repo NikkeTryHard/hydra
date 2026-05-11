@@ -7,7 +7,14 @@ use burn::module::AutodiffModule;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::{Trajectory, TrajectoryStep};
 use hydra_core::encoder::OBS_SIZE;
+use hydra_model::model::{HydraModelConfig, HydraModelInit};
 use hydra_search_labels::live_exit::LiveExitConfig;
+use hydra_selfplay::batch::{RlBatchScratch, trajectories_to_rl_batch_reuse};
+use hydra_selfplay::{
+    CooperativeSelfPlayCoordinator, SelfPlayBatchSource, default_gae_config,
+    generate_self_play_batch_source, generate_self_play_batch_source_cooperative,
+    generate_self_play_batch_source_cooperative_reuse, trajectories_to_rl_batch,
+};
 use hydra_train::data::bc_shards::{
     BcShardSplit, BcShardSplitMode, BuildBcShardsConfig, build_bc_shards, load_bc_shard_reader,
     materialize_host_batch_owned,
@@ -21,18 +28,10 @@ use hydra_train::data::pipeline::{
     stream_val_microbatches, stream_val_pass,
 };
 use hydra_train::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
-use hydra_train::model::{HydraModelConfig, HydraModelInit, HydraTrainModelExt};
-use hydra_train::selfplay::{
-    CooperativeSelfPlayCoordinator, generate_self_play_batch_source,
-    generate_self_play_batch_source_cooperative, generate_self_play_batch_source_cooperative_reuse,
-};
-use hydra_train::selfplay_batch::{
-    RlBatchScratch, default_gae_config, trajectories_to_rl_batch, trajectories_to_rl_batch_reuse,
-};
-use hydra_train::training::bc::BcExitConfig;
-use hydra_train::training::bc::bc_total_with_optional_exit_from_breakdown;
-use hydra_train::training::losses::LossBreakdown;
-use hydra_train::training::losses::{HydraLoss, HydraLossConfig};
+use hydra_train_exec::bc_runtime::{BcExitConfig, bc_total_with_optional_exit_from_breakdown};
+use hydra_train_exec::losses::HydraLoss;
+use hydra_train_exec::model::HydraTrainModelExt;
+use hydra_train_types::losses::{HydraLossConfig, LossBreakdown};
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
@@ -177,7 +176,7 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
             .expect("validation bench batch should exist");
             let output = valid.forward(obs.clone());
             let breakdown = loss_fn.total_loss(&output, &targets);
-            let total = hydra_train::training::bc::bc_total_with_optional_exit_from_breakdown(
+            let total = bc_total_with_optional_exit_from_breakdown(
                 &output,
                 Some(&batch),
                 &breakdown,
@@ -478,7 +477,7 @@ fn game_seeds_for_bench(base_seed: u64, games_per_batch: usize) -> Vec<u64> {
         .collect()
 }
 
-fn black_box_selfplay_batch_source(source: hydra_train::selfplay::SelfPlayBatchSource) {
+fn black_box_selfplay_batch_source(source: SelfPlayBatchSource) {
     let games = source.trajectories.len();
     let steps = source
         .trajectories

@@ -1,7 +1,7 @@
 #[cfg(test)]
 use super::config::TrainConfig;
 #[cfg(test)]
-use hydra_train::model::HydraModelConfig;
+use hydra_model::model::HydraModelConfig;
 #[cfg(test)]
 use hydra_train_exec::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary as exec_bc_hyperparam_summary,
@@ -51,11 +51,7 @@ pub(super) fn optimized_path_summary(config: &TrainConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::{bc_hyperparam_summary, model_kind, optimized_path_summary};
-    use hydra_train::model::HydraModelConfig;
-    use hydra_train::preflight::{
-        EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, ProbeKind, ProbeResult,
-        ProbeStatus, SelectedRuntimeConfig,
-    };
+    use hydra_model::model::HydraModelConfig;
     use hydra_train_exec::presentation::{
         BcHyperparamSummaryInput, explicit_preflight_recommendation, explicit_preflight_summary,
         format_advisory_line, format_preflight_selection_line, format_preflight_summary_line,
@@ -63,6 +59,10 @@ mod tests {
         format_probe_status_line, format_progress_message, format_runtime_tuning_message,
         format_status_line, format_timed_phase_message, format_warning_line, make_bar,
         make_spinner, phase_label, preflight_phase_label, timestamped, with_utc_timestamp,
+    };
+    use hydra_train_runtime::preflight::{
+        EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, ProbeKind, ProbeResult,
+        ProbeStatus, SelectedRuntimeConfig,
     };
 
     fn strip_ansi(input: &str) -> String {

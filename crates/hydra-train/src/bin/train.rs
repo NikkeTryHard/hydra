@@ -55,7 +55,7 @@ use self::resume::{
     read_resume_state, resume_banner_message, test_runtime_resume_contract,
 };
 #[cfg(test)]
-use hydra_train::preflight::PreflightConfig;
+use hydra_train_runtime::preflight::PreflightConfig;
 
 #[cfg(test)]
 type TrainBackend = Autodiff<LibTorch<f32>>;
@@ -89,7 +89,7 @@ mod tests {
     use super::*;
     use burn::backend::libtorch::LibTorchDevice;
     use burn::prelude::*;
-    use hydra_train::training::bc::policy_agreement_counts;
+    use hydra_train_algo::bc::policy_agreement_counts;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -199,7 +199,7 @@ mod tests {
         ];
         let parsed = parse_args(args).expect("probe args should parse");
         let probe = parsed.probe_only.expect("probe_only should be present");
-        assert_eq!(probe.kind, hydra_train::preflight::ProbeKind::Train);
+        assert_eq!(probe.kind, hydra_train_runtime::preflight::ProbeKind::Train);
         assert_eq!(probe.candidate_microbatch, 192);
         assert_eq!(probe.warmup_steps, Some(4));
         assert_eq!(probe.measure_steps, Some(8));
@@ -233,7 +233,7 @@ mod tests {
             crate::config::ProbeChildRequest::Single(child) => {
                 assert_eq!(
                     child.request.kind,
-                    hydra_train::preflight::ProbeKind::Validation
+                    hydra_train_runtime::preflight::ProbeKind::Validation
                 );
                 assert_eq!(child.request.candidate_microbatch, 192);
                 assert_eq!(child.result_path, PathBuf::from("/tmp/probe.json"));
@@ -269,7 +269,7 @@ mod tests {
             crate::config::ProbeChildRequest::Single(child) => {
                 assert_eq!(
                     child.request.kind,
-                    hydra_train::preflight::ProbeKind::Validation
+                    hydra_train_runtime::preflight::ProbeKind::Validation
                 );
                 assert_eq!(child.request.candidate_microbatch, 192);
                 assert_eq!(child.request.warmup_steps, Some(4));
@@ -314,7 +314,10 @@ mod tests {
             .expect("probe batch child should be present")
         {
             crate::config::ProbeChildRequest::Batch(child) => {
-                assert_eq!(child.request.kind, hydra_train::preflight::ProbeKind::Train);
+                assert_eq!(
+                    child.request.kind,
+                    hydra_train_runtime::preflight::ProbeKind::Train
+                );
                 assert_eq!(child.request.candidate_microbatch, 256);
                 assert_eq!(child.request.warmup_steps, Some(5));
                 assert_eq!(child.request.measure_steps, Some(9));
@@ -1060,7 +1063,7 @@ preflight:
 
     #[test]
     fn estimate_epoch_progress_returns_none_without_exact_counts() {
-        let manifest = hydra_train::data::pipeline::DataManifest {
+        let manifest = hydra_data_core::DataManifest {
             sources: vec![],
             total_games: 0,
             train_count: 100,
@@ -1075,7 +1078,7 @@ preflight:
 
     #[test]
     fn estimate_epoch_progress_computes_remaining_steps() {
-        let manifest = hydra_train::data::pipeline::DataManifest {
+        let manifest = hydra_data_core::DataManifest {
             sources: vec![],
             total_games: 100,
             train_count: 100,

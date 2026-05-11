@@ -31,9 +31,9 @@ use crate::data::sample::{MjaiSample, collate_sample_refs};
 pub use hydra_train_exec::data::validation_stream::StreamValMicrobatchIterator;
 
 type CollatedTrainBatch<B> = Vec<(Tensor<B, 3>, HydraTargets<B>)>;
-use crate::training::losses::HydraTargets;
 use crate::training::replay_delta_q::DeltaQSidecarIndex;
 use crate::training::replay_exit::ExitSidecarIndex;
+use hydra_train_types::losses::HydraTargets;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 const MJAI_ARCHIVE_QUEUE_BOUND: usize = 128;

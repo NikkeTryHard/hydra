@@ -29,8 +29,8 @@ mod tests {
     use burn::prelude::Tensor;
     use burn::tensor::Int;
     use burn::tensor::TensorData;
-    use hydra_train::preflight::ProfilingEnvelope;
-    use hydra_train::training::losses::LossBreakdown;
+    use hydra_train_runtime::preflight::ProfilingEnvelope;
+    use hydra_train_types::losses::LossBreakdown;
     use serde_json::Value;
 
     use super::{

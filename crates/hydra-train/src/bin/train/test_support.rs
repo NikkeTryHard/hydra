@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use crate::config::{BcHyperparamConfig, TrainConfig, ValidationGateConfig};
 #[cfg(test)]
-use hydra_train::preflight::PreflightConfig;
+use hydra_train_runtime::preflight::PreflightConfig;
 
 #[cfg(test)]
 pub(crate) fn dummy_train_config() -> TrainConfig {

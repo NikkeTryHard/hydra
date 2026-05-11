@@ -6,7 +6,7 @@ use self::replay_sidecar_common::{
     ReplaySidecarWriteRequest, build_exit_config, load_model, parse_args, read_events, write_jsonl,
     write_report, write_sidecar_with,
 };
-use hydra_train::training::replay_delta_q::replay_delta_q_records_for_identity;
+use hydra_search_labels::replay_delta_q::replay_delta_q_records_for_identity;
 
 fn validate_source_version(source_version: u32) -> Result<(), String> {
     if source_version != 1 {

@@ -8,17 +8,8 @@
 
 #![deny(clippy::dbg_macro, clippy::manual_assert)]
 
-pub mod amp;
-pub mod backbone;
 pub mod config;
 pub mod data;
 pub mod eval;
-pub mod heads;
-pub mod inference;
-pub mod model;
-pub mod preflight;
-pub mod saf;
-pub mod selfplay;
-pub mod selfplay_batch;
 pub mod teacher;
 pub mod training;

@@ -11,9 +11,11 @@ mod tests {
 
     #[test]
     fn test_ach_one_epoch_changes_weights() {
-        use crate::model::{HydraModelConfig, HydraModelInit};
-        use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
-        use crate::training::rl::{RlBatch, RlConfig, rl_step};
+        use hydra_model::model::{HydraModelConfig, HydraModelInit};
+        use hydra_train_exec::losses::HydraLoss;
+        use hydra_train_exec::rl_step::{RlBatch, rl_step};
+        use hydra_train_types::config::RlConfig;
+        use hydra_train_types::losses::{HydraLossConfig, tests::make_dummy_targets};
         use burn::optim::AdamConfig;
 
         let device = Default::default();
