@@ -13,7 +13,6 @@ workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-hydra-model = { path = "../hydra-model" }
 hydra-core = { path = "../hydra-core" }
 hydra-data-core = { path = "../hydra-data-core" }
 hydra-train-types = { path = "../hydra-train-types" }

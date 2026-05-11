@@ -27,11 +27,11 @@ use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationContro
 use hydra_train_runtime::preflight::ManifestCacheEntry;
 use hydra_train_runtime::preflight::{
     BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
-    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PROFILING_STAGE_CHECKPOINT,
-    PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK, PROFILING_STAGE_TRAIN,
-    PROFILING_STAGE_VALIDATION, PreflightCacheEntry, PreflightCacheKey, PreflightConfig, ProbeKind,
-    ProbeResult, ProbeStatus, ProfilingEnvelope, candidate_ladder, preflight_cache_key,
-    resolve_runtime_config,
+    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, ModelFingerprintInput,
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK,
+    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, PreflightCacheEntry, PreflightCacheKey,
+    PreflightConfig, ProbeKind, ProbeResult, ProbeStatus, ProfilingEnvelope, candidate_ladder,
+    preflight_cache_key, resolve_runtime_config,
 };
 use tboard::EventWriter;
 
@@ -103,6 +103,17 @@ use indicatif::ProgressBar;
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 type BenchmarkOptimizerOf<B> = OptimizerAdaptor<Adam, HydraModel<B>, B>;
+fn model_fingerprint_input(model: &HydraModelConfig) -> ModelFingerprintInput {
+    ModelFingerprintInput {
+        num_blocks: model.num_blocks,
+        input_channels: model.input_channels,
+        hidden_channels: model.hidden_channels,
+        num_groups: model.num_groups,
+        action_space: model.action_space,
+        score_bins: model.score_bins,
+    }
+}
+
 type StageTwoCachedValidationSamples = Option<Arc<[Box<[MjaiSample]>]>>;
 
 fn append_step_log(
@@ -284,10 +295,11 @@ pub fn bc_preflight_cache_context(
     device_label: &str,
     artifacts: &BcArtifactPaths,
 ) -> BcPreflightCacheContext {
+    let model_fingerprint = model_fingerprint_input(model_config);
     BcPreflightCacheContext {
         cache_key: preflight_cache_key(
             config,
-            model_config,
+            &model_fingerprint,
             device_label,
             default_num_threads_for_system(),
         ),
@@ -378,9 +390,10 @@ pub fn matching_rl_preflight_cache(
     artifacts: &RlArtifactPaths,
 ) -> Result<Option<PreflightCacheEntry>, String> {
     let paths = RlPreflightPaths::new(artifacts);
+    let model_fingerprint = model_fingerprint_input(model_config);
     let cache_key = preflight_cache_key(
         config,
-        model_config,
+        &model_fingerprint,
         &config.device,
         default_num_threads_for_system(),
     );
@@ -458,9 +471,10 @@ pub fn persist_rl_preflight_runtime(
     runtime: EffectiveRuntimeConfig,
 ) -> Result<(), String> {
     let paths = RlPreflightPaths::new(artifacts);
+    let model_fingerprint = model_fingerprint_input(&HydraModelConfig::learner());
     let cache_key = preflight_cache_key(
         config,
-        &HydraModelConfig::learner(),
+        &model_fingerprint,
         &config.device,
         default_num_threads_for_system(),
     );
@@ -4800,7 +4814,7 @@ mod tests {
     #[test]
     fn preflight_cache_key_changes_only_for_workload_relevant_inputs() {
         let config = dummy_config();
-        let model = HydraModelConfig::learner();
+        let model = model_fingerprint_input(&HydraModelConfig::learner());
         let baseline = preflight_cache_key(&config, &model, "cpu", 8);
 
         let mut threaded = config.clone();
@@ -6362,9 +6376,10 @@ mod tests {
         config.data_dir = data_dir.clone();
         config.preflight.real_benchmark_enabled = false;
         let model_config = HydraModelConfig::learner();
+        let model_fingerprint = model_fingerprint_input(&model_config);
         let key = preflight_cache_key(
             &config,
-            &model_config,
+            &model_fingerprint,
             "cpu",
             hydra_train_runtime::config::default_num_threads_for_system(),
         );
@@ -6444,9 +6459,10 @@ mod tests {
         // Disable re-benchmark so we can test cache-hit probe-skip path in isolation
         config.preflight.real_benchmark_enabled = false;
         let model_config = HydraModelConfig::learner();
+        let model_fingerprint = model_fingerprint_input(&model_config);
         let key = preflight_cache_key(
             &config,
-            &model_config,
+            &model_fingerprint,
             "cpu",
             hydra_train_runtime::config::default_num_threads_for_system(),
         );
@@ -6633,9 +6649,10 @@ mod tests {
             .expect("create RL artifact root for cache hit test");
 
         let model_config = HydraModelConfig::learner();
+        let model_fingerprint = model_fingerprint_input(&model_config);
         let key = preflight_cache_key(
             &config,
-            &model_config,
+            &model_fingerprint,
             &config.device,
             hydra_train_runtime::config::default_num_threads_for_system(),
         );

@@ -8,10 +8,21 @@ mod tests {
     use super::*;
     use hydra_model::model::HydraModelConfig;
     use hydra_train_runtime::preflight::{
-        PreflightConfig, advanced_loss_signature, hardware_fingerprint,
+        ModelFingerprintInput, PreflightConfig, advanced_loss_signature, hardware_fingerprint,
     };
 
     use crate::config::{AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, TrainConfig};
+
+    fn model_fingerprint_input(model: &HydraModelConfig) -> ModelFingerprintInput {
+        ModelFingerprintInput {
+            num_blocks: model.num_blocks,
+            input_channels: model.input_channels,
+            hidden_channels: model.hidden_channels,
+            num_groups: model.num_groups,
+            action_space: model.action_space,
+            score_bins: model.score_bins,
+        }
+    }
 
     fn dummy_config() -> TrainConfig {
         TrainConfig {
@@ -83,7 +94,7 @@ mod tests {
             opponent_hand_type: None,
             delta_q: None,
         });
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
 
         let fingerprint = workload_fingerprint(&config, &model_config);
         assert_eq!(fingerprint.batch_size, 256);
@@ -117,7 +128,7 @@ mod tests {
     #[test]
     fn hardware_and_cache_key_include_runtime_identity() {
         let config = dummy_config();
-        let model_config = HydraModelConfig::actor();
+        let model_config = model_fingerprint_input(&HydraModelConfig::actor());
 
         let hardware = hardware_fingerprint("cuda:0", 32);
         assert_eq!(hardware.device_label, "cuda:0");
@@ -137,7 +148,7 @@ mod tests {
         let fp32 = dummy_config();
         let mut bf16 = dummy_config();
         bf16.precision_mode = PrecisionMode::Bf16Autocast;
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
 
         let fp32_key = preflight_cache_key(&fp32, &model_config, "cuda:0", 32);
         let bf16_key = preflight_cache_key(&bf16, &model_config, "cuda:0", 32);
@@ -152,7 +163,7 @@ mod tests {
         let baseline = dummy_config();
         let mut changed = dummy_config();
         changed.preflight.warmup_steps = baseline.preflight.warmup_steps + 1;
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
 
         let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
         let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
@@ -169,7 +180,7 @@ mod tests {
         let baseline = dummy_config();
         let mut changed = dummy_config();
         changed.preflight.candidate_microbatches = vec![128, 64, 32];
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
 
         let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
         let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
@@ -183,7 +194,7 @@ mod tests {
         no_override.microbatch_size = None;
         let mut with_override = dummy_config();
         with_override.microbatch_size = Some(128);
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
 
         let no_key = preflight_cache_key(&no_override, &model_config, "cuda:0", 32);
         let with_key = preflight_cache_key(&with_override, &model_config, "cuda:0", 32);
@@ -199,7 +210,7 @@ mod tests {
         no_override.validation_microbatch_size = None;
         let mut with_override = dummy_config();
         with_override.validation_microbatch_size = Some(256);
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
 
         let no_key = preflight_cache_key(&no_override, &model_config, "cuda:0", 32);
         let with_key = preflight_cache_key(&with_override, &model_config, "cuda:0", 32);
@@ -222,7 +233,7 @@ mod tests {
         changed.tensorboard = !baseline.tensorboard;
         changed.log_every_n_steps = baseline.log_every_n_steps + 100;
         changed.checkpoint_every_n_steps = baseline.checkpoint_every_n_steps + 100;
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
 
         let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
         let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
@@ -233,7 +244,7 @@ mod tests {
     #[test]
     fn code_signature_uses_v4_version() {
         let config = dummy_config();
-        let model_config = HydraModelConfig::learner();
+        let model_config = model_fingerprint_input(&HydraModelConfig::learner());
         let fingerprint = workload_fingerprint(&config, &model_config);
         assert!(
             fingerprint.code_signature.contains("preflight-v4"),

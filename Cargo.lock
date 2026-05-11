@@ -3391,7 +3391,6 @@ dependencies = [
  "burn",
  "hydra-core",
  "hydra-data-core",
- "hydra-model",
  "hydra-train-algo",
  "hydra-train-types",
  "serde",

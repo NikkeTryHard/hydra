@@ -326,10 +326,34 @@ pub fn preflight_config_signature(config: &crate::config::TrainConfig) -> String
         .unwrap_or_else(|_| "preflight_config:unserializable".to_string())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFingerprintInput {
+    pub num_blocks: usize,
+    pub input_channels: usize,
+    pub hidden_channels: usize,
+    pub num_groups: usize,
+    pub action_space: usize,
+    pub score_bins: usize,
+}
+
+impl ModelFingerprintInput {
+    pub fn signature(&self) -> String {
+        format!(
+            "blocks:{} input:{} hidden:{} groups:{} action:{} score_bins:{}",
+            self.num_blocks,
+            self.input_channels,
+            self.hidden_channels,
+            self.num_groups,
+            self.action_space,
+            self.score_bins,
+        )
+    }
+}
+
 /// Builds the workload fingerprint portion of the preflight cache key.
 pub fn workload_fingerprint(
     config: &crate::config::TrainConfig,
-    model_config: &hydra_model::model::HydraModelConfig,
+    model: &ModelFingerprintInput,
 ) -> WorkloadFingerprint {
     WorkloadFingerprint {
         batch_size: config.batch_size,
@@ -339,15 +363,7 @@ pub fn workload_fingerprint(
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         max_validation_batches: config.max_validation_batches,
         max_validation_samples: config.max_validation_samples,
-        model_signature: format!(
-            "blocks:{} input:{} hidden:{} groups:{} action:{} score_bins:{}",
-            model_config.num_blocks,
-            model_config.input_channels,
-            model_config.hidden_channels,
-            model_config.num_groups,
-            model_config.action_space,
-            model_config.score_bins,
-        ),
+        model_signature: model.signature(),
         code_signature: format!(
             "hydra-train:{}:{}:preflight-v4",
             env!("CARGO_PKG_VERSION"),
@@ -373,13 +389,13 @@ pub fn hardware_fingerprint(device_label: &str, cpu_logical_cores: usize) -> Har
 /// Builds the complete preflight cache key.
 pub fn preflight_cache_key(
     config: &crate::config::TrainConfig,
-    model_config: &hydra_model::model::HydraModelConfig,
+    model: &ModelFingerprintInput,
     device_label: &str,
     cpu_logical_cores: usize,
 ) -> PreflightCacheKey {
     PreflightCacheKey {
         hardware: hardware_fingerprint(device_label, cpu_logical_cores),
-        workload: workload_fingerprint(config, model_config),
+        workload: workload_fingerprint(config, model),
     }
 }
 
