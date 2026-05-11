@@ -85,6 +85,17 @@ Rust conventions:
 - Avoid per-turn allocations in hot paths
 - Use `rayon` for batch simulation when parallelism needed
 
+Test layout:
+- No inline `#[cfg(test)] mod tests { ... }` blocks in production source bodies.
+- Use hybrid Rust test structure:
+  - Public contract tests: `crates/<crate>/tests/*.rs`; only public crate API.
+  - Subsystem white-box tests: `src/<subsystem>/tests/*.rs`; use public/`pub(crate)`/`pub(super)` subsystem API.
+  - Leaf private tests: `src/<leaf>/tests.rs`; only when tests need private funcs/types/fields/constants in that exact file.
+- Do not make private items `pub` only for cleaner test placement.
+- `pub(super)` is OK only when item is real subsystem-internal API, not test-only visibility churn.
+- If moving test upward causes privacy errors, keep it leaf-adjacent.
+- Prefer clarity over uniformity; mirror Tokio-style subsystem grouping where privacy allows.
+
 docs:
 - Use `///` for public items and `//!` for module docs
 - Follow RFC 1574 style
