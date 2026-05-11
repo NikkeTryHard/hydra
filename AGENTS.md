@@ -1,7 +1,5 @@
 # AGENTS.md -- Hydra Root Guide
 
-Nextest enforced when applicable. No exceptions. Save time where possible.
-
 ## Purpose
 
 Hydra = open-source Riichi Mahjong AI. Target LuckyJ-level. Optimize strength first, not simplicity. If research shows stronger viable path, ship strength.
@@ -65,24 +63,6 @@ Codebase-memory MCP:
 - Use LSP for definition/reference/rename; use `read` before editing exact lines.
 - Local index should stay cache-only. Do not commit `.codebase-memory/` artifacts.
 - `.cbmignore` intentionally excludes research/provenance blobs; keep code/config/docs indexed.
-
-## Critical runtime and execution invariants
-
-Keep globally visible; easy to violate, costly to rediscover:
-
-- Encoder/model contract: `192x34`
-- Old `85x34` view = baseline-prefix only (`channels 0..84`)
-- Action space: 46 actions, Mortal-compatible
-- Riichi and kan use two-phase handling
-- Tile encoding uses normalized tile indices `0..33`
-- Aka tiles stay distinct in 136-format mapping
-
-Docker/runtime contract summary:
-- Prefer Docker for real train/preflight execution, including RL/self-play and GPU runs
-- Container entrypoint is `train` and expects YAML config
-- Keep mounted paths aligned with config expectations: `/data` and `/output`
-- BC training supports either flat MJAI dir of `.json` / `.json.gz` files or direct `.tar.zst` archive path
-- User-edited training and preflight settings should live in YAML; do not rely on ad-hoc `HYDRA_PREFLIGHT_*` env vars for normal workflows
 
 ## Licensing and code constraints
 
