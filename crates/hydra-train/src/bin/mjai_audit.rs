@@ -9,7 +9,7 @@ use std::time::Instant;
 use hydra_replay_loader::archive_helpers::is_mjai_archive_entry;
 use hydra_replay_loader::mjai_loader::{load_game_from_path, load_game_from_stream};
 use hydra_sample_cache::is_parsed_sample_cache_file;
-use hydra_train::data::pipeline::{DataSource, scan_data_sources};
+use hydra_train_exec::data_pipeline::{DataSource, scan_data_sources};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;

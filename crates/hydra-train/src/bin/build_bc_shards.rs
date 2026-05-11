@@ -218,7 +218,7 @@ fn run() -> Result<(), String> {
     let scan = scan_data_sources_with_progress(
         &cli.input,
         cli.train_fraction,
-        &hydra_train::data::pipeline::SourceFilterConfig::default(),
+        &hydra_train_exec::data_pipeline::SourceFilterConfig::default(),
         Some(&pb),
     )
     .map_err(|err| format!("failed to scan replay sources: {err}"))?;
