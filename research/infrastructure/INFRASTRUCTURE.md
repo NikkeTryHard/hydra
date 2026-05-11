@@ -15,7 +15,7 @@ If conflict: code/runtime wins. Later PPO/oracle/league sections here = reserve/
 |---|---|---|
 | `hydra-engine` | vendored/owned riichi game engine, MJAI replay/state transition, scoring/shanten bridge | No Mortal/AGPL code. Engine behavior truth in code + `docs/GAME_ENGINE.md`. |
 | `hydra-core` | tile/action types, 46-action mapping, `192x34` fixed-superset encoder, safety features, `ObservationRef`, batch sim/search glue, seeding helpers | First 85 channels keep old public+safety baseline prefix; compatibility truth in `docs/COMPATIBILITY_SURFACE.md`. |
-| `hydra-train` | Burn model, inference, BC/replay pipeline, target/sidecar builders, preflight/runtime selection, training binaries | Training workflow truth in `docs/TRAINING_RUNBOOK.md`. |
+| `hydra-model` / `hydra-train-algo` / `hydra-train-runtime` / `hydra-train-exec` / `hydra-train` | model components; pure train algorithms; CLI/config/preflight/status contracts; execution composition/data pipeline/shard builder; user-facing binaries | Training workflow truth in `docs/TRAINING_RUNBOOK.md`; crate boundary truth in `docs/COMPATIBILITY_SURFACE.md`. |
 
 Core contracts:
 

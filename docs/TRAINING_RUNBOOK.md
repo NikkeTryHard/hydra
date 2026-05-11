@@ -4,9 +4,9 @@ Compact op entrypoint. Owns: train CLI modes, YAML shape, preflight authority, B
 
 Truth owners:
 - CLI/router: `crates/hydra-train/src/bin/train.rs`
-- YAML contract: `crates/hydra-train/src/bin/train/config.rs`
-- shard contract: `crates/hydra-train/src/data/bc_shards.rs`
-- shard builder: `crates/hydra-train/src/bin/build_bc_shards.rs`
+- YAML contract: `crates/hydra-train-runtime/src/config.rs`
+- shard contract: `crates/hydra-bc-shards/src/lib.rs`
+- shard builder CLI: `crates/hydra-train/src/bin/build_bc_shards.rs`; impl: `crates/hydra-train-exec/src/bc_shard_builder.rs`
 - sidecar shared flags: `crates/hydra-train/src/bin/common/replay_sidecar_common.rs`
 - current shipped/staged status: `docs/CURRENT_STATUS.md`
 - replay audit before train/shard/sidecar: `docker/train/README.md`

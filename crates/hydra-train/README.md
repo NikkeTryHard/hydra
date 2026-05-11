@@ -1,6 +1,6 @@
 # hydra-train
 
-Crate-local map for Hydra training code. Not operator manual.
+Package-local map for Hydra training entry binaries. Not operator manual.
 
 Operator docs:
 - training modes/YAML and preflight/runtime authority: [`docs/TRAINING_RUNBOOK.md`](../../docs/TRAINING_RUNBOOK.md)
@@ -9,21 +9,26 @@ Operator docs:
 
 ## Owns
 
-`hydra-train` sits above `hydra-core` and `hydra-engine`.
+`hydra-train` is now user-facing binary package plus marker library.
 
 Owns:
-- model/backbone/head defs
-- losses and BC/RL optimize loops
-- replay data loading, sample collation, BC shard consumption/build
-- self-play batch gen and eval harnesses
-- preflight/runtime autotune and resume-compat checks
-- replay sidecar generation for ExIt / DeltaQ-style lanes
-- training/data binaries listed below
+- training/data CLI entrypoints listed below
+- env dispatch / process exit boundary in `src/bin/train.rs`
+- tiny binary-specific glue where CLI shape requires it
 
 Does not own:
-- Riichi rules, scoring, legal actions, replay parsing core: `hydra-engine`
+- CLI/config/preflight/probe/status contracts: `hydra-train-runtime`
+- execution composition, bootstrap, validation, artifacts, GPU/NVTX, data pipeline, BC shard builder: `hydra-train-exec`
+- model components: `hydra-model`
+- pure training algorithms/loss math: `hydra-train-algo`
+- replay load/archive helpers: `hydra-replay-loader`
+- BC shard format: `hydra-bc-shards`
+- parsed sample cache: `hydra-sample-cache`
+- replay sidecar schema: `hydra-replay-sidecar`
+- self-play coordination: `hydra-selfplay`
+- search-label generation: `hydra-search-labels`
+- Riichi rules, scoring, legal actions: `hydra-engine`
 - runtime bridge, encoder, simulation, seeding, search/runtime feature plumbing: `hydra-core`
-- operator truth for run commands: docs linked above
 
 If rule/runtime semantics drift, code plus [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md) win.
 
@@ -52,26 +57,17 @@ Read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md) before treating st
 | `recompress` | replay/data artifact recompression util |
 | `repack_tar` | tar replay corpus repack util |
 
-Main entrypoint: [`src/bin/train.rs`](src/bin/train.rs). Train submodules under `src/bin/train/` own runtime/preflight selection, probe transport, autotune, resume/state persistence, and test support.
+Main entrypoint: [`src/bin/train.rs`](src/bin/train.rs). Only `src/bin/train/epoch_runner.rs` remains as bin-local test harness; production execution lives in canonical crates above.
 
-## Module map
+## Source map
 
-| Module | Owns |
+| Path | Role |
 |---|---|
-| `amp` | AMP/BF16 runtime helpers |
-| `backbone` | network backbone blocks |
-| `config` | shared train/runtime config parsing/types |
-| `data` | replay scan/load, augmentation, batch/sample plumbing |
-| `eval` | arena/eval helpers and metric summaries |
-| `heads` | policy/value/aux heads |
-| `inference` | train-side model inference helpers |
-| `model` | `HydraModel` assembly and config surface |
-| `preflight` | probe/preflight config and runtime selection helpers |
-| `saf` | SAF-related train helpers |
-| `selfplay` | self-play orchestration and mixed-policy execution |
-| `selfplay_batch` | batched self-play data plumbing |
-| `teacher` | teacher features/labels, incl belief surfaces |
-| `training` | BC, RL, ACH, DRDA, ExIt, DeltaQ gates/orchestrators |
+| `src/lib.rs` | marker library; no public training facade |
+| `src/bin/train.rs` | train CLI entrypoint/env dispatch/delegation |
+| `src/bin/train/epoch_runner.rs` | bin-local tests for epoch-runner integration seams |
+| `src/bin/common/replay_sidecar_common.rs` | shared sidecar CLI flag parsing glue |
+| `src/bin/*.rs` | user-facing binary entrypoints |
 
 ## License
 
