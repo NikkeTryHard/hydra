@@ -6,6 +6,7 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::afbs::AfbsTree;
 use hydra_core::ct_smc::{CtSmc, CtSmcConfig};
 use hydra_core::encoder::NUM_CHANNELS;
+use hydra_search_labels::exit;
 #[allow(
     unused_imports,
     reason = "compile coverage for old delta-q arena eval imports"
@@ -19,24 +20,14 @@ use hydra_train::model::{HydraModelConfig, HydraModelInit};
 )]
 use hydra_train::training::delta_q_promotion::DeltaQArenaReport;
 use hydra_train::training::drda;
-use hydra_train::training::exit;
 use hydra_train::training::gae;
 use hydra_train::training::losses::*;
 
 #[allow(
     unused_imports,
-    reason = "compile coverage for old public config imports"
-)]
-use hydra_train::config::{
-    BcHyperparamConfig, PipelineState, PrecisionMode, ProbeCliRequest, RlPhaseConfig,
-    RlTrainConfig, SourceFilterConfig, TrainCli, TrainConfig, TrainingPhase, ValidationGateConfig,
-    default_batch_size, parse_args, read_config, validate_config,
-};
-#[allow(
-    unused_imports,
     reason = "compile coverage for old replay delta-q imports"
 )]
-use hydra_train::training::replay_delta_q::{
+use hydra_replay_sidecar::{
     DeltaQSidecarIndex, REPLAY_DELTA_Q_PROVENANCE, REPLAY_DELTA_Q_SEMANTICS_V1,
     ReplayDecisionKey as DeltaQReplayDecisionKey, ReplayDeltaQLookupKey, ReplayDeltaQRecordV1,
     copy_label_arrays as delta_q_copy_label_arrays,
@@ -50,11 +41,20 @@ use hydra_train::training::replay_delta_q::{
     unused_imports,
     reason = "compile coverage for old replay exit imports"
 )]
-use hydra_train::training::replay_exit::{
+use hydra_replay_sidecar::{
     ExitSidecarIndex, REPLAY_EXIT_PROVENANCE, REPLAY_EXIT_SEMANTICS_V1, ReplayDecisionKey,
     ReplayExitLookupKey, ReplayExitRecordV1, copy_label_arrays, legal_mask_digest_from_bool,
     legal_mask_digest_from_f32, source_hash_from_identity,
     source_net_hash_from_checkpoint_identity,
+};
+#[allow(
+    unused_imports,
+    reason = "compile coverage for old public config imports"
+)]
+use hydra_train::config::{
+    BcHyperparamConfig, PipelineState, PrecisionMode, ProbeCliRequest, RlPhaseConfig,
+    RlTrainConfig, SourceFilterConfig, TrainCli, TrainConfig, TrainingPhase, ValidationGateConfig,
+    default_batch_size, parse_args, read_config, validate_config,
 };
 type TestBackend = Autodiff<NdArray<f32>>;
 type InferBackend = NdArray<f32>;
@@ -503,7 +503,7 @@ fn ach_rl_step_integration() {
 
 #[test]
 fn exit_rl_step_with_target() {
-    use hydra_train::training::exit::{build_exit_from_afbs_tree, collate_exit_targets};
+    use hydra_search_labels::exit::{build_exit_from_afbs_tree, collate_exit_targets};
     use hydra_train::training::rl::{RlBatch, RlConfig};
 
     let device = Default::default();

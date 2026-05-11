@@ -7,8 +7,10 @@ use burn::module::AutodiffModule;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::{Trajectory, TrajectoryStep};
 use hydra_core::encoder::OBS_SIZE;
+use hydra_search_labels::live_exit::LiveExitConfig;
 use hydra_train::data::bc_shards::{
     BcShardSplit, BcShardSplitMode, BuildBcShardsConfig, build_bc_shards, load_bc_shard_reader,
+    materialize_host_batch_owned,
 };
 use hydra_train::data::mjai_loader::{
     ReplayTargetProfile, SidecarProvenance, load_game_from_reader,
@@ -29,7 +31,6 @@ use hydra_train::selfplay_batch::{
 };
 use hydra_train::training::bc::BcExitConfig;
 use hydra_train::training::bc::bc_total_with_optional_exit_from_breakdown;
-use hydra_train::training::live_exit::LiveExitConfig;
 use hydra_train::training::losses::LossBreakdown;
 use hydra_train::training::losses::{HydraLoss, HydraLossConfig};
 
@@ -678,28 +679,13 @@ fn bench_shard_collation(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("materialize_borrowed", |b| {
-        b.iter(|| {
-            reader
-                .collate_host_batch_range_into(0, sample_count, false, &mut scratch)
-                .expect("collate");
-            let host_batch = scratch.take_batch();
-            let batch = host_batch.materialize::<ValidBackend>(&device);
-            black_box((
-                batch.obs.dims(),
-                batch.batch.actions.dims(),
-                batch.targets.legal_mask.dims(),
-            ))
-        });
-    });
-
     group.bench_function("materialize_owned", |b| {
         b.iter(|| {
             reader
                 .collate_host_batch_range_into(0, sample_count, false, &mut scratch)
                 .expect("collate");
             let host_batch = scratch.take_batch();
-            let batch = host_batch.materialize_owned::<ValidBackend>(&device);
+            let batch = materialize_host_batch_owned::<ValidBackend>(host_batch, &device);
             black_box((
                 batch.obs.dims(),
                 batch.batch.actions.dims(),
