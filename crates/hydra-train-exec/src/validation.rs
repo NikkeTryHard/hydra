@@ -307,6 +307,50 @@ mod tests {
     }
 
     #[test]
+    fn better_validation_rejects_higher_loss_and_lower_agreement_ties() {
+        let best = BestValidation {
+            policy_loss: 1.0,
+            agreement: 0.4,
+        };
+
+        assert!(!is_better_validation(
+            &ValidationScalarSummary {
+                policy_loss: 1.1,
+                agreement: 0.9,
+                ..ValidationScalarSummary::default()
+            },
+            Some(best),
+        ));
+
+        assert!(!is_better_validation(
+            &ValidationScalarSummary {
+                policy_loss: best.policy_loss,
+                agreement: best.agreement,
+                ..ValidationScalarSummary::default()
+            },
+            Some(best),
+        ));
+
+        assert!(is_better_validation(
+            &ValidationScalarSummary {
+                policy_loss: best.policy_loss + f64::EPSILON / 2.0,
+                agreement: best.agreement + 0.05,
+                ..ValidationScalarSummary::default()
+            },
+            Some(best),
+        ));
+
+        assert!(!is_better_validation(
+            &ValidationScalarSummary {
+                policy_loss: best.policy_loss + f64::EPSILON / 2.0,
+                agreement: best.agreement - 0.05,
+                ..ValidationScalarSummary::default()
+            },
+            Some(best),
+        ));
+    }
+
+    #[test]
     fn validation_gates_preserve_scalar_criteria() {
         let gates = ValidationGateConfig {
             enabled: true,

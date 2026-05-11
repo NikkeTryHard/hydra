@@ -547,8 +547,9 @@ mod tests {
     #[test]
     fn emit_interval_step_summary_records_logging_scope_order() {
         let artifacts = test_artifacts("nvtx_interval_logging_scope");
-        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+        let mut step_log =
+            hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
+                .expect("open step log appender");
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let multi = MultiProgress::new();
         let config = dummy_config();
@@ -1278,8 +1279,9 @@ mod tests {
         let manifest = dummy_manifest(false);
         let multi = MultiProgress::new();
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
-        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+        let mut step_log =
+            hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
+                .expect("open step log appender");
         let window_stats = ScalarAverages::default();
 
         emit_interval_step_summary(
@@ -1325,8 +1327,9 @@ mod tests {
         let manifest = dummy_manifest(true);
         let multi = MultiProgress::new();
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
-        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+        let mut step_log =
+            hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
+                .expect("open step log appender");
         let mut window_stats = ScalarAverages::default();
         window_stats.record_batch(batch_stats(4, 2.5, 0.4));
         let window_stats = window_stats.finalize();
@@ -1507,7 +1510,7 @@ mod tests {
         let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let mut training_log =
-            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+            hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
                 .expect("open training log appender");
         let mut train_stats = ScalarAverages::default();
         train_stats.record_batch(batch_stats(4, 3.5, 0.55));
@@ -1576,7 +1579,7 @@ mod tests {
         let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let mut training_log =
-            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+            hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
                 .expect("open training log appender");
         let mut train_stats = ScalarAverages::default();
         train_stats.record_batch(batch_stats(4, 3.5, 0.55));
@@ -1697,7 +1700,7 @@ mod tests {
         let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let mut training_log =
-            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+            hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
                 .expect("open training log appender");
 
         finalize_epoch_outputs::<Vec<u8>, _, _, hydra_train_exec::advisory::RuntimeAdvisory>(
@@ -1750,10 +1753,11 @@ mod tests {
         let mut best_validation = None;
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let mut training_log =
-            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+            hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
                 .expect("open training log appender");
-        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+        let mut step_log =
+            hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
+                .expect("open step log appender");
         let mut last_log_step = 0usize;
         let mut last_log_time = Instant::now();
         let run_start = Instant::now();
@@ -1854,10 +1858,11 @@ mod tests {
         });
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let mut training_log =
-            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+            hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
                 .expect("open training log appender");
-        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+        let mut step_log =
+            hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
+                .expect("open step log appender");
         let mut last_log_step = 11usize;
         let mut last_log_time = Instant::now();
         let run_start = Instant::now();
@@ -1940,10 +1945,11 @@ mod tests {
         let mut best_validation = None;
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let mut training_log =
-            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+            hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
                 .expect("open training log appender");
-        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+        let mut step_log =
+            hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
+                .expect("open step log appender");
         let mut last_log_step = 0usize;
         let mut last_log_time = Instant::now();
         let run_start = Instant::now();
@@ -2097,10 +2103,11 @@ mod tests {
         let mut best_validation = None;
         let mut tb: Option<EventWriter<Vec<u8>>> = None;
         let mut training_log =
-            crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
+            hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
                 .expect("open training log appender");
-        let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+        let mut step_log =
+            hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
+                .expect("open step log appender");
         let mut last_log_step = 0usize;
         let mut last_log_time = Instant::now();
         let run_start = Instant::now();

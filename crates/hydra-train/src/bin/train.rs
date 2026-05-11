@@ -1,24 +1,6 @@
 #[cfg(test)]
-#[path = "train/artifacts.rs"]
-mod artifacts;
-#[cfg(test)]
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
-#[cfg(test)]
-#[path = "train/modes.rs"]
-mod modes;
-#[cfg(test)]
-#[path = "train/presentation.rs"]
-mod presentation;
-#[cfg(test)]
-#[path = "train/progress.rs"]
-mod progress;
-#[cfg(test)]
-#[path = "train/test_support.rs"]
-mod test_support;
-#[cfg(test)]
-#[path = "train/validation.rs"]
-mod validation;
 
 use std::env;
 #[cfg(test)]
@@ -85,14 +67,14 @@ mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::Duration;
 
-    use crate::artifacts::BcArtifactPaths;
-    use crate::presentation::{format_progress_message, phase_label};
-    use crate::validation::{ValidationSummary, is_better_validation};
+    use hydra_train_exec::artifacts::BcArtifactPaths;
     use hydra_train_exec::config_runtime::train_device;
+    use hydra_train_exec::presentation::{format_progress_message, phase_label};
     use hydra_train_exec::resume::{
         BestValidation, EpochContinuation, paused_training_message,
         validate_resume_runtime_compatibility,
     };
+    use hydra_train_exec::validation::{ValidationSummary, is_better_validation};
     use hydra_train_runtime::config::{train_microbatch_size, validate_config};
     use hydra_train_runtime::loss_policy::build_loss_config;
     use hydra_train_runtime::schedule::{
@@ -1138,17 +1120,17 @@ preflight:
             delta_q_policy_transfer: None,
             delta_q_policy_transfer_result: None,
             delta_q_policy_transfer_snapshot: None,
-            rare_actions: crate::progress::RareActionMetrics::default(),
+            rare_actions: hydra_train_runtime::progress::RareActionMetrics::default(),
             saw_exit_targets: false,
             saw_delta_q_targets: false,
         };
-        assert!(is_better_validation(&summary, None));
+        assert!(is_better_validation(&summary.scalar_summary(), None));
 
         let best = BestValidation {
             policy_loss: 1.1,
             agreement: 0.60,
         };
-        assert!(is_better_validation(&summary, Some(best)));
+        assert!(is_better_validation(&summary.scalar_summary(), Some(best)));
 
         let tied = ValidationSummary {
             total_loss: 2.1,
@@ -1162,19 +1144,19 @@ preflight:
             delta_q_policy_transfer: None,
             delta_q_policy_transfer_result: None,
             delta_q_policy_transfer_snapshot: None,
-            rare_actions: crate::progress::RareActionMetrics::default(),
+            rare_actions: hydra_train_runtime::progress::RareActionMetrics::default(),
             saw_exit_targets: false,
             saw_delta_q_targets: false,
         };
         assert!(is_better_validation(
-            &tied,
+            &tied.scalar_summary(),
             Some(BestValidation {
                 policy_loss: 1.0,
                 agreement: 0.39
             })
         ));
         assert!(!is_better_validation(
-            &tied,
+            &tied.scalar_summary(),
             Some(BestValidation {
                 policy_loss: 1.0,
                 agreement: 0.41
