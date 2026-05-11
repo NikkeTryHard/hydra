@@ -14,6 +14,8 @@ pub mod bc_fixed_shape;
 pub mod bc_metrics;
 /// Behavioral-cloning execution adapters.
 pub mod bc_runtime;
+/// BC shard build execution helpers.
+pub mod bc_shard_builder;
 /// Training bootstrap initialization and prepared runtime state.
 pub mod bootstrap;
 /// LibTorch/Rayon runtime helpers for execution-owned config materialization.

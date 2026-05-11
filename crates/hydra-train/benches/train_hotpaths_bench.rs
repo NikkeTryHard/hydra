@@ -20,8 +20,8 @@ use hydra_selfplay::{
     generate_self_play_batch_source, generate_self_play_batch_source_cooperative,
     generate_self_play_batch_source_cooperative_reuse, trajectories_to_rl_batch,
 };
-use hydra_train::data::bc_shards::{BuildBcShardsConfig, build_bc_shards};
 use hydra_train_exec::bc_runtime::{BcExitConfig, bc_total_with_optional_exit_from_breakdown};
+use hydra_train_exec::bc_shard_builder::{BuildBcShardsConfig, build_bc_shards};
 use hydra_train_exec::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
 use hydra_train_exec::data_pipeline::{
     SourceFilterConfig, StreamingLoaderConfig, scan_data_sources_with_progress,
