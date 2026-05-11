@@ -34,11 +34,11 @@ use hydra_sample_cache::{
     read_parsed_sample_cache_metadata,
 };
 
-fn compact_identity(identity: &str) -> &str {
+pub fn compact_identity(identity: &str) -> &str {
     identity.rsplit('/').next().unwrap_or(identity)
 }
 
-fn compact_error_message(err: &dyn std::fmt::Display) -> &'static str {
+pub fn compact_error_message(err: &dyn std::fmt::Display) -> &'static str {
     let message = err.to_string();
     if message.contains("expected value") || message.contains("EOF while parsing") {
         "invalid-json"
@@ -53,7 +53,7 @@ fn compact_error_message(err: &dyn std::fmt::Display) -> &'static str {
     }
 }
 
-fn identity_for_archive_entry(archive_path: &Path, entry_path: &Path) -> io::Result<String> {
+pub fn identity_for_archive_entry(archive_path: &Path, entry_path: &Path) -> io::Result<String> {
     let archive_name = archive_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -63,14 +63,14 @@ fn identity_for_archive_entry(archive_path: &Path, entry_path: &Path) -> io::Res
     Ok(format!("{archive_name}/{}", entry_path.display()))
 }
 
-fn is_tar_zst_file(path: &Path) -> bool {
+pub fn is_tar_zst_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(name) if name.ends_with(".tar.zst") || name.ends_with(".tzst")
     )
 }
 
-fn is_mjai_archive_entry(path: &Path) -> bool {
+pub fn is_mjai_archive_entry(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(name)
@@ -634,7 +634,7 @@ fn fnv1a_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-pub(crate) fn identity_for_loose_file(path: &Path) -> io::Result<String> {
+pub fn identity_for_loose_file(path: &Path) -> io::Result<String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1371,7 +1371,7 @@ impl crate::validation_runner::ValidationDataLoader for TrainValidationLoader<'_
     }
 }
 
-fn is_mjai_file(path: &Path) -> bool {
+pub fn is_mjai_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(name)
@@ -1381,7 +1381,7 @@ fn is_mjai_file(path: &Path) -> bool {
     )
 }
 
-fn is_tar_file(path: &Path) -> bool {
+pub fn is_tar_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(name) if name.ends_with(".tar")

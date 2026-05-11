@@ -14,21 +14,21 @@ use rayon::prelude::*;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::data::archive_helpers::{
-    compact_error_message, compact_identity, identity_for_archive_entry, is_mjai_archive_entry,
-    is_tar_zst_file,
-};
 use crate::data::parsed_sample_cache::{
     ParsedSampleCacheMetadata, is_parsed_sample_cache_file, load_parsed_sample_cache,
     read_parsed_sample_cache_metadata,
 };
-use hydra_replay_loader::mjai_loader::{
-    MjaiDataset, MjaiGame, ReplayLoadPolicy, ReplayTargetProfile, SidecarProvenance,
-    load_game_from_path, load_game_from_path_with_policy, load_game_from_stream_with_policy,
-    normalized_train_fraction,
+pub use hydra_replay_loader::ReplayTargetProfile;
+use hydra_replay_loader::{
+    MjaiDataset, MjaiGame, ReplayLoadPolicy, SidecarProvenance, load_game_from_path,
+    load_game_from_path_with_policy, load_game_from_stream_with_policy, normalized_train_fraction,
 };
 use hydra_train_exec::data::sample::{MjaiSample, collate_sample_refs};
 pub use hydra_train_exec::data::validation_stream::StreamValMicrobatchIterator;
+pub use hydra_train_exec::data_pipeline::{
+    compact_error_message, compact_identity, identity_for_archive_entry, identity_for_loose_file,
+    is_mjai_archive_entry, is_mjai_file, is_tar_file, is_tar_zst_file,
+};
 
 type CollatedTrainBatch<B> = Vec<(Tensor<B, 3>, HydraTargets<B>)>;
 use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
@@ -583,30 +583,6 @@ fn fnv1a_hash(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
-}
-
-pub(crate) fn identity_for_loose_file(path: &Path) -> io::Result<String> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "loose file path does not have a recognizable filename: {}",
-                    path.display()
-                ),
-            )
-        })?;
-    if let Some(parent) = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-    {
-        Ok(format!("{parent}/{file_name}"))
-    } else {
-        Ok(file_name.to_owned())
-    }
 }
 
 fn shuffle_sources(sources: &mut [DataSource], seed: u64) {
@@ -1298,23 +1274,6 @@ pub fn stream_val_microbatches(
     progress: Option<&ProgressBar>,
 ) -> impl Iterator<Item = io::Result<Vec<MjaiSample>>> {
     StreamValMicrobatchIterator::new(stream_val_pass(manifest, config, progress), microbatch_size)
-}
-
-fn is_mjai_file(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name)
-            if name.ends_with(".json")
-                || name.ends_with(".json.gz")
-                || name.ends_with(".json.zst")
-    )
-}
-
-fn is_tar_file(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name) if name.ends_with(".tar")
-    )
 }
 
 fn load_mjai_archive(

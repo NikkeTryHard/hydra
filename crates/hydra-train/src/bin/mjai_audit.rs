@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use hydra_replay_loader::archive_helpers::is_mjai_archive_entry;
 use hydra_replay_loader::mjai_loader::{load_game_from_path, load_game_from_stream};
-use hydra_train::data::archive_helpers::is_mjai_archive_entry;
-use hydra_train::data::parsed_sample_cache::is_parsed_sample_cache_file;
+use hydra_sample_cache::is_parsed_sample_cache_file;
 use hydra_train::data::pipeline::{DataSource, scan_data_sources};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::ThreadPoolBuilder;
@@ -865,7 +865,7 @@ mod tests {
 
         assert!(!is_mjai_archive_entry(Path::new("round.mjai")));
         assert!(!is_mjai_archive_entry(Path::new("round.log")));
-        assert!(!is_mjai_archive_entry(Path::new("round.json.zst")));
+        assert!(is_mjai_archive_entry(Path::new("round.json.zst")));
     }
 
     #[test]

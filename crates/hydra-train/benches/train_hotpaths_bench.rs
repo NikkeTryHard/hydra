@@ -4,6 +4,7 @@ use std::time::Duration;
 use burn::backend::libtorch::LibTorchDevice;
 use burn::backend::{Autodiff, LibTorch};
 use burn::module::AutodiffModule;
+use hydra_bc_shards::{BcShardSplit, BcShardSplitMode, load_bc_shard_reader};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::{Trajectory, TrajectoryStep};
 use hydra_core::encoder::OBS_SIZE;
@@ -19,16 +20,14 @@ use hydra_selfplay::{
     generate_self_play_batch_source, generate_self_play_batch_source_cooperative,
     generate_self_play_batch_source_cooperative_reuse, trajectories_to_rl_batch,
 };
-use hydra_train::data::bc_shards::{
-    BcShardSplit, BcShardSplitMode, BuildBcShardsConfig, build_bc_shards, load_bc_shard_reader,
-    materialize_host_batch_owned,
-};
+use hydra_train::data::bc_shards::{BuildBcShardsConfig, build_bc_shards};
 use hydra_train_exec::bc_runtime::{BcExitConfig, bc_total_with_optional_exit_from_breakdown};
 use hydra_train_exec::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
 use hydra_train_exec::data_pipeline::{
     SourceFilterConfig, StreamingLoaderConfig, scan_data_sources_with_progress,
     stream_val_microbatches, stream_val_pass,
 };
+use hydra_train_exec::epoch_runner::materialize_host_batch_owned;
 use hydra_train_exec::losses::HydraLoss;
 use hydra_train_exec::model::HydraTrainModelExt;
 use hydra_train_types::losses::{HydraLossConfig, LossBreakdown};

@@ -45,13 +45,18 @@ use hydra_replay_sidecar::{
 };
 #[allow(
     unused_imports,
-    reason = "compile coverage for old public config imports"
+    reason = "compile coverage for canonical public config imports"
 )]
-use hydra_train::config::{
-    BcHyperparamConfig, PipelineState, PrecisionMode, ProbeCliRequest, RlPhaseConfig,
-    RlTrainConfig, SourceFilterConfig, TrainCli, TrainConfig, TrainingPhase, ValidationGateConfig,
-    default_batch_size, parse_args, read_config, validate_config,
+use hydra_train_runtime::config::{
+    BcHyperparamConfig, PrecisionMode, ProbeCliRequest, RlPhaseConfig, RlTrainConfig,
+    SourceFilterConfig, TrainCli, TrainConfig, ValidationGateConfig, default_batch_size,
+    parse_args, read_config, validate_config,
 };
+#[allow(
+    unused_imports,
+    reason = "compile coverage for canonical phase imports"
+)]
+use hydra_train_types::phase::{PipelineState, TrainingPhase};
 type TestBackend = Autodiff<NdArray<f32>>;
 type InferBackend = NdArray<f32>;
 

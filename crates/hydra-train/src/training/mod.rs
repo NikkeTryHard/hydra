@@ -1,3 +1,3 @@
-//! Training components: losses, BC loop, GAE, ACH, DRDA, head activation gates.
-
-pub mod delta_q_promotion;
+//! Training entrypoint namespace.
+//!
+//! Training implementation surfaces live in their canonical owner crates.

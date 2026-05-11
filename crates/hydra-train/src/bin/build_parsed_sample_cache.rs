@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use hydra_replay_loader::archive_helpers::{
+    compact_error_message, compact_identity, is_tar_zst_file,
+};
 use hydra_replay_loader::mjai_loader::load_game_from_path;
-use hydra_train::data::archive_helpers::is_tar_zst_file;
-use hydra_train::data::archive_helpers::{compact_error_message, compact_identity};
-use hydra_train::data::parsed_sample_cache::{
-    parsed_sample_cache_file_name, write_parsed_sample_cache,
+use hydra_sample_cache::{
+    ParsedSampleCacheGame, parsed_sample_cache_file_name, write_parsed_sample_cache,
 };
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
@@ -132,6 +133,10 @@ fn build_one_cache(path: &Path, output_dir: &Path) -> Result<PathBuf, String> {
     let game = load_game_from_path(path)
         .map_err(|err| format!("failed to load loose MJAI {}: {err}", path.display()))?;
     let identity = original_identity_for_loose_file(path)?;
+    let cache_game = ParsedSampleCacheGame {
+        samples: game.samples,
+        final_scores: game.final_scores,
+    };
     let file_name = parsed_sample_cache_file_name(path).map_err(|err| {
         format!(
             "failed to derive cache filename for {}: {err}",
@@ -139,7 +144,7 @@ fn build_one_cache(path: &Path, output_dir: &Path) -> Result<PathBuf, String> {
         )
     })?;
     let output_path = output_dir.join(file_name);
-    write_parsed_sample_cache(&output_path, path, &identity, &game).map_err(|err| {
+    write_parsed_sample_cache(&output_path, path, &identity, &cache_game).map_err(|err| {
         format!(
             "failed to write parsed-sample cache {}: {err}",
             output_path.display()
