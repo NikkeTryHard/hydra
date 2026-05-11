@@ -1,4 +1,13 @@
-use super::*;
+use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE};
+use hydra_core::tile::ALL_PERMUTATIONS;
+
+use crate::data::augment::{
+    augment_action_suit, augment_action_vector_suit, augment_belief_fields_suit, augment_mask_suit,
+    augment_obs_suit,
+};
+
+const AKA_CHANNEL_START: usize = 40;
 #[test]
 fn augment_6x_distinct() {
     let mut obs = [0.0f32; OBS_SIZE];

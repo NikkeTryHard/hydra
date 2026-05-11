@@ -58,6 +58,3 @@ impl GameModeConfig {
 
 // Re-export shared utilities from types module
 pub use crate::types::{is_sanma_excluded_tile, standard_next_dora_tile};
-
-#[cfg(test)]
-mod tests;

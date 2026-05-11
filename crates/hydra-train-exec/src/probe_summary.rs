@@ -130,6 +130,3 @@ pub fn candidate_average(results: &[ProbeResult], candidate: usize) -> Option<f6
         .filter(|summary| summary.status == ProbeStatus::Success)
         .and_then(|summary| summary.average_samples_per_second)
 }
-
-#[cfg(test)]
-mod tests;

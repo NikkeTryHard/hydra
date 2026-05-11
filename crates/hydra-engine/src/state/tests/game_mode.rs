@@ -1,5 +1,5 @@
-use super::*;
 use crate::rule::GameRule;
+use crate::state::game_mode::{is_sanma_excluded_tile, GameModeConfig};
 
 #[test]
 fn test_game_mode_config_four_player() {

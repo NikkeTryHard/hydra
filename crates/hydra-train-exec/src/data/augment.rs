@@ -277,6 +277,3 @@ pub fn augment_belief_fields_suit(values: &[f32; 16 * 34], perm: &[u8; 3]) -> [f
     }
     out
 }
-
-#[cfg(test)]
-mod tests;

@@ -1042,6 +1042,3 @@ impl GameState {
         (self.current_claim_counts[i_us] as usize, missed_agari)
     }
 }
-
-#[cfg(test)]
-mod tests;

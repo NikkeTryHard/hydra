@@ -2002,6 +2002,3 @@ mod wrapper_moved_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
-
-#[cfg(test)]
-mod tests;

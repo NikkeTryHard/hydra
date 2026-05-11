@@ -56,6 +56,3 @@ pub fn get_next_dora_tile(tile: u8) -> u8 {
         standard_next_dora_tile(tile)
     }
 }
-
-#[cfg(test)]
-mod tests;

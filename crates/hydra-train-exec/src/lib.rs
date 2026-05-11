@@ -95,6 +95,8 @@ pub mod bc_shard_adapter;
 mod test_loose_replay_fixtures;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod tests;
 /// Validation snapshot and gate DTOs shared across training execution seams.
 pub mod validation;
 

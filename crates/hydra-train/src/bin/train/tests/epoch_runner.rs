@@ -1,4 +1,4 @@
-use super::*;
+use crate::epoch_runner::*;
 use hydra_train_exec::epoch_runner as exec_epoch;
 use hydra_train_types::config::BCTrainerConfig;
 

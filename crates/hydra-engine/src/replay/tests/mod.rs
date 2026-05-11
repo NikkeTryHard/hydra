@@ -1,4 +1,5 @@
 use super::TileConverter;
+mod mjai_replay;
 
 #[test]
 fn parse_tile_variants_preserve_suit_and_red_flags() {

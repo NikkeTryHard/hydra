@@ -1,4 +1,6 @@
-use super::*;
+use burn::backend::libtorch::LibTorchDevice;
+
+use crate::config_runtime::parse_train_device;
 
 #[test]
 fn parse_train_device_accepts_cpu_cuda_and_indices() {

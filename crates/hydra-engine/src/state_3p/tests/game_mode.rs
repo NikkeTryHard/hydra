@@ -1,4 +1,7 @@
-use super::*;
+use crate::state_3p::game_mode::{
+    get_next_dora_tile, num_players, starting_score, tenpai_pool, tile_set, GameSubMode3P,
+};
+use crate::types::is_sanma_excluded_tile;
 
 #[test]
 fn sub_mode_mapping_and_ids_follow_sanma_modes() {

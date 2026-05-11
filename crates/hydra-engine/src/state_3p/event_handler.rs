@@ -753,6 +753,3 @@ impl GameState3PEventHandler for GameState3P {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -1,4 +1,7 @@
-use super::*;
+use hydra_train_runtime::config::{AdvancedLossConfig, ValidationGateConfig};
+
+use crate::resume::BestValidation;
+use crate::validation::{ValidationScalarSummary, evaluate_validation_gates, is_better_validation};
 
 #[test]
 fn better_validation_prefers_lower_loss_then_higher_agreement() {

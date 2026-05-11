@@ -1,6 +1,6 @@
 use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
 
-use super::*;
+use crate::probe_summary::{best_probe_summary, probe_kind_name, summarize_probe_results};
 
 #[test]
 fn summarize_probe_results_averages_all_successful_attempts_for_candidate() {

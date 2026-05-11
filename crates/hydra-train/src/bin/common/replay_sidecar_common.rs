@@ -225,5 +225,5 @@ pub(super) fn write_report<T: Serialize>(output: &Path, report: &T) -> Result<Pa
 }
 
 #[cfg(test)]
-#[path = "replay_sidecar_common/tests.rs"]
+#[path = "tests/replay_sidecar_common.rs"]
 mod tests;

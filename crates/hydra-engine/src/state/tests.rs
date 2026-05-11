@@ -1,4 +1,6 @@
 use super::*;
+mod game_mode;
+mod legal_actions;
 
 fn fresh_state() -> GameState {
     GameState::new(1, false, Some(7), 0, GameRule::default_tenhou())

@@ -40,7 +40,3 @@ pub(super) use hydra_train_runtime::preflight::{
 };
 #[cfg(test)]
 pub(super) use hydra_train_runtime::progress::{BatchStats, ScalarAverages};
-
-#[cfg(test)]
-#[path = "epoch_runner/tests.rs"]
-mod tests;

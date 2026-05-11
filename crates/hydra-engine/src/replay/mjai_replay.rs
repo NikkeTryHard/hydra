@@ -283,6 +283,3 @@ pub fn load_mjai_events_from_path(path: impl AsRef<Path>) -> RiichiResult<Vec<Mj
     }
     read_mjai_events(reader)
 }
-
-#[cfg(test)]
-mod tests;

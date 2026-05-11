@@ -57,5 +57,8 @@ fn main() {
 }
 
 #[cfg(test)]
-#[path = "train/tests.rs"]
+#[path = "train/tests/epoch_runner.rs"]
+mod epoch_runner_tests;
+#[cfg(test)]
+#[path = "train/tests/mod.rs"]
 mod tests;

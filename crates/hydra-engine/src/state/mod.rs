@@ -22,6 +22,8 @@ pub mod wall;
 use event_handler::GameStateEventHandler;
 use game_mode::GameModeConfig;
 use legal_actions::GameStateLegalActions;
+#[cfg(test)]
+mod tests;
 use player::PlayerState;
 use wall::WallState;
 
@@ -2505,6 +2507,3 @@ impl GameState {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -262,6 +262,3 @@ pub fn evaluate_validation_gates(
         criteria,
     }
 }
-
-#[cfg(test)]
-mod tests;

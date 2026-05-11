@@ -98,6 +98,3 @@ pub fn rl_config_from_train_config(rl: &RlTrainConfig) -> RlConfig {
     cfg.microbatch_size = Some(rl.microbatch_size.unwrap_or(DEFAULT_RL_MICROBATCH_SIZE));
     cfg
 }
-
-#[cfg(test)]
-mod tests;

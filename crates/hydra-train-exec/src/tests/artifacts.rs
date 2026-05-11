@@ -1,4 +1,9 @@
-use super::*;
+use std::fs;
+use std::path::PathBuf;
+
+use hydra_train_types::checkpoint::CheckpointMeta;
+
+use crate::artifacts::{checkpoint_meta_semantically_matches, write_checkpoint_meta};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temp_checkpoint_base(label: &str) -> PathBuf {

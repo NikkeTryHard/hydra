@@ -1,6 +1,9 @@
-use super::*;
+use crate::action::{Action, ActionType, Phase};
 use crate::parser::{parse_hand, parse_tile};
 use crate::rule::GameRule;
+use crate::state::legal_actions::GameStateLegalActions;
+use crate::state::GameState;
+use crate::types::{Meld, MeldType};
 
 fn empty_state() -> GameState {
     let mut state = GameState::new(0, true, Some(7), 0, GameRule::default_tenhou());

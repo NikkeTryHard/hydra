@@ -1,4 +1,4 @@
-use super::*;
+use crate::nvtx::{scope, with_test_recorder};
 
 #[test]
 fn scope_without_test_recorder_is_noop() {

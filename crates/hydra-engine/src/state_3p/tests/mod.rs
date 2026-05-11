@@ -1,4 +1,8 @@
 use super::*;
+mod event_handler;
+mod game_mode;
+mod legal_actions;
+mod sanma;
 
 fn test_state_with_mode(game_mode: u8, skip_mjai_logging: bool) -> GameState3P {
     GameState3P::new(

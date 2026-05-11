@@ -388,6 +388,3 @@ fn split_for_identity(identity: &str, config: &BuildBcShardsConfig) -> Option<Bc
     };
     config.split_mode.includes(split).then_some(split)
 }
-
-#[cfg(test)]
-mod tests;

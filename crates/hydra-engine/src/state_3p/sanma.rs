@@ -187,6 +187,3 @@ impl GameState3P {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

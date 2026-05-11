@@ -163,6 +163,3 @@ pub fn with_test_recorder<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
     let events = TEST_EVENTS.with(|events| events.borrow_mut().take().unwrap_or_default());
     (result, events)
 }
-
-#[cfg(test)]
-mod tests;

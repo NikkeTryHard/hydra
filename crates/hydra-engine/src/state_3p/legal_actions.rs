@@ -379,6 +379,3 @@ impl GameState3PLegalActions for GameState3P {
         (legals, missed_agari)
     }
 }
-
-#[cfg(test)]
-mod tests;
