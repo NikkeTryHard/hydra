@@ -86,7 +86,7 @@ use hydra_train_types::losses::HydraLossConfig;
 pub fn validate_training_config(
     model_cfg: &hydra_model::model::HydraModelConfig,
     ach_cfg: &AchConfig,
-    exit_cfg: &crate::training::exit::ExitConfig,
+    exit_cfg: &hydra_search_labels::exit::ExitConfig,
 ) -> Result<(), &'static str> {
     model_cfg.validate()?;
     ach_cfg.validate()?;
@@ -99,7 +99,7 @@ pub fn validate_all_configs(
     model_cfg: &hydra_model::model::HydraModelConfig,
     loss_cfg: &HydraLossConfig,
     ach_cfg: &AchConfig,
-    exit_cfg: &crate::training::exit::ExitConfig,
+    exit_cfg: &hydra_search_labels::exit::ExitConfig,
     drda_cfg: &DrdaConfig,
     gae_cfg: &GaeConfig,
     distill_cfg: &DistillConfig,
@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn test_all_defaults_match_roadmap() {
-        use crate::training::exit;
         use hydra_model::model::HydraModelConfig;
+        use hydra_search_labels::exit;
 
         // -- Model configs --
         let learner = HydraModelConfig::learner();
@@ -448,8 +448,8 @@ mod tests {
 
     #[test]
     fn validate_all_configs_defaults_pass() {
-        use crate::training::exit;
         use hydra_model::model::HydraModelConfig;
+        use hydra_search_labels::exit;
         let result = validate_all_configs(
             &HydraModelConfig::learner(),
             &HydraLossConfig::new(),
@@ -464,8 +464,8 @@ mod tests {
 
     #[test]
     fn validate_all_configs_catches_bad_ach() {
-        use crate::training::exit;
         use hydra_model::model::HydraModelConfig;
+        use hydra_search_labels::exit;
         let bad_ach = AchConfig::new().with_eta(0.0);
         let result = validate_all_configs(
             &HydraModelConfig::learner(),

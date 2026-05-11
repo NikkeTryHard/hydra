@@ -2,7 +2,7 @@
 
 pub use hydra_sample_cache::*;
 
-use crate::data::mjai_loader::MjaiGame;
+use hydra_replay_loader::mjai_loader::MjaiGame;
 
 /// Writes a parsed-sample cache from the legacy hydra-train `MjaiGame` type.
 pub fn write_parsed_sample_cache(
@@ -35,7 +35,7 @@ pub fn load_parsed_sample_cache(path: &std::path::Path) -> std::io::Result<Parse
     })
 }
 
-/// Legacy parsed-sample cache file shape using `hydra_train::data::mjai_loader::MjaiGame`.
+/// Legacy parsed-sample cache file shape using `hydra_replay_loader::mjai_loader::MjaiGame`.
 pub struct ParsedSampleCacheFile {
     /// Cache metadata header.
     pub metadata: hydra_sample_cache::ParsedSampleCacheMetadata,

@@ -18,21 +18,20 @@ use crate::data::archive_helpers::{
     compact_error_message, compact_identity, identity_for_archive_entry, is_mjai_archive_entry,
     is_tar_zst_file,
 };
-use crate::data::mjai_loader::{
-    MjaiDataset, MjaiGame, ReplayLoadPolicy, ReplayTargetProfile, SidecarProvenance,
-    load_game_from_path, load_game_from_path_with_policy, load_game_from_stream_with_policy,
-    normalized_train_fraction,
-};
 use crate::data::parsed_sample_cache::{
     ParsedSampleCacheMetadata, is_parsed_sample_cache_file, load_parsed_sample_cache,
     read_parsed_sample_cache_metadata,
 };
-use crate::data::sample::{MjaiSample, collate_sample_refs};
+use hydra_replay_loader::mjai_loader::{
+    MjaiDataset, MjaiGame, ReplayLoadPolicy, ReplayTargetProfile, SidecarProvenance,
+    load_game_from_path, load_game_from_path_with_policy, load_game_from_stream_with_policy,
+    normalized_train_fraction,
+};
+use hydra_train_exec::data::sample::{MjaiSample, collate_sample_refs};
 pub use hydra_train_exec::data::validation_stream::StreamValMicrobatchIterator;
 
 type CollatedTrainBatch<B> = Vec<(Tensor<B, 3>, HydraTargets<B>)>;
-use crate::training::replay_delta_q::DeltaQSidecarIndex;
-use crate::training::replay_exit::ExitSidecarIndex;
+use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
 use hydra_train_types::losses::HydraTargets;
 
 const MJAI_LOAD_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -1536,7 +1535,7 @@ pub fn collate_sample_chunk<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
     device: &B::Device,
-) -> crate::data::sample::CollatedHydraBatch<B> {
+) -> hydra_train_exec::data::sample::CollatedHydraBatch<B> {
     collate_sample_refs::<B>(samples, augment, device)
 }
 
@@ -1555,14 +1554,16 @@ mod tests {
     use tar::Builder;
     use zstd::stream::Encoder as ZstdEncoder;
 
-    use crate::data::mjai_loader::{MjaiDataset, MjaiGame, prepare_replay_decision, update_safety};
-    use crate::training::replay_delta_q::{DeltaQSidecarIndex, ReplayDeltaQRecordV1};
-    use crate::training::replay_exit::{
-        ExitSidecarIndex, ReplayDecisionKey, ReplayExitRecordV1, legal_mask_digest_from_f32,
-    };
-    use crate::training::{live_exit, replay_delta_q, replay_exit};
     use hydra_core::encoder::ObservationEncoder;
     use hydra_core::safety::SafetyInfo;
+    use hydra_replay_loader::mjai_loader::{
+        MjaiDataset, MjaiGame, prepare_replay_decision, update_safety,
+    };
+    use hydra_replay_sidecar::{
+        DeltaQSidecarIndex, ReplayDecisionKey, ReplayDeltaQRecordV1, ReplayExitRecordV1,
+        legal_mask_digest_from_f32,
+    };
+    use hydra_search_labels::{live_exit, replay_delta_q, replay_exit};
     use riichienv_core::rule::GameRule;
     use riichienv_core::state::GameState;
     use std::os::unix::ffi::OsStringExt;

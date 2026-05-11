@@ -8,6 +8,10 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::{Trajectory, TrajectoryStep};
 use hydra_core::encoder::OBS_SIZE;
 use hydra_model::model::{HydraModelConfig, HydraModelInit};
+use hydra_replay_loader::mjai_loader::{
+    ReplayTargetProfile, SidecarProvenance, load_game_from_reader,
+    load_game_from_reader_with_sidecar,
+};
 use hydra_search_labels::live_exit::LiveExitConfig;
 use hydra_selfplay::batch::{RlBatchScratch, trajectories_to_rl_batch_reuse};
 use hydra_selfplay::{
@@ -19,16 +23,12 @@ use hydra_train::data::bc_shards::{
     BcShardSplit, BcShardSplitMode, BuildBcShardsConfig, build_bc_shards, load_bc_shard_reader,
     materialize_host_batch_owned,
 };
-use hydra_train::data::mjai_loader::{
-    ReplayTargetProfile, SidecarProvenance, load_game_from_reader,
-    load_game_from_reader_with_sidecar,
-};
-use hydra_train::data::pipeline::{
+use hydra_train_exec::bc_runtime::{BcExitConfig, bc_total_with_optional_exit_from_breakdown};
+use hydra_train_exec::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
+use hydra_train_exec::data_pipeline::{
     SourceFilterConfig, StreamingLoaderConfig, scan_data_sources_with_progress,
     stream_val_microbatches, stream_val_pass,
 };
-use hydra_train::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
-use hydra_train_exec::bc_runtime::{BcExitConfig, bc_total_with_optional_exit_from_breakdown};
 use hydra_train_exec::losses::HydraLoss;
 use hydra_train_exec::model::HydraTrainModelExt;
 use hydra_train_types::losses::{HydraLossConfig, LossBreakdown};
@@ -169,11 +169,10 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(8));
     group.bench_function("collate_forward_loss", |b| {
         b.iter(|| {
-            let (obs, batch, targets) = hydra_train::data::sample::collate_samples_owned::<
-                ValidBackend,
-            >(&samples, false, &device)
-            .expect("validation bench collate should succeed")
-            .expect("validation bench batch should exist");
+            let (obs, batch, targets) =
+                collate_samples_owned::<ValidBackend>(&samples, false, &device)
+                    .expect("validation bench collate should succeed")
+                    .expect("validation bench batch should exist");
             let output = valid.forward(obs.clone());
             let breakdown = loss_fn.total_loss(&output, &targets);
             let total = bc_total_with_optional_exit_from_breakdown(
@@ -188,11 +187,9 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
 
     group.bench_function("collate_only", |b| {
         b.iter(|| {
-            let batch = hydra_train::data::sample::collate_samples_owned::<ValidBackend>(
-                &samples, false, &device,
-            )
-            .expect("validation bench collate should succeed")
-            .expect("validation bench batch should exist");
+            let batch = collate_samples_owned::<ValidBackend>(&samples, false, &device)
+                .expect("validation bench collate should succeed")
+                .expect("validation bench batch should exist");
             black_box(batch.0.dims())
         });
     });
@@ -224,7 +221,7 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
     });
 
     let (bench_obs, bench_batch, bench_targets) =
-        hydra_train::data::sample::collate_samples_owned::<ValidBackend>(&samples, false, &device)
+        collate_samples_owned::<ValidBackend>(&samples, false, &device)
             .expect("validation bench collate should succeed")
             .expect("validation bench batch should exist");
     group.bench_function("forward_loss_only", |b| {

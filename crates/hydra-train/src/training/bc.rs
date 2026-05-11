@@ -14,9 +14,10 @@ pub use hydra_train_types::config::BCTrainerConfig;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::sample::MjaiBcBatch;
-    use crate::model::{HydraModel, HydraModelConfig, HydraModelInit};
-    use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
+    use hydra_train_exec::data::sample::MjaiBcBatch;
+    use hydra_train_exec::losses::{HydraLoss, tests::make_dummy_targets};
+    use hydra_train_exec::model::{HydraModel, HydraModelConfig, HydraModelInit};
+    use hydra_train_types::losses::HydraLossConfig;
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;

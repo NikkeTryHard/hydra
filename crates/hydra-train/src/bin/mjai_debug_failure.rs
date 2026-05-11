@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::BufReader;
 
-use hydra_train::data::mjai_loader::debug_first_replay_failure_from_reader;
+use hydra_replay_loader::mjai_loader::debug_first_replay_failure_from_reader;
 
 fn usage(program: &str) -> String {
     format!("Usage: {program} <replay.json>")

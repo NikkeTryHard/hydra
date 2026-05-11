@@ -12,15 +12,14 @@ use crate::data::archive_helpers::{
     compact_error_message, compact_identity, identity_for_archive_entry, is_mjai_archive_entry,
     is_tar_zst_file,
 };
-use crate::data::mjai_loader::{
-    MjaiGame, ReplayLoadPolicy, SidecarProvenance, invalid_data, load_game_from_path_with_policy,
-    load_game_from_stream_with_policy,
-};
 use crate::data::pipeline::{
     DataManifest, DataSource, identity_for_loose_file, is_train_game, scan_data_sources,
 };
-use crate::training::replay_delta_q::DeltaQSidecarIndex;
-use crate::training::replay_exit::ExitSidecarIndex;
+use hydra_replay_loader::mjai_loader::{
+    MjaiGame, ReplayLoadPolicy, SidecarProvenance, invalid_data, load_game_from_path_with_policy,
+    load_game_from_stream_with_policy,
+};
+use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
 
 pub use hydra_bc_shards::{
     BC_BASE_RECORD_SIZE, BC_RECORD_SIZE_WITH_ALL_OPTIONALS, BC_SHARD_HEADER_SIZE, BC_SHARD_MAGIC,
@@ -237,8 +236,8 @@ fn sidecar_manifest(
 
 fn replay_target_profile_for_bc_shards(
     config: &BuildBcShardsConfig,
-) -> crate::data::mjai_loader::ReplayTargetProfile {
-    crate::data::mjai_loader::ReplayTargetProfile::with_optional_heads(
+) -> hydra_replay_loader::ReplayTargetProfile {
+    hydra_replay_loader::ReplayTargetProfile::with_optional_heads(
         false,
         false,
         false,

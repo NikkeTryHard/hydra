@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use hydra_replay_loader::mjai_loader::load_game_from_path;
 use hydra_train::data::archive_helpers::is_tar_zst_file;
 use hydra_train::data::archive_helpers::{compact_error_message, compact_identity};
-use hydra_train::data::mjai_loader::load_game_from_path;
 use hydra_train::data::parsed_sample_cache::{
     parsed_sample_cache_file_name, write_parsed_sample_cache,
 };
