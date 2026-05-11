@@ -20,7 +20,7 @@ use crate::bc_shard_adapter::{
 };
 use crate::data_pipeline::{DataManifest, ReplayTargetProfile, StreamingLoaderConfig};
 use crate::losses::HydraLoss;
-use hydra_model::model::{HydraModel, HydraModelConfig};
+use hydra_model::model::{HydraModel, HydraModelConfig, HydraModelInit};
 use hydra_replay_sidecar::{
     DeltaQSidecarIndex, ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
 };

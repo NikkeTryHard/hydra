@@ -3,6 +3,7 @@
 use burn::prelude::*;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE};
+use hydra_train_types::config::ModelShapeConfig;
 
 use crate::backbone::{SEResNet, SEResNetConfig};
 use crate::heads::*;
@@ -177,116 +178,14 @@ pub struct HydraModel<B: Backend> {
     safety_residual: SafetyResidualHead<B>,
 }
 
-#[derive(Config, Debug)]
-pub struct HydraModelConfig {
-    pub num_blocks: usize,
-    #[config(default = "192")]
-    pub input_channels: usize,
-    #[config(default = "256")]
-    pub hidden_channels: usize,
-    #[config(default = "32")]
-    pub num_groups: usize,
-    #[config(default = "64")]
-    pub se_bottleneck: usize,
-    #[config(default = "46")]
-    pub action_space: usize,
-    #[config(default = "64")]
-    pub score_bins: usize,
-    #[config(default = "3")]
-    pub num_opponents: usize,
-    #[config(default = "24")]
-    pub grp_classes: usize,
-    #[config(default = "4")]
-    pub num_belief_components: usize,
-    #[config(default = "8")]
-    pub opponent_hand_type_classes: usize,
+pub type HydraModelConfig = ModelShapeConfig;
+
+pub trait HydraModelInit {
+    fn init<B: Backend>(&self, device: &B::Device) -> HydraModel<B>;
 }
 
-impl HydraModelConfig {
-    pub fn summary(&self) -> String {
-        let kind = if self.num_blocks <= 12 {
-            "actor"
-        } else {
-            "learner"
-        };
-        format!(
-            "{}(blocks={}, ch={})",
-            kind, self.num_blocks, self.hidden_channels
-        )
-    }
-
-    pub fn is_actor(&self) -> bool {
-        self.num_blocks == 12
-    }
-    pub fn is_learner(&self) -> bool {
-        self.num_blocks == 24
-    }
-
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
-            return Err("hidden_channels must be divisible by num_groups");
-        }
-        if self.num_blocks == 0 {
-            return Err("num_blocks must be > 0");
-        }
-        if self.se_bottleneck == 0 {
-            return Err("se_bottleneck must be > 0");
-        }
-        if self.num_belief_components == 0 {
-            return Err("num_belief_components must be > 0");
-        }
-        if self.opponent_hand_type_classes == 0 {
-            return Err("opponent_hand_type_classes must be > 0");
-        }
-        Ok(())
-    }
-
-    pub fn actor() -> Self {
-        Self::new(12).with_input_channels(NUM_CHANNELS)
-    }
-
-    pub fn estimated_params(&self) -> usize {
-        let h = self.hidden_channels;
-        let se_b = self.se_bottleneck;
-        let input_conv = self.input_channels * h * 3 + h;
-        let gn = h * 2;
-        let block = (h * h * 3 + h) * 2 + gn * 2 + (h * se_b + se_b) + (se_b * h + h);
-        let backbone = input_conv + gn + block * self.num_blocks + gn;
-        let policy = h * self.action_space + self.action_space;
-        let value = h + 1;
-        let score = (h * self.score_bins + self.score_bins) * 2;
-        let tenpai = h * self.num_opponents + self.num_opponents;
-        let grp = h * self.grp_classes + self.grp_classes;
-        let opp_next = h * self.num_opponents + self.num_opponents;
-        let danger = h * self.num_opponents + self.num_opponents;
-        let oracle = h * 4 + 4;
-        let belief_field = h * (self.num_belief_components * 4) + (self.num_belief_components * 4);
-        let mixture_weight = h * self.num_belief_components + self.num_belief_components;
-        let opponent_hand_type = h * (self.num_opponents * self.opponent_hand_type_classes)
-            + (self.num_opponents * self.opponent_hand_type_classes);
-        let delta_q = h * self.action_space + self.action_space;
-        let safety_residual = h * self.action_space + self.action_space;
-        backbone
-            + policy
-            + value
-            + score
-            + tenpai
-            + grp
-            + opp_next
-            + danger
-            + oracle
-            + belief_field
-            + mixture_weight
-            + opponent_hand_type
-            + delta_q
-            + safety_residual
-    }
-
-    pub fn learner() -> Self {
-        Self::new(24).with_input_channels(NUM_CHANNELS)
-    }
-
-    pub fn init<B: Backend>(&self, device: &B::Device) -> HydraModel<B> {
+impl HydraModelInit for ModelShapeConfig {
+    fn init<B: Backend>(&self, device: &B::Device) -> HydraModel<B> {
         let backbone_cfg = SEResNetConfig::new(
             self.num_blocks,
             self.input_channels,

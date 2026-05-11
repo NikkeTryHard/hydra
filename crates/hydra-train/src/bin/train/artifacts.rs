@@ -74,10 +74,10 @@ mod tests {
         delta_q_arena_report_from_paired_eval,
     };
 
-    use crate::advisory::{AdvisoryEvent, RuntimeAdvisory};
     use crate::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
     use crate::resume::{BestValidation, write_rl_resume_state};
     use crate::validation::ValidationSummary;
+    use hydra_train_exec::advisory::{AdvisoryEvent, RuntimeAdvisory};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

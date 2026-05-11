@@ -13,7 +13,7 @@ use burn::tensor::Tensor;
 use burn::tensor::backend::AutodiffBackend;
 use colored::Colorize;
 use hydra_core::arena::compute_placements;
-use hydra_model::model::{HydraModel, HydraModelConfig, HydraOutput};
+use hydra_model::model::{HydraModel, HydraModelConfig, HydraModelInit, HydraOutput};
 use hydra_selfplay::run_mixed_policy_game_scores;
 use hydra_train_runtime::config::{PrecisionMode, TrainConfig};
 use hydra_train_types::delta_q_promotion::{

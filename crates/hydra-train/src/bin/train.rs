@@ -1,7 +1,4 @@
 #[cfg(test)]
-#[path = "train/advisory.rs"]
-mod advisory;
-#[cfg(test)]
 #[path = "train/artifacts.rs"]
 mod artifacts;
 #[path = "train/config.rs"]
@@ -11,9 +8,6 @@ mod config;
 mod epoch_runner;
 #[path = "train/gpu_config.rs"]
 mod gpu_config;
-#[cfg(test)]
-#[path = "train/loss_policy.rs"]
-mod loss_policy;
 #[cfg(test)]
 #[path = "train/modes.rs"]
 mod modes;
@@ -29,12 +23,6 @@ mod progress;
 #[cfg(test)]
 #[path = "train/resume.rs"]
 mod resume;
-#[cfg(test)]
-#[path = "train/schedule.rs"]
-mod schedule;
-#[cfg(test)]
-#[path = "train/status.rs"]
-mod status;
 #[cfg(test)]
 #[path = "train/test_support.rs"]
 mod test_support;
@@ -109,20 +97,22 @@ mod tests {
 
     use crate::artifacts::BcArtifactPaths;
     use crate::config::{train_microbatch_size, validate_config};
-    use crate::loss_policy::build_loss_config;
     use crate::presentation::{format_progress_message, phase_label};
     use crate::resume::{
         BestValidation, EpochContinuation, paused_training_message,
         validate_resume_runtime_compatibility,
     };
-    use crate::schedule::{lr_status_message, schedule_total_steps, steps_per_second};
-    use crate::status::{
+    use crate::validation::{ValidationSummary, is_better_validation};
+    use hydra_train_exec::config_runtime::train_device;
+    use hydra_train_runtime::loss_policy::build_loss_config;
+    use hydra_train_runtime::schedule::{
+        lr_status_message, schedule_total_steps, steps_per_second,
+    };
+    use hydra_train_runtime::status::{
         EpochProgressEstimate, display_step_label, display_validation_scope_label,
         epoch_progress_message_with_rate, estimate_epoch_progress, format_rough_duration,
         reached_session_step_budget, session_steps_completed,
     };
-    use crate::validation::{ValidationSummary, is_better_validation};
-    use hydra_train_exec::config_runtime::train_device;
 
     #[test]
     fn parse_args_accepts_single_config_path() {

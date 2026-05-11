@@ -449,6 +449,7 @@ mod tests {
     use super::*;
     use crate::bc_runtime::bc_total_with_exit_from_breakdown;
     use crate::data::sample::{collate_batch_samples, collate_samples, collate_samples_owned};
+    use crate::model::HydraModelInit;
     use burn::backend::{Autodiff, LibTorch};
     use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams, Optimizer};
     use hydra_core::encoder::NUM_CHANNELS;

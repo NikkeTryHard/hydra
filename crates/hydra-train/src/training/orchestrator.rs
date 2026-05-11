@@ -205,7 +205,7 @@ pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
 mod tests {
     use super::*;
     use crate::config::INPUT_CHANNELS;
-    use crate::model::HydraModelConfig;
+    use crate::model::{HydraModelConfig, HydraModelInit};
     use crate::training::head_gates::{
         AdvancedHead, HeadActivationConfig, HeadActivationController, HeadState,
     };

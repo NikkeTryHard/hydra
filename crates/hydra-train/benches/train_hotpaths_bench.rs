@@ -19,7 +19,7 @@ use hydra_train::data::pipeline::{
     stream_val_microbatches, stream_val_pass,
 };
 use hydra_train::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
-use hydra_train::model::{HydraModelConfig, HydraTrainModelExt};
+use hydra_train::model::{HydraModelConfig, HydraModelInit, HydraTrainModelExt};
 use hydra_train::selfplay::{
     CooperativeSelfPlayCoordinator, generate_self_play_batch_source,
     generate_self_play_batch_source_cooperative, generate_self_play_batch_source_cooperative_reuse,

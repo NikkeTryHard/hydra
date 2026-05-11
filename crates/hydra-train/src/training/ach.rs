@@ -11,7 +11,7 @@ mod tests {
 
     #[test]
     fn test_ach_one_epoch_changes_weights() {
-        use crate::model::HydraModelConfig;
+        use crate::model::{HydraModelConfig, HydraModelInit};
         use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
         use crate::training::rl::{RlBatch, RlConfig, rl_step};
         use burn::optim::AdamConfig;

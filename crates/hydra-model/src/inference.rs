@@ -436,6 +436,7 @@ pub fn infer_action<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::HydraModelInit;
     use burn::backend::NdArray;
 
     type B = NdArray<f32>;

@@ -6,7 +6,7 @@ use burn::backend::LibTorch;
 use burn::backend::libtorch::LibTorchDevice;
 use burn::prelude::Module;
 use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
-use hydra_train::model::{HydraModel, HydraModelConfig};
+use hydra_train::model::{HydraModel, HydraModelConfig, HydraModelInit};
 use hydra_train::training::exit::ExitConfig;
 use hydra_train::training::replay_exit::source_net_hash_from_checkpoint_identity;
 use riichienv_core::replay::{MjaiEvent, load_mjai_events_from_path, read_mjai_events};

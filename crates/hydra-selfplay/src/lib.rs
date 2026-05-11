@@ -1404,7 +1404,7 @@ mod tests {
     use crate::batch::default_gae_config;
     use burn::backend::NdArray;
     use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
-    use hydra_model::model::HydraModelConfig;
+    use hydra_model::model::{HydraModelConfig, HydraModelInit};
     use hydra_train_types::config::{GAE_GAMMA, GAE_LAMBDA};
 
     type B = NdArray<f32>;

@@ -522,7 +522,7 @@ mod tests {
     use super::*;
     use burn::backend::NdArray;
     use hydra_core::arena::TrajectoryExitLabel;
-    use hydra_model::model::HydraModelConfig;
+    use hydra_model::model::{HydraModelConfig, HydraModelInit};
 
     type B = NdArray<f32>;
 

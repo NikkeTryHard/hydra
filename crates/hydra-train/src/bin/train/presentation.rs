@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn advisory_line_renders_key_and_message() {
-        let advisory = crate::advisory::RuntimeAdvisory::warning(
+        let advisory = hydra_train_exec::advisory::RuntimeAdvisory::warning(
             "steady_state_cuda_bc_uses_loose_replay",
             "use shards for steady-state CUDA BC",
         );

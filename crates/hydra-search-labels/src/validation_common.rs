@@ -101,7 +101,7 @@ mod tests {
     use super::*;
     use burn::backend::NdArray;
     use hydra_core::encoder::OBS_SIZE;
-    use hydra_model::model::HydraModelConfig;
+    use hydra_model::model::{HydraModelConfig, HydraModelInit};
 
     type B = NdArray<f32>;
 

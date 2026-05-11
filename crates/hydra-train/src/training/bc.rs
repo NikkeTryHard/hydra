@@ -327,7 +327,7 @@ pub use hydra_train_types::checkpoint::CheckpointMeta;
 mod tests {
     use super::*;
     use crate::data::sample::MjaiBatch;
-    use crate::model::HydraModelConfig;
+    use crate::model::{HydraModelConfig, HydraModelInit};
     use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;

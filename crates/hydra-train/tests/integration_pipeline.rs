@@ -12,7 +12,7 @@ use hydra_core::encoder::NUM_CHANNELS;
 )]
 use hydra_train::eval::PairedArenaEvalResult;
 use hydra_train::inference;
-use hydra_train::model::HydraModelConfig;
+use hydra_train::model::{HydraModelConfig, HydraModelInit};
 #[allow(
     unused_imports,
     reason = "compile coverage for old delta-q arena report imports"

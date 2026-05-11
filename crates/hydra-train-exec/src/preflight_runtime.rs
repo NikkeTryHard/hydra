@@ -10,7 +10,7 @@ use crate::data_pipeline::{
     DataManifest, StreamingLoaderConfig, stream_train_epoch, stream_val_microbatches,
 };
 use crate::losses::HydraLoss;
-use crate::model::{HydraModel, HydraModelConfig, HydraTrainModelExt};
+use crate::model::{HydraModel, HydraModelConfig, HydraModelInit, HydraTrainModelExt};
 use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::module::AutodiffModule;
 use burn::optim::adaptor::OptimizerAdaptor;
@@ -67,9 +67,11 @@ use crate::probe_ladder::{dynamic_probe_ladder, probe_only_candidate_ladder};
 use crate::probe_process::{mem_available_bytes, rl_probe_required_free_bytes};
 use crate::probe_search::{
     ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec, finalize_probe_search,
-    maybe_expand_probe_candidates, probe_candidate_ladder, refine_probe_winner_locally,
-    refine_top_k_probe_candidates_locally, rerun_probe_finalists, run_candidate_attempts,
+    maybe_expand_probe_candidates, refine_probe_winner_locally,
+    refine_top_k_probe_candidates_locally, rerun_probe_finalists,
 };
+#[cfg(not(test))]
+use crate::probe_search::{probe_candidate_ladder, run_candidate_attempts};
 use crate::probe_summary::{
     ProbeCandidateSummary, best_probe_summary, candidate_average, format_probe_selection_summary,
     probe_kind_name, summarize_probe_results,
@@ -89,6 +91,8 @@ use crate::validation_runner::{
     run_validation,
 };
 use hydra_data_core::manifest::DataManifest as CoreDataManifest;
+#[cfg(test)]
+use hydra_train_runtime::config::read_config;
 use hydra_train_runtime::config::{ProbeChildRequest, TrainConfig, default_num_threads_for_system};
 use hydra_train_runtime::loss_policy::{build_bc_exit_config, build_loss_config};
 use hydra_train_runtime::probe_request::{
@@ -3291,6 +3295,60 @@ pub fn run_probe_child_mode_with_model_config(
 }
 
 #[cfg(test)]
+fn run_candidate_attempts<F>(
+    config_path: &Path,
+    result_path_for: &mut F,
+    spec: ProbeRunSpec,
+    results: &mut Vec<ProbeResult>,
+    progress: &ProgressBar,
+) -> Result<bool, String>
+where
+    F: FnMut(ProbeKind, usize, usize) -> PathBuf,
+{
+    let config = read_config(config_path)?;
+    let attempts = spec.attempts.max(1);
+    let request = ProbeRequest {
+        kind: spec.kind,
+        candidate_microbatch: spec.candidate,
+        warmup_steps: spec.warmup_steps,
+        measure_steps: spec.measure_steps,
+    };
+    let tiny = HydraModelConfig::new(1)
+        .with_input_channels(hydra_core::encoder::NUM_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1);
+
+    for attempt in 0..attempts {
+        progress.set_message(format_probe_attempt_message(
+            spec.kind,
+            spec.candidate,
+            attempt + 1,
+            attempts,
+        ));
+        let result_path = result_path_for(spec.kind, spec.candidate, attempt);
+        std::fs::remove_file(&result_path).ok();
+        let result = match request.kind {
+            ProbeKind::Train | ProbeKind::Validation => {
+                run_probe_only_with_model_config_result(&config, &tiny, None, request)?
+            }
+            ProbeKind::RlGames | ProbeKind::RlMicrobatch => {
+                run_rl_probe_only_result(&config, request)?
+            }
+        };
+        write_probe_result(&result_path, &result)?;
+        let passed = result.status == ProbeStatus::Success;
+        progress.inc(1);
+        println!("{}", format_probe_status_line(&result));
+        results.push(result);
+        if !passed {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
 pub fn run_probe_child_batch_mode_result(
     config: &TrainConfig,
     child: Option<ProbeChildRequest>,
@@ -3320,12 +3378,15 @@ pub fn execute_probe_request(
     request: ProbeRequest,
     result_path: &Path,
 ) -> Result<ProbeResult, String> {
-    crate::probe_process::execute_probe_request(
-        config_path,
+    let config = read_config(config_path)?;
+    run_probe_only_with_model_config(
+        &config,
+        &HydraModelConfig::learner(),
+        None,
         request,
         result_path,
-        classify_probe_detail,
-    )
+    )?;
+    crate::probe_transport::read_probe_result(result_path)
 }
 
 #[cfg(test)]
@@ -3347,6 +3408,47 @@ pub fn format_probe_attempt_message(
 #[cfg(test)]
 pub fn format_probe_result_summary(result: &ProbeResult) -> String {
     format_probe_status_line(result)
+}
+
+#[cfg(test)]
+fn probe_candidate_ladder_with_local_executor(
+    config_path: &Path,
+    config: &TrainConfig,
+    artifacts: &BcArtifactPaths,
+    kind: ProbeKind,
+    candidates: &[usize],
+) -> Result<(usize, Vec<ProbeResult>), String> {
+    let explicit_candidate = match kind {
+        ProbeKind::Train => config.microbatch_size,
+        ProbeKind::Validation => config.validation_microbatch_size,
+        ProbeKind::RlGames => config.rl.as_ref().map(|rl| rl.games_per_batch),
+        ProbeKind::RlMicrobatch => config.rl.as_ref().and_then(|rl| rl.microbatch_size),
+    };
+    let spec = ProbeSearchSpec::new(kind, candidates.first().copied().unwrap_or(1))
+        .with_explicit_candidate(explicit_candidate)
+        .with_no_stable_error(format!(
+            "no stable {} microbatch found in preflight",
+            probe_kind_name(kind)
+        ));
+    let outcome =
+        search_probe_candidate_ladder(config_path, config, spec, |kind, candidate, attempt| {
+            probe_result_path(artifacts, kind, candidate, attempt)
+        })?;
+    Ok((
+        outcome.selected_summary.candidate_microbatch,
+        outcome.results,
+    ))
+}
+
+#[cfg(not(test))]
+fn probe_candidate_ladder_with_local_executor(
+    config_path: &Path,
+    config: &TrainConfig,
+    artifacts: &BcArtifactPaths,
+    kind: ProbeKind,
+    candidates: &[usize],
+) -> Result<(usize, Vec<ProbeResult>), String> {
+    probe_candidate_ladder(config_path, config, artifacts, kind, candidates)
 }
 
 pub fn run_probe_ladder_only(
@@ -3376,8 +3478,13 @@ pub fn run_probe_ladder_only(
     );
 
     let candidates = probe_only_candidate_ladder(config, request);
-    let selected =
-        probe_candidate_ladder(config_path, config, artifacts, request.kind, &candidates)?;
+    let selected = probe_candidate_ladder_with_local_executor(
+        config_path,
+        config,
+        artifacts,
+        request.kind,
+        &candidates,
+    )?;
     Ok(selected)
 }
 

@@ -55,7 +55,7 @@ mod tests {
     use burn::backend::libtorch::LibTorchDevice;
     use burn::optim::AdamConfig;
     use burn::tensor::backend::AutodiffBackend;
-    use hydra_train::model::HydraModelConfig;
+    use hydra_train::model::{HydraModelConfig, HydraModelInit};
     use hydra_train::preflight::PreflightConfig;
     use hydra_train::training::head_gates::{HeadActivationConfig, HeadActivationController};
     use hydra_train::training::losses::HydraLossConfig;

@@ -1,5 +1,5 @@
 use crate::data_pipeline::{DataManifest, StreamingLoaderConfig};
-use crate::model::HydraModelConfig;
+use crate::model::{HydraModelConfig, HydraModelInit};
 use crate::rl_runner::live_exit_config_from_plan;
 use crate::rl_step::{RlPhaseTrainRequest, rl_phase_train_step_with_controller};
 use burn::backend::libtorch::LibTorchDevice;

@@ -3231,6 +3231,7 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "hydra-core",
+ "hydra-train-types",
 ]
 
 [[package]]
@@ -3404,7 +3405,6 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "hydra-core",
- "hydra-model",
  "serde",
 ]
 

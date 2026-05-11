@@ -14,6 +14,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hydra-core = { path = "../hydra-core" }
+hydra-train-types = { path = "../hydra-train-types" }
 burn = { version = "0.20", default-features = false, features = ["std"] }
 
 [dev-dependencies]

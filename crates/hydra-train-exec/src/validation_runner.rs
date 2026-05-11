@@ -917,7 +917,7 @@ mod tests {
 
     use crate::bc_runtime::bc_total_with_exit_from_breakdown;
     use crate::data::sample::MjaiBatch;
-    use crate::model::HydraModelConfig;
+    use crate::model::{HydraModelConfig, HydraModelInit};
     use burn::backend::libtorch::LibTorchDevice;
     use burn::tensor::Tensor;
     use hydra_core::action::HYDRA_ACTION_SPACE;

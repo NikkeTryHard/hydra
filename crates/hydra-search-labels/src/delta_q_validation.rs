@@ -405,7 +405,7 @@ mod tests {
     use burn::backend::NdArray;
     use hydra_core::action::HYDRA_ACTION_SPACE;
     use hydra_core::arena::TrajectoryDeltaQLabel;
-    use hydra_model::model::HydraModelConfig;
+    use hydra_model::model::{HydraModelConfig, HydraModelInit};
 
     type B = NdArray<f32>;
 

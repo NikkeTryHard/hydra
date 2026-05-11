@@ -6,7 +6,6 @@
 use burn::config::Config;
 use burn::grad_clipping::GradientClippingConfig;
 use burn::optim::AdamConfig;
-use hydra_model::model::HydraModelConfig;
 
 /// Default RL physical microbatch size used when the train YAML omits one.
 pub const DEFAULT_RL_MICROBATCH_SIZE: usize = 128;
@@ -96,10 +95,122 @@ impl Default for BcExitConfig {
     }
 }
 
+/// Backend-independent Hydra model shape/configuration used by trainer contracts.
+#[derive(Config, Debug)]
+pub struct ModelShapeConfig {
+    pub num_blocks: usize,
+    #[config(default = "192")]
+    pub input_channels: usize,
+    #[config(default = "256")]
+    pub hidden_channels: usize,
+    #[config(default = "32")]
+    pub num_groups: usize,
+    #[config(default = "64")]
+    pub se_bottleneck: usize,
+    #[config(default = "46")]
+    pub action_space: usize,
+    #[config(default = "64")]
+    pub score_bins: usize,
+    #[config(default = "3")]
+    pub num_opponents: usize,
+    #[config(default = "24")]
+    pub grp_classes: usize,
+    #[config(default = "4")]
+    pub num_belief_components: usize,
+    #[config(default = "8")]
+    pub opponent_hand_type_classes: usize,
+}
+
+impl ModelShapeConfig {
+    pub fn summary(&self) -> String {
+        let kind = if self.num_blocks <= 12 {
+            "actor"
+        } else {
+            "learner"
+        };
+        format!(
+            "{}(blocks={}, ch={})",
+            kind, self.num_blocks, self.hidden_channels
+        )
+    }
+
+    pub fn is_actor(&self) -> bool {
+        self.num_blocks == 12
+    }
+
+    pub fn is_learner(&self) -> bool {
+        self.num_blocks == 24
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
+            return Err("hidden_channels must be divisible by num_groups");
+        }
+        if self.num_blocks == 0 {
+            return Err("num_blocks must be > 0");
+        }
+        if self.se_bottleneck == 0 {
+            return Err("se_bottleneck must be > 0");
+        }
+        if self.num_belief_components == 0 {
+            return Err("num_belief_components must be > 0");
+        }
+        if self.opponent_hand_type_classes == 0 {
+            return Err("opponent_hand_type_classes must be > 0");
+        }
+        Ok(())
+    }
+
+    pub fn actor() -> Self {
+        Self::new(12)
+    }
+
+    pub fn learner() -> Self {
+        Self::new(24)
+    }
+
+    pub fn estimated_params(&self) -> usize {
+        let h = self.hidden_channels;
+        let se_b = self.se_bottleneck;
+        let input_conv = self.input_channels * h * 3 + h;
+        let gn = h * 2;
+        let block = (h * h * 3 + h) * 2 + gn * 2 + (h * se_b + se_b) + (se_b * h + h);
+        let backbone = input_conv + gn + block * self.num_blocks + gn;
+        let policy = h * self.action_space + self.action_space;
+        let value = h + 1;
+        let score = (h * self.score_bins + self.score_bins) * 2;
+        let tenpai = h * self.num_opponents + self.num_opponents;
+        let grp = h * self.grp_classes + self.grp_classes;
+        let opp_next = h * self.num_opponents + self.num_opponents;
+        let danger = h * self.num_opponents + self.num_opponents;
+        let oracle = h * 4 + 4;
+        let belief_field = h * (self.num_belief_components * 4) + (self.num_belief_components * 4);
+        let mixture_weight = h * self.num_belief_components + self.num_belief_components;
+        let opponent_hand_type = h * (self.num_opponents * self.opponent_hand_type_classes)
+            + (self.num_opponents * self.opponent_hand_type_classes);
+        let delta_q = h * self.action_space + self.action_space;
+        let safety_residual = h * self.action_space + self.action_space;
+        backbone
+            + policy
+            + value
+            + score
+            + tenpai
+            + grp
+            + opp_next
+            + danger
+            + oracle
+            + belief_field
+            + mixture_weight
+            + opponent_hand_type
+            + delta_q
+            + safety_residual
+    }
+}
+
 /// Behavioral-cloning trainer hyperparameters and model shape.
 #[derive(Config, Debug)]
 pub struct BCTrainerConfig {
-    pub model_config: HydraModelConfig,
+    pub model_config: ModelShapeConfig,
     #[config(default = "2.5e-4")]
     pub lr: f64,
     #[config(default = "1e-6")]
@@ -127,11 +238,11 @@ impl BCTrainerConfig {
     }
 
     pub fn default_actor() -> Self {
-        Self::new(HydraModelConfig::actor())
+        Self::new(ModelShapeConfig::actor())
     }
 
     pub fn default_learner() -> Self {
-        Self::new(HydraModelConfig::learner())
+        Self::new(ModelShapeConfig::learner())
     }
 
     pub fn estimated_training_time_hours(&self, num_samples: usize, samples_per_sec: f32) -> f32 {
@@ -293,12 +404,35 @@ mod tests {
 
     #[test]
     fn bc_config_defaults_match_legacy_contract() {
-        let cfg = BCTrainerConfig::new(HydraModelConfig::actor());
+        let cfg = BCTrainerConfig::new(ModelShapeConfig::actor());
         assert!((cfg.lr - 2.5e-4).abs() < 1e-10);
         assert!((cfg.min_learning_rate - 1e-6).abs() < 1e-12);
         assert_eq!(cfg.batch_size, 2048);
         assert_eq!(cfg.warmup_steps, 1000);
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn model_shape_defaults_match_legacy_model_config() {
+        let actor = ModelShapeConfig::actor();
+        assert_eq!(actor.num_blocks, 12);
+        assert_eq!(actor.input_channels, 192);
+        assert_eq!(actor.hidden_channels, 256);
+        assert_eq!(actor.num_groups, 32);
+        assert_eq!(actor.se_bottleneck, 64);
+        assert_eq!(actor.action_space, 46);
+        assert_eq!(actor.score_bins, 64);
+        assert_eq!(actor.num_opponents, 3);
+        assert_eq!(actor.grp_classes, 24);
+        assert_eq!(actor.num_belief_components, 4);
+        assert_eq!(actor.opponent_hand_type_classes, 8);
+        assert!(actor.is_actor());
+        assert!(actor.validate().is_ok());
+
+        let learner = ModelShapeConfig::learner();
+        assert_eq!(learner.num_blocks, 24);
+        assert!(learner.is_learner());
+        assert!(learner.validate().is_ok());
     }
 
     #[test]

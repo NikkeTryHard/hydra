@@ -83,8 +83,9 @@ For impl work, choose next lane from
 | `crates/hydra-train-algo` | pure Burn training algorithms/loss math | CLI/config/preflight, model definition |
 | `crates/hydra-selfplay` | self-play coordination primitives | train CLI/runtime contracts |
 | `crates/hydra-search-labels` | search-label generation | base search/runtime primitives |
-| `crates/hydra-train-runtime` | train CLI/config/preflight/probe/status contracts | execution modules still in `hydra-train` |
-| `crates/hydra-train` | compatibility facade + bins during split migration; remaining execution modules | settled ownership for new model/algo/runtime code |
+| `crates/hydra-train-runtime` | train CLI/config/preflight/probe/status contracts | execution/model/algo ownership |
+| `crates/hydra-train-exec` | training execution composition over runtime/model/algo/data crates | CLI/config/preflight/probe/status contracts |
+| `crates/hydra-train` | compatibility facade + bins during split migration | settled ownership for new model/algo/runtime/exec code |
 
 If deciding what to build next, follow Fresh-agent routing order above.
 Historical design/planning docs now live as compact entries in `research/design/HYDRA_ARCHIVE.md`.

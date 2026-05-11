@@ -15,7 +15,7 @@ pub use hydra_train_types::losses::{HydraLossConfig, HydraTargets, LossBreakdown
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::model::{HydraModelConfig, HydraOutput};
+    use crate::model::{HydraModelConfig, HydraModelInit, HydraOutput};
     use burn::backend::NdArray;
     use burn::prelude::*;
 
