@@ -26,7 +26,7 @@ Modes:
 |---|---|---|
 | normal train | `train config.yaml` | BC/RL per YAML |
 | preflight | `train config.yaml --preflight` | measure/select runtime tuple, cache result |
-| probe-only | `train config.yaml --probe-kind <train|validation> --probe-candidate-microbatch <N> ...` | bounded candidate check, no full train |
+| probe-only | `train config.yaml --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> ...` | bounded candidate check, no full train |
 | DeltaQ promotion | `train config.yaml --delta-q-promotion --delta-q-baseline-checkpoint <path>` | candidate-vs-baseline gated eval |
 
 Internal child probe path exists. Not op entrypoint.
@@ -34,7 +34,7 @@ Internal child probe path exists. Not op entrypoint.
 Choose:
 - normal: runtime tuple already trusted or config explicit.
 - preflight: new GPU/machine, precision change, workload/shard change, old cache suspect.
-- probe-only: test one candidate microbatch or train-vs-validation headroom.
+- probe-only: test one candidate train/validation microbatch, RL microbatch, or RL game-count setting.
 - DeltaQ promotion: candidate checkpoint exists; DeltaQ lane needs promote/no-promote evidence. Not normal train.
 
 ## YAML contract

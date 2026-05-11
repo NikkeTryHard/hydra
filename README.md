@@ -121,7 +121,16 @@ If need run/debug training stack rather than architecture docs, start here:
 
 ## Testing and Coverage
 
-Hydra uses `cargo nextest run --release` as default workspace test path. Coverage commands now live in [`docker/train/README.md`](docker/train/README.md).
+Default workspace test path: `cargo nextest run --release`. Use `cargo test --release -p <crate> <test-name>` only for narrow single-test/module cases.
+
+Executable test inventory:
+- Rust inline/unit tests across workspace crates run under nextest.
+- Rust integration tests: `crates/hydra-core/tests/{golden_encoder,mjai_replay,proptest_invariants,game_loop_integration}.rs`; `crates/hydra-train/tests/integration_pipeline.rs`.
+- Criterion benches: `cargo bench -p hydra-core`, `cargo bench -p hydra-engine`, `cargo bench -p hydra-train`.
+- Core throughput example: `cargo run -p hydra-core --example bench_throughput`.
+- Python script tests: `uv run python -m unittest discover -s scripts/tests`.
+
+Coverage commands now live in [`docker/train/README.md`](docker/train/README.md).
 
 ## License
 

@@ -44,6 +44,8 @@ Read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md) before treating st
 
 ## Entry binaries
 
+Cargo target truth comes from Cargo metadata: explicit `[[bin]]` entries plus auto-discovered files under `src/bin/` when `autobins` stays enabled.
+
 | Binary | Purpose |
 |---|---|
 | `train` | main entrypoint: normal train, preflight, probe-only, DeltaQ promotion |

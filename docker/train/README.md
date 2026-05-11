@@ -134,9 +134,14 @@ Useful knobs:
 - `HYDRA_BUILD_JOBS` and `HYDRA_TEST_THREADS` tune build/test parallelism; defaults pin both to 16.
 
 Default artifacts under `target/coverage/`:
-- `html/index.html`
-- `lcov.info`
-- `summary.txt`
+- `summary.txt`, `summary.json`
+- `timings.txt`, `run.log`
+- sccache stats when available
+
+Optional artifacts:
+- `HYDRA_COVERAGE_HTML=1` writes `html/index.html`
+- `HYDRA_COVERAGE_LCOV=1` writes `lcov.info`
+- `HYDRA_COVERAGE_FAST=1` skips HTML, LCOV, and summary generation
 
 Use coverage as safety signal, not correctness proof. Watch gaps near encoder channels, replay roundtrip, legal actions, scoring/state transitions, batch shaping, supervision gates.
 

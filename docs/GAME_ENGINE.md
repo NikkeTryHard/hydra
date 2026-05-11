@@ -336,26 +336,28 @@ Current runtime-status note: bridge carries two live Hand-EV paths on same fixed
 
 ## Testing
 
-Split impl crates keep inline unit tests (`#[cfg(test)]`). `hydra-core/tests/` contains integration tests:
+Split impl crates keep inline unit tests (`#[cfg(test)]`). Runtime-facing integration tests:
 
 | Test File | What It Covers |
 |-----------|---------------|
-| `golden_encoder.rs` | Encoder regression tests. Compares output against saved golden snapshots. Catches silent encoding drift when channel logic changes. |
-| `mjai_replay.rs` | Replays recorded MJAI game logs through engine and verifies game state, actions, observations match expected sequence. Current regression surface explicitly covers replay round-reset correctness + kan-action legality matching so MJAI replay stays aligned with runtime legality checks. |
-| `proptest_invariants.rs` | Property-based tests using `proptest`. Generates random game states, verifies invariants: legal mask consistency, encoder channel bounds, tile count conservation, action round-trip fidelity. |
-| `game_loop_integration.rs` | End-to-end game loop tests. Runs complete games with `FirstActionSelector`, verifies termination, score consistency, result collection. |
+| `crates/hydra-core/tests/golden_encoder.rs` | Encoder regression tests. Compares output against saved golden snapshots. Catches silent encoding drift when channel logic changes. |
+| `crates/hydra-core/tests/mjai_replay.rs` | Replays recorded MJAI game logs through engine and verifies game state, actions, observations match expected sequence. Current regression surface explicitly covers replay round-reset correctness + kan-action legality matching so MJAI replay stays aligned with runtime legality checks. |
+| `crates/hydra-core/tests/proptest_invariants.rs` | Property-based tests using `proptest`. Generates random game states, verifies invariants: legal mask consistency, encoder channel bounds, tile count conservation, action round-trip fidelity. |
+| `crates/hydra-core/tests/game_loop_integration.rs` | End-to-end game loop tests. Runs complete games with `FirstActionSelector`, verifies termination, score consistency, result collection. |
+| `crates/hydra-train/tests/integration_pipeline.rs` | Training-stack smoke/integration checks over model, loss, distill, GAE/DRDA, CT-SMC/AFBS, and replay sidecar compile surfaces. |
 
 Current replay-status note: after fixing MJAI replay round-start reset semantics + kan replay matching in vendored engine layer, Hydra MJAI loader was re-audited against Tenhou Houou 2025 corpus (`178,897` files) with `0` skips.
 
 ### Benchmarks
 
-`benches/` dir uses `criterion` for perf benchmarks:
+Criterion benches by crate:
 
-- `single_game`: time to run one complete game start to finish
-- `batch_100`: time to run 100 games in parallel with `BatchSimulator`
-- `encode_observation_1000x`: time to encode 1,000 observations (measures encoder throughput)
+- `crates/hydra-core/benches/simulator_bench.rs`: `single_game_first_action`, `single_game_first_action_reuse`, `batch_100_games`, encoder variants, Hand-EV, shanten batches.
+- `crates/hydra-core/benches/ct_smc_bench.rs`: `ct_smc_dp_128_samples`.
+- `crates/hydra-engine/benches/agari_bench.rs`: 4p/3p agari evaluator and scoring fixture cases.
+- `crates/hydra-train/benches/train_hotpaths_bench.rs`: loader, shard collation, validation grouping/stats, RL batch collation, model CPU bridge, self-play source generation.
 
-Run benchmarks with `cargo bench`.
+Run benchmarks with `cargo bench -p hydra-core`, `cargo bench -p hydra-engine`, or `cargo bench -p hydra-train`.
 
 ## Direct Dependencies (`hydra-core`)
 

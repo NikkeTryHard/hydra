@@ -46,9 +46,10 @@ Archive doctrine rules:
 
 Preferred validation defaults:
 - `cargo nextest run --release`
-- `cargo clippy --all-targets -- -D warnings`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `cargo build --release`
 - use `cargo test --release` only for narrow single-test or module cases
+- strict lint gate: `scripts/lint-check.sh` = Markdown compression hook + anti-game scan + rustfmt + all-features clippy; all-features path includes `cuda-graph`, so CUDA libtorch/CUDA toolkit must be available. `scripts/lint-check.sh --cuda-graph` adds focused `hydra-train` cuda-graph clippy.
 
 Tooling rules:
 - `.cargo/config.toml` is local-only and gitignored; do not commit

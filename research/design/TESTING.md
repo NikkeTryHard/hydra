@@ -10,14 +10,23 @@ Testing critical for mahjong AI. Engine bugs silently poison training data. One 
 
 This doc defines testing strategy for all Hydra subsystems: Rust engine, observation encoder, MJAI parser, suit permutation augmentation, Burn training stack.
 
+### Current Executable Inventory
+
+- Workspace Rust tests: `cargo nextest run --release`.
+- Narrow Rust cases: `cargo test --release -p <crate> <test-name>`.
+- Integration tests: `crates/hydra-core/tests/{golden_encoder,mjai_replay,proptest_invariants,game_loop_integration}.rs`; `crates/hydra-train/tests/integration_pipeline.rs`.
+- Benches: `cargo bench -p hydra-core`; `cargo bench -p hydra-engine`; `cargo bench -p hydra-train`.
+- Core throughput example: `cargo run -p hydra-core --example bench_throughput`.
+- Python script tests: `uv run python -m unittest discover -s scripts/tests`.
+
 ### Coverage Reporting
 
 Hydra publishes workspace-wide Rust coverage via `cargo-llvm-cov`. Coverage = regression-review aid, not correctness proof.
 
-- Default fast regression path: `cargo nextest run --release`
-- Coverage path: `./scripts/coverage.sh`
-- Coverage artifacts: HTML report, LCOV export, text summary
-
+- Coverage path: `./scripts/coverage.sh`, backed by `cargo llvm-cov nextest`.
+- Default artifacts under `target/coverage/`: `summary.txt`, `summary.json`, `timings.txt`, `run.log`, optional sccache stats.
+- HTML requires `HYDRA_COVERAGE_HTML=1`; LCOV requires `HYDRA_COVERAGE_LCOV=1`.
+- `HYDRA_COVERAGE_FAST=1` skips HTML, LCOV, and summary generation.
 Use coverage to confirm tests hit risky paths like encoder writes, replay roundtrips, legal-action generation, scoring, training-label gating. Do not treat one repo-wide percentage as semantic safety proof.
 
 ---
@@ -241,22 +250,18 @@ Cross-validate Rust scoring against `mahjong` Python library on 100K randomly co
 
 ## Burn Training Stack
 
-### Model Smoke Tests
+Current tests are split by crate ownership:
 
-- Forward pass with random input `[1, 192, 34]` produces output shapes asserted by `hydra-train/src/model.rs` for current `ActorNet` / `LearnerNet`
-- Legal action masking: masked logits are negative infinity, softmax produces zero probability for illegal actions
-- Inference: run forward pass through burn-tch backend, verify output matches expected within tolerance (atol=1e-5)
+| Crate / path | Test surface |
+|---|---|
+| `crates/hydra-model/src/{backbone,heads,inference,model,saf}.rs` | Model shape, head, inference, and SAF checks. |
+| `crates/hydra-train-algo/src/{ach,bc,distill,drda,gae,losses}.rs` | Pure training loss/algo math: policy CE, distill, GAE, DRDA, composite losses. |
+| `crates/hydra-train-exec/src/{data/sample,data/augment,bc_fixed_shape,bc_metrics,modes,artifacts,...}.rs` | Batch collation, augmentation, fixed-shape parity, metrics, modes, artifacts, preflight/probe/runtime seams. |
+| `crates/hydra-selfplay/src/{lib,batch,validation}.rs` | Self-play generation, action selection, cooperative runner, RL batch collation, validation entry points. |
+| `crates/hydra-train/tests/integration_pipeline.rs` | Integration smoke over model, losses, distill, GAE/DRDA, CT-SMC/AFBS, and replay sidecar compile paths. |
 
-### Loss Function Tests
+### Required Test Classes
 
-- Policy CE loss with known logits and labels — verify against hand-computed value
-- GRP 24-way CE loss sums to correct value for known permutation distribution
-- Focal BCE loss with γ=2.0 produces lower loss for high-confidence correct predictions than standard BCE
-- Composite loss with known component values → verify weighted sum matches expected total
-
-### Data Pipeline Tests
-
-- Burn DataLoaderBuilder yields batches of correct shape `[2048, 192, 34]`
-- 3-level shuffle produces different orderings across epochs (statistical test: correlation < 0.1)
-- Suit permutation produces 6 distinct outputs for same input game
-- Filtering: game with known bad metadata is excluded from manifest
+- Model smoke: forward pass over `[N, 192, 34]`, actor/learner output shapes, legal-action mask behavior, backend inference tolerance.
+- Losses: known logits/labels against hand-computed values; component-weighted composite totals; focal confidence behavior.
+- Data pipeline: batch shape, shuffle/sampling behavior, suit permutation diversity, bad-metadata filtering, sidecar hydration gates.
