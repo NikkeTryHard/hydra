@@ -27,19 +27,27 @@ pub(crate) use hydra_train_exec::artifacts::{
 };
 
 #[cfg(test)]
-pub(crate) fn append_step_log(
-    path: &Path,
-    entry: &super::progress::StepLogEntry,
-) -> Result<(), String> {
+use hydra_train_exec::progress::{
+    EpochLogEntry as RuntimeEpochLogEntry, StepLogEntry as RuntimeStepLogEntry,
+};
+#[cfg(test)]
+type EpochLogEntry = RuntimeEpochLogEntry<
+    hydra_train_exec::validation::DeltaQPromotionSnapshot,
+    hydra_train_exec::advisory::RuntimeAdvisory,
+>;
+#[cfg(test)]
+type StepLogEntry = RuntimeStepLogEntry<
+    hydra_train_exec::validation::DeltaQPromotionSnapshot,
+    hydra_train_exec::advisory::RuntimeAdvisory,
+>;
+#[cfg(test)]
+pub(crate) fn append_step_log(path: &Path, entry: &StepLogEntry) -> Result<(), String> {
     let mut file = open_step_log_appender(path)?;
     append_step_log_to_writer(&mut file, entry)
 }
 
 #[cfg(test)]
-pub(crate) fn append_training_log(
-    path: &Path,
-    entry: &super::progress::EpochLogEntry,
-) -> Result<(), String> {
+pub(crate) fn append_training_log(path: &Path, entry: &EpochLogEntry) -> Result<(), String> {
     let mut file = open_training_log_appender(path)?;
     append_training_log_to_writer(&mut file, entry)
 }
@@ -47,7 +55,7 @@ pub(crate) fn append_training_log(
 #[cfg(test)]
 pub(crate) fn append_rl_step_log(
     path: &Path,
-    entry: &super::progress::RlStepLogEntry,
+    entry: &hydra_train_exec::progress::RlStepLogEntry,
 ) -> Result<(), String> {
     let mut file = open_rl_step_log_appender(path)?;
     append_rl_step_log_to_writer(&mut file, entry)
@@ -56,13 +64,13 @@ pub(crate) fn append_rl_step_log(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RlPhaseConfig;
-    use crate::resume::{RlResumeSemantics, RlResumeState, RlRuntimeResumeContract};
-    use crate::validation::DeltaQPromotionSnapshot;
     use hydra_data_core::{DataManifest, DataSource};
     use hydra_train_exec::delta_q_promotion::{
         delta_q_arena_report_from_paired_eval, paired_arena_result_from_placements,
     };
+    use hydra_train_exec::resume::{RlResumeSemantics, RlResumeState, RlRuntimeResumeContract};
+    use hydra_train_exec::validation::DeltaQPromotionSnapshot;
+    use hydra_train_runtime::config::RlPhaseConfig;
     use hydra_train_runtime::preflight::{
         BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
         EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
@@ -76,10 +84,10 @@ mod tests {
     };
     use hydra_train_types::phase::{PipelineState, TrainingPhase};
 
-    use crate::progress::{EpochLogEntry, RlStepLogEntry, ScalarAverages, StepLogEntry};
-    use crate::resume::{BestValidation, write_rl_resume_state};
-    use crate::validation::ValidationSummary;
     use hydra_train_exec::advisory::{AdvisoryEvent, RuntimeAdvisory};
+    use hydra_train_exec::progress::{RlStepLogEntry, ScalarAverages};
+    use hydra_train_exec::resume::{BestValidation, write_rl_resume_state};
+    use hydra_train_exec::validation::ValidationSummary;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -755,7 +763,7 @@ mod tests {
                 games_per_batch: 16,
                 microbatch_size: 32,
                 phase: RlPhaseConfig::ExitPondering,
-                precision_mode: crate::config::PrecisionMode::Fp32,
+                precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
             },
             saved_at_unix_s: 123,
         };

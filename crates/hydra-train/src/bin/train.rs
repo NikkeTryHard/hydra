@@ -1,13 +1,9 @@
 #[cfg(test)]
 #[path = "train/artifacts.rs"]
 mod artifacts;
-#[path = "train/config.rs"]
-mod config;
 #[cfg(test)]
 #[path = "train/epoch_runner.rs"]
 mod epoch_runner;
-#[path = "train/gpu_config.rs"]
-mod gpu_config;
 #[cfg(test)]
 #[path = "train/modes.rs"]
 mod modes;
@@ -17,9 +13,6 @@ mod presentation;
 #[cfg(test)]
 #[path = "train/progress.rs"]
 mod progress;
-#[cfg(test)]
-#[path = "train/resume.rs"]
-mod resume;
 #[cfg(test)]
 #[path = "train/test_support.rs"]
 mod test_support;
@@ -35,21 +28,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
 
-use self::config::{parse_args, read_config};
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use hydra_train_exec::modes::run_train_modes;
 use hydra_train_exec::preflight_runtime::run_probe_child_mode;
+use hydra_train_runtime::config::{parse_args, read_config};
 
 #[cfg(test)]
-use self::config::{
-    AdvancedLossConfig, BcHyperparamConfig, TrainConfig, default_seed, validation_microbatch_size,
-    validation_sample_limit,
-};
-#[cfg(test)]
-use self::resume::{
+use hydra_train_exec::resume::{
     BcResumeState, ResumeSemantics, build_resume_state, checkpoint_base_from_path,
     latest_optimizer_base_for_checkpoint_base, latest_state_path_for_checkpoint_base,
     read_resume_state, resume_banner_message, test_runtime_resume_contract,
+};
+#[cfg(test)]
+use hydra_train_runtime::config::{
+    AdvancedLossConfig, BcHyperparamConfig, TrainConfig, default_seed, validation_microbatch_size,
+    validation_sample_limit,
 };
 #[cfg(test)]
 use hydra_train_runtime::preflight::PreflightConfig;
@@ -61,7 +54,7 @@ fn run() -> Result<(), String> {
     color_control::set_override(true);
     let cli = parse_args(env::args())?;
     let config = read_config(&cli.config_path)?;
-    gpu_config::apply_gpu_performance_flags(&config.device);
+    hydra_train_exec::gpu_config::apply_gpu_performance_flags(&config.device);
     if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE_CHILD").is_some() {
         return handle_graph_probe_child(&cli.config_path);
     }
@@ -93,14 +86,14 @@ mod tests {
     use std::time::Duration;
 
     use crate::artifacts::BcArtifactPaths;
-    use crate::config::{train_microbatch_size, validate_config};
     use crate::presentation::{format_progress_message, phase_label};
-    use crate::resume::{
+    use crate::validation::{ValidationSummary, is_better_validation};
+    use hydra_train_exec::config_runtime::train_device;
+    use hydra_train_exec::resume::{
         BestValidation, EpochContinuation, paused_training_message,
         validate_resume_runtime_compatibility,
     };
-    use crate::validation::{ValidationSummary, is_better_validation};
-    use hydra_train_exec::config_runtime::train_device;
+    use hydra_train_runtime::config::{train_microbatch_size, validate_config};
     use hydra_train_runtime::loss_policy::build_loss_config;
     use hydra_train_runtime::schedule::{
         lr_status_message, schedule_total_steps, steps_per_second,
@@ -227,7 +220,7 @@ mod tests {
         assert_eq!(parsed.config_path, PathBuf::from("config.yaml"));
         assert!(parsed.probe_only.is_none());
         match parsed.probe_child.expect("probe child should be present") {
-            crate::config::ProbeChildRequest::Single(child) => {
+            hydra_train_runtime::config::ProbeChildRequest::Single(child) => {
                 assert_eq!(
                     child.request.kind,
                     hydra_train_runtime::preflight::ProbeKind::Validation
@@ -235,7 +228,7 @@ mod tests {
                 assert_eq!(child.request.candidate_microbatch, 192);
                 assert_eq!(child.result_path, PathBuf::from("/tmp/probe.json"));
             }
-            crate::config::ProbeChildRequest::Batch(_) => {
+            hydra_train_runtime::config::ProbeChildRequest::Batch(_) => {
                 panic!("single probe child flags should stay on the single-request path")
             }
         }
@@ -263,7 +256,7 @@ mod tests {
 
         assert!(parsed.probe_only.is_none());
         match parsed.probe_child.expect("probe child should be present") {
-            crate::config::ProbeChildRequest::Single(child) => {
+            hydra_train_runtime::config::ProbeChildRequest::Single(child) => {
                 assert_eq!(
                     child.request.kind,
                     hydra_train_runtime::preflight::ProbeKind::Validation
@@ -277,7 +270,7 @@ mod tests {
                     Some(PathBuf::from("/tmp/manifest.json"))
                 );
             }
-            crate::config::ProbeChildRequest::Batch(_) => {
+            hydra_train_runtime::config::ProbeChildRequest::Batch(_) => {
                 panic!("single probe child flags should stay on the single-request path")
             }
         }
@@ -310,7 +303,7 @@ mod tests {
             .probe_child
             .expect("probe batch child should be present")
         {
-            crate::config::ProbeChildRequest::Batch(child) => {
+            hydra_train_runtime::config::ProbeChildRequest::Batch(child) => {
                 assert_eq!(
                     child.request.kind,
                     hydra_train_runtime::preflight::ProbeKind::Train
@@ -325,7 +318,7 @@ mod tests {
                     Some(PathBuf::from("/tmp/manifest.json"))
                 );
             }
-            crate::config::ProbeChildRequest::Single(_) => {
+            hydra_train_runtime::config::ProbeChildRequest::Single(_) => {
                 panic!("batch probe child flags should stay on the batch-request path")
             }
         }
@@ -731,7 +724,7 @@ unexpected_field: true
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
@@ -750,7 +743,7 @@ unexpected_field: true
             max_validation_batches: None,
             max_validation_samples: Some(8192),
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         };
         assert_eq!(schedule_total_steps(&cfg, 0), 1000);
         assert_eq!(schedule_total_steps(&cfg, 400), 1400);
@@ -1208,7 +1201,7 @@ preflight:
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
@@ -1227,7 +1220,7 @@ preflight:
             max_validation_batches: Some(32),
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         };
 
         assert_eq!(train_microbatch_size(&cfg), 64);
@@ -1264,7 +1257,7 @@ preflight:
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
@@ -1283,7 +1276,7 @@ preflight:
             max_validation_batches: None,
             max_validation_samples: Some(0),
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         };
 
         let err = validate_config(&cfg).expect_err("zero validation controls should fail");
@@ -1321,8 +1314,8 @@ preflight:
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
-            validation_gates: crate::config::ValidationGateConfig::default(),
-            rl: Some(crate::config::RlTrainConfig::default()),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+            rl: Some(hydra_train_runtime::config::RlTrainConfig::default()),
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
             device: "cpu".to_string(),
@@ -1340,7 +1333,7 @@ preflight:
             max_validation_batches: None,
             max_validation_samples: Some(64),
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         };
 
         validate_config(&cfg).expect("basic rl block should validate");
@@ -1470,7 +1463,7 @@ advanced_loss:
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig {
                 learning_rate: 1e-4,
@@ -1495,7 +1488,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("invalid bc ranges should fail");
         assert!(err.contains("bc.min_learning_rate"));
@@ -1523,7 +1516,7 @@ advanced_loss:
                 exit: Some(0.1),
                 ..Default::default()
             }),
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
@@ -1542,7 +1535,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("exit loss without sidecar should fail");
         assert!(err.contains("exit_sidecar_path"));
@@ -1570,7 +1563,7 @@ advanced_loss:
                 delta_q: Some(0.1),
                 ..Default::default()
             }),
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
@@ -1589,7 +1582,7 @@ advanced_loss:
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         };
         let err = validate_config(&cfg).expect_err("delta_q loss without sidecar should fail");
         assert!(err.contains("delta_q_sidecar_path"));

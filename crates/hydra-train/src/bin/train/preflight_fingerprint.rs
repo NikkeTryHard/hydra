@@ -11,7 +11,7 @@ mod tests {
         ModelFingerprintInput, PreflightConfig, advanced_loss_signature, hardware_fingerprint,
     };
 
-    use crate::config::{AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, TrainConfig};
+    use hydra_train_runtime::config::{AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, TrainConfig};
 
     fn model_fingerprint_input(model: &HydraModelConfig) -> ModelFingerprintInput {
         ModelFingerprintInput {
@@ -42,7 +42,7 @@ mod tests {
             resume_checkpoint: None,
             seed: 7,
             advanced_loss: None,
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,

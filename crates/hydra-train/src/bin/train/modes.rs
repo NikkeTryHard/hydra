@@ -47,9 +47,9 @@ mod tests {
     use hydra_train_types::delta_q_promotion::DeltaQPromotionRecommendation;
     use std::path::{Path, PathBuf};
 
-    use super::super::config::{RlTrainConfig, TrainConfig};
     use super::*;
     use crate::test_support::{dummy_train_config, unique_test_path as shared_unique_test_path};
+    use hydra_train_runtime::config::{RlTrainConfig, TrainConfig};
 
     fn dummy_config() -> TrainConfig {
         let mut config = dummy_train_config();
@@ -220,7 +220,7 @@ mod tests {
         config.device = "definitely-not-a-device".to_string();
         config.preflight.allow_override_explicit_microbatch = true;
         config.preflight.required_successes = 1;
-        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        config.precision_mode = hydra_train_runtime::config::PrecisionMode::Bf16Autocast;
         let config_path =
             unique_test_path("bf16-bc-preflight-no-stable-config").with_extension("yaml");
         let config_yaml =
@@ -277,7 +277,7 @@ mod tests {
         config.device = "definitely-not-a-device".to_string();
         config.preflight.allow_override_explicit_microbatch = true;
         config.preflight.required_successes = 1;
-        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        config.precision_mode = hydra_train_runtime::config::PrecisionMode::Bf16Autocast;
         let config_path = unique_test_path("bf16-bc-probe-no-stable-config").with_extension("yaml");
         let config_yaml =
             serde_yaml::to_string(&config).expect("serialize valid BF16 BC probe config");
@@ -305,7 +305,7 @@ mod tests {
     fn handle_probe_mode_rl_branch_allows_bf16_past_top_level_gate() {
         let mut config = dummy_config();
         config.rl = Some(RlTrainConfig::default());
-        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        config.precision_mode = hydra_train_runtime::config::PrecisionMode::Bf16Autocast;
         config.device = "definitely-not-a-device".to_string();
         config.data_dir = unique_test_path("missing-rl-bf16-probe-data");
         config.output_dir = unique_test_path("missing-rl-bf16-probe-out");
@@ -333,7 +333,7 @@ mod tests {
         config.preflight.allow_override_explicit_microbatch = false;
         config.preflight.required_successes = 1;
         config.rl = Some(RlTrainConfig::default());
-        config.precision_mode = crate::config::PrecisionMode::Bf16Autocast;
+        config.precision_mode = hydra_train_runtime::config::PrecisionMode::Bf16Autocast;
         let config_path =
             unique_test_path("bf16-rl-preflight-no-stable-config").with_extension("yaml");
         let config_yaml =
@@ -517,7 +517,7 @@ mod tests {
     fn delta_q_promotion_formatters_cover_offline_holdout_and_gate_messages() {
         let offline = format_delta_q_offline_gate_message(
             64,
-            crate::validation::DeltaQPromotionSnapshot {
+            hydra_train_exec::validation::DeltaQPromotionSnapshot {
                 compared_states: 12,
                 candidate_top1_agreement: 0.75,
                 candidate_mean_regret: 0.2,
@@ -539,7 +539,7 @@ mod tests {
         assert!(offline.contains("artifact=/tmp/delta_q.json"));
 
         let holdout = format_delta_q_policy_holdout_message(
-            crate::validation::DeltaQPolicyTransferSnapshot {
+            hydra_train_exec::validation::DeltaQPolicyTransferSnapshot {
                 compared_states: 20,
                 candidate_policy_top1_to_teacher: 0.6,
                 baseline_policy_top1_to_teacher: 0.5,
@@ -827,7 +827,7 @@ mod tests {
 
         let offline = format_delta_q_offline_gate_message(
             8,
-            crate::validation::DeltaQPromotionSnapshot {
+            hydra_train_exec::validation::DeltaQPromotionSnapshot {
                 compared_states: 4,
                 candidate_top1_agreement: 0.25,
                 candidate_mean_regret: 0.5,

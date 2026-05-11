@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
-use crate::config::{BcHyperparamConfig, TrainConfig, ValidationGateConfig};
+use hydra_train_runtime::config::{BcHyperparamConfig, TrainConfig, ValidationGateConfig};
 #[cfg(test)]
 use hydra_train_runtime::preflight::PreflightConfig;
 
@@ -48,7 +48,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         max_validation_batches: None,
         max_validation_samples: None,
         preflight: PreflightConfig::default(),
-        precision_mode: crate::config::PrecisionMode::Fp32,
+        precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     }
 }
 

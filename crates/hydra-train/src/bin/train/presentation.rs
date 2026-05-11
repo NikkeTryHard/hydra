@@ -1,11 +1,11 @@
 #[cfg(test)]
-use super::config::TrainConfig;
-#[cfg(test)]
 use hydra_model::model::HydraModelConfig;
 #[cfg(test)]
 use hydra_train_exec::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary as exec_bc_hyperparam_summary,
 };
+#[cfg(test)]
+use hydra_train_runtime::config::TrainConfig;
 
 #[cfg(test)]
 pub(crate) use hydra_train_exec::presentation::{format_progress_message, phase_label};

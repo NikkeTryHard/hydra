@@ -68,8 +68,8 @@ mod tests {
     type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
     type TestValidBackend = ValidBackendOf<TrainBackend>;
 
-    use crate::config::{BcHyperparamConfig, TrainConfig};
-    use crate::resume::read_resume_state;
+    use hydra_train_exec::resume::read_resume_state;
+    use hydra_train_runtime::config::{BcHyperparamConfig, TrainConfig};
 
     fn batch_stats(sample_count: usize, total_loss: f64, policy_agreement: f64) -> BatchStats {
         BatchStats {
@@ -85,7 +85,7 @@ mod tests {
             loss_opp_next: total_loss + 0.6,
             loss_score_pdf: total_loss + 0.7,
             loss_score_cdf: total_loss + 0.8,
-            rare_actions: crate::progress::RareActionMetrics::default(),
+            rare_actions: hydra_train_runtime::progress::RareActionMetrics::default(),
         }
     }
 
@@ -107,7 +107,7 @@ mod tests {
             resume_checkpoint: None,
             seed: 0,
             advanced_loss: None,
-            validation_gates: crate::config::ValidationGateConfig::default(),
+            validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
@@ -126,7 +126,7 @@ mod tests {
             max_validation_batches: None,
             max_validation_samples: None,
             preflight: PreflightConfig::default(),
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         }
     }
 
@@ -146,7 +146,7 @@ mod tests {
             policy_loss,
             agreement,
             samples: 64,
-            rare_actions: crate::progress::RareActionMetrics::default(),
+            rare_actions: hydra_train_runtime::progress::RareActionMetrics::default(),
             saw_exit_targets: false,
             saw_delta_q_targets: false,
             profiling: None,
@@ -187,7 +187,7 @@ mod tests {
             train_microbatch_size: 4,
             validation_microbatch_size: 4,
             accum_steps: 4,
-            precision_mode: crate::config::PrecisionMode::Fp32,
+            precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
         }
     }
 
