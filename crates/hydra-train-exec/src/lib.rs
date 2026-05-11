@@ -45,6 +45,8 @@ pub mod model;
 pub mod modes;
 /// NVTX profiling scope adapter.
 pub mod nvtx;
+/// Supervised/RL phase orchestration helpers below train compatibility facades.
+pub mod orchestrator;
 /// CUDA pinned host staging and reusable device materialization for BC shards.
 #[cfg(feature = "cuda-graph")]
 pub mod pinned_transfer;

@@ -1,338 +1,27 @@
-//! Behavioral cloning training loop (Phase 0).
+//! Compatibility re-exports for behavioral cloning training execution.
 
-use crate::amp::maybe_autocast;
-use crate::config::OracleGuidingConfig;
-use crate::data::sample::{MjaiBatch, MjaiSample, collate_sample_refs_bc_owned};
-use crate::model::HydraModel;
-use crate::training::losses::{HydraLoss, HydraTargets};
-use burn::module::AutodiffModule;
-use burn::optim::{GradientsAccumulator, GradientsParams};
-use burn::prelude::*;
-use burn::tensor::backend::AutodiffBackend;
 pub use hydra_train_exec::bc_runtime::{
-    BcExitConfig, bc_total_with_exit_from_breakdown, cosine_annealing_lr, gated_bc_context,
-    maybe_add_exit_loss, oracle_guidance_mask_tensor, oracle_guidance_mask_values,
-    policy_agreement, policy_agreement_counts, target_actions_from_policy_target,
-    warmup_then_cosine_lr,
+    BcExitConfig, BcTrainBatchInput, BcTrainStepContext, EpochStats, OracleGuidingBatchInput,
+    OracleGuidingStepSchedule, OracleGuidingStepStats, bc_total_with_exit,
+    bc_total_with_exit_from_breakdown, bc_total_with_optional_exit_from_breakdown, bc_train_step,
+    cosine_annealing_lr, gated_bc_context, maybe_add_exit_loss, oracle_guidance_mask_tensor,
+    oracle_guidance_mask_values, oracle_guiding_train_step, phase_learning_rate, policy_agreement,
+    policy_agreement_counts, target_actions_from_policy_target, train_epoch, warmup_then_cosine_lr,
 };
-
-pub fn phase_learning_rate(
-    phase: crate::config::TrainingPhase,
-    step: usize,
-    total_steps: usize,
-) -> f64 {
-    use crate::config::TrainingPhase;
-    let (lr_max, lr_min) = match phase {
-        TrainingPhase::BcWarmStart => (2.5e-4, 1e-6),
-        TrainingPhase::OracleGuiding => (1e-4, 1e-6),
-        TrainingPhase::DrdaAchSelfPlay => (2.5e-4, 2.5e-5),
-        TrainingPhase::ExitPondering => (1e-4, 1e-5),
-        TrainingPhase::BenchmarkGates => (2.5e-4, 2.5e-4),
-    };
-    cosine_annealing_lr(step, total_steps, lr_max, lr_min)
-}
-
-pub use hydra_train_types::config::BCTrainerConfig;
-
-pub struct EpochStats {
-    pub avg_loss: f64,
-    pub policy_agreement: f64,
-    pub num_batches: usize,
-}
-
-impl EpochStats {
-    pub fn summary(&self) -> String {
-        format!(
-            "loss={:.4} agree={:.2}% batches={}",
-            self.avg_loss,
-            self.policy_agreement * 100.0,
-            self.num_batches
-        )
-    }
-
-    pub fn is_improving(&self, previous: &EpochStats) -> bool {
-        self.avg_loss < previous.avg_loss
-    }
-}
-
-pub struct OracleGuidingStepStats {
-    pub skipped: bool,
-    pub effective_lr: f64,
-    pub oracle_keep_prob: f32,
-    pub kept_oracle_fraction: f32,
-    pub loss: Option<f64>,
-}
-
-pub struct BcTrainBatchInput<'a, B: Backend> {
-    pub obs: Tensor<B, 3>,
-    pub batch: &'a MjaiBatch<B>,
-    pub targets: &'a HydraTargets<B>,
-}
-
-pub struct BcTrainStepContext<'a, B: AutodiffBackend> {
-    pub loss_fn: &'a HydraLoss<B>,
-    pub exit_cfg: &'a BcExitConfig,
-    pub use_amp: bool,
-    pub lr: f64,
-}
-
-pub struct OracleGuidingBatchInput<'a, B: Backend> {
-    pub obs: Tensor<B, 3>,
-    pub targets: &'a HydraTargets<B>,
-    pub loss_fn: &'a HydraLoss<B>,
-    pub importance_weight: f32,
-    pub max_importance_weight: f32,
-    pub rng_values: &'a [f32],
-}
-
-pub struct OracleGuidingStepSchedule<'a> {
-    pub base_lr: f64,
-    pub oracle_cfg: &'a OracleGuidingConfig,
-    pub step: usize,
-    pub total_steps: usize,
-}
-
-pub fn bc_total_with_optional_exit_from_breakdown<B: Backend>(
-    output: &crate::model::HydraOutput<B>,
-    batch: Option<&MjaiBatch<B>>,
-    breakdown: &crate::training::losses::LossBreakdown<B>,
-    exit_cfg: &BcExitConfig,
-) -> Tensor<B, 1> {
-    let mut total = breakdown.total.clone();
-    if let Some(batch) = batch {
-        total = maybe_add_exit_loss(
-            total,
-            output.policy_logits.clone(),
-            batch.exit_target.as_ref(),
-            batch.exit_mask.as_ref(),
-            exit_cfg,
-        );
-    }
-    total
-}
-
-pub fn bc_total_with_exit<B: Backend>(
-    output: &crate::model::HydraOutput<B>,
-    batch: &MjaiBatch<B>,
-    targets: &HydraTargets<B>,
-    loss_fn: &HydraLoss<B>,
-    exit_cfg: &BcExitConfig,
-) -> Tensor<B, 1> {
-    let breakdown = loss_fn.total_loss(output, targets);
-    bc_total_with_exit_from_breakdown(output, batch, &breakdown, exit_cfg)
-}
-
-pub fn bc_train_step<B: AutodiffBackend>(
-    model: HydraModel<B>,
-    batch_input: BcTrainBatchInput<'_, B>,
-    step_context: BcTrainStepContext<'_, B>,
-    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
-) -> (HydraModel<B>, f64) {
-    let output = maybe_autocast(step_context.use_amp, || model.forward(batch_input.obs));
-    let breakdown = step_context
-        .loss_fn
-        .total_loss(&output, batch_input.targets);
-    let total = bc_total_with_optional_exit_from_breakdown(
-        &output,
-        Some(batch_input.batch),
-        &breakdown,
-        step_context.exit_cfg,
-    );
-    let loss_val = total
-        .clone()
-        .into_data()
-        .convert::<f64>()
-        .as_slice::<f64>()
-        .expect("bc total loss should be readable as f64")[0];
-    let grads = total.backward();
-    let grads = GradientsParams::from_grads(grads, &model);
-    let model = optimizer.step(step_context.lr, model, grads);
-    (model, loss_val)
-}
-
-pub fn oracle_guiding_train_step<B: AutodiffBackend>(
-    model: HydraModel<B>,
-    batch_input: OracleGuidingBatchInput<'_, B>,
-    schedule: OracleGuidingStepSchedule<'_>,
-    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
-) -> (HydraModel<B>, OracleGuidingStepStats) {
-    let oracle_keep_prob = schedule
-        .oracle_cfg
-        .dropout_at_step(schedule.step, schedule.total_steps);
-    let effective_lr = schedule.oracle_cfg.effective_learning_rate(
-        schedule.base_lr,
-        schedule.step,
-        schedule.total_steps,
-    );
-
-    if schedule.oracle_cfg.should_reject_importance_weight(
-        batch_input.importance_weight,
-        batch_input.max_importance_weight,
-        schedule.step,
-        schedule.total_steps,
-    ) {
-        return (
-            model,
-            OracleGuidingStepStats {
-                skipped: true,
-                effective_lr,
-                oracle_keep_prob,
-                kept_oracle_fraction: 0.0,
-                loss: None,
-            },
-        );
-    }
-
-    let batch_size = batch_input.obs.dims()[0];
-    let device = batch_input.obs.device();
-    let oracle_mask_values =
-        oracle_guidance_mask_values(batch_size, oracle_keep_prob, batch_input.rng_values);
-    let kept_oracle_fraction = oracle_mask_values.iter().copied().sum::<f32>() / batch_size as f32;
-    let oracle_mask = Tensor::<B, 1>::from_floats(oracle_mask_values.as_slice(), &device);
-    let mut masked_targets = batch_input.targets.clone();
-    masked_targets.oracle_guidance_mask = Some(oracle_mask);
-    let output = model.forward(batch_input.obs);
-    let breakdown = batch_input.loss_fn.total_loss(&output, &masked_targets);
-    let total = bc_total_with_optional_exit_from_breakdown(
-        &output,
-        None,
-        &breakdown,
-        &BcExitConfig::default(),
-    );
-    let loss = total
-        .clone()
-        .into_data()
-        .convert::<f64>()
-        .as_slice::<f64>()
-        .expect("oracle-guided total loss should be readable as f64")[0];
-    let grads = total.backward();
-    let grads = GradientsParams::from_grads(grads, &model);
-    let model = optimizer.step(effective_lr, model, grads);
-    (
-        model,
-        OracleGuidingStepStats {
-            skipped: false,
-            effective_lr,
-            oracle_keep_prob,
-            kept_oracle_fraction,
-            loss: Some(loss),
-        },
-    )
-}
-
-/// Run one epoch of behavioral cloning with optional gradient accumulation.
-///
-/// `microbatch_size` is the physical batch size that goes through forward/backward
-/// at once (controls peak VRAM). `accum_steps` is how many microbatches to
-/// accumulate before one optimizer step. The effective logical batch size is
-/// `microbatch_size * accum_steps`.
-///
-/// For backwards compatibility: set `accum_steps = 1` and `microbatch_size =
-/// batch_size` to get the original behavior.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "training loop needs explicit config, device, and telemetry context"
-)]
-pub fn train_epoch<B: AutodiffBackend>(
-    model: HydraModel<B>,
-    samples: &[&MjaiSample],
-    microbatch_size: usize,
-    accum_steps: usize,
-    augment: bool,
-    device: &B::Device,
-    loss_fn: &HydraLoss<B>,
-    lr: f64,
-    optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
-) -> (HydraModel<B>, EpochStats)
-where
-    HydraModel<B>: AutodiffModule<B>,
-{
-    let accum_steps = accum_steps.max(1);
-    let mut m = model;
-    let mut total_loss = 0.0;
-    let mut total_agreement = 0.0;
-    let mut num_batches = 0usize;
-    let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
-    let mut accum_current = 0usize;
-    let mut accum_loss = 0.0;
-    let mut accum_agreement = 0.0;
-
-    for chunk in samples.chunks(microbatch_size) {
-        let Some((obs, batch, targets)) = collate_sample_refs_bc_owned::<B>(chunk, augment, device)
-            .expect("behavior cloning sample collation should be valid")
-        else {
-            continue;
-        };
-        let output = m.forward(obs);
-        accum_agreement += policy_agreement(
-            output.policy_logits.clone(),
-            targets.legal_mask.clone(),
-            batch.actions.clone(),
-        );
-        let breakdown = loss_fn.total_loss(&output, &targets);
-        let total = maybe_add_exit_loss(
-            breakdown.total.clone(),
-            output.policy_logits.clone(),
-            batch.exit_target.as_ref(),
-            batch.exit_mask.as_ref(),
-            &BcExitConfig::default(),
-        );
-        let loss = total.clone().into_scalar().elem::<f64>();
-        let grads = total.backward();
-        let grads = GradientsParams::from_grads(grads, &m);
-        accumulator.accumulate(&m, grads);
-        accum_loss += loss;
-        accum_current += 1;
-
-        if accum_current >= accum_steps {
-            let grads = accumulator.grads();
-            m = optimizer.step(lr, m, grads);
-            total_loss += accum_loss / accum_current as f64;
-            total_agreement += accum_agreement / accum_current as f64;
-            num_batches += 1;
-            accum_current = 0;
-            accum_loss = 0.0;
-            accum_agreement = 0.0;
-        }
-    }
-
-    // Flush any remaining accumulated microbatches
-    if accum_current > 0 {
-        let grads = accumulator.grads();
-        m = optimizer.step(lr, m, grads);
-        total_loss += accum_loss / accum_current as f64;
-        total_agreement += accum_agreement / accum_current as f64;
-        num_batches += 1;
-    }
-
-    let stats = EpochStats {
-        avg_loss: if num_batches == 0 {
-            0.0
-        } else {
-            total_loss / num_batches as f64
-        },
-        policy_agreement: if num_batches == 0 {
-            0.0
-        } else {
-            total_agreement / num_batches as f64
-        },
-        num_batches,
-    };
-    (m, stats)
-}
-
 pub use hydra_train_types::checkpoint::CheckpointMeta;
+pub use hydra_train_types::config::BCTrainerConfig;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::sample::MjaiBatch;
-    use crate::model::{HydraModelConfig, HydraModelInit};
-    use crate::training::losses::{HydraLossConfig, tests::make_dummy_targets};
+    use crate::data::sample::MjaiBcBatch;
+    use crate::model::{HydraModel, HydraModelConfig, HydraModelInit};
+    use crate::training::losses::{HydraLoss, HydraLossConfig, tests::make_dummy_targets};
     use burn::backend::Autodiff;
     use burn::backend::NdArray;
     use burn::grad_clipping::GradientClippingConfig;
     use burn::optim::AdamConfig;
+    use burn::prelude::*;
 
     use std::time::{SystemTime, UNIX_EPOCH};
     type TestBackend = Autodiff<NdArray<f32>>;
@@ -357,32 +46,11 @@ mod tests {
     fn empty_batch(
         device: &<TestBackend as Backend>::Device,
         batch: usize,
-    ) -> MjaiBatch<TestBackend> {
-        MjaiBatch {
-            obs: Tensor::zeros([batch, crate::config::INPUT_CHANNELS, 34], device),
+    ) -> MjaiBcBatch<TestBackend> {
+        MjaiBcBatch {
             actions: Tensor::zeros([batch], device),
-            legal_mask: Tensor::ones([batch, 46], device),
-            value_target: Tensor::zeros([batch], device),
-            grp_target: Tensor::zeros([batch, 24], device),
-            oracle_target: None,
-            oracle_target_mask: Tensor::zeros([batch], device),
-            tenpai_target: Tensor::zeros([batch, 3], device),
-            danger_target: Tensor::zeros([batch, 3, 34], device),
-            danger_mask: Tensor::zeros([batch, 3, 34], device),
-            safety_residual_target: None,
-            safety_residual_mask: None,
             exit_target: None,
             exit_mask: None,
-            delta_q_target: None,
-            delta_q_mask: None,
-            belief_fields_target: None,
-            mixture_weight_target: None,
-            belief_fields_mask: None,
-            mixture_weight_mask: None,
-            opp_next_target: Tensor::zeros([batch, 3, 34], device),
-            score_pdf_target: Tensor::zeros([batch, 64], device),
-            score_cdf_target: Tensor::zeros([batch, 64], device),
-            target_presence: None,
         }
     }
 

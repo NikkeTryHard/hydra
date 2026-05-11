@@ -95,6 +95,77 @@ impl Default for BcExitConfig {
     }
 }
 
+/// Oracle-guiding dropout and learning-rate schedule configuration.
+pub struct OracleGuidingConfig {
+    pub dropout_start: f32,
+    pub dropout_end: f32,
+    pub lr_decay_factor: f32,
+}
+
+impl OracleGuidingConfig {
+    /// Human-readable compact schedule summary.
+    pub fn summary(&self) -> String {
+        format!(
+            "oracle(drop={:.1}->{:.1}, decay={:.2})",
+            self.dropout_start, self.dropout_end, self.lr_decay_factor
+        )
+    }
+
+    /// Validates scalar schedule ranges.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.dropout_start < 0.0 || self.dropout_start > 1.0 {
+            return Err("dropout_start in [0,1]");
+        }
+        if self.dropout_end < 0.0 || self.dropout_end > 1.0 {
+            return Err("dropout_end in [0,1]");
+        }
+        if self.lr_decay_factor <= 0.0 || self.lr_decay_factor > 1.0 {
+            return Err("lr_decay_factor in (0,1]");
+        }
+        Ok(())
+    }
+
+    /// Linearly interpolates the oracle-target keep probability at `step`.
+    pub fn dropout_at_step(&self, step: usize, total_steps: usize) -> f32 {
+        if total_steps == 0 {
+            return self.dropout_start;
+        }
+        let t = (step as f32 / total_steps as f32).min(1.0);
+        self.dropout_start + (self.dropout_end - self.dropout_start) * t
+    }
+
+    /// Applies oracle-guiding LR decay after the dropout schedule reaches its floor.
+    pub fn effective_learning_rate(&self, base_lr: f64, step: usize, total_steps: usize) -> f64 {
+        if self.dropout_at_step(step, total_steps) <= self.dropout_end + 1e-6 {
+            base_lr * self.lr_decay_factor as f64
+        } else {
+            base_lr
+        }
+    }
+
+    /// Returns true when a post-dropout importance weight exceeds the configured cap.
+    pub fn should_reject_importance_weight(
+        &self,
+        importance_weight: f32,
+        max_importance_weight: f32,
+        step: usize,
+        total_steps: usize,
+    ) -> bool {
+        self.dropout_at_step(step, total_steps) <= self.dropout_end + 1e-6
+            && importance_weight > max_importance_weight
+    }
+}
+
+impl Default for OracleGuidingConfig {
+    fn default() -> Self {
+        Self {
+            dropout_start: 1.0,
+            dropout_end: 0.0,
+            lr_decay_factor: 0.1,
+        }
+    }
+}
+
 /// Backend-independent Hydra model shape/configuration used by trainer contracts.
 #[derive(Config, Debug)]
 pub struct ModelShapeConfig {

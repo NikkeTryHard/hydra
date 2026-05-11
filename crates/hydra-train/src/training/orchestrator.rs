@@ -1,41 +1,22 @@
 //! Phase-aware training orchestration and gate evaluation.
 
-use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 
-use crate::config::{OracleGuidingConfig, PipelineState, TrainingPhase};
-use crate::data::sample::MjaiBatch;
+use crate::config::PipelineState;
 use crate::model::HydraModel;
-use crate::training::bc::{
-    BcExitConfig, BcTrainBatchInput, BcTrainStepContext, OracleGuidingBatchInput,
-    OracleGuidingStepSchedule, bc_train_step, oracle_guiding_train_step, phase_learning_rate,
-};
 use crate::training::distill::{DistillConfig, DistillState};
 use crate::training::drda::RebaseTracker;
-use crate::training::exit::ExitConfig;
-pub use hydra_train_exec::rl_step::RlPhaseTrainRequest;
-
 use crate::training::live_exit::LiveExitConfig;
-use crate::training::losses::{HydraLoss, HydraTargets};
+use crate::training::losses::HydraLoss;
 use crate::training::rl::{RlBatch, RlConfig};
+use hydra_search_labels::exit::ExitConfig;
+pub use hydra_train_exec::orchestrator::SupervisedPhaseTrainRequest;
+pub use hydra_train_exec::rl_step::RlPhaseTrainRequest;
 pub use hydra_train_types::orchestrator::{
     BenchmarkGateMetrics, GateReport, MaintenancePlan, OrchestratorPlanInputs, PhaseTrainReport,
     ValidationGateMetrics, evaluate_benchmark_gates, evaluate_validation_gates,
     maintenance_plan_from_inputs, maybe_advance_phase, phase_advance_report,
 };
-
-pub struct SupervisedPhaseTrainRequest<'a, B: Backend> {
-    pub state: &'a PipelineState,
-    pub obs: Tensor<B, 3>,
-    pub targets: &'a HydraTargets<B>,
-    pub loss_fn: &'a HydraLoss<B>,
-    pub oracle_cfg: &'a OracleGuidingConfig,
-    pub step: usize,
-    pub total_steps: usize,
-    pub importance_weight: f32,
-    pub max_importance_weight: f32,
-    pub rng_values: &'a [f32],
-}
 
 pub fn maintenance_plan(
     state: &PipelineState,
@@ -67,119 +48,7 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
     request: SupervisedPhaseTrainRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
-    let batch_size = request.obs.dims()[0];
-    let device = request.obs.device();
-    let empty_batch = MjaiBatch {
-        obs: Tensor::zeros([batch_size, crate::config::INPUT_CHANNELS, 34], &device),
-        actions: Tensor::zeros([batch_size], &device),
-        legal_mask: request.targets.legal_mask.clone(),
-        value_target: request.targets.value_target.clone(),
-        grp_target: request.targets.grp_target.clone(),
-        oracle_target: request.targets.oracle_target.clone(),
-        oracle_target_mask: request
-            .targets
-            .oracle_guidance_mask
-            .clone()
-            .unwrap_or_else(|| Tensor::zeros([batch_size], &device)),
-        tenpai_target: request.targets.tenpai_target.clone(),
-        danger_target: request.targets.danger_target.clone(),
-        danger_mask: request.targets.danger_mask.clone(),
-        safety_residual_target: request.targets.safety_residual_target.clone(),
-        safety_residual_mask: request.targets.safety_residual_mask.clone(),
-        exit_target: None,
-        exit_mask: None,
-        belief_fields_target: request.targets.belief_fields_target.clone(),
-        mixture_weight_target: request.targets.mixture_weight_target.clone(),
-        delta_q_target: request.targets.delta_q_target.clone(),
-        delta_q_mask: request.targets.delta_q_mask.clone(),
-        belief_fields_mask: request.targets.belief_fields_mask.clone(),
-        mixture_weight_mask: request.targets.mixture_weight_mask.clone(),
-        opp_next_target: request.targets.opp_next_target.clone(),
-        score_pdf_target: request.targets.score_pdf_target.clone(),
-        score_cdf_target: request.targets.score_cdf_target.clone(),
-        target_presence: request.targets.target_presence,
-    };
-    match request.state.phase {
-        TrainingPhase::BenchmarkGates => Ok((
-            model,
-            PhaseTrainReport {
-                phase: request.state.phase,
-                skipped: true,
-                loss: None,
-                effective_lr: 0.0,
-                oracle_keep_prob: None,
-                kept_oracle_fraction: None,
-                exit_weight: None,
-            },
-        )),
-        TrainingPhase::BcWarmStart => {
-            let lr = phase_learning_rate(request.state.phase, request.step, request.total_steps);
-            let (model, loss) = bc_train_step(
-                model,
-                BcTrainBatchInput {
-                    obs: request.obs,
-                    batch: &empty_batch,
-                    targets: request.targets,
-                },
-                BcTrainStepContext {
-                    loss_fn: request.loss_fn,
-                    exit_cfg: &BcExitConfig::default(),
-                    use_amp: false,
-                    lr,
-                },
-                optimizer,
-            );
-            Ok((
-                model,
-                PhaseTrainReport {
-                    phase: request.state.phase,
-                    skipped: false,
-                    loss: Some(loss),
-                    effective_lr: lr,
-                    oracle_keep_prob: None,
-                    kept_oracle_fraction: None,
-                    exit_weight: None,
-                },
-            ))
-        }
-        TrainingPhase::OracleGuiding => {
-            let (model, stats) = oracle_guiding_train_step(
-                model,
-                OracleGuidingBatchInput {
-                    obs: request.obs,
-                    targets: request.targets,
-                    loss_fn: request.loss_fn,
-                    importance_weight: request.importance_weight,
-                    max_importance_weight: request.max_importance_weight,
-                    rng_values: request.rng_values,
-                },
-                OracleGuidingStepSchedule {
-                    base_lr: phase_learning_rate(
-                        request.state.phase,
-                        request.step,
-                        request.total_steps,
-                    ),
-                    oracle_cfg: request.oracle_cfg,
-                    step: request.step,
-                    total_steps: request.total_steps,
-                },
-                optimizer,
-            );
-            Ok((
-                model,
-                PhaseTrainReport {
-                    phase: request.state.phase,
-                    skipped: stats.skipped,
-                    loss: stats.loss,
-                    effective_lr: stats.effective_lr,
-                    oracle_keep_prob: Some(stats.oracle_keep_prob),
-                    kept_oracle_fraction: Some(stats.kept_oracle_fraction),
-                    exit_weight: None,
-                },
-            ))
-        }
-        _ => Err("supervised_phase_train_step only supports benchmark/bc/oracle phases"),
-    }
+    hydra_train_exec::orchestrator::supervised_phase_train_step(model, request, optimizer)
 }
 
 pub fn rl_phase_train_step<B: AutodiffBackend>(
@@ -204,14 +73,15 @@ pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::INPUT_CHANNELS;
+    use crate::config::{INPUT_CHANNELS, OracleGuidingConfig, TrainingPhase};
     use crate::model::{HydraModelConfig, HydraModelInit};
     use crate::training::head_gates::{
         AdvancedHead, HeadActivationConfig, HeadActivationController, HeadState,
     };
-    use crate::training::losses::HydraLossConfig;
+    use crate::training::losses::{HydraLossConfig, HydraTargets};
     use burn::backend::Autodiff;
     use burn::optim::AdamConfig;
+    use burn::prelude::*;
 
     type AB = Autodiff<burn::backend::NdArray<f32>>;
 
