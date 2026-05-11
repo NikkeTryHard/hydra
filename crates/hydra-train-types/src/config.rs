@@ -84,6 +84,18 @@ pub fn warmup_then_cosine_lr(
     }
 }
 
+/// Behavioral-cloning ExIt loss weighting.
+#[derive(Debug, Clone, Copy)]
+pub struct BcExitConfig {
+    pub exit_weight: f32,
+}
+
+impl Default for BcExitConfig {
+    fn default() -> Self {
+        Self { exit_weight: 0.0 }
+    }
+}
+
 /// Behavioral-cloning trainer hyperparameters and model shape.
 #[derive(Config, Debug)]
 pub struct BCTrainerConfig {

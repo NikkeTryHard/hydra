@@ -1,6 +1,6 @@
 //! Runtime loss configuration policy.
 
-use hydra_train_algo::bc::BcExitConfig;
+use hydra_train_types::config::BcExitConfig;
 use hydra_train_types::losses::HydraLossConfig;
 
 use crate::config::AdvancedLossConfig;

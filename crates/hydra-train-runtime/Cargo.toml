@@ -16,7 +16,6 @@ crate-type = ["rlib"]
 hydra-core = { path = "../hydra-core" }
 hydra-data-core = { path = "../hydra-data-core" }
 hydra-train-types = { path = "../hydra-train-types" }
-hydra-train-algo = { path = "../hydra-train-algo" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
 serde_yaml = "0.9"

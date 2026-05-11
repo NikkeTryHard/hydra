@@ -1,19 +1,7 @@
 //! Behavioral cloning helper algorithms.
 
 use burn::prelude::*;
-pub use hydra_train_types::config::{cosine_annealing_lr, warmup_then_cosine_lr};
-
-/// Behavioral-cloning ExIt loss weighting.
-#[derive(Debug, Clone, Copy)]
-pub struct BcExitConfig {
-    pub exit_weight: f32,
-}
-
-impl Default for BcExitConfig {
-    fn default() -> Self {
-        Self { exit_weight: 0.0 }
-    }
-}
+pub use hydra_train_types::config::{BcExitConfig, cosine_annealing_lr, warmup_then_cosine_lr};
 
 /// Adds ExIt imitation loss when targets and masks are present.
 pub fn maybe_add_exit_loss<B: Backend>(
