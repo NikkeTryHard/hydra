@@ -13,6 +13,8 @@ fn main() {
     println!("cargo:rerun-if-changed=csrc/hydra_gpu.cpp");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA_GRAPH");
     println!("cargo:rerun-if-env-changed=DEP_TCH_LIBTORCH_LIB");
+    println!("cargo:rerun-if-env-changed=LIBTORCH_INCLUDE");
+    println!("cargo:rerun-if-env-changed=LIBTORCH_USE_PYTORCH");
     for name in CUDA_ENV_VARS {
         println!("cargo:rerun-if-env-changed={name}");
     }
@@ -143,14 +145,21 @@ fn main() {
 
 fn find_libtorch_root_include_dir(libtorch_lib: &Path) -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    if let Some(path) = env::var_os("LIBTORCH_INCLUDE") {
+        candidates.push(PathBuf::from(path));
+    }
     if let Some(root) = libtorch_lib.parent() {
         candidates.push(root.join("include"));
     }
     candidates.push(libtorch_lib.join("include"));
+    if let Some(python_site_packages) = python_site_packages_from_torch_sys_out(libtorch_lib) {
+        candidates.push(python_site_packages.join("torch/include"));
+    }
 
     candidates.into_iter().find(|path| {
         path.join("ATen/Context.h").exists()
             && path.join("torch/csrc/api/include/torch/all.h").exists()
+            && path.join("c10/cuda/impl/cuda_cmake_macros.h").exists()
     })
 }
 
