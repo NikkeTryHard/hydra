@@ -2424,7 +2424,7 @@ where
                 sub_timing.h2d_pageable_to_pinned_seconds += h2d_timing.pageable_to_pinned_seconds;
                 sub_timing.h2d_tensor_materialize_seconds += h2d_timing.tensor_materialize_seconds;
                 sub_timing.h2d_stream_sync_seconds += h2d_timing.stream_sync_seconds;
-                (shard_batch, None)
+                (shard_batch, Some(host_batch))
             } else {
                 let t_materialize = Instant::now();
                 let shard_batch = materialize_host_batch_owned::<B>(host_batch, train_device);

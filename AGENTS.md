@@ -11,10 +11,26 @@ Hydra = open-source Riichi Mahjong AI. Target LuckyJ-level. Optimize strength fi
 - For impl work, choose next lane from `research/design/HYDRA_RECONCILIATION.md`, confirm shipped/staged state in `docs/CURRENT_STATUS.md`, confirm exact runtime contracts in `docs/GAME_ENGINE.md` plus current code.
 - Do not treat `HYDRA_FINAL.md` alone as authorization to build every destination-facing feature now.
 
-Core ownership summary:
-- `crates/hydra-core/` — first-party runtime, encoder, simulator, safety, seeding
-- `crates/hydra-train/` — first-party Burn training and model stack
+Crate ownership summary:
 - `crates/hydra-engine/` — vendored upstream rules engine, Apache-2.0
+- `crates/hydra-runtime-types/` — shared runtime type rails
+- `crates/hydra-safety/` — runtime safety rails
+- `crates/hydra-belief-search/` — belief-state search pieces
+- `crates/hydra-encoder/` — observation encoder pieces
+- `crates/hydra-core/` — first-party runtime, simulator, seeding, integration API
+- `crates/hydra-data-core/` — pure training sample DTOs and scoring helpers
+- `crates/hydra-replay-sidecar/` — pure replay sidecar JSONL contracts
+- `crates/hydra-sample-cache/` — parsed sample cache storage
+- `crates/hydra-replay-loader/` — replay ingest/loading pipeline
+- `crates/hydra-bc-shards/` — behavior-cloning shard format/tools
+- `crates/hydra-train-types/` — training scalar/coordination types
+- `crates/hydra-model/` — Burn neural model components
+- `crates/hydra-train-algo/` — pure training algorithms
+- `crates/hydra-train-runtime/` — training CLI/config/preflight/probe contracts
+- `crates/hydra-train-exec/` — training execution composition layer
+- `crates/hydra-search-labels/` — search label generation
+- `crates/hydra-selfplay/` — self-play coordination primitives
+- `crates/hydra-train/` — first-party Burn training binaries and user-facing stack
 
 Hard source boundary:
 - `Mortal-Policy/` is AGPL. Never copy, adapt, derive code from it.

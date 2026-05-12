@@ -208,14 +208,18 @@ fn process_validation_batch<TB>(
     } = batch_input;
     let (active_loss_fn, warmup_heads) =
         gated_bc_context(head_controller.as_deref_mut(), loss_fn, &targets);
+    let has_delta_q_targets = targets.delta_q_target.is_some() && targets.delta_q_mask.is_some();
+    let needs_baseline_forward = has_delta_q_targets && !std::ptr::eq(model, baseline_model);
+    let baseline_obs = if needs_baseline_forward {
+        Some(obs.clone())
+    } else {
+        None
+    };
     let candidate_started = Instant::now();
     let (output, breakdown, total) = {
         let _candidate_scope = nvtx::scope(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS);
-        let output = model_valid.forward_with_warmup_train(
-            obs.clone(),
-            &active_loss_fn.config,
-            &warmup_heads,
-        );
+        let output =
+            model_valid.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads);
         let breakdown = active_loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
             breakdown.total.clone(),
@@ -239,17 +243,20 @@ fn process_validation_batch<TB>(
     if batch.exit_target.is_some() && batch.exit_mask.is_some() {
         accumulator.saw_exit_targets = true;
     }
-    if targets.delta_q_target.is_some() && targets.delta_q_mask.is_some() {
-        let baseline_policy_logits = if std::ptr::eq(model, baseline_model) {
-            output.policy_logits.clone()
-        } else {
+    if has_delta_q_targets {
+        let baseline_policy_logits = if needs_baseline_forward {
             let baseline_started = Instant::now();
             let baseline_policy_logits = {
                 let _baseline_scope = nvtx::scope(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD);
-                baseline_valid.forward_policy(obs)
+                baseline_valid.forward_policy(
+                    baseline_obs
+                        .expect("baseline input should exist when baseline forward is needed"),
+                )
             };
             baseline_elapsed_seconds = baseline_started.elapsed().as_secs_f64();
             baseline_policy_logits
+        } else {
+            output.policy_logits.clone()
         };
         accumulator
             .delta_q_promotion

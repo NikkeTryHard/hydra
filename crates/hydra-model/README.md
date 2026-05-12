@@ -1,0 +1,39 @@
+# hydra-model
+
+Crate-local map for pure Burn neural model components.
+
+## Owns
+
+- AMP compatibility helpers.
+- SE-ResNet backbone modules.
+- Model output heads.
+- Inference server/policy-selection utilities.
+- Full Hydra model and forward DTOs.
+- Search-as-Feature adaptor modules.
+
+## Does not own
+
+- Training algorithms/loss math: `hydra-train-algo` owns.
+- Runtime CLI/config/preflight: `hydra-train-runtime` owns.
+- Execution orchestration/artifacts/GPU adapters: `hydra-train-exec` owns.
+- User-facing binaries: `hydra-train` owns.
+- Runtime observation/action semantics: `hydra-core` + docs own.
+
+## Critical invariants
+
+| Surface | Contract |
+|---|---|
+| Framework | Burn model components |
+| Public shape | follows runtime/model contract in docs/current code |
+| Layer | model definition/inference helpers, not train loop |
+| Search-as-feature | adapters here; label generation elsewhere |
+
+## Read next
+
+- Training operator contract: [`docs/TRAINING_RUNBOOK.md`](../../docs/TRAINING_RUNBOOK.md).
+- Runtime shape contract: [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md).
+- Training algos: [`crates/hydra-train-algo/README.md`](../hydra-train-algo/README.md).
+
+## License
+
+Business Source License 1.1 (BSL). See repo-root [`LICENSE`](../../LICENSE).
