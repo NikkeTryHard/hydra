@@ -107,7 +107,21 @@ pub type CollatedOwnedBatch<B> =
     Result<Option<(Tensor<B, 3>, MjaiBatch<B>, HydraTargets<B>)>, String>;
 pub type CollatedOwnedBcBatch<B> =
     Result<Option<(Tensor<B, 3>, MjaiBcBatch<B>, HydraTargets<B>)>, String>;
-type OptionalActionTargets = Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>;
+pub type OptionalActionTargets = Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>;
+pub type TimedCollatedOwnedBcBatch<B> = Result<Option<TimedOwnedBcBatch<B>>, String>;
+
+struct HostCollatedBatch {
+    buffers: CollateBuffers,
+    batch: usize,
+}
+
+pub struct TimedOwnedBcBatch<B: Backend> {
+    pub obs: Tensor<B, 3>,
+    pub batch: MjaiBcBatch<B>,
+    pub targets: HydraTargets<B>,
+    pub cpu_prep_seconds: f64,
+    pub device_materialize_seconds: f64,
+}
 
 struct CollateBuffers {
     obs_flat: Vec<f32>,
@@ -227,11 +241,7 @@ fn optional_tensor_3d<B: Backend>(
     any_present.then(|| Tensor::<B, 1>::from_floats(values, device).reshape([batch, dim1, dim2]))
 }
 
-fn collate_with_writer<'a, B: Backend, I>(
-    samples: I,
-    batch: usize,
-    device: &B::Device,
-) -> Result<MjaiBatch<B>, String>
+fn collate_host_with_writer<'a, I>(samples: I, batch: usize) -> Result<HostCollatedBatch, String>
 where
     I: IntoIterator<Item = (&'a MjaiSample, Option<&'a [u8; 3]>)>,
 {
@@ -247,10 +257,19 @@ where
         for (index, (sample, perm)) in samples.into_iter().enumerate() {
             buffers.write_sample(index, sample, perm)?;
         }
-        let batch_out = buffers.to_batch(batch, device);
-        *slot = Some(buffers);
-        Ok(batch_out)
+        Ok(HostCollatedBatch { buffers, batch })
     })
+}
+
+fn collate_with_writer<'a, B: Backend, I>(
+    samples: I,
+    batch: usize,
+    device: &B::Device,
+) -> Result<MjaiBatch<B>, String>
+where
+    I: IntoIterator<Item = (&'a MjaiSample, Option<&'a [u8; 3]>)>,
+{
+    Ok(collate_host_with_writer(samples, batch)?.into_batch(device))
 }
 
 fn build_batch_from_samples<B: Backend>(
@@ -596,6 +615,30 @@ impl CollateBuffers {
         }
     }
 }
+impl HostCollatedBatch {
+    fn into_batch<B: Backend>(self, device: &B::Device) -> MjaiBatch<B> {
+        let HostCollatedBatch { buffers, batch } = self;
+        let batch_out = buffers.to_batch(batch, device);
+        COLLATE_SCRATCH.with(|scratch| {
+            *scratch.borrow_mut() = Some(buffers);
+        });
+        batch_out
+    }
+
+    fn into_bc_batch_and_targets<B: Backend>(self, device: &B::Device) -> TimedOwnedBcBatch<B> {
+        let started = std::time::Instant::now();
+        let batch = self.into_batch(device);
+        let device_materialize_seconds = started.elapsed().as_secs_f64();
+        let (obs, batch, targets) = into_bc_batch_and_hydra_targets_inner(batch);
+        TimedOwnedBcBatch {
+            obs,
+            batch,
+            targets,
+            cpu_prep_seconds: 0.0,
+            device_materialize_seconds,
+        }
+    }
+}
 
 impl<B: Backend> MjaiBatch<B> {
     pub fn into_hydra_targets(self) -> HydraTargets<B> {
@@ -702,6 +745,35 @@ pub fn collate_samples_bc_owned<B: Backend>(
         return Ok(None);
     };
     Ok(Some(into_bc_batch_and_hydra_targets_inner(batch)))
+}
+
+pub fn collate_samples_bc_owned_timed<B: Backend>(
+    samples: &[MjaiSample],
+    augment: bool,
+    device: &B::Device,
+) -> TimedCollatedOwnedBcBatch<B> {
+    if samples.is_empty() {
+        return Ok(None);
+    }
+
+    let cpu_started = std::time::Instant::now();
+    let host_batch = if augment {
+        let batch = samples.len() * ALL_PERMUTATIONS.len();
+        collate_host_with_writer(
+            samples.iter().flat_map(|sample| {
+                ALL_PERMUTATIONS
+                    .iter()
+                    .map(move |perm| (sample, Some(perm as &[u8; 3])))
+            }),
+            batch,
+        )?
+    } else {
+        collate_host_with_writer(samples.iter().map(|sample| (sample, None)), samples.len())?
+    };
+    let cpu_prep_seconds = cpu_started.elapsed().as_secs_f64();
+    let mut timed = host_batch.into_bc_batch_and_targets(device);
+    timed.cpu_prep_seconds = cpu_prep_seconds;
+    Ok(Some(timed))
 }
 
 pub fn collate_batch_samples<B: Backend>(

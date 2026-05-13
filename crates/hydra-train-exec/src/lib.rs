@@ -84,6 +84,8 @@ pub mod rl_step;
 )]
 /// Loader runtime autotune support used by migrated preflight execution.
 pub mod runtime_autotune_shim;
+/// Lightweight system metrics telemetry helpers.
+pub mod system_metrics;
 /// Heavy validation execution runner.
 pub mod validation_runner;
 

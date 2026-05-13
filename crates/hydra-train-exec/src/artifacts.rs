@@ -10,14 +10,19 @@ use burn::optim::Optimizer;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
-use hydra_data_core::{DataManifest, DataSource};
+use hydra_data_core::{
+    DataManifest, DataSource, DiscoveryManifest, DiscoveryMode, DiscoverySummary,
+};
 use hydra_sample_cache::{
     ParsedSampleCacheMetadata, is_parsed_sample_cache_file, read_parsed_sample_cache_metadata,
 };
 use hydra_train_runtime::preflight::{
-    BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
-    PreflightCacheKey, default_cache_name, default_manifest_cache_name,
+    BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightArtifactEvent,
+    PreflightCacheEntry, PreflightCacheKey, PreflightCandidateRecord, PreflightState,
+    default_cache_name, default_manifest_cache_name,
 };
+
+type DirectoryDiscoveryTuple = (DiscoveryMode, Vec<DataSource>, usize, usize, Vec<PathBuf>);
 use hydra_train_types::checkpoint::CheckpointMeta;
 use hydra_train_types::delta_q_promotion::{
     ArenaPromotionDecision, DeltaQArenaConfirmationRequest, DeltaQArenaReport,
@@ -81,12 +86,26 @@ pub struct RlArtifactPaths {
     pub step_log_path: PathBuf,
 }
 
-/// BC preflight cache paths.
+/// BC preflight artifact paths.
 pub struct PreflightPaths {
     /// Runtime preflight cache path.
     pub cache_path: PathBuf,
     /// Manifest cache path.
     pub manifest_cache_path: PathBuf,
+    /// Compact discovery summary path.
+    pub discovery_summary_path: PathBuf,
+    /// Binary discovery source index path.
+    pub discovery_index_path: PathBuf,
+    /// Preflight events JSONL path.
+    pub events_log_path: PathBuf,
+    /// Preflight metrics JSONL path.
+    pub metrics_log_path: PathBuf,
+    /// Preflight candidate results JSONL path.
+    pub candidates_log_path: PathBuf,
+    /// Resumable preflight state path.
+    pub state_path: PathBuf,
+    /// Human-readable preflight report path.
+    pub report_path: PathBuf,
 }
 
 /// BC preflight benchmark artifact paths.
@@ -212,14 +231,81 @@ pub fn atomic_write_text(path: &Path, contents: &str, label: &str) -> Result<(),
     })
 }
 
+/// Atomically writes binary bytes by writing a timestamped temporary sibling then renaming it.
+pub fn atomic_write_bytes(path: &Path, contents: &[u8], label: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {label} dir {}: {err}", parent.display()))?;
+    }
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("tmp");
+    let tmp_path = path.with_extension(format!(
+        "{extension}.tmp-{}-{}",
+        std::process::id(),
+        current_timestamp_s()
+    ));
+    fs::write(&tmp_path, contents).map_err(|err| {
+        format!(
+            "failed to write temporary {label} {}: {err}",
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        format!(
+            "failed to finalize {label} {} from {}: {err}",
+            path.display(),
+            tmp_path.display()
+        )
+    })
+}
+
 impl PreflightPaths {
-    /// Builds BC preflight cache paths from BC artifact paths.
+    /// Builds preflight artifact paths from BC artifact paths.
     #[must_use]
     pub fn new(artifacts: &BcArtifactPaths) -> Self {
+        let output_root = artifacts.root.parent().unwrap_or(artifacts.root.as_path());
+        let preflight_root = output_root.join("preflight");
         Self {
-            cache_path: artifacts.root.join(default_cache_name()),
-            manifest_cache_path: artifacts.root.join(default_manifest_cache_name()),
+            cache_path: preflight_root.join("cache").join(default_cache_name()),
+            manifest_cache_path: preflight_root
+                .join("cache")
+                .join(default_manifest_cache_name()),
+            discovery_summary_path: preflight_root.join("discovery").join("summary.json"),
+            discovery_index_path: preflight_root.join("discovery").join("index.bin"),
+            events_log_path: preflight_root.join("logs").join("events.jsonl"),
+            metrics_log_path: preflight_root.join("logs").join("metrics.jsonl"),
+            candidates_log_path: preflight_root.join("logs").join("candidates.jsonl"),
+            state_path: preflight_root.join("state").join("preflight_state.json"),
+            report_path: preflight_root.join("reports").join("preflight_report.json"),
         }
+    }
+
+    /// Creates parent directories for preflight logs, state, reports, and cache.
+    pub fn create_dirs(&self) -> Result<(), String> {
+        for path in [
+            &self.cache_path,
+            &self.manifest_cache_path,
+            &self.discovery_summary_path,
+            &self.discovery_index_path,
+            &self.events_log_path,
+            &self.metrics_log_path,
+            &self.candidates_log_path,
+            &self.state_path,
+            &self.report_path,
+        ] {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|err| {
+                    format!(
+                        "failed to create preflight artifact dir {}: {err}",
+                        parent.display()
+                    )
+                })?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -822,6 +908,109 @@ pub fn write_preflight_cache(path: &Path, entry: &PreflightCacheEntry) -> Result
     atomic_write_text(path, &json, "preflight cache")
 }
 
+/// Writes a durable preflight state snapshot.
+pub fn write_preflight_state(path: &Path, state: &PreflightState) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(state).map_err(|err| {
+        format!(
+            "failed to serialize preflight state {}: {err}",
+            path.display()
+        )
+    })?;
+    atomic_write_text(path, &json, "preflight state")
+}
+
+/// Reads a durable preflight state snapshot if the path exists.
+pub fn read_preflight_state(path: &Path) -> Result<Option<PreflightState>, String> {
+    match fs::read_to_string(path) {
+        Ok(contents) => serde_json::from_str(&contents)
+            .map(Some)
+            .map_err(|err| format!("failed to parse preflight state {}: {err}", path.display())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "failed to read preflight state {}: {err}",
+            path.display()
+        )),
+    }
+}
+
+/// Writes a human-readable preflight report.
+pub fn write_preflight_report<T: serde::Serialize>(path: &Path, report: &T) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(report).map_err(|err| {
+        format!(
+            "failed to serialize preflight report {}: {err}",
+            path.display()
+        )
+    })?;
+    atomic_write_text(path, &json, "preflight report")
+}
+
+/// Appends a preflight phase/event record.
+pub fn append_preflight_event_to_writer<W>(
+    writer: &mut W,
+    event: &PreflightArtifactEvent,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(writer, event, "preflight events log", "preflight event")
+}
+
+/// Appends a preflight candidate-result record.
+pub fn append_preflight_candidate_to_writer<W>(
+    writer: &mut W,
+    candidate: &PreflightCandidateRecord,
+) -> Result<(), String>
+where
+    W: Write,
+{
+    append_jsonl_entry(
+        writer,
+        candidate,
+        "preflight candidates log",
+        "preflight candidate result",
+    )
+}
+
+/// Opens the preflight events JSONL appender.
+pub fn open_preflight_event_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "preflight events log")
+}
+
+/// Opens the preflight candidate JSONL appender.
+pub fn open_preflight_candidate_appender(path: &Path) -> Result<JsonlAppender, String> {
+    open_jsonl_appender(path, "preflight candidates log")
+}
+
+/// Ensures the metrics JSONL placeholder exists without clobbering existing metrics.
+pub fn ensure_preflight_metrics_placeholder(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create preflight metrics log dir {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map(|_| ())
+        .or_else(|err| {
+            if err.kind() == io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(format!(
+                    "failed to create preflight metrics log {}: {err}",
+                    path.display()
+                ))
+            }
+        })
+}
+
 /// Writes a preflight benchmark report.
 pub fn write_preflight_benchmark_report(
     path: &Path,
@@ -850,13 +1039,157 @@ pub fn read_preflight_cache(path: &Path) -> Result<Option<PreflightCacheEntry>, 
 
 /// Writes a manifest cache entry.
 pub fn write_manifest_cache(path: &Path, entry: &ManifestCacheEntry) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(entry).map_err(|err| {
+    let json = serde_json::to_string(entry).map_err(|err| {
         format!(
             "failed to serialize manifest cache {}: {err}",
             path.display()
         )
     })?;
     atomic_write_text(path, &json, "manifest cache")
+}
+
+/// Writes a compact discovery summary and binary source index.
+pub fn write_discovery_manifest_cache(
+    summary_path: &Path,
+    index_path: &Path,
+    discovery: &DiscoveryManifest,
+) -> Result<(), String> {
+    let json = serde_json::to_string(&discovery.summary).map_err(|err| {
+        format!(
+            "failed to serialize discovery summary {}: {err}",
+            summary_path.display()
+        )
+    })?;
+    let mut index = Vec::new();
+    let root = discovery_root(&discovery.summary.data_dir);
+    discovery
+        .write_binary_index_with_root(&mut index, root)
+        .map_err(|err| {
+            format!(
+                "failed to encode discovery index {}: {err}",
+                index_path.display()
+            )
+        })?;
+    atomic_write_text(summary_path, &json, "discovery summary")?;
+    atomic_write_bytes(index_path, &index, "discovery index")
+}
+
+/// Reads a compact discovery summary and binary source index if both paths exist.
+pub fn read_discovery_manifest_cache(
+    summary_path: &Path,
+    index_path: &Path,
+) -> Result<Option<DiscoveryManifest>, String> {
+    if !summary_path.exists() || !index_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(summary_path).map_err(|err| {
+        format!(
+            "failed to read discovery summary {}: {err}",
+            summary_path.display()
+        )
+    })?;
+    let summary: DiscoverySummary = serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "failed to parse discovery summary {}: {err}",
+            summary_path.display()
+        )
+    })?;
+    let bytes = fs::read(index_path).map_err(|err| {
+        format!(
+            "failed to read discovery index {}: {err}",
+            index_path.display()
+        )
+    })?;
+    let mut cursor = io::Cursor::new(bytes);
+    let root_path = discovery_root(&summary.data_dir).map(Path::to_path_buf);
+    let discovery =
+        DiscoveryManifest::read_binary_index_with_root(&mut cursor, summary, root_path.as_deref())
+            .map_err(|err| {
+                format!(
+                    "failed to parse discovery index {}: {err}",
+                    index_path.display()
+                )
+            })?;
+    Ok(Some(discovery))
+}
+
+fn discovery_root(data_dir: &Path) -> Option<&Path> {
+    if data_dir.as_os_str().is_empty() {
+        None
+    } else if data_dir.is_file() {
+        data_dir.parent()
+    } else {
+        Some(data_dir)
+    }
+}
+
+fn discovery_manifest_matches(
+    discovery: &DiscoveryManifest,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+) -> bool {
+    discovery.summary.data_dir == data_dir
+        && discovery.summary.train_fraction_bits == train_fraction.to_bits()
+        && discovery.summary.include_source_patterns == source_filters.include_source_patterns
+        && discovery.summary.exclude_source_patterns == source_filters.exclude_source_patterns
+        && discovery.summary.fingerprint
+            == discovery_fingerprint(&discovery.summary, &discovery.sources)
+}
+
+fn discovery_fingerprint(summary: &DiscoverySummary, sources: &[DataSource]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    hash_bytes(&mut hash, summary.data_dir.to_string_lossy().as_bytes());
+    hash_bytes(&mut hash, &summary.train_fraction_bits.to_le_bytes());
+    for pattern in &summary.include_source_patterns {
+        hash_bytes(&mut hash, pattern.as_bytes());
+    }
+    hash_bytes(&mut hash, &[0xff]);
+    for pattern in &summary.exclude_source_patterns {
+        hash_bytes(&mut hash, pattern.as_bytes());
+    }
+    hash_bytes(&mut hash, &[summary.mode as u8]);
+    hash_bytes(
+        &mut hash,
+        &(summary.ignored_archive_count as u64).to_le_bytes(),
+    );
+    hash_bytes(
+        &mut hash,
+        &(summary.ignored_file_count as u64).to_le_bytes(),
+    );
+    for path in &summary.ignored_file_examples {
+        hash_bytes(&mut hash, path.to_string_lossy().as_bytes());
+    }
+    for source in sources {
+        match source {
+            DataSource::Archive(path) => {
+                hash_bytes(&mut hash, &[0]);
+                hash_bytes(&mut hash, path.to_string_lossy().as_bytes());
+            }
+            DataSource::LooseFile(path) => {
+                hash_bytes(&mut hash, &[1]);
+                hash_bytes(&mut hash, path.to_string_lossy().as_bytes());
+            }
+            DataSource::ParsedSampleCache {
+                path,
+                original_identity,
+                original_source_path,
+            } => {
+                hash_bytes(&mut hash, &[2]);
+                hash_bytes(&mut hash, path.to_string_lossy().as_bytes());
+                hash_bytes(&mut hash, original_identity.as_bytes());
+                hash_bytes(&mut hash, original_source_path.to_string_lossy().as_bytes());
+            }
+        }
+    }
+    hash
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for &byte in bytes {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
 }
 
 /// Reads a manifest cache entry if the path exists.
@@ -885,7 +1218,34 @@ pub fn manifest_cache_matches(
         && cached.exclude_source_patterns == source_filters.exclude_source_patterns
 }
 
-/// Scans data sources and persists the resulting manifest cache entry.
+/// Scans data sources and persists the compact discovery cache.
+pub fn scan_and_write_discovery_cache(
+    discovery_summary_path: &Path,
+    discovery_index_path: &Path,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+    scan_error_context: &str,
+) -> Result<DataManifest, String> {
+    let discovery =
+        scan_discovery_manifest_with_progress(data_dir, train_fraction, source_filters, progress)
+            .map_err(|err| {
+            format!(
+                "failed to scan {scan_error_context} from {}: {err}",
+                data_dir.display()
+            )
+        })?;
+    let manifest = DataManifest::from_discovery(&discovery);
+    write_discovery_manifest_cache(discovery_summary_path, discovery_index_path, &discovery)?;
+    Ok(manifest)
+}
+
+/// Scans data sources and persists the resulting legacy manifest cache entry.
+///
+/// Prefer [`scan_and_write_discovery_cache`] for new preflight discovery writes; this legacy
+/// helper exists for compatibility with older callers/tests that explicitly request a full
+/// manifest cache path.
 pub fn scan_and_write_manifest_cache(
     cache_path: &Path,
     data_dir: &Path,
@@ -894,14 +1254,15 @@ pub fn scan_and_write_manifest_cache(
     progress: Option<&indicatif::ProgressBar>,
     scan_error_context: &str,
 ) -> Result<DataManifest, String> {
-    let manifest =
-        scan_data_sources_with_progress(data_dir, train_fraction, source_filters, progress)
+    let discovery =
+        scan_discovery_manifest_with_progress(data_dir, train_fraction, source_filters, progress)
             .map_err(|err| {
-                format!(
-                    "failed to scan {scan_error_context} from {}: {err}",
-                    data_dir.display()
-                )
-            })?;
+            format!(
+                "failed to scan {scan_error_context} from {}: {err}",
+                data_dir.display()
+            )
+        })?;
+    let manifest = DataManifest::from_discovery(&discovery);
     write_manifest_cache(
         cache_path,
         &ManifestCacheEntry {
@@ -915,27 +1276,67 @@ pub fn scan_and_write_manifest_cache(
     Ok(manifest)
 }
 
-/// Loads a matching manifest cache entry, or scans and rewrites it.
+/// Request describing manifest cache lookup and compact discovery scan identity.
+pub struct ManifestCacheRequest<'a> {
+    /// Legacy manifest cache path kept for read compatibility.
+    pub cache_path: &'a Path,
+    /// Compact discovery summary path.
+    pub discovery_summary_path: &'a Path,
+    /// Compact binary discovery index path.
+    pub discovery_index_path: &'a Path,
+    /// Root data path being discovered.
+    pub data_dir: &'a Path,
+    /// Train split fraction used for cache identity.
+    pub train_fraction: f32,
+    /// Include/exclude source filters used for cache identity.
+    pub source_filters: &'a hydra_train_runtime::config::SourceFilterConfig,
+    /// Optional scan progress bar.
+    pub progress: Option<&'a indicatif::ProgressBar>,
+    /// Human context for scan errors.
+    pub scan_error_context: &'a str,
+}
+
+/// Loads a matching legacy manifest cache entry, or scans and writes compact discovery artifacts.
 pub fn load_or_scan_manifest_cache<F>(
-    cache_path: &Path,
-    data_dir: &Path,
-    train_fraction: f32,
-    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
-    progress: Option<&indicatif::ProgressBar>,
-    scan_error_context: &str,
+    request: ManifestCacheRequest<'_>,
     on_cache_hit: F,
 ) -> Result<DataManifest, String>
 where
     F: FnOnce(&ManifestCacheEntry),
 {
+    let ManifestCacheRequest {
+        cache_path,
+        discovery_summary_path,
+        discovery_index_path,
+        data_dir,
+        train_fraction,
+        source_filters,
+        progress,
+        scan_error_context,
+    } = request;
+    if let Some(discovery) =
+        read_discovery_manifest_cache(discovery_summary_path, discovery_index_path)?
+        && discovery_manifest_matches(&discovery, data_dir, train_fraction, source_filters)
+    {
+        let manifest = DataManifest::from_discovery(&discovery);
+        on_cache_hit(&ManifestCacheEntry {
+            data_dir: data_dir.to_path_buf(),
+            train_fraction_bits: train_fraction.to_bits(),
+            include_source_patterns: source_filters.include_source_patterns.clone(),
+            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
+            manifest: manifest.clone(),
+        });
+        return Ok(manifest);
+    }
     if let Some(cached) = read_manifest_cache(cache_path)?
         && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
     {
         on_cache_hit(&cached);
         return Ok(cached.manifest);
     }
-    scan_and_write_manifest_cache(
-        cache_path,
+    scan_and_write_discovery_cache(
+        discovery_summary_path,
+        discovery_index_path,
         data_dir,
         train_fraction,
         source_filters,
@@ -951,25 +1352,56 @@ pub fn scan_data_sources_with_progress(
     source_filters: &hydra_train_runtime::config::SourceFilterConfig,
     progress: Option<&indicatif::ProgressBar>,
 ) -> io::Result<DataManifest> {
-    let sources = if data_dir.is_file() {
-        if is_tar_zst_file(data_dir) || is_tar_file(data_dir) {
-            vec![DataSource::Archive(data_dir.to_path_buf())]
-        } else if is_mjai_file(data_dir) {
-            vec![DataSource::LooseFile(data_dir.to_path_buf())]
-        } else if is_parsed_sample_cache_file(data_dir) {
-            vec![data_source_for_cache_path(data_dir)?]
+    Ok(DataManifest::from_discovery(
+        &scan_discovery_manifest_with_progress(data_dir, train_fraction, source_filters, progress)?,
+    ))
+}
+
+/// Scan data_dir and return compact discovery metadata plus source index.
+pub fn scan_discovery_manifest_with_progress(
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+    progress: Option<&indicatif::ProgressBar>,
+) -> io::Result<DiscoveryManifest> {
+    let (mode, sources, ignored_archive_count, ignored_file_count, ignored_file_examples) =
+        if data_dir.is_file() {
+            if is_archive_file(data_dir) {
+                (
+                    DiscoveryMode::ArchiveSingle,
+                    vec![DataSource::Archive(data_dir.to_path_buf())],
+                    0,
+                    0,
+                    Vec::new(),
+                )
+            } else if is_mjai_file(data_dir) {
+                (
+                    DiscoveryMode::LooseGames,
+                    vec![DataSource::LooseFile(data_dir.to_path_buf())],
+                    0,
+                    0,
+                    Vec::new(),
+                )
+            } else if is_parsed_sample_cache_file(data_dir) {
+                (
+                    DiscoveryMode::LooseGames,
+                    vec![data_source_for_cache_path(data_dir)?],
+                    0,
+                    0,
+                    Vec::new(),
+                )
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "expected directory, MJAI file, parsed-sample cache file, or .tar/.tar.gz/.tgz/.tar.zst archive, got {}",
+                        data_dir.display()
+                    ),
+                ));
+            }
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "expected directory, MJAI file, parsed-sample cache file, or .tar/.tar.zst archive, got {}",
-                    data_dir.display()
-                ),
-            ));
-        }
-    } else {
-        scan_directory_sources(data_dir)?
-    };
+            scan_directory_sources(data_dir)?
+        };
     let sources: Vec<DataSource> = sources
         .into_iter()
         .filter(|source| source_matches_filters(source, source_filters))
@@ -1004,40 +1436,125 @@ pub fn scan_data_sources_with_progress(
         }
     }
 
-    Ok(DataManifest {
+    let manifest = DataManifest {
         sources,
         total_games,
         train_count,
         val_count: total_games.saturating_sub(train_count),
         counts_exact,
-    })
+    };
+    let mut discovery = DiscoveryManifest::from_data_manifest(
+        manifest,
+        mode,
+        ignored_archive_count,
+        ignored_file_count,
+        ignored_file_examples,
+    );
+    discovery.summary.data_dir = data_dir.to_path_buf();
+    discovery.summary.train_fraction_bits = train_fraction.to_bits();
+    discovery.summary.include_source_patterns = source_filters.include_source_patterns.clone();
+    discovery.summary.exclude_source_patterns = source_filters.exclude_source_patterns.clone();
+    discovery.summary.fingerprint = discovery_fingerprint(&discovery.summary, &discovery.sources);
+    Ok(discovery)
 }
 
-fn scan_directory_sources(dir: &Path) -> io::Result<Vec<DataSource>> {
-    let mut sources = Vec::new();
-    scan_directory_sources_recursive(dir, &mut sources)?;
-    sources.sort_by(|a, b| a.path().cmp(b.path()));
-    Ok(sources)
+fn scan_directory_sources(dir: &Path) -> io::Result<DirectoryDiscoveryTuple> {
+    let mut loose_sources = Vec::new();
+    let mut archive_sources = Vec::new();
+    let mut ignored_examples = Vec::new();
+    let ignored_count = scan_directory_sources_recursive(
+        dir,
+        &mut loose_sources,
+        &mut archive_sources,
+        &mut ignored_examples,
+    )?;
+    loose_sources.sort_by(|a, b| a.path().cmp(b.path()));
+    archive_sources.sort_by(|a, b| a.path().cmp(b.path()));
+    if loose_sources.is_empty() {
+        if archive_sources.is_empty() {
+            return Err(empty_dataset_error(dir, ignored_count, &ignored_examples));
+        }
+        Ok((
+            DiscoveryMode::ArchiveMulti,
+            archive_sources,
+            0,
+            ignored_count,
+            ignored_examples,
+        ))
+    } else {
+        let ignored_archive_count = archive_sources.len();
+        if ignored_archive_count > 0 {
+            eprintln!(
+                "[discovery] ignoring {ignored_archive_count} archive source(s) because loose game files were found"
+            );
+        }
+        Ok((
+            DiscoveryMode::LooseGames,
+            loose_sources,
+            ignored_archive_count,
+            ignored_count,
+            ignored_examples,
+        ))
+    }
 }
 
-fn scan_directory_sources_recursive(dir: &Path, sources: &mut Vec<DataSource>) -> io::Result<()> {
+fn scan_directory_sources_recursive(
+    dir: &Path,
+    loose_sources: &mut Vec<DataSource>,
+    archive_sources: &mut Vec<DataSource>,
+    ignored_examples: &mut Vec<PathBuf>,
+) -> io::Result<usize> {
+    let mut ignored_count = 0usize;
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let path = entry.path();
         if file_type.is_dir() {
-            scan_directory_sources_recursive(&path, sources)?;
+            ignored_count += scan_directory_sources_recursive(
+                &path,
+                loose_sources,
+                archive_sources,
+                ignored_examples,
+            )?;
         } else if file_type.is_file() {
             if is_mjai_file(&path) {
-                sources.push(DataSource::LooseFile(path));
+                loose_sources.push(DataSource::LooseFile(path));
             } else if is_parsed_sample_cache_file(&path) {
-                sources.push(data_source_for_cache_path(&path)?);
-            } else if is_tar_zst_file(&path) || is_tar_file(&path) {
-                sources.push(DataSource::Archive(path));
+                loose_sources.push(data_source_for_cache_path(&path)?);
+            } else if is_archive_file(&path) {
+                archive_sources.push(DataSource::Archive(path));
+            } else {
+                ignored_count += 1;
+                if ignored_examples.len() < 5 {
+                    ignored_examples.push(path);
+                }
             }
         }
     }
-    Ok(())
+    Ok(ignored_count)
+}
+
+fn empty_dataset_error(
+    dir: &Path,
+    ignored_count: usize,
+    ignored_examples: &[PathBuf],
+) -> io::Error {
+    let examples = if ignored_examples.is_empty() {
+        "none".to_string()
+    } else {
+        ignored_examples
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "no usable training data sources found in {}; loose_files=0 archive_files=0 parsed_sample_caches=0 ignored_files={ignored_count} ignored_examples=[{examples}]",
+            dir.display()
+        ),
+    )
 }
 
 fn data_source_for_cache_path(path: &Path) -> io::Result<DataSource> {
@@ -1133,17 +1650,15 @@ fn is_mjai_file(path: &Path) -> bool {
     )
 }
 
-fn is_tar_file(path: &Path) -> bool {
+fn is_archive_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
-        Some(name) if name.ends_with(".tar")
-    )
-}
-
-fn is_tar_zst_file(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name) if name.ends_with(".tar.zst") || name.contains(".tar-") && name.ends_with(".zst")
+        Some(name)
+            if name.ends_with(".tar")
+                || name.ends_with(".tar.gz")
+                || name.ends_with(".tgz")
+                || name.ends_with(".tar.zst")
+                || name.contains(".tar-") && name.ends_with(".zst")
     )
 }
 
@@ -1235,6 +1750,10 @@ mod wrapper_moved_tests {
                     train_microbatch_size: 32,
                     validation_microbatch_size: 64,
                     accum_steps: 4,
+                    unsafe_selected_batch_size: None,
+                    unsafe_selected_learning_rate: None,
+                    unsafe_selected_min_learning_rate: None,
+                    unsafe_selected_warmup_steps: None,
                 },
                 loader: LoaderRuntimeConfig {
                     num_threads: Some(8),
@@ -1260,6 +1779,9 @@ mod wrapper_moved_tests {
                     buffer_samples: 2048,
                     archive_queue_bound: 32,
                 },
+                learning_rate: None,
+                min_learning_rate: None,
+                warmup_steps: None,
             },
             score: BenchmarkScore {
                 wall_clock_samples_per_second: 111.0,
@@ -1625,11 +2147,31 @@ mod wrapper_moved_tests {
 
         assert_eq!(
             bc_preflight.cache_path,
-            bc_artifacts.root.join(default_cache_name())
+            output_dir
+                .join("preflight")
+                .join("cache")
+                .join(default_cache_name())
         );
         assert_eq!(
             bc_preflight.manifest_cache_path,
-            bc_artifacts.root.join(default_manifest_cache_name())
+            output_dir
+                .join("preflight")
+                .join("cache")
+                .join(default_manifest_cache_name())
+        );
+        assert_eq!(
+            bc_preflight.discovery_summary_path,
+            output_dir
+                .join("preflight")
+                .join("discovery")
+                .join("summary.json")
+        );
+        assert_eq!(
+            bc_preflight.discovery_index_path,
+            output_dir
+                .join("preflight")
+                .join("discovery")
+                .join("index.bin")
         );
         assert_eq!(
             rl_preflight.cache_path,
@@ -1750,6 +2292,9 @@ mod wrapper_moved_tests {
                     buffer_samples: 128,
                     archive_queue_bound: 4,
                 },
+                learning_rate: None,
+                min_learning_rate: None,
+                warmup_steps: None,
             },
             score: BenchmarkScore {
                 wall_clock_samples_per_second: 123.456,

@@ -121,20 +121,32 @@ Status: BC path is stable baseline. RL exists, but BC-first op surface remains s
 
 ## Preflight authority + cache
 
-Preflight answers one question: what runtime tuple can this machine/workload sustain?
+Preflight answers: what runtime tuple can this machine/workload sustain under selected tuning safety?
+
+Tuning modes:
+
+```yaml
+preflight:
+  tuning_mode: safe
+```
+
+Explicit `--preflight` requires `preflight.tuning_mode: safe` or `unsafe`; it does not use hidden mode. Normal config deserialization defaults to safe only outside explicit preflight. `safe` tunes only math-preserving runtime knobs: train microbatch, validation microbatch, derived accumulation for unchanged `batch_size`, loader tuple (`num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`), and probe/benchmark search effort. matching cache can apply safe selected-runtime and loader-runtime on fresh start or epoch-boundary resume. It must not change logical optimizer batch, LR/schedule, precision, loss, model, data split, augmentation, sample set, labels, or targets.
+
+`unsafe` is explicit (`preflight.tuning_mode: unsafe`) and may tune math-affecting performance knobs. Current runtime fields cover logical BC `batch_size` from `preflight.unsafe_candidate_batch_sizes`, optional `bc.learning_rate`/`bc.min_learning_rate` candidates from `preflight.unsafe_candidate_lr_scales`, and optional `bc.warmup_steps` candidates from `preflight.unsafe_candidate_warmup_steps`. LR candidates are multiplicative scales of current LR/min LR; `lr_auto_scaled=false` in reports means selected values are explicit candidates, not silent automatic scaling. Unsafe cache application is fresh-start only for math knobs. Resume keeps checkpoint runtime/optimizer schedule authoritative: cached unsafe math is ignored, and incompatible checkpoint runtime is refused by resume contract.
 
 Selected-runtime tuple:
 - `train_microbatch_size`
 - `validation_microbatch_size`
-- derived accumulation/throughput effects
+- derived `accum_steps`
+- unsafe-only `unsafe_selected_batch_size`
+- unsafe-only selected LR/min LR/warmup fields when those candidates were chosen
 
-Loader-runtime tuple: data/replay loader knobs such as threads/buffers. Separate authority.
-
+Loader-runtime tuple: data/replay loader knobs `num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`. Safe-applied when cache identity matches and run is fresh-start or epoch-boundary resume.
 Authority rules:
-- Fresh BC: selected-runtime config-derived unless preflight chooses; loader-runtime config-derived.
-- Epoch-boundary resume: may reuse matching preflight-selected selected-runtime when authority + cache identity match; loader-runtime still config-derived.
-- Partial-epoch resume: runtime must match prior compatible resume contract. Stricter by design.
-- Matching BC preflight cache does not make loader-runtime authoritative.
+- Fresh BC: selected-runtime and loader-runtime config-derived unless matching preflight cache applies them; unsafe cache may also apply selected logical batch/LR/min LR/warmup.
+- Epoch-boundary resume: may reuse matching safe selected-runtime and loader-runtime when authority + cache identity match; unsafe math changes are skipped.
+- Partial-epoch resume: preflight cache is ignored; runtime must match prior compatible resume contract. Stricter by design.
+- Matching BC preflight cache does not override checkpoint runtime contract.
 
 Cache key covers hardware, workload, preflight config signature, explicit microbatch overrides. Manifest-cache scan reuse also requires replay-selection contract match: `train_fraction`, `source_filters`. Cache key deliberately excludes knobs not defining selected-runtime contract: `data_dir`, `seed`, `num_threads`, `buffer_games`, `buffer_samples`. Meaning: same runtime-selection problem, not byte-identical YAML.
 
@@ -143,12 +155,14 @@ Identical-run fast path:
 - Probe result vectors empty on that path because no probe ran.
 
 Preflight knobs worth knowing:
+- safety label: `tuning_mode` (`safe` default, `unsafe` explicit math-affecting mode)
 - candidate ladder: `candidate_microbatches`, `min_microbatch_size`, `allow_override_explicit_microbatch`
 - probe stability: `warmup_steps`, `measure_steps`, `required_successes`, `measure_noise_tolerance_ratio`
 - loader search: `loader_runtime_rounds`, `loader_tuple_margin_ratio`, `loader_tuple_extra_samples`
 - stage-2: `real_benchmark_enabled`, candidate caps, `real_benchmark_max_finalists`
 - refinement: `local_refinement_enabled`, `local_refinement_max_candidates`, `local_refinement_min_gap`, `search_coordinate_rounds`, `search_top_k`
 
+- unsafe candidates: `unsafe_candidate_batch_sizes`, `unsafe_candidate_lr_scales`, `unsafe_candidate_warmup_steps` (explicit unsafe-only logical batch/LR schedule ladders)
 Stage-2 benchmark may reuse bounded validation cache only when validation sample limit finite and finalists share loader-runtime + resolved validation limit. Materialization cost still counted. Shard-backed validation does not use this in-memory cache path.
 
 Shard-backed preflight changes behavior:
@@ -181,6 +195,7 @@ Common preflight traps:
 - cache hit can skip probes; absence of probe rows not failure.
 - precision change invalidates assumptions.
 - advisory `selected_*_runtime_slower_than_best_probe_candidate` means optimization gap, not wrong result.
+- unsafe mode can change logical `batch_size` and selected LR/min LR/warmup when candidate fields are configured; reports include selected values and `lr_auto_scaled=false`. Apply cached unsafe math only on fresh starts.
 
 ## BC shards
 
@@ -402,15 +417,15 @@ Current status:
 - RL and DeltaQ promotion not baseline BF16 surfaces.
 
 Shard CUDA fast path available only when all true:
-- Cargo feature `cuda-graph` enabled.
+- `hydra-train` default features enabled (default includes `cuda-graph`; use `--no-default-features` to opt out).
 - runtime device CUDA.
 - `bc_shards_manifest_path` set.
 
 Build/run:
 
 ```bash
-cargo run --release -p hydra-train --features cuda-graph --bin train -- /path/to/config.yaml
-cargo build --release -p hydra-train --features cuda-graph
+cargo run --release -p hydra-train --bin train -- /path/to/config.yaml
+cargo build --release -p hydra-train
 ```
 
 Semantics:

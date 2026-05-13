@@ -247,6 +247,7 @@ fn generic_benchmark_step(
     FixedShapeBenchmarkStepOutput {
         grads: accumulator.grads(),
         batch_stats: step_batches,
+        sub_stage_timing: Default::default(),
     }
 }
 

@@ -44,8 +44,9 @@ use hydra_train_types::phase::PipelineState;
 
 use crate::advisory::MicrobatchExplicitness;
 use crate::artifacts::{
-    BcArtifactPaths, JsonlAppender, RlArtifactPaths, RlPreflightPaths, load_or_scan_manifest_cache,
-    open_rl_step_log_appender, open_step_log_appender, open_training_log_appender,
+    BcArtifactPaths, JsonlAppender, ManifestCacheRequest, RlArtifactPaths, RlPreflightPaths,
+    load_or_scan_manifest_cache, open_rl_step_log_appender, open_step_log_appender,
+    open_training_log_appender,
 };
 use crate::presentation::timestamped;
 use crate::resume::{
@@ -327,12 +328,16 @@ where
     } else {
         let preflight_paths = crate::artifacts::PreflightPaths::new(&artifacts);
         let manifest = load_or_scan_manifest_cache(
-            &preflight_paths.manifest_cache_path,
-            &config.data_dir,
-            config.train_fraction,
-            &config.source_filters,
-            Some(&scan_pb),
-            "MJAI data",
+            ManifestCacheRequest {
+                cache_path: &preflight_paths.manifest_cache_path,
+                discovery_summary_path: &preflight_paths.discovery_summary_path,
+                discovery_index_path: &preflight_paths.discovery_index_path,
+                data_dir: &config.data_dir,
+                train_fraction: config.train_fraction,
+                source_filters: &config.source_filters,
+                progress: Some(&scan_pb),
+                scan_error_context: "MJAI data",
+            },
             |cached| {
                 scan_pb.finish_with_message(format!(
                     "reused manifest: {} train / {} val games",

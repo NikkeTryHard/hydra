@@ -28,11 +28,13 @@ fn resolve_runtime_config_preserves_batch_semantics() {
     assert_eq!(runtime.train_microbatch_size, 64);
     assert_eq!(runtime.validation_microbatch_size, 128);
     assert_eq!(runtime.accum_steps, 4);
+    assert_eq!(runtime.unsafe_selected_batch_size, None);
 }
 
 #[test]
 fn preflight_defaults_include_search_policy_controls() {
     let config = PreflightConfig::default();
+    assert_eq!(config.tuning_mode, PreflightTuningMode::Safe);
     assert_eq!(config.validation_growth_patience, 2);
     assert_eq!(config.validation_growth_max_steps, 6);
     assert!((config.measure_noise_tolerance_ratio - 0.02).abs() < f64::EPSILON);
@@ -46,6 +48,46 @@ fn preflight_defaults_include_search_policy_controls() {
     assert_eq!(config.rl_probe_min_free_memory_bytes, 0);
     assert!((config.rl_probe_memory_headroom_ratio - 0.0).abs() < f64::EPSILON);
     assert!((config.rl_probe_growth_safety_factor - 1.35).abs() < f64::EPSILON);
+    assert!(config.unsafe_candidate_batch_sizes.is_empty());
+}
+
+#[test]
+fn preflight_tuning_mode_round_trips_as_snake_case() {
+    let config = PreflightConfig {
+        tuning_mode: PreflightTuningMode::Unsafe,
+        ..Default::default()
+    };
+    let serialized = serde_json::to_string(&config).expect("preflight config should serialize");
+    assert!(serialized.contains("\"tuning_mode\":\"unsafe\""));
+
+    let decoded: PreflightConfig = serde_json::from_str("{\"tuning_mode\":\"safe\"}")
+        .expect("partial preflight config should deserialize with defaults");
+    assert_eq!(decoded.tuning_mode, PreflightTuningMode::Safe);
+}
+
+#[test]
+fn unsafe_candidate_batch_sizes_default_empty_and_round_trip() {
+    let config = PreflightConfig {
+        tuning_mode: PreflightTuningMode::Unsafe,
+        unsafe_candidate_batch_sizes: vec![512, 1024],
+        unsafe_candidate_lr_scales: vec![0.5, 2.0],
+        unsafe_candidate_warmup_steps: vec![500, 1000],
+        ..Default::default()
+    };
+
+    let serialized = serde_json::to_string(&config).expect("preflight config should serialize");
+    assert!(serialized.contains("\"unsafe_candidate_batch_sizes\":[512,1024]"));
+    assert!(serialized.contains("\"unsafe_candidate_lr_scales\":[0.5,2.0]"));
+    assert!(serialized.contains("\"unsafe_candidate_warmup_steps\":[500,1000]"));
+
+    let decoded: PreflightConfig = serde_json::from_str(
+        "{\"tuning_mode\":\"unsafe\",\"unsafe_candidate_batch_sizes\":[128],\"unsafe_candidate_lr_scales\":[1.5],\"unsafe_candidate_warmup_steps\":[250]}",
+    )
+    .expect("unsafe candidate batch sizes should deserialize");
+    assert_eq!(decoded.tuning_mode, PreflightTuningMode::Unsafe);
+    assert_eq!(decoded.unsafe_candidate_batch_sizes, vec![128]);
+    assert_eq!(decoded.unsafe_candidate_lr_scales, vec![1.5]);
+    assert_eq!(decoded.unsafe_candidate_warmup_steps, vec![250]);
 }
 
 #[test]
@@ -75,6 +117,7 @@ fn resolve_runtime_config_clamps_zero_microbatches() {
     assert_eq!(runtime.train_microbatch_size, 1);
     assert_eq!(runtime.validation_microbatch_size, 1);
     assert_eq!(runtime.accum_steps, 32);
+    assert_eq!(runtime.unsafe_selected_batch_size, None);
 }
 
 #[test]
@@ -92,6 +135,19 @@ fn resolve_runtime_config_caps_train_microbatch_without_overcounting_accumulatio
     assert_eq!(runtime.train_microbatch_size, 32);
     assert_eq!(runtime.validation_microbatch_size, 4);
     assert_eq!(runtime.accum_steps, 1);
+}
+
+#[test]
+fn preflight_tuning_mode_changes_cache_signature() {
+    let mut safe = dummy_config();
+    safe.preflight.tuning_mode = PreflightTuningMode::Safe;
+    let mut unsafe_config = safe.clone();
+    unsafe_config.preflight.tuning_mode = PreflightTuningMode::Unsafe;
+
+    assert_ne!(
+        preflight_config_signature(&safe),
+        preflight_config_signature(&unsafe_config)
+    );
 }
 
 #[test]
@@ -193,6 +249,48 @@ fn benchmark_result_defaults_optional_profiling_when_missing() {
         benchmark.metadata.mode,
         BenchmarkMode::CadenceAwareProjection
     );
+}
+
+#[test]
+fn system_metrics_event_serializes_as_lightweight_sparse_schema() {
+    let event = SystemMetricsEvent {
+        kind: SystemMetricEventKind::ProbeHostMemory,
+        probe_kind: Some(ProbeKind::Train),
+        candidate_microbatch: Some(64),
+        mem_available_bytes: Some(1024),
+        mem_total_bytes: Some(2048),
+        ..SystemMetricsEvent::default()
+    };
+
+    let encoded = serde_json::to_string(&event).expect("system metric event should serialize");
+
+    assert!(encoded.contains("\"kind\":\"probe_host_memory\""));
+    assert!(encoded.contains("\"probe_kind\":\"train\""));
+    assert!(encoded.contains("\"candidate_microbatch\":64"));
+    assert!(encoded.contains("\"mem_available_bytes\":1024"));
+    assert!(!encoded.contains("model_init_ms"));
+}
+
+#[test]
+fn progress_metric_event_serializes_sparse_rates_and_planned_counts() {
+    let event = SystemMetricsEvent {
+        kind: SystemMetricEventKind::Progress,
+        phase: Some("manifest_scan".to_string()),
+        completed: Some(10),
+        planned: Some(20),
+        elapsed_seconds: Some(2.0),
+        files_per_second: Some(5.0),
+        ..SystemMetricsEvent::default()
+    };
+
+    let encoded = serde_json::to_string(&event).expect("progress metric should serialize");
+
+    assert!(encoded.contains("\"kind\":\"progress\""));
+    assert!(encoded.contains("\"phase\":\"manifest_scan\""));
+    assert!(encoded.contains("\"completed\":10"));
+    assert!(encoded.contains("\"planned\":20"));
+    assert!(encoded.contains("\"files_per_second\":5.0"));
+    assert!(!encoded.contains("gpu_util_percent"));
 }
 
 #[test]

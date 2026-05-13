@@ -599,6 +599,46 @@ where
     }
 }
 
+pub fn require_explicit_preflight_tuning_mode(path: &Path) -> Result<(), String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read config {}: {err}", path.display()))?;
+    let value = match path.extension().and_then(OsStr::to_str) {
+        Some("yaml" | "yml") => serde_yaml::from_str::<serde_yaml::Value>(&raw)
+            .map_err(|err| format!("failed to parse yaml config {}: {err}", path.display()))?,
+        _ => {
+            return Err(format!(
+                "unsupported config extension for {}; use .yaml",
+                path.display()
+            ));
+        }
+    };
+    let Some(root) = value.as_mapping() else {
+        return Err(
+            "preflight.tuning_mode must be set to safe or unsafe when using --preflight"
+                .to_string(),
+        );
+    };
+    let preflight_key = serde_yaml::Value::String("preflight".to_string());
+    let tuning_mode_key = serde_yaml::Value::String("tuning_mode".to_string());
+    let Some(preflight) = root
+        .get(&preflight_key)
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Err(
+            "preflight.tuning_mode must be set to safe or unsafe when using --preflight"
+                .to_string(),
+        );
+    };
+    if preflight.contains_key(&tuning_mode_key) {
+        Ok(())
+    } else {
+        Err(
+            "preflight.tuning_mode must be set to safe or unsafe when using --preflight"
+                .to_string(),
+        )
+    }
+}
+
 pub fn read_config(path: &Path) -> Result<TrainConfig, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read config {}: {err}", path.display()))?;

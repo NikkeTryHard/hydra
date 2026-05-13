@@ -7,6 +7,9 @@ use burn::backend::libtorch::LibTorchDevice;
 use burn::tensor::Tensor;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
+use hydra_train_runtime::preflight::{
+    PROFILING_STAGE_COLLATION, PROFILING_STAGE_H2D_TENSOR_MATERIALIZE, PROFILING_STAGE_H2D_TRANSFER,
+};
 use hydra_train_types::losses::HydraLossConfig;
 
 type TrainBackend = burn::backend::Autodiff<burn::backend::LibTorch>;
@@ -404,4 +407,27 @@ fn run_validation_distinct_baseline_uses_policy_only_forward_without_drift() {
     let policy_only_rows = tensor_rows_f32(policy_only_logits);
     let full_rows = tensor_rows_f32(full_logits);
     assert_eq!(policy_only_rows, full_rows);
+}
+
+fn child<'a>(profile: &'a ProfilingEnvelope, stage: &str) -> &'a ProfilingEnvelope {
+    profile
+        .children
+        .iter()
+        .find(|child| child.stage == stage)
+        .unwrap_or_else(|| panic!("missing profiling stage {stage}"))
+}
+
+#[test]
+fn validation_profile_envelope_contains_collation_and_h2d_fields() {
+    let mut accumulator = ValidationAccumulator::<TestValidBackend>::new();
+    accumulator.record_collation_timing(0.75, 0.25);
+
+    let collation = child(&accumulator.profiling, PROFILING_STAGE_COLLATION);
+    assert_eq!(collation.elapsed_seconds, 0.75);
+    let h2d = child(&accumulator.profiling, PROFILING_STAGE_H2D_TRANSFER);
+    assert_eq!(h2d.elapsed_seconds, 0.25);
+    assert_eq!(
+        child(h2d, PROFILING_STAGE_H2D_TENSOR_MATERIALIZE).elapsed_seconds,
+        0.25
+    );
 }

@@ -4,7 +4,7 @@
 )]
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use colored::Colorize;
 use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
@@ -14,7 +14,9 @@ use hydra_train_runtime::preflight::{format_probe_attempt_message, format_probe_
 
 use super::presentation::{format_status_line, make_bar};
 use super::probe_ladder::{dynamic_probe_ceiling, top_k_refinement_candidates};
-use super::probe_process::{execute_probe_request, execute_probe_request_batch};
+use super::probe_process::{
+    execute_probe_request, execute_probe_request_batch, execute_probe_request_window,
+};
 use super::probe_summary::{
     ProbeCandidateSummary, best_probe_summary, probe_kind_name, summarize_probe_results,
 };
@@ -22,6 +24,94 @@ use super::probe_transport::{probe_batch_results_path, probe_result_path};
 use hydra_train_runtime::probe_request::{ProbeBatchRequest, ProbeRequest};
 
 const UNSUPPORTED_DEVICE_PREFIX: &str = "unsupported HYDRA_TRAIN_DEVICE=";
+const MIN_REUSE_WINDOW: usize = 4;
+const MAX_REUSE_WINDOW: usize = 8;
+const REUSE_CONFIRMATION_ATTEMPT: usize = 9_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeChildPolicy {
+    FreshBoundary,
+    ReuseWindow,
+}
+
+#[derive(Debug, Clone)]
+struct ProbeWindowSpec {
+    request: ProbeRequest,
+    attempts: usize,
+    results_path: PathBuf,
+}
+
+fn probe_child_policy(results: &[ProbeResult], candidate: usize) -> ProbeChildPolicy {
+    let previous_oom = results
+        .iter()
+        .filter(|result| result.status == ProbeStatus::Oom)
+        .map(|result| result.candidate_microbatch)
+        .min();
+    if previous_oom.is_some_and(|oom| candidate >= oom) {
+        ProbeChildPolicy::FreshBoundary
+    } else {
+        ProbeChildPolicy::ReuseWindow
+    }
+}
+
+fn reuse_window_size(config: &TrainConfig) -> usize {
+    config
+        .preflight
+        .fast_repeated_run_candidate_window
+        .clamp(MIN_REUSE_WINDOW, MAX_REUSE_WINDOW)
+}
+
+fn confirm_winner_in_fresh_child<F>(
+    config_path: &Path,
+    result_path_for: &mut F,
+    kind: ProbeKind,
+    config: &TrainConfig,
+    results: &mut Vec<ProbeResult>,
+    progress: &indicatif::ProgressBar,
+) -> Result<(), String>
+where
+    F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
+{
+    if reuse_window_size(config) <= 1 || cfg!(test) {
+        return Ok(());
+    }
+    let Some(summary) = best_probe_summary(results) else {
+        return Ok(());
+    };
+    let candidate = summary.candidate_microbatch;
+    let request = ProbeRequest {
+        kind,
+        candidate_microbatch: candidate,
+        warmup_steps: config.preflight.warmup_steps,
+        measure_steps: config.preflight.measure_steps,
+    };
+    let result_path = result_path_for(kind, candidate, REUSE_CONFIRMATION_ATTEMPT);
+    println!(
+        "{}",
+        format_status_line(
+            &format!("[preflight:{}]", probe_kind_name(kind)),
+            format!("candidate_mb={} phase=fresh-child-confirm", candidate)
+        )
+    );
+    let result = execute_probe_request(
+        config_path,
+        request,
+        &result_path,
+        hydra_train_runtime::preflight::classify_probe_detail,
+    )?;
+    progress.println(format_probe_result_summary(&result));
+    results.push(result.clone());
+    if result.status == ProbeStatus::Success {
+        Ok(())
+    } else {
+        Err(format!(
+            "selected {} microbatch {} failed fresh-child confirmation: {:?}",
+            probe_kind_name(kind),
+            candidate,
+            result.status
+        ))
+    }
+}
 
 fn fatal_probe_backend_error(results: &[ProbeResult]) -> Option<String> {
     results
@@ -54,6 +144,53 @@ pub struct ProbeGrowthState {
     pub patience: usize,
     pub steps: usize,
     pub prior_best_score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeSearchStopReason {
+    ExhaustedCandidates,
+    FirstFailedCandidate,
+    ExplicitCandidateFailed,
+    ValidationGrowthBudget,
+    ValidationGrowthPatience,
+    HostRamGuard,
+}
+
+impl ProbeSearchStopReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExhaustedCandidates => "exhausted_candidates",
+            Self::FirstFailedCandidate => "first_failed_candidate",
+            Self::ExplicitCandidateFailed => "explicit_candidate_failed",
+            Self::ValidationGrowthBudget => "validation_growth_budget",
+            Self::ValidationGrowthPatience => "validation_growth_patience",
+            Self::HostRamGuard => "host_ram_guard",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeSearchPlan {
+    pub initial_candidates: usize,
+    pub required_successes: usize,
+    pub planned_attempts: usize,
+    pub max_growth_candidates: usize,
+    pub max_planned_attempts: usize,
+}
+
+pub fn probe_search_plan(candidate_count: usize, config: &TrainConfig) -> ProbeSearchPlan {
+    let required_successes = config.preflight.required_successes.max(1);
+    let max_growth_candidates = config.preflight.validation_growth_max_steps.max(1);
+    let initial_candidates = candidate_count;
+    ProbeSearchPlan {
+        initial_candidates,
+        required_successes,
+        planned_attempts: initial_candidates.saturating_mul(required_successes),
+        max_growth_candidates,
+        max_planned_attempts: initial_candidates
+            .saturating_add(max_growth_candidates)
+            .saturating_mul(required_successes),
+    }
 }
 
 pub struct ProbeGrowthDecision<'a> {
@@ -95,7 +232,7 @@ pub fn maybe_expand_probe_candidates(
     decision: ProbeGrowthDecision<'_>,
     config: &TrainConfig,
     growth_state: &mut ProbeGrowthState,
-) -> bool {
+) -> Option<ProbeSearchStopReason> {
     let ProbeGrowthDecision {
         index,
         kind,
@@ -110,7 +247,7 @@ pub fn maybe_expand_probe_candidates(
         let next_candidate = candidate.saturating_mul(2);
         if next_candidate > candidate && next_candidate <= ceiling {
             if growth_state.steps >= config.preflight.validation_growth_max_steps.max(1) {
-                return true;
+                return Some(ProbeSearchStopReason::ValidationGrowthBudget);
             }
             let reference_score = growth_state.prior_best_score.unwrap_or_else(|| {
                 summary
@@ -126,7 +263,7 @@ pub fn maybe_expand_probe_candidates(
                 growth_state.patience += 1;
                 growth_state.prior_best_score = Some(reference_score.max(candidate_score));
                 if growth_state.patience >= config.preflight.validation_growth_patience.max(1) {
-                    return true;
+                    return Some(ProbeSearchStopReason::ValidationGrowthPatience);
                 }
             }
         }
@@ -139,7 +276,7 @@ pub fn maybe_expand_probe_candidates(
                 .unwrap_or(candidate_score),
         ),
     );
-    false
+    None
 }
 
 pub fn run_candidate_attempts<F>(
@@ -202,7 +339,7 @@ where
         format_status_line(
             &format!("[preflight:{}]", probe_kind_name(kind)),
             format!(
-                "candidate_mb={} attempt=1/{} phase=probe",
+                "candidate_mb={} attempt=1/{} phase=probe policy=fresh",
                 candidate, attempts,
             )
         )
@@ -221,6 +358,64 @@ where
         progress,
         1,
     ))
+}
+
+fn run_reuse_window(
+    config_path: &Path,
+    window: Vec<ProbeWindowSpec>,
+    results: &mut Vec<ProbeResult>,
+    progress: &indicatif::ProgressBar,
+) -> Result<bool, String> {
+    if window.is_empty() {
+        return Ok(true);
+    }
+    for spec in &window {
+        println!(
+            "{}",
+            format_status_line(
+                &format!("[preflight:{}]", probe_kind_name(spec.request.kind)),
+                format!(
+                    "candidate_mb={} attempt=1/{} phase=probe policy=reuse-window",
+                    spec.request.candidate_microbatch, spec.attempts,
+                )
+            )
+        );
+    }
+    let result_paths = window
+        .iter()
+        .map(|spec| spec.results_path.clone())
+        .collect::<Vec<_>>();
+    let batch_results = execute_probe_request_window(
+        config_path,
+        window
+            .iter()
+            .map(|spec| ProbeBatchRequest {
+                request: spec.request,
+                attempts: spec.attempts,
+            })
+            .collect(),
+        &result_paths,
+        hydra_train_runtime::preflight::classify_probe_detail,
+    )?;
+
+    for (spec, candidate_results) in window.into_iter().zip(batch_results) {
+        let stable = replay_candidate_attempt_results(
+            spec.request.kind,
+            spec.request.candidate_microbatch,
+            spec.attempts,
+            candidate_results,
+            results,
+            progress,
+            1,
+        );
+        if !stable {
+            return Ok(false);
+        }
+        if fatal_probe_backend_error(results).is_some() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn replay_candidate_attempt_results(
@@ -579,73 +774,73 @@ pub fn probe_candidate_ladder(
         "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
     )?;
 
-    for candidate in candidate_list {
-        let mut stable = true;
-        let attempts = config.preflight.required_successes.max(1);
-        let result_path_for =
-            |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
-        for attempt in 0..attempts {
-            let attempt_number = attempt + 1;
-            println!(
-                "{}",
-                format_status_line(
-                    &format!("[preflight:{}]", probe_kind_name(kind)),
-                    format!(
-                        "candidate_mb={} attempt={}/{} stage=starting",
-                        candidate, attempt_number, attempts,
-                    )
-                )
-            );
-            progress.set_message(format_probe_attempt_message(
-                kind,
-                candidate,
-                attempt_number,
-                attempts,
-            ));
-            let request = ProbeRequest {
-                kind,
-                candidate_microbatch: candidate,
-                warmup_steps: config.preflight.warmup_steps,
-                measure_steps: config.preflight.measure_steps,
-            };
-            let result_path = result_path_for(kind, candidate, attempt);
-            println!(
-                "{}",
-                format_status_line(
-                    &format!("[preflight:{}]", probe_kind_name(kind)),
-                    format!(
-                        "candidate_mb={} attempt={}/{} stage=running probe",
-                        candidate, attempt_number, attempts,
-                    )
-                )
-            );
-            let result = execute_probe_request(
-                config_path,
-                request,
-                &result_path,
-                hydra_train_runtime::preflight::classify_probe_detail,
-            )?;
-            let passed = result.status == ProbeStatus::Success;
-            progress.inc(1);
-            println!("{}", format_probe_result_summary(&result));
-            results.push(result);
-            if !passed {
-                println!(
-                    "{}",
-                    format_status_line(
-                        &format!("[preflight:{}]", probe_kind_name(kind)),
-                        format!(
-                            "candidate_mb={} attempt={}/{} stage=backing off",
-                            candidate, attempt_number, attempts,
-                        )
-                    )
-                );
-                stable = false;
-                break;
+    let mut result_path_for =
+        |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
+    let attempts = config.preflight.required_successes.max(1);
+    let mut index = 0usize;
+    while index < candidate_list.len() {
+        let candidate = candidate_list[index];
+        let request = ProbeRequest {
+            kind,
+            candidate_microbatch: candidate,
+            warmup_steps: config.preflight.warmup_steps,
+            measure_steps: config.preflight.measure_steps,
+        };
+        match probe_child_policy(&results, candidate) {
+            ProbeChildPolicy::FreshBoundary => {
+                let spec = ProbeRunSpec {
+                    kind,
+                    candidate,
+                    attempts,
+                    warmup_steps: config.preflight.warmup_steps,
+                    measure_steps: config.preflight.measure_steps,
+                };
+                let stable = run_candidate_attempts(
+                    config_path,
+                    &mut result_path_for,
+                    spec,
+                    &mut results,
+                    &progress,
+                )?;
+                if stable && use_explicit_only {
+                    return Ok((candidate, results));
+                }
+                index += 1;
             }
-        }
-        if stable && use_explicit_only {
-            return Ok((candidate, results));
+            ProbeChildPolicy::ReuseWindow => {
+                let window_size = reuse_window_size(config);
+                let mut window = Vec::new();
+                while index < candidate_list.len() && window.len() < window_size {
+                    let window_candidate = candidate_list[index];
+                    if probe_child_policy(&results, window_candidate)
+                        == ProbeChildPolicy::FreshBoundary
+                    {
+                        break;
+                    }
+                    let request = ProbeRequest {
+                        kind,
+                        candidate_microbatch: window_candidate,
+                        warmup_steps: config.preflight.warmup_steps,
+                        measure_steps: config.preflight.measure_steps,
+                    };
+                    let results_path =
+                        probe_batch_results_path(&result_path_for(kind, window_candidate, 0));
+                    window.push(ProbeWindowSpec {
+                        request,
+                        attempts,
+                        results_path,
+                    });
+                    index += 1;
+                }
+                if window.is_empty() {
+                    index += 1;
+                    continue;
+                }
+                let stable = run_reuse_window(config_path, window, &mut results, &progress)?;
+                if stable && use_explicit_only {
+                    return Ok((request.candidate_microbatch, results));
+                }
+            }
         }
         if let Some(err) = fatal_probe_backend_error(&results) {
             return Err(err);
@@ -668,6 +863,14 @@ pub fn probe_candidate_ladder(
     rerun_probe_finalists(
         config_path,
         |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
+        kind,
+        config,
+        &mut results,
+        &progress,
+    )?;
+    confirm_winner_in_fresh_child(
+        config_path,
+        &mut |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         kind,
         config,
         &mut results,

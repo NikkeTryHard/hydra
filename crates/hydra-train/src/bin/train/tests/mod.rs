@@ -779,6 +779,49 @@ num_epochs: 1
 }
 
 #[test]
+fn read_config_defaults_preflight_tuning_mode_for_normal_training_config() {
+    let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  warmup_steps: 1
+"#;
+    let yaml_path = write_temp_file("yaml_preflight_default", "yaml", yaml);
+    let config = read_config(&yaml_path).expect("normal config may omit explicit tuning_mode");
+    assert_eq!(config.preflight.tuning_mode, PreflightTuningMode::Safe);
+    std::fs::remove_file(yaml_path).ok();
+}
+
+#[test]
+fn explicit_preflight_presence_check_requires_tuning_mode() {
+    let missing_yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  warmup_steps: 1
+"#;
+    let missing_path = write_temp_file("yaml_preflight_missing_tuning", "yaml", missing_yaml);
+    let err = hydra_train_runtime::config::require_explicit_preflight_tuning_mode(&missing_path)
+        .expect_err("explicit --preflight requires tuning_mode presence");
+    assert_eq!(
+        err,
+        "preflight.tuning_mode must be set to safe or unsafe when using --preflight"
+    );
+    std::fs::remove_file(missing_path).ok();
+
+    let explicit_yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+preflight:
+  tuning_mode: safe
+"#;
+    let explicit_path = write_temp_file("yaml_preflight_explicit_tuning", "yaml", explicit_yaml);
+    hydra_train_runtime::config::require_explicit_preflight_tuning_mode(&explicit_path)
+        .expect("explicit tuning_mode should satisfy --preflight presence check");
+    std::fs::remove_file(explicit_path).ok();
+}
+
+#[test]
 fn read_config_rejects_json_config() {
     let json = r#"{
         "data_dir": "/tmp/data",

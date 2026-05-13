@@ -27,7 +27,7 @@ use hydra_train_runtime::config::{
     validation_sample_limit,
 };
 #[cfg(test)]
-use hydra_train_runtime::preflight::PreflightConfig;
+use hydra_train_runtime::preflight::{PreflightConfig, PreflightTuningMode};
 
 #[cfg(test)]
 type TrainBackend = Autodiff<LibTorch<f32>>;

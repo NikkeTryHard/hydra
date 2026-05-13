@@ -1,6 +1,7 @@
+use hydra_train_runtime::config::BcHyperparamConfig;
 use hydra_train_runtime::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, ProbeKind, ProbeResult,
-    ProbeStatus, SelectedRuntimeConfig,
+    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PreflightTuningMode, ProbeKind,
+    ProbeResult, ProbeStatus, SelectedRuntimeConfig,
 };
 
 use super::*;
@@ -505,6 +506,10 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
                 train_microbatch_size: 64,
                 validation_microbatch_size: 32,
                 accum_steps: 4,
+                unsafe_selected_batch_size: None,
+                unsafe_selected_learning_rate: None,
+                unsafe_selected_min_learning_rate: None,
+                unsafe_selected_warmup_steps: None,
             },
             loader: LoaderRuntimeConfig {
                 num_threads: Some(6),
@@ -517,11 +522,61 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
             train_microbatch_explicit: true,
             validation_microbatch_explicit: false,
         },
+        PreflightTuningMode::Safe,
     );
     assert_eq!(
         summary,
-        "saved train_mb=64 val_mb=32 accum_steps=4 threads=6 buffer_games=128 buffer_samples=4096 archive_queue_bound=16 explicit(train=true, val=false)"
+        "mode=Safe saved train_mb=64 val_mb=32 accum_steps=4 threads=6 buffer_games=128 buffer_samples=4096 archive_queue_bound=16 explicit(train=true, val=false)"
     );
+
+    let unsafe_runtime = EffectiveRuntimeConfig {
+        selected: SelectedRuntimeConfig {
+            train_microbatch_size: 128,
+            validation_microbatch_size: 32,
+            accum_steps: 2,
+            unsafe_selected_batch_size: Some(512),
+            unsafe_selected_learning_rate: Some(5.0e-4),
+            unsafe_selected_min_learning_rate: Some(2.0e-6),
+            unsafe_selected_warmup_steps: Some(2000),
+        },
+        loader: LoaderRuntimeConfig {
+            num_threads: None,
+            buffer_games: 128,
+            buffer_samples: 4096,
+            archive_queue_bound: 16,
+        },
+    };
+    let unsafe_summary = explicit_preflight_summary(
+        unsafe_runtime,
+        ExplicitSettings {
+            train_microbatch_explicit: false,
+            validation_microbatch_explicit: false,
+        },
+        PreflightTuningMode::Unsafe,
+    );
+    assert!(unsafe_summary.contains("mode=Unsafe"));
+    assert!(unsafe_summary.contains("unsafe_can_change_logical_batch=true"));
+    assert!(unsafe_summary.contains("selected_batch=512"));
+    assert!(unsafe_summary.contains("selected_lr=5.00e-4"));
+    assert!(unsafe_summary.contains("selected_min_lr=2.00e-6"));
+    assert!(unsafe_summary.contains("selected_warmup_steps=2000"));
+    assert!(unsafe_summary.contains("lr_auto_scaled=false"));
+
+    let bc = BcHyperparamConfig {
+        learning_rate: 2.5e-4,
+        min_learning_rate: 1.0e-6,
+        warmup_steps: 1000,
+        ..Default::default()
+    };
+    let math_summary = unsafe_preflight_math_summary(unsafe_runtime, &bc)
+        .expect("unsafe runtime should report math summary");
+    assert!(math_summary.contains("selected_batch=512"));
+    assert!(math_summary.contains("selected_lr=5.00e-4"));
+    assert!(math_summary.contains("selected_min_lr=2.00e-6"));
+    assert!(math_summary.contains("selected_warmup_steps=2000"));
+    assert!(math_summary.contains("apply=fresh_start_only"));
+    assert!(math_summary.contains("resume=ignored_or_refused_if_checkpoint_contract_mismatch"));
+
     assert_eq!(
         explicit_preflight_recommendation(),
         "using config runtime except epoch-boundary selected-runtime reuse; run train <config.yaml> --preflight to tune this machine before training"

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
+use crate::probe_search::probe_candidate_ladder;
 use crate::test_loose_replay_fixtures::{write_real_preflight_fixture, write_real_probe_fixture};
 use crate::test_support::{dummy_train_config, unique_test_path as shared_unique_test_path};
 use hydra_train_runtime::config::{
@@ -11,9 +12,45 @@ use hydra_train_runtime::config::{
     RlTrainConfig, loader_runtime_config,
 };
 use hydra_train_runtime::preflight::{
-    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_LOGGING, PROFILING_STAGE_STAGE_2_BENCHMARK,
-    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, ProbeStatus,
+    PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
+    PROFILING_STAGE_H2D_TENSOR_MATERIALIZE, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOGGING,
+    PROFILING_STAGE_STAGE_2_BENCHMARK, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
+    PreflightCompletedPhase, PreflightState, ProbeStatus, SelectedRuntimeConfig,
+    preflight_cache_key,
 };
+
+fn benchmark_runtime_config(
+    train_microbatch_size: usize,
+    validation_microbatch_size: usize,
+    accum_steps: usize,
+    loader: LoaderRuntimeConfig,
+) -> BenchmarkRuntimeConfig {
+    BenchmarkRuntimeConfig {
+        train_microbatch_size,
+        validation_microbatch_size,
+        accum_steps,
+        loader,
+        learning_rate: None,
+        min_learning_rate: None,
+        warmup_steps: None,
+    }
+}
+
+fn selected_runtime_config(
+    train_microbatch_size: usize,
+    validation_microbatch_size: usize,
+    accum_steps: usize,
+) -> SelectedRuntimeConfig {
+    SelectedRuntimeConfig {
+        train_microbatch_size,
+        validation_microbatch_size,
+        accum_steps,
+        unsafe_selected_batch_size: None,
+        unsafe_selected_learning_rate: None,
+        unsafe_selected_min_learning_rate: None,
+        unsafe_selected_warmup_steps: None,
+    }
+}
 
 fn dummy_config() -> TrainConfig {
     dummy_train_config()
@@ -27,6 +64,16 @@ fn write_temp_file(label: &str, extension: &str, contents: &str) -> PathBuf {
     let path = unique_test_path(label).with_extension(extension);
     fs::write(&path, contents).expect("temporary test file should be writable");
     path
+}
+fn write_tiny_replay_data_dir(label: &str) -> PathBuf {
+    let data_dir = unique_test_path(label);
+    fs::create_dir_all(&data_dir).expect("create tiny replay data dir");
+    fs::write(
+        data_dir.join("game.mjai.json"),
+        crate::test_loose_replay_fixtures::tiny_real_mjai_replay(),
+    )
+    .expect("write tiny replay");
+    data_dir
 }
 
 #[test]
@@ -103,6 +150,7 @@ fn benchmark_finalist(runtime: BenchmarkRuntimeConfig) -> BenchmarkFinalist {
         train_probe_samples_per_second: 0.0,
         validation_probe_samples_per_second: 0.0,
         loader_probe_samples_per_second: 0.0,
+        unsafe_batch_size: None,
     }
 }
 
@@ -136,6 +184,42 @@ fn sample_stage_two_benchmark_profiling() -> ProfilingEnvelope {
             ProfilingEnvelope::leaf(PROFILING_STAGE_LOGGING, 0.25),
         ],
     )
+}
+
+fn child<'a>(profile: &'a ProfilingEnvelope, stage: &str) -> &'a ProfilingEnvelope {
+    profile
+        .children
+        .iter()
+        .find(|child| child.stage == stage)
+        .unwrap_or_else(|| panic!("missing profiling stage {stage}"))
+}
+
+#[test]
+fn train_substage_profile_separates_collation_from_h2d_materialization() {
+    let timing = hydra_train_runtime::progress::TrainSubStageTiming {
+        collation_seconds: 1.25,
+        h2d_transfer_seconds: 0.5,
+        h2d_tensor_materialize_seconds: 0.5,
+        forward_seconds: 2.0,
+        ..Default::default()
+    };
+
+    let profile = train_substage_profile(PROFILING_STAGE_TRAIN, 3.75, timing);
+
+    assert_eq!(
+        child(&profile, PROFILING_STAGE_COLLATION).elapsed_seconds,
+        1.25
+    );
+    let h2d = child(&profile, PROFILING_STAGE_H2D_TRANSFER);
+    assert_eq!(h2d.elapsed_seconds, 0.5);
+    assert_eq!(
+        child(h2d, PROFILING_STAGE_H2D_TENSOR_MATERIALIZE).elapsed_seconds,
+        0.5
+    );
+    assert_eq!(
+        child(&profile, PROFILING_STAGE_FORWARD).elapsed_seconds,
+        2.0
+    );
 }
 
 #[test]
@@ -387,6 +471,106 @@ fn prioritize_full_batch_train_candidate_noops_when_seed_is_full_batch() {
 }
 
 #[test]
+fn probe_search_plan_counts_initial_and_growth_attempts() {
+    let mut config = dummy_config();
+    config.preflight.required_successes = 3;
+    config.preflight.validation_growth_max_steps = 2;
+
+    let plan = probe_search_plan(4, &config);
+
+    assert_eq!(plan.initial_candidates, 4);
+    assert_eq!(plan.required_successes, 3);
+    assert_eq!(plan.planned_attempts, 12);
+    assert_eq!(plan.max_growth_candidates, 2);
+    assert_eq!(plan.max_planned_attempts, 18);
+}
+
+#[test]
+fn validation_growth_budget_returns_stop_reason_without_adding_candidate() {
+    let mut config = dummy_config();
+    config.preflight.validation_growth_max_steps = 1;
+    let mut candidates = vec![64];
+    let summary = probe_summary(64, 100.0);
+    let mut growth_state = ProbeGrowthState {
+        patience: 0,
+        steps: 1,
+        prior_best_score: Some(100.0),
+    };
+
+    let reason = maybe_expand_probe_candidates(
+        &mut candidates,
+        ProbeGrowthDecision {
+            index: 0,
+            kind: ProbeKind::Validation,
+            candidate: 64,
+            summary: &summary,
+            candidate_score: 100.0,
+            tolerance: 0.0,
+        },
+        &config,
+        &mut growth_state,
+    );
+
+    assert_eq!(reason, Some(ProbeSearchStopReason::ValidationGrowthBudget));
+    assert_eq!(candidates, vec![64]);
+}
+
+#[test]
+fn oom_candidate_prunes_higher_candidates_from_ladder() {
+    let mut candidates = vec![256, 128, 64, 32];
+
+    prune_oom_upper_bound(&mut candidates, 128);
+
+    assert_eq!(candidates, vec![128, 64, 32]);
+}
+
+#[test]
+fn hybrid_child_reuse_recovers_window_results_and_resets_after_oom() {
+    let config_path = unique_test_path("hybrid-child-reuse-config").with_extension("yaml");
+    let mut config = dummy_config();
+    config.preflight.required_successes = 2;
+    config.preflight.fast_repeated_run_candidate_window = 4;
+    config.preflight.allow_override_explicit_microbatch = true;
+    config.preflight.local_refinement_enabled = false;
+    let config_yaml = serde_yaml::to_string(&config).expect("serialize train config");
+    fs::write(&config_path, config_yaml).expect("write train config");
+    let output_dir = unique_test_path("hybrid-child-reuse-out");
+    let artifacts = BcArtifactPaths::new(&output_dir, 0);
+
+    let (_selected, results) = probe_candidate_ladder(
+        &config_path,
+        &config,
+        &artifacts,
+        ProbeKind::Train,
+        &[64, 128, 512, 1024],
+    )
+    .expect("parent should recover reused-window results and continue after OOM");
+
+    assert!(
+        results.iter().any(
+            |result| result.candidate_microbatch == 64 && result.status == ProbeStatus::Success
+        )
+    );
+    assert!(
+        results
+            .iter()
+            .any(|result| result.candidate_microbatch == 128
+                && result.status == ProbeStatus::Success)
+    );
+    assert!(
+        results
+            .iter()
+            .any(|result| result.candidate_microbatch == 512 && result.status == ProbeStatus::Oom)
+    );
+    assert!(
+        !results
+            .iter()
+            .any(|result| result.candidate_microbatch == 1024),
+        "OOM at 512 must prune larger candidates before probing"
+    );
+    let _ = fs::remove_file(config_path);
+}
+#[test]
 fn diverse_probe_candidates_prefer_larger_microbatch_when_scores_tie() {
     let results = vec![
         probe_result_with_runtime(ProbeKind::Train, 32, ProbeStatus::Success, Some(100.0)),
@@ -429,11 +613,7 @@ fn stage_two_finalists_accept_loader_ranked_first_by_runtime_autotune() {
         },
     ];
     let selected = EffectiveRuntimeConfig {
-        selected: hydra_train_runtime::preflight::SelectedRuntimeConfig {
-            train_microbatch_size: 64,
-            validation_microbatch_size: 32,
-            accum_steps: 4,
-        },
+        selected: selected_runtime_config(64, 32, 4),
         loader: selected_loader,
     };
     let train_candidates = vec![ProbeCandidateSummary {
@@ -466,6 +646,7 @@ fn stage_two_finalists_accept_loader_ranked_first_by_runtime_autotune() {
         train_probe_results: &[],
         validation_probe_results: &[],
         ranked_loaders: &ranked_loaders,
+        unsafe_batch_candidates: &[],
     });
 
     assert_eq!(loader_candidates.len(), 1);
@@ -491,11 +672,7 @@ fn stage_two_finalists_prefer_larger_train_microbatch_when_scores_tie() {
         archive_queue_bound: 16,
     };
     let selected = EffectiveRuntimeConfig {
-        selected: hydra_train_runtime::preflight::SelectedRuntimeConfig {
-            train_microbatch_size: 32,
-            validation_microbatch_size: 64,
-            accum_steps: 4,
-        },
+        selected: selected_runtime_config(32, 64, 4),
         loader,
     };
     let train_candidates = vec![probe_summary(32, 400.0), probe_summary(128, 400.0)];
@@ -515,6 +692,7 @@ fn stage_two_finalists_prefer_larger_train_microbatch_when_scores_tie() {
         train_probe_results: &[],
         validation_probe_results: &[],
         ranked_loaders: &loader_candidates,
+        unsafe_batch_candidates: &[],
     });
 
     assert_eq!(finalists[0].runtime.train_microbatch_size, 128);
@@ -535,24 +713,9 @@ fn stage_two_validation_cache_plan_groups_only_identical_validation_workloads() 
         num_threads: Some(4),
         ..shared_loader
     };
-    let shared_runtime_a = BenchmarkRuntimeConfig {
-        train_microbatch_size: 16,
-        validation_microbatch_size: 8,
-        accum_steps: 2,
-        loader: shared_loader,
-    };
-    let shared_runtime_b = BenchmarkRuntimeConfig {
-        train_microbatch_size: 32,
-        validation_microbatch_size: 8,
-        accum_steps: 1,
-        loader: shared_loader,
-    };
-    let other_runtime = BenchmarkRuntimeConfig {
-        train_microbatch_size: 32,
-        validation_microbatch_size: 8,
-        accum_steps: 1,
-        loader: other_loader,
-    };
+    let shared_runtime_a = benchmark_runtime_config(16, 8, 2, shared_loader);
+    let shared_runtime_b = benchmark_runtime_config(32, 8, 1, shared_loader);
+    let other_runtime = benchmark_runtime_config(32, 8, 1, other_loader);
     let shared_key = stage_two_benchmark_validation_cache_key(
         &benchmark_validation_config(&config, shared_runtime_a),
         shared_loader,
@@ -588,18 +751,8 @@ fn stage_two_validation_cache_key_separates_resolved_sample_limits() {
         buffer_samples: 64,
         archive_queue_bound: 4,
     };
-    let smaller_runtime = BenchmarkRuntimeConfig {
-        train_microbatch_size: 16,
-        validation_microbatch_size: 8,
-        accum_steps: 2,
-        loader,
-    };
-    let larger_runtime = BenchmarkRuntimeConfig {
-        train_microbatch_size: 16,
-        validation_microbatch_size: 16,
-        accum_steps: 2,
-        loader,
-    };
+    let smaller_runtime = benchmark_runtime_config(16, 8, 2, loader);
+    let larger_runtime = benchmark_runtime_config(16, 16, 2, loader);
     let smaller_key = stage_two_benchmark_validation_cache_key(
         &benchmark_validation_config(&config, smaller_runtime),
         loader,
@@ -634,18 +787,8 @@ fn stage_two_validation_cache_drops_entries_after_planned_reuses() {
         buffer_samples: 64,
         archive_queue_bound: 4,
     };
-    let runtime_a = BenchmarkRuntimeConfig {
-        train_microbatch_size: 16,
-        validation_microbatch_size: 8,
-        accum_steps: 2,
-        loader,
-    };
-    let runtime_b = BenchmarkRuntimeConfig {
-        train_microbatch_size: 32,
-        validation_microbatch_size: 8,
-        accum_steps: 1,
-        loader,
-    };
+    let runtime_a = benchmark_runtime_config(16, 8, 2, loader);
+    let runtime_b = benchmark_runtime_config(32, 8, 1, loader);
     let benchmark_config = benchmark_validation_config(&config, runtime_a);
     let key = stage_two_benchmark_validation_cache_key(&benchmark_config, loader);
     let mut cache = StageTwoBenchmarkValidationCache::new(
@@ -655,21 +798,23 @@ fn stage_two_validation_cache_drops_entries_after_planned_reuses() {
 
     assert_eq!(cache.entries.len(), 1);
 
-    let (first_samples, first_materialization_seconds) = cache
+    let (first_samples, first_materialization_seconds, first_stats) = cache
         .checkout(key, &benchmark_config, &empty_manifest())
         .expect("first cache checkout should materialize cached validation samples");
     assert!(first_samples.is_some());
     assert!(first_materialization_seconds >= 0.0);
+    assert_eq!(first_stats.event_count, 0);
     assert_eq!(
         cache.entries.get(&key).map(|entry| entry.remaining_uses),
         Some(1)
     );
 
-    let (second_samples, second_materialization_seconds) = cache
+    let (second_samples, second_materialization_seconds, second_stats) = cache
         .checkout(key, &benchmark_config, &empty_manifest())
         .expect("second cache checkout should reuse cached validation samples");
     assert!(second_samples.is_some());
     assert!((second_materialization_seconds - first_materialization_seconds).abs() < 1e-12);
+    assert_eq!(second_stats.event_count, first_stats.event_count);
     assert!(cache.entries.is_empty());
 }
 
@@ -688,6 +833,9 @@ fn benchmark_validation_pass_charges_materialization_seconds_into_validation_tim
         )),
         stats: ScalarAverages::default(),
         elapsed_seconds: 0.0,
+        measured_samples: 0,
+        materialization_stats: Default::default(),
+        sub_stage_timing: Default::default(),
     };
 
     let (summary, validation_seconds) = benchmark_validation_pass(
@@ -1132,9 +1280,9 @@ fn run_probe_only_rl_games_fails_fast_without_rl_config() {
 fn emit_probe_progress_and_step_progress_cover_warmup_and_measure_paths() {
     assert!(emit_probe_progress("plain text that should only flush").is_ok());
     assert!(emit_probe_progress(
-            "probe_progress kind=train candidate_mb=64 phase=starting warmup_steps=2 measure_steps=3"
-        )
-        .is_ok());
+        "probe_progress kind=train candidate_mb=64 phase=starting warmup_steps=2 measure_steps=3"
+    )
+    .is_ok());
 
     let request = ProbeRequest {
         kind: ProbeKind::Train,
@@ -1583,8 +1731,7 @@ fn run_probe_only_train_fails_fast_when_dataset_scan_cannot_start() {
 
 #[test]
 fn run_probe_only_train_bubbles_invalid_device_after_successful_scan() {
-    let root = unique_test_path("train-invalid-device-scan");
-    fs::create_dir_all(&root).expect("create empty data dir");
+    let root = write_tiny_replay_data_dir("train-invalid-device-scan");
     let mut config = dummy_config();
     config.data_dir = root.clone();
     config.output_dir = unique_test_path("train-invalid-device-out");
@@ -1610,8 +1757,7 @@ fn run_probe_only_train_bubbles_invalid_device_after_successful_scan() {
 
 #[test]
 fn run_probe_only_validation_bubbles_invalid_device_after_successful_scan() {
-    let root = unique_test_path("validation-invalid-device-scan");
-    fs::create_dir_all(&root).expect("create empty data dir");
+    let root = write_tiny_replay_data_dir("validation-invalid-device-scan");
     let mut config = dummy_config();
     config.data_dir = root.clone();
     config.output_dir = unique_test_path("validation-invalid-device-out");
@@ -1988,8 +2134,7 @@ fn search_rl_runtime_candidate_explicit_microbatch_failure_uses_explicit_error_p
 
 #[test]
 fn search_train_microbatch_explicit_failure_uses_explicit_error_path() {
-    let data_dir = unique_test_path("train-explicit-microbatch-data");
-    fs::create_dir_all(&data_dir).expect("create empty train data dir");
+    let data_dir = write_tiny_replay_data_dir("train-explicit-microbatch-data");
     let output_dir = unique_test_path("train-explicit-microbatch-out");
     let artifacts = BcArtifactPaths::new(&output_dir, 0);
     let mut config = dummy_config();
@@ -2016,8 +2161,7 @@ fn search_train_microbatch_explicit_failure_uses_explicit_error_path() {
 
 #[test]
 fn search_train_microbatch_non_explicit_failure_reports_no_stable_result() {
-    let data_dir = unique_test_path("train-no-stable-data");
-    fs::create_dir_all(&data_dir).expect("create empty train data dir");
+    let data_dir = write_tiny_replay_data_dir("train-no-stable-data");
     let output_dir = unique_test_path("train-no-stable-out");
     let artifacts = BcArtifactPaths::new(&output_dir, 0);
     let mut config = dummy_config();
@@ -2043,8 +2187,7 @@ fn search_train_microbatch_non_explicit_failure_reports_no_stable_result() {
 
 #[test]
 fn search_train_microbatch_propagates_fatal_backend_error_without_extra_refinement() {
-    let data_dir = unique_test_path("train-fatal-backend-data");
-    fs::create_dir_all(&data_dir).expect("create empty train data dir");
+    let data_dir = write_tiny_replay_data_dir("train-fatal-backend-data");
     let output_dir = unique_test_path("train-fatal-backend-out");
     let artifacts = BcArtifactPaths::new(&output_dir, 0);
     let mut config = dummy_config();
@@ -2072,8 +2215,7 @@ fn search_train_microbatch_propagates_fatal_backend_error_without_extra_refineme
 
 #[test]
 fn search_validation_microbatch_explicit_failure_uses_explicit_error_path() {
-    let data_dir = unique_test_path("validation-explicit-microbatch-data");
-    fs::create_dir_all(&data_dir).expect("create empty validation data dir");
+    let data_dir = write_tiny_replay_data_dir("validation-explicit-microbatch-data");
     let output_dir = unique_test_path("validation-explicit-microbatch-out");
     let artifacts = BcArtifactPaths::new(&output_dir, 0);
     let mut config = dummy_config();
@@ -2101,8 +2243,7 @@ fn search_validation_microbatch_explicit_failure_uses_explicit_error_path() {
 
 #[test]
 fn search_validation_microbatch_non_explicit_failure_reports_no_stable_result() {
-    let data_dir = unique_test_path("validation-no-stable-data");
-    fs::create_dir_all(&data_dir).expect("create empty validation data dir");
+    let data_dir = write_tiny_replay_data_dir("validation-no-stable-data");
     let output_dir = unique_test_path("validation-no-stable-out");
     let artifacts = BcArtifactPaths::new(&output_dir, 0);
     let mut config = dummy_config();
@@ -2450,6 +2591,153 @@ fn classify_probe_detail_treats_plain_data_keywords_as_data_errors() {
 }
 
 #[test]
+fn replay_load_error_classification_keeps_required_classes_distinct() {
+    use crate::data_pipeline::{ReplayLoadErrorClass, classify_replay_load_error};
+
+    let cases = [
+        (
+            "notes.txt",
+            "ignored extension",
+            ReplayLoadErrorClass::IgnoredUnsupportedFile,
+        ),
+        (
+            "bad.mjai.json.zst",
+            "failed to open zstd MJAI stream: unknown frame descriptor",
+            ReplayLoadErrorClass::CorruptCompressedFile,
+        ),
+        (
+            "bad.mjai.json",
+            "failed to parse MJAI events: expected value at line 1 column 1",
+            ReplayLoadErrorClass::InvalidJson,
+        ),
+        (
+            "bad.mjai.json",
+            "unsupported mjai event: reach_accepted",
+            ReplayLoadErrorClass::UnsupportedEvent,
+        ),
+        (
+            "bad.mjai.json",
+            "replay observation failed: legal action not found",
+            ReplayLoadErrorClass::ReplayDesync,
+        ),
+        (
+            "bad.mjai.json",
+            "score placement invariant failed",
+            ReplayLoadErrorClass::EngineInvariantFailure,
+        ),
+    ];
+
+    for (path, err, expected) in cases {
+        assert_eq!(classify_replay_load_error(path, &err), expected);
+    }
+}
+
+#[test]
+fn preflight_resume_state_reuses_matching_completed_candidate() {
+    let key = preflight_cache_key(
+        &dummy_config(),
+        &model_fingerprint_input(&HydraModelConfig::learner()),
+        "cpu",
+        hydra_train_runtime::config::default_num_threads_for_system(),
+    );
+    let state = PreflightState {
+        cache_key: key,
+        completed_phases: vec![PreflightCompletedPhase {
+            phase: "train_probe".to_string(),
+            elapsed_seconds: 1.25,
+        }],
+        selected_runtime: None,
+        cache_written: false,
+        candidate_records: vec![hydra_train_runtime::preflight::PreflightCandidateRecord {
+            phase: "train_probe".to_string(),
+            result: ProbeResult {
+                kind: ProbeKind::Train,
+                candidate_microbatch: 32,
+                status: ProbeStatus::Success,
+                measured_samples_per_second: Some(100.0),
+                elapsed_seconds: Some(1.0),
+                detail: "ok".to_string(),
+            },
+        }],
+    };
+
+    assert_eq!(completed_phase_seconds(&state, "train_probe"), Some(1.25));
+    let results = resumed_candidate_results(&state, "train_probe");
+    assert_eq!(successful_candidate_selection(&results), Some(32));
+}
+
+#[test]
+fn resumed_train_seed_requires_exact_successful_attempts() {
+    let mut config = dummy_config();
+    config.preflight.required_successes = 2;
+    let incomplete = vec![ProbeResult {
+        kind: ProbeKind::Train,
+        candidate_microbatch: 32,
+        status: ProbeStatus::Success,
+        measured_samples_per_second: Some(100.0),
+        elapsed_seconds: Some(1.0),
+        detail: "ok".to_string(),
+    }];
+    assert!(exact_train_probe_runtime_seed(&config, 32, &incomplete, incomplete.len()).is_none());
+
+    let complete = vec![
+        ProbeResult {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 32,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: Some(100.0),
+            elapsed_seconds: Some(1.0),
+            detail: "ok".to_string(),
+        },
+        ProbeResult {
+            kind: ProbeKind::Train,
+            candidate_microbatch: 32,
+            status: ProbeStatus::Success,
+            measured_samples_per_second: Some(120.0),
+            elapsed_seconds: Some(1.0),
+            detail: "ok".to_string(),
+        },
+    ];
+    let seed = exact_train_probe_runtime_seed(&config, 32, &complete, complete.len())
+        .expect("exact complete attempts should yield loader seed");
+    assert_eq!(seed.stats.count, 2);
+    assert_eq!(seed.stats.sum, 220.0);
+}
+
+#[test]
+fn preflight_resume_state_ignores_completed_phase_without_successful_candidate() {
+    let key = preflight_cache_key(
+        &dummy_config(),
+        &model_fingerprint_input(&HydraModelConfig::learner()),
+        "cpu",
+        hydra_train_runtime::config::default_num_threads_for_system(),
+    );
+    let state = PreflightState {
+        cache_key: key,
+        completed_phases: vec![PreflightCompletedPhase {
+            phase: "validation_probe".to_string(),
+            elapsed_seconds: 2.0,
+        }],
+        selected_runtime: None,
+        cache_written: false,
+        candidate_records: vec![hydra_train_runtime::preflight::PreflightCandidateRecord {
+            phase: "validation_probe".to_string(),
+            result: ProbeResult {
+                kind: ProbeKind::Validation,
+                candidate_microbatch: 64,
+                status: ProbeStatus::Oom,
+                measured_samples_per_second: None,
+                elapsed_seconds: Some(0.5),
+                detail: "oom".to_string(),
+            },
+        }],
+    };
+
+    let results = resumed_candidate_results(&state, "validation_probe");
+    assert_eq!(successful_candidate_selection(&results), None);
+}
+
+#[test]
 fn format_probe_attempt_message_clamps_zero_total_attempts_for_rl_games() {
     assert_eq!(
         format_probe_attempt_message(ProbeKind::RlGames, 12, 1, 0),
@@ -2495,12 +2783,11 @@ fn run_preflight_returns_cached_runtime_on_identical_fingerprint() {
     use crate::artifacts::{PreflightPaths, write_preflight_cache};
     use hydra_train_runtime::preflight::preflight_cache_key;
     use hydra_train_runtime::preflight::{
-        EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
+        EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry,
     };
 
     let output_dir = unique_test_path("preflight-cache-hit-out");
-    let data_dir = unique_test_path("preflight-cache-hit-data");
-    fs::create_dir_all(&data_dir).expect("create empty data dir for cache hit test");
+    let data_dir = write_tiny_replay_data_dir("preflight-cache-hit-data");
     let artifacts = BcArtifactPaths::new(&output_dir, 0);
     artifacts
         .create_root_dir()
@@ -2519,11 +2806,7 @@ fn run_preflight_returns_cached_runtime_on_identical_fingerprint() {
     );
 
     let cached_runtime = EffectiveRuntimeConfig {
-        selected: SelectedRuntimeConfig {
-            train_microbatch_size: 42,
-            validation_microbatch_size: 21,
-            accum_steps: 7,
-        },
+        selected: selected_runtime_config(42, 21, 7),
         loader: LoaderRuntimeConfig {
             num_threads: Some(4),
             buffer_games: 256,
@@ -2566,23 +2849,75 @@ fn run_preflight_returns_cached_runtime_on_identical_fingerprint() {
         "cache hit has no probe results and must not invent selected-vs-best advisories"
     );
 
+    let paths = PreflightPaths::new(&artifacts);
+    assert!(
+        paths.events_log_path.exists(),
+        "events log should be created"
+    );
+    assert!(
+        paths.metrics_log_path.exists(),
+        "metrics placeholder should be created"
+    );
+    assert!(paths.state_path.exists(), "state file should be created");
+    assert!(paths.report_path.exists(), "report file should be created");
+
+    let events = fs::read_to_string(&paths.events_log_path).expect("read preflight events");
+    let parsed_events: Vec<hydra_train_runtime::preflight::PreflightArtifactEvent> = events
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("event JSONL line should parse"))
+        .collect();
+    assert!(
+        parsed_events
+            .iter()
+            .any(|event| event.phase == "cache_lookup"
+                && event.kind
+                    == hydra_train_runtime::preflight::PreflightArtifactEventKind::Completed),
+        "cache-hit preflight should record cache_lookup completion"
+    );
+
+    let state_raw = fs::read_to_string(&paths.state_path).expect("read preflight state");
+    let state: hydra_train_runtime::preflight::PreflightState =
+        serde_json::from_str(&state_raw).expect("state should parse");
+    assert!(
+        state.cache_written,
+        "state should be durable after cache write"
+    );
+    assert!(
+        state
+            .completed_phases
+            .iter()
+            .any(|phase| phase.phase == "cache_lookup"),
+        "state should persist completed phases"
+    );
+    assert_eq!(
+        state
+            .selected_runtime
+            .expect("selected runtime should persist")
+            .selected
+            .train_microbatch_size,
+        42
+    );
+
+    let report_raw = fs::read_to_string(&paths.report_path).expect("read preflight report");
+    let report: hydra_train_runtime::preflight::PreflightReport =
+        serde_json::from_str(&report_raw).expect("report should parse");
+    assert!(report.cache_hit, "report should preserve cache-hit summary");
+
     let _ = fs::remove_dir_all(&output_dir);
     let _ = fs::remove_dir_all(&data_dir);
 }
 
 #[test]
 fn run_preflight_cache_hit_preserves_benchmark_result() {
-    use crate::artifacts::{PreflightBenchmarkPaths, PreflightPaths, write_preflight_cache};
+    use crate::artifacts::{PreflightPaths, write_preflight_cache};
     use hydra_train_runtime::preflight::preflight_cache_key;
     use hydra_train_runtime::preflight::{
-        BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
-        EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, ProfilingEnvelope,
-        SelectedRuntimeConfig,
+        BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkScore, EffectiveRuntimeConfig,
+        LoaderRuntimeConfig, PreflightCacheEntry, ProfilingEnvelope,
     };
 
     let output_dir = unique_test_path("preflight-cache-hit-benchmark-out");
-    let data_dir = unique_test_path("preflight-cache-hit-benchmark-data");
-    fs::create_dir_all(&data_dir).expect("create empty data dir for benchmark cache hit test");
+    let data_dir = write_tiny_replay_data_dir("preflight-cache-hit-benchmark-data");
     let artifacts = BcArtifactPaths::new(&output_dir, 0);
     artifacts
         .create_root_dir()
@@ -2590,8 +2925,7 @@ fn run_preflight_cache_hit_preserves_benchmark_result() {
 
     let mut config = dummy_config();
     config.data_dir = data_dir.clone();
-    // Disable re-benchmark so we can test cache-hit probe-skip path in isolation
-    config.preflight.real_benchmark_enabled = false;
+    config.preflight.real_benchmark_enabled = true;
     let model_config = HydraModelConfig::learner();
     let model_fingerprint = model_fingerprint_input(&model_config);
     let key = preflight_cache_key(
@@ -2602,17 +2936,17 @@ fn run_preflight_cache_hit_preserves_benchmark_result() {
     );
 
     let benchmark = BenchmarkResult {
-        runtime: BenchmarkRuntimeConfig {
-            train_microbatch_size: 8,
-            validation_microbatch_size: 4,
-            accum_steps: 2,
-            loader: LoaderRuntimeConfig {
+        runtime: benchmark_runtime_config(
+            8,
+            4,
+            2,
+            LoaderRuntimeConfig {
                 num_threads: Some(2),
                 buffer_games: 32,
                 buffer_samples: 128,
                 archive_queue_bound: 4,
             },
-        },
+        ),
         score: BenchmarkScore {
             wall_clock_samples_per_second: 123.456,
             train_only_samples_per_second: 200.0,
@@ -2637,11 +2971,7 @@ fn run_preflight_cache_hit_preserves_benchmark_result() {
         &PreflightCacheEntry {
             cache_key: key,
             runtime: EffectiveRuntimeConfig {
-                selected: SelectedRuntimeConfig {
-                    train_microbatch_size: 8,
-                    validation_microbatch_size: 4,
-                    accum_steps: 2,
-                },
+                selected: selected_runtime_config(8, 4, 2),
                 loader: LoaderRuntimeConfig {
                     num_threads: Some(2),
                     buffer_games: 32,
@@ -2649,7 +2979,7 @@ fn run_preflight_cache_hit_preserves_benchmark_result() {
                     archive_queue_bound: 4,
                 },
             },
-            benchmark: Some(benchmark),
+            benchmark: Some(benchmark.clone()),
         },
     )
     .expect("write cache entry with benchmark");
@@ -2662,19 +2992,37 @@ fn run_preflight_cache_hit_preserves_benchmark_result() {
     let result = run_preflight(&config_path, &config, &model_config, "cpu", &artifacts)
         .expect("cache hit should succeed through common path");
 
-    // With real_benchmark_enabled=false, the stage-2 benchmark is skipped
-    // so the returned benchmark should be None (fresh run, not carried from cache)
-    assert!(
-        result.benchmark.is_none(),
-        "benchmark should be None when real_benchmark_enabled=false"
+    let returned_benchmark = result
+        .benchmark
+        .as_ref()
+        .expect("cache hit should return cached benchmark without re-benchmarking");
+    assert_eq!(returned_benchmark.runtime, benchmark.runtime);
+    assert_eq!(
+        returned_benchmark.metadata.finalists_benchmarked, benchmark.metadata.finalists_benchmarked,
+        "cache-hit real benchmark must not synthesize finalists from empty probe vectors"
+    );
+    assert_eq!(
+        returned_benchmark.score.wall_clock_samples_per_second,
+        benchmark.score.wall_clock_samples_per_second
     );
     assert_eq!(result.runtime.selected.train_microbatch_size, 8);
     assert_eq!(result.runtime.selected.validation_microbatch_size, 4);
+
+    let events = fs::read_to_string(&paths.events_log_path).expect("read preflight events");
+    let parsed_events: Vec<hydra_train_runtime::preflight::PreflightArtifactEvent> = events
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("event JSONL line should parse"))
+        .collect();
     assert!(
-        !PreflightBenchmarkPaths::new(&artifacts)
-            .report_path()
-            .exists(),
-        "cache-hit preflight without stage-2 benchmark should not emit benchmark report"
+        parsed_events.iter().any(|event| {
+            event.phase == "stage_2_benchmark"
+                && event.kind == hydra_train_runtime::preflight::PreflightArtifactEventKind::Skipped
+                && event
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("reused cached benchmark result"))
+        }),
+        "cache-hit real benchmark should report reuse, not an empty-finalist re-benchmark"
     );
     assert!(
         result.advisories.is_empty(),
@@ -2690,7 +3038,7 @@ fn run_preflight_misses_cache_on_different_fingerprint() {
     use crate::artifacts::{PreflightPaths, write_preflight_cache};
     use hydra_train_runtime::preflight::{
         EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, PreflightCacheEntry,
-        PreflightCacheKey, SelectedRuntimeConfig, WorkloadFingerprint,
+        PreflightCacheKey, WorkloadFingerprint,
     };
 
     let output_dir = unique_test_path("preflight-cache-miss-out");
@@ -2728,11 +3076,7 @@ fn run_preflight_misses_cache_on_different_fingerprint() {
         &PreflightCacheEntry {
             cache_key: stale_key,
             runtime: EffectiveRuntimeConfig {
-                selected: SelectedRuntimeConfig {
-                    train_microbatch_size: 99,
-                    validation_microbatch_size: 99,
-                    accum_steps: 1,
-                },
+                selected: selected_runtime_config(99, 99, 1),
                 loader: LoaderRuntimeConfig {
                     num_threads: Some(1),
                     buffer_games: 999,
@@ -2768,7 +3112,7 @@ fn run_rl_preflight_returns_cached_runtime_on_identical_fingerprint() {
     use crate::artifacts::{RlArtifactPaths, RlPreflightPaths, write_preflight_cache};
     use hydra_train_runtime::preflight::preflight_cache_key;
     use hydra_train_runtime::preflight::{
-        EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry, SelectedRuntimeConfig,
+        EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightCacheEntry,
     };
 
     let output_dir = unique_test_path("rl-preflight-cache-hit-out");
@@ -2792,11 +3136,7 @@ fn run_rl_preflight_returns_cached_runtime_on_identical_fingerprint() {
     );
 
     let cached_runtime = EffectiveRuntimeConfig {
-        selected: SelectedRuntimeConfig {
-            train_microbatch_size: 77,
-            validation_microbatch_size: 33,
-            accum_steps: 3,
-        },
+        selected: selected_runtime_config(77, 33, 3),
         loader: LoaderRuntimeConfig {
             num_threads: Some(4),
             buffer_games: 256,
@@ -2837,5 +3177,129 @@ fn run_rl_preflight_returns_cached_runtime_on_identical_fingerprint() {
         "cache hit should skip RL microbatch probing"
     );
 
+    let _ = fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn apply_cached_runtime_applies_loader_tuple_for_fresh_start() {
+    let output_dir = unique_test_path("loader-cache-apply-out");
+    let artifacts = BcArtifactPaths::new(&output_dir, 0);
+    artifacts.create_root_dir().expect("create artifact root");
+    let mut config = dummy_config();
+    config.output_dir = output_dir.clone();
+    config.batch_size = 128;
+    config.microbatch_size = Some(64);
+    config.validation_microbatch_size = Some(32);
+    config.num_threads = Some(1);
+    config.buffer_games = 16;
+    config.buffer_samples = 128;
+    config.archive_queue_bound = 8;
+    let model_config = HydraModelConfig::learner();
+    let paths = PreflightPaths::new(&artifacts);
+    write_preflight_cache(
+        &paths.cache_path,
+        &PreflightCacheEntry {
+            cache_key: preflight_cache_key(
+                &config,
+                &model_fingerprint_input(&model_config),
+                &config.device,
+                hydra_train_runtime::config::default_num_threads_for_system(),
+            ),
+            runtime: EffectiveRuntimeConfig {
+                selected: selected_runtime_config(32, 16, 4),
+                loader: LoaderRuntimeConfig {
+                    num_threads: Some(2),
+                    buffer_games: 7,
+                    buffer_samples: 64,
+                    archive_queue_bound: 3,
+                },
+            },
+            benchmark: None,
+        },
+    )
+    .expect("write safe preflight cache");
+    let resume = ResumeContext {
+        checkpoint_base: None,
+        state: None,
+        optimizer_base: None,
+        session_start_global_step: 0,
+        start_epoch: 0,
+    };
+
+    apply_cached_bc_runtime_if_matching(&mut config, &resume, &artifacts, &model_config)
+        .expect("fresh safe cache should apply");
+
+    assert_eq!(config.batch_size, 128);
+    assert_eq!(config.microbatch_size, Some(32));
+    assert_eq!(config.validation_microbatch_size, Some(16));
+    assert_eq!(config.num_threads, Some(2));
+    assert_eq!(config.buffer_games, 7);
+    assert_eq!(config.buffer_samples, 64);
+    assert_eq!(config.archive_queue_bound, 3);
+    let _ = fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn apply_cached_runtime_keeps_loader_tuple_on_partial_resume() {
+    let output_dir = unique_test_path("loader-cache-partial-resume-out");
+    let artifacts = BcArtifactPaths::new(&output_dir, 0);
+    artifacts.create_root_dir().expect("create artifact root");
+    let mut config = dummy_config();
+    config.output_dir = output_dir.clone();
+    config.batch_size = 128;
+    config.microbatch_size = Some(64);
+    config.validation_microbatch_size = Some(32);
+    config.num_threads = Some(1);
+    config.buffer_games = 16;
+    config.buffer_samples = 128;
+    config.archive_queue_bound = 8;
+    let model_config = HydraModelConfig::learner();
+    let paths = PreflightPaths::new(&artifacts);
+    write_preflight_cache(
+        &paths.cache_path,
+        &PreflightCacheEntry {
+            cache_key: preflight_cache_key(
+                &config,
+                &model_fingerprint_input(&model_config),
+                &config.device,
+                hydra_train_runtime::config::default_num_threads_for_system(),
+            ),
+            runtime: EffectiveRuntimeConfig {
+                selected: selected_runtime_config(32, 16, 4),
+                loader: LoaderRuntimeConfig {
+                    num_threads: Some(2),
+                    buffer_games: 7,
+                    buffer_samples: 64,
+                    archive_queue_bound: 3,
+                },
+            },
+            benchmark: None,
+        },
+    )
+    .expect("write safe preflight cache");
+    let resume = ResumeContext {
+        checkpoint_base: None,
+        state: Some(crate::resume::build_resume_state(
+            1,
+            3,
+            7,
+            None,
+            crate::resume::test_runtime_resume_contract(128, 64, 32),
+        )),
+        optimizer_base: None,
+        session_start_global_step: 7,
+        start_epoch: 1,
+    };
+
+    apply_cached_bc_runtime_if_matching(&mut config, &resume, &artifacts, &model_config)
+        .expect("partial resume should ignore safe cache");
+
+    assert_eq!(config.batch_size, 128);
+    assert_eq!(config.microbatch_size, Some(64));
+    assert_eq!(config.validation_microbatch_size, Some(32));
+    assert_eq!(config.num_threads, Some(1));
+    assert_eq!(config.buffer_games, 16);
+    assert_eq!(config.buffer_samples, 128);
+    assert_eq!(config.archive_queue_bound, 8);
     let _ = fs::remove_dir_all(&output_dir);
 }

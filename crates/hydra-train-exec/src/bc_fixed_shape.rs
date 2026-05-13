@@ -2,7 +2,7 @@ use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
-use crate::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned};
+use crate::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned_timed};
 use crate::losses::HydraLoss;
 use crate::model::{HydraModel, HydraTrainModelExt};
 use hydra_model::amp::maybe_autocast;
@@ -33,6 +33,7 @@ pub struct FixedShapeTrainStepOutput {
 pub struct FixedShapeBenchmarkStepOutput {
     pub grads: GradientsParams,
     pub batch_stats: Vec<BatchStats>,
+    pub sub_stage_timing: TrainSubStageTiming,
 }
 
 pub struct FixedShapeTrainConfig<'a, B>
@@ -129,16 +130,20 @@ where
     let mut sub_timing = TrainSubStageTiming::default();
 
     for chunk in fixed_shape_prefix.chunks_exact(microbatch_size) {
-        let t = Instant::now();
         let collated = {
             let _collation_scope = crate::nvtx::scope(PROFILING_STAGE_COLLATION);
-            collate_samples_bc_owned::<B>(chunk, augment, train_device)
+            collate_samples_bc_owned_timed::<B>(chunk, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
-        sub_timing.collation_seconds += t.elapsed().as_secs_f64();
-        let Some((obs, batch, targets)) = collated else {
+        let Some(collated) = collated else {
             continue;
         };
+        sub_timing.collation_seconds += collated.cpu_prep_seconds;
+        sub_timing.h2d_transfer_seconds += collated.device_materialize_seconds;
+        sub_timing.h2d_tensor_materialize_seconds += collated.device_materialize_seconds;
+        let obs = collated.obs;
+        let batch = collated.batch;
+        let targets = collated.targets;
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t = Instant::now();
@@ -187,16 +192,20 @@ where
     }
 
     if !tail_remainder.is_empty() {
-        let t = Instant::now();
         let collated = {
             let _collation_scope = crate::nvtx::scope(PROFILING_STAGE_COLLATION);
-            collate_samples_bc_owned::<B>(tail_remainder, augment, train_device)
+            collate_samples_bc_owned_timed::<B>(tail_remainder, augment, train_device)
                 .map_err(|err| format!("training collation failed: {err}"))?
         };
-        sub_timing.collation_seconds += t.elapsed().as_secs_f64();
-        let Some((obs, batch, targets)) = collated else {
+        let Some(collated) = collated else {
             return Ok(None);
         };
+        sub_timing.collation_seconds += collated.cpu_prep_seconds;
+        sub_timing.h2d_transfer_seconds += collated.device_materialize_seconds;
+        sub_timing.h2d_tensor_materialize_seconds += collated.device_materialize_seconds;
+        let obs = collated.obs;
+        let batch = collated.batch;
+        let targets = collated.targets;
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t = Instant::now();
@@ -350,19 +359,28 @@ where
     let mut step_batches = Vec::with_capacity(
         fixed_shape_prefix.len() / microbatch_size + usize::from(!tail_remainder.is_empty()),
     );
+    let mut sub_timing = TrainSubStageTiming::default();
 
     for chunk in fixed_shape_prefix.chunks_exact(microbatch_size) {
-        let Some((obs, batch, targets)) =
-            collate_samples_bc_owned::<B>(chunk, augment, train_device)
-                .map_err(|err| format!("benchmark train collation failed: {err}"))?
+        let Some(collated) = collate_samples_bc_owned_timed::<B>(chunk, augment, train_device)
+            .map_err(|err| format!("benchmark train collation failed: {err}"))?
         else {
             continue;
         };
+        sub_timing.collation_seconds += collated.cpu_prep_seconds;
+        sub_timing.h2d_transfer_seconds += collated.device_materialize_seconds;
+        sub_timing.h2d_tensor_materialize_seconds += collated.device_materialize_seconds;
+        let obs = collated.obs;
+        let batch = collated.batch;
+        let targets = collated.targets;
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let t_forward = Instant::now();
         let output = maybe_autocast(use_amp, || {
             model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
+        sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();
+        let t_loss = Instant::now();
         let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
             breakdown.total.clone(),
@@ -371,6 +389,7 @@ where
             batch.exit_mask.as_ref(),
             bc_exit_cfg,
         );
+        sub_timing.loss_seconds += t_loss.elapsed().as_secs_f64();
         step_batches.push(BatchStats {
             sample_count: chunk.len(),
             batch_count: 1,
@@ -388,26 +407,38 @@ where
             )
         });
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
+        let t_backward = Instant::now();
         let grads = (total * chunk_weight).backward();
         let grads = GradientsParams::from_grads(grads, model);
         accumulator.accumulate(model, grads);
+        sub_timing.backward_seconds += t_backward.elapsed().as_secs_f64();
     }
 
     if !tail_remainder.is_empty() {
-        let Some((obs, batch, targets)) =
-            collate_samples_bc_owned::<B>(tail_remainder, augment, train_device)
+        let Some(collated) =
+            collate_samples_bc_owned_timed::<B>(tail_remainder, augment, train_device)
                 .map_err(|err| format!("benchmark train collation failed: {err}"))?
         else {
             return Ok(Some(FixedShapeBenchmarkStepOutput {
                 grads: accumulator.grads(),
                 batch_stats: step_batches,
+                sub_stage_timing: sub_timing,
             }));
         };
+        sub_timing.collation_seconds += collated.cpu_prep_seconds;
+        sub_timing.h2d_transfer_seconds += collated.device_materialize_seconds;
+        sub_timing.h2d_tensor_materialize_seconds += collated.device_materialize_seconds;
+        let obs = collated.obs;
+        let batch = collated.batch;
+        let targets = collated.targets;
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let t_forward = Instant::now();
         let output = maybe_autocast(use_amp, || {
             model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
+        sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();
+        let t_loss = Instant::now();
         let breakdown = active_loss_fn.total_loss(&output, &targets);
         let total = maybe_add_exit_loss(
             breakdown.total.clone(),
@@ -416,6 +447,7 @@ where
             batch.exit_mask.as_ref(),
             bc_exit_cfg,
         );
+        sub_timing.loss_seconds += t_loss.elapsed().as_secs_f64();
         step_batches.push(BatchStats {
             sample_count: tail_remainder.len(),
             batch_count: 1,
@@ -433,14 +465,17 @@ where
             )
         });
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
+        let t_backward = Instant::now();
         let grads = (total * chunk_weight).backward();
         let grads = GradientsParams::from_grads(grads, model);
         accumulator.accumulate(model, grads);
+        sub_timing.backward_seconds += t_backward.elapsed().as_secs_f64();
     }
 
     Ok(Some(FixedShapeBenchmarkStepOutput {
         grads: accumulator.grads(),
         batch_stats: step_batches,
+        sub_stage_timing: sub_timing,
     }))
 }
 

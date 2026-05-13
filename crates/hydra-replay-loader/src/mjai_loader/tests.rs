@@ -13,6 +13,7 @@ use std::fs::{self, File};
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zstd::stream::write::Encoder as ZstdEncoder;
 
 fn dummy_game() -> MjaiGame {
     MjaiGame {
@@ -118,6 +119,22 @@ fn load_game_from_reader_extracts_samples() {
             .iter()
             .all(|sample| sample.legal_mask[sample.action as usize] > 0.0)
     );
+}
+
+#[test]
+fn replay_materialization_stats_record_parse_update_encode_and_mask() {
+    let _ = drain_replay_materialization_stats();
+    let game = load_game_from_reader(Cursor::new(replay_sidecar_guardrail_log()))
+        .expect("guardrail replay should load");
+    assert!(!game.samples.is_empty());
+
+    let stats = drain_replay_materialization_stats();
+    assert!(stats.json_parse_ns > 0);
+    assert!(stats.replay_update_ns > 0);
+    assert!(stats.observation_encode_ns > 0);
+    assert!(stats.mask_build_ns > 0);
+    assert!(stats.event_count > 0);
+    assert!(stats.decision_count > 0);
 }
 
 #[test]
@@ -862,6 +879,44 @@ fn load_game_from_gzip_path_extracts_samples() {
 
     assert_eq!(game.final_scores, final_scores);
     assert!(game.samples.len() > 50);
+}
+
+#[test]
+fn replay_materialization_stats_record_gzip_decompression() {
+    let _ = drain_replay_materialization_stats();
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(replay_sidecar_guardrail_log().as_bytes())
+        .unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let game = load_game_from_stream(Cursor::new(compressed)).expect("gzip replay should load");
+    assert!(!game.samples.is_empty());
+
+    let stats = drain_replay_materialization_stats();
+    assert!(stats.decompress_ns > 0);
+    assert!(stats.json_parse_ns > 0);
+}
+
+#[test]
+fn replay_materialization_stats_record_zstd_decompression_separately_from_json_parse() {
+    let _ = drain_replay_materialization_stats();
+    let mut encoder = ZstdEncoder::new(Vec::new(), 0).expect("create zstd encoder");
+    encoder
+        .write_all(replay_sidecar_guardrail_log().as_bytes())
+        .expect("write zstd log");
+    let compressed = encoder.finish().expect("finish zstd log");
+
+    let game = load_game_from_stream(Cursor::new(compressed)).expect("zstd replay should load");
+    assert!(!game.samples.is_empty());
+
+    let stats = drain_replay_materialization_stats();
+    assert!(stats.decompress_ns > 0);
+    assert!(stats.json_parse_ns > 0);
+    assert_ne!(
+        stats.decompress_ns, stats.json_parse_ns,
+        "zstd decompression timing must be recorded independently from JSON parse timing"
+    );
 }
 
 #[test]

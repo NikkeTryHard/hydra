@@ -27,8 +27,9 @@ use std::array;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 use zstd::stream::read::Decoder as ZstdDecoder;
 
 const MISSING_TILE_TARGET: u8 = 255;
@@ -36,6 +37,42 @@ const MISSING_TILE_TARGET: u8 = 255;
 #[derive(Clone, Copy, Default)]
 struct ReplayDecisionOptions {
     use_bc_minimal_encode: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReplayMaterializationStats {
+    pub decompress_ns: u128,
+    pub json_parse_ns: u128,
+    pub replay_update_ns: u128,
+    pub observation_encode_ns: u128,
+    pub mask_build_ns: u128,
+    pub event_count: usize,
+    pub decision_count: usize,
+}
+
+impl ReplayMaterializationStats {
+    pub fn elapsed(&self) -> Duration {
+        Duration::from_nanos(
+            self.decompress_ns
+                .saturating_add(self.json_parse_ns)
+                .saturating_add(self.replay_update_ns)
+                .saturating_add(self.observation_encode_ns)
+                .saturating_add(self.mask_build_ns)
+                .min(u64::MAX as u128) as u64,
+        )
+    }
+
+    pub fn merge_assign(&mut self, other: ReplayMaterializationStats) {
+        self.decompress_ns = self.decompress_ns.saturating_add(other.decompress_ns);
+        self.json_parse_ns = self.json_parse_ns.saturating_add(other.json_parse_ns);
+        self.replay_update_ns = self.replay_update_ns.saturating_add(other.replay_update_ns);
+        self.observation_encode_ns = self
+            .observation_encode_ns
+            .saturating_add(other.observation_encode_ns);
+        self.mask_build_ns = self.mask_build_ns.saturating_add(other.mask_build_ns);
+        self.event_count = self.event_count.saturating_add(other.event_count);
+        self.decision_count = self.decision_count.saturating_add(other.decision_count);
+    }
 }
 
 #[derive(Default)]
@@ -61,12 +98,41 @@ struct ReplayProfileStats {
 }
 
 static REPLAY_PROFILE_PRINTED: AtomicBool = AtomicBool::new(false);
-static REPLAY_IMPLICIT_PASS_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static REPLAY_OBSERVATION_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static REPLAY_LEGAL_MASK_BUILD_NS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-static REPLAY_ENCODE_OBS_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REPLAY_IMPLICIT_PASS_NS: AtomicU64 = AtomicU64::new(0);
+static REPLAY_OBSERVATION_NS: AtomicU64 = AtomicU64::new(0);
+static REPLAY_LEGAL_MASK_BUILD_NS: AtomicU64 = AtomicU64::new(0);
+static REPLAY_ENCODE_OBS_NS: AtomicU64 = AtomicU64::new(0);
+static REPLAY_MATERIALIZATION_TOTALS: Mutex<ReplayMaterializationStats> =
+    Mutex::new(ReplayMaterializationStats {
+        decompress_ns: 0,
+        json_parse_ns: 0,
+        replay_update_ns: 0,
+        observation_encode_ns: 0,
+        mask_build_ns: 0,
+        event_count: 0,
+        decision_count: 0,
+    });
 
+fn replay_materialization_totals() -> MutexGuard<'static, ReplayMaterializationStats> {
+    REPLAY_MATERIALIZATION_TOTALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn drain_replay_materialization_stats() -> ReplayMaterializationStats {
+    let mut totals = replay_materialization_totals();
+    let stats = *totals;
+    *totals = ReplayMaterializationStats::default();
+    stats
+}
+
+pub fn peek_replay_materialization_stats() -> ReplayMaterializationStats {
+    *replay_materialization_totals()
+}
+
+fn record_replay_materialization_stats(stats: ReplayMaterializationStats) {
+    replay_materialization_totals().merge_assign(stats);
+}
 fn maybe_print_replay_profile(stats: &ReplayProfileStats) {
     if REPLAY_PROFILE_PRINTED.swap(true, Ordering::SeqCst) {
         return;
@@ -980,6 +1046,17 @@ fn load_game_from_events_internal(
     stats.replay_observation_ns = REPLAY_OBSERVATION_NS.swap(0, Ordering::Relaxed) as u128;
     stats.legal_mask_build_ns = REPLAY_LEGAL_MASK_BUILD_NS.swap(0, Ordering::Relaxed) as u128;
     stats.encode_observation_ns = REPLAY_ENCODE_OBS_NS.swap(0, Ordering::Relaxed) as u128;
+    record_replay_materialization_stats(ReplayMaterializationStats {
+        decompress_ns: 0,
+        json_parse_ns: 0,
+        replay_update_ns: stats.update_safety_ns.saturating_add(stats.apply_event_ns),
+        observation_encode_ns: stats
+            .replay_observation_ns
+            .saturating_add(stats.encode_observation_ns),
+        mask_build_ns: stats.legal_mask_build_ns,
+        event_count: stats.event_count,
+        decision_count: stats.decision_count,
+    });
 
     maybe_print_replay_profile(&stats);
 
@@ -1026,10 +1103,15 @@ pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
     let t_parse = Instant::now();
     let events = read_mjai_events(reader)
         .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+    let parse_ns = t_parse.elapsed().as_nanos();
     let game = load_game_from_events(events)?;
+    record_replay_materialization_stats(ReplayMaterializationStats {
+        json_parse_ns: parse_ns,
+        ..ReplayMaterializationStats::default()
+    });
     if !game.samples.is_empty() {
         let stats = ReplayProfileStats {
-            parse_events_ns: t_parse.elapsed().as_nanos(),
+            parse_events_ns: parse_ns,
             ..ReplayProfileStats::default()
         };
         maybe_print_replay_profile(&stats);
@@ -1090,8 +1172,13 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
+    let t_parse = Instant::now();
     let events = read_mjai_events(reader)
         .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+    record_replay_materialization_stats(ReplayMaterializationStats {
+        json_parse_ns: t_parse.elapsed().as_nanos(),
+        ..ReplayMaterializationStats::default()
+    });
     load_game_from_events_with_sidecar(
         source_identity,
         exit_provenance,
@@ -1109,6 +1196,38 @@ enum StreamCompression {
     Zstd,
 }
 
+struct TimedRead<R> {
+    inner: R,
+    elapsed_ns: Arc<AtomicU64>,
+}
+
+impl<R> TimedRead<R> {
+    fn new(inner: R) -> (Self, Arc<AtomicU64>) {
+        let elapsed_ns = Arc::new(AtomicU64::new(0));
+        (
+            Self {
+                inner,
+                elapsed_ns: Arc::clone(&elapsed_ns),
+            },
+            elapsed_ns,
+        )
+    }
+}
+
+impl<R: Read> Read for TimedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let start = Instant::now();
+        let result = self.inner.read(buf);
+        let elapsed = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let _ = self
+            .elapsed_ns
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(elapsed))
+            });
+        result
+    }
+}
+
 fn inspect_stream_compression<R: BufRead>(reader: &mut R) -> io::Result<StreamCompression> {
     let buf = reader
         .fill_buf()
@@ -1122,16 +1241,37 @@ fn inspect_stream_compression<R: BufRead>(reader: &mut R) -> io::Result<StreamCo
     }
 }
 
+fn record_decompression_result<T>(
+    result: &io::Result<T>,
+    elapsed_ns: &AtomicU64,
+    compression: StreamCompression,
+) {
+    if result.is_ok() && !matches!(compression, StreamCompression::Plain) {
+        record_replay_materialization_stats(ReplayMaterializationStats {
+            decompress_ns: u128::from(elapsed_ns.load(Ordering::Relaxed)),
+            ..ReplayMaterializationStats::default()
+        });
+    }
+}
+
 pub fn load_game_from_stream<R: Read>(reader: R) -> io::Result<MjaiGame> {
     let mut reader = BufReader::new(reader);
     let compression = inspect_stream_compression(&mut reader)?;
 
     match compression {
-        StreamCompression::Gzip => load_game_from_reader(BufReader::new(GzDecoder::new(reader))),
+        StreamCompression::Gzip => {
+            let (timed, elapsed_ns) = TimedRead::new(GzDecoder::new(reader));
+            let result = load_game_from_reader(BufReader::new(timed));
+            record_decompression_result(&result, elapsed_ns.as_ref(), compression);
+            result
+        }
         StreamCompression::Zstd => {
             let zstd = ZstdDecoder::new(reader)
                 .map_err(|err| invalid_data(format!("failed to open zstd MJAI stream: {err}")))?;
-            load_game_from_reader(BufReader::new(zstd))
+            let (timed, elapsed_ns) = TimedRead::new(zstd);
+            let result = load_game_from_reader(BufReader::new(timed));
+            record_decompression_result(&result, elapsed_ns.as_ref(), compression);
+            result
         }
         StreamCompression::Plain => load_game_from_reader(reader),
     }
@@ -1150,27 +1290,35 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
     let compression = inspect_stream_compression(&mut reader)?;
 
     match compression {
-        StreamCompression::Gzip => load_game_from_reader_with_sidecar(
-            source_identity,
-            exit_provenance,
-            delta_q_provenance,
-            profile,
-            BufReader::new(GzDecoder::new(reader)),
-            exit_sidecar,
-            delta_q_sidecar,
-        ),
-        StreamCompression::Zstd => {
-            let zstd = ZstdDecoder::new(reader)
-                .map_err(|err| invalid_data(format!("failed to open zstd MJAI stream: {err}")))?;
-            load_game_from_reader_with_sidecar(
+        StreamCompression::Gzip => {
+            let (timed, elapsed_ns) = TimedRead::new(GzDecoder::new(reader));
+            let result = load_game_from_reader_with_sidecar(
                 source_identity,
                 exit_provenance,
                 delta_q_provenance,
                 profile,
-                BufReader::new(zstd),
+                BufReader::new(timed),
                 exit_sidecar,
                 delta_q_sidecar,
-            )
+            );
+            record_decompression_result(&result, elapsed_ns.as_ref(), compression);
+            result
+        }
+        StreamCompression::Zstd => {
+            let zstd = ZstdDecoder::new(reader)
+                .map_err(|err| invalid_data(format!("failed to open zstd MJAI stream: {err}")))?;
+            let (timed, elapsed_ns) = TimedRead::new(zstd);
+            let result = load_game_from_reader_with_sidecar(
+                source_identity,
+                exit_provenance,
+                delta_q_provenance,
+                profile,
+                BufReader::new(timed),
+                exit_sidecar,
+                delta_q_sidecar,
+            );
+            record_decompression_result(&result, elapsed_ns.as_ref(), compression);
+            result
         }
         StreamCompression::Plain => load_game_from_reader_with_sidecar(
             source_identity,

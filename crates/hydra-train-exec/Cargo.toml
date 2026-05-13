@@ -49,6 +49,7 @@ cc = "1"
 
 
 [features]
+default = ["cuda-graph"]
 bootstrap-exec-in-progress = []
 rl-runner-exec-in-progress = []
 cuda-graph = []

@@ -1,5 +1,6 @@
 use super::super::config::{AdvancedLossConfig, PrecisionMode, RlPhaseConfig, RlTrainConfig};
 use super::*;
+use crate::preflight::PreflightTuningMode;
 use crate::test_support::dummy_train_config;
 use std::path::PathBuf;
 
@@ -50,6 +51,85 @@ fn validate_config_requires_positive_sidecar_backed_advanced_losses() {
                 .to_string()
         )
     );
+}
+
+#[test]
+fn validate_config_enforces_unsafe_candidate_batch_size_contract() {
+    let mut config = dummy_config();
+    assert!(config.preflight.unsafe_candidate_batch_sizes.is_empty());
+    assert!(validate_config(&config).is_ok());
+
+    config.preflight.unsafe_candidate_batch_sizes = vec![512];
+    assert_eq!(
+        validate_config(&config),
+        Err(
+            "preflight.unsafe_candidate_batch_sizes requires preflight.tuning_mode = unsafe"
+                .to_string()
+        )
+    );
+
+    config.preflight.tuning_mode = PreflightTuningMode::Unsafe;
+    assert!(validate_config(&config).is_ok());
+
+    config.preflight.unsafe_candidate_batch_sizes.clear();
+    assert_eq!(
+        validate_config(&config),
+        Err(
+            "preflight.unsafe_candidate_batch_sizes must be non-empty when preflight.tuning_mode = unsafe"
+                .to_string()
+        )
+    );
+
+    config.preflight.unsafe_candidate_batch_sizes = vec![256, 0];
+    assert_eq!(
+        validate_config(&config),
+        Err("preflight.unsafe_candidate_batch_sizes entries must be greater than 0".to_string())
+    );
+}
+
+#[test]
+fn validate_config_enforces_unsafe_hyperparam_candidate_contract() {
+    let mut config = dummy_config();
+    config.preflight.unsafe_candidate_lr_scales = vec![1.5];
+    assert_eq!(
+        validate_config(&config),
+        Err(
+            "preflight.unsafe_candidate_lr_scales requires preflight.tuning_mode = unsafe"
+                .to_string()
+        )
+    );
+
+    config.preflight.unsafe_candidate_lr_scales.clear();
+    config.preflight.unsafe_candidate_warmup_steps = vec![500];
+    assert_eq!(
+        validate_config(&config),
+        Err(
+            "preflight.unsafe_candidate_warmup_steps requires preflight.tuning_mode = unsafe"
+                .to_string()
+        )
+    );
+
+    config.preflight.tuning_mode = PreflightTuningMode::Unsafe;
+    config.preflight.unsafe_candidate_batch_sizes = vec![512];
+    config.preflight.unsafe_candidate_warmup_steps.clear();
+    config.preflight.unsafe_candidate_lr_scales = vec![1.0, 0.0];
+    assert_eq!(
+        validate_config(&config),
+        Err(
+            "preflight.unsafe_candidate_lr_scales entries must be finite and greater than 0"
+                .to_string()
+        )
+    );
+
+    config.preflight.unsafe_candidate_lr_scales = vec![1.0];
+    config.preflight.unsafe_candidate_warmup_steps = vec![100, 0];
+    assert_eq!(
+        validate_config(&config),
+        Err("preflight.unsafe_candidate_warmup_steps entries must be greater than 0".to_string())
+    );
+
+    config.preflight.unsafe_candidate_warmup_steps = vec![100];
+    assert!(validate_config(&config).is_ok());
 }
 
 #[test]

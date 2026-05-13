@@ -10,7 +10,10 @@ use burn::backend::libtorch::{LibTorchDevice, TchTensor};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
-use hydra_train_runtime::config::{PrecisionMode, TrainCli, TrainConfig, display_num_threads};
+use hydra_train_runtime::config::{
+    PrecisionMode, TrainCli, TrainConfig, display_num_threads,
+    require_explicit_preflight_tuning_mode,
+};
 
 use crate::config_runtime::{configure_threads, device_label, train_device, validate_config};
 use hydra_train_runtime::preflight::{
@@ -34,7 +37,7 @@ use crate::presentation::{
     explicit_preflight_summary, format_advisory_line, format_preflight_selection_line,
     format_preflight_summary_line, format_probe_results_table, format_status_line,
     format_timed_phase_message, format_warning_line, print_banner_field, print_header_block,
-    timestamped,
+    timestamped, unsafe_preflight_math_summary,
 };
 use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use crate::resume::BestValidation;
@@ -44,6 +47,7 @@ use crate::validation_runner::materialize_validation_samples;
 /// Runs explicit preflight mode for BC or RL training.
 pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result<(), String> {
     let preflight_wall_start = Instant::now();
+    require_explicit_preflight_tuning_mode(config_path)?;
     validate_config(config)?;
     configure_threads(config.num_threads)?;
     if config.rl.is_some() {
@@ -93,13 +97,18 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
     )?;
     println!(
         "{}",
-        format_bc_preflight_selection_message(preflight.runtime, preflight.explicit)
+        format_bc_preflight_selection_message(
+            preflight.runtime,
+            preflight.explicit,
+            config.preflight.tuning_mode,
+        )
     );
     if let Some(benchmark) = preflight.benchmark.as_ref() {
         println!(
             "{}",
             format_preflight_selection_line(format!(
-                "benchmark winner mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?})",
+                "benchmark winner tuning_mode={:?} benchmark_mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?})",
+                config.preflight.tuning_mode,
                 benchmark.metadata.mode,
                 benchmark.score.wall_clock_samples_per_second,
                 benchmark.score.train_only_samples_per_second,
@@ -111,6 +120,9 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
                 benchmark.runtime.loader.num_threads,
             ))
         );
+    }
+    if let Some(math_summary) = unsafe_preflight_math_summary(preflight.runtime, &config.bc) {
+        println!("{}", format_preflight_selection_line(math_summary));
     }
     for advisory in &preflight.advisories {
         println!("{}", format_advisory_line(advisory));
@@ -223,8 +235,12 @@ pub fn format_rl_preflight_selection_message(
 pub fn format_bc_preflight_selection_message(
     runtime: EffectiveRuntimeConfig,
     explicit: ExplicitSettings,
+    tuning_mode: hydra_train_runtime::preflight::PreflightTuningMode,
 ) -> String {
-    format_preflight_summary_line("Preflight:", explicit_preflight_summary(runtime, explicit))
+    format_preflight_summary_line(
+        "Preflight:",
+        explicit_preflight_summary(runtime, explicit, tuning_mode),
+    )
 }
 
 /// Formats a preflight/probe table with title and selected candidate marker.

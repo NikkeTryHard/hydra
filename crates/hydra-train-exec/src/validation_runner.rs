@@ -2,7 +2,7 @@ use crate::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
 };
 use crate::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
-use crate::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
+use crate::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned_timed};
 use crate::delta_q_promotion::{
     collect_policy_transfer_metrics_from_policy_outputs, collect_promotion_metrics_from_outputs,
 };
@@ -20,8 +20,9 @@ use hydra_bc_shards::{
 use hydra_data_core::manifest::DataManifest;
 use hydra_train_runtime::head_gates::HeadActivationController;
 use hydra_train_runtime::preflight::{
-    PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD,
-    PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
+    PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, PROFILING_STAGE_COLLATION,
+    PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD, PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
+    PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_VALIDATION, ProfilingEnvelope,
 };
 use hydra_train_runtime::validation::ValidationRunConfig;
 use hydra_train_types::delta_q_promotion::{
@@ -154,11 +155,38 @@ impl<B: Backend> ValidationAccumulator<B> {
                 PROFILING_STAGE_VALIDATION,
                 0.0,
                 vec![
+                    ProfilingEnvelope::leaf(PROFILING_STAGE_COLLATION, 0.0),
+                    ProfilingEnvelope::nested(
+                        PROFILING_STAGE_H2D_TRANSFER,
+                        0.0,
+                        vec![ProfilingEnvelope::leaf(
+                            PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
+                            0.0,
+                        )],
+                    ),
                     ProfilingEnvelope::leaf(PROFILING_STAGE_CANDIDATE_FORWARD_AND_LOSS, 0.0),
                     ProfilingEnvelope::leaf(PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD, 0.0),
                 ],
             ),
         }
+    }
+
+    fn record_collation_timing(&mut self, cpu_prep_seconds: f64, device_materialize_seconds: f64) {
+        self.profiling.merge_assign(&ProfilingEnvelope::nested(
+            PROFILING_STAGE_VALIDATION,
+            cpu_prep_seconds + device_materialize_seconds,
+            vec![
+                ProfilingEnvelope::leaf(PROFILING_STAGE_COLLATION, cpu_prep_seconds),
+                ProfilingEnvelope::nested(
+                    PROFILING_STAGE_H2D_TRANSFER,
+                    device_materialize_seconds,
+                    vec![ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_H2D_TENSOR_MATERIALIZE,
+                        device_materialize_seconds,
+                    )],
+                ),
+            ],
+        ));
     }
 }
 
@@ -447,12 +475,19 @@ where
                      head_controller: &mut Option<&mut HeadActivationController>,
                      accumulator: &mut ValidationAccumulator<ValidBackendOf<TB>>|
      -> Result<(), String> {
-        let Some((obs, batch, targets)) =
-            collate_samples_bc_owned::<ValidBackendOf<TB>>(capped_chunk, false, device)
+        let Some(collated) =
+            collate_samples_bc_owned_timed::<ValidBackendOf<TB>>(capped_chunk, false, device)
                 .map_err(|err| format!("validation collation failed: {err}"))?
         else {
             return Ok(());
         };
+        let obs = collated.obs;
+        let batch = collated.batch;
+        let targets = collated.targets;
+        accumulator.record_collation_timing(
+            collated.cpu_prep_seconds,
+            collated.device_materialize_seconds,
+        );
         process_validation_batch(
             ValidationModels {
                 model,
@@ -520,6 +555,21 @@ where
     C: ValidationTrainConfig,
     L: ValidationDataLoader,
 {
+    materialize_validation_samples_with_observer(config, loader, manifest, |_| {})
+}
+
+/// Materializes validation microbatches and reports accepted microbatches to an observer.
+pub fn materialize_validation_samples_with_observer<C, L, F>(
+    config: &C,
+    loader: &L,
+    manifest: &DataManifest,
+    mut on_microbatch: F,
+) -> Result<Option<ValidationCachedMicrobatches>, String>
+where
+    C: ValidationTrainConfig,
+    L: ValidationDataLoader,
+    F: FnMut(&[MjaiSample]),
+{
     if config.bc_shards_manifest_path().is_some() {
         return Ok(None);
     }
@@ -541,13 +591,9 @@ where
             break;
         }
         let take = microbatch.len().min(remaining);
-        microbatches.push(
-            microbatch
-                .into_iter()
-                .take(take)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
+        let capped = microbatch.into_iter().take(take).collect::<Vec<_>>();
+        on_microbatch(&capped);
+        microbatches.push(capped.into_boxed_slice());
         total_samples += take;
     }
     Ok(Some(microbatches.into_boxed_slice()))

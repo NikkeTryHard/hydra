@@ -2,6 +2,18 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightTuningMode {
+    #[default]
+    Safe,
+    Unsafe,
+}
+
+pub fn default_preflight_tuning_mode() -> PreflightTuningMode {
+    PreflightTuningMode::Safe
+}
+
 pub fn default_allow_override_explicit_microbatch() -> bool {
     false
 }
@@ -26,6 +38,18 @@ pub fn default_candidate_microbatches() -> Vec<usize> {
     vec![
         512, 384, 320, 288, 256, 224, 192, 160, 144, 128, 112, 104, 96, 80, 72, 64, 48, 32, 24, 16,
     ]
+}
+
+pub fn default_unsafe_candidate_batch_sizes() -> Vec<usize> {
+    Vec::new()
+}
+
+pub fn default_unsafe_candidate_lr_scales() -> Vec<f64> {
+    Vec::new()
+}
+
+pub fn default_unsafe_candidate_warmup_steps() -> Vec<usize> {
+    Vec::new()
 }
 
 pub fn default_fast_repeated_run_candidate_window() -> usize {
@@ -167,6 +191,8 @@ pub fn default_rl_probe_growth_safety_factor() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightConfig {
+    #[serde(default = "default_preflight_tuning_mode")]
+    pub tuning_mode: PreflightTuningMode,
     #[serde(default = "default_fast_repeated_run_profile")]
     pub fast_repeated_run_profile: bool,
     #[serde(default = "default_allow_override_explicit_microbatch")]
@@ -181,6 +207,12 @@ pub struct PreflightConfig {
     pub min_microbatch_size: usize,
     #[serde(default = "default_candidate_microbatches")]
     pub candidate_microbatches: Vec<usize>,
+    #[serde(default = "default_unsafe_candidate_batch_sizes")]
+    pub unsafe_candidate_batch_sizes: Vec<usize>,
+    #[serde(default = "default_unsafe_candidate_lr_scales")]
+    pub unsafe_candidate_lr_scales: Vec<f64>,
+    #[serde(default = "default_unsafe_candidate_warmup_steps")]
+    pub unsafe_candidate_warmup_steps: Vec<usize>,
     #[serde(default = "default_fast_repeated_run_candidate_window")]
     pub fast_repeated_run_candidate_window: usize,
     #[serde(default = "default_validation_growth_patience")]
@@ -252,6 +284,7 @@ pub struct PreflightConfig {
 impl Default for PreflightConfig {
     fn default() -> Self {
         Self {
+            tuning_mode: default_preflight_tuning_mode(),
             allow_override_explicit_microbatch: default_allow_override_explicit_microbatch(),
             fast_repeated_run_profile: default_fast_repeated_run_profile(),
             warmup_steps: default_warmup_steps(),
@@ -259,6 +292,9 @@ impl Default for PreflightConfig {
             required_successes: default_required_successes(),
             min_microbatch_size: default_min_microbatch_size(),
             candidate_microbatches: default_candidate_microbatches(),
+            unsafe_candidate_batch_sizes: default_unsafe_candidate_batch_sizes(),
+            unsafe_candidate_lr_scales: default_unsafe_candidate_lr_scales(),
+            unsafe_candidate_warmup_steps: default_unsafe_candidate_warmup_steps(),
             fast_repeated_run_candidate_window: default_fast_repeated_run_candidate_window(),
             validation_growth_patience: default_validation_growth_patience(),
             validation_growth_max_steps: default_validation_growth_max_steps(),
@@ -466,11 +502,19 @@ pub struct ProbeResult {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct SelectedRuntimeConfig {
     pub train_microbatch_size: usize,
     pub validation_microbatch_size: usize,
     pub accum_steps: usize,
+    #[serde(default)]
+    pub unsafe_selected_batch_size: Option<usize>,
+    #[serde(default)]
+    pub unsafe_selected_learning_rate: Option<f64>,
+    #[serde(default)]
+    pub unsafe_selected_min_learning_rate: Option<f64>,
+    #[serde(default)]
+    pub unsafe_selected_warmup_steps: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -481,7 +525,7 @@ pub struct LoaderRuntimeConfig {
     pub archive_queue_bound: usize,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct EffectiveRuntimeConfig {
     pub selected: SelectedRuntimeConfig,
     pub loader: LoaderRuntimeConfig,
@@ -493,6 +537,70 @@ pub struct BenchmarkRuntimeConfig {
     pub validation_microbatch_size: usize,
     pub accum_steps: usize,
     pub loader: LoaderRuntimeConfig,
+    #[serde(default)]
+    pub learning_rate: Option<f64>,
+    #[serde(default)]
+    pub min_learning_rate: Option<f64>,
+    #[serde(default)]
+    pub warmup_steps: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemMetricEventKind {
+    #[default]
+    ProbeHostMemory,
+    ProbeChildInit,
+    ResourceSnapshot,
+    Progress,
+    PipelineStage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SystemMetricsEvent {
+    pub kind: SystemMetricEventKind,
+    pub probe_kind: Option<ProbeKind>,
+    pub candidate_microbatch: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_rss_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_read_mb_per_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_write_mb_per_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_util_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_mem_used_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_mem_free_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_oom_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_per_second: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples_per_second: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_available_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_total_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_init_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer_init_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loss_init_ms: Option<u128>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -652,6 +760,59 @@ pub struct PreflightCacheEntry {
     pub benchmark: Option<BenchmarkResult>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightArtifactEventKind {
+    Started,
+    Completed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreflightArtifactEvent {
+    pub phase: String,
+    pub kind: PreflightArtifactEventKind,
+    pub elapsed_seconds: Option<f64>,
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreflightCandidateRecord {
+    pub phase: String,
+    pub result: ProbeResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreflightCompletedPhase {
+    pub phase: String,
+    pub elapsed_seconds: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreflightState {
+    pub cache_key: PreflightCacheKey,
+    pub completed_phases: Vec<PreflightCompletedPhase>,
+    pub selected_runtime: Option<EffectiveRuntimeConfig>,
+    pub cache_written: bool,
+    #[serde(default)]
+    pub candidate_records: Vec<PreflightCandidateRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreflightReport {
+    pub cache_key: PreflightCacheKey,
+    pub runtime: EffectiveRuntimeConfig,
+    pub cache_hit: bool,
+    pub train_probe_results: usize,
+    pub validation_probe_results: usize,
+    pub benchmark: Option<BenchmarkResult>,
+    pub total_elapsed_seconds: f64,
+}
+
 pub fn candidate_ladder(config: &PreflightConfig, batch_size: usize) -> Vec<usize> {
     let mut candidates: Vec<usize> = config
         .candidate_microbatches
@@ -674,10 +835,15 @@ pub fn resolve_runtime_config(
     validation_microbatch: usize,
 ) -> SelectedRuntimeConfig {
     let _ = explicit;
+    let train_microbatch_size = train_microbatch.min(batch_size).max(1);
     SelectedRuntimeConfig {
-        train_microbatch_size: train_microbatch.min(batch_size).max(1),
+        train_microbatch_size,
         validation_microbatch_size: validation_microbatch.max(1),
         accum_steps: batch_size.div_ceil(train_microbatch.max(1)).max(1),
+        unsafe_selected_batch_size: None,
+        unsafe_selected_learning_rate: None,
+        unsafe_selected_min_learning_rate: None,
+        unsafe_selected_warmup_steps: None,
     }
 }
 

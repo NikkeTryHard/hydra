@@ -11,9 +11,7 @@ use std::env;
 use std::fs;
 #[cfg(not(test))]
 use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
-#[cfg(not(test))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::process::Child;
 #[cfg(not(test))]
@@ -61,6 +59,8 @@ use super::probe_summary::probe_kind_name;
 use super::probe_transport::recover_probe_batch_results;
 #[cfg(all(test, feature = "cuda-graph"))]
 use super::probe_transport::should_suppress_probe_output_line;
+#[cfg(test)]
+use super::probe_transport::write_probe_batch_artifact;
 #[cfg(not(test))]
 use super::probe_transport::{build_probe_failure_result, read_probe_result};
 use hydra_train_runtime::probe_request::{ProbeBatchRequest, ProbeRequest};
@@ -607,5 +607,121 @@ pub fn execute_probe_request_batch(
             format_probe_spinner_finish_message(&finish_result, child_run.elapsed_seconds),
         );
         Ok(results)
+    }
+}
+
+pub fn execute_probe_request_window(
+    config_path: &Path,
+    batches: Vec<ProbeBatchRequest>,
+    results_paths: &[PathBuf],
+    #[cfg_attr(
+        test,
+        allow(
+            unused_variables,
+            reason = "test path uses deterministic simulated child-window recovery"
+        )
+    )]
+    classify_probe_detail: impl Fn(&str) -> ProbeStatus + Copy,
+) -> Result<Vec<Vec<ProbeResult>>, String> {
+    if batches.len() != results_paths.len() {
+        return Err(format!(
+            "probe window request/result path mismatch: requests={} paths={}",
+            batches.len(),
+            results_paths.len()
+        ));
+    }
+
+    #[cfg(test)]
+    {
+        let _ = (config_path, classify_probe_detail);
+        let mut recovered = Vec::with_capacity(batches.len());
+        for (batch, path) in batches.into_iter().zip(results_paths) {
+            let candidate = batch.request.candidate_microbatch;
+            let mut artifact = super::probe_transport::ProbeBatchArtifact::pending();
+            if candidate >= 512 {
+                let result = ProbeResult {
+                    kind: batch.request.kind,
+                    candidate_microbatch: candidate,
+                    status: ProbeStatus::Oom,
+                    measured_samples_per_second: None,
+                    elapsed_seconds: Some(0.01),
+                    detail: "simulated OOM in reused child".to_string(),
+                };
+                artifact.push_result(result);
+                write_probe_batch_artifact(path, &artifact)?;
+                recovered.push(artifact.completed_results_before_failure().to_vec());
+                break;
+            }
+            for _ in 0..batch.attempts.max(1) {
+                artifact.push_result(ProbeResult {
+                    kind: batch.request.kind,
+                    candidate_microbatch: candidate,
+                    status: ProbeStatus::Success,
+                    measured_samples_per_second: Some(candidate as f64),
+                    elapsed_seconds: Some(0.01),
+                    detail: "simulated success in reused child".to_string(),
+                });
+            }
+            artifact.mark_finished();
+            write_probe_batch_artifact(path, &artifact)?;
+            recovered.push(artifact.replay_ordered_results().cloned().collect());
+        }
+        Ok(recovered)
+    }
+
+    #[cfg(not(test))]
+    {
+        let config = read_config(config_path)?;
+        let manifest_cache_path =
+            PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0)).manifest_cache_path;
+        let mut recovered = Vec::with_capacity(batches.len());
+        for (batch, results_path) in batches.into_iter().zip(results_paths) {
+            fs::remove_file(results_path).ok();
+            let child_run = run_probe_child_process(ProbeChildRunRequest {
+                config_path,
+                kind: batch.request.kind,
+                candidate_microbatch: batch.request.candidate_microbatch,
+                warmup_steps: batch.request.warmup_steps,
+                measure_steps: batch.request.measure_steps,
+                result_flag: "--probe-results-path",
+                result_path: results_path,
+                attempts: Some(batch.attempts),
+                manifest_cache_path: &manifest_cache_path,
+            })?;
+            let output = child_run.output;
+            let finish_kind = batch.request.kind;
+            let finish_candidate = batch.request.candidate_microbatch;
+            let candidate_results = recover_probe_batch_results(
+                batch,
+                results_path,
+                output.status,
+                &output.stdout,
+                &output.stderr,
+                classify_probe_detail,
+            )?;
+            let finish_result = candidate_results
+                .last()
+                .cloned()
+                .unwrap_or_else(|| ProbeResult {
+                    kind: finish_kind,
+                    candidate_microbatch: finish_candidate,
+                    status: ProbeStatus::BackendError,
+                    measured_samples_per_second: None,
+                    elapsed_seconds: None,
+                    detail: "probe window completed without recorded results".to_string(),
+                });
+            finish_probe_spinner(
+                &child_run.spinner,
+                format_probe_spinner_finish_message(&finish_result, child_run.elapsed_seconds),
+            );
+            let reset_after_failure = candidate_results
+                .last()
+                .is_some_and(|result| result.status != ProbeStatus::Success);
+            recovered.push(candidate_results);
+            if reset_after_failure {
+                break;
+            }
+        }
+        Ok(recovered)
     }
 }

@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
-pub use hydra_data_core::{DataManifest, DataSource, GameLocator, SourceFilterConfig};
+pub use hydra_data_core::{
+    DataManifest, DataSource, DiscoveryManifest, DiscoveryMode, GameLocator, SourceFilterConfig,
+};
 use indicatif::ProgressBar;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
@@ -38,19 +40,66 @@ pub fn compact_identity(identity: &str) -> &str {
     identity.rsplit('/').next().unwrap_or(identity)
 }
 
-pub fn compact_error_message(err: &dyn std::fmt::Display) -> &'static str {
-    let message = err.to_string();
-    if message.contains("expected value") || message.contains("EOF while parsing") {
-        "invalid-json"
-    } else if message.contains("no valid decisions") || message.contains("no samples") {
-        "no-decision-samples"
-    } else if message.contains("unsupported") {
-        "unsupported-replay"
-    } else if message.contains("sidecar") {
-        "sidecar-mismatch"
-    } else {
-        "parse-error"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReplayLoadErrorClass {
+    IgnoredUnsupportedFile,
+    CorruptCompressedFile,
+    InvalidJson,
+    UnsupportedEvent,
+    ReplayDesync,
+    EngineInvariantFailure,
+}
+
+impl ReplayLoadErrorClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IgnoredUnsupportedFile => "ignored-unsupported-file",
+            Self::CorruptCompressedFile => "corrupt-compressed-file",
+            Self::InvalidJson => "invalid-json",
+            Self::UnsupportedEvent => "unsupported-event",
+            Self::ReplayDesync => "replay-desync",
+            Self::EngineInvariantFailure => "engine-invariant-failure",
+        }
     }
+}
+
+pub fn classify_replay_load_error(
+    identity: &str,
+    err: &dyn std::fmt::Display,
+) -> ReplayLoadErrorClass {
+    let message = err.to_string();
+    let lower = message.to_ascii_lowercase();
+    if !is_mjai_file(Path::new(identity)) {
+        ReplayLoadErrorClass::IgnoredUnsupportedFile
+    } else if lower.contains("zstd")
+        || lower.contains("gzip")
+        || lower.contains("compressed")
+        || lower.contains("decompress")
+    {
+        ReplayLoadErrorClass::CorruptCompressedFile
+    } else if lower.contains("expected value")
+        || lower.contains("eof while parsing")
+        || lower.contains("failed to parse mjai events")
+        || lower.contains("invalid type")
+        || lower.contains("trailing characters")
+    {
+        ReplayLoadErrorClass::InvalidJson
+    } else if lower.contains("unsupported") {
+        ReplayLoadErrorClass::UnsupportedEvent
+    } else if lower.contains("replay observation failed")
+        || lower.contains("replay action conversion failed")
+        || lower.contains("no valid decisions")
+        || lower.contains("no samples")
+        || lower.contains("legal")
+    {
+        ReplayLoadErrorClass::ReplayDesync
+    } else {
+        ReplayLoadErrorClass::EngineInvariantFailure
+    }
+}
+
+pub fn compact_error_message(err: &dyn std::fmt::Display) -> &'static str {
+    classify_replay_load_error("unknown.mjai.json", err).as_str()
 }
 
 pub fn identity_for_archive_entry(archive_path: &Path, entry_path: &Path) -> io::Result<String> {
@@ -199,7 +248,8 @@ struct SkipLogState {
     suppressed: AtomicUsize,
     max_logs: usize,
     aggregate_only: bool,
-    reason_counts: std::sync::Mutex<BTreeMap<&'static str, usize>>,
+    class_counts: std::sync::Mutex<BTreeMap<ReplayLoadErrorClass, usize>>,
+    class_examples: std::sync::Mutex<BTreeMap<ReplayLoadErrorClass, Vec<String>>>,
 }
 
 struct ProducerLoadContext {
@@ -271,14 +321,21 @@ impl SkipLogState {
             suppressed: AtomicUsize::new(0),
             max_logs,
             aggregate_only,
-            reason_counts: std::sync::Mutex::new(BTreeMap::new()),
+            class_counts: std::sync::Mutex::new(BTreeMap::new()),
+            class_examples: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
     fn log_skip(&self, identity: &str, err: &dyn std::fmt::Display) {
-        let reason = compact_error_message(err);
-        if let Ok(mut counts) = self.reason_counts.lock() {
-            *counts.entry(reason).or_insert(0) += 1;
+        let class = classify_replay_load_error(identity, err);
+        if let Ok(mut counts) = self.class_counts.lock() {
+            *counts.entry(class).or_insert(0) += 1;
+        }
+        if let Ok(mut examples) = self.class_examples.lock() {
+            let entry = examples.entry(class).or_default();
+            if entry.len() < self.max_logs {
+                entry.push(compact_identity(identity).to_string());
+            }
         }
         if self.aggregate_only {
             self.suppressed.fetch_add(1, Ordering::Relaxed);
@@ -286,24 +343,39 @@ impl SkipLogState {
         }
         let emitted = self.emitted.fetch_add(1, Ordering::Relaxed);
         if emitted < self.max_logs {
-            eprintln!("Skipping {}: {}", compact_identity(identity), reason);
+            eprintln!(
+                "Skipping {}: {}",
+                compact_identity(identity),
+                class.as_str()
+            );
         } else {
             self.suppressed.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     fn flush_summary(&self) {
-        if self.aggregate_only
-            && let Ok(counts) = self.reason_counts.lock()
+        if let Ok(counts) = self.class_counts.lock()
             && !counts.is_empty()
         {
+            let examples = self.class_examples.lock().ok();
             let summary = counts
                 .iter()
-                .map(|(reason, count)| format!("{reason}={count}"))
+                .map(|(class, count)| {
+                    let sample_paths = examples
+                        .as_ref()
+                        .and_then(|examples| examples.get(class))
+                        .map(|paths| paths.join("|"))
+                        .unwrap_or_default();
+                    if sample_paths.is_empty() {
+                        format!("{}={count}", class.as_str())
+                    } else {
+                        format!("{}={count} examples=[{}]", class.as_str(), sample_paths)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             eprintln!(
-                "{} [preflight:skip] source={} {}",
+                "{} [preflight:replay-errors] source={} {}",
                 Self::utc_prefix(),
                 self.source,
                 summary
@@ -718,13 +790,36 @@ fn scan_data_sources_with_fraction(
     source_filters: &SourceFilterConfig,
     progress: Option<&ProgressBar>,
 ) -> io::Result<DataManifest> {
-    let sources = if data_dir.is_file() {
+    Ok(DataManifest::from_discovery(
+        &scan_discovery_manifest_with_fraction(data_dir, train_fraction, source_filters, progress)?,
+    ))
+}
+
+pub fn scan_discovery_manifest_with_fraction(
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &SourceFilterConfig,
+    progress: Option<&ProgressBar>,
+) -> io::Result<DiscoveryManifest> {
+    let (mode, sources, ignored_archive_count) = if data_dir.is_file() {
         if is_tar_zst_file(data_dir) || is_tar_file(data_dir) {
-            vec![DataSource::Archive(data_dir.to_path_buf())]
+            (
+                DiscoveryMode::ArchiveSingle,
+                vec![DataSource::Archive(data_dir.to_path_buf())],
+                0,
+            )
         } else if is_mjai_file(data_dir) {
-            vec![DataSource::LooseFile(data_dir.to_path_buf())]
+            (
+                DiscoveryMode::LooseGames,
+                vec![DataSource::LooseFile(data_dir.to_path_buf())],
+                0,
+            )
         } else if is_parsed_sample_cache_file(data_dir) {
-            vec![data_source_for_cache_path(data_dir)?]
+            (
+                DiscoveryMode::LooseGames,
+                vec![data_source_for_cache_path(data_dir)?],
+                0,
+            )
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -771,40 +866,120 @@ fn scan_data_sources_with_fraction(
         }
     }
 
-    Ok(DataManifest {
+    let manifest = DataManifest {
         sources,
         total_games,
         train_count,
         val_count: total_games.saturating_sub(train_count),
         counts_exact,
-    })
+    };
+    Ok(DiscoveryManifest::from_data_manifest(
+        manifest,
+        mode,
+        ignored_archive_count,
+        0,
+        Vec::new(),
+    ))
 }
 
-fn scan_directory_sources(dir: &Path) -> io::Result<Vec<DataSource>> {
-    let mut sources = Vec::new();
-    scan_directory_sources_recursive(dir, &mut sources)?;
-    sources.sort_by(|a, b| a.path().cmp(b.path()));
-    Ok(sources)
+pub fn scan_discovery_manifest_with_progress(
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &SourceFilterConfig,
+    progress: Option<&ProgressBar>,
+) -> io::Result<DiscoveryManifest> {
+    scan_discovery_manifest_with_fraction(data_dir, train_fraction, source_filters, progress)
 }
 
-fn scan_directory_sources_recursive(dir: &Path, sources: &mut Vec<DataSource>) -> io::Result<()> {
+fn scan_directory_sources(dir: &Path) -> io::Result<(DiscoveryMode, Vec<DataSource>, usize)> {
+    let mut loose_sources = Vec::new();
+    let mut archive_sources = Vec::new();
+    let mut ignored_examples = Vec::new();
+    let ignored_count = scan_directory_sources_recursive(
+        dir,
+        &mut loose_sources,
+        &mut archive_sources,
+        &mut ignored_examples,
+    )?;
+    loose_sources.sort_by(|a, b| a.path().cmp(b.path()));
+    archive_sources.sort_by(|a, b| a.path().cmp(b.path()));
+    if loose_sources.is_empty() {
+        if archive_sources.is_empty() {
+            return Err(empty_dataset_error(dir, ignored_count, &ignored_examples));
+        }
+        Ok((DiscoveryMode::ArchiveMulti, archive_sources, 0))
+    } else {
+        let ignored_archive_count = archive_sources.len();
+        if ignored_archive_count > 0 {
+            eprintln!(
+                "[discovery] ignoring {ignored_archive_count} archive source(s) because loose game files were found"
+            );
+        }
+        Ok((
+            DiscoveryMode::LooseGames,
+            loose_sources,
+            ignored_archive_count,
+        ))
+    }
+}
+
+fn scan_directory_sources_recursive(
+    dir: &Path,
+    loose_sources: &mut Vec<DataSource>,
+    archive_sources: &mut Vec<DataSource>,
+    ignored_examples: &mut Vec<PathBuf>,
+) -> io::Result<usize> {
+    let mut ignored_count = 0usize;
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let path = entry.path();
         if file_type.is_dir() {
-            scan_directory_sources_recursive(&path, sources)?;
+            ignored_count += scan_directory_sources_recursive(
+                &path,
+                loose_sources,
+                archive_sources,
+                ignored_examples,
+            )?;
         } else if file_type.is_file() {
             if is_mjai_file(&path) {
-                sources.push(DataSource::LooseFile(path));
+                loose_sources.push(DataSource::LooseFile(path));
             } else if is_parsed_sample_cache_file(&path) {
-                sources.push(data_source_for_cache_path(&path)?);
+                loose_sources.push(data_source_for_cache_path(&path)?);
             } else if is_tar_zst_file(&path) || is_tar_file(&path) {
-                sources.push(DataSource::Archive(path));
+                archive_sources.push(DataSource::Archive(path));
+            } else {
+                ignored_count += 1;
+                if ignored_examples.len() < 5 {
+                    ignored_examples.push(path);
+                }
             }
         }
     }
-    Ok(())
+    Ok(ignored_count)
+}
+
+fn empty_dataset_error(
+    dir: &Path,
+    ignored_count: usize,
+    ignored_examples: &[PathBuf],
+) -> io::Error {
+    let examples = if ignored_examples.is_empty() {
+        "none".to_string()
+    } else {
+        ignored_examples
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "no usable training data sources found in {}; loose_files=0 archive_files=0 parsed_sample_caches=0 ignored_files={ignored_count} ignored_examples=[{examples}]",
+            dir.display()
+        ),
+    )
 }
 
 fn data_source_for_cache_path(path: &Path) -> io::Result<DataSource> {

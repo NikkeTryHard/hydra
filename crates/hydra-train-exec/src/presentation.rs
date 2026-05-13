@@ -6,10 +6,11 @@
 )]
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use colored::Colorize;
-use hydra_train_runtime::config::display_num_threads;
+use hydra_train_runtime::config::{BcHyperparamConfig, display_num_threads};
 use hydra_train_runtime::preflight::{
     EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult, ProbeStatus,
 };
@@ -666,9 +667,11 @@ pub fn format_probe_results_table(
 pub fn explicit_preflight_summary(
     runtime: EffectiveRuntimeConfig,
     explicit: ExplicitSettings,
+    tuning_mode: hydra_train_runtime::preflight::PreflightTuningMode,
 ) -> String {
-    format!(
-        "saved train_mb={} val_mb={} accum_steps={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={} explicit(train={}, val={})",
+    let mut summary = format!(
+        "mode={:?} saved train_mb={} val_mb={} accum_steps={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={} explicit(train={}, val={})",
+        tuning_mode,
         runtime.selected.train_microbatch_size,
         runtime.selected.validation_microbatch_size,
         runtime.selected.accum_steps,
@@ -678,7 +681,59 @@ pub fn explicit_preflight_summary(
         runtime.loader.archive_queue_bound,
         explicit.train_microbatch_explicit,
         explicit.validation_microbatch_explicit,
-    )
+    );
+    if tuning_mode == hydra_train_runtime::preflight::PreflightTuningMode::Unsafe {
+        match runtime.selected.unsafe_selected_batch_size {
+            Some(selected_batch) => {
+                write!(
+                    &mut summary,
+                    " unsafe_can_change_logical_batch=true selected_batch={selected_batch}"
+                )
+                .expect("writing to String should not fail");
+                if let Some(lr) = runtime.selected.unsafe_selected_learning_rate {
+                    write!(&mut summary, " selected_lr={lr:.2e}")
+                        .expect("writing to String should not fail");
+                }
+                if let Some(min_lr) = runtime.selected.unsafe_selected_min_learning_rate {
+                    write!(&mut summary, " selected_min_lr={min_lr:.2e}")
+                        .expect("writing to String should not fail");
+                }
+                if let Some(warmup_steps) = runtime.selected.unsafe_selected_warmup_steps {
+                    write!(&mut summary, " selected_warmup_steps={warmup_steps}")
+                        .expect("writing to String should not fail");
+                }
+                summary.push_str(" lr_auto_scaled=false");
+            }
+            None => summary.push_str(
+                " unsafe_can_change_logical_batch=true selected_batch=reserved lr_auto_scaled=false",
+            ),
+        }
+    }
+    summary
+}
+
+/// Formats unsafe preflight math selection/apply policy.
+pub fn unsafe_preflight_math_summary(
+    runtime: EffectiveRuntimeConfig,
+    bc: &BcHyperparamConfig,
+) -> Option<String> {
+    let selected_batch = runtime.selected.unsafe_selected_batch_size?;
+    let selected_lr = runtime
+        .selected
+        .unsafe_selected_learning_rate
+        .unwrap_or(bc.learning_rate);
+    let selected_min_lr = runtime
+        .selected
+        .unsafe_selected_min_learning_rate
+        .unwrap_or(bc.min_learning_rate);
+    let selected_warmup_steps = runtime
+        .selected
+        .unsafe_selected_warmup_steps
+        .unwrap_or(bc.warmup_steps);
+    Some(format!(
+        "unsafe_math selected_batch={} selected_lr={:.2e} selected_min_lr={:.2e} selected_warmup_steps={} lr_auto_scaled=false apply=fresh_start_only resume=ignored_or_refused_if_checkpoint_contract_mismatch",
+        selected_batch, selected_lr, selected_min_lr, selected_warmup_steps,
+    ))
 }
 
 /// Returns the CUDA graph replay status label.
