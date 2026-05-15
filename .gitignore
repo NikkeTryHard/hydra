@@ -40,3 +40,6 @@ local/
 /notebooks/offline-bundle/*.bin
 /notebooks/offline-bundle/*.zip
 .omp/mcp.json
+
+# Local machine preflight configs
+/local-unsafe-preflight-*.yaml
