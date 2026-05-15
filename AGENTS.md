@@ -79,34 +79,51 @@ pixi run check
 pixi run build
 pixi run test
 pixi run lint
+pixi run fmt
+pixi run check-training
+pixi run check-data-tools
+pixi run check-debug-tools
+pixi run check-cuda-graph
+pixi run bench-core
+pixi run bench-engine
+pixi run bench-train
 pixi run test-exhaustive
 pixi run lint-exhaustive
-pixi run check-training
-pixi run check-cuda-graph
+pixi run lint-cuda-graph
 pixi run nextest-list
 pixi run nextest-list-exhaustive
 ```
 
 Meanings:
-- `pixi run check-lib` = fastest inner-loop compile gate: workspace libs only, no default features.
-- `pixi run test-lib` = fastest inner-loop unit-test gate: workspace lib tests only, no default features.
+- `pixi run torch-check` = print pinned PyTorch version, CUDA availability, and libtorch path.
+- `pixi run check-lib` = fastest compile gate: workspace libs only, no default features.
+- `pixi run test-lib` = fastest unit-test gate: workspace lib tests only, no default features.
 - `pixi run test-fast` = fast behavior gate: workspace test targets without benches/examples, no default features.
-- `pixi run check` = `cargo check --workspace --all-targets --no-default-features`; default no-heavy all-target compile gate.
-- `pixi run check-all-targets` = explicit alias for default all-target check.
-- `pixi run build` = `cargo build --workspace --no-default-features`; fast default dev build.
-- `pixi run test` = default no-heavy workspace tests, `--all-targets --no-default-features --cargo-profile dev --no-fail-fast`.
+- `pixi run check` / `pixi run check-all-targets` = default no-heavy all-target compile gate: `cargo check --workspace --all-targets --no-default-features --quiet`.
+- `pixi run build` = fast default dev build; `pixi run build-release` = fast release build; `pixi run build-dist` = fat-LTO final artifact build.
+- `pixi run test` = default no-heavy workspace tests: `--all-targets --no-default-features --cargo-profile dev --no-fail-fast`.
+- `pixi run test-release` = release-profile tests without heavy defaults.
 - `pixi run lint` = fast default lint: anti-game scan + rustfmt + clippy no-default-features.
+- `pixi run fmt` = Rustfmt only.
 - `pixi run test-exhaustive` / `pixi run lint-exhaustive` = explicit all-feature heavy gates; require CUDA-capable libtorch/toolkit where CUDA graph builds.
-- `pixi run check-training` = explicit CPU LibTorch training path; `pixi run check-cuda-graph` / `pixi run lint-cuda-graph` = explicit CUDA graph paths.
-- Compatibility aliases remain: `build-fast`, `nextest`, `nextest-list`, `nextest-list-all-features`.
+- `pixi run check-training` = explicit CPU LibTorch training path.
+- `pixi run check-data-tools` = explicit hydra-train data-tool bins (`data-tools`).
+- `pixi run check-debug-tools` = explicit hydra-train replay-debug bins (`debug-tools`).
+- `pixi run check-cuda-graph` / `pixi run lint-cuda-graph` = explicit CUDA graph paths.
+- `pixi run bench-core`, `pixi run bench-engine`, `pixi run bench-train` = explicit benchmark targets; benches are not default targets.
+- `pixi run timings-check`, `pixi run timings-nextest-list`, `pixi run timings-build-fast`, `pixi run timings-full` = Cargo timing reports.
+- Compatibility aliases remain: `build-fast`, `nextest`, `nextest-list`, `nextest-list-all-features`, `nextest-list-exhaustive`.
+
 Fast iteration tips:
 - Use Pixi tasks, not direct system Cargo. Pixi pins Rust/libtorch/mold/sccache env; direct Cargo can pick host PyTorch and lie.
 - Inner loop: `pixi run check-lib`; add `pixi run test-lib` for unit tests or `pixi run test-fast` for integration-style test targets without benches/examples.
 - Default all-target loop: `pixi run check` then `pixi run test`; this preserves broader no-heavy coverage.
 - Exhaustive/heavy paths are opt-in only: `pixi run test-exhaustive`, `pixi run lint-exhaustive`, `pixi run check-training`, `pixi run check-cuda-graph`.
+- Tool bins are opt-in only: `pixi run check-data-tools`, `pixi run check-debug-tools`.
+- Benchmarks are opt-in only: `pixi run bench-core`, `pixi run bench-engine`, `pixi run bench-train`.
 - Narrow loop: `pixi run cargo check -p <crate> --no-default-features --quiet` or `pixi run cargo nextest run -p <crate> --lib --no-default-features --cargo-profile dev --cargo-quiet`.
 - For one test: `pixi run cargo nextest run <test-name> --no-default-features --cargo-profile dev --cargo-quiet`.
-- Timing work: `pixi run timings-check` for default graph; `pixi run timings-full` for full heavy graph. Do not compare cold vs warm caches.
+- Timing work: `pixi run timings-check` for default graph; `pixi run timings-nextest-list` for test discovery; `pixi run timings-full` for full heavy graph. Do not compare cold vs warm caches.
 - Use `CARGO_TARGET_DIR=$HOME/tmp/hydra-compile-bench/<name> SCCACHE_DISABLE=1 pixi run ...` for clean compile measurements; normal dev should leave sccache on.
 
 Scoped tests use Pixi-owned Cargo:
