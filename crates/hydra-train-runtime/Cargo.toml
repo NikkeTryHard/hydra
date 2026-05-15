@@ -22,5 +22,5 @@ serde_yaml = "0.9"
 
 
 [dev-dependencies]
-burn = { version = "0.20", features = ["ndarray"] }
+burn = { version = "0.21", features = ["ndarray"] }
 

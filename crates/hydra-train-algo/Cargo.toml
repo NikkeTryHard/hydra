@@ -14,7 +14,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hydra-train-types = { path = "../hydra-train-types" }
-burn = { version = "0.20" }
+burn = { version = "0.21" }
 
 [dev-dependencies]
-burn = { version = "0.20", features = ["autodiff", "ndarray"] }
+burn = { version = "0.21", features = ["autodiff", "ndarray"] }

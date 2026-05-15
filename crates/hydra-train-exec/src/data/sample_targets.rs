@@ -7,7 +7,7 @@ use hydra_train_types::losses::HydraTargets;
 fn policy_target_from_actions<B: Backend>(
     actions: Tensor<B, 1, Int>,
     batch_size: usize,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Tensor<B, 2> {
     let actions = actions.into_data().convert::<i64>();
     let actions = actions
@@ -25,7 +25,7 @@ pub(crate) type OptionalActionTargets =
 
 pub(crate) fn collate_action_targets<B: Backend>(
     samples: &[OptionalActionTargets],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> (Option<Tensor<B, 2>>, Option<Tensor<B, 2>>) {
     if samples.is_empty() || samples.iter().all(Option::is_none) {
         return (None, None);

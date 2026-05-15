@@ -146,7 +146,11 @@ impl<B: Backend> HydraOutput<B> {
     }
 }
 
-fn zero_linear_head<B: Backend>(batch: usize, width: usize, device: &B::Device) -> Tensor<B, 2> {
+fn zero_linear_head<B: Backend>(
+    batch: usize,
+    width: usize,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+) -> Tensor<B, 2> {
     Tensor::<B, 2>::zeros([batch, width], device)
 }
 
@@ -154,7 +158,7 @@ fn zero_spatial_head<B: Backend>(
     batch: usize,
     channels: usize,
     width: usize,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Tensor<B, 3> {
     Tensor::<B, 3>::zeros([batch, channels, width], device)
 }
@@ -181,11 +185,17 @@ pub struct HydraModel<B: Backend> {
 pub type HydraModelConfig = ModelShapeConfig;
 
 pub trait HydraModelInit {
-    fn init<B: Backend>(&self, device: &B::Device) -> HydraModel<B>;
+    fn init<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> HydraModel<B>;
 }
 
 impl HydraModelInit for ModelShapeConfig {
-    fn init<B: Backend>(&self, device: &B::Device) -> HydraModel<B> {
+    fn init<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> HydraModel<B> {
         let backbone_cfg = SEResNetConfig::new(
             self.num_blocks,
             self.input_channels,
@@ -240,7 +250,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn policy_value_cpu(
         &self,
         obs: &[f32; OBS_SIZE],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
     ) -> ([f32; HYDRA_ACTION_SPACE], f32) {
         let input = Tensor::<B, 1>::from_floats(obs.as_slice(), device).reshape([
             1,
@@ -268,7 +278,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn policy_cpu(
         &self,
         obs: &[f32; OBS_SIZE],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
     ) -> [f32; HYDRA_ACTION_SPACE] {
         let input = Tensor::<B, 1>::from_floats(obs.as_slice(), device).reshape([
             1,
@@ -285,7 +295,11 @@ impl<B: Backend> HydraModel<B> {
         logits
     }
 
-    pub fn value_cpu(&self, obs: &[f32; OBS_SIZE], device: &B::Device) -> f32 {
+    pub fn value_cpu(
+        &self,
+        obs: &[f32; OBS_SIZE],
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> f32 {
         let input = Tensor::<B, 1>::from_floats(obs.as_slice(), device).reshape([
             1,
             NUM_CHANNELS,
@@ -302,7 +316,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn policy_and_value_cpu(
         &self,
         obs: &[f32; OBS_SIZE],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
     ) -> ([f32; HYDRA_ACTION_SPACE], f32) {
         self.policy_value_cpu(obs, device)
     }
@@ -312,7 +326,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn fill_batch_policy_value_cpu(
         &self,
         observations: &[[f32; OBS_SIZE]],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
         flat_buf: &mut Vec<f32>,
         outputs: &mut Vec<([f32; HYDRA_ACTION_SPACE], f32)>,
     ) {
@@ -356,7 +370,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn batch_policy_value_cpu_reuse(
         &self,
         observations: &[[f32; OBS_SIZE]],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
         flat_buf: &mut Vec<f32>,
         outputs: &mut Vec<([f32; HYDRA_ACTION_SPACE], f32)>,
     ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
@@ -367,7 +381,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn fill_batch_value_cpu(
         &self,
         observations: &[[f32; OBS_SIZE]],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
         flat_buf: &mut Vec<f32>,
         values_out: &mut Vec<f32>,
     ) {
@@ -398,7 +412,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn batch_value_cpu_reuse(
         &self,
         observations: &[[f32; OBS_SIZE]],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
         flat_buf: &mut Vec<f32>,
         values_out: &mut Vec<f32>,
     ) -> Vec<f32> {
@@ -415,7 +429,7 @@ impl<B: Backend> HydraModel<B> {
     pub fn batch_policy_value_cpu(
         &self,
         observations: &[[f32; OBS_SIZE]],
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
     ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
         if observations.is_empty() {
             return Vec::new();

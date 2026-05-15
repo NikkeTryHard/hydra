@@ -134,6 +134,10 @@ fn parse_args_accepts_probe_child_flags_after_libtest_separator() {
         "/tmp/probe.json".to_string(),
         "--probe-manifest-cache-path".to_string(),
         "/tmp/manifest.json".to_string(),
+        "--probe-discovery-summary-path".to_string(),
+        "/tmp/summary.json".to_string(),
+        "--probe-discovery-index-path".to_string(),
+        "/tmp/index.bin".to_string(),
     ];
 
     let parsed = parse_args(args).expect("libtest-separated probe child args should parse");
@@ -147,6 +151,14 @@ fn parse_args_accepts_probe_child_flags_after_libtest_separator() {
             );
             assert_eq!(child.request.candidate_microbatch, 192);
             assert_eq!(child.result_path, PathBuf::from("/tmp/probe.json"));
+            assert_eq!(
+                child.discovery_summary_path,
+                Some(PathBuf::from("/tmp/summary.json"))
+            );
+            assert_eq!(
+                child.discovery_index_path,
+                Some(PathBuf::from("/tmp/index.bin"))
+            );
         }
         hydra_train_runtime::config::ProbeChildRequest::Batch(_) => {
             panic!("single probe child flags should stay on the single-request path")
@@ -171,6 +183,10 @@ fn parse_args_accepts_single_probe_child_flags_unchanged() {
         "/tmp/probe.json".to_string(),
         "--probe-manifest-cache-path".to_string(),
         "/tmp/manifest.json".to_string(),
+        "--probe-discovery-summary-path".to_string(),
+        "/tmp/summary.json".to_string(),
+        "--probe-discovery-index-path".to_string(),
+        "/tmp/index.bin".to_string(),
     ];
     let parsed = parse_args(args).expect("single probe child args should parse");
 
@@ -188,6 +204,14 @@ fn parse_args_accepts_single_probe_child_flags_unchanged() {
             assert_eq!(
                 child.manifest_cache_path,
                 Some(PathBuf::from("/tmp/manifest.json"))
+            );
+            assert_eq!(
+                child.discovery_summary_path,
+                Some(PathBuf::from("/tmp/summary.json"))
+            );
+            assert_eq!(
+                child.discovery_index_path,
+                Some(PathBuf::from("/tmp/index.bin"))
             );
         }
         hydra_train_runtime::config::ProbeChildRequest::Batch(_) => {
@@ -215,6 +239,10 @@ fn parse_args_accepts_internal_probe_batch_child_flags() {
         "/tmp/probe-results.json".to_string(),
         "--probe-manifest-cache-path".to_string(),
         "/tmp/manifest.json".to_string(),
+        "--probe-discovery-summary-path".to_string(),
+        "/tmp/summary.json".to_string(),
+        "--probe-discovery-index-path".to_string(),
+        "/tmp/index.bin".to_string(),
     ];
     let parsed = parse_args(args).expect("internal probe batch child args should parse");
 
@@ -236,6 +264,14 @@ fn parse_args_accepts_internal_probe_batch_child_flags() {
             assert_eq!(
                 child.manifest_cache_path,
                 Some(PathBuf::from("/tmp/manifest.json"))
+            );
+            assert_eq!(
+                child.discovery_summary_path,
+                Some(PathBuf::from("/tmp/summary.json"))
+            );
+            assert_eq!(
+                child.discovery_index_path,
+                Some(PathBuf::from("/tmp/index.bin"))
             );
         }
         hydra_train_runtime::config::ProbeChildRequest::Single(_) => {
@@ -1584,7 +1620,7 @@ fn train_device_rejects_invalid_env_value() {
 
 #[test]
 fn validation_agreement_is_sample_weighted_across_chunks() {
-    let device: <burn::backend::ndarray::NdArray<f32> as Backend>::Device = Default::default();
+    let device: <burn::backend::ndarray::NdArray<f32> as burn::tensor::backend::BackendTypes>::Device = Default::default();
     let logits = Tensor::<burn::backend::ndarray::NdArray<f32>, 2>::from_floats(
         [[5.0, 0.0], [5.0, 0.0], [5.0, 0.0], [5.0, 0.0], [0.0, 5.0]],
         &device,

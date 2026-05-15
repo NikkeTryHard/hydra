@@ -27,7 +27,7 @@ pub fn run_exit_validation<B: Backend>(
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     exit_config: ExitConfig,
 ) -> ExitValidationReport {
     let source = generate_self_play_batch_source_cooperative(
@@ -51,7 +51,7 @@ pub fn run_delta_q_validation<B: Backend>(
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     exit_config: ExitConfig,
 ) -> DeltaQValidationReport {
     let source = generate_self_play_batch_source_cooperative(

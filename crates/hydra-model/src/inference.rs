@@ -42,7 +42,7 @@ pub struct InferenceServer<B: Backend> {
     pub saf_mlp: SafMlp<B>,
     pub config: InferenceConfig,
     saf_alpha: f32,
-    device: B::Device,
+    device: <B as burn::tensor::backend::BackendTypes>::Device,
 }
 
 impl<B: Backend> InferenceServer<B> {
@@ -52,7 +52,7 @@ impl<B: Backend> InferenceServer<B> {
         saf_mlp: SafMlp<B>,
         saf_alpha: f32,
         config: InferenceConfig,
-        device: B::Device,
+        device: <B as burn::tensor::backend::BackendTypes>::Device,
     ) -> Self {
         Self {
             actor,
@@ -68,7 +68,7 @@ impl<B: Backend> InferenceServer<B> {
         actor: ActorNet<B>,
         saf_config: &SafConfig,
         config: InferenceConfig,
-        device: B::Device,
+        device: <B as burn::tensor::backend::BackendTypes>::Device,
     ) -> Self {
         let saf_alpha = saf_config.alpha;
         let saf_mlp = saf_config.init(&device);
@@ -209,7 +209,7 @@ impl<B: Backend> InferenceServer<B> {
 /// Converts a boolean legal mask to a [1, 46] float tensor.
 pub fn legal_mask_to_tensor<B: Backend>(
     mask: &[bool; HYDRA_ACTION_SPACE],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Tensor<B, 2> {
     let mut f32_mask = [0.0f32; HYDRA_ACTION_SPACE];
     for (i, &m) in mask.iter().enumerate() {
@@ -366,7 +366,7 @@ pub fn policy_top1_confidence(probs: &[f32; HYDRA_ACTION_SPACE]) -> f32 {
 
 pub fn batch_legal_masks_to_tensor<B: Backend>(
     masks: &[[bool; HYDRA_ACTION_SPACE]],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Tensor<B, 2> {
     let batch = masks.len();
     let mut flat = vec![0.0f32; batch * HYDRA_ACTION_SPACE];

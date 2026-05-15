@@ -6,6 +6,7 @@ license-file = "../../LICENSE"
 description = "Neural model components for Hydra Riichi Mahjong AI"
 repository = "https://github.com/hydra-mahjong/hydra"
 
+build = "build.rs"
 [lints]
 workspace = true
 
@@ -15,7 +16,7 @@ crate-type = ["rlib"]
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 hydra-train-types = { path = "../hydra-train-types" }
-burn = { version = "0.20", default-features = false, features = ["std"] }
+burn = { version = "0.21", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-burn = { version = "0.20", features = ["autodiff", "ndarray", "tch"] }
+burn = { version = "0.21", features = ["autodiff", "ndarray", "tch"] }

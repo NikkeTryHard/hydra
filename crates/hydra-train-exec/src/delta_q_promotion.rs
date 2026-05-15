@@ -151,7 +151,7 @@ pub fn delta_q_arena_report_from_paired_eval(
 pub fn run_paired_delta_q_arena_confirmation<B: Backend>(
     candidate_model: &HydraModel<B>,
     baseline_model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     config: &PairedArenaEvalConfig,
     temperature: f32,
 ) -> DeltaQArenaEvalOutcome {

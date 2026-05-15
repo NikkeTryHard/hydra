@@ -4,7 +4,7 @@ use burn::backend::NdArray;
 type B = NdArray<f32>;
 
 fn onehot2d<B: Backend>(
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     batch: usize,
     classes: usize,
     idx: usize,
@@ -16,7 +16,12 @@ fn onehot2d<B: Backend>(
     Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, classes])
 }
 
-fn onehot3d<B: Backend>(device: &B::Device, batch: usize, c1: usize, c2: usize) -> Tensor<B, 3> {
+fn onehot3d<B: Backend>(
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    batch: usize,
+    c1: usize,
+    c2: usize,
+) -> Tensor<B, 3> {
     let mut d = vec![0.0f32; batch * c1 * c2];
     for i in 0..(batch * c1) {
         d[i * c2] = 1.0;
@@ -24,7 +29,10 @@ fn onehot3d<B: Backend>(device: &B::Device, batch: usize, c1: usize, c2: usize) 
     Tensor::<B, 1>::from_floats(d.as_slice(), device).reshape([batch, c1, c2])
 }
 
-fn make_dummy_targets<B: Backend>(device: &B::Device, batch: usize) -> HydraTargets<B> {
+fn make_dummy_targets<B: Backend>(
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    batch: usize,
+) -> HydraTargets<B> {
     HydraTargets {
         policy_target: onehot2d(device, batch, 46, 0),
         legal_mask: Tensor::ones([batch, 46], device),

@@ -1628,7 +1628,7 @@ pub struct BcShardDeviceBatch<B: Backend> {
 #[must_use]
 pub fn materialize_host_batch_owned<B: Backend>(
     host: BcShardHostBatch,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> BcShardDeviceBatch<B> {
     let target_presence = target_presence_from_host_batch(&host, host.batch_size);
     materialize_host_parts_owned::<B>(
@@ -1683,7 +1683,7 @@ fn materialize_host_parts_owned<B: Backend>(
     delta_q_target_flat: Option<Vec<f32>>,
     delta_q_mask_flat: Option<Vec<f32>>,
     target_presence: TargetPresence,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> BcShardDeviceBatch<B> {
     let b = batch_size;
 
@@ -1767,7 +1767,7 @@ fn materialize_host_parts_owned<B: Backend>(
 fn policy_target_from_action_slice<B: Backend>(
     actions: &[i64],
     batch_size: usize,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Tensor<B, 2> {
     let mut flat = vec![0.0f32; batch_size * HYDRA_ACTION_SPACE];
     for (row, &action) in actions.iter().take(batch_size).enumerate() {

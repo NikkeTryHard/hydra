@@ -310,7 +310,7 @@ pub fn build_delta_q_from_afbs_tree(
 /// target and zero mask rows, ensuring per-sample masking in the loss.
 pub fn collate_exit_targets<B: Backend>(
     samples: &[Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> (Option<Tensor<B, 2>>, Option<Tensor<B, 2>>) {
     if samples.is_empty() || samples.iter().all(|s| s.is_none()) {
         return (None, None);
@@ -334,7 +334,7 @@ pub fn collate_exit_targets<B: Backend>(
 
 pub fn collate_delta_q_targets<B: Backend>(
     samples: &[Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> (Option<Tensor<B, 2>>, Option<Tensor<B, 2>>) {
     if samples.is_empty() || samples.iter().all(|s| s.is_none()) {
         return (None, None);

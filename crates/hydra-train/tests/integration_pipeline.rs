@@ -624,14 +624,14 @@ fn ctsmc_to_endgame_to_exit_pipeline() {
 }
 
 fn make_test_targets_infer(
-    device: &<TestBackend as Backend>::Device,
+    device: &<TestBackend as burn::tensor::backend::BackendTypes>::Device,
     batch: usize,
 ) -> HydraTargets<TestBackend> {
     make_test_targets(device, batch)
 }
 
 fn make_test_targets(
-    device: &<TestBackend as Backend>::Device,
+    device: &<TestBackend as burn::tensor::backend::BackendTypes>::Device,
     batch: usize,
 ) -> HydraTargets<TestBackend> {
     let mut pd = vec![0.0f32; batch * 46];

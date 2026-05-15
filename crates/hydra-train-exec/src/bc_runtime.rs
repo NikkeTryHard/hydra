@@ -315,7 +315,7 @@ pub fn train_epoch<B: AutodiffBackend>(
     microbatch_size: usize,
     accum_steps: usize,
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     loss_fn: &HydraLoss<B>,
     lr: f64,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,

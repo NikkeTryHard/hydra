@@ -61,11 +61,23 @@ Archive doctrine rules:
 ## Build, test, and tooling defaults
 
 Preferred validation defaults:
-- `cargo nextest run --release`
+- Use Pixi by default so Rust/Python/libtorch stay pinned: `pixi run <task>` from repo root.
+- `pixi run nextest` = `cargo nextest run --workspace --all-targets --no-default-features --release --no-fail-fast`.
+- `pixi run nextest-list` = whole-workspace release test discovery without `cuda-graph`.
+- `pixi run build-fast` = `cargo build --workspace --no-default-features --release`.
+- `pixi run build` = full default-feature release build.
+- `pixi run torch-check` prints PyTorch version, CUDA availability, and libtorch path.
+- Legacy direct commands, when Pixi unavailable: `cargo nextest run --release`; `cargo build --release`; `cargo test --release -p <crate> <test-name>` only for narrow single-test/module cases.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo build --release`
-- use `cargo test --release` only for narrow single-test or module cases
 - strict lint gate: `scripts/lint-check.sh` = Markdown compression hook + anti-game scan + rustfmt + all-features clippy; all-features path includes `cuda-graph`, so CUDA libtorch/CUDA toolkit must be available. `scripts/lint-check.sh --cuda-graph` adds focused `hydra-train` cuda-graph clippy.
+
+Pixi/libtorch contract:
+- `pixi.toml` + `pixi.lock` are source of truth for dev/build env.
+- Single Pixi env only; use default env for CPU and GPU runs. Device is selected by Hydra config (`device: cpu` or `device: cuda:0`), not by Pixi env name.
+- Current Hydra backend is Burn `LibTorch` (`burn-tch` -> `tch` -> `torch-sys` -> native libtorch).
+- Burn is priority crate for model/backend updates. Keep Burn at latest safe release first; keep `tch`/`torch-sys`/PyTorch pinned to versions required by that Burn release.
+- Current Burn 0.21 stack uses `burn-tch 0.21` -> `tch 0.22` -> `torch-sys 0.22`; `torch-sys 0.22` requires exact PyTorch/libtorch `2.9.0`; do not use `2.9.1`, newer PyTorch, or `LIBTORCH_BYPASS_VERSION_CHECK` unless Burn's own `burn-tch` dependency updates.
+- Required env vars live in `pixi.toml`: `LIBTORCH_USE_PYTORCH=1`, libtorch `LD_LIBRARY_PATH`, `CUDA_HOME`, `CUDA_PATH`, Linux clang/mold Cargo linker flags.
 
 Tooling rules:
 - `.cargo/config.toml` is local-only and gitignored; do not commit

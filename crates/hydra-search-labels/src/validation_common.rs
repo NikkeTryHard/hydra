@@ -24,7 +24,7 @@ pub enum CommonGateOutcome {
 pub fn evaluate_common_validation_gate<B: Backend>(
     step: &TrajectoryStep,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     hard_state_threshold: f32,
 ) -> CommonGateOutcome {
     let legal_f32 = step

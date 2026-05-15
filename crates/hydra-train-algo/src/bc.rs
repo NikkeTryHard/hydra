@@ -82,7 +82,7 @@ pub fn oracle_guidance_mask_tensor<B: Backend>(
     batch_size: usize,
     keep_prob: f32,
     rng_values: &[f32],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Tensor<B, 1> {
     let mask = oracle_guidance_mask_values(batch_size, keep_prob, rng_values);
     Tensor::<B, 1>::from_floats(mask.as_slice(), device)

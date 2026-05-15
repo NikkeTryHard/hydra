@@ -370,7 +370,7 @@ pub fn evaluate_report(
 pub fn collect_validation_metrics_for_step<B: Backend>(
     step: &TrajectoryStep,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     cfg: &ExitConfig,
     report: &mut ExitValidationReport,
 ) {
@@ -435,7 +435,7 @@ pub fn collect_validation_metrics_for_step<B: Backend>(
 pub fn run_exit_validation_over_trajectories<B: Backend>(
     trajectories: &[hydra_core::arena::Trajectory],
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     exit_config: &ExitConfig,
 ) -> ExitValidationReport {
     let mut report = ExitValidationReport::new();

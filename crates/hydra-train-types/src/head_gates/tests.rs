@@ -556,7 +556,7 @@ fn extract_presence_prefers_cached_metadata() {
 #[test]
 fn controller_full_lifecycle_with_extracted_presence() {
     let mut ctrl = HeadActivationController::new(test_config());
-    let device: <B as Backend>::Device = Default::default();
+    let device: <B as burn::tensor::backend::BackendTypes>::Device = Default::default();
 
     for _ in 0..200 {
         let mut targets = dummy_targets(4);

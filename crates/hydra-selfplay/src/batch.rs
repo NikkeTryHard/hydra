@@ -129,7 +129,7 @@ pub fn trajectories_to_rl_batch<B: Backend>(
     trajectories: &[Trajectory],
     values: &[Vec<f32>],
     gae_config: &GaeConfig,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> RlBatch<B> {
     let mut scratch = RlBatchScratch::default();
     trajectories_to_rl_batch_reuse(trajectories, values, gae_config, device, &mut scratch)
@@ -139,7 +139,7 @@ pub fn trajectories_to_rl_batch_reuse<B: Backend>(
     trajectories: &[Trajectory],
     values: &[Vec<f32>],
     gae_config: &GaeConfig,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     scratch: &mut RlBatchScratch,
 ) -> RlBatch<B> {
     let total_steps: usize = trajectories

@@ -25,7 +25,10 @@ pub struct SEBlock<B: Backend> {
 
 impl SEBlockConfig {
     /// Initialize the block on `device`.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> SEBlock<B> {
+    pub fn init<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> SEBlock<B> {
         SEBlock {
             fc1: LinearConfig::new(self.channels, self.bottleneck).init(device),
             fc2: LinearConfig::new(self.bottleneck, self.channels).init(device),
@@ -67,7 +70,10 @@ pub struct SEResBlock<B: Backend> {
 
 impl SEResBlockConfig {
     /// Initialize the residual block on `device`.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> SEResBlock<B> {
+    pub fn init<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> SEResBlock<B> {
         let conv_cfg =
             Conv1dConfig::new(self.channels, self.channels, 3).with_padding(PaddingConfig1d::Same);
         let gn_cfg = GroupNormConfig::new(self.num_groups, self.channels);
@@ -136,7 +142,10 @@ pub struct SEResNet<B: Backend> {
 
 impl SEResNetConfig {
     /// Initialize the backbone on `device`.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> SEResNet<B> {
+    pub fn init<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> SEResNet<B> {
         let input_conv = Conv1dConfig::new(self.input_channels, self.hidden_channels, 3)
             .with_padding(PaddingConfig1d::Same)
             .init(device);

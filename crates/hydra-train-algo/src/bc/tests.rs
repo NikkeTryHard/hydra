@@ -11,7 +11,7 @@ fn oracle_guidance_mask_values_follow_keep_probability() {
 
 #[test]
 fn policy_agreement_counts_match_fraction() {
-    let device: <NdArray<f32> as Backend>::Device = Default::default();
+    let device: <NdArray<f32> as burn::tensor::backend::BackendTypes>::Device = Default::default();
     let logits = Tensor::<NdArray<f32>, 2>::from_floats(
         [
             [10.0, 1.0, 0.0],

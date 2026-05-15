@@ -394,7 +394,7 @@ pub fn run_mixed_policy_game_scores<B: Backend>(
     temperature: f32,
     rng_seed: u64,
     seat_models: [&HydraModel<B>; 4],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> [i32; 4] {
     let rule = GameRule::default_tenhou();
     let mut state = GameState::new(DEFAULT_GAME_MODE, true, Some(game_seed), 0, rule);
@@ -1034,7 +1034,7 @@ impl CooperativeSelfPlayCoordinator {
         temperature: f32,
         rng_seed: u64,
         model: &HydraModel<B>,
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
         live_exit_cfg: LiveExitConfig,
     ) -> SelfPlayBatchSource {
         self.prepare_games(game_seeds, temperature, rng_seed, &live_exit_cfg);
@@ -1134,7 +1134,7 @@ pub fn generate_self_play_batch_source<B: Backend>(
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource {
     let mut trajectories = Vec::with_capacity(game_seeds.len());
@@ -1175,7 +1175,7 @@ pub fn generate_self_play_batch_source_cooperative<B: Backend>(
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource {
     let mut coordinator = CooperativeSelfPlayCoordinator::new();
@@ -1195,7 +1195,7 @@ pub fn generate_self_play_batch_source_cooperative_reuse<B: Backend>(
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource {
     coordinator.run(
@@ -1213,8 +1213,8 @@ pub fn generate_self_play_batch_source_batched<B: Backend>(
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
-    device: &B::Device,
-    _inference_device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    _inference_device: &<B as burn::tensor::backend::BackendTypes>::Device,
     live_exit_cfg: LiveExitConfig,
 ) -> SelfPlayBatchSource {
     generate_self_play_batch_source_cooperative(
@@ -1237,7 +1237,7 @@ pub fn generate_self_play_rl_batch<B: AutodiffBackend>(
     temperature: f32,
     rng_seed: u64,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     gae_config: &GaeConfig,
     live_exit_cfg: LiveExitConfig,
 ) -> RlBatch<B> {
@@ -1257,7 +1257,7 @@ pub fn generate_self_play_rl_batch_reuse<B: AutodiffBackend>(
     coordinator: &mut CooperativeSelfPlayCoordinator,
     request: CooperativeSelfPlayRequest<'_>,
     model: &HydraModel<B>,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     gae_config: &GaeConfig,
 ) -> RlBatch<B> {
     let valid_model = model.valid();
@@ -1343,7 +1343,7 @@ fn run_mixed_player_decision<B: Backend>(
     selector: &mut NnActionSelector,
     legal_buf: &mut Vec<Action>,
     seat_models: &[&HydraModel<B>; 4],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
     chosen_actions: &mut [Option<Action>; 4],
     pid: u8,
 ) {

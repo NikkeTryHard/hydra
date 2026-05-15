@@ -217,7 +217,7 @@ fn optional_tensor_2d<B: Backend>(
     any_present: bool,
     batch: usize,
     width: usize,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Option<Tensor<B, 2>> {
     any_present.then(|| Tensor::<B, 1>::from_floats(values, device).reshape([batch, width]))
 }
@@ -225,7 +225,7 @@ fn optional_tensor_2d<B: Backend>(
 fn optional_mask_tensor_1d<B: Backend>(
     values: &[f32],
     any_present: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Option<Tensor<B, 1>> {
     any_present.then(|| Tensor::<B, 1>::from_floats(values, device))
 }
@@ -236,7 +236,7 @@ fn optional_tensor_3d<B: Backend>(
     batch: usize,
     dim1: usize,
     dim2: usize,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Option<Tensor<B, 3>> {
     any_present.then(|| Tensor::<B, 1>::from_floats(values, device).reshape([batch, dim1, dim2]))
 }
@@ -264,7 +264,7 @@ where
 fn collate_with_writer<'a, B: Backend, I>(
     samples: I,
     batch: usize,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Result<MjaiBatch<B>, String>
 where
     I: IntoIterator<Item = (&'a MjaiSample, Option<&'a [u8; 3]>)>,
@@ -275,7 +275,7 @@ where
 fn build_batch_from_samples<B: Backend>(
     samples: &[MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Result<Option<MjaiBatch<B>>, String> {
     if samples.is_empty() {
         return Ok(None);
@@ -306,7 +306,7 @@ fn build_batch_from_samples<B: Backend>(
 fn build_batch_from_sample_refs<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Result<Option<MjaiBatch<B>>, String> {
     if samples.is_empty() {
         return Ok(None);
@@ -507,7 +507,11 @@ impl CollateBuffers {
         Ok(())
     }
 
-    fn to_batch<B: Backend>(&self, batch: usize, device: &B::Device) -> MjaiBatch<B> {
+    fn to_batch<B: Backend>(
+        &self,
+        batch: usize,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> MjaiBatch<B> {
         let (exit_target, exit_mask) =
             collate_action_targets::<B>(&self.exit_samples[..batch], device);
         let (delta_q_target, delta_q_mask) =
@@ -616,7 +620,10 @@ impl CollateBuffers {
     }
 }
 impl HostCollatedBatch {
-    fn into_batch<B: Backend>(self, device: &B::Device) -> MjaiBatch<B> {
+    fn into_batch<B: Backend>(
+        self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> MjaiBatch<B> {
         let HostCollatedBatch { buffers, batch } = self;
         let batch_out = buffers.to_batch(batch, device);
         COLLATE_SCRATCH.with(|scratch| {
@@ -625,7 +632,10 @@ impl HostCollatedBatch {
         batch_out
     }
 
-    fn into_bc_batch_and_targets<B: Backend>(self, device: &B::Device) -> TimedOwnedBcBatch<B> {
+    fn into_bc_batch_and_targets<B: Backend>(
+        self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> TimedOwnedBcBatch<B> {
         let started = std::time::Instant::now();
         let batch = self.into_batch(device);
         let device_materialize_seconds = started.elapsed().as_secs_f64();
@@ -650,7 +660,10 @@ impl<B: Backend> MjaiBatch<B> {
     }
 }
 
-pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> MjaiBatch<B> {
+pub fn collate_batch<B: Backend>(
+    samples: &[MjaiSample],
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+) -> MjaiBatch<B> {
     build_batch_from_samples::<B>(samples, false, device)
         .expect("valid sample collation")
         .expect("non-empty samples")
@@ -658,7 +671,7 @@ pub fn collate_batch<B: Backend>(samples: &[MjaiSample], device: &B::Device) -> 
 
 pub fn collate_batch_augmented<B: Backend>(
     samples: &[MjaiSample],
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> MjaiBatch<B> {
     build_batch_from_samples::<B>(samples, true, device)
         .expect("valid sample collation")
@@ -668,7 +681,7 @@ pub fn collate_batch_augmented<B: Backend>(
 pub fn collate_sample_refs<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedHydraBatch<B> {
     let Some((obs, batch)) = collate_sample_refs_with_batch::<B>(samples, augment, device)? else {
         return Ok(None);
@@ -679,7 +692,7 @@ pub fn collate_sample_refs<B: Backend>(
 pub fn collate_sample_refs_owned<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedOwnedBatch<B> {
     let Some(batch) = build_batch_from_sample_refs::<B>(samples, augment, device)? else {
         return Ok(None);
@@ -692,7 +705,7 @@ pub fn collate_sample_refs_owned<B: Backend>(
 pub fn collate_sample_refs_bc_owned<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedOwnedBcBatch<B> {
     let Some(batch) = build_batch_from_sample_refs::<B>(samples, augment, device)? else {
         return Ok(None);
@@ -703,7 +716,7 @@ pub fn collate_sample_refs_bc_owned<B: Backend>(
 pub fn collate_sample_refs_with_batch<B: Backend>(
     samples: &[&MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedSampleBatch<B> {
     let Some(batch) = build_batch_from_sample_refs::<B>(samples, augment, device)? else {
         return Ok(None);
@@ -715,7 +728,7 @@ pub fn collate_sample_refs_with_batch<B: Backend>(
 pub fn collate_samples<B: Backend>(
     samples: &[MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedHydraBatch<B> {
     let Some((obs, batch)) = collate_batch_samples::<B>(samples, augment, device)? else {
         return Ok(None);
@@ -726,7 +739,7 @@ pub fn collate_samples<B: Backend>(
 pub fn collate_samples_owned<B: Backend>(
     samples: &[MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedOwnedBatch<B> {
     let Some(batch) = build_batch_from_samples::<B>(samples, augment, device)? else {
         return Ok(None);
@@ -739,7 +752,7 @@ pub fn collate_samples_owned<B: Backend>(
 pub fn collate_samples_bc_owned<B: Backend>(
     samples: &[MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedOwnedBcBatch<B> {
     let Some(batch) = build_batch_from_samples::<B>(samples, augment, device)? else {
         return Ok(None);
@@ -750,7 +763,7 @@ pub fn collate_samples_bc_owned<B: Backend>(
 pub fn collate_samples_bc_owned_timed<B: Backend>(
     samples: &[MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> TimedCollatedOwnedBcBatch<B> {
     if samples.is_empty() {
         return Ok(None);
@@ -779,7 +792,7 @@ pub fn collate_samples_bc_owned_timed<B: Backend>(
 pub fn collate_batch_samples<B: Backend>(
     samples: &[MjaiSample],
     augment: bool,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> CollatedSampleBatch<B> {
     let Some(batch) = build_batch_from_samples::<B>(samples, augment, device)? else {
         return Ok(None);

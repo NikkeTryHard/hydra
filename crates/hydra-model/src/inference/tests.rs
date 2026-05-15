@@ -4,7 +4,7 @@ use burn::backend::NdArray;
 
 type B = NdArray<f32>;
 
-fn make_server(device: &<B as Backend>::Device) -> InferenceServer<B> {
+fn make_server(device: &<B as burn::tensor::backend::BackendTypes>::Device) -> InferenceServer<B> {
     let actor = crate::model::HydraModelConfig::actor().init::<B>(device);
     InferenceServer::from_configs(
         actor,

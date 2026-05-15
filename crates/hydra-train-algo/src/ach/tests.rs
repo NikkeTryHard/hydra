@@ -10,7 +10,7 @@ type AchInputs = (
     Tensor<B, 1>,
 );
 
-fn make_ach_inputs(device: &<B as Backend>::Device) -> AchInputs {
+fn make_ach_inputs(device: &<B as burn::tensor::backend::BackendTypes>::Device) -> AchInputs {
     let logits = Tensor::<B, 2>::from_floats([[0.0, 1.0, -1.0]], device);
     let mask = Tensor::<B, 2>::ones([1, 3], device);
     let actions = Tensor::<B, 1, Int>::from_ints(&[1i32][..], device);

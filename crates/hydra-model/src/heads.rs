@@ -235,70 +235,100 @@ pub struct HeadsConfig {
 
 impl HeadsConfig {
     /// Initialize the policy head.
-    pub fn init_policy<B: Backend>(&self, device: &B::Device) -> PolicyHead<B> {
+    pub fn init_policy<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> PolicyHead<B> {
         PolicyHead {
             linear: LinearConfig::new(self.hidden_channels, self.action_space).init(device),
         }
     }
 
     /// Initialize the value head.
-    pub fn init_value<B: Backend>(&self, device: &B::Device) -> ValueHead<B> {
+    pub fn init_value<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> ValueHead<B> {
         ValueHead {
             linear: LinearConfig::new(self.hidden_channels, 1).init(device),
         }
     }
 
     /// Initialize the score PDF head.
-    pub fn init_score_pdf<B: Backend>(&self, device: &B::Device) -> ScorePdfHead<B> {
+    pub fn init_score_pdf<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> ScorePdfHead<B> {
         ScorePdfHead {
             linear: LinearConfig::new(self.hidden_channels, self.score_bins).init(device),
         }
     }
 
     /// Initialize the score CDF head.
-    pub fn init_score_cdf<B: Backend>(&self, device: &B::Device) -> ScoreCdfHead<B> {
+    pub fn init_score_cdf<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> ScoreCdfHead<B> {
         ScoreCdfHead {
             linear: LinearConfig::new(self.hidden_channels, self.score_bins).init(device),
         }
     }
 
     /// Initialize the opponent tenpai head.
-    pub fn init_opp_tenpai<B: Backend>(&self, device: &B::Device) -> OppTenpaiHead<B> {
+    pub fn init_opp_tenpai<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> OppTenpaiHead<B> {
         OppTenpaiHead {
             linear: LinearConfig::new(self.hidden_channels, self.num_opponents).init(device),
         }
     }
 
     /// Initialize the global reward prediction head.
-    pub fn init_grp<B: Backend>(&self, device: &B::Device) -> GrpHead<B> {
+    pub fn init_grp<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> GrpHead<B> {
         GrpHead {
             linear: LinearConfig::new(self.hidden_channels, self.grp_classes).init(device),
         }
     }
 
     /// Initialize the opponent next-discard head.
-    pub fn init_opp_next_discard<B: Backend>(&self, device: &B::Device) -> OppNextDiscardHead<B> {
+    pub fn init_opp_next_discard<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> OppNextDiscardHead<B> {
         OppNextDiscardHead {
             conv: Conv1dConfig::new(self.hidden_channels, self.num_opponents, 1).init(device),
         }
     }
 
     /// Initialize the danger head.
-    pub fn init_danger<B: Backend>(&self, device: &B::Device) -> DangerHead<B> {
+    pub fn init_danger<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> DangerHead<B> {
         DangerHead {
             conv: Conv1dConfig::new(self.hidden_channels, self.num_opponents, 1).init(device),
         }
     }
 
     /// Initialize the oracle critic head.
-    pub fn init_oracle_critic<B: Backend>(&self, device: &B::Device) -> OracleCriticHead<B> {
+    pub fn init_oracle_critic<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> OracleCriticHead<B> {
         OracleCriticHead {
             linear: LinearConfig::new(self.hidden_channels, 4).init(device),
         }
     }
 
     /// Initialize the belief-field head.
-    pub fn init_belief_field<B: Backend>(&self, device: &B::Device) -> BeliefFieldHead<B> {
+    pub fn init_belief_field<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> BeliefFieldHead<B> {
         BeliefFieldHead {
             conv: Conv1dConfig::new(self.hidden_channels, self.num_belief_components * 4, 1)
                 .init(device),
@@ -306,7 +336,10 @@ impl HeadsConfig {
     }
 
     /// Initialize the mixture weight head.
-    pub fn init_mixture_weight<B: Backend>(&self, device: &B::Device) -> MixtureWeightHead<B> {
+    pub fn init_mixture_weight<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> MixtureWeightHead<B> {
         MixtureWeightHead {
             linear: LinearConfig::new(self.hidden_channels, self.num_belief_components)
                 .init(device),
@@ -316,7 +349,7 @@ impl HeadsConfig {
     /// Initialize the opponent hand-type head.
     pub fn init_opponent_hand_type<B: Backend>(
         &self,
-        device: &B::Device,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
     ) -> OpponentHandTypeHead<B> {
         OpponentHandTypeHead {
             linear: LinearConfig::new(
@@ -328,14 +361,20 @@ impl HeadsConfig {
     }
 
     /// Initialize the delta-Q head.
-    pub fn init_delta_q<B: Backend>(&self, device: &B::Device) -> DeltaQHead<B> {
+    pub fn init_delta_q<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> DeltaQHead<B> {
         DeltaQHead {
             linear: LinearConfig::new(self.hidden_channels, self.action_space).init(device),
         }
     }
 
     /// Initialize the safety residual head.
-    pub fn init_safety_residual<B: Backend>(&self, device: &B::Device) -> SafetyResidualHead<B> {
+    pub fn init_safety_residual<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> SafetyResidualHead<B> {
         SafetyResidualHead {
             linear: LinearConfig::new(self.hidden_channels, self.action_space).init(device),
         }

@@ -15,8 +15,8 @@ hydra-train-types = { path = "../hydra-train-types" }
 hydra-model = { path = "../hydra-model" }
 hydra-train-algo = { path = "../hydra-train-algo" }
 hydra-search-labels = { path = "../hydra-search-labels" }
-burn = { version = "0.20" }
+burn = { version = "0.21" }
 riichienv-core = { version = "0.4.7", path = "../hydra-engine", package = "hydra-engine", features = ["fast-json-ingest"] }
 
 [dev-dependencies]
-burn = { version = "0.20", features = ["ndarray"] }
+burn = { version = "0.21", features = ["ndarray"] }

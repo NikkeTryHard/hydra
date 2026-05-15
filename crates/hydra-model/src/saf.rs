@@ -141,7 +141,10 @@ pub fn saf_features_from_observation(obs: &[f32]) -> [SafFeatures; HYDRA_ACTION_
 }
 
 /// Convert observation-derived SaF features into a `[46, 8]` tensor.
-pub fn saf_tensor_from_observation<B: Backend>(obs: &[f32], device: &B::Device) -> Tensor<B, 2> {
+pub fn saf_tensor_from_observation<B: Backend>(
+    obs: &[f32],
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+) -> Tensor<B, 2> {
     let features = saf_features_from_observation(obs);
     let mut flat = [0.0f32; HYDRA_ACTION_SPACE * SAF_INPUT_DIM];
     for (action, feature) in features.iter().enumerate() {
@@ -228,7 +231,10 @@ pub struct SafMlp<B: Backend> {
 
 impl SafConfig {
     /// Initialize the SaF MLP on `device`.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> SafMlp<B> {
+    pub fn init<B: Backend>(
+        &self,
+        device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    ) -> SafMlp<B> {
         SafMlp {
             fc1: LinearConfig::new(SAF_INPUT_DIM, self.hidden_dim).init(device),
             fc2: LinearConfig::new(self.hidden_dim, 1).init(device),

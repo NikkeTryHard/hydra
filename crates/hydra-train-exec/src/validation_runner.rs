@@ -84,7 +84,7 @@ pub struct ValidationContext<'a, C, L, B: Backend> {
     /// Optional cached validation microbatches.
     pub cached_samples: Option<&'a [Box<[MjaiSample]>]>,
     /// Device used for validation tensors.
-    pub device: &'a B::Device,
+    pub device: &'a <B as burn::tensor::backend::BackendTypes>::Device,
     /// Validation loss function.
     pub loss_fn: &'a HydraLoss<B>,
     /// ExIt auxiliary-loss configuration.
@@ -736,7 +736,7 @@ struct BcShardBatch<B: Backend> {
 
 fn materialize_extracted_host_batch<B: Backend>(
     host: ExtractedBcShardHostBatch,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> BcShardBatch<B> {
     let target_presence = target_presence_from_extracted_host_batch(&host, host.batch_size);
     materialize_host_parts_owned::<B>(
@@ -791,7 +791,7 @@ fn materialize_host_parts_owned<B: Backend>(
     delta_q_target_flat: Option<Vec<f32>>,
     delta_q_mask_flat: Option<Vec<f32>>,
     target_presence: TargetPresence,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> BcShardBatch<B> {
     let b = batch_size;
 
@@ -896,7 +896,7 @@ fn materialize_host_parts_owned<B: Backend>(
 fn policy_target_from_action_slice<B: Backend>(
     actions: &[i64],
     batch_size: usize,
-    device: &B::Device,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
 ) -> Tensor<B, 2> {
     let mut flat = vec![0.0f32; batch_size * hydra_core::action::HYDRA_ACTION_SPACE];
     for (row, &action) in actions.iter().take(batch_size).enumerate() {
