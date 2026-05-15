@@ -33,17 +33,20 @@ pixi run test
 pixi run lint
 ```
 
-Fast default commands avoid LibTorch/CUDA-heavy paths unless explicitly requested.
+Fast inner-loop commands avoid benches, examples, and LibTorch/CUDA-heavy paths unless explicitly requested. Default gates keep all no-heavy targets for broader local coverage.
 
 | Command | Use |
 |---|---|
-| `pixi run check` | Fast workspace compile check |
+| `pixi run check-lib` | Fastest workspace library compile check |
+| `pixi run test-lib` | Fastest workspace library unit tests |
+| `pixi run test-fast` | Fast workspace test targets without benches/examples |
+| `pixi run check` | Default no-heavy all-target compile check |
+| `pixi run check-all-targets` | Explicit alias for default all-target check |
 | `pixi run build` | Fast workspace dev build |
-| `pixi run test` | Fast workspace tests via nextest |
+| `pixi run test` | Default no-heavy all-target workspace tests via nextest |
 | `pixi run lint` | Fast lint: anti-game scan, rustfmt, clippy |
-| `pixi run nextest-list` | List default test inventory |
+| `pixi run nextest-list` | List default all-target test inventory |
 | `pixi run timings-check` | Emit Cargo timing report for default graph |
-
 Heavy paths are explicit:
 
 | Command | Use |

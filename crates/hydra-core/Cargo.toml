@@ -39,7 +39,13 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "simulator_bench"
 harness = false
+required-features = ["benchmarks"]
 
 [[bench]]
 name = "ct_smc_bench"
 harness = false
+required-features = ["benchmarks"]
+
+[features]
+default = []
+benchmarks = []

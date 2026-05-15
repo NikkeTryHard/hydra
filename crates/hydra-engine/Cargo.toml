@@ -41,9 +41,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "agari_bench"
 harness = false
+required-features = ["benchmarks"]
 
 [features]
 default = ["mjai-logging"]
 mjai-logging = []
+benchmarks = []
 ## Use sonic-rs SIMD JSON parser for replay ingest (offline batch paths only).
 fast-json-ingest = ["sonic-rs"]
