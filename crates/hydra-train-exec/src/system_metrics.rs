@@ -303,7 +303,7 @@ fn read_disk_sample() -> Option<DiskSample> {
     parse_proc_self_io(&fs::read_to_string("/proc/self/io").ok()?)
 }
 
-fn read_gpu_telemetry() -> Option<GpuTelemetry> {
+pub fn read_gpu_telemetry() -> Option<GpuTelemetry> {
     let output = Command::new("nvidia-smi")
         .args([
             "--query-gpu=utilization.gpu,memory.used,memory.free",

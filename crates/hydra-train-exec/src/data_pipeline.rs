@@ -1530,6 +1530,7 @@ pub struct TrainValidationLoader<'a> {
     pub config: &'a StreamingLoaderConfig,
 }
 
+#[cfg(feature = "libtorch")]
 impl crate::validation_runner::ValidationDataLoader for TrainValidationLoader<'_> {
     fn stream_val_microbatches<'a>(
         &'a self,

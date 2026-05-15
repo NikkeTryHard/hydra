@@ -69,7 +69,7 @@ fn probe_request_from_cli_rejects_zero_values() {
 
 #[test]
 fn probe_child_request_from_cli_parses_child_probe_inputs() {
-    let (request, path, manifest_cache_path) =
+    let (request, path, manifest_paths) =
         probe_child_request_from_cli(Some(ProbeChildRequest::Single(ProbeSingleChildRequest {
             request: ProbeCliRequest {
                 kind: ProbeKind::Train,
@@ -79,6 +79,8 @@ fn probe_child_request_from_cli_parses_child_probe_inputs() {
             },
             result_path: PathBuf::from("/tmp/probe.json"),
             manifest_cache_path: Some(PathBuf::from("/tmp/manifest.json")),
+            discovery_summary_path: Some(PathBuf::from("/tmp/discovery-summary.json")),
+            discovery_index_path: Some(PathBuf::from("/tmp/discovery-index.bin")),
         })))
         .expect("child request should parse")
         .expect("child request should be present");
@@ -87,9 +89,14 @@ fn probe_child_request_from_cli_parses_child_probe_inputs() {
     assert_eq!(request.warmup_steps, 4);
     assert_eq!(request.measure_steps, 12);
     assert_eq!(path, PathBuf::from("/tmp/probe.json"));
+    assert_eq!(manifest_paths.0, Some(PathBuf::from("/tmp/manifest.json")));
     assert_eq!(
-        manifest_cache_path,
-        Some(PathBuf::from("/tmp/manifest.json"))
+        manifest_paths.1,
+        Some(PathBuf::from("/tmp/discovery-summary.json"))
+    );
+    assert_eq!(
+        manifest_paths.2,
+        Some(PathBuf::from("/tmp/discovery-index.bin"))
     );
 }
 
@@ -105,6 +112,8 @@ fn probe_child_request_from_cli_ignores_batch_child_inputs() {
         attempts: 2,
         results_path: PathBuf::from("/tmp/probe-results.json"),
         manifest_cache_path: None,
+        discovery_summary_path: None,
+        discovery_index_path: None,
     });
 
     let parsed = probe_child_request_from_cli(Some(child)).expect("batch child should parse");
@@ -113,7 +122,7 @@ fn probe_child_request_from_cli_ignores_batch_child_inputs() {
 
 #[test]
 fn probe_batch_child_request_from_cli_parses_batch_probe_inputs() {
-    let (batch, path, manifest_cache_path) = probe_batch_child_request_from_cli(Some(
+    let (batch, path, manifest_paths) = probe_batch_child_request_from_cli(Some(
         ProbeChildRequest::Batch(ProbeBatchChildRequest {
             request: ProbeCliRequest {
                 kind: ProbeKind::Validation,
@@ -124,6 +133,8 @@ fn probe_batch_child_request_from_cli_parses_batch_probe_inputs() {
             attempts: 3,
             results_path: PathBuf::from("/tmp/probe-results.json"),
             manifest_cache_path: Some(PathBuf::from("/tmp/manifest.json")),
+            discovery_summary_path: Some(PathBuf::from("/tmp/discovery-summary.json")),
+            discovery_index_path: Some(PathBuf::from("/tmp/discovery-index.bin")),
         }),
     ))
     .expect("batch child request should parse")
@@ -135,9 +146,14 @@ fn probe_batch_child_request_from_cli_parses_batch_probe_inputs() {
     assert_eq!(batch.request.measure_steps, 9);
     assert_eq!(batch.attempts, 3);
     assert_eq!(path, PathBuf::from("/tmp/probe-results.json"));
+    assert_eq!(manifest_paths.0, Some(PathBuf::from("/tmp/manifest.json")));
     assert_eq!(
-        manifest_cache_path,
-        Some(PathBuf::from("/tmp/manifest.json"))
+        manifest_paths.1,
+        Some(PathBuf::from("/tmp/discovery-summary.json"))
+    );
+    assert_eq!(
+        manifest_paths.2,
+        Some(PathBuf::from("/tmp/discovery-index.bin"))
     );
 }
 
@@ -154,6 +170,8 @@ fn probe_batch_child_request_from_cli_rejects_zero_attempts() {
             attempts: 0,
             results_path: PathBuf::from("/tmp/probe-results.json"),
             manifest_cache_path: None,
+            discovery_summary_path: None,
+            discovery_index_path: None,
         },
     )))
     .expect_err("zero attempts should fail");

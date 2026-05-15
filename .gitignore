@@ -28,6 +28,7 @@ handoff_zips/
 # Local build/env config
 .cargo/
 .pixi-env/
+.pixi/
 output/
 out/
 dist/

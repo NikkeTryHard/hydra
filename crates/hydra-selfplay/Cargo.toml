@@ -12,11 +12,15 @@ workspace = true
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 hydra-train-types = { path = "../hydra-train-types" }
-hydra-model = { path = "../hydra-model" }
-hydra-train-algo = { path = "../hydra-train-algo" }
-hydra-search-labels = { path = "../hydra-search-labels" }
-burn = { version = "0.21" }
+hydra-model = { path = "../hydra-model", default-features = false }
+hydra-train-algo = { path = "../hydra-train-algo", default-features = false }
+hydra-search-labels = { path = "../hydra-search-labels", default-features = false }
+burn = { version = "0.21", default-features = false, features = ["std"] }
 riichienv-core = { version = "0.4.7", path = "../hydra-engine", package = "hydra-engine", features = ["fast-json-ingest"] }
 
 [dev-dependencies]
-burn = { version = "0.21", features = ["ndarray"] }
+burn = { version = "0.21", default-features = false, features = ["std", "autodiff", "ndarray"] }
+
+[features]
+default = []
+model-eval = ["hydra-search-labels/model-eval"]

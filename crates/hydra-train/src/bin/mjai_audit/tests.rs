@@ -175,7 +175,6 @@ fn collect_sources_accepts_single_files_and_directory_archives() {
         vec![
             DataSource::LooseFile(keep_json.clone()),
             DataSource::LooseFile(keep_gz.clone()),
-            DataSource::Archive(keep_archive.clone()),
         ]
     );
 

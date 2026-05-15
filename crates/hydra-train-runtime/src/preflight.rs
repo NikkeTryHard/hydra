@@ -766,6 +766,7 @@ pub enum PreflightArtifactEventKind {
     Started,
     Completed,
     Skipped,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

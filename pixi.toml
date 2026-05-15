@@ -1,0 +1,57 @@
+[workspace]
+name = "hydra"
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["linux-64"]
+requires-pixi = ">=0.49"
+
+[dependencies]
+python = ">=3.12,<3.13"
+rust = ">=1.95,<1.96"
+cargo-nextest = ">=0.9.133,<0.10"
+clang = "*"
+cmake = "*"
+ninja = "*"
+pkg-config = "*"
+protobuf = "*"
+git = "*"
+zstd = "*"
+mold = "*"
+sccache = ">=0.15.0,<0.16"
+
+[pypi-dependencies]
+torch = "==2.9.0"
+numpy = "==1.26.4"
+
+[activation]
+env = { LIBTORCH_USE_PYTORCH = "1", PROTOC = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/bin/protoc", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH", CUDA_HOME = "$CONDA_PREFIX", CUDA_PATH = "$CONDA_PREFIX", RUSTC_WRAPPER = "$PIXI_PROJECT_ROOT/scripts/rustc-wrapper.sh", SCCACHE_DIR = "$PIXI_PROJECT_ROOT/.pixi/sccache" }
+
+[target.linux-64.activation.env]
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "$CONDA_PREFIX/bin/clang"
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=$CONDA_PREFIX/bin/mold -C link-arg=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot/usr/lib64/libc_nonshared.a"
+
+[tasks]
+fmt = { cmd = "cargo fmt --all", description = "Format Rust workspace" }
+check = { cmd = "cargo check --workspace --all-targets --no-default-features --quiet", description = "Fast default workspace check" }
+build = { cmd = "cargo build --workspace --no-default-features --quiet", description = "Fast default workspace build" }
+build-release = { cmd = "cargo build --workspace --no-default-features --release --quiet", description = "Fast release workspace build" }
+build-dist = { cmd = "cargo build --workspace --profile prod --quiet", description = "Fat-LTO final artifact build" }
+test = { cmd = "cargo nextest run --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast default tests" }
+test-release = { cmd = "cargo nextest run --workspace --all-targets --no-default-features --release --cargo-quiet --no-fail-fast", description = "Release-profile tests without heavy defaults" }
+test-exhaustive = { cmd = "cargo nextest run --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Explicit all-feature test gate" }
+lint = { cmd = "scripts/lint-check.sh --fast", description = "Fast default lint" }
+lint-exhaustive = { cmd = "scripts/lint-check.sh --exhaustive", description = "Explicit all-feature/CUDA lint gate" }
+lint-cuda-graph = { cmd = "scripts/lint-check.sh --cuda-graph", description = "Focused CUDA graph lint gate" }
+check-training = { cmd = "cargo check -p hydra-train --no-default-features --features training --bin train --quiet", description = "Check explicit CPU LibTorch training path" }
+check-cuda-graph = { cmd = "cargo check -p hydra-train --no-default-features --features cuda-graph --bin train --quiet", description = "Check explicit CUDA graph path" }
+timings-check = { cmd = "cargo check --workspace --all-targets --no-default-features --timings --quiet", description = "Timing report for fast default check" }
+timings-nextest-list = { cmd = "cargo nextest list --workspace --all-targets --no-default-features --cargo-profile dev --timings --cargo-quiet", description = "Timing report for test discovery" }
+timings-build-fast = { cmd = "cargo build --workspace --no-default-features --timings --quiet", description = "Timing report for default no-heavy build" }
+timings-full = { cmd = "cargo build --workspace --all-features --timings --quiet", description = "Timing report for full heavy path" }
+build-fast = { cmd = "pixi run build-release", description = "Compatibility alias for fast release workspace build" }
+nextest = { cmd = "pixi run test", description = "Compatibility alias for fast default tests" }
+nextest-list = { cmd = "cargo nextest list --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet", description = "Discover fast default workspace tests" }
+nextest-list-all-features = { cmd = "cargo nextest list --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet", description = "Discover all-feature workspace tests" }
+nextest-list-exhaustive = { cmd = "pixi run nextest-list-all-features", description = "Compatibility alias for all-feature test discovery" }
+rustc-wrapper = { cmd = "scripts/rustc-wrapper.sh", description = "Run rustc through the repo sccache wrapper; accepts rustc args" }
+torch-check = { cmd = "python -c \"import torch, os; print(torch.__version__); print(torch.cuda.is_available()); print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\"", description = "Print PyTorch version, CUDA availability, and libtorch path" }
+clean = { cmd = "cargo clean", description = "Delete Cargo build artifacts" }

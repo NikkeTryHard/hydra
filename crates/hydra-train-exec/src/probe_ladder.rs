@@ -12,6 +12,7 @@ use hydra_train_runtime::config::TrainConfig;
 use hydra_train_runtime::probe_request::{ProbeRequest, probe_candidate_ceiling};
 
 const MAX_DYNAMIC_PROBE_CANDIDATE: usize = 8192;
+const OOM_GEOMETRIC_BACKOFF_DIVISOR: usize = 2;
 
 pub fn close_probe_finalists(
     results: &[ProbeResult],
@@ -206,6 +207,108 @@ fn close_probe_finalists_from_summaries(
         .map(|summary| summary.candidate_microbatch)
         .take(max_candidates.max(1))
         .collect()
+}
+fn first_unprobed_from(
+    candidates: &[usize],
+    probed: &BTreeSet<usize>,
+    start_index: usize,
+) -> usize {
+    candidates
+        .iter()
+        .enumerate()
+        .skip(start_index)
+        .find(|(_, candidate)| !probed.contains(candidate))
+        .map(|(index, _)| index)
+        .unwrap_or(candidates.len())
+}
+
+fn closest_unprobed_candidate_in_open_range(
+    candidates: &[usize],
+    probed: &BTreeSet<usize>,
+    lower: usize,
+    upper: usize,
+) -> Option<usize> {
+    if lower >= upper.saturating_sub(1) {
+        return None;
+    }
+    let midpoint = lower + (upper - lower) / 2;
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            **candidate > lower && **candidate < upper && !probed.contains(candidate)
+        })
+        .min_by_key(|(_, candidate)| candidate.abs_diff(midpoint))
+        .map(|(index, _)| index)
+}
+
+fn geometric_lower_unprobed_candidate(
+    candidates: &[usize],
+    probed: &BTreeSet<usize>,
+    oom_candidate: usize,
+) -> Option<usize> {
+    let target = (oom_candidate / OOM_GEOMETRIC_BACKOFF_DIVISOR).max(1);
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            **candidate < oom_candidate && **candidate <= target && !probed.contains(candidate)
+        })
+        .min_by_key(|(_, candidate)| candidate.abs_diff(target))
+        .map(|(index, _)| index)
+        .or_else(|| {
+            candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| **candidate < oom_candidate && !probed.contains(candidate))
+                .min_by_key(|(_, candidate)| oom_candidate.saturating_sub(**candidate))
+                .map(|(index, _)| index)
+        })
+}
+
+pub fn adaptive_oom_probe_next_index(
+    candidates: &[usize],
+    results: &[ProbeResult],
+    default_next_index: usize,
+) -> usize {
+    let probed = results
+        .iter()
+        .map(|result| result.candidate_microbatch)
+        .collect::<BTreeSet<_>>();
+    let Some(lowest_oom) = results
+        .iter()
+        .filter(|result| result.status == ProbeStatus::Oom)
+        .map(|result| result.candidate_microbatch)
+        .min()
+    else {
+        return first_unprobed_from(candidates, &probed, default_next_index);
+    };
+
+    if let Some(highest_success_below_oom) = results
+        .iter()
+        .filter(|result| {
+            result.status == ProbeStatus::Success && result.candidate_microbatch < lowest_oom
+        })
+        .map(|result| result.candidate_microbatch)
+        .max()
+    {
+        if let Some(index) = closest_unprobed_candidate_in_open_range(
+            candidates,
+            &probed,
+            highest_success_below_oom,
+            lowest_oom,
+        ) {
+            return index;
+        }
+    } else if results
+        .last()
+        .is_some_and(|result| result.status == ProbeStatus::Oom)
+        && let Some(index) = geometric_lower_unprobed_candidate(candidates, &probed, lowest_oom)
+    {
+        return index;
+    }
+
+    first_unprobed_from(candidates, &probed, default_next_index)
 }
 
 pub fn dynamic_probe_ceiling(config: &TrainConfig, kind: ProbeKind, seed: usize) -> usize {

@@ -21,6 +21,8 @@ pub struct ProbeBatchRequest {
     pub attempts: usize,
 }
 
+pub type ProbeManifestCachePaths = (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>);
+
 pub fn probe_request_from_cli(
     config: &TrainConfig,
     probe: Option<ProbeCliRequest>,
@@ -51,7 +53,7 @@ pub fn probe_request_from_cli(
 
 pub fn probe_child_request_from_cli(
     child: Option<ProbeChildRequest>,
-) -> Result<Option<(ProbeRequest, PathBuf, Option<PathBuf>)>, String> {
+) -> Result<Option<(ProbeRequest, PathBuf, ProbeManifestCachePaths)>, String> {
     let Some(child) = child else {
         return Ok(None);
     };
@@ -63,7 +65,7 @@ pub fn probe_child_request_from_cli(
 
 pub fn probe_batch_child_request_from_cli(
     child: Option<ProbeChildRequest>,
-) -> Result<Option<(ProbeBatchRequest, PathBuf, Option<PathBuf>)>, String> {
+) -> Result<Option<(ProbeBatchRequest, PathBuf, ProbeManifestCachePaths)>, String> {
     let Some(child) = child else {
         return Ok(None);
     };
@@ -92,17 +94,21 @@ pub fn resolve_probe_request(request: ProbeCliRequest) -> Result<ProbeRequest, S
 
 pub fn resolve_probe_single_child_request(
     child: ProbeSingleChildRequest,
-) -> Result<(ProbeRequest, PathBuf, Option<PathBuf>), String> {
+) -> Result<(ProbeRequest, PathBuf, ProbeManifestCachePaths), String> {
     Ok((
         resolve_probe_request(child.request)?,
         child.result_path,
-        child.manifest_cache_path,
+        (
+            child.manifest_cache_path,
+            child.discovery_summary_path,
+            child.discovery_index_path,
+        ),
     ))
 }
 
 pub fn resolve_probe_batch_child_request(
     child: ProbeBatchChildRequest,
-) -> Result<(ProbeBatchRequest, PathBuf, Option<PathBuf>), String> {
+) -> Result<(ProbeBatchRequest, PathBuf, ProbeManifestCachePaths), String> {
     if child.attempts == 0 {
         return Err("internal probe batch child missing positive attempts".to_string());
     }
@@ -112,7 +118,11 @@ pub fn resolve_probe_batch_child_request(
             attempts: child.attempts,
         },
         child.results_path,
-        child.manifest_cache_path,
+        (
+            child.manifest_cache_path,
+            child.discovery_summary_path,
+            child.discovery_index_path,
+        ),
     ))
 }
 

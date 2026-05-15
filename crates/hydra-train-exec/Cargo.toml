@@ -14,7 +14,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hydra-train-runtime = { path = "../hydra-train-runtime" }
-hydra-model = { path = "../hydra-model" }
+hydra-model = { path = "../hydra-model", default-features = false }
 hydra-replay-loader = { path = "../hydra-replay-loader" }
 hydra-bc-shards = { path = "../hydra-bc-shards" }
 hydra-data-core = { path = "../hydra-data-core" }
@@ -23,11 +23,11 @@ hydra-sample-cache = { path = "../hydra-sample-cache" }
 hydra-train-types = { path = "../hydra-train-types" }
 hydra-train-algo = { path = "../hydra-train-algo" }
 hydra-replay-sidecar = { path = "../hydra-replay-sidecar" }
-hydra-search-labels = { path = "../hydra-search-labels" }
-hydra-selfplay = { path = "../hydra-selfplay" }
-burn = { version = "0.21", features = ["train"] }
-tch = "0.22"
-torch-sys = "0.22"
+hydra-search-labels = { path = "../hydra-search-labels", default-features = false }
+hydra-selfplay = { path = "../hydra-selfplay", default-features = false }
+burn = { version = "0.21", default-features = false, features = ["std"] }
+tch = { version = "0.22", optional = true }
+torch-sys = { version = "0.22", optional = true }
 colored = "3"
 indicatif = "0.17"
 serde = { version = "1.0", features = ["derive"] }
@@ -42,15 +42,22 @@ tboard = "0.1.1"
 libloading = "0.8"
 
 [dev-dependencies]
-burn = { version = "0.21", features = ["ndarray"] }
+burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
 
 [build-dependencies]
 cc = "1"
 
 
 [features]
-default = ["cuda-graph"]
+default = []
+libtorch = [
+    "burn/train",
+    "burn/tch",
+    "dep:tch",
+    "dep:torch-sys",
+    "hydra-search-labels/model-eval",
+]
+cuda-graph = ["libtorch"]
 bootstrap-exec-in-progress = []
 rl-runner-exec-in-progress = []
-cuda-graph = []
 test-nvtx-recorder = []

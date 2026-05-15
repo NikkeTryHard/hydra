@@ -1,7 +1,9 @@
 use super::*;
 use burn::backend::Autodiff;
+#[cfg(feature = "libtorch-tests")]
 use burn::backend::LibTorch;
 use burn::backend::NdArray;
+#[cfg(feature = "libtorch-tests")]
 use burn::tensor::bf16;
 
 type B = NdArray<f32>;
@@ -181,6 +183,7 @@ fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
 }
 
 #[test]
+#[cfg(feature = "libtorch-tests")]
 fn batch_value_cpu_reuse_supports_libtorch_bf16_backend() {
     type Bf16Backend = LibTorch<bf16>;
 

@@ -435,6 +435,35 @@ fn exact_train_probe_runtime_seed_ignores_non_standard_or_mismatched_attempts() 
 }
 
 #[test]
+fn train_probe_runtime_seed_from_successes_uses_refined_winner_attempts() {
+    let mut config = dummy_config();
+    config.batch_size = 256;
+    config.microbatch_size = Some(44);
+    config.preflight.warmup_steps = 2;
+    config.preflight.measure_steps = 4;
+    config.archive_queue_bound = 8;
+    config.buffer_samples = 128;
+    config.buffer_games = 16;
+    let results = vec![
+        probe_result_with_runtime(ProbeKind::Train, 64, ProbeStatus::Success, Some(100.0)),
+        probe_result_with_runtime(ProbeKind::Train, 64, ProbeStatus::Success, Some(90.0)),
+        probe_result_with_runtime(ProbeKind::Train, 44, ProbeStatus::Success, Some(720.0)),
+        probe_result_with_runtime(ProbeKind::Train, 44, ProbeStatus::Success, Some(722.0)),
+        probe_result_with_runtime(ProbeKind::Validation, 44, ProbeStatus::Success, Some(999.0)),
+    ];
+
+    let seed = train_probe_runtime_seed_from_successes(&config, 44, &results)
+        .expect("refined train winner should seed loader tuning");
+
+    assert_eq!(seed.train_microbatch_size, 44);
+    assert_eq!(seed.tuple, (8, 128, 16));
+    assert_eq!(seed.warmup_steps, 2);
+    assert_eq!(seed.measure_steps, 4);
+    assert_eq!(seed.stats.count, 2);
+    assert!((seed.stats.sum - 1442.0).abs() < 1e-12);
+}
+
+#[test]
 fn benchmark_score_builds_stage_two_profiling_projection() {
     let config = dummy_config();
     let evaluation = benchmark_score(&config, &sample_stage_two_benchmark_profiling(), 512);
@@ -522,6 +551,61 @@ fn oom_candidate_prunes_higher_candidates_from_ladder() {
     prune_oom_upper_bound(&mut candidates, 128);
 
     assert_eq!(candidates, vec![128, 64, 32]);
+}
+
+fn probe_result(kind: ProbeKind, candidate_microbatch: usize, status: ProbeStatus) -> ProbeResult {
+    let measured_samples_per_second =
+        (status == ProbeStatus::Success).then_some(candidate_microbatch as f64);
+    ProbeResult {
+        kind,
+        candidate_microbatch,
+        status,
+        measured_samples_per_second,
+        elapsed_seconds: Some(0.01),
+        detail: String::new(),
+    }
+}
+
+#[test]
+fn oom_adaptive_search_jumps_geometrically_after_first_high_oom() {
+    let candidates = vec![2048, 512, 384, 320, 288, 256, 224, 192, 160, 128, 64];
+    let results = vec![probe_result(ProbeKind::Train, 2048, ProbeStatus::Oom)];
+
+    let next = adaptive_oom_probe_next_index(&candidates, &results, 1);
+
+    assert_eq!(candidates[next], 512);
+}
+
+#[test]
+fn oom_adaptive_search_binary_refines_after_safe_lower_bound() {
+    let candidates = vec![2048, 512, 384, 320, 288, 256, 224, 192, 160, 128, 64];
+    let mut results = vec![probe_result(ProbeKind::Train, 2048, ProbeStatus::Oom)];
+    let mut probed = Vec::new();
+    let mut index = adaptive_oom_probe_next_index(&candidates, &results, 1);
+    while index < candidates.len() {
+        let candidate = candidates[index];
+        probed.push(candidate);
+        let status = if candidate > 160 {
+            ProbeStatus::Oom
+        } else {
+            ProbeStatus::Success
+        };
+        results.push(probe_result(ProbeKind::Train, candidate, status));
+        index = adaptive_oom_probe_next_index(&candidates, &results, index + 1);
+        if results.iter().any(|result| {
+            result.status == ProbeStatus::Success && result.candidate_microbatch == 160
+        }) {
+            break;
+        }
+    }
+
+    assert_eq!(probed, vec![512, 256, 128, 192, 160]);
+    assert!(
+        [384, 320, 288, 224]
+            .into_iter()
+            .all(|candidate| !probed.contains(&candidate)),
+        "high OOM-only candidates must be skipped once bounded by geometric/binary search"
+    );
 }
 
 #[test]
@@ -836,6 +920,9 @@ fn benchmark_validation_pass_charges_materialization_seconds_into_validation_tim
         measured_samples: 0,
         materialization_stats: Default::default(),
         sub_stage_timing: Default::default(),
+        model_init_seconds: 0.0,
+        optimizer_init_seconds: 0.0,
+        loss_init_seconds: 0.0,
     };
 
     let (summary, validation_seconds) = benchmark_validation_pass(
@@ -1321,6 +1408,8 @@ fn run_probe_child_mode_rejects_unresolved_child_probe_steps() {
             },
             result_path: result_path.clone(),
             manifest_cache_path: None,
+            discovery_summary_path: None,
+            discovery_index_path: None,
         })),
     )
     .expect_err("missing warmup steps should be rejected before running child mode");
@@ -1340,6 +1429,8 @@ fn run_probe_child_mode_rejects_unresolved_child_probe_steps() {
             },
             result_path,
             manifest_cache_path: None,
+            discovery_summary_path: None,
+            discovery_index_path: None,
         })),
     )
     .expect_err("missing measure steps should be rejected before running child mode");
@@ -1367,6 +1458,8 @@ fn run_probe_child_mode_bubbles_probe_runtime_errors_after_cli_resolution() {
             },
             result_path: result_path.clone(),
             manifest_cache_path: None,
+            discovery_summary_path: None,
+            discovery_index_path: None,
         })),
     )
     .expect_err("resolved child requests should bubble probe runtime errors");
@@ -1415,6 +1508,8 @@ fn run_probe_child_mode_reuses_manifest_cache_for_child_probe_scan_bypass() {
             },
             result_path: result_path.clone(),
             manifest_cache_path: Some(manifest_cache_path),
+            discovery_summary_path: None,
+            discovery_index_path: None,
         })),
         &tiny_test_probe_model_config(),
     )
@@ -1472,6 +1567,8 @@ fn run_probe_child_batch_mode_reuses_manifest_cache_across_attempts() {
             attempts: 2,
             results_path: results_path.clone(),
             manifest_cache_path: Some(manifest_cache_path),
+            discovery_summary_path: None,
+            discovery_index_path: None,
         })),
     )
     .expect("child batch probe should reuse manifest cache across attempts")
@@ -1519,6 +1616,8 @@ fn run_probe_child_mode_routes_rl_requests_into_rl_probe_wrapper_errors() {
             },
             result_path: result_path.clone(),
             manifest_cache_path: None,
+            discovery_summary_path: None,
+            discovery_index_path: None,
         })),
     )
     .expect_err("resolved RL child requests should route into the RL probe wrapper");
@@ -1697,6 +1796,8 @@ fn run_probe_child_mode_bubbles_invalid_thread_configuration_before_probe_execut
             },
             result_path: result_path.clone(),
             manifest_cache_path: None,
+            discovery_summary_path: None,
+            discovery_index_path: None,
         })),
     )
     .expect_err("invalid rayon thread config should bubble before child probe execution");

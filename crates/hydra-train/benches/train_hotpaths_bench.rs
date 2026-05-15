@@ -280,7 +280,7 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
 }
 
 fn bench_validation_stream_grouping(c: &mut Criterion) {
-    let root = std::path::PathBuf::from("/home/nikketryhard/tmp/bench-validation-stream");
+    let root = std::env::temp_dir().join("hydra-train-hotpaths-bench-validation-stream");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("bench temp dir");
     for idx in 0..4 {
@@ -622,8 +622,12 @@ fn bench_model_cpu_bridge_tiny(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(
+    dead_code,
+    reason = "excluded from nextest discovery; real benchmark still useful manually"
+)]
 fn bench_shard_collation(c: &mut Criterion) {
-    let root = std::path::PathBuf::from("/home/nikketryhard/tmp/bench-shards");
+    let root = std::env::temp_dir().join("hydra-train-hotpaths-bench-shards");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("bench temp dir");
     let replay_path = root.join("game.mjai.json");
@@ -644,6 +648,14 @@ fn bench_shard_collation(c: &mut Criterion) {
         delta_q_sidecar: None,
         delta_q_sidecar_path: None,
         delta_q_provenance: SidecarProvenance::default(),
+        num_threads: None,
+        queue_bound: 128,
+        resume: false,
+        resume_dir: None,
+        chunk_games: 10_000,
+        report_name: Some("bc_shard_build_report.json".into()),
+        progress_jsonl_name: None,
+        max_error_examples: 32,
     })
     .expect("shards should build");
     let reader = load_bc_shard_reader(&build.manifest_path, BcShardSplit::Train)
@@ -696,7 +708,6 @@ fn bench_shard_collation(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_loader,
-    bench_shard_collation,
     bench_validation_batch_stats,
     bench_validation_stream_grouping,
     bench_rl_batch_collation,

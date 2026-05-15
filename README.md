@@ -1,138 +1,171 @@
 # Hydra
 
-Open-source Riichi Mahjong AI. Goal: rival [LuckyJ](https://haobofu.github.io/) (Tencent, 10.68 stable dan on Tenhou) with open weights.
+Hydra is open-source Riichi Mahjong AI project. goal is reproducible, permissively released system that can approach LuckyJ-level play while staying usable by researchers and engineers who want to inspect, train, and extend it.
+
+Hydra is still under active development. repo already contains game/runtime surface, encoders, training data formats, model/training crates, replay tooling, and CUDA/LibTorch-gated training paths. Current shipped/staged status lives in [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md).
 
 > ## Compute support
-> Research used Delta advanced computing/data resource, supported by National Science Foundation (award OAC 2005572) and State of Illinois. Delta = joint effort of University of Illinois Urbana-Champaign and National Center for Supercomputing Applications.
+> Research used Delta advanced computing/data resource, supported by National Science Foundation award OAC 2005572 and State of Illinois. Delta is joint effort of University of Illinois Urbana-Champaign and National Center for Supercomputing Applications.
 
-## Goal
+## What Hydra is trying to do
 
-Train mahjong AI that:
-- Beats [Mortal](https://github.com/Equim-chan/Mortal) (~7-dan), nears LuckyJ-level play (10+ dan) in head-to-head eval
-- Releases weights under permissive license
-- Adds opponent modeling and inference-time search — two capabilities separating LuckyJ from other mahjong AIs
+Hydra aims to:
 
-## Architecture
+- train strong Riichi Mahjong policy, ultimately near [LuckyJ](https://haobofu.github.io/) strength;
+- release weights under permissive license;
+- support reproducible training/evaluation;
+- add opponent modeling and inference-time search;
+- keep compatibility surfaces explicit: action space, encoder shape, legal masks, replay identity, and checkpoint/runtime contracts.
 
-Hydra uses layered authority flow, built upward from archive handoff canon:
+Useful context:
 
-1. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) — epistemic root / canonical archive SSOT for upstream research conclusions
-2. [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) — derived archive triage view over canonical source ledger; full render archived/generated on demand
-3. [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) — promoted architecture doctrine from archive canon + repo validation
-4. [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) — promoted operational doctrine and Hydra v1 roadmap from archive canon + repo validation
-5. [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — promoted current-status snapshot for shipped repo surfaces
-6. [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md) — runtime semantics and compatibility surfaces; current code wins if docs drift
+- [Mortal](https://github.com/Equim-chan/Mortal) is key public comparison point, but it is AGPL. Hydra does not copy or derive from Mortal code.
+- LuckyJ is long-term strength target, not claim that Hydra is already there.
 
-Hydra doc split:
+## Quick start
 
-- `HYDRA_FINAL.md` = max-ceiling destination
-- `HYDRA_RECONCILIATION.md` = roadmap to Hydra v1
-- `docs/CURRENT_STATUS.md` = shipped/staged now
+Install/use [Pixi](https://pixi.sh/) from repo root. Pixi owns Rust toolchain, PyTorch/libtorch, `cargo-nextest`, `clang`, `mold`, and `sccache` setup.
 
-Raw `answer_*_combined.md` files in `research/agent_handoffs/combined_all_variants/` stay raw archive corpus, not promoted doctrine.
+```bash
+pixi run torch-check
+pixi run check
+pixi run test
+pixi run lint
+```
 
-## Fresh-agent routing
+Fast default commands avoid LibTorch/CUDA-heavy paths unless explicitly requested.
 
-If entering Hydra with zero prior memory, use this order and stop when truth enough for task:
-
-1. `README.md` for repo routing
-2. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` for canonical archive intake
-3. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md` for derived archive triage
-4. `research/design/HYDRA_RECONCILIATION.md` for Hydra v1 roadmap
-5. `research/design/HYDRA_FINAL.md` for long-term ceiling
-6. `docs/CURRENT_STATUS.md` for shipped/staged truth
-7. `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` for runtime truth
-
-`combined_all_variants/` stays raw archive corpus for provenance only.
-
-## Status vocabulary
-
-For impl work, choose next lane from
-`research/design/HYDRA_RECONCILIATION.md`, confirm shipped/staged status in
-`docs/CURRENT_STATUS.md`, then confirm exact runtime contracts in
-`docs/GAME_ENGINE.md` plus current code.
-
-| Term | Meaning |
+| Command | Use |
 |---|---|
-| `active path` | what Hydra should optimize/build now |
-| `shipped baseline` | implemented, part of current live baseline |
-| `implemented but not default-on` | implemented in code, intentionally not default path |
-| `implemented but staged` | implemented enough to exist, activation/promotion intentionally deferred |
-| `reserve shelf` | preserved later-work direction, not current mainline |
-| `blocked` | not ready because real dependency or semantic gap remains |
-| `rejected` | not part of current plan |
-| `historical` | preserved context only; not governing truth |
+| `pixi run check` | Fast workspace compile check |
+| `pixi run build` | Fast workspace dev build |
+| `pixi run test` | Fast workspace tests via nextest |
+| `pixi run lint` | Fast lint: anti-game scan, rustfmt, clippy |
+| `pixi run nextest-list` | List default test inventory |
+| `pixi run timings-check` | Emit Cargo timing report for default graph |
 
-## Crate ownership
+Heavy paths are explicit:
 
-| Crate | Owns | Does not own |
-|---|---|---|
-| `crates/hydra-engine` | vendored riichi rules engine | Hydra runtime/training orchestration |
-| `crates/hydra-runtime-types` | shared runtime rails/types | rules, encoder, training |
-| `crates/hydra-safety` | safety rail primitives | policy/model/training execution |
-| `crates/hydra-belief-search` | belief/search primitives | neural labels or training loop |
-| `crates/hydra-encoder` | observation encoder components | simulator or training ownership |
-| `crates/hydra-core` | public runtime bridge over engine/types/safety/encoder/search; simulator, action/tile API, seeding | Burn model/training/data pipelines or vendored rules ownership |
-| `crates/hydra-data-core` | sample DTOs/scoring helpers | replay IO, shard/cache storage |
-| `crates/hydra-replay-sidecar` | replay sidecar JSONL contracts | replay loading/conversion |
-| `crates/hydra-replay-loader` | MJAI replay load + sample conversion | model/training loop |
-| `crates/hydra-sample-cache` | parsed-sample cache format | replay parsing authority |
-| `crates/hydra-bc-shards` | backend-agnostic BC shard host format | optimizer/model runtime |
-| `crates/hydra-train-types` | training scalar coordination types | algorithms, model layers, CLI |
-| `crates/hydra-model` | Burn neural model components | training algorithms/runtime CLI |
-| `crates/hydra-train-algo` | pure Burn training algorithms/loss math | CLI/config/preflight, model definition |
-| `crates/hydra-selfplay` | self-play coordination primitives | train CLI/runtime contracts |
-| `crates/hydra-search-labels` | search-label generation | base search/runtime primitives |
-| `crates/hydra-train-runtime` | train CLI/config/preflight/probe/status contracts | execution/model/algo ownership |
-| `crates/hydra-train-exec` | training execution composition over runtime/model/algo/data crates | CLI/config/preflight/probe/status contracts |
-| `crates/hydra-train` | user-facing training binary package | library/model/algo/runtime/exec ownership |
+| Command | Use |
+|---|---|
+| `pixi run check-training` | CPU LibTorch training compile path |
+| `pixi run check-cuda-graph` | CUDA graph compile path |
+| `pixi run test-exhaustive` | All-feature test gate |
+| `pixi run lint-exhaustive` | All-feature/CUDA lint gate |
+| `pixi run lint-cuda-graph` | Focused CUDA graph lint |
+| `pixi run build-dist` | Fat-LTO final artifact build |
+| `pixi run timings-full` | Timing report for full heavy graph |
 
-If deciding what to build next, follow Fresh-agent routing order above.
-Historical design/planning docs now live as compact entries in `research/design/HYDRA_ARCHIVE.md`.
+For narrow work, prefer Pixi-owned Cargo:
 
-## Research
+```bash
+pixi run cargo check -p hydra-core --no-default-features --quiet
+pixi run cargo nextest run -p hydra-core --lib --no-default-features --cargo-profile dev --cargo-quiet
+pixi run cargo nextest run golden_aka_flags --no-default-features --cargo-profile dev --cargo-quiet
+```
 
-| File | What's In It |
-|------|-------------|
-| [ARCHIVE_CANONICAL_CLAIMS.jsonl](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl) | Epistemic root / canonical archive SSOT for upstream research intake |
-| [ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS_ROADMAP.md) | Derived archive prioritization view over canonical archive claims |
-| [HYDRA_FINAL.md](research/design/HYDRA_FINAL.md) | Promoted Max Hydra architecture doctrine |
-| [HYDRA_RECONCILIATION.md](research/design/HYDRA_RECONCILIATION.md) | Promoted Hydra v1 active-path roadmap |
-| [HYDRA_ARCHIVE.md](research/design/HYDRA_ARCHIVE.md) | Historical/reserve design parking lot for retired docs |
-| [RESEARCH_DIGEST.md](research/evidence/RESEARCH_DIGEST.md) | Consolidated evidence: value decomposition, belief/search limits, safe exploitation, mean-field caveats |
-| [ALGORITHM_WATCH.md](research/evidence/ALGORITHM_WATCH.md) | ACH/LuckyJ, ExIt, R-NaD/DRDA, CFR variants, algorithm status |
-| [MAHJONG_AI_INTEL.md](research/intel/MAHJONG_AI_INTEL.md) | Competitor/community/tactical-gap intel; AGPL boundary |
-| [REFERENCES.md](research/intel/REFERENCES.md) | Citation/source ledger |
-| [INFRASTRUCTURE.md](research/infrastructure/INFRASTRUCTURE.md) | Rust/Burn, artifacts, checkpoint essentials, compute doctrine |
-| [ENGINE_BENCHMARKS.md](research/infrastructure/ENGINE_BENCHMARKS.md) | Measured benchmark ledger |
-| [SEEDING.md](research/design/SEEDING.md) | RNG hierarchy, reproducibility, eval seed bank |
-| [TESTING.md](research/design/TESTING.md) | Testing strategy and high-risk verification |
+Use direct system `cargo` only when Pixi is unavailable. Direct Cargo can pick host PyTorch/libtorch that does not match Hydra's pinned Burn/tch stack.
 
-## Status
+## Build environment notes
 
-Hydra in active impl. For current shipped/staged repo snapshot, read [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). For runtime semantics and compatibility-sensitive invariants, read [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) and [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md).
+Hydra's default Pixi env is supported local build surface.
 
-## Operator docs
+Pixi config sets:
 
-If need run/debug training stack rather than architecture docs, start here:
+- `RUSTC_WRAPPER=scripts/rustc-wrapper.sh`
+- repo-local `SCCACHE_DIR=.pixi/sccache`
+- Pixi `clang` linker driver
+- Pixi `mold` linker
+- conda sysroot startup-symbol workaround
+- PyTorch/libtorch path for `torch-sys`
 
-|- [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md) — train CLI modes, YAML contract, preflight/runtime authority, BC shards, replay sidecars, DeltaQ promotion, precision/CUDA notes
-|- [`docker/train/README.md`](docker/train/README.md) — container, GHCR, Kaggle-compatible artifact, MJAI audit, coverage commands
+Current Burn LibTorch stack requires PyTorch/libtorch `2.9.0` through `burn-tch 0.21` -> `tch 0.22` -> `torch-sys 0.22`. Do not bypass that version check unless Burn/tch requirements changed.
 
-## Testing and Coverage
+For clean compile measurements:
 
-Default workspace test path: `cargo nextest run --release`. Use `cargo test --release -p <crate> <test-name>` only for narrow single-test/module cases.
+```bash
+CARGO_TARGET_DIR=$HOME/tmp/hydra-compile-bench/default-check \
+SCCACHE_DISABLE=1 \
+pixi run check
+```
 
-Executable test inventory:
-- Rust inline/unit tests across workspace crates run under nextest.
-- Rust integration tests: `crates/hydra-core/tests/{golden_encoder,mjai_replay,proptest_invariants,game_loop_integration}.rs`; `crates/hydra-train/tests/integration_pipeline.rs`.
-- Criterion benches: `cargo bench -p hydra-core`, `cargo bench -p hydra-engine`, `cargo bench -p hydra-train`.
-- Core throughput example: `cargo run -p hydra-core --example bench_throughput`.
-- Python script tests: `uv run python -m unittest discover -s scripts/tests`.
+Do not compare cold-cache and warm-cache numbers.
 
-Coverage commands now live in [`docker/train/README.md`](docker/train/README.md).
+## Repository map
+
+| Path | Purpose |
+|---|---|
+| `crates/hydra-engine` | Vendored Apache-2.0 Riichi rules engine |
+| `crates/hydra-runtime-types` | Shared runtime action/tile rails |
+| `crates/hydra-safety` | Safety primitives |
+| `crates/hydra-belief-search` | Belief/search primitives |
+| `crates/hydra-encoder` | Observation encoders |
+| `crates/hydra-core` | Public runtime facade, simulator, action/tile API, seeding |
+| `crates/hydra-data-core` | Sample DTOs and scoring helpers |
+| `crates/hydra-replay-sidecar` | Replay sidecar JSONL contracts |
+| `crates/hydra-replay-loader` | MJAI replay loading and sample conversion |
+| `crates/hydra-sample-cache` | Parsed sample cache format/storage |
+| `crates/hydra-bc-shards` | Backend-agnostic behavior-cloning shard format |
+| `crates/hydra-train-types` | Shared training scalar/coordination types |
+| `crates/hydra-model` | Burn neural model components |
+| `crates/hydra-train-algo` | Pure Burn losses/algorithms |
+| `crates/hydra-selfplay` | Self-play coordination primitives |
+| `crates/hydra-search-labels` | Search-label generation |
+| `crates/hydra-train-runtime` | Training CLI/config/preflight/probe contracts |
+| `crates/hydra-train-exec` | Training execution over model/algo/data/runtime crates |
+| `crates/hydra-train` | User-facing binaries |
+| `docs/` | Current user/operator docs |
+| `research/` | Research/design/evidence archive |
+| `docker/train/` | Container/Kaggle/operator packaging docs |
+
+## Where to read next
+
+| Need | Read |
+|---|---|
+| Current shipped/staged state | [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) |
+| Runtime/game invariants | [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md) |
+| Compatibility contracts | [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md) |
+| Training/operator commands | [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md) |
+| Container/Kaggle workflow | [`docker/train/README.md`](docker/train/README.md) |
+| Hydra v1 roadmap | [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md) |
+| Long-term architecture | [`research/design/HYDRA_FINAL.md`](research/design/HYDRA_FINAL.md) |
+| Research evidence summary | [`research/evidence/RESEARCH_DIGEST.md`](research/evidence/RESEARCH_DIGEST.md) |
+| Benchmarks | [`research/infrastructure/ENGINE_BENCHMARKS.md`](research/infrastructure/ENGINE_BENCHMARKS.md) |
+| Reproducibility/seeding | [`research/design/SEEDING.md`](research/design/SEEDING.md) |
+
+canonical research ledger is [`research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl`](research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl). Derived roadmap/rendered files are helpers; JSONL wins if archive views drift.
+
+## Testing
+
+Default:
+
+```bash
+pixi run test
+```
+
+Common focused tests:
+
+```bash
+pixi run cargo nextest run -p hydra-core --no-default-features --cargo-profile dev --cargo-quiet
+pixi run cargo nextest run -p hydra-core --test golden_encoder --no-default-features --cargo-profile dev --cargo-quiet
+pixi run cargo nextest run -p hydra-core --lib --no-default-features --cargo-profile dev --cargo-quiet
+pixi run cargo nextest run -p hydra-train-exec --lib --no-default-features --cargo-profile dev --cargo-quiet
+```
+
+Python scripts:
+
+```bash
+uv run python -m unittest discover -s scripts/tests
+```
+
+Coverage/container/Kaggle commands live in [`docker/train/README.md`](docker/train/README.md).
+
+For impl work: start from [`research/design/HYDRA_RECONCILIATION.md`](research/design/HYDRA_RECONCILIATION.md), confirm status in [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), then confirm runtime contracts in [`docs/GAME_ENGINE.md`](docs/GAME_ENGINE.md), [`docs/COMPATIBILITY_SURFACE.md`](docs/COMPATIBILITY_SURFACE.md), and current code.
+
+Raw files under `research/agent_handoffs/combined_all_variants/` are provenance only, not impl doctrine.
 
 ## License
 
-- **hydra-core** (encoder, training pipeline): [BSL 1.1](crates/hydra-core/LICENSE) -- free for non-commercial use, converts to Apache-2.0 on 2031-03-02
-- **hydra-engine** (game rules): Apache-2.0 (vendored from riichienv-core)
+Hydra first-party crates use BSL 1.1 unless crate-specific license says otherwise. `hydra-engine` is Apache-2.0 vendored upstream rules-engine code.
+
+Do not add AGPL/GPL/LGPL dependencies. Do not copy, adapt, port, or translate AGPL code from Mortal.

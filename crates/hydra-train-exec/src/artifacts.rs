@@ -5,10 +5,15 @@ use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "libtorch")]
 use crate::model::HydraModel;
+#[cfg(feature = "libtorch")]
 use burn::optim::Optimizer;
+#[cfg(feature = "libtorch")]
 use burn::prelude::Module;
+#[cfg(feature = "libtorch")]
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
+#[cfg(feature = "libtorch")]
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use hydra_data_core::{
     DataManifest, DataSource, DiscoveryManifest, DiscoveryMode, DiscoverySummary,
@@ -36,9 +41,11 @@ use crate::progress::{
     EpochLogEntry, RareActionMetrics, RlStepLogEntry, ScalarAverages, StepLogEntry,
 };
 use crate::resume::current_timestamp_s;
+use crate::resume::{BestValidation, read_resume_state, read_rl_resume_state};
+#[cfg(feature = "libtorch")]
 use crate::resume::{
-    BestValidation, EpochContinuation, RuntimeResumeContract, build_resume_state,
-    read_resume_state, read_rl_resume_state, write_resume_state, write_rl_resume_state,
+    EpochContinuation, RuntimeResumeContract, build_resume_state, write_resume_state,
+    write_rl_resume_state,
 };
 use crate::validation::{ValidationGateDecision, ValidationSummary};
 
@@ -739,6 +746,7 @@ pub fn write_checkpoint_meta(base: &Path, meta: &CheckpointMeta) -> Result<(), S
     })
 }
 
+#[cfg(feature = "libtorch")]
 /// Saves a model checkpoint payload at the provided base path.
 pub fn save_model_payload<B: Backend>(model: &HydraModel<B>, base: &Path) -> Result<(), String> {
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
@@ -748,6 +756,7 @@ pub fn save_model_payload<B: Backend>(model: &HydraModel<B>, base: &Path) -> Res
         .map_err(|err| format!("failed to save checkpoint {}: {err}", base.display()))
 }
 
+#[cfg(feature = "libtorch")]
 /// Saves an optimizer checkpoint payload at the provided base path.
 pub fn save_optimizer_payload<B, O>(optimizer: &O, base: &Path) -> Result<(), String>
 where
@@ -779,6 +788,7 @@ pub fn checkpoint_meta(
 }
 
 /// Checkpoint/resume state needed when saving the latest BC checkpoint.
+#[cfg(feature = "libtorch")]
 pub struct LatestCheckpointState<'a> {
     /// Resume-state global step.
     pub global_step: usize,
@@ -792,6 +802,7 @@ pub struct LatestCheckpointState<'a> {
     pub runtime: RuntimeResumeContract,
 }
 
+#[cfg(feature = "libtorch")]
 /// Writes the latest BC checkpoint payloads, metadata, and resume state.
 pub fn save_latest_checkpoint_and_state<B, O>(
     artifacts: &BcArtifactPaths,
@@ -827,6 +838,7 @@ where
     write_resume_state(&artifacts.latest_state_path, &state)
 }
 
+#[cfg(feature = "libtorch")]
 /// Saves a named BC checkpoint payload and metadata from validation metrics.
 pub fn save_checkpoint<B: Backend>(
     model: &HydraModel<B>,
@@ -846,6 +858,7 @@ pub fn save_checkpoint<B: Backend>(
     write_checkpoint_meta(base, &meta)
 }
 
+#[cfg(feature = "libtorch")]
 /// Writes the latest RL checkpoint payloads, metadata, and resume state.
 pub fn save_latest_rl_checkpoint_and_state<B, O>(
     artifacts: &RlArtifactPaths,
@@ -1218,6 +1231,19 @@ pub fn manifest_cache_matches(
         && cached.exclude_source_patterns == source_filters.exclude_source_patterns
 }
 
+fn manifest_cache_matches_explicit_path(
+    cached: &ManifestCacheEntry,
+    data_dir: &Path,
+    train_fraction: f32,
+    source_filters: &hydra_train_runtime::config::SourceFilterConfig,
+    explicit_cache_path: bool,
+) -> bool {
+    (explicit_cache_path || cached.data_dir == data_dir)
+        && cached.train_fraction_bits == train_fraction.to_bits()
+        && cached.include_source_patterns == source_filters.include_source_patterns
+        && cached.exclude_source_patterns == source_filters.exclude_source_patterns
+}
+
 /// Scans data sources and persists the compact discovery cache.
 pub fn scan_and_write_discovery_cache(
     discovery_summary_path: &Path,
@@ -1277,6 +1303,7 @@ pub fn scan_and_write_manifest_cache(
 }
 
 /// Request describing manifest cache lookup and compact discovery scan identity.
+#[derive(Clone, Copy)]
 pub struct ManifestCacheRequest<'a> {
     /// Legacy manifest cache path kept for read compatibility.
     pub cache_path: &'a Path,
@@ -1296,14 +1323,39 @@ pub struct ManifestCacheRequest<'a> {
     pub scan_error_context: &'a str,
 }
 
-/// Loads a matching legacy manifest cache entry, or scans and writes compact discovery artifacts.
-pub fn load_or_scan_manifest_cache<F>(
+/// Source used to satisfy a manifest-cache lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestCacheHitSource {
+    /// Compact discovery summary plus binary source index.
+    CompactDiscovery,
+    /// Legacy full JSON manifest cache.
+    LegacyManifest,
+}
+
+impl ManifestCacheHitSource {
+    /// Stable lowercase label for logs and tests.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CompactDiscovery => "compact_discovery",
+            Self::LegacyManifest => "legacy_manifest",
+        }
+    }
+}
+
+/// Manifest returned by cache lookup with provenance for logging.
+pub struct ManifestCacheLoad {
+    /// Resolved data manifest.
+    pub manifest: DataManifest,
+    /// Cache hit source, or `None` when data was scanned.
+    pub hit_source: Option<ManifestCacheHitSource>,
+}
+
+/// Loads a matching compact discovery cache, migrates a matching legacy manifest cache, or scans
+/// and writes compact discovery artifacts.
+pub fn load_or_scan_manifest_cache_with_source(
     request: ManifestCacheRequest<'_>,
-    on_cache_hit: F,
-) -> Result<DataManifest, String>
-where
-    F: FnOnce(&ManifestCacheEntry),
-{
+) -> Result<ManifestCacheLoad, String> {
     let ManifestCacheRequest {
         cache_path,
         discovery_summary_path,
@@ -1318,31 +1370,115 @@ where
         read_discovery_manifest_cache(discovery_summary_path, discovery_index_path)?
         && discovery_manifest_matches(&discovery, data_dir, train_fraction, source_filters)
     {
-        let manifest = DataManifest::from_discovery(&discovery);
-        on_cache_hit(&ManifestCacheEntry {
-            data_dir: data_dir.to_path_buf(),
-            train_fraction_bits: train_fraction.to_bits(),
-            include_source_patterns: source_filters.include_source_patterns.clone(),
-            exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
-            manifest: manifest.clone(),
+        return Ok(ManifestCacheLoad {
+            manifest: DataManifest::from_discovery(&discovery),
+            hit_source: Some(ManifestCacheHitSource::CompactDiscovery),
         });
-        return Ok(manifest);
     }
     if let Some(cached) = read_manifest_cache(cache_path)?
-        && manifest_cache_matches(&cached, data_dir, train_fraction, source_filters)
+        && manifest_cache_matches_explicit_path(
+            &cached,
+            data_dir,
+            train_fraction,
+            source_filters,
+            true,
+        )
     {
-        on_cache_hit(&cached);
-        return Ok(cached.manifest);
+        let discovery = discovery_manifest_from_legacy_cache(&cached, data_dir, train_fraction);
+        write_discovery_manifest_cache(discovery_summary_path, discovery_index_path, &discovery)?;
+        return Ok(ManifestCacheLoad {
+            manifest: cached.manifest,
+            hit_source: Some(ManifestCacheHitSource::LegacyManifest),
+        });
     }
-    scan_and_write_discovery_cache(
-        discovery_summary_path,
-        discovery_index_path,
+    Ok(ManifestCacheLoad {
+        manifest: scan_and_write_discovery_cache(
+            discovery_summary_path,
+            discovery_index_path,
+            data_dir,
+            train_fraction,
+            source_filters,
+            progress,
+            scan_error_context,
+        )?,
+        hit_source: None,
+    })
+}
+
+/// Loads a matching compact discovery cache, migrates a matching legacy manifest cache, or scans
+/// and writes compact discovery artifacts.
+pub fn load_or_scan_manifest_cache<F>(
+    request: ManifestCacheRequest<'_>,
+    on_cache_hit: F,
+) -> Result<DataManifest, String>
+where
+    F: FnOnce(&ManifestCacheEntry),
+{
+    let ManifestCacheRequest {
+        cache_path: _,
+        discovery_summary_path: _,
+        discovery_index_path: _,
         data_dir,
         train_fraction,
         source_filters,
-        progress,
-        scan_error_context,
-    )
+        progress: _,
+        scan_error_context: _,
+    } = request;
+    let entry_identity = ManifestCacheEntry {
+        data_dir: data_dir.to_path_buf(),
+        train_fraction_bits: train_fraction.to_bits(),
+        include_source_patterns: source_filters.include_source_patterns.clone(),
+        exclude_source_patterns: source_filters.exclude_source_patterns.clone(),
+        manifest: DataManifest {
+            sources: Vec::new(),
+            total_games: 0,
+            train_count: 0,
+            val_count: 0,
+            counts_exact: true,
+        },
+    };
+    let loaded = load_or_scan_manifest_cache_with_source(request)?;
+    if loaded.hit_source.is_some() {
+        on_cache_hit(&ManifestCacheEntry {
+            manifest: loaded.manifest.clone(),
+            ..entry_identity
+        });
+    }
+    Ok(loaded.manifest)
+}
+
+fn discovery_manifest_from_legacy_cache(
+    cached: &ManifestCacheEntry,
+    data_dir: &Path,
+    train_fraction: f32,
+) -> DiscoveryManifest {
+    let mut discovery = DiscoveryManifest::from_data_manifest(
+        cached.manifest.clone(),
+        infer_discovery_mode(data_dir, &cached.manifest.sources),
+        0,
+        0,
+        Vec::new(),
+    );
+    discovery.summary.data_dir = data_dir.to_path_buf();
+    discovery.summary.train_fraction_bits = train_fraction.to_bits();
+    discovery.summary.include_source_patterns = cached.include_source_patterns.clone();
+    discovery.summary.exclude_source_patterns = cached.exclude_source_patterns.clone();
+    discovery.summary.fingerprint = discovery_fingerprint(&discovery.summary, &discovery.sources);
+    discovery
+}
+
+fn infer_discovery_mode(data_dir: &Path, sources: &[DataSource]) -> DiscoveryMode {
+    if data_dir.is_file() {
+        return DiscoveryMode::ArchiveSingle;
+    }
+    if sources
+        .iter()
+        .all(|source| matches!(source, DataSource::Archive(_)))
+    {
+        DiscoveryMode::ArchiveMulti
+    } else {
+        DiscoveryMode::LooseGames
+    }
 }
 
 /// Scan data_dir and return all source locators without loading replay payloads.
@@ -1663,6 +1799,7 @@ fn is_archive_file(path: &Path) -> bool {
 }
 
 #[cfg(test)]
+#[cfg(feature = "libtorch")]
 mod wrapper_moved_tests {
     use super::*;
     use crate::delta_q_promotion::{
@@ -2262,6 +2399,49 @@ mod wrapper_moved_tests {
             .expect("manifest cache entry present");
 
         assert_eq!(restored, entry);
+
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn matching_legacy_manifest_cache_migrates_to_compact_discovery_cache() {
+        let output_dir = temp_dir_path("legacy_manifest_migration");
+        fs::create_dir_all(&output_dir).expect("create temp dir");
+        let legacy_path = output_dir.join("preflight_manifest.json");
+        let summary_path = output_dir.join("summary.json");
+        let index_path = output_dir.join("index.bin");
+        let entry = sample_manifest_cache_entry();
+        let filters = SourceFilterConfig::default();
+
+        write_manifest_cache(&legacy_path, &entry).expect("write legacy manifest cache");
+        let manifest = load_or_scan_manifest_cache(
+            ManifestCacheRequest {
+                cache_path: &legacy_path,
+                discovery_summary_path: &summary_path,
+                discovery_index_path: &index_path,
+                data_dir: Path::new("/data"),
+                train_fraction: 0.9,
+                source_filters: &filters,
+                progress: None,
+                scan_error_context: "test data",
+            },
+            |_| {},
+        )
+        .expect("migrate matching legacy manifest cache");
+
+        assert_eq!(manifest, entry.manifest);
+        assert!(summary_path.exists());
+        assert!(index_path.exists());
+        let discovery = read_discovery_manifest_cache(&summary_path, &index_path)
+            .expect("read migrated discovery cache")
+            .expect("migrated discovery cache present");
+        assert!(discovery_manifest_matches(
+            &discovery,
+            Path::new("/data"),
+            0.9,
+            &filters
+        ));
+        assert_eq!(DataManifest::from_discovery(&discovery), entry.manifest);
 
         cleanup_dir(&output_dir);
     }

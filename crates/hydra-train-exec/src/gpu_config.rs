@@ -1,11 +1,13 @@
 use std::sync::Once;
 
+#[cfg(feature = "cuda-graph")]
 unsafe extern "C" {
     fn hydra_set_allow_tf32_cublas(b: std::ffi::c_int);
     fn hydra_set_allow_tf32_cudnn(b: std::ffi::c_int);
 }
 
 static LIBTORCH_CPU_POOL_CONFIG: Once = Once::new();
+static CUDA_PERFORMANCE_FLAGS: Once = Once::new();
 
 fn device_requests_cuda(device: &str) -> bool {
     device
@@ -14,13 +16,22 @@ fn device_requests_cuda(device: &str) -> bool {
         .is_some_and(|kind| kind.eq_ignore_ascii_case("cuda"))
 }
 
-/// Global libtorch performance flags. Must be called before any tensor ops.
+/// Global libtorch CPU-pool flags. Must be called before any tensor ops.
+pub fn configure_libtorch_cpu_threads(num_threads: usize) {
+    LIBTORCH_CPU_POOL_CONFIG.call_once(|| {
+        let threads = num_threads.max(1) as i32;
+        tch::set_num_interop_threads(1);
+        tch::set_num_threads(threads);
+    });
+}
+
+/// Global CUDA performance flags. Must be called before any tensor ops.
 pub fn apply_gpu_performance_flags(device: &str) {
     if !device_requests_cuda(device) {
         return;
     }
 
-    LIBTORCH_CPU_POOL_CONFIG.call_once(|| {
+    CUDA_PERFORMANCE_FLAGS.call_once(|| {
         // SAFETY: called inside Once, before any tensor ops or thread spawning.
         unsafe {
             std::env::set_var("OMP_NUM_THREADS", "1");
@@ -36,8 +47,6 @@ pub fn apply_gpu_performance_flags(device: &str) {
                 std::env::set_var("CUDA_CACHE_MAXSIZE", "4294967296");
             }
         }
-        tch::set_num_interop_threads(1);
-        tch::set_num_threads(1);
     });
 
     if tch::Cuda::is_available() {
@@ -45,12 +54,15 @@ pub fn apply_gpu_performance_flags(device: &str) {
         // the fastest. Safe with fixed tensor shapes (Hydra's case).
         tch::Cuda::cudnn_set_benchmark(true);
 
-        // TF32: on Ampere+ GPUs, uses Tensor Cores for FP32 matmul/conv
-        // with 10-bit mantissa. Same exponent range, no overflow risk.
-        // tch-rs doesn't expose globalContext TF32 setters.
-        unsafe {
-            hydra_set_allow_tf32_cublas(1);
-            hydra_set_allow_tf32_cudnn(1);
+        #[cfg(feature = "cuda-graph")]
+        {
+            // TF32: on Ampere+ GPUs, uses Tensor Cores for FP32 matmul/conv
+            // with 10-bit mantissa. Same exponent range, no overflow risk.
+            // tch-rs doesn't expose globalContext TF32 setters.
+            unsafe {
+                hydra_set_allow_tf32_cublas(1);
+                hydra_set_allow_tf32_cudnn(1);
+            }
         }
     }
 }

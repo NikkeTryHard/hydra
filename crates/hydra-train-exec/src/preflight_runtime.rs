@@ -30,11 +30,13 @@ use hydra_train_runtime::preflight::{
     EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, ModelFingerprintInput,
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION,
     PROFILING_STAGE_FORWARD, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOGGING,
-    PROFILING_STAGE_LOSS, PROFILING_STAGE_OPTIMIZER_STEP, PROFILING_STAGE_STAGE_2_BENCHMARK,
-    PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION, PreflightArtifactEvent,
-    PreflightArtifactEventKind, PreflightCacheEntry, PreflightCacheKey, PreflightCompletedPhase,
-    PreflightConfig, PreflightReport, PreflightState, PreflightTuningMode, ProbeKind, ProbeResult,
-    ProbeStatus, ProfilingEnvelope, candidate_ladder, preflight_cache_key, resolve_runtime_config,
+    PROFILING_STAGE_LOSS, PROFILING_STAGE_OPTIMIZER_STEP, PROFILING_STAGE_PREFLIGHT_LOSS_INIT,
+    PROFILING_STAGE_PREFLIGHT_MODEL_INIT, PROFILING_STAGE_PREFLIGHT_OPTIMIZER_INIT,
+    PROFILING_STAGE_STAGE_2_BENCHMARK, PROFILING_STAGE_TRAIN, PROFILING_STAGE_VALIDATION,
+    PreflightArtifactEvent, PreflightArtifactEventKind, PreflightCacheEntry, PreflightCacheKey,
+    PreflightCompletedPhase, PreflightConfig, PreflightReport, PreflightState, PreflightTuningMode,
+    ProbeKind, ProbeResult, ProbeStatus, ProfilingEnvelope, candidate_ladder, preflight_cache_key,
+    resolve_runtime_config,
 };
 use tboard::EventWriter;
 
@@ -43,14 +45,14 @@ use crate::advisory::{RuntimeAdvisory, selected_runtime_probe_advisories};
 #[cfg(test)]
 use crate::artifacts::write_manifest_cache;
 use crate::artifacts::{
-    BcArtifactPaths, LatestCheckpointState, ManifestCacheRequest, PreflightBenchmarkPaths,
-    PreflightBenchmarkReport, PreflightPaths, RlArtifactPaths, RlPreflightPaths,
-    append_preflight_candidate_to_writer, append_preflight_event_to_writer,
+    BcArtifactPaths, LatestCheckpointState, ManifestCacheHitSource, ManifestCacheRequest,
+    PreflightBenchmarkPaths, PreflightBenchmarkReport, PreflightPaths, RlArtifactPaths,
+    RlPreflightPaths, append_preflight_candidate_to_writer, append_preflight_event_to_writer,
     append_step_log_to_writer, ensure_preflight_metrics_placeholder, load_or_scan_manifest_cache,
-    open_preflight_candidate_appender, open_preflight_event_appender, open_step_log_appender,
-    read_manifest_cache, read_preflight_cache, read_preflight_state,
-    save_latest_checkpoint_and_state, write_preflight_benchmark_report, write_preflight_cache,
-    write_preflight_report, write_preflight_state,
+    load_or_scan_manifest_cache_with_source, open_preflight_candidate_appender,
+    open_preflight_event_appender, open_step_log_appender, read_preflight_cache,
+    read_preflight_state, save_latest_checkpoint_and_state, write_preflight_benchmark_report,
+    write_preflight_cache, write_preflight_report, write_preflight_state,
 };
 use crate::bc_fixed_shape::{
     FixedShapeProbeConfig, FixedShapeTrainConfig, benchmark_train_fixed_chunks,
@@ -70,7 +72,9 @@ use crate::presentation::{
     format_preflight_selection_line, format_preflight_summary_line, format_probe_status_line,
     format_timed_phase_message, make_bar, make_spinner, preflight_phase_label, timestamped,
 };
-use crate::probe_ladder::{dynamic_probe_ladder, probe_only_candidate_ladder};
+use crate::probe_ladder::{
+    adaptive_oom_probe_next_index, dynamic_probe_ladder, probe_only_candidate_ladder,
+};
 use crate::probe_process::{mem_available_bytes, rl_probe_required_free_bytes};
 use crate::probe_search::{
     ProbeGrowthDecision, ProbeGrowthState, ProbeRunSpec, ProbeSearchStopReason,
@@ -438,6 +442,25 @@ impl PreflightArtifactLogger {
         )
     }
 
+    fn phase_interrupted(
+        &mut self,
+        phase: &str,
+        elapsed_seconds: f64,
+        detail: String,
+    ) -> Result<(), String> {
+        append_preflight_event_to_writer(
+            &mut self.events,
+            &PreflightArtifactEvent {
+                phase: phase.to_string(),
+                kind: PreflightArtifactEventKind::Interrupted,
+                elapsed_seconds: Some(elapsed_seconds),
+                detail: Some(detail),
+                completed: None,
+                planned: None,
+            },
+        )
+    }
+
     fn phase_completed(
         &mut self,
         phase: &str,
@@ -502,6 +525,22 @@ impl PreflightArtifactLogger {
         self.state.cache_written = true;
         write_preflight_state(&self.state_path, &self.state)
     }
+}
+
+fn log_interrupted_phase_if_probe_interrupted(
+    logger: &mut PreflightArtifactLogger,
+    phase: &str,
+    started: Instant,
+    err: &str,
+) -> Result<(), String> {
+    if err.contains("preflight interrupted") {
+        logger.phase_interrupted(
+            phase,
+            started.elapsed().as_secs_f64(),
+            "interrupt received; probe child/process group cleanup requested".to_string(),
+        )?;
+    }
+    Ok(())
 }
 
 fn completed_phase_seconds(state: &PreflightState, phase: &str) -> Option<f64> {
@@ -790,6 +829,9 @@ where
     measured_samples: usize,
     materialization_stats: ReplayMaterializationStats,
     sub_stage_timing: hydra_train_runtime::progress::TrainSubStageTiming,
+    model_init_seconds: f64,
+    optimizer_init_seconds: f64,
+    loss_init_seconds: f64,
 }
 
 struct BenchmarkEvaluationOutcome {
@@ -1082,6 +1124,35 @@ fn exact_train_probe_runtime_seed(
     })
 }
 
+fn train_probe_runtime_seed_from_successes(
+    config: &TrainConfig,
+    selected_candidate: usize,
+    results: &[ProbeResult],
+) -> Option<LoaderRuntimeScoreSeed> {
+    let mut count = 0usize;
+    let mut sum = 0.0;
+    for attempt in results.iter().filter(|result| {
+        result.kind == ProbeKind::Train
+            && result.candidate_microbatch == selected_candidate
+            && result.status == ProbeStatus::Success
+    }) {
+        sum += attempt.measured_samples_per_second?;
+        count += 1;
+    }
+
+    (count > 0).then_some(LoaderRuntimeScoreSeed {
+        train_microbatch_size: selected_candidate.min(config.batch_size).max(1),
+        tuple: (
+            config.archive_queue_bound,
+            config.buffer_samples,
+            config.buffer_games,
+        ),
+        warmup_steps: config.preflight.warmup_steps.max(1),
+        measure_steps: config.preflight.measure_steps.max(1),
+        stats: RuntimeTupleStats { count, sum },
+    })
+}
+
 fn search_train_microbatch(
     config_path: &Path,
     config: &TrainConfig,
@@ -1129,7 +1200,16 @@ fn search_train_microbatch(
     let mut best_score = f64::NEG_INFINITY;
     let mut last_successful_candidate: Option<usize> = None;
 
-    for candidate in candidates {
+    let mut index = 0usize;
+    while index < candidates.len() {
+        let candidate = candidates[index];
+        if results
+            .iter()
+            .any(|result: &ProbeResult| result.candidate_microbatch == candidate)
+        {
+            index += 1;
+            continue;
+        }
         if let Some(blocked) = maybe_block_host_ram_growth_probe(
             config,
             ProbeKind::Train,
@@ -1138,6 +1218,7 @@ fn search_train_microbatch(
         ) {
             println!("{}", format_probe_status_line(&blocked));
             results.push(blocked);
+            index += 1;
             continue;
         }
         let mut result_path_for =
@@ -1167,6 +1248,7 @@ fn search_train_microbatch(
                     candidate
                 ));
             }
+            index = adaptive_oom_probe_next_index(&candidates, &results, index + 1);
             continue;
         }
         last_successful_candidate = Some(candidate);
@@ -1181,6 +1263,7 @@ fn search_train_microbatch(
                 exact_train_probe_runtime_seed(config, candidate, &results, results.len());
             return Ok((candidate, results, baseline_seed));
         }
+        index = adaptive_oom_probe_next_index(&candidates, &results, index + 1);
     }
 
     if let Some(err) = fatal_probe_backend_error(&results) {
@@ -1222,7 +1305,14 @@ fn search_train_microbatch(
         selected_summary.candidate_microbatch,
         &results,
         standard_attempts_len,
-    );
+    )
+    .or_else(|| {
+        train_probe_runtime_seed_from_successes(
+            config,
+            selected_summary.candidate_microbatch,
+            &results,
+        )
+    });
     println!(
         "{}",
         format_preflight_selection_line(format_probe_selection_summary(
@@ -2017,10 +2107,19 @@ where
         >,
 {
     let train_cfg = trainer_config_from_train_config(config);
+
+    let model_init_started = Instant::now();
     let mut model = model_config.init::<B>(train_device);
+    let model_init_seconds = model_init_started.elapsed().as_secs_f64();
+
+    let optimizer_init_started = Instant::now();
     let mut optimizer: BenchmarkOptimizerOf<B> = train_cfg.optimizer_config().init();
+    let optimizer_init_seconds = optimizer_init_started.elapsed().as_secs_f64();
+
+    let loss_init_started = Instant::now();
     let loss_fn = HydraLoss::<B>::new(build_loss_config(config.advanced_loss.as_ref())?);
     let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
+    let loss_init_seconds = loss_init_started.elapsed().as_secs_f64();
     let mut head_controller = HeadActivationController::new(
         HeadActivationConfig::default_with_params(model_config.estimated_params()),
     );
@@ -2171,6 +2270,9 @@ where
                     measured_samples: measured_train_steps.saturating_mul(config.batch_size),
                     materialization_stats,
                     sub_stage_timing,
+                    model_init_seconds,
+                    optimizer_init_seconds,
+                    loss_init_seconds,
                 });
             }
         }
@@ -2531,6 +2633,18 @@ where
                         train_outcome.elapsed_seconds,
                         train_outcome.sub_stage_timing,
                     );
+                    train_profile.children.push(ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_PREFLIGHT_MODEL_INIT,
+                        train_outcome.model_init_seconds,
+                    ));
+                    train_profile.children.push(ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_PREFLIGHT_OPTIMIZER_INIT,
+                        train_outcome.optimizer_init_seconds,
+                    ));
+                    train_profile.children.push(ProfilingEnvelope::leaf(
+                        PROFILING_STAGE_PREFLIGHT_LOSS_INIT,
+                        train_outcome.loss_init_seconds,
+                    ));
                     train_profile.children.push(replay_materialization_profile(
                         train_outcome.materialization_stats,
                     ));
@@ -2797,12 +2911,19 @@ where
                 );
                 return Err(err);
             }
-            if results
+            let next_index = if results
                 .last()
                 .is_some_and(|result| result.status == ProbeStatus::Oom)
             {
                 prune_oom_upper_bound(&mut candidates, candidate);
-            }
+                Some(adaptive_oom_probe_next_index(
+                    &candidates,
+                    &results,
+                    index + 1,
+                ))
+            } else {
+                None
+            };
             if use_explicit_only {
                 progress.finish_with_message(
                     format!("preflight {} ladder complete", probe_kind_name(spec.kind))
@@ -2816,6 +2937,10 @@ where
                 ));
             }
             stop_reason = ProbeSearchStopReason::FirstFailedCandidate;
+            if let Some(next_index) = next_index {
+                index = next_index;
+                continue;
+            }
             break;
         }
         last_successful_candidate = Some(candidate);
@@ -2862,7 +2987,7 @@ where
             growth_steps = growth_state.steps;
             prior_best_score = growth_state.prior_best_score;
         }
-        index += 1;
+        index = adaptive_oom_probe_next_index(&candidates, &results, index + 1);
     }
 
     if let Some(err) = fatal_probe_backend_error(&results) {
@@ -3559,6 +3684,8 @@ fn resolve_probe_data_context(
     config: &TrainConfig,
     kind: ProbeKind,
     manifest_cache_path: Option<&Path>,
+    discovery_summary_path: Option<&Path>,
+    discovery_index_path: Option<&Path>,
 ) -> Result<ProbeDataContext, String> {
     if matches!(kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch) {
         return Ok(ProbeDataContext {
@@ -3599,7 +3726,13 @@ fn resolve_probe_data_context(
     }
 
     Ok(ProbeDataContext {
-        manifest: load_probe_batch_manifest(config, kind, manifest_cache_path)?,
+        manifest: load_probe_batch_manifest(
+            config,
+            kind,
+            manifest_cache_path,
+            discovery_summary_path,
+            discovery_index_path,
+        )?,
         train_reader: None,
         validation_reader: None,
     })
@@ -3683,6 +3816,8 @@ fn load_probe_batch_manifest(
     config: &TrainConfig,
     kind: ProbeKind,
     manifest_cache_path: Option<&Path>,
+    discovery_summary_path: Option<&Path>,
+    discovery_index_path: Option<&Path>,
 ) -> Result<Option<DataManifest>, String> {
     if config.bc_shards_manifest_path.is_some()
         && matches!(kind, ProbeKind::Train | ProbeKind::Validation)
@@ -3693,50 +3828,54 @@ fn load_probe_batch_manifest(
         return Ok(None);
     }
 
-    if let Some(path) = manifest_cache_path {
-        if let Some(cached) = read_manifest_cache(path)? {
-            return Ok(Some(cached.manifest));
-        }
-        let paths = PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0));
-        return load_or_scan_manifest_cache(
-            ManifestCacheRequest {
-                cache_path: path,
-                discovery_summary_path: &paths.discovery_summary_path,
-                discovery_index_path: &paths.discovery_index_path,
-                data_dir: &config.data_dir,
-                train_fraction: config.train_fraction,
-                source_filters: &config.source_filters,
-                progress: None,
-                scan_error_context: "preflight data",
-            },
-            |_| {},
-        )
-        .map(Some);
-    }
-
     let paths = PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0));
-    load_or_scan_manifest_cache(
-        ManifestCacheRequest {
-            cache_path: &paths.manifest_cache_path,
-            discovery_summary_path: &paths.discovery_summary_path,
-            discovery_index_path: &paths.discovery_index_path,
-            data_dir: &config.data_dir,
-            train_fraction: config.train_fraction,
-            source_filters: &config.source_filters,
-            progress: None,
-            scan_error_context: "preflight data",
-        },
-        |_| {},
-    )
-    .map(Some)
+    let cache_path = manifest_cache_path.unwrap_or(&paths.manifest_cache_path);
+    let discovery_summary_path = discovery_summary_path.unwrap_or(&paths.discovery_summary_path);
+    let discovery_index_path = discovery_index_path.unwrap_or(&paths.discovery_index_path);
+    let loaded = load_or_scan_manifest_cache_with_source(ManifestCacheRequest {
+        cache_path,
+        discovery_summary_path,
+        discovery_index_path,
+        data_dir: &config.data_dir,
+        train_fraction: config.train_fraction,
+        source_filters: &config.source_filters,
+        progress: None,
+        scan_error_context: "preflight data",
+    })?;
+    let source = loaded
+        .hit_source
+        .map(ManifestCacheHitSource::as_str)
+        .unwrap_or("scan");
+    emit_probe_progress(&format!(
+        "probe_progress kind={} phase=manifest_load source={} discovery_summary_path={} discovery_index_path={} legacy_manifest_path={} sources={} total_games={} train_count={} val_count={} counts_exact={}",
+        probe_kind_name(kind),
+        source,
+        discovery_summary_path.display(),
+        discovery_index_path.display(),
+        cache_path.display(),
+        loaded.manifest.sources.len(),
+        loaded.manifest.total_games,
+        loaded.manifest.train_count,
+        loaded.manifest.val_count,
+        loaded.manifest.counts_exact,
+    ))?;
+    Ok(Some(loaded.manifest))
 }
 
 fn load_probe_child_manifest(
     config: &TrainConfig,
     kind: ProbeKind,
     manifest_cache_path: Option<&Path>,
+    discovery_summary_path: Option<&Path>,
+    discovery_index_path: Option<&Path>,
 ) -> Result<Option<DataManifest>, String> {
-    load_probe_batch_manifest(config, kind, manifest_cache_path)
+    load_probe_batch_manifest(
+        config,
+        kind,
+        manifest_cache_path,
+        discovery_summary_path,
+        discovery_index_path,
+    )
 }
 
 fn run_probe_child_batch_request_with_model_config(
@@ -3744,11 +3883,19 @@ fn run_probe_child_batch_request_with_model_config(
     batch: ProbeBatchRequest,
     results_path: &Path,
     manifest_cache_path: Option<&Path>,
+    discovery_summary_path: Option<&Path>,
+    discovery_index_path: Option<&Path>,
     model_config: &HydraModelConfig,
 ) -> Result<ProbeBatchArtifact, String> {
     configure_probe_threads(config)?;
     std::fs::remove_file(results_path).ok();
-    let context = resolve_probe_data_context(config, batch.request.kind, manifest_cache_path)?;
+    let context = resolve_probe_data_context(
+        config,
+        batch.request.kind,
+        manifest_cache_path,
+        discovery_summary_path,
+        discovery_index_path,
+    )?;
     let mut artifact = ProbeBatchArtifact::pending();
 
     for _attempt in 0..batch.attempts {
@@ -3860,7 +4007,7 @@ fn run_probe_only_with_model_config_result(
         num_threads: config.num_threads,
     };
     let probe_context = if config.bc_shards_manifest_path.is_some() {
-        resolve_probe_data_context(config, request.kind, None)?
+        resolve_probe_data_context(config, request.kind, None, None, None)?
     } else if let Some(manifest) = manifest.cloned() {
         ProbeDataContext {
             manifest: Some(manifest),
@@ -3875,23 +4022,28 @@ fn run_probe_only_with_model_config_result(
             config.data_dir.display(),
         ))?;
         let paths = PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0));
-        let manifest = load_or_scan_manifest_cache(
-            ManifestCacheRequest {
-                cache_path: &paths.manifest_cache_path,
-                discovery_summary_path: &paths.discovery_summary_path,
-                discovery_index_path: &paths.discovery_index_path,
-                data_dir: &config.data_dir,
-                train_fraction: config.train_fraction,
-                source_filters: &config.source_filters,
-                progress: None,
-                scan_error_context: "preflight data",
-            },
-            |_| {},
-        )?;
+        let loaded = load_or_scan_manifest_cache_with_source(ManifestCacheRequest {
+            cache_path: &paths.manifest_cache_path,
+            discovery_summary_path: &paths.discovery_summary_path,
+            discovery_index_path: &paths.discovery_index_path,
+            data_dir: &config.data_dir,
+            train_fraction: config.train_fraction,
+            source_filters: &config.source_filters,
+            progress: None,
+            scan_error_context: "preflight data",
+        })?;
+        let source = loaded
+            .hit_source
+            .map(ManifestCacheHitSource::as_str)
+            .unwrap_or("scan");
+        let manifest = loaded.manifest;
         emit_probe_progress(&format!(
-            "probe_progress kind={} candidate_mb={} phase=scan_complete sources={} total_games={} train_count={} val_count={} counts_exact={}",
+            "probe_progress kind={} candidate_mb={} phase=scan_complete source={} discovery_summary_path={} discovery_index_path={} sources={} total_games={} train_count={} val_count={} counts_exact={}",
             probe_kind_name(request.kind),
             request.candidate_microbatch,
+            source,
+            paths.discovery_summary_path.display(),
+            paths.discovery_index_path.display(),
             manifest.sources.len(),
             manifest.total_games,
             manifest.train_count,
@@ -4001,24 +4153,33 @@ pub fn run_probe_child_mode_with_model_config(
     child: Option<ProbeChildRequest>,
     model_config: &HydraModelConfig,
 ) -> Result<bool, String> {
-    if let Some((batch, results_path, manifest_cache_path)) =
+    if let Some((batch, results_path, manifest_paths)) =
         probe_batch_child_request_from_cli(child.clone())?
     {
+        let (manifest_cache_path, discovery_summary_path, discovery_index_path) = manifest_paths;
         run_probe_child_batch_request_with_model_config(
             config,
             batch,
             &results_path,
             manifest_cache_path.as_deref(),
+            discovery_summary_path.as_deref(),
+            discovery_index_path.as_deref(),
             model_config,
         )?;
         return Ok(true);
     }
 
-    let Some((request, result_path, manifest_cache_path)) = probe_child_request_from_cli(child)?
-    else {
+    let Some((request, result_path, manifest_paths)) = probe_child_request_from_cli(child)? else {
         return Ok(false);
     };
-    let manifest = load_probe_child_manifest(config, request.kind, manifest_cache_path.as_deref())?;
+    let (manifest_cache_path, discovery_summary_path, discovery_index_path) = manifest_paths;
+    let manifest = load_probe_child_manifest(
+        config,
+        request.kind,
+        manifest_cache_path.as_deref(),
+        discovery_summary_path.as_deref(),
+        discovery_index_path.as_deref(),
+    )?;
     run_probe_only_with_model_config(
         config,
         model_config,
@@ -4088,11 +4249,11 @@ pub fn run_probe_child_batch_mode_result(
     config: &TrainConfig,
     child: Option<ProbeChildRequest>,
 ) -> Result<Option<ProbeBatchArtifact>, String> {
-    let Some((batch, results_path, manifest_cache_path)) =
-        probe_batch_child_request_from_cli(child)?
+    let Some((batch, results_path, manifest_paths)) = probe_batch_child_request_from_cli(child)?
     else {
         return Ok(None);
     };
+    let (manifest_cache_path, discovery_summary_path, discovery_index_path) = manifest_paths;
     let tiny = HydraModelConfig::new(1)
         .with_input_channels(hydra_core::encoder::NUM_CHANNELS)
         .with_hidden_channels(4)
@@ -4103,6 +4264,8 @@ pub fn run_probe_child_batch_mode_result(
         batch,
         &results_path,
         manifest_cache_path.as_deref(),
+        discovery_summary_path.as_deref(),
+        discovery_index_path.as_deref(),
         &tiny,
     )?))
 }
@@ -4395,7 +4558,18 @@ pub fn run_preflight(
                     )?;
                     let t_train_probe = Instant::now();
                     let (selected, results, seed) =
-                        search_train_microbatch(config_path, config, artifacts, train_seed)?;
+                        match search_train_microbatch(config_path, config, artifacts, train_seed) {
+                            Ok(result) => result,
+                            Err(err) => {
+                                log_interrupted_phase_if_probe_interrupted(
+                                    &mut artifact_logger,
+                                    "train_probe",
+                                    t_train_probe,
+                                    &err,
+                                )?;
+                                return Err(err);
+                            }
+                        };
                     let secs = t_train_probe.elapsed().as_secs_f64();
                     artifact_logger.candidate_results("train_probe", &results)?;
                     artifact_logger.phase_completed(
@@ -4415,7 +4589,18 @@ pub fn run_preflight(
                 )?;
                 let t_train_probe = Instant::now();
                 let (selected, results, seed) =
-                    search_train_microbatch(config_path, config, artifacts, train_seed)?;
+                    match search_train_microbatch(config_path, config, artifacts, train_seed) {
+                        Ok(result) => result,
+                        Err(err) => {
+                            log_interrupted_phase_if_probe_interrupted(
+                                &mut artifact_logger,
+                                "train_probe",
+                                t_train_probe,
+                                &err,
+                            )?;
+                            return Err(err);
+                        }
+                    };
                 let secs = t_train_probe.elapsed().as_secs_f64();
                 artifact_logger.candidate_results("train_probe", &results)?;
                 artifact_logger.phase_completed(
@@ -4451,8 +4636,23 @@ pub fn run_preflight(
                     Some(format!("seed_candidate_mb={validation_seed}")),
                 )?;
                 let t_val_probe = Instant::now();
-                let (selected, results) =
-                    search_validation_microbatch(config_path, config, artifacts, validation_seed)?;
+                let (selected, results) = match search_validation_microbatch(
+                    config_path,
+                    config,
+                    artifacts,
+                    validation_seed,
+                ) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        log_interrupted_phase_if_probe_interrupted(
+                            &mut artifact_logger,
+                            "validation_probe",
+                            t_val_probe,
+                            &err,
+                        )?;
+                        return Err(err);
+                    }
+                };
                 let secs = t_val_probe.elapsed().as_secs_f64();
                 artifact_logger.candidate_results("validation_probe", &results)?;
                 artifact_logger.phase_completed(
@@ -4561,28 +4761,25 @@ pub fn run_preflight(
     let t_loader = Instant::now();
     artifact_logger.phase_started("loader_tuning", None)?;
     let train_device = train_device(&config.device)?;
-    let ranked_loaders =
-        if config.bc_shards_manifest_path.is_some() {
-            vec![crate::runtime_autotune_shim::RankedLoaderRuntime {
-                loader: hydra_train_runtime::config::loader_runtime_config(&tuned_config),
-                tuple: (
-                    tuned_config.archive_queue_bound,
-                    tuned_config.buffer_samples,
-                    tuned_config.buffer_games,
-                ),
-                train_samples_per_second: 0.0,
-            }]
-        } else {
-            autotune_ranked_loader_runtime_with_seed(
-                &tuned_config,
-                &manifest,
-                &train_device,
-                config.preflight.real_benchmark_loader_candidates.max(1),
-                Some(train_runtime_seed.expect(
-                    "fresh or resumed preflight search should produce a loader runtime seed",
-                )),
-            )?
-        };
+    let ranked_loaders = if config.bc_shards_manifest_path.is_some() {
+        vec![crate::runtime_autotune_shim::RankedLoaderRuntime {
+            loader: hydra_train_runtime::config::loader_runtime_config(&tuned_config),
+            tuple: (
+                tuned_config.archive_queue_bound,
+                tuned_config.buffer_samples,
+                tuned_config.buffer_games,
+            ),
+            train_samples_per_second: 0.0,
+        }]
+    } else {
+        autotune_ranked_loader_runtime_with_seed(
+            &tuned_config,
+            &manifest,
+            &train_device,
+            config.preflight.real_benchmark_loader_candidates.max(1),
+            train_runtime_seed,
+        )?
+    };
     let loader = ranked_loaders
         .first()
         .map(|ranked| ranked.loader)

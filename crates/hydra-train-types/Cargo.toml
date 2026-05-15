@@ -15,4 +15,7 @@ burn = { version = "0.21", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
-burn = { version = "0.21", features = ["ndarray"] }
+burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
+
+[features]
+default = []

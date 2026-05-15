@@ -220,17 +220,34 @@ cargo run -p hydra-train --bin build_bc_shards -- \
   [--shard-samples <usize>] \
   [--train-fraction <f32>] \
   [--split train|val|both] \
-  [--exit-sidecar <path> --exit-source-net-hash <u64> --exit-source-version <u32>] \
-  [--delta-q-sidecar <path> --delta-q-source-net-hash <u64> --delta-q-source-version <u32>]
+  [--num-threads <usize>] \
+  [--queue-bound <usize>] \
+  [--resume] \
+  [--resume-dir <dir>] \
+  [--chunk-games <usize>] \
+  [--report-name <file>|--no-report] \
+  [--progress-jsonl <file>] \
+  [--dry-scan-only] \
+  [--exit-sidecar ...] \
+  [--delta-q-sidecar ...]
 ```
 
-Defaults: manifest `bc_shards_manifest.json`, `--shard-samples 10000`, `--train-fraction 0.9`, `--split both`.
+Defaults: manifest `bc_shards_manifest.json`, `--shard-samples 10000`, `--train-fraction 0.9`, `--split both`. Parallel/resume/report defaults are builder-owned; inspect `--help` for current binary defaults.
+
+Operator rules:
+- use `--resume` for long corpus builds.
+- never move manifest without shard files.
+- report is op metadata; manifest is training contract.
+- archive source counts may be hints; build report has loaded/skipped/empty actuals.
+- resume fingerprint mismatch: use new output dir or intentionally delete resume state.
+- non-resume output should be new/empty; do not mix stale shards with new manifest.
+- `--dry-scan-only` uses build scan path; it must not become second scanner.
 
 Prod workflow:
 1. Audit replay corpus and sidecar inputs.
-2. Build train+validation shards using same train fraction + sidecar provenance intended for training.
-3. Inspect manifest split counts, totals, sidecar provenance.
-4. Set `bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json`.
+2. Build train+validation shards using same train fraction + sidecar provenance intended for training; use `--resume` for long builds.
+3. Inspect manifest split counts/totals/sidecar provenance and build report skipped/empty/rates.
+4. Set `bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json` (example path).
 5. Run preflight + training against same manifest.
 6. Rebuild on dataset/contract change.
 
@@ -260,6 +277,13 @@ Manifest fields to inspect:
 - `totals.sample_count`, `totals.skipped_games`, `totals.empty_games`
 - `splits[*].sample_count`, shard count, feature flags, record size, descriptor list
 
+Build report fields to inspect:
+- loaded/skipped/empty game counts
+- shard/sample totals and rates
+- error examples, bounded by CLI config
+- resume reused/built chunks when enabled
+- output `report_path`; manifest path remains training input
+
 Sidecar-backed shard build requires full provenance tuple. Partial tuple rejected.
 
 ```bash
@@ -273,6 +297,153 @@ cargo run -p hydra-train --bin build_bc_shards -- \
   --delta-q-source-net-hash 123456789 \
   --delta-q-source-version 1
 ```
+
+### BC shard benchmark protocol
+
+Required serial baseline before code change: same semantic config as after run. Example paths from original plan only; do not assume they exist.
+
+```bash
+rm -rf /home/cachybtw/tmp/hydra-bc-shard-baseline-2019
+/usr/bin/time -v \
+  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+    --input /home/cachybtw/Downloads/dataset_bundle/majsoul-jade-mjai-2019 \
+    --output-dir /home/cachybtw/tmp/hydra-bc-shard-baseline-2019 \
+    --manifest-name manifest.json \
+    --shard-samples 10000 \
+    --train-fraction 0.9 \
+    --split train \
+  2> /home/cachybtw/tmp/hydra-bc-shard-baseline-2019.time.txt \
+  | tee /home/cachybtw/tmp/hydra-bc-shard-baseline-2019.stdout.txt
+```
+
+Record baseline:
+- command line
+- git ref
+- hardware note: CPU, RAM, storage path, OS/kernel
+- wall/user/sys from `/usr/bin/time -v`
+- max RSS from `/usr/bin/time -v`
+- source count / total hint / counts_exact from manifest
+- input compressed bytes when cheap to compute
+- skipped/empty games
+- output shard count
+- output sample count
+- output bytes = sum descriptor byte_len
+- samples/sec
+- included files/sec if counts exact
+- input MiB/sec if input bytes known
+- output MiB/sec
+
+Manual baseline shell report may live at example path:
+
+```text
+<output-dir>/bc_shard_build_report.baseline-shell.json
+```
+
+Use `schema_version: 0` or `captured_by: shell`; do not confuse with code report schema v1.
+
+After impl: same input/config, new output dir, plus parallel/resume/report flags.
+
+```bash
+rm -rf /home/cachybtw/tmp/hydra-bc-shard-after-2019
+/usr/bin/time -v \
+  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+    --input /home/cachybtw/Downloads/dataset_bundle/majsoul-jade-mjai-2019 \
+    --output-dir /home/cachybtw/tmp/hydra-bc-shard-after-2019 \
+    --manifest-name manifest.json \
+    --shard-samples 10000 \
+    --train-fraction 0.9 \
+    --split train \
+    --num-threads 20 \
+    --queue-bound 128 \
+    --resume \
+    --chunk-games 10000 \
+    --report-name bc_shard_build_report.json \
+    --progress-jsonl bc_shard_build_progress.jsonl \
+  2> /home/cachybtw/tmp/hydra-bc-shard-after-2019.time.txt \
+  | tee /home/cachybtw/tmp/hydra-bc-shard-after-2019.stdout.txt
+```
+
+Compare semantic manifest fields, not `created_at`:
+
+```text
+totals.sample_count
+totals.skipped_games
+totals.empty_games
+totals.shard_count
+splits[*].sample_count
+splits[*].shard_count
+splits[*].feature_flags
+splits[*].record_size
+splits[*].shards[*].sample_count
+splits[*].shards[*].first_sample_index
+splits[*].shards[*].byte_len
+```
+
+Pass target:
+- same semantic counts as serial baseline.
+- shard reader loads produced manifest.
+- speedup >= 5x on local loose-file subset, or report proves bottleneck is disk/decompression/writer.
+- max RSS bounded by queue/chunk config, not source count.
+
+Archive benchmark when tar/tar.zst corpus exists:
+
+```bash
+/usr/bin/time -v \
+  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+    --input <path/to/replays.tar.zst> \
+    --output-dir <tmp>/hydra-bc-shard-after-archive \
+    --manifest-name manifest.json \
+    --shard-samples 10000 \
+    --train-fraction 0.9 \
+    --split both \
+    --num-threads 20 \
+    --queue-bound 128 \
+    --resume \
+    --report-name bc_shard_build_report.json \
+  2> <tmp>/hydra-bc-shard-after-archive.time.txt \
+  | tee <tmp>/hydra-bc-shard-after-archive.stdout.txt
+```
+
+Archive acceptance:
+- tar reader remains sequential.
+- entry bytes queue bounded.
+- worker parse parallelism visible in CPU user time / progress rates.
+- output order matches serial archive order.
+
+Full dataset dry scan after `--dry-scan-only` exists:
+
+```bash
+/usr/bin/time -v \
+  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+    --input <full-replay-root> \
+    --output-dir <tmp>/hydra-bc-shard-dry-scan \
+    --train-fraction 0.9 \
+    --split both \
+    --dry-scan-only \
+    --report-name bc_shard_scan_report.json \
+  2> <tmp>/hydra-bc-shard-dry-scan.time.txt \
+  | tee <tmp>/hydra-bc-shard-dry-scan.stdout.txt
+```
+
+Train-side benchmark from shards: if manifest exists, create short train YAML with `bc_shards_manifest_path`, short step count, stable batch config.
+
+```bash
+HYDRA_BENCHMARK_QUIET=1 \
+/usr/bin/time -v \
+  cargo run -p hydra-train --bin train --no-default-features --quiet -- \
+    <tmp>/train-from-shards-bench.yaml \
+  2> <output_dir>/train-from-shards.time.txt \
+  | tee <output_dir>/train-from-shards.stdout.txt
+```
+
+Read `<output_dir>/bc/step_log.jsonl` for:
+- `producer_wait`
+- `data_load`
+- `collation`
+- `h2d_transfer`
+- `train`
+- `steps/s`
+- derived `samples/s = steps/s * batch_size`
 
 ## Replay sidecars
 

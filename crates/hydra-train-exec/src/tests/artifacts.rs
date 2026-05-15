@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use hydra_train_types::checkpoint::CheckpointMeta;
 
 use crate::artifacts::{
-    ManifestCacheRequest, PreflightPaths, checkpoint_meta_semantically_matches,
-    load_or_scan_manifest_cache, read_discovery_manifest_cache, scan_and_write_discovery_cache,
-    scan_discovery_manifest_with_progress, write_checkpoint_meta, write_discovery_manifest_cache,
-    write_manifest_cache,
+    ManifestCacheHitSource, ManifestCacheRequest, PreflightPaths,
+    checkpoint_meta_semantically_matches, load_or_scan_manifest_cache,
+    load_or_scan_manifest_cache_with_source, read_discovery_manifest_cache,
+    scan_and_write_discovery_cache, scan_discovery_manifest_with_progress, write_checkpoint_meta,
+    write_discovery_manifest_cache, write_manifest_cache,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -282,6 +283,69 @@ fn load_or_scan_prefers_valid_discovery_cache_over_legacy_manifest() {
     assert!(hit);
     assert_eq!(manifest, expected);
     assert_eq!(manifest.sources.len(), 1);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_with_source_reports_compact_hit_and_skips_legacy_manifest() {
+    let root = temp_dir_path("compact_source_skips_legacy");
+    let data_dir = root.join("data");
+    touch(&data_dir.join("game-a.json"));
+    let paths = PreflightPaths::new(&crate::artifacts::BcArtifactPaths::new(&root, 0));
+    let expected = scan_and_write_discovery_cache(
+        &paths.discovery_summary_path,
+        &paths.discovery_index_path,
+        &data_dir,
+        1.0,
+        &hydra_train_runtime::config::SourceFilterConfig::default(),
+        None,
+        "test data",
+    )
+    .expect("write compact discovery");
+    write_manifest_cache(
+        &paths.manifest_cache_path,
+        &hydra_train_runtime::preflight::ManifestCacheEntry {
+            data_dir: data_dir.clone(),
+            train_fraction_bits: 1.0f32.to_bits(),
+            include_source_patterns: Vec::new(),
+            exclude_source_patterns: Vec::new(),
+            manifest: hydra_data_core::DataManifest {
+                sources: vec![hydra_data_core::DataSource::LooseFile(
+                    data_dir.join("legacy.json"),
+                )],
+                total_games: 1,
+                train_count: 1,
+                val_count: 0,
+                counts_exact: true,
+            },
+        },
+    )
+    .expect("write conflicting legacy manifest");
+
+    let loaded = load_or_scan_manifest_cache_with_source(ManifestCacheRequest {
+        cache_path: &paths.manifest_cache_path,
+        discovery_summary_path: &paths.discovery_summary_path,
+        discovery_index_path: &paths.discovery_index_path,
+        data_dir: &data_dir,
+        train_fraction: 1.0,
+        source_filters: &hydra_train_runtime::config::SourceFilterConfig::default(),
+        progress: None,
+        scan_error_context: "test data",
+    })
+    .expect("load compact discovery");
+
+    assert_eq!(
+        loaded.hit_source,
+        Some(ManifestCacheHitSource::CompactDiscovery)
+    );
+    assert_eq!(loaded.manifest, expected);
+    assert!(
+        !loaded
+            .manifest
+            .sources
+            .iter()
+            .any(|source| source.path().ends_with("legacy.json"))
+    );
     let _ = fs::remove_dir_all(root);
 }
 

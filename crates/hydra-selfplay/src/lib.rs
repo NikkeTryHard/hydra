@@ -1,5 +1,6 @@
 pub mod batch;
 mod cooperative_state;
+#[cfg(feature = "model-eval")]
 pub mod validation;
 
 use burn::module::AutodiffModule;
@@ -45,6 +46,7 @@ use hydra_train_types::rl::RlBatch;
 pub use crate::batch::{default_gae_config, trajectories_to_rl_batch};
 pub use hydra_train_types::selfplay::{RootDecisionContext, StepRecord};
 
+#[cfg(feature = "model-eval")]
 pub use crate::validation::{run_delta_q_validation, run_exit_validation};
 const DEFAULT_GAME_MODE: u8 = 0;
 #[cfg(not(test))]

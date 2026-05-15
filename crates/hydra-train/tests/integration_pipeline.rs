@@ -1,3 +1,4 @@
+#![cfg(feature = "training")]
 use burn::backend::{Autodiff, NdArray};
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::*;

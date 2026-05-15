@@ -160,6 +160,8 @@ pub struct ProbeSingleChildRequest {
     pub request: ProbeCliRequest,
     pub result_path: PathBuf,
     pub manifest_cache_path: Option<PathBuf>,
+    pub discovery_summary_path: Option<PathBuf>,
+    pub discovery_index_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +170,8 @@ pub struct ProbeBatchChildRequest {
     pub attempts: usize,
     pub results_path: PathBuf,
     pub manifest_cache_path: Option<PathBuf>,
+    pub discovery_summary_path: Option<PathBuf>,
+    pub discovery_index_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,6 +425,8 @@ where
     let mut probe_result_path = None;
     let mut probe_results_path = None;
     let mut probe_manifest_cache_path = None;
+    let mut probe_discovery_summary_path = None;
+    let mut probe_discovery_index_path = None;
     let mut preflight = false;
     let mut delta_q_promotion = false;
     let mut delta_q_baseline_checkpoint = None;
@@ -480,6 +486,18 @@ where
                     .ok_or_else(|| "missing value for --probe-manifest-cache-path".to_string())?;
                 probe_manifest_cache_path = Some(PathBuf::from(value));
             }
+            "--probe-discovery-summary-path" => {
+                let value = args.next().ok_or_else(|| {
+                    "missing value for --probe-discovery-summary-path".to_string()
+                })?;
+                probe_discovery_summary_path = Some(PathBuf::from(value));
+            }
+            "--probe-discovery-index-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --probe-discovery-index-path".to_string())?;
+                probe_discovery_index_path = Some(PathBuf::from(value));
+            }
             _ => return Err(usage(&program)),
         }
     }
@@ -527,6 +545,12 @@ where
             usage(&program)
         ));
     }
+    if probe_discovery_summary_path.is_some() ^ probe_discovery_index_path.is_some() {
+        return Err(format!(
+            "{}\ninternal probe child mode requires both --probe-discovery-summary-path and --probe-discovery-index-path",
+            usage(&program)
+        ));
+    }
     match (
         probe_kind,
         candidate_microbatch,
@@ -570,6 +594,8 @@ where
                 },
                 result_path,
                 manifest_cache_path: probe_manifest_cache_path,
+                discovery_summary_path: probe_discovery_summary_path.clone(),
+                discovery_index_path: probe_discovery_index_path.clone(),
             })),
         }),
         (Some(kind), Some(candidate_microbatch), None, Some(results_path), Some(attempts)) => {
@@ -589,6 +615,8 @@ where
                     attempts,
                     results_path,
                     manifest_cache_path: probe_manifest_cache_path,
+                    discovery_summary_path: probe_discovery_summary_path,
+                    discovery_index_path: probe_discovery_index_path,
                 })),
             })
         }

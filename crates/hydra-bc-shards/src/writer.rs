@@ -112,7 +112,7 @@ impl SplitBuildState {
 }
 
 impl ActiveShardWriter {
-    /// Opens a new active shard writer in `output_dir`.
+    /// Opens a new active shard writer in `output_dir` using the default shard file name.
     pub fn new(
         output_dir: &Path,
         split: BcShardSplit,
@@ -121,6 +121,25 @@ impl ActiveShardWriter {
         feature_flags: u32,
     ) -> io::Result<Self> {
         let file_name = format!("{}-{shard_index:05}.hydra-bc", split.shard_prefix());
+        Self::new_named(
+            output_dir,
+            split,
+            shard_index,
+            first_sample_index,
+            feature_flags,
+            file_name,
+        )
+    }
+
+    /// Opens a new active shard writer in `output_dir` using `file_name`.
+    pub fn new_named(
+        output_dir: &Path,
+        split: BcShardSplit,
+        shard_index: usize,
+        first_sample_index: u64,
+        feature_flags: u32,
+        file_name: String,
+    ) -> io::Result<Self> {
         let path = output_dir.join(&file_name);
         let file = fs::File::create(&path)?;
         let mut writer = BufWriter::new(file);
@@ -182,6 +201,25 @@ impl ActiveShardWriter {
             record_size: self.record_size,
         })
     }
+}
+
+/// Rewrites a shard file header from a finalized descriptor.
+pub fn rewrite_shard_header_for_descriptor(
+    path: &Path,
+    descriptor: &BcShardDescriptor,
+) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new().write(true).open(path)?;
+    write_shard_header(
+        &mut file,
+        descriptor.split,
+        descriptor.shard_index as u32,
+        descriptor.sample_count,
+        descriptor.first_sample_index,
+        descriptor.feature_flags,
+        descriptor.record_size,
+    )?;
+    file.flush()?;
+    file.sync_all()
 }
 
 /// Writes one BC shard header.

@@ -10,8 +10,15 @@ struct CudaPaths {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=csrc/hydra_gpu.cpp");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LIBTORCH");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA_GRAPH");
+
+    let cuda_graph_enabled = env::var_os("CARGO_FEATURE_CUDA_GRAPH").is_some();
+    if !cuda_graph_enabled {
+        return;
+    }
+
+    println!("cargo:rerun-if-changed=csrc/hydra_gpu.cpp");
     println!("cargo:rerun-if-env-changed=DEP_TCH_LIBTORCH_LIB");
     println!("cargo:rerun-if-env-changed=LIBTORCH_INCLUDE");
     println!("cargo:rerun-if-env-changed=LIBTORCH_USE_PYTORCH");
@@ -19,7 +26,6 @@ fn main() {
         println!("cargo:rerun-if-env-changed={name}");
     }
 
-    let cuda_graph_enabled = env::var_os("CARGO_FEATURE_CUDA_GRAPH").is_some();
     let libtorch_lib = match env::var("DEP_TCH_LIBTORCH_LIB") {
         Ok(v) => PathBuf::from(v),
         Err(_) if cuda_graph_enabled => {
@@ -29,19 +35,7 @@ fn main() {
                  (for PyTorch wheels, set LIBTORCH_USE_PYTORCH=1)"
             );
         }
-        Err(_) => {
-            println!(
-                "cargo:warning=hydra_gpu: DEP_TCH_LIBTORCH_LIB not set; building TF32 no-op shim only"
-            );
-            cc::Build::new()
-                .cpp(true)
-                .pic(true)
-                .warnings(false)
-                .flag("-std=c++17")
-                .file("csrc/hydra_gpu.cpp")
-                .compile("hydra_gpu");
-            return;
-        }
+        Err(_) => unreachable!("cuda-graph missing DEP_TCH_LIBTORCH_LIB arm must panic"),
     };
 
     let torch_root_include = match find_libtorch_root_include_dir(&libtorch_lib) {
@@ -54,13 +48,7 @@ fn main() {
                 libtorch_lib.display()
             );
         }
-        None => {
-            println!(
-                "cargo:warning=hydra_gpu: libtorch include dir not found near {}; skipping hydra_gpu build",
-                libtorch_lib.display()
-            );
-            return;
-        }
+        None => unreachable!("cuda-graph missing libtorch headers arm must panic"),
     };
     let torch_csrc_include = torch_root_include.join("torch/csrc/api/include");
     if cuda_graph_enabled {
@@ -71,15 +59,16 @@ fn main() {
             torch_csrc_include.display()
         );
     }
-    if !torch_csrc_include.exists() {
-        println!(
-            "cargo:warning=hydra_gpu: libtorch C++ API include dir not found at {}; skipping hydra_gpu build",
-            torch_csrc_include.display()
-        );
-        return;
-    }
 
-    println!("cargo:rustc-link-arg=-Wl,-rpath={}", libtorch_lib.display());
+    if let Some(libtorch_cuda_lib) = find_libtorch_cuda_lib_dir(&libtorch_lib) {
+        println!(
+            "cargo:rustc-link-arg=-Wl,-rpath={}:{}",
+            libtorch_cuda_lib.display(),
+            libtorch_lib.display()
+        );
+    } else {
+        println!("cargo:rustc-link-arg=-Wl,-rpath={}", libtorch_lib.display());
+    }
 
     let mut build = cc::Build::new();
     build
@@ -91,8 +80,7 @@ fn main() {
         .flag("-std=c++17")
         .file("csrc/hydra_gpu.cpp");
 
-    if cuda_graph_enabled {
-        let cuda_paths = discover_cuda_paths().unwrap_or_else(|| {
+    let cuda_paths = discover_cuda_paths().unwrap_or_else(|| {
             panic!(
                 "cuda-graph feature requires CUDA headers and cudart, but discovery failed. \
                  Probed include dirs: {}. Probed lib dirs: {}. \
@@ -100,47 +88,42 @@ fn main() {
                 format_paths(&cuda_include_candidates()),
                 format_paths(&cuda_lib_candidates())
             )
-        });
-        let libtorch_cuda_lib = find_libtorch_cuda_lib_dir(&libtorch_lib).unwrap_or_else(|| {
+    });
+    let libtorch_cuda_lib = find_libtorch_cuda_lib_dir(&libtorch_lib).unwrap_or_else(|| {
             panic!(
                 "cuda-graph feature requires PyTorch CUDA library libc10_cuda.so near {}; \
                  install/use a CUDA-enabled PyTorch/libtorch build and set LIBTORCH_USE_PYTORCH=1 if using a wheel",
                 libtorch_lib.display()
             )
-        });
-        require_libtorch_cuda_component(&libtorch_cuda_lib, "c10_cuda");
-        require_libtorch_cuda_component(&libtorch_cuda_lib, "torch_cuda");
+    });
+    require_libtorch_cuda_component(&libtorch_cuda_lib, "c10_cuda");
+    require_libtorch_cuda_component(&libtorch_cuda_lib, "torch_cuda");
 
-        build.define("HYDRA_ENABLE_CUDA_GRAPH_FFI", None);
-        build.define("HYDRA_USE_CUDA_GRAPH", None);
-        build.include(&cuda_paths.include_dir);
+    build.define("HYDRA_ENABLE_CUDA_GRAPH_FFI", None);
+    build.define("HYDRA_USE_CUDA_GRAPH", None);
+    build.include(&cuda_paths.include_dir);
 
-        println!(
-            "cargo:rustc-link-search=native={}",
-            libtorch_cuda_lib.display()
-        );
-        println!(
-            "cargo:rustc-link-search=native={}",
-            cuda_paths.lib_dir.display()
-        );
-        println!("cargo:rustc-link-lib=dylib=cudart");
-        println!("cargo:rustc-link-lib=dylib=c10_cuda");
-        println!("cargo:rustc-link-lib=dylib=torch_cuda");
-        println!(
-            "cargo:rustc-link-arg=-Wl,-rpath={}",
-            cuda_paths.lib_dir.display()
-        );
-        println!(
-            "cargo:warning=hydra_gpu: cuda-graph enabled; building real CUDA graph/pinned FFI with CUDA include={} lib={} libtorch_lib={}",
-            cuda_paths.include_dir.display(),
-            cuda_paths.lib_dir.display(),
-            libtorch_cuda_lib.display()
-        );
-    } else {
-        println!(
-            "cargo:warning=hydra_gpu: cuda-graph disabled; building TF32 shim only (no pinned async H2D FFI)"
-        );
-    }
+    println!(
+        "cargo:rustc-link-search=native={}",
+        libtorch_cuda_lib.display()
+    );
+    println!(
+        "cargo:rustc-link-search=native={}",
+        cuda_paths.lib_dir.display()
+    );
+    println!("cargo:rustc-link-lib=dylib=cudart");
+    println!("cargo:rustc-link-lib=dylib=c10_cuda");
+    println!("cargo:rustc-link-lib=dylib=torch_cuda");
+    println!(
+        "cargo:rustc-link-arg=-Wl,-rpath={}",
+        cuda_paths.lib_dir.display()
+    );
+    println!(
+        "cargo:warning=hydra_gpu: cuda-graph enabled; building real CUDA graph/pinned FFI with CUDA include={} lib={} libtorch_lib={}",
+        cuda_paths.include_dir.display(),
+        cuda_paths.lib_dir.display(),
+        libtorch_cuda_lib.display()
+    );
 
     build.compile("hydra_gpu");
 }
@@ -154,6 +137,9 @@ fn find_libtorch_root_include_dir(libtorch_lib: &Path) -> Option<PathBuf> {
         candidates.push(root.join("include"));
     }
     candidates.push(libtorch_lib.join("include"));
+    if let Some(torch_package) = libtorch_lib.parent() {
+        candidates.push(torch_package.join("include"));
+    }
     if let Some(python_site_packages) = python_site_packages_from_torch_sys_out(libtorch_lib) {
         candidates.push(python_site_packages.join("torch/include"));
     }
@@ -161,7 +147,6 @@ fn find_libtorch_root_include_dir(libtorch_lib: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|path| {
         path.join("ATen/Context.h").exists()
             && path.join("torch/csrc/api/include/torch/all.h").exists()
-            && path.join("c10/cuda/impl/cuda_cmake_macros.h").exists()
     })
 }
 
@@ -176,13 +161,8 @@ fn find_libtorch_cuda_lib_dir(libtorch_lib: &Path) -> Option<PathBuf> {
         .find(|path| path.join("libc10_cuda.so").exists())
 }
 
-fn python_site_packages_from_torch_sys_out(libtorch_lib: &Path) -> Option<PathBuf> {
-    let marker = Path::new("/target/");
-    let path = libtorch_lib.to_string_lossy();
-    let repo_root = path.split(marker.to_str()?).next()?;
-    let home = Path::new(repo_root).parent()?.parent()?;
-    let python_lib = home.join(".pyenv/versions/3.12.13/lib/python3.12/site-packages");
-    python_lib.exists().then_some(python_lib)
+fn python_site_packages_from_torch_sys_out(_libtorch_lib: &Path) -> Option<PathBuf> {
+    None
 }
 
 fn discover_cuda_paths() -> Option<CudaPaths> {

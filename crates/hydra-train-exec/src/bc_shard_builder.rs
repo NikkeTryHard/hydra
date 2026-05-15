@@ -277,7 +277,7 @@ pub struct BcShardBuildRates {
 #[cfg(test)]
 static TEST_STOP_AFTER_BUILT_CHUNKS: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(all(test, feature = "libtorch"))]
 pub(crate) fn set_test_stop_after_built_chunks(chunks: Option<usize>) {
     *TEST_STOP_AFTER_BUILT_CHUNKS
         .lock()

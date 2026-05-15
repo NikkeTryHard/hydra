@@ -7,10 +7,14 @@
 use colored::Colorize;
 #[cfg(not(test))]
 use std::env;
+#[cfg(all(not(test), target_os = "linux"))]
+use std::ffi::c_int;
 #[cfg(any(not(test), feature = "cuda-graph", target_os = "linux"))]
 use std::fs;
 #[cfg(not(test))]
 use std::io::{BufRead, BufReader, Read};
+#[cfg(all(not(test), target_os = "linux"))]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::process::Child;
@@ -38,6 +42,8 @@ use std::time::Instant;
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressStyle};
 
+#[cfg(not(test))]
+use super::system_metrics::read_gpu_telemetry;
 use hydra_train_runtime::config::TrainConfig;
 #[cfg(not(test))]
 use hydra_train_runtime::config::read_config;
@@ -160,6 +166,162 @@ pub fn interrupt_flag() -> Result<Arc<AtomicBool>, String> {
     }
     Ok(flag)
 }
+
+#[cfg(all(not(test), target_os = "linux"))]
+const PR_SET_PDEATHSIG: c_int = 1;
+#[cfg(all(not(test), target_os = "linux"))]
+const SIGKILL: c_int = 9;
+#[cfg(all(not(test), target_os = "linux"))]
+const SIGTERM: c_int = 15;
+
+#[cfg(all(not(test), target_os = "linux"))]
+unsafe extern "C" {
+    fn kill(pid: c_int, sig: c_int) -> c_int;
+    fn prctl(option: c_int, arg2: c_int, arg3: c_int, arg4: c_int, arg5: c_int) -> c_int;
+    fn setpgid(pid: c_int, pgid: c_int) -> c_int;
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn configure_probe_child_process_group() -> std::io::Result<()> {
+    unsafe {
+        if setpgid(0, 0) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn terminate_probe_child_process_group(pid: u32) {
+    let pgid = -(pid as c_int);
+    unsafe {
+        kill(pgid, SIGTERM);
+    }
+    thread::sleep(Duration::from_millis(50));
+    unsafe {
+        kill(pgid, SIGKILL);
+    }
+}
+
+#[cfg(not(test))]
+struct ProbeChildGuard {
+    child: Option<Child>,
+}
+
+#[cfg(not(test))]
+impl ProbeChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> Result<&mut Child, String> {
+        self.child
+            .as_mut()
+            .ok_or_else(|| "preflight probe child guard missing child".to_string())
+    }
+
+    fn terminate(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        #[cfg(target_os = "linux")]
+        terminate_probe_child_process_group(child.id());
+        child.kill().ok();
+        child.wait().ok();
+    }
+
+    fn disarm(mut self) -> Result<Child, String> {
+        self.child
+            .take()
+            .ok_or_else(|| "preflight probe child guard missing child".to_string())
+    }
+}
+
+#[cfg(not(test))]
+impl Drop for ProbeChildGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+pub fn spawn_guarded_child_for_test(cmd: &mut Command) -> Result<u32, String> {
+    unsafe {
+        cmd.pre_exec(configure_probe_child_process_group);
+    }
+    let child = cmd
+        .spawn()
+        .map_err(|err| format!("failed to spawn test child: {err}"))?;
+    let pid = child.id();
+    let _guard = ProbeChildGuard::new(child);
+    Ok(pid)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod test_child_guard {
+    use std::ffi::c_int;
+    use std::process::{Child, Command};
+    use std::thread;
+    use std::time::Duration;
+
+    const SIGKILL: c_int = 9;
+    const SIGTERM: c_int = 15;
+
+    unsafe extern "C" {
+        fn kill(pid: c_int, sig: c_int) -> c_int;
+    }
+
+    fn terminate_probe_child_process_group(pid: u32) {
+        let pgid = -(pid as c_int);
+        unsafe {
+            kill(pgid, SIGTERM);
+        }
+        thread::sleep(Duration::from_millis(50));
+        unsafe {
+            kill(pgid, SIGKILL);
+        }
+    }
+
+    struct ProbeChildGuard {
+        child: Option<Child>,
+    }
+
+    impl ProbeChildGuard {
+        fn new(child: Child) -> Self {
+            Self { child: Some(child) }
+        }
+
+        fn terminate(&mut self) {
+            let Some(child) = self.child.as_mut() else {
+                return;
+            };
+            terminate_probe_child_process_group(child.id());
+            child.kill().ok();
+            child.wait().ok();
+        }
+    }
+
+    impl Drop for ProbeChildGuard {
+        fn drop(&mut self) {
+            self.terminate();
+        }
+    }
+
+    pub fn spawn_guarded_child_for_test(cmd: &mut Command) -> Result<u32, String> {
+        let child = cmd
+            .spawn()
+            .map_err(|err| format!("failed to spawn test child: {err}"))?;
+        let pid = child.id();
+        let _guard = ProbeChildGuard::new(child);
+        Ok(pid)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub use test_child_guard::spawn_guarded_child_for_test;
 
 #[cfg(all(test, feature = "cuda-graph"))]
 #[cfg_attr(
@@ -318,6 +480,39 @@ fn join_output_forwarder(
 }
 
 #[cfg(not(test))]
+fn format_gpu_memory_snapshot(gpu: Option<super::system_metrics::GpuTelemetry>) -> String {
+    match gpu {
+        Some(gpu) => format!(
+            "gpu_mem_used_mb={:?} gpu_mem_free_mb={:?}",
+            gpu.mem_used_mb, gpu.mem_free_mb
+        ),
+        None => "gpu_mem=unavailable".to_string(),
+    }
+}
+
+#[cfg(not(test))]
+fn append_probe_cleanup_log(
+    stderr: &mut Vec<u8>,
+    pid: u32,
+    status: ExitStatus,
+    elapsed_seconds: f64,
+    gpu_before: Option<super::system_metrics::GpuTelemetry>,
+    gpu_after: Option<super::system_metrics::GpuTelemetry>,
+) {
+    use std::io::Write as _;
+
+    let _ = writeln!(
+        stderr,
+        "probe_cleanup pid={} status={} elapsed_seconds={:.3} before={} after={}",
+        pid,
+        status,
+        elapsed_seconds,
+        format_gpu_memory_snapshot(gpu_before),
+        format_gpu_memory_snapshot(gpu_after),
+    );
+}
+
+#[cfg(not(test))]
 fn child_output(status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>) -> std::process::Output {
     std::process::Output {
         status,
@@ -344,6 +539,8 @@ struct ProbeChildRunRequest<'a> {
     result_path: &'a Path,
     attempts: Option<usize>,
     manifest_cache_path: &'a Path,
+    discovery_summary_path: &'a Path,
+    discovery_index_path: &'a Path,
 }
 
 #[cfg(not(test))]
@@ -375,27 +572,38 @@ fn run_probe_child_process(
         .arg(request.result_path)
         .arg("--probe-manifest-cache-path")
         .arg(request.manifest_cache_path)
+        .arg("--probe-discovery-summary-path")
+        .arg(request.discovery_summary_path)
+        .arg("--probe-discovery-index-path")
+        .arg(request.discovery_index_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(target_os = "linux")]
+    unsafe {
+        child_cmd.pre_exec(configure_probe_child_process_group);
+    }
     propagate_probe_runtime_env(&mut child_cmd);
-    let mut child = child_cmd.spawn().map_err(|err| {
+    let gpu_before_spawn = read_gpu_telemetry();
+    let child = child_cmd.spawn().map_err(|err| {
         format!(
             "failed to spawn preflight probe child {}: {err}",
             child_exe.display()
         )
     })?;
-    let stdout_handle = child
-        .stdout
-        .take()
-        .map(|stdout| spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone()));
-    let stderr_handle = child
-        .stderr
-        .take()
-        .map(|stderr| spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone()));
+    let child_pid = child.id();
+    let mut child_guard = ProbeChildGuard::new(child);
+    let stdout_handle =
+        child_guard.child_mut()?.stdout.take().map(|stdout| {
+            spawn_output_forwarder_with_spinner(stdout, false, spinner_message.clone())
+        });
+    let stderr_handle =
+        child_guard.child_mut()?.stderr.take().map(|stderr| {
+            spawn_output_forwarder_with_spinner(stderr, true, spinner_message.clone())
+        });
 
     let interrupted_run = wait_for_probe_child_with_spinner(
-        &mut child,
+        child_guard.child_mut()?,
         interrupted.as_ref(),
         &spinner,
         &spinner_message,
@@ -404,6 +612,7 @@ fn run_probe_child_process(
     if interrupted_run {
         fs::remove_file(request.result_path).ok();
         interrupted.store(true, Ordering::SeqCst);
+        child_guard.terminate();
         if let Some(handle) = stdout_handle {
             let _ = join_output_forwarder(handle, "stdout");
         }
@@ -424,20 +633,29 @@ fn run_probe_child_process(
     }
 
     interrupted.store(false, Ordering::SeqCst);
+    let mut child = child_guard.disarm()?;
     let stdout = match stdout_handle {
         Some(handle) => join_output_forwarder(handle, "stdout")?,
         None => Vec::new(),
     };
-    let stderr = match stderr_handle {
+    let mut stderr = match stderr_handle {
         Some(handle) => join_output_forwarder(handle, "stderr")?,
         None => Vec::new(),
     };
     let status = child
-        .try_wait()
-        .map_err(|err| format!("failed to query preflight probe child status: {err}"))?
-        .ok_or_else(|| "preflight probe child exited without final status".to_string())?;
-    let output = child_output(status, stdout, stderr);
+        .wait()
+        .map_err(|err| format!("failed to reap preflight probe child {child_pid}: {err}"))?;
     let elapsed_seconds = probe_started.elapsed().as_secs_f64();
+    let gpu_after_exit = read_gpu_telemetry();
+    append_probe_cleanup_log(
+        &mut stderr,
+        child_pid,
+        status,
+        elapsed_seconds,
+        gpu_before_spawn,
+        gpu_after_exit,
+    );
+    let output = child_output(status, stdout, stderr);
     Ok(ProbeChildRunOutput {
         output,
         elapsed_seconds,
@@ -504,8 +722,7 @@ pub fn execute_probe_request(
     {
         #[cfg(not(test))]
         let _config = read_config(config_path)?;
-        let manifest_cache_path =
-            PreflightPaths::new(&BcArtifactPaths::new(&_config.output_dir, 0)).manifest_cache_path;
+        let preflight_paths = PreflightPaths::new(&BcArtifactPaths::new(&_config.output_dir, 0));
 
         fs::remove_file(result_path).ok();
         let child_run = run_probe_child_process(ProbeChildRunRequest {
@@ -517,7 +734,9 @@ pub fn execute_probe_request(
             result_flag: "--probe-result-path",
             result_path,
             attempts: None,
-            manifest_cache_path: &manifest_cache_path,
+            manifest_cache_path: &preflight_paths.manifest_cache_path,
+            discovery_summary_path: &preflight_paths.discovery_summary_path,
+            discovery_index_path: &preflight_paths.discovery_index_path,
         })?;
         let output = child_run.output;
 
@@ -568,8 +787,7 @@ pub fn execute_probe_request_batch(
     #[cfg(not(test))]
     {
         let config = read_config(config_path)?;
-        let manifest_cache_path =
-            PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0)).manifest_cache_path;
+        let preflight_paths = PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0));
         let kind = batch.request.kind;
         let candidate_microbatch = batch.request.candidate_microbatch;
 
@@ -583,7 +801,9 @@ pub fn execute_probe_request_batch(
             result_flag: "--probe-results-path",
             result_path: results_path,
             attempts: Some(batch.attempts),
-            manifest_cache_path: &manifest_cache_path,
+            manifest_cache_path: &preflight_paths.manifest_cache_path,
+            discovery_summary_path: &preflight_paths.discovery_summary_path,
+            discovery_index_path: &preflight_paths.discovery_index_path,
         })?;
         let output = child_run.output;
         let results = recover_probe_batch_results(
@@ -672,8 +892,7 @@ pub fn execute_probe_request_window(
     #[cfg(not(test))]
     {
         let config = read_config(config_path)?;
-        let manifest_cache_path =
-            PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0)).manifest_cache_path;
+        let preflight_paths = PreflightPaths::new(&BcArtifactPaths::new(&config.output_dir, 0));
         let mut recovered = Vec::with_capacity(batches.len());
         for (batch, results_path) in batches.into_iter().zip(results_paths) {
             fs::remove_file(results_path).ok();
@@ -686,7 +905,9 @@ pub fn execute_probe_request_window(
                 result_flag: "--probe-results-path",
                 result_path: results_path,
                 attempts: Some(batch.attempts),
-                manifest_cache_path: &manifest_cache_path,
+                manifest_cache_path: &preflight_paths.manifest_cache_path,
+                discovery_summary_path: &preflight_paths.discovery_summary_path,
+                discovery_index_path: &preflight_paths.discovery_index_path,
             })?;
             let output = child_run.output;
             let finish_kind = batch.request.kind;

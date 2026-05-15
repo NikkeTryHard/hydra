@@ -17,4 +17,7 @@ pub use manifest::{
     validate_bc_shard_split_manifest_contract,
 };
 pub use reader::{BcShardReader, load_bc_shard_reader, read_bc_shard_manifest};
-pub use writer::{ActiveShardWriter, SplitBuildState, write_sample_record, write_shard_header};
+pub use writer::{
+    ActiveShardWriter, SplitBuildState, rewrite_shard_header_for_descriptor, write_sample_record,
+    write_shard_header,
+};

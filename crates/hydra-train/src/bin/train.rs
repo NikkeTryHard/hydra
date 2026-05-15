@@ -36,6 +36,9 @@ fn run() -> Result<(), String> {
     color_control::set_override(true);
     let cli = parse_args(env::args())?;
     let config = read_config(&cli.config_path)?;
+    hydra_train_exec::gpu_config::configure_libtorch_cpu_threads(
+        hydra_train_runtime::config::default_num_threads_for_system(),
+    );
     hydra_train_exec::gpu_config::apply_gpu_performance_flags(&config.device);
     if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE_CHILD").is_some() {
         return handle_graph_probe_child(&cli.config_path);

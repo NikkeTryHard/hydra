@@ -6,32 +6,40 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/lint-check.sh [--install-hook] [--anti-game-only] [--cuda-graph]
+Usage: scripts/lint-check.sh [--fast|--exhaustive|--cuda-graph] [--install-hook] [--anti-game-only]
 
-Strict Hydra quality gate:
-  - caveman-compress staged Markdown
-  - anti-game pattern scan
-  - cargo fmt --all -- --check
-  - cargo clippy --workspace --all-targets --all-features -- -D warnings
-  - optional focused CUDA graph lint when --cuda-graph or HYDRA_LINT_CUDA_GRAPH=1 is set:
-    cargo clippy --all-targets --features cuda-graph -p hydra-train -- -D warnings
+Hydra quality gates:
+  --fast            default; caveman-compress hook + anti-game scan + rustfmt + clippy no-default-features
+  --exhaustive      caveman-compress hook + anti-game scan + rustfmt + CUDA/libtorch prep + clippy all-features
+  --cuda-graph      caveman-compress hook + anti-game scan + rustfmt + CUDA/libtorch prep + focused cuda-graph clippy
+  --anti-game-only  run cheap anti-game scan only; no fmt, clippy, CUDA/libtorch prep, or hook install side effects
+  --install-hook    install pre-commit hook; hook runs fast mode by default
+  --help            show this help
 
-Env:
-  HYDRA_LINT_ANTI_GAME_ONLY=1  skip fmt/clippy
-  HYDRA_LINT_CUDA_GRAPH=1     also run focused hydra-train cuda-graph lint
+Env compatibility:
+  HYDRA_LINT_ANTI_GAME_ONLY=1  same as --anti-game-only
+  HYDRA_LINT_CUDA_GRAPH=1     same as --cuda-graph unless --exhaustive is passed
+  HYDRA_LINT_EXHAUSTIVE=1     same as --exhaustive
   HYDRA_LINT_SKIP_INSTALL=1    avoid hook install prompt/side effects
 USAGE
 }
 
 INSTALL_HOOK=0
 ANTI_GAME_ONLY="${HYDRA_LINT_ANTI_GAME_ONLY:-0}"
-CUDA_GRAPH="${HYDRA_LINT_CUDA_GRAPH:-0}"
+MODE=fast
+if [[ "${HYDRA_LINT_EXHAUSTIVE:-0}" == "1" ]]; then
+  MODE=exhaustive
+elif [[ "${HYDRA_LINT_CUDA_GRAPH:-0}" == "1" ]]; then
+  MODE=cuda-graph
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --fast) MODE=fast ;;
+    --exhaustive) MODE=exhaustive ;;
+    --cuda-graph) MODE=cuda-graph ;;
     --install-hook) INSTALL_HOOK=1 ;;
     --anti-game-only) ANTI_GAME_ONLY=1 ;;
-    --cuda-graph) CUDA_GRAPH=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'error: unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -118,8 +126,16 @@ resolve_libtorch_root() {
   fail "CUDA graph lint requires CUDA-enabled libtorch. Set LIBTORCH to a CUDA libtorch root, or install/select a Python torch package containing include/c10/cuda/impl/cuda_cmake_macros.h, lib/libc10_cuda.so, and lib/libtorch_cuda.so."
 }
 
+cuda_home_has_runtime() {
+  local root="$1"
+  [[ -n "$root" ]] || return 1
+  first_existing_file "$root" include/cuda_runtime_api.h include/cuda_runtime.h >/dev/null || return 1
+  first_existing_file "$root" lib64/libcudart.so lib/libcudart.so targets/x86_64-linux/lib/libcudart.so >/dev/null || return 1
+}
+
+
 prepare_cuda_libtorch() {
-  if [[ -z "${CUDA_HOME:-}" ]] && [[ -d /opt/cuda ]]; then
+  if ! cuda_home_has_runtime "${CUDA_HOME:-}" && [[ -d /opt/cuda ]] && cuda_home_has_runtime /opt/cuda; then
     export CUDA_HOME=/opt/cuda
   fi
 
@@ -216,18 +232,17 @@ install_hook() {
 #!/usr/bin/env sh
 set -eu
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-sh "$ROOT/scripts/caveman-compress-hook.sh"
-exec "$ROOT/scripts/lint-check.sh"
+exec "$ROOT/scripts/lint-check.sh" --fast
 HOOK
   chmod +x "$hook"
   printf '[hydra lint] installed %s\n' "$hook"
 }
 
-if [[ "$INSTALL_HOOK" == "1" ]]; then
+if [[ "$INSTALL_HOOK" == "1" && "$ANTI_GAME_ONLY" != "1" ]]; then
   install_hook
 fi
 
-if git rev-parse --git-dir >/dev/null 2>&1; then
+if [[ "$ANTI_GAME_ONLY" != "1" ]] && git rev-parse --git-dir >/dev/null 2>&1; then
   run_step 'caveman-compress staged markdown' scripts/caveman-compress-hook.sh
 fi
 
@@ -239,9 +254,20 @@ fi
 
 need_cmd cargo
 run_step 'checking rustfmt' cargo fmt --all -- --check
-prepare_cuda_libtorch
-run_step 'checking clippy (all features)' cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-if [[ "$CUDA_GRAPH" == "1" ]]; then
-  run_step 'checking clippy (hydra-train cuda-graph)' cargo clippy --all-targets --features cuda-graph -p hydra-train -- -D warnings
-fi
+case "$MODE" in
+  fast)
+    run_step 'checking clippy (no default features)' cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+    ;;
+  exhaustive)
+    prepare_cuda_libtorch
+    run_step 'checking clippy (all features)' cargo clippy --workspace --all-targets --all-features -- -D warnings
+    ;;
+  cuda-graph)
+    prepare_cuda_libtorch
+    run_step 'checking clippy (hydra-train + hydra-train-exec cuda-graph)' cargo clippy -p hydra-train -p hydra-train-exec --all-targets --no-default-features --features cuda-graph -- -D warnings
+    ;;
+  *)
+    fail "internal error: unknown lint mode: $MODE"
+    ;;
+esac

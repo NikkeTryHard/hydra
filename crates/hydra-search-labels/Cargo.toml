@@ -17,11 +17,15 @@ hydra-core = { path = "../hydra-core" }
 hydra-train-types = { path = "../hydra-train-types" }
 hydra-replay-sidecar = { path = "../hydra-replay-sidecar" }
 hydra-replay-loader = { path = "../hydra-replay-loader" }
-hydra-model = { path = "../hydra-model" }
-burn = { version = "0.21", features = ["train", "tch"] }
+hydra-model = { path = "../hydra-model", optional = true, default-features = false }
+burn = { version = "0.21", default-features = false, features = ["std"] }
 riichienv-core = { version = "0.4.7", path = "../hydra-engine", package = "hydra-engine", features = ["fast-json-ingest"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
 
 [dev-dependencies]
-burn = { version = "0.21", features = ["ndarray"] }
+burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
+
+[features]
+default = []
+model-eval = ["dep:hydra-model"]
