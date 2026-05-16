@@ -5,7 +5,8 @@ use hydra_core::encoder::OBS_SIZE;
 use hydra_data_core::sample::SCORE_BINS;
 
 use crate::manifest::{
-    BC_BASE_RECORD_SIZE, FLAG_DELTA_Q, FLAG_EXIT, FLAG_SAFETY_RESIDUAL, OPPONENT_COUNT,
+    BC_BASE_RECORD_SIZE, BELIEF_FIELDS_BYTES, FLAG_BELIEF_FIELDS, FLAG_DELTA_Q, FLAG_EXIT,
+    FLAG_MIXTURE_WEIGHTS, FLAG_SAFETY_RESIDUAL, MIXTURE_WEIGHTS_BYTES, OPPONENT_COUNT,
     OPTIONAL_ACTION_FLOAT32_BYTES, OPTIONAL_ACTION_MASK_BYTES, PLAYER_COUNT, SPATIAL_TARGET_SIZE,
 };
 
@@ -307,6 +308,12 @@ pub const fn record_size_for_flags(flags: u32) -> u32 {
     }
     if flags & FLAG_DELTA_Q != 0 {
         size += OPTIONAL_ACTION_FLOAT32_BYTES as u32 + OPTIONAL_ACTION_MASK_BYTES as u32;
+    }
+    if flags & FLAG_BELIEF_FIELDS != 0 {
+        size += BELIEF_FIELDS_BYTES as u32;
+    }
+    if flags & FLAG_MIXTURE_WEIGHTS != 0 {
+        size += MIXTURE_WEIGHTS_BYTES as u32;
     }
     size
 }

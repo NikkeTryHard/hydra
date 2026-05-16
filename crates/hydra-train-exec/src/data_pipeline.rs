@@ -27,8 +27,8 @@ pub use crate::data::validation_stream::StreamValMicrobatchIterator;
 use hydra_data_core::MjaiSample;
 pub use hydra_replay_loader::ReplayTargetProfile;
 use hydra_replay_loader::{
-    MjaiGame, ReplayLoadPolicy, SidecarProvenance, load_game_from_path_with_policy,
-    load_game_from_stream_with_policy, normalized_train_fraction,
+    MjaiGame, ReplayLoadPolicy, ReplayObservationProfile, SidecarProvenance,
+    load_game_from_path_with_policy, load_game_from_stream_with_policy, normalized_train_fraction,
 };
 use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
 use hydra_sample_cache::{
@@ -286,6 +286,7 @@ impl LooseBatchWorkerContext {
     fn replay_load_policy(&self) -> ReplayLoadPolicy<'_> {
         ReplayLoadPolicy::new(
             self.replay_target_profile,
+            ReplayObservationProfile::BcMinimal,
             self.exit_provenance,
             self.delta_q_provenance,
             self.exit_sidecar.as_deref(),
@@ -298,6 +299,7 @@ impl ArchiveParsePolicy {
     fn replay_load_policy(&self) -> ReplayLoadPolicy<'_> {
         ReplayLoadPolicy::new(
             self.replay_target_profile,
+            ReplayObservationProfile::BcMinimal,
             self.exit_provenance,
             self.delta_q_provenance,
             self.exit_sidecar.as_deref(),

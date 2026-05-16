@@ -12,9 +12,9 @@ use hydra_bc_shards::{
     ActiveShardWriter, BC_BASE_RECORD_SIZE, BC_RECORD_SIZE_WITH_ALL_OPTIONALS,
     BC_SHARD_HEADER_SIZE, BC_SHARD_MANIFEST_VERSION, BC_SHARD_VERSION, BcShardBuildTotals,
     BcShardDescriptor, BcShardManifest, BcShardSidecarManifest, BcShardSplit, BcShardSplitManifest,
-    BcShardSplitMode, FLAG_DELTA_Q, FLAG_EXIT, FLAG_SAFETY_RESIDUAL, record_size_for_flags,
-    rewrite_shard_header_for_descriptor, validate_bc_shard_manifest_contract,
-    validate_bc_shard_split_manifest_contract,
+    BcShardSplitMode, FLAG_DELTA_Q, FLAG_EXIT, FLAG_SAFETY_RESIDUAL, STORAGE_LAYOUT_COMPACT,
+    record_size_for_flags, rewrite_shard_header_for_descriptor,
+    validate_bc_shard_manifest_contract, validate_bc_shard_split_manifest_contract,
 };
 use rayon::ThreadPoolBuilder;
 use rayon::iter::{ParallelBridge, ParallelIterator};
@@ -26,8 +26,8 @@ use crate::data_pipeline::{
 };
 use hydra_data_core::{DataManifest, DataSource};
 use hydra_replay_loader::mjai_loader::{
-    MjaiGame, ReplayLoadPolicy, SidecarProvenance, invalid_data, load_game_from_path_with_policy,
-    load_game_from_stream_with_policy,
+    MjaiGame, ReplayLoadPolicy, ReplayObservationProfile, SidecarProvenance, invalid_data,
+    load_game_from_path_with_policy, load_game_from_stream_with_policy,
 };
 use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
 
@@ -244,6 +244,14 @@ pub struct BcShardOutputReport {
     pub output_bytes: u64,
     /// Manifest JSON bytes.
     pub manifest_bytes: u64,
+    /// Written shard bytes per sample, excluding manifest JSON.
+    pub bytes_per_sample: Option<f64>,
+    /// Dense observation-equivalent bytes for the same sample count.
+    pub dense_equivalent_observation_bytes: u64,
+    /// Dense observation-equivalent bytes per sample.
+    pub dense_equivalent_observation_bytes_per_sample: u64,
+    /// Ratio of dense observation bytes to compact output bytes.
+    pub savings_ratio_vs_dense_observation: Option<f64>,
     /// Per-split output summaries.
     pub splits: Vec<BcShardSplitOutputReport>,
 }
@@ -478,6 +486,7 @@ impl BuildWorkerContext {
     fn policy(&self) -> ReplayLoadPolicy<'_> {
         ReplayLoadPolicy::new(
             self.replay_target_profile,
+            ReplayObservationProfile::BcMinimal,
             self.exit_provenance,
             self.delta_q_provenance,
             self.exit_sidecar.as_deref(),
@@ -1474,6 +1483,7 @@ fn make_manifest(
         ),
         totals,
         splits: split_manifests,
+        storage_layout: STORAGE_LAYOUT_COMPACT.to_string(),
     }
 }
 
@@ -1518,6 +1528,15 @@ fn make_report(
         .map(|shard| shard.byte_len)
         .sum();
     let manifest_bytes = fs::metadata(manifest_path).map(|m| m.len()).unwrap_or(0);
+    let bytes_per_sample = (manifest.totals.sample_count > 0)
+        .then(|| output_bytes as f64 / manifest.totals.sample_count as f64);
+    let dense_equivalent_observation_bytes_per_sample = hydra_bc_shards::DENSE_OBS_F32_BYTES as u64;
+    let dense_equivalent_observation_bytes = manifest
+        .totals
+        .sample_count
+        .saturating_mul(dense_equivalent_observation_bytes_per_sample);
+    let savings_ratio_vs_dense_observation =
+        (output_bytes > 0).then(|| dense_equivalent_observation_bytes as f64 / output_bytes as f64);
     let input_bytes = input_compressed_bytes(source_manifest);
     let seconds = elapsed_seconds.max(0.000_001);
     Ok(BcShardBuildReport {
@@ -1568,6 +1587,10 @@ fn make_report(
             shard_count: manifest.totals.shard_count,
             output_bytes,
             manifest_bytes,
+            bytes_per_sample,
+            dense_equivalent_observation_bytes,
+            dense_equivalent_observation_bytes_per_sample,
+            savings_ratio_vs_dense_observation,
             splits: manifest
                 .splits
                 .iter()

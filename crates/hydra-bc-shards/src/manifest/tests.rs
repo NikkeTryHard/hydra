@@ -26,6 +26,7 @@ fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
         delta_q_sidecar: None,
         totals: BcShardBuildTotals::default(),
         splits: Vec::new(),
+        storage_layout: STORAGE_LAYOUT_COMPACT.to_string(),
     };
 
     assert_eq!(OBS_SIZE, 6528);
@@ -35,4 +36,10 @@ fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
     assert_eq!(manifest.num_channels, NUM_CHANNELS);
     assert_eq!(manifest.action_space, HYDRA_ACTION_SPACE);
     validate_bc_shard_manifest_contract(&manifest).expect("manifest geometry should be valid");
+    assert_eq!(COMPACT_OBS_BASELINE_FACT_BYTES, 1_675);
+    assert_eq!(OBS_ADVANCED_SCALAR_REPEATED_CHANNEL_COUNT, 0);
+    assert_eq!(OBS_ADVANCED_DENSE_CHANNEL_COUNT, 0);
+    assert_eq!(COMPACT_OBS_SCALAR_REPEATED_BYTES, 0);
+    assert_eq!(COMPACT_OBS_DENSE_BYTES, 0);
+    assert_eq!(COMPACT_OBS_BYTES, 1_675);
 }

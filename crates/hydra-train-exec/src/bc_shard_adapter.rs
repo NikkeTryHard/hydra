@@ -49,6 +49,7 @@ struct TrainBcShardManifestCompat {
     delta_q_sidecar: Option<hydra_bc_shards::BcShardSidecarManifest>,
     totals: hydra_bc_shards::BcShardBuildTotals,
     splits: Vec<hydra_bc_shards::BcShardSplitManifest>,
+    storage_layout: String,
 }
 
 impl From<TrainBcShardManifestCompat> for BcShardManifest {
@@ -77,6 +78,7 @@ impl From<TrainBcShardManifestCompat> for BcShardManifest {
             delta_q_sidecar: manifest.delta_q_sidecar,
             totals: manifest.totals,
             splits: manifest.splits,
+            storage_layout: manifest.storage_layout,
         }
     }
 }

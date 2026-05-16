@@ -159,6 +159,13 @@ fn parallel_loose_build_matches_serial_manifest_counts() {
         reader.sample_count() as u64,
         parallel.manifest.totals.sample_count
     );
+    let batch = reader
+        .collate_host_batch_range(0, reader.sample_count().min(2), false)
+        .expect("parallel shards should decode compact fact rows");
+    assert_eq!(
+        batch.obs_flat.len(),
+        reader.sample_count().min(2) * hydra_core::encoder::OBS_SIZE
+    );
     assert!(
         parallel
             .report_path
@@ -174,6 +181,33 @@ fn parallel_loose_build_matches_serial_manifest_counts() {
             .total_samples,
         parallel.manifest.totals.sample_count
     );
+}
+
+#[test]
+fn bounded_loose_fixture_decodes_metadata_without_dense_tail() {
+    let input_dir = test_dir("bounded-input");
+    let paths = vec![write_replay(&input_dir, "bounded.mjai")];
+    let output_dir = test_dir("bounded-output");
+
+    let built = build_bc_shards(&BuildBcShardsConfig {
+        num_threads: Some(1),
+        queue_bound: 1,
+        shard_samples: 1,
+        ..base_config(&input_dir, &output_dir, &paths)
+    })
+    .expect("bounded loose build should pass");
+    let reader = load_bc_shard_reader(&built.manifest_path, BcShardSplit::Train)
+        .expect("bounded fixture shards should load");
+    let batch = reader
+        .collate_host_batch_range(0, 1, false)
+        .expect("bounded fixture first sample should decode");
+
+    assert_eq!(batch.obs_flat.len(), hydra_core::encoder::OBS_SIZE);
+    assert_eq!(batch.obs_flat[47 * 34], 0.25);
+    assert_eq!(batch.obs_flat[48 * 34], 0.25);
+    assert_eq!(batch.obs_flat[59 * 34], 0.0);
+    assert_eq!(batch.obs_flat[60 * 34], 0.0);
+    assert_eq!(batch.obs_flat[61 * 34], 0.0);
 }
 
 #[test]

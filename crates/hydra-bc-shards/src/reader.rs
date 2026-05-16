@@ -10,11 +10,19 @@ use hydra_core::encoder::OBS_SIZE;
 use hydra_data_core::sample::{score_delta_to_bin, score_delta_to_value};
 use memmap2::{Advice, Mmap};
 
-use crate::host::{BcShardHostBatch, BcShardHostScratch, GRP_CLASS_COUNT, record_size_for_flags};
+use crate::compact::{
+    decode_counts_threshold_planes, unpack_action_mask_into, unpack_binary_mask_into,
+    unpack_spatial_mask_into, unpack_tile_counts,
+};
+use crate::host::{BcShardHostBatch, BcShardHostScratch, GRP_CLASS_COUNT};
 use crate::manifest::{
-    BC_SHARD_HEADER_SIZE, BC_SHARD_MAGIC, BC_SHARD_VERSION, BcShardManifest, BcShardSplit,
-    FLAG_DELTA_Q, FLAG_EXIT, FLAG_SAFETY_RESIDUAL, OPPONENT_COUNT, PLAYER_COUNT,
-    SPATIAL_TARGET_SIZE, TILE_COUNT, validate_bc_shard_manifest_contract,
+    BC_DENSE_SHARD_MAGIC, BC_SHARD_HEADER_SIZE, BC_SHARD_LAYOUT_VERSION, BC_SHARD_MAGIC,
+    BC_SHARD_VERSION, BcShardManifest, BcShardSplit, COMPACT_OBS_BASELINE_FACT_BYTES,
+    COMPACT_OBS_DENSE_BYTES, COMPACT_OBS_SCALAR_REPEATED_BYTES, DENSE_REBUILD_MESSAGE,
+    FLAG_BELIEF_FIELDS, FLAG_DELTA_Q, FLAG_EXIT, FLAG_MIXTURE_WEIGHTS, FLAG_SAFETY_RESIDUAL,
+    OPPONENT_COUNT, PACKED_ACTION_MASK_BYTES, PACKED_SPATIAL_MASK_BYTES, PLAYER_COUNT,
+    SPATIAL_TARGET_SIZE, TILE_COUNT, TILE34_BITSET_BYTES, TILE34_COUNT_BYTES,
+    checked_compact_record_size, validate_bc_shard_manifest_contract,
 };
 
 /// IEEE 754 bit pattern for `1.0f32`.
@@ -78,6 +86,22 @@ pub fn load_bc_shard_reader(
         };
         let _ = mmap.advise(Advice::Sequential);
         verify_shard_header(&mmap, split, shard.feature_flags, shard.record_size)?;
+        let expected_len = (BC_SHARD_HEADER_SIZE as u64)
+            .checked_add(
+                shard
+                    .sample_count
+                    .checked_mul(u64::from(shard.record_size))
+                    .ok_or_else(|| "BC shard byte length overflow".to_string())?,
+            )
+            .ok_or_else(|| "BC shard byte length overflow".to_string())?;
+        if mmap.len() as u64 != expected_len {
+            return Err(format!(
+                "BC shard {} length {} does not match header + records {}",
+                path.display(),
+                mmap.len(),
+                expected_len
+            ));
+        }
         shards.push(ShardMap {
             start_sample: shard.first_sample_index,
             sample_count: shard.sample_count,
@@ -345,29 +369,33 @@ fn decode_row_bytes(
     suit_perm: Option<[usize; 3]>,
 ) -> Result<(), String> {
     let mut cursor = 0usize;
-    let obs_bytes = take(bytes, &mut cursor, OBS_SIZE * 4)?;
+    let obs_facts = take(bytes, &mut cursor, COMPACT_OBS_BASELINE_FACT_BYTES)?;
+    let obs_scalars = take(bytes, &mut cursor, COMPACT_OBS_SCALAR_REPEATED_BYTES)?;
+    let obs_dense = take(bytes, &mut cursor, COMPACT_OBS_DENSE_BYTES)?;
     let obs_dst = &mut scratch.obs_flat[row * OBS_SIZE..(row + 1) * OBS_SIZE];
+    decode_compact_obs(obs_facts, obs_scalars, obs_dense, obs_dst)?;
     if let Some(perm) = suit_perm {
-        augment_obs_suit_from_le_bytes(obs_bytes, perm, obs_dst);
-    } else {
-        let obs = read_f32_array::<OBS_SIZE>(obs_bytes);
-        obs_dst.copy_from_slice(&obs);
+        let mut unpermuted = [0.0f32; OBS_SIZE];
+        unpermuted.copy_from_slice(obs_dst);
+        augment_obs_suit(&unpermuted, perm, obs_dst);
     }
 
     scratch.actions[row] = take(bytes, &mut cursor, 1)?[0] as i64;
 
-    let legal = take(bytes, &mut cursor, HYDRA_ACTION_SPACE)?;
+    let legal = take_array::<PACKED_ACTION_MASK_BYTES>(bytes, &mut cursor)?;
     let legal_dst =
         &mut scratch.legal_mask_flat[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
-    match suit_perm {
-        Some(perm) => expand_and_augment_mask_into(legal, &action_permutation(perm), legal_dst),
-        None => {
-            for (dst, &src) in legal_dst.iter_mut().zip(legal) {
-                *dst = f32::from_bits(u32::from(src != 0) * F32_ONE_BITS);
-            }
-            false
+    if let Some(perm) = suit_perm {
+        let mut unpermuted = [0.0f32; HYDRA_ACTION_SPACE];
+        unpack_action_mask_into(legal, &mut unpermuted).map_err(|err| err.to_string())?;
+        let mut packed_unpermuted = [0u8; HYDRA_ACTION_SPACE];
+        for (dst, &src) in packed_unpermuted.iter_mut().zip(&unpermuted) {
+            *dst = u8::from(src != 0.0);
         }
-    };
+        expand_and_augment_mask_into(&packed_unpermuted, &action_permutation(perm), legal_dst);
+    } else {
+        unpack_action_mask_into(legal, legal_dst).map_err(|err| err.to_string())?;
+    }
 
     let score_delta = read_i32_le(take_array::<4>(bytes, &mut cursor)?);
     scratch.value_target[row] = score_delta_to_value(score_delta);
@@ -388,13 +416,13 @@ fn decode_row_bytes(
     oracle_dst.copy_from_slice(&oracle);
     scratch.oracle_target_mask[row] = f32::from(take(bytes, &mut cursor, 1)?[0] != 0);
 
-    let tenpai = take(bytes, &mut cursor, OPPONENT_COUNT)?;
-    for (dst, &src) in scratch.tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT]
-        .iter_mut()
-        .zip(tenpai)
-    {
-        *dst = f32::from_bits(u32::from(src != 0) * F32_ONE_BITS);
-    }
+    let tenpai = take(bytes, &mut cursor, 1)?;
+    unpack_binary_mask_into(
+        tenpai,
+        OPPONENT_COUNT,
+        &mut scratch.tenpai_flat[row * OPPONENT_COUNT..(row + 1) * OPPONENT_COUNT],
+    )
+    .map_err(|err| err.to_string())?;
 
     let opp_next = take(bytes, &mut cursor, OPPONENT_COUNT)?;
     let opp_base = row * SPATIAL_TARGET_SIZE;
@@ -404,15 +432,27 @@ fn decode_row_bytes(
         }
     }
 
-    let danger = take(bytes, &mut cursor, SPATIAL_TARGET_SIZE)?;
+    let danger = take_array::<PACKED_SPATIAL_MASK_BYTES>(bytes, &mut cursor)?;
     let danger_dst =
         &mut scratch.danger_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE];
-    expand_spatial_mask(danger, danger_dst, suit_perm);
+    if suit_perm.is_some() {
+        let mut unpermuted = [0.0f32; SPATIAL_TARGET_SIZE];
+        unpack_spatial_mask_into(danger, &mut unpermuted).map_err(|err| err.to_string())?;
+        expand_spatial_mask_f32(&unpermuted, danger_dst, suit_perm);
+    } else {
+        unpack_spatial_mask_into(danger, danger_dst).map_err(|err| err.to_string())?;
+    }
 
-    let danger_mask = take(bytes, &mut cursor, SPATIAL_TARGET_SIZE)?;
+    let danger_mask = take_array::<PACKED_SPATIAL_MASK_BYTES>(bytes, &mut cursor)?;
     let danger_mask_dst =
         &mut scratch.danger_mask_flat[row * SPATIAL_TARGET_SIZE..(row + 1) * SPATIAL_TARGET_SIZE];
-    expand_spatial_mask(danger_mask, danger_mask_dst, suit_perm);
+    if suit_perm.is_some() {
+        let mut unpermuted = [0.0f32; SPATIAL_TARGET_SIZE];
+        unpack_spatial_mask_into(danger_mask, &mut unpermuted).map_err(|err| err.to_string())?;
+        expand_spatial_mask_f32(&unpermuted, danger_mask_dst, suit_perm);
+    } else {
+        unpack_spatial_mask_into(danger_mask, danger_mask_dst).map_err(|err| err.to_string())?;
+    }
 
     if feature_flags & FLAG_SAFETY_RESIDUAL != 0 {
         decode_optional_action_pair(
@@ -444,6 +484,18 @@ fn decode_row_bytes(
             OptionalKind::DeltaQ,
         )?;
     }
+    if feature_flags & FLAG_BELIEF_FIELDS != 0 {
+        let _ = take(bytes, &mut cursor, 16 * TILE_COUNT * 4)?;
+    }
+    if feature_flags & FLAG_MIXTURE_WEIGHTS != 0 {
+        let _ = take(bytes, &mut cursor, PLAYER_COUNT * 4)?;
+    }
+    if cursor != bytes.len() {
+        return Err(format!(
+            "BC shard compact record has {} trailing byte(s)",
+            bytes.len() - cursor
+        ));
+    }
 
     Ok(())
 }
@@ -463,7 +515,7 @@ fn decode_optional_action_pair(
     kind: OptionalKind,
 ) -> Result<(), String> {
     let values = take(bytes, cursor, HYDRA_ACTION_SPACE * 4)?;
-    let mask = take(bytes, cursor, HYDRA_ACTION_SPACE)?;
+    let mask = take_array::<PACKED_ACTION_MASK_BYTES>(bytes, cursor)?;
     let action_perm = suit_perm.map(action_permutation);
     match kind {
         OptionalKind::Safety => {
@@ -478,9 +530,16 @@ fn decode_optional_action_pair(
             if let Some(buf) = scratch.safety_mask_flat.as_mut() {
                 let dst = &mut buf[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
                 if let Some(perm) = action_perm.as_ref() {
-                    expand_and_augment_mask_into(mask, perm, dst);
+                    let mut unpermuted = [0.0f32; HYDRA_ACTION_SPACE];
+                    unpack_action_mask_into(mask, &mut unpermuted)
+                        .map_err(|err| err.to_string())?;
+                    let mut packed_unpermuted = [0u8; HYDRA_ACTION_SPACE];
+                    for (dst, &src) in packed_unpermuted.iter_mut().zip(&unpermuted) {
+                        *dst = u8::from(src != 0.0);
+                    }
+                    expand_and_augment_mask_into(&packed_unpermuted, perm, dst);
                 } else {
-                    read_optional_action_mask_f32_into(mask, dst);
+                    unpack_action_mask_into(mask, dst).map_err(|err| err.to_string())?;
                 }
             }
         }
@@ -496,9 +555,16 @@ fn decode_optional_action_pair(
             if let Some(buf) = scratch.exit_mask_flat.as_mut() {
                 let dst = &mut buf[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
                 if let Some(perm) = action_perm.as_ref() {
-                    expand_and_augment_mask_into(mask, perm, dst);
+                    let mut unpermuted = [0.0f32; HYDRA_ACTION_SPACE];
+                    unpack_action_mask_into(mask, &mut unpermuted)
+                        .map_err(|err| err.to_string())?;
+                    let mut packed_unpermuted = [0u8; HYDRA_ACTION_SPACE];
+                    for (dst, &src) in packed_unpermuted.iter_mut().zip(&unpermuted) {
+                        *dst = u8::from(src != 0.0);
+                    }
+                    expand_and_augment_mask_into(&packed_unpermuted, perm, dst);
                 } else {
-                    read_optional_action_mask_f32_into(mask, dst);
+                    unpack_action_mask_into(mask, dst).map_err(|err| err.to_string())?;
                 }
             }
         }
@@ -514,9 +580,16 @@ fn decode_optional_action_pair(
             if let Some(buf) = scratch.delta_q_mask_flat.as_mut() {
                 let dst = &mut buf[row * HYDRA_ACTION_SPACE..(row + 1) * HYDRA_ACTION_SPACE];
                 if let Some(perm) = action_perm.as_ref() {
-                    expand_and_augment_mask_into(mask, perm, dst);
+                    let mut unpermuted = [0.0f32; HYDRA_ACTION_SPACE];
+                    unpack_action_mask_into(mask, &mut unpermuted)
+                        .map_err(|err| err.to_string())?;
+                    let mut packed_unpermuted = [0u8; HYDRA_ACTION_SPACE];
+                    for (dst, &src) in packed_unpermuted.iter_mut().zip(&unpermuted) {
+                        *dst = u8::from(src != 0.0);
+                    }
+                    expand_and_augment_mask_into(&packed_unpermuted, perm, dst);
                 } else {
-                    read_optional_action_mask_f32_into(mask, dst);
+                    unpack_action_mask_into(mask, dst).map_err(|err| err.to_string())?;
                 }
             }
         }
@@ -533,12 +606,19 @@ fn verify_shard_header(
     if mmap.len() < BC_SHARD_HEADER_SIZE as usize {
         return Err("BC shard file too small for header".to_string());
     }
+    if mmap[..8] == BC_DENSE_SHARD_MAGIC {
+        return Err(DENSE_REBUILD_MESSAGE.to_string());
+    }
     if mmap[..8] != BC_SHARD_MAGIC {
-        return Err("invalid BC shard magic".to_string());
+        return Err("invalid compact BC shard magic".to_string());
     }
     let version = read_u32_le(&mmap[8..12]);
     if version != BC_SHARD_VERSION {
-        return Err(format!("unsupported BC shard version {version}"));
+        return Err(format!("unsupported compact BC shard version {version}"));
+    }
+    let header_size = read_u32_le(&mmap[12..16]);
+    if header_size != BC_SHARD_HEADER_SIZE {
+        return Err("BC shard header size mismatch".to_string());
     }
     let split_id = read_u32_le(&mmap[20..24]);
     if split_id != split.split_id() {
@@ -548,16 +628,26 @@ fn verify_shard_header(
     if header_record_size != record_size {
         return Err("BC shard record size mismatch".to_string());
     }
+    if read_u32_le(&mmap[36..40]) != 192 || read_u32_le(&mmap[40..44]) != TILE_COUNT as u32 {
+        return Err("BC shard encoder contract mismatch".to_string());
+    }
+    if read_u32_le(&mmap[44..48]) != HYDRA_ACTION_SPACE as u32 {
+        return Err("BC shard action contract mismatch".to_string());
+    }
     let header_flags = read_u32_le(&mmap[56..60]);
     if header_flags != feature_flags {
         return Err("BC shard feature flags mismatch".to_string());
     }
-    let expected_record_size = record_size_for_flags(feature_flags);
+    let layout_version = read_u32_le(&mmap[60..64]);
+    if layout_version != BC_SHARD_LAYOUT_VERSION {
+        return Err(format!(
+            "unsupported BC shard layout version {layout_version}"
+        ));
+    }
+    let expected_record_size = checked_compact_record_size(feature_flags)?;
     if record_size != expected_record_size {
         return Err(format!(
-            "BC shard record_size {record_size} incompatible with current binary \
-             (expected {expected_record_size} for flags {feature_flags:#x}). \
-             Rebuild shards with the current encoder.",
+            "BC shard record_size {record_size} incompatible with current compact binary (expected {expected_record_size} for flags {feature_flags:#x}). Rebuild shards from replay.",
         ));
     }
     Ok(())
@@ -676,17 +766,6 @@ fn read_optional_action_f32_into(bytes: &[u8], dst: &mut [f32]) -> bool {
 }
 
 #[inline]
-fn read_optional_action_mask_f32_into(bytes: &[u8], dst: &mut [f32]) -> bool {
-    let mut any = false;
-    for (out, &byte) in dst.iter_mut().zip(bytes) {
-        let nonzero = byte != 0;
-        any |= nonzero;
-        *out = f32::from_bits(u32::from(nonzero) * F32_ONE_BITS);
-    }
-    any
-}
-
-#[inline]
 fn expand_and_augment_mask_into(bytes: &[u8], action_perm: &[usize; 37], dst: &mut [f32]) -> bool {
     let mut any = false;
     for src in 0..37 {
@@ -702,25 +781,263 @@ fn expand_and_augment_mask_into(bytes: &[u8], action_perm: &[usize; 37], dst: &m
     any
 }
 
-fn expand_spatial_mask(bytes: &[u8], dst: &mut [f32], suit_perm: Option<[usize; 3]>) {
+fn expand_spatial_mask_f32(values: &[f32], dst: &mut [f32], suit_perm: Option<[usize; 3]>) {
     if let Some(perm) = suit_perm {
         for opponent in 0..OPPONENT_COUNT {
             for tile in 0..TILE_COUNT {
                 let dst_tile = permute_tile(tile, perm);
                 let src_idx = opponent * TILE_COUNT + tile;
                 let dst_idx = opponent * TILE_COUNT + dst_tile;
-                dst[dst_idx] = f32::from_bits(u32::from(bytes[src_idx] != 0) * F32_ONE_BITS);
+                dst[dst_idx] = values[src_idx];
             }
         }
     } else {
-        for (out, &byte) in dst.iter_mut().zip(bytes) {
-            *out = f32::from_bits(u32::from(byte != 0) * F32_ONE_BITS);
+        dst.copy_from_slice(values);
+    }
+}
+
+fn decode_compact_obs(
+    facts: &[u8],
+    scalars: &[u8],
+    dense: &[u8],
+    dst: &mut [f32],
+) -> Result<(), String> {
+    if !scalars.is_empty() || !dense.is_empty() {
+        return Err("BC shard compact observation advanced sections must be empty".to_string());
+    }
+    dst.fill(0.0);
+    decode_baseline_obs_facts(facts, dst)
+}
+fn decode_baseline_obs_facts(bytes: &[u8], dst: &mut [f32]) -> Result<(), String> {
+    if bytes.len() != COMPACT_OBS_BASELINE_FACT_BYTES {
+        return Err("BC shard compact observation fact section has invalid length".to_string());
+    }
+    let mut cursor = 0usize;
+    decode_tile_counts(
+        take_array::<TILE34_COUNT_BYTES>(bytes, &mut cursor)?,
+        dst,
+        0,
+    )?;
+    decode_tile_counts(
+        take_array::<TILE34_COUNT_BYTES>(bytes, &mut cursor)?,
+        dst,
+        4,
+    )?;
+    decode_tile_bitset(
+        take_array::<TILE34_BITSET_BYTES>(bytes, &mut cursor)?,
+        dst,
+        8,
+    )?;
+    decode_tile_bitset(
+        take_array::<TILE34_BITSET_BYTES>(bytes, &mut cursor)?,
+        dst,
+        9,
+    )?;
+    decode_tile_bitset(
+        take_array::<TILE34_BITSET_BYTES>(bytes, &mut cursor)?,
+        dst,
+        10,
+    )?;
+    decode_discard_facts(bytes, &mut cursor, dst)?;
+    decode_meld_facts(bytes, &mut cursor, dst)?;
+    decode_dora_facts(take(bytes, &mut cursor, TILE_COUNT)?, dst)?;
+    decode_aka_facts(take(bytes, &mut cursor, 1)?[0], dst);
+    decode_metadata_facts(bytes, &mut cursor, dst)?;
+    decode_safety_facts(bytes, &mut cursor, dst)?;
+    debug_assert_eq!(cursor, COMPACT_OBS_BASELINE_FACT_BYTES);
+    Ok(())
+}
+
+fn decode_tile_counts(
+    bytes: &[u8; TILE34_COUNT_BYTES],
+    dst: &mut [f32],
+    channel_start: usize,
+) -> Result<(), String> {
+    let mut counts = [0u8; TILE_COUNT];
+    unpack_tile_counts(bytes, &mut counts).map_err(|err| err.to_string())?;
+    decode_counts_threshold_planes(&counts, dst, channel_start);
+    Ok(())
+}
+
+fn decode_tile_bitset(
+    bytes: &[u8; TILE34_BITSET_BYTES],
+    dst: &mut [f32],
+    channel: usize,
+) -> Result<(), String> {
+    let start = channel * TILE_COUNT;
+    unpack_binary_mask_into(bytes, TILE_COUNT, &mut dst[start..start + TILE_COUNT])
+        .map_err(|err| err.to_string())
+}
+
+fn decode_channel_bitsets(
+    bytes: &[u8],
+    cursor: &mut usize,
+    dst: &mut [f32],
+    channel_start: usize,
+    channel_count: usize,
+) -> Result<(), String> {
+    for channel in channel_start..channel_start + channel_count {
+        decode_tile_bitset(
+            take_array::<TILE34_BITSET_BYTES>(bytes, cursor)?,
+            dst,
+            channel,
+        )?;
+    }
+    Ok(())
+}
+
+fn decode_discard_facts(bytes: &[u8], cursor: &mut usize, dst: &mut [f32]) -> Result<(), String> {
+    for player in 0..4usize {
+        let base = 11 + player * 3;
+        decode_tile_bitset(take_array::<TILE34_BITSET_BYTES>(bytes, cursor)?, dst, base)?;
+        decode_tile_bitset(
+            take_array::<TILE34_BITSET_BYTES>(bytes, cursor)?,
+            dst,
+            base + 1,
+        )?;
+        let row = (base + 2) * TILE_COUNT;
+        for tile in 0..TILE_COUNT {
+            let idx = read_u32_le(take(bytes, cursor, 4)?);
+            dst[row + tile] = temporal_value(idx)?;
+        }
+    }
+    Ok(())
+}
+
+fn temporal_value(index: u32) -> Result<f32, String> {
+    #[allow(
+        clippy::excessive_precision,
+        reason = "table entries preserve encoder discard decay exactly"
+    )]
+    const DISCARD_EXP_TABLE: [f32; 31] = [
+        1.0,
+        0.818_730_8,
+        0.670_320_0,
+        0.548_811_6,
+        0.449_329_0,
+        0.367_879_5,
+        0.301_194_2,
+        0.246_597_0,
+        0.201_896_5,
+        0.165_298_9,
+        0.135_335_3,
+        0.110_803_2,
+        0.090_717_96,
+        0.074_273_58,
+        0.060_810_06,
+        0.049_787_07,
+        0.040_762_20,
+        0.033_373_27,
+        0.027_323_72,
+        0.022_370_77,
+        0.018_315_64,
+        0.014_995_58,
+        0.012_277_34,
+        0.010_051_84,
+        0.008_229_747,
+        0.006_737_947,
+        0.005_516_564,
+        0.004_516_581,
+        0.003_697_864,
+        0.003_027_555,
+        0.002_478_752,
+    ];
+    if index == u32::MAX {
+        return Ok(0.0);
+    }
+    DISCARD_EXP_TABLE
+        .get(index as usize)
+        .copied()
+        .ok_or_else(|| format!("BC shard discard temporal index {index} out of range"))
+}
+
+fn decode_meld_facts(bytes: &[u8], cursor: &mut usize, dst: &mut [f32]) -> Result<(), String> {
+    decode_channel_bitsets(bytes, cursor, dst, 23, 12)
+}
+
+fn decode_dora_facts(bytes: &[u8], dst: &mut [f32]) -> Result<(), String> {
+    for (tile, &count) in bytes.iter().enumerate() {
+        if count > 5 {
+            return Err(format!("BC shard dora count {count} out of range"));
+        }
+        for threshold in 0..5usize {
+            if count as usize > threshold {
+                dst[(35 + threshold) * TILE_COUNT + tile] = 1.0;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn decode_aka_facts(flags: u8, dst: &mut [f32]) {
+    for suit in 0..3usize {
+        if (flags & (1u8 << suit)) != 0 {
+            dst[(40 + suit) * TILE_COUNT..(41 + suit) * TILE_COUNT].fill(1.0);
         }
     }
 }
 
-fn augment_obs_suit_from_le_bytes(bytes: &[u8], suit_perm: [usize; 3], dst: &mut [f32]) {
-    let values = read_f32_array::<OBS_SIZE>(bytes);
+fn decode_metadata_facts(bytes: &[u8], cursor: &mut usize, dst: &mut [f32]) -> Result<(), String> {
+    decode_repeated_bool_channels(
+        take_array::<TILE34_BITSET_BYTES>(bytes, cursor)?,
+        dst,
+        43,
+        4,
+    )?;
+    for channel in 47..55usize {
+        let value = read_f32_array::<1>(take(bytes, cursor, 4)?)[0];
+        dst[channel * TILE_COUNT..(channel + 1) * TILE_COUNT].fill(value);
+    }
+    decode_repeated_bool_channels(
+        take_array::<TILE34_BITSET_BYTES>(bytes, cursor)?,
+        dst,
+        55,
+        4,
+    )?;
+    for channel in 59..62usize {
+        let value = read_f32_array::<1>(take(bytes, cursor, 4)?)[0];
+        dst[channel * TILE_COUNT..(channel + 1) * TILE_COUNT].fill(value);
+    }
+    Ok(())
+}
+
+fn decode_repeated_bool_channels(
+    bytes: &[u8; TILE34_BITSET_BYTES],
+    dst: &mut [f32],
+    channel_start: usize,
+    channel_count: usize,
+) -> Result<(), String> {
+    let mut values = [0.0f32; TILE_COUNT];
+    unpack_binary_mask_into(bytes, TILE_COUNT, &mut values).map_err(|err| err.to_string())?;
+    for (channel_offset, &value) in values.iter().enumerate().take(channel_count) {
+        if value != 0.0 {
+            let channel = channel_start + channel_offset;
+            dst[channel * TILE_COUNT..(channel + 1) * TILE_COUNT].fill(1.0);
+        }
+    }
+    Ok(())
+}
+
+fn decode_safety_facts(bytes: &[u8], cursor: &mut usize, dst: &mut [f32]) -> Result<(), String> {
+    decode_channel_bitsets(bytes, cursor, dst, 62, 9)?;
+    for channel in 71..74usize {
+        decode_dense_channel(take(bytes, cursor, TILE_COUNT * 4)?, dst, channel)?;
+    }
+    decode_channel_bitsets(bytes, cursor, dst, 74, 3)?;
+    for channel in 77..80usize {
+        decode_dense_channel(take(bytes, cursor, TILE_COUNT * 4)?, dst, channel)?;
+    }
+    decode_channel_bitsets(bytes, cursor, dst, 80, 5)
+}
+
+fn decode_dense_channel(bytes: &[u8], dst: &mut [f32], channel: usize) -> Result<(), String> {
+    let values = read_f32_array::<TILE_COUNT>(bytes);
+    dst[channel * TILE_COUNT..(channel + 1) * TILE_COUNT].copy_from_slice(&values);
+    Ok(())
+}
+
+fn augment_obs_suit(values: &[f32; OBS_SIZE], suit_perm: [usize; 3], dst: &mut [f32]) {
+    dst.fill(0.0);
     for channel in 0..192 {
         let src_base = channel * TILE_COUNT;
         let dst_base = src_base;
