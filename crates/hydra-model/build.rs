@@ -16,13 +16,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LIBTORCH_INCLUDE");
     println!("cargo:rerun-if-env-changed=LIBTORCH_USE_PYTORCH");
 
-    let Ok(libtorch_lib) = env::var("DEP_TCH_LIBTORCH_LIB") else {
-        return;
-    };
-    let libtorch_lib = PathBuf::from(libtorch_lib);
+    let libtorch_lib = env::var("DEP_TCH_LIBTORCH_LIB")
+        .map(PathBuf::from)
+        .expect("hydra-model/libtorch requires DEP_TCH_LIBTORCH_LIB from torch-sys");
 
     let Some(torch_root_include) = find_libtorch_root_include_dir(&libtorch_lib) else {
-        return;
+        panic!(
+            "hydra-model/libtorch requires libtorch headers near {} or LIBTORCH_INCLUDE",
+            libtorch_lib.display()
+        );
     };
     let torch_csrc_include = torch_root_include.join("torch/csrc/api/include");
     println!("cargo:rustc-link-arg=-Wl,-rpath={}", libtorch_lib.display());

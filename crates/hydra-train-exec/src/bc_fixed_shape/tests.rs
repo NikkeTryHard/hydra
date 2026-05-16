@@ -615,6 +615,7 @@ fn cuda_bf16_autocast_state_restores_after_return_panic_and_nested_scope() {
         with_cuda_bf16_autocast_dtype_proof_only(|| {
             let active = current_cuda_autocast_state().expect("state readable in BF16 scope");
             assert_eq!(active.enabled, 1);
+            assert_eq!(active.cache_enabled, 1);
         })
         .expect("BF16 scope should enter");
     }));
@@ -634,6 +635,7 @@ fn cuda_bf16_autocast_state_restores_after_return_panic_and_nested_scope() {
     with_cuda_bf16_autocast_dtype_proof_only(|| {
         let inner = current_cuda_autocast_state().expect("inner state readable");
         assert_eq!(inner.enabled, 1);
+        assert_eq!(inner.cache_enabled, 1);
     })
     .expect("nested BF16 scope should enter");
     let after_nested = current_cuda_autocast_state().expect("state readable after nested proof");

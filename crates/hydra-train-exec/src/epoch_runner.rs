@@ -1907,9 +1907,10 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(use_amp, || {
-                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
-            })
+            maybe_autocast(
+                use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+                || model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads),
+            )
         };
         sub_timing_fallback.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
@@ -2018,9 +2019,16 @@ where
     let t = Instant::now();
     let output = {
         let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-        maybe_autocast(use_amp, || {
-            model.forward_with_warmup_train(device_batch.obs, &active_loss_fn.config, &warmup_heads)
-        })
+        maybe_autocast(
+            use_amp && matches!(config.train_device, LibTorchDevice::Cuda(_)),
+            || {
+                model.forward_with_warmup_train(
+                    device_batch.obs,
+                    &active_loss_fn.config,
+                    &warmup_heads,
+                )
+            },
+        )
     };
     sub_timing.forward_seconds += t.elapsed().as_secs_f64();
 
@@ -2465,9 +2473,10 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(use_amp, || {
-                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
-            })
+            maybe_autocast(
+                use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+                || model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads),
+            )
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
@@ -2527,13 +2536,16 @@ where
             let t = Instant::now();
             let output = {
                 let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-                maybe_autocast(use_amp, || {
-                    model.forward_with_warmup_train(
-                        obs_chunk,
-                        &active_loss_fn.config,
-                        &warmup_heads,
-                    )
-                })
+                maybe_autocast(
+                    use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+                    || {
+                        model.forward_with_warmup_train(
+                            obs_chunk,
+                            &active_loss_fn.config,
+                            &warmup_heads,
+                        )
+                    },
+                )
             };
             sub_timing.forward_seconds += t.elapsed().as_secs_f64();
             let t = Instant::now();

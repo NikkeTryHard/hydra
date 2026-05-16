@@ -77,10 +77,22 @@ fn validate_config_rejects_bf16_for_rl_and_delta_q() {
 }
 
 #[test]
-fn validate_config_allows_bc_only_bf16() {
+fn validate_config_allows_bc_only_bf16_on_cuda() {
     let mut config = dummy_config();
+    config.device = "cuda:0".to_string();
     config.precision_mode = PrecisionMode::Bf16Autocast;
     assert!(validate_config(&config).is_ok());
+}
+
+#[test]
+fn validate_config_rejects_bf16_for_non_cuda_bc() {
+    let mut config = dummy_config();
+    config.device = "cpu".to_string();
+    config.precision_mode = PrecisionMode::Bf16Autocast;
+    assert_eq!(
+        validate_config(&config),
+        Err("precision_mode=bf16_autocast requires a CUDA device for BC training".to_string())
+    );
 }
 
 #[test]

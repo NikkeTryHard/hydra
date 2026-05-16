@@ -54,7 +54,7 @@ impl<'de> serde::Deserialize<'de> for RuntimeResumeContract {
         let requested_precision = raw.requested_precision.unwrap_or(raw.precision_mode);
         let effective_precision = raw
             .effective_precision
-            .unwrap_or_else(|| effective_precision_for_request(requested_precision));
+            .unwrap_or_else(|| legacy_effective_precision_for_missing_field(requested_precision));
         Ok(Self {
             batch_size: raw.batch_size,
             train_microbatch_size: raw.train_microbatch_size,
@@ -67,10 +67,12 @@ impl<'de> serde::Deserialize<'de> for RuntimeResumeContract {
     }
 }
 
-const fn effective_precision_for_request(requested_precision: PrecisionMode) -> EffectivePrecision {
+const fn legacy_effective_precision_for_missing_field(
+    requested_precision: PrecisionMode,
+) -> EffectivePrecision {
     match requested_precision {
         PrecisionMode::Fp32 => EffectivePrecision::Fp32,
-        PrecisionMode::Bf16Autocast => EffectivePrecision::Bf16Amp,
+        PrecisionMode::Bf16Autocast => EffectivePrecision::Fp32NoopForBf16Request,
     }
 }
 
@@ -138,7 +140,7 @@ impl<'de> serde::Deserialize<'de> for RlRuntimeResumeContract {
         let requested_precision = raw.requested_precision.unwrap_or(raw.precision_mode);
         let effective_precision = raw
             .effective_precision
-            .unwrap_or_else(|| effective_precision_for_request(requested_precision));
+            .unwrap_or_else(|| legacy_effective_precision_for_missing_field(requested_precision));
         Ok(Self {
             games_per_batch: raw.games_per_batch,
             microbatch_size: raw.microbatch_size,

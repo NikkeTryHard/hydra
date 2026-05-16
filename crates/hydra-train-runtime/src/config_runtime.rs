@@ -209,6 +209,11 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
                 "precision_mode=bf16_autocast is not supported for DeltaQ training yet".to_string(),
             );
         }
+        if !config.device.starts_with("cuda") {
+            return Err(
+                "precision_mode=bf16_autocast requires a CUDA device for BC training".to_string(),
+            );
+        }
     }
     if let Some(rl) = config.rl.as_ref() {
         validate_rl_config(rl)?;

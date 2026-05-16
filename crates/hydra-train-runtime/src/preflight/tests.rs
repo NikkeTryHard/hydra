@@ -162,6 +162,7 @@ fn effective_runtime_config_reports_requested_and_effective_precision() {
 
     let mut bf16_config = dummy_config();
     bf16_config.precision_mode = PrecisionMode::Bf16Autocast;
+    bf16_config.device = "cuda:0".to_string();
     let bf16_runtime = EffectiveRuntimeConfig::from_config(selected, loader, &bf16_config);
     assert_eq!(
         bf16_runtime.requested_precision,
@@ -532,6 +533,7 @@ fn advanced_loss_signature_distinguishes_none_and_some() {
 fn workload_fingerprint_captures_model_and_config_shape() {
     let mut config = dummy_config();
     config.precision_mode = PrecisionMode::Bf16Autocast;
+    config.device = "cuda:0".to_string();
     config.advanced_loss = Some(AdvancedLossConfig {
         exit: Some(0.25),
         safety_residual: Some(0.75),
@@ -598,6 +600,7 @@ fn precision_mode_changes_preflight_cache_key() {
     let fp32 = dummy_config();
     let mut bf16 = dummy_config();
     bf16.precision_mode = PrecisionMode::Bf16Autocast;
+    bf16.device = "cuda:0".to_string();
     let model_config = learner_model_fingerprint_input();
 
     let fp32_key = preflight_cache_key(&fp32, &model_config, "cuda:0", 32);

@@ -70,7 +70,7 @@ int hydra_cuda_autocast_enter_bf16(HydraCudaAutocastState* previous_out) {
     at::autocast::increment_nesting();
     at::autocast::set_autocast_enabled(at::kCUDA, true);
     at::autocast::set_autocast_dtype(at::kCUDA, at::kBFloat16);
-    at::autocast::set_autocast_cache_enabled(previous_out->cache_enabled != 0);
+    at::autocast::set_autocast_cache_enabled(true);
     return 0;
   } catch (const std::exception&) {
     return -1;

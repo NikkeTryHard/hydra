@@ -85,6 +85,10 @@ fn split_divisible_prefix(
     logical_batch.split_at(fixed_shape_prefix_len)
 }
 
+fn amp_enabled_for_device(use_amp: bool, train_device: &LibTorchDevice) -> bool {
+    use_amp && matches!(train_device, LibTorchDevice::Cuda(_))
+}
+
 fn merge_metric_sums<B: Backend>(
     metric_sums: &mut Option<BatchMetricSums<B>>,
     chunk_metric_sums: BatchMetricSums<B>,
@@ -149,7 +153,7 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = crate::nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(use_amp, || {
+            maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
                 model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
@@ -211,7 +215,7 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = crate::nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(use_amp, || {
+            maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
                 model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
@@ -302,7 +306,9 @@ where
         else {
             continue;
         };
-        let output = maybe_autocast(use_amp, || model.forward(obs));
+        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
+            model.forward(obs)
+        });
         let breakdown = loss_fn.total_loss(&output, &targets);
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
         let grads = (breakdown.total * chunk_weight).backward();
@@ -316,7 +322,9 @@ where
         else {
             return Ok(Some(accumulator.grads()));
         };
-        let output = maybe_autocast(use_amp, || model.forward(obs));
+        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
+            model.forward(obs)
+        });
         let breakdown = loss_fn.total_loss(&output, &targets);
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
         let grads = (breakdown.total * chunk_weight).backward();
@@ -376,7 +384,7 @@ where
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t_forward = Instant::now();
-        let output = maybe_autocast(use_amp, || {
+        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
             model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
         sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();
@@ -434,7 +442,7 @@ where
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t_forward = Instant::now();
-        let output = maybe_autocast(use_amp, || {
+        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
             model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
         sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();
