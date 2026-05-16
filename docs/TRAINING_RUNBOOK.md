@@ -233,6 +233,7 @@ cargo run -p hydra-train --bin build_bc_shards -- \
 ```
 
 Defaults: manifest `bc_shards_manifest.json`, `--shard-samples 10000`, `--train-fraction 0.9`, `--split both`. Parallel/resume/report defaults are builder-owned; inspect `--help` for current binary defaults.
+Shard storage is compact-only v3. Builder stores replay-fact baseline observation records only; old dense v2 shards are invalid and must be rebuilt from replay. No dense/v2 shard storage mode exists. Training still sees dense `192x34` f32 obs and 46-action legal masks after reader decode; replay BC shard advanced/search/Hand-EV observation tail is absent/zero.
 
 Operator rules:
 - use `--resume` for long corpus builds.
@@ -258,6 +259,8 @@ Shard consume semantics:
 - bounded validation sample materialization disabled.
 - startup banner uses manifest counts.
 - invalid manifest/header contract is hard error; no silent fallback.
+- dense v2 shard magic hard-errors; no mixed reader or fallback.
+- compact v3 is only shard format; no format flag, mixed reader, or dense fallback.
 - shard files resolve relative to manifest parent. Do not move manifest alone.
 
 Rebuild if any change:
@@ -276,6 +279,7 @@ Manifest fields to inspect:
 - `exit_sidecar`, `delta_q_sidecar`
 - `totals.sample_count`, `totals.skipped_games`, `totals.empty_games`
 - `splits[*].sample_count`, shard count, feature flags, record size, descriptor list
+- top-level `storage_layout` must be `compact`; v3 manifest/header/layout versions must match current binary
 
 Build report fields to inspect:
 - loaded/skipped/empty game counts
@@ -283,6 +287,7 @@ Build report fields to inspect:
 - error examples, bounded by CLI config
 - resume reused/built chunks when enabled
 - output `report_path`; manifest path remains training input
+- output `bytes_per_sample` and `savings_ratio_vs_dense_observation` show compact storage effect; dense equivalent is report-only
 
 Sidecar-backed shard build requires full provenance tuple. Partial tuple rejected.
 

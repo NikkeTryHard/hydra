@@ -813,6 +813,7 @@ pub fn augment_samples_6x(samples: &[MjaiSample]) -> Vec<MjaiSample> {
             let legal_mask = augment_mask_suit(&sample.legal_mask, perm);
             augmented.push(MjaiSample {
                 obs,
+                compact_facts: sample.compact_facts.clone(),
                 action,
                 legal_mask,
                 placement: sample.placement,

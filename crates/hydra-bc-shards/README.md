@@ -21,11 +21,11 @@ Crate-local map for backend-agnostic behavior-cloning shard host format.
 
 | Surface | Contract |
 |---|---|
-| Format | backend-agnostic host shard format |
-| Observation bytes | fixed by runtime/model contract |
-| Legal/action masks | 46-action Hydra space |
-| Optional labels | gated by explicit flags |
-| Validators | manifest contract validators must reject drift |
+| Format | compact-only v3 host shard format; dense v2 invalid |
+| Observation storage | replay-fact baseline obs only; reader rebuilds `192x34` f32 with advanced/search/Hand-EV channels absent/zero |
+| Legal/action masks | 46-action Hydra space; masks packed on disk, expanded on read |
+| Optional labels | gated by explicit flags; unsupported bits hard-error |
+| Validators | manifest/header/descriptor byte contract validators must reject drift |
 
 ## Read next
 

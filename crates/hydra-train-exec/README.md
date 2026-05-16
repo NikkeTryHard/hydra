@@ -11,6 +11,7 @@ Crate-local map for training execution composition migrated out of train binarie
 - GPU/libtorch/CUDA-graph/NVTX/pinned-transfer adapters where feature-gated.
 - Artifacts, resume state, progress accumulation, presentation helpers.
 - BC shard build execution helpers.
+- BC shard build reports: compact bytes/sample plus dense-observation-equivalent savings metric (report-only).
 
 ## Does not own
 

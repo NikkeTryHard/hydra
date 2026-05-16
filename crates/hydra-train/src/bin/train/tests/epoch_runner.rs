@@ -177,6 +177,7 @@ fn dummy_train_sample(action: u8) -> MjaiSample {
     legal_mask[45] = 1.0;
     MjaiSample {
         obs: [0.1f32; hydra_core::encoder::OBS_SIZE],
+        compact_facts: None,
         action,
         legal_mask,
         placement: 0,

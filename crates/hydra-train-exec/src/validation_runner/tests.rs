@@ -119,6 +119,7 @@ fn empty_batch(device: &LibTorchDevice, batch: usize) -> MjaiBatch<TestValidBack
 fn delta_q_sample() -> MjaiSample {
     let mut sample = MjaiSample {
         obs: [0.0; OBS_SIZE],
+        compact_facts: None,
         action: 0,
         legal_mask: [1.0; HYDRA_ACTION_SPACE],
         placement: 0,

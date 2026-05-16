@@ -10,6 +10,7 @@ fn dummy_sample(action: u8, score_delta: i32) -> MjaiSample {
     legal_mask[45] = 1.0;
     MjaiSample {
         obs: [0.1f32; OBS_SIZE],
+        compact_facts: None,
         action,
         legal_mask,
         placement: 0,

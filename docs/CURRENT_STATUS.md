@@ -37,6 +37,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - ExIt has end-to-end carrier across live self-play lane and replay/sample sidecar-first lane.
 - Rare-action train/validation metrics shipped as observability only; no policy behavior change.
 
+- BC shards are compact-only v3 on disk. No dense/v2 storage path is supported. Shard builder writes replay-fact baseline observation records, omits advanced/search/Hand-EV dense tails, and dense v2 shards hard-error with rebuild-from-replay message. Reader expands compact records back to unchanged `192x34` training tensors with advanced channels absent/zero for replay BC shards.
 - BC shard CUDA path has reusable pinned H2D staging, preallocated GPU tensors, CPU f32 policy-target materialization, and child-process CUDA graph compute-capture probe. Production CUDA graph replay remains blocked by Burn `GradientsParams` optimizer contract; runtime labels say `cuda_graph_replay=production_off_probe_only`.
 ### Implemented but not default-on
 
