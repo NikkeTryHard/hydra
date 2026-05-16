@@ -53,7 +53,7 @@ Choose:
 | `source_filters` | replay include/exclude identity filters |
 | `augment` | suit permutation augmentation |
 | `resume_checkpoint` | checkpoint base for resume |
-| `precision_mode` | requested precision: `fp32` or `bf16_autocast`; BC `bf16_autocast` effective = `bf16_amp`; RL/DeltaQ hard-error |
+| `precision_mode` | optional; omitted BC CUDA defaults to `bf16_autocast` / effective `bf16_amp`; explicit `fp32` overrides; CPU omission FP32; RL/DeltaQ BF16 hard-error |
 | `device` | backend device label |
 | `bc` | BC optimizer knobs |
 | `rl` | RL/self-play enable + phase knobs |
@@ -86,10 +86,17 @@ Useful BC adds:
 ```yaml
 microbatch_size: 256
 validation_microbatch_size: 128
-precision_mode: bf16_autocast  # BC CUDA AMP forward; loss/backward/optimizer/checkpoint/validation stay FP32
+# precision_mode omitted on BC CUDA defaults to BF16 AMP; set fp32 explicitly for debug/repro FP32
 train_fraction: 0.9
 augment: true
 tensorboard: true
+```
+
+Explicit CUDA FP32 override:
+
+```yaml
+device: cuda:0
+precision_mode: fp32
 ```
 
 Validation gate example. Affects `best_model` only; `latest_model` still saves for resume.
@@ -589,9 +596,9 @@ Precision modes:
 - `bf16_autocast`
 
 Current status:
-- BC accepts `precision_mode` as request. `fp32` => effective `fp32`; `bf16_autocast` => effective `bf16_amp` for BC CUDA AMP forward.
-- Loss construction, backward, optimizer state, checkpoints, and validation remain FP32 for first cutover.
-- RL and DeltaQ promotion hard-error on BF16. Do not claim CUDA graph BF16 support or speed/parity/benchmark without exact measurements.
+- Omitted `precision_mode` on BC CUDA defaults to requested `bf16_autocast` and effective `bf16_amp`. Explicit `precision_mode: fp32` keeps FP32. CPU omission stays FP32.
+- BF16 AMP wraps BC forward only. Loss construction, backward, optimizer state, checkpoints, and validation remain FP32.
+- RL and DeltaQ promotion hard-error on BF16. On CUDA DeltaQ promotion, set explicit `precision_mode: fp32`. Do not claim CUDA graph BF16 support without exact measurement.
 Shard CUDA fast path available only when all true:
 - `hydra-train` default features enabled (default includes `cuda-graph`; use `--no-default-features` to opt out).
 - runtime device CUDA.
@@ -664,7 +671,7 @@ Debug/audit run:
 
 Promotion run:
 1. Pick candidate and accepted baseline checkpoint.
-2. Ensure `precision_mode` not `bf16_autocast`.
+2. On CUDA, set explicit `precision_mode: fp32`; omitted precision defaults to BC BF16 AMP and DeltaQ promotion rejects BF16.
 3. Run DeltaQ promotion command with baseline.
 4. Read console for quick path.
 5. Archive `delta_q_promotion.json` as durable decision record.

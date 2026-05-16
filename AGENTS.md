@@ -31,7 +31,7 @@ Rules:
 - Suit augmentation = exactly 6 numbered-suit permutations; honors unchanged.
 - BC selected-runtime authority: fresh run config-derived; epoch-boundary resume may reuse matching selected-runtime tuple; partial-epoch resume requires identical runtime.
 - BC loader-runtime authority stays config-derived; matching preflight cache does not override checkpoint/runtime contract.
-- BF16/AMP shipped for BC. RL and DeltaQ BF16 paths hard-gated.
+- BC CUDA LibTorch runs default to BF16 AMP when `precision_mode` omitted; explicit `fp32` stays FP32; CPU omission stays FP32; RL/DeltaQ BF16 hard-gated.
 - CUDA graph feature ships pinned staging/preallocated tensors/probes; production graph replay remains off/probe-only until Burn optimizer gradient contract permits it.
 
 ## Crate ownership

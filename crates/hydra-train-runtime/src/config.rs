@@ -705,11 +705,39 @@ pub fn read_config(path: &Path) -> Result<TrainConfig, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read config {}: {err}", path.display()))?;
     match path.extension().and_then(OsStr::to_str) {
-        Some("yaml" | "yml") => serde_yaml::from_str(&raw)
-            .map_err(|err| format!("failed to parse yaml config {}: {err}", path.display())),
+        Some("yaml" | "yml") => {
+            let precision_omitted = precision_mode_is_omitted(&raw)
+                .map_err(|err| format!("failed to parse yaml config {}: {err}", path.display()))?;
+            serde_yaml::from_str::<TrainConfig>(&raw)
+                .map(|config| resolve_omitted_precision_mode(config, precision_omitted))
+                .map_err(|err| format!("failed to parse yaml config {}: {err}", path.display()))
+        }
         _ => Err(format!(
             "unsupported config extension for {}; use .yaml",
             path.display()
         )),
+    }
+}
+
+fn resolve_omitted_precision_mode(mut config: TrainConfig, precision_omitted: bool) -> TrainConfig {
+    if config.precision_mode == PrecisionMode::Fp32 && precision_omitted {
+        let delta_q_active = config
+            .advanced_loss
+            .as_ref()
+            .and_then(|loss| loss.delta_q)
+            .is_some_and(|weight| weight > 0.0);
+        if config.device.starts_with("cuda") && config.rl.is_none() && !delta_q_active {
+            config.precision_mode = PrecisionMode::Bf16Autocast;
+        }
+    }
+    config
+}
+
+fn precision_mode_is_omitted(raw: &str) -> Result<bool, serde_yaml::Error> {
+    match serde_yaml::from_str::<serde_yaml::Value>(raw)? {
+        serde_yaml::Value::Mapping(mapping) => {
+            Ok(!mapping.contains_key(serde_yaml::Value::String("precision_mode".to_string())))
+        }
+        _ => Ok(true),
     }
 }

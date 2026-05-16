@@ -409,7 +409,7 @@ pub fn workload_fingerprint(
         max_validation_samples: config.max_validation_samples,
         model_signature: model.signature(),
         code_signature: format!(
-            "hydra-train:{}:{}:preflight-v5",
+            "hydra-train:{}:{}:preflight-v6",
             env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_NAME")
         ),

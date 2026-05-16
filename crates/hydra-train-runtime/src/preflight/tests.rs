@@ -530,7 +530,7 @@ fn advanced_loss_signature_distinguishes_none_and_some() {
 }
 
 #[test]
-fn workload_fingerprint_captures_model_and_config_shape() {
+fn workload_fingerprint_uses_bf16_for_cuda_bc_precision() {
     let mut config = dummy_config();
     config.precision_mode = PrecisionMode::Bf16Autocast;
     config.device = "cuda:0".to_string();
@@ -596,7 +596,7 @@ fn hardware_and_cache_key_include_runtime_identity() {
 }
 
 #[test]
-fn precision_mode_changes_preflight_cache_key() {
+fn precision_modes_change_preflight_cache_key() {
     let fp32 = dummy_config();
     let mut bf16 = dummy_config();
     bf16.precision_mode = PrecisionMode::Bf16Autocast;
