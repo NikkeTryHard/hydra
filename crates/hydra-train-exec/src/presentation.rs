@@ -10,9 +10,10 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use colored::Colorize;
-use hydra_train_runtime::config::{BcHyperparamConfig, display_num_threads};
+use hydra_train_runtime::config::{BcHyperparamConfig, PrecisionMode, display_num_threads};
 use hydra_train_runtime::preflight::{
     EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult, ProbeStatus,
+    requested_precision_signature,
 };
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use time::OffsetDateTime;
@@ -155,6 +156,18 @@ pub fn format_advisory_line(advisory: &RuntimeAdvisory) -> String {
     };
     let detail = format!("{}: {}", advisory.key, advisory.message);
     with_utc_timestamp(format!("{} {}", severity, detail.yellow()))
+}
+
+/// Formats requested/effective precision for runtime status surfaces.
+pub fn precision_runtime_summary(
+    requested_precision: PrecisionMode,
+    effective_precision: hydra_train_runtime::config::EffectivePrecision,
+) -> String {
+    format!(
+        "requested_precision={} effective_precision={}",
+        requested_precision_signature(requested_precision),
+        effective_precision,
+    )
 }
 
 /// Formats an epoch/phase label.
@@ -670,7 +683,7 @@ pub fn explicit_preflight_summary(
     tuning_mode: hydra_train_runtime::preflight::PreflightTuningMode,
 ) -> String {
     let mut summary = format!(
-        "mode={:?} saved train_mb={} val_mb={} accum_steps={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={} explicit(train={}, val={})",
+        "mode={:?} saved train_mb={} val_mb={} accum_steps={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={} {} explicit(train={}, val={})",
         tuning_mode,
         runtime.selected.train_microbatch_size,
         runtime.selected.validation_microbatch_size,
@@ -679,6 +692,7 @@ pub fn explicit_preflight_summary(
         runtime.loader.buffer_games,
         runtime.loader.buffer_samples,
         runtime.loader.archive_queue_bound,
+        precision_runtime_summary(runtime.requested_precision, runtime.effective_precision),
         explicit.train_microbatch_explicit,
         explicit.validation_microbatch_explicit,
     );

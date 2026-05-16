@@ -2,7 +2,7 @@ use super::*;
 use hydra_train_types::phase::TrainingPhase;
 use std::fs;
 
-use hydra_train_runtime::config::{PrecisionMode, TrainConfig};
+use hydra_train_runtime::config::{EffectivePrecision, PrecisionMode, TrainConfig};
 
 fn dummy_train_config() -> TrainConfig {
     TrainConfig {
@@ -114,12 +114,16 @@ fn runtime_contract_helpers_compute_expected_values() {
     assert_eq!(bc.validation_microbatch_size, 32);
     assert_eq!(bc.accum_steps, 4);
     assert_eq!(bc.precision_mode, PrecisionMode::Fp32);
+    assert_eq!(bc.requested_precision, PrecisionMode::Fp32);
+    assert_eq!(bc.effective_precision, EffectivePrecision::Fp32);
 
     let rl = rl_runtime_resume_contract(&RlTrainConfig::default());
     assert_eq!(rl.games_per_batch, RlTrainConfig::default().games_per_batch);
     assert_eq!(rl.microbatch_size, DEFAULT_RL_MICROBATCH_SIZE);
     assert_eq!(rl.phase, RlTrainConfig::default().phase);
     assert_eq!(rl.precision_mode, PrecisionMode::Fp32);
+    assert_eq!(rl.requested_precision, PrecisionMode::Fp32);
+    assert_eq!(rl.effective_precision, EffectivePrecision::Fp32);
 }
 
 #[test]
@@ -175,6 +179,8 @@ fn validate_rl_resume_runtime_compatibility_rejects_mismatched_runtime() {
             microbatch_size: 16,
             phase: RlPhaseConfig::ExitPondering,
             precision_mode: PrecisionMode::Fp32,
+            requested_precision: PrecisionMode::Fp32,
+            effective_precision: EffectivePrecision::Fp32,
         },
     );
 
@@ -185,6 +191,8 @@ fn validate_rl_resume_runtime_compatibility_rejects_mismatched_runtime() {
             microbatch_size: 16,
             phase: RlPhaseConfig::ExitPondering,
             precision_mode: PrecisionMode::Fp32,
+            requested_precision: PrecisionMode::Fp32,
+            effective_precision: EffectivePrecision::Fp32,
         },
     )
     .expect_err("RL runtime mismatch should be rejected");
@@ -234,6 +242,45 @@ saved_at_unix_s: 1
     let semantics_err =
         read_resume_state(&semantics_path).expect_err("semantics mismatch should fail");
     assert!(semantics_err.contains("failed to parse resume state"));
+}
+
+#[test]
+fn read_resume_state_backfills_legacy_bf16_precision_contract() {
+    let path = write_yaml_file(
+        "legacy-bf16-bc-runtime",
+        r#"schema_version: 3
+resume_semantics: RestoreOptimizerSkipSeenSamples
+next_epoch: 2
+skip_optimizer_steps_in_epoch: 3
+global_step: 11
+best_validation: null
+runtime:
+  batch_size: 256
+  train_microbatch_size: 64
+  validation_microbatch_size: 32
+  accum_steps: 4
+  precision_mode: bf16_autocast
+saved_at_unix_s: 1
+"#,
+    );
+
+    let state = read_resume_state(&path).expect("legacy BF16 state should deserialize");
+
+    assert_eq!(state.runtime.precision_mode, PrecisionMode::Bf16Autocast);
+    assert_eq!(
+        state.runtime.requested_precision,
+        PrecisionMode::Bf16Autocast
+    );
+    assert_eq!(
+        state.runtime.effective_precision,
+        EffectivePrecision::Fp32NoopForBf16Request
+    );
+
+    let mut current = state.runtime;
+    current.effective_precision = EffectivePrecision::Fp32;
+    let err = validate_resume_runtime_compatibility(&state, current)
+        .expect_err("partial-epoch resume should compare backfilled effective precision");
+    assert!(err.contains("partial-epoch resume requires identical runtime contract"));
 }
 
 #[test]
@@ -310,6 +357,8 @@ fn rl_resume_context_restore_flag_tracks_presence_of_state() {
                 microbatch_size: 16,
                 phase: RlPhaseConfig::ExitPondering,
                 precision_mode: PrecisionMode::Fp32,
+                requested_precision: PrecisionMode::Fp32,
+                effective_precision: EffectivePrecision::Fp32,
             },
         )),
         optimizer_base: None,
@@ -331,6 +380,7 @@ fn banner_and_pause_messages_include_runtime_details() {
     assert!(resume_banner.contains("global_step=9"));
     assert!(resume_banner.contains("skipping 3 completed optimizer steps"));
     assert!(resume_banner.contains("runtime=train_mb:64 val_mb:32 accum_steps:4"));
+    assert!(resume_banner.contains("requested_precision=fp32 effective_precision=fp32"));
 
     let immediate_state =
         build_resume_state(0, 0, 1, None, test_runtime_resume_contract(256, 64, 32));
@@ -342,7 +392,7 @@ fn banner_and_pause_messages_include_runtime_details() {
         Some(test_runtime_resume_contract(256, 32, 16)),
     );
     assert!(effective_banner.contains("runtime=train_mb:64 val_mb:32 accum_steps:4"));
-    assert!(effective_banner.contains("effective_runtime=train_mb:32 val_mb:16 accum_steps:8"));
+    assert!(effective_banner.contains("effective_runtime=train_mb:32 val_mb:16 accum_steps:8 requested_precision=fp32 effective_precision=fp32"));
 
     let unchanged_runtime_banner = resume_banner_message(
         &immediate_state,
@@ -363,11 +413,14 @@ fn banner_and_pause_messages_include_runtime_details() {
             microbatch_size: 16,
             phase: RlPhaseConfig::ExitPondering,
             precision_mode: PrecisionMode::Fp32,
+            requested_precision: PrecisionMode::Fp32,
+            effective_precision: EffectivePrecision::Fp32,
         },
     ));
     assert!(rl_banner.contains("phase=ExitPondering"));
     assert!(rl_banner.contains("games=12 samples=128"));
     assert!(rl_banner.contains("runtime=games_per_batch:8 microbatch_size:16"));
+    assert!(rl_banner.contains("requested_precision=fp32 effective_precision=fp32"));
 
     let paused = paused_training_message(&EpochContinuation {
         next_epoch: 2,
@@ -430,6 +483,8 @@ fn rl_resume_context_load_detects_latest_state_and_optimizer() {
             microbatch_size: 16,
             phase: RlPhaseConfig::ExitPondering,
             precision_mode: PrecisionMode::Fp32,
+            requested_precision: PrecisionMode::Fp32,
+            effective_precision: EffectivePrecision::Fp32,
         },
     );
     let yaml = serde_yaml::to_string(&state).expect("RL resume state should serialize");

@@ -287,6 +287,8 @@ pub struct RlPreflightRuntime {
     pub selected_games_per_batch: usize,
     /// Selected RL microbatch size.
     pub selected_microbatch_size: usize,
+    /// Effective runtime selected by cache/probes.
+    pub runtime: EffectiveRuntimeConfig,
     /// RL games probe results; empty on cache hit.
     pub rl_games_probe_results: Vec<ProbeResult>,
     /// RL microbatch probe results; empty on cache hit.
@@ -2499,7 +2501,7 @@ fn run_stage_two_finalist_benchmark(
             format_preflight_summary_line(
                 "Preflight benchmark:",
                 format!(
-                    "candidate={} train_mb={} val_mb={} loader=({}, {}, {}, {:?}) effective={:.2} train_only={:.2}",
+                    "candidate={} train_mb={} val_mb={} loader=({}, {}, {}, {:?}) requested_precision={} effective_precision={} effective={:.2} train_only={:.2}",
                     candidate_index + 1,
                     result.runtime.train_microbatch_size,
                     result.runtime.validation_microbatch_size,
@@ -2507,6 +2509,10 @@ fn run_stage_two_finalist_benchmark(
                     result.runtime.loader.buffer_samples,
                     result.runtime.loader.buffer_games,
                     result.runtime.loader.num_threads,
+                    hydra_train_runtime::preflight::requested_precision_signature(
+                        config.precision_mode
+                    ),
+                    config.effective_precision(),
                     result.score.wall_clock_samples_per_second,
                     result.score.train_only_samples_per_second,
                 ),
@@ -4685,10 +4691,11 @@ pub fn run_preflight(
                 selected.validation_microbatch_size,
                 selected.accum_steps
             )),
-            Some(EffectiveRuntimeConfig {
+            Some(EffectiveRuntimeConfig::from_config(
                 selected,
-                loader: hydra_train_runtime::config::loader_runtime_config(config),
-            }),
+                hydra_train_runtime::config::loader_runtime_config(config),
+                config,
+            )),
         )?;
         println!(
             "{}",
@@ -4784,7 +4791,7 @@ pub fn run_preflight(
         .first()
         .map(|ranked| ranked.loader)
         .ok_or_else(|| "loader runtime autotune returned no ranked candidates".to_string())?;
-    let mut runtime = EffectiveRuntimeConfig { selected, loader };
+    let mut runtime = EffectiveRuntimeConfig::from_config(selected, loader, config);
     let loader_secs = t_loader.elapsed().as_secs_f64();
     artifact_logger.phase_completed(
         "loader_tuning",
@@ -4839,8 +4846,8 @@ pub fn run_preflight(
             validation_candidates: validation_candidates.len(),
             loader_candidates: loader_candidates.len(),
         })?;
-        runtime = EffectiveRuntimeConfig {
-            selected: hydra_train_runtime::preflight::SelectedRuntimeConfig {
+        runtime = EffectiveRuntimeConfig::from_config(
+            hydra_train_runtime::preflight::SelectedRuntimeConfig {
                 train_microbatch_size: best.runtime.train_microbatch_size,
                 validation_microbatch_size: best.runtime.validation_microbatch_size.max(1),
                 accum_steps: best.runtime.accum_steps.max(1),
@@ -4852,15 +4859,20 @@ pub fn run_preflight(
                 unsafe_selected_min_learning_rate: best.runtime.min_learning_rate,
                 unsafe_selected_warmup_steps: best.runtime.warmup_steps,
             },
-            loader: best.runtime.loader,
-        };
+            best.runtime.loader,
+            config,
+        );
         println!(
             "{}",
             format_preflight_selection_line(format!(
-                "stage-2 winner train_mb={} val_mb={} accum_steps={} wall_clock_effective={:.2} samples/s mode={:?}",
+                "stage-2 winner train_mb={} val_mb={} accum_steps={} requested_precision={} effective_precision={} wall_clock_effective={:.2} samples/s mode={:?}",
                 best.runtime.train_microbatch_size,
                 best.runtime.validation_microbatch_size,
                 runtime.selected.accum_steps,
+                hydra_train_runtime::preflight::requested_precision_signature(
+                    runtime.requested_precision
+                ),
+                runtime.effective_precision,
                 best.score.wall_clock_samples_per_second,
                 best.metadata.mode,
             ))
@@ -5016,15 +5028,21 @@ pub fn run_rl_preflight(
     if let Some(cached) =
         matching_rl_preflight_cache(config, &HydraModelConfig::learner(), &artifacts)?
     {
-        let tuned_games = cached.runtime.loader.buffer_games;
-        let tuned_microbatch = cached.runtime.selected.train_microbatch_size;
+        let runtime = cached.runtime;
+        let tuned_games = runtime.loader.buffer_games;
+        let tuned_microbatch = runtime.selected.train_microbatch_size;
         println!(
             "{}",
             format_preflight_summary_line(
                 "RL preflight cache hit:",
                 format!(
-                    "reusing cached runtime games_per_batch={} microbatch_size={} (identical fingerprint)",
-                    tuned_games, tuned_microbatch,
+                    "reusing cached runtime games_per_batch={} microbatch_size={} requested_precision={} effective_precision={} (identical fingerprint)",
+                    tuned_games,
+                    tuned_microbatch,
+                    hydra_train_runtime::preflight::requested_precision_signature(
+                        runtime.requested_precision
+                    ),
+                    runtime.effective_precision,
                 ),
             )
         );
@@ -5039,6 +5057,7 @@ pub fn run_rl_preflight(
         return Ok(RlPreflightRuntime {
             selected_games_per_batch: tuned_games,
             selected_microbatch_size: tuned_microbatch,
+            runtime,
             rl_games_probe_results: Vec::new(),
             rl_microbatch_probe_results: Vec::new(),
         });
@@ -5067,39 +5086,42 @@ pub fn run_rl_preflight(
         ProbeKind::RlMicrobatch,
         microbatch_seed,
     )?;
-    persist_rl_preflight_runtime(
-        config,
-        &artifacts,
-        EffectiveRuntimeConfig {
-            selected: hydra_train_runtime::preflight::SelectedRuntimeConfig {
-                train_microbatch_size: selected_microbatch_size,
-                validation_microbatch_size: config
-                    .validation_microbatch_size
-                    .unwrap_or(selected_microbatch_size),
-                accum_steps: config
-                    .batch_size
-                    .div_ceil(selected_microbatch_size.max(1))
-                    .max(1),
-                unsafe_selected_batch_size: None,
-                unsafe_selected_learning_rate: None,
-                unsafe_selected_min_learning_rate: None,
-                unsafe_selected_warmup_steps: None,
-            },
-            loader: hydra_train_runtime::preflight::LoaderRuntimeConfig {
-                num_threads: config.num_threads,
-                buffer_games: selected_games_per_batch,
-                buffer_samples: config.buffer_samples,
-                archive_queue_bound: config.archive_queue_bound,
-            },
+    let runtime = EffectiveRuntimeConfig::from_config(
+        hydra_train_runtime::preflight::SelectedRuntimeConfig {
+            train_microbatch_size: selected_microbatch_size,
+            validation_microbatch_size: config
+                .validation_microbatch_size
+                .unwrap_or(selected_microbatch_size),
+            accum_steps: config
+                .batch_size
+                .div_ceil(selected_microbatch_size.max(1))
+                .max(1),
+            unsafe_selected_batch_size: None,
+            unsafe_selected_learning_rate: None,
+            unsafe_selected_min_learning_rate: None,
+            unsafe_selected_warmup_steps: None,
         },
-    )?;
+        hydra_train_runtime::preflight::LoaderRuntimeConfig {
+            num_threads: config.num_threads,
+            buffer_games: selected_games_per_batch,
+            buffer_samples: config.buffer_samples,
+            archive_queue_bound: config.archive_queue_bound,
+        },
+        config,
+    );
+    persist_rl_preflight_runtime(config, &artifacts, runtime)?;
     println!(
         "{}",
         format_preflight_summary_line(
             "RL Preflight:",
             format!(
-                "selected games_per_batch={} rl.microbatch_size={} (stored in preflight cache for RL runtime reuse)",
-                selected_games_per_batch, selected_microbatch_size,
+                "selected games_per_batch={} rl.microbatch_size={} requested_precision={} effective_precision={} (stored in preflight cache for RL runtime reuse)",
+                selected_games_per_batch,
+                selected_microbatch_size,
+                hydra_train_runtime::preflight::requested_precision_signature(
+                    runtime.requested_precision
+                ),
+                runtime.effective_precision,
             )
         )
     );
@@ -5114,6 +5136,7 @@ pub fn run_rl_preflight(
     Ok(RlPreflightRuntime {
         selected_games_per_batch,
         selected_microbatch_size,
+        runtime,
         rl_games_probe_results: game_results,
         rl_microbatch_probe_results: microbatch_results,
     })

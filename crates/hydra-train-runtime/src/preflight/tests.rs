@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{
-    AdvancedLossConfig, BcHyperparamConfig, PrecisionMode, SourceFilterConfig, TrainConfig,
-    ValidationGateConfig,
+    AdvancedLossConfig, BcHyperparamConfig, EffectivePrecision, PrecisionMode, SourceFilterConfig,
+    TrainConfig, ValidationGateConfig,
 };
 
 #[test]
@@ -135,6 +135,58 @@ fn resolve_runtime_config_caps_train_microbatch_without_overcounting_accumulatio
     assert_eq!(runtime.train_microbatch_size, 32);
     assert_eq!(runtime.validation_microbatch_size, 4);
     assert_eq!(runtime.accum_steps, 1);
+}
+
+#[test]
+fn effective_runtime_config_reports_requested_and_effective_precision() {
+    let selected = SelectedRuntimeConfig {
+        train_microbatch_size: 64,
+        validation_microbatch_size: 32,
+        accum_steps: 4,
+        unsafe_selected_batch_size: None,
+        unsafe_selected_learning_rate: None,
+        unsafe_selected_min_learning_rate: None,
+        unsafe_selected_warmup_steps: None,
+    };
+    let loader = LoaderRuntimeConfig {
+        num_threads: Some(2),
+        buffer_games: 16,
+        buffer_samples: 128,
+        archive_queue_bound: 8,
+    };
+
+    let fp32_config = dummy_config();
+    let fp32_runtime = EffectiveRuntimeConfig::from_config(selected, loader, &fp32_config);
+    assert_eq!(fp32_runtime.requested_precision, PrecisionMode::Fp32);
+    assert_eq!(fp32_runtime.effective_precision, EffectivePrecision::Fp32);
+
+    let mut bf16_config = dummy_config();
+    bf16_config.precision_mode = PrecisionMode::Bf16Autocast;
+    let bf16_runtime = EffectiveRuntimeConfig::from_config(selected, loader, &bf16_config);
+    assert_eq!(
+        bf16_runtime.requested_precision,
+        PrecisionMode::Bf16Autocast
+    );
+    assert_eq!(
+        bf16_runtime.effective_precision,
+        EffectivePrecision::Bf16Amp
+    );
+}
+
+#[test]
+fn effective_precision_fp32_noop_serde_matches_display_spelling() {
+    let precision = EffectivePrecision::Fp32NoopForBf16Request;
+    let serialized =
+        serde_json::to_string(&precision).expect("effective precision should serialize");
+    assert_eq!(serialized, format!("\"{}\"", precision));
+
+    let decoded: EffectivePrecision =
+        serde_json::from_str(&serialized).expect("display spelling should deserialize");
+    assert_eq!(decoded, precision);
+
+    let decoded_from_canonical: EffectivePrecision =
+        serde_json::from_str("\"fp32_noop\"").expect("canonical fp32_noop should deserialize");
+    assert_eq!(decoded_from_canonical, precision);
 }
 
 #[test]
@@ -494,6 +546,8 @@ fn workload_fingerprint_captures_model_and_config_shape() {
     assert_eq!(fingerprint.batch_size, 256);
     assert!(fingerprint.augment);
     assert_eq!(fingerprint.precision_mode, "bf16_autocast");
+    assert_eq!(fingerprint.requested_precision, "bf16_autocast");
+    assert_eq!(fingerprint.effective_precision, "bf16_amp");
     assert_eq!(fingerprint.train_fraction_bits, 0.875f32.to_bits());
     assert_eq!(fingerprint.max_skip_logs_per_source, 4);
     assert_eq!(fingerprint.max_validation_batches, Some(3));
@@ -534,6 +588,8 @@ fn hardware_and_cache_key_include_runtime_identity() {
     assert_eq!(cache_key.hardware.cpu_logical_cores, 32);
     assert_eq!(cache_key.workload.batch_size, config.batch_size);
     assert_eq!(cache_key.workload.precision_mode, "fp32");
+    assert_eq!(cache_key.workload.requested_precision, "fp32");
+    assert_eq!(cache_key.workload.effective_precision, "fp32");
     assert!(cache_key.workload.model_signature.contains("blocks:12"));
 }
 
@@ -548,7 +604,11 @@ fn precision_mode_changes_preflight_cache_key() {
     let bf16_key = preflight_cache_key(&bf16, &model_config, "cuda:0", 32);
 
     assert_eq!(fp32_key.workload.precision_mode, "fp32");
+    assert_eq!(fp32_key.workload.requested_precision, "fp32");
+    assert_eq!(fp32_key.workload.effective_precision, "fp32");
     assert_eq!(bf16_key.workload.precision_mode, "bf16_autocast");
+    assert_eq!(bf16_key.workload.requested_precision, "bf16_autocast");
+    assert_eq!(bf16_key.workload.effective_precision, "bf16_amp");
     assert_ne!(fp32_key, bf16_key);
 }
 

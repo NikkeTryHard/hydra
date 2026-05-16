@@ -5,7 +5,8 @@ use crate::resume::{
 };
 use hydra_data_core::{DataManifest, DataSource};
 use hydra_train_runtime::config::{
-    BcHyperparamConfig, PrecisionMode, RlPhaseConfig, SourceFilterConfig, ValidationGateConfig,
+    BcHyperparamConfig, EffectivePrecision, PrecisionMode, RlPhaseConfig, SourceFilterConfig,
+    ValidationGateConfig,
 };
 use hydra_train_runtime::preflight::{
     EffectiveRuntimeConfig, LoaderRuntimeConfig, ManifestCacheEntry, PreflightCacheEntry,
@@ -173,6 +174,8 @@ fn initialize_rl_training_bootstrap_rejects_runtime_mismatch() {
                 microbatch_size: 4,
                 phase: RlPhaseConfig::DrdaAchSelfPlay,
                 precision_mode: PrecisionMode::Fp32,
+                requested_precision: PrecisionMode::Fp32,
+                effective_precision: EffectivePrecision::Fp32,
             },
         ),
     );
@@ -222,6 +225,8 @@ fn initialize_rl_training_bootstrap_restores_pipeline_state() {
                 microbatch_size: 4,
                 phase: RlPhaseConfig::DrdaAchSelfPlay,
                 precision_mode: PrecisionMode::Fp32,
+                requested_precision: PrecisionMode::Fp32,
+                effective_precision: EffectivePrecision::Fp32,
             },
         ),
     );
@@ -430,6 +435,8 @@ fn initialize_training_bootstrap_applies_cached_loader_tuple_on_fresh_start() {
                 buffer_samples: 64,
                 archive_queue_bound: 3,
             },
+            requested_precision: config.precision_mode,
+            effective_precision: config.effective_precision(),
         },
     );
 
@@ -502,6 +509,8 @@ fn initialize_training_bootstrap_applies_cached_loader_tuple_on_epoch_boundary_r
                 buffer_samples: 96,
                 archive_queue_bound: 4,
             },
+            requested_precision: config.precision_mode,
+            effective_precision: config.effective_precision(),
         },
     );
 
@@ -574,6 +583,8 @@ fn initialize_training_bootstrap_keeps_loader_tuple_on_partial_resume() {
                 buffer_samples: 96,
                 archive_queue_bound: 4,
             },
+            requested_precision: config.precision_mode,
+            effective_precision: config.effective_precision(),
         },
     );
 

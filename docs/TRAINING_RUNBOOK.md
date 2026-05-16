@@ -53,7 +53,7 @@ Choose:
 | `source_filters` | replay include/exclude identity filters |
 | `augment` | suit permutation augmentation |
 | `resume_checkpoint` | checkpoint base for resume |
-| `precision_mode` | `fp32` or `bf16_autocast` |
+| `precision_mode` | requested precision: `fp32` or `bf16_autocast`; BC `bf16_autocast` effective = `bf16_amp`; RL/DeltaQ hard-error |
 | `device` | backend device label |
 | `bc` | BC optimizer knobs |
 | `rl` | RL/self-play enable + phase knobs |
@@ -86,7 +86,7 @@ Useful BC adds:
 ```yaml
 microbatch_size: 256
 validation_microbatch_size: 128
-precision_mode: bf16_autocast
+precision_mode: bf16_autocast  # BC CUDA AMP forward; loss/backward/optimizer/checkpoint/validation stay FP32
 train_fraction: 0.9
 augment: true
 tensorboard: true
@@ -117,7 +117,7 @@ Current RL phase enum:
 - `drda_ach_self_play`
 - `exit_pondering`
 
-Status: BC path is stable baseline. RL exists, but BC-first op surface remains safer. BF16/AMP shipped for BC; RL and DeltaQ promotion not baseline BF16 surfaces.
+Status: BC path is stable baseline. `bf16_autocast` runs BC CUDA AMP forward as effective `bf16_amp`; loss/backward/optimizer/checkpoint/validation stay FP32. RL and DeltaQ promotion hard-error on BF16.
 
 ## Preflight authority + cache
 
@@ -171,7 +171,7 @@ Shard-backed preflight changes behavior:
 - stage-2 finalist benchmark skipped even if enabled.
 - Not comparable to loose-replay preflight for replay-scan throughput.
 
-Fast repeated shard profile only when hardware, precision, shard manifest, prior runtime known-good:
+Fast repeated shard profile only when hardware, requested/effective precision, shard manifest, prior runtime known-good:
 
 ```yaml
 bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json
@@ -188,7 +188,7 @@ preflight:
   real_benchmark_enabled: false
 ```
 
-New hardware, new shard artifact, changed precision, or odd throughput: use full default preflight.
+New hardware, new shard artifact, changed requested/effective precision, or odd throughput: use full default preflight.
 
 Common preflight traps:
 - explicit microbatch can still be rejected by safety/authority.
@@ -589,9 +589,9 @@ Precision modes:
 - `bf16_autocast`
 
 Current status:
-- BC training/preflight/probe/stage-2 dispatch by precision.
-- RL and DeltaQ promotion not baseline BF16 surfaces.
-
+- BC accepts `precision_mode` as request. `fp32` => effective `fp32`; `bf16_autocast` => effective `bf16_amp` for BC CUDA AMP forward.
+- Loss construction, backward, optimizer state, checkpoints, and validation remain FP32 for first cutover.
+- RL and DeltaQ promotion hard-error on BF16. Do not claim CUDA graph BF16 support or speed/parity/benchmark without exact measurements.
 Shard CUDA fast path available only when all true:
 - `hydra-train` default features enabled (default includes `cuda-graph`; use `--no-default-features` to opt out).
 - runtime device CUDA.
@@ -626,7 +626,7 @@ Probe knobs:
 - `HYDRA_CUDA_GRAPH_PROBE_REPLAYS=N`; default `16`, max `1024`.
 - `HYDRA_CUDA_GRAPH_PROBE_POST_REPLAY_PARITY=0`; disables post-replay parity rerun.
 
-Observed recent 64-step shard slice: `1981.9 samples/s`, wall `4.63s`; prior plain shard mean `1888.9 samples/s`; about `+4.9%` profiled throughput in one run. Single-run signal only. Main bottleneck still model compute + unfused Burn Adam.
+Recent shard slice was CUDA-graph transport/probe signal, not BF16 evidence: `1981.9 samples/s`, wall `4.63s`; prior plain shard mean `1888.9 samples/s`; about `+4.9%` in one run. Single-run signal only. Main bottleneck still model compute + unfused Burn Adam.
 
 ## Runtime advisories
 

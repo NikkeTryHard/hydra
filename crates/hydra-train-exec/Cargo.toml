@@ -55,9 +55,11 @@ libtorch = [
     "burn/tch",
     "dep:tch",
     "dep:torch-sys",
+    "hydra-model/libtorch",
     "hydra-search-labels/model-eval",
 ]
 cuda-graph = ["libtorch"]
+bf16-autocast-proof = ["libtorch", "burn/bf16-autocast-proof"]
 bootstrap-exec-in-progress = []
 rl-runner-exec-in-progress = []
 test-nvtx-recorder = []

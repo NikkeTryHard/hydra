@@ -22,6 +22,15 @@ members = [
     "crates/hydra-train",
 ]
 
+[patch.crates-io]
+burn = { path = "third_party/burn/burn-0.21.0" }
+burn-autodiff = { path = "third_party/burn/burn-autodiff-0.21.0" }
+burn-backend = { path = "third_party/burn/burn-backend-0.21.0" }
+burn-tch = { path = "third_party/burn/burn-tch-0.21.0" }
+burn-flex = { path = "third_party/burn/burn-flex-0.21.0" }
+burn-ndarray = { path = "third_party/burn/burn-ndarray-0.21.0" }
+burn-optim = { path = "third_party/burn/burn-optim-0.21.0" }
+
 [workspace.lints.clippy]
 correctness = { level = "deny", priority = -1 }
 suspicious = { level = "deny", priority = -1 }

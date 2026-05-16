@@ -92,9 +92,43 @@ pub enum PrecisionMode {
     Bf16Autocast,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EffectivePrecision {
+    #[default]
+    #[serde(rename = "fp32")]
+    Fp32,
+    #[serde(rename = "fp32_noop")]
+    Fp32NoopForBf16Request,
+    #[serde(rename = "bf16_amp")]
+    Bf16Amp,
+}
+
+impl EffectivePrecision {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fp32 => "fp32",
+            Self::Fp32NoopForBf16Request => "fp32_noop",
+            Self::Bf16Amp => "bf16_amp",
+        }
+    }
+}
+
+impl std::fmt::Display for EffectivePrecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl TrainConfig {
     pub fn use_amp(&self) -> bool {
         matches!(self.precision_mode, PrecisionMode::Bf16Autocast)
+    }
+
+    pub fn effective_precision(&self) -> EffectivePrecision {
+        match self.precision_mode {
+            PrecisionMode::Fp32 => EffectivePrecision::Fp32,
+            PrecisionMode::Bf16Autocast => EffectivePrecision::Bf16Amp,
+        }
     }
 }
 

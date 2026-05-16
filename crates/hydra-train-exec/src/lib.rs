@@ -18,6 +18,8 @@ pub mod bc_metrics;
 pub mod bc_runtime;
 /// BC shard build execution helpers.
 pub mod bc_shard_builder;
+#[cfg(all(feature = "libtorch", feature = "bf16-autocast-proof"))]
+mod bf16_autocast_proof;
 /// Training bootstrap initialization and prepared runtime state.
 #[cfg(feature = "libtorch")]
 pub mod bootstrap;

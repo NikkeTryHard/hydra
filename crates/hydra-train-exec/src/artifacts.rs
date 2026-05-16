@@ -1808,7 +1808,7 @@ mod wrapper_moved_tests {
     use crate::resume::{RlResumeSemantics, RlResumeState, RlRuntimeResumeContract};
     use crate::validation::DeltaQPromotionSnapshot;
     use hydra_data_core::{DataManifest, DataSource};
-    use hydra_train_runtime::config::RlPhaseConfig;
+    use hydra_train_runtime::config::{EffectivePrecision, PrecisionMode, RlPhaseConfig};
     use hydra_train_runtime::preflight::{
         BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
         EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
@@ -1880,6 +1880,8 @@ mod wrapper_moved_tests {
                     preflight_config_signature: "preflight-sig".to_string(),
                     explicit_train_microbatch: Some(32),
                     explicit_validation_microbatch: Some(64),
+                    requested_precision: "fp32".to_string(),
+                    effective_precision: "fp32".to_string(),
                 },
             },
             runtime: EffectiveRuntimeConfig {
@@ -1898,6 +1900,8 @@ mod wrapper_moved_tests {
                     buffer_samples: 2048,
                     archive_queue_bound: 32,
                 },
+                requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
+                effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
             },
             benchmark: None,
         }
@@ -2592,7 +2596,9 @@ mod wrapper_moved_tests {
                 games_per_batch: 16,
                 microbatch_size: 32,
                 phase: RlPhaseConfig::ExitPondering,
-                precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
+                precision_mode: PrecisionMode::Fp32,
+                requested_precision: PrecisionMode::Fp32,
+                effective_precision: EffectivePrecision::Fp32,
             },
             saved_at_unix_s: 123,
         };

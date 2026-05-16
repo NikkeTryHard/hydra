@@ -11,8 +11,7 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
 use hydra_train_runtime::config::{
-    PrecisionMode, TrainCli, TrainConfig, display_num_threads,
-    require_explicit_preflight_tuning_mode,
+    TrainCli, TrainConfig, display_num_threads, require_explicit_preflight_tuning_mode,
 };
 
 use crate::config_runtime::{configure_threads, device_label, train_device, validate_config};
@@ -36,8 +35,8 @@ use crate::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary, explicit_preflight_recommendation,
     explicit_preflight_summary, format_advisory_line, format_preflight_selection_line,
     format_preflight_summary_line, format_probe_results_table, format_status_line,
-    format_timed_phase_message, format_warning_line, print_banner_field, print_header_block,
-    timestamped, unsafe_preflight_math_summary,
+    format_timed_phase_message, format_warning_line, precision_runtime_summary, print_banner_field,
+    print_header_block, timestamped, unsafe_preflight_math_summary,
 };
 use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use crate::resume::BestValidation;
@@ -57,10 +56,7 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
         let preflight = run_rl_preflight(config_path, config, &train_device)?;
         println!(
             "{}",
-            format_rl_preflight_selection_message(
-                preflight.selected_games_per_batch,
-                preflight.selected_microbatch_size,
-            )
+            format_rl_preflight_selection_message(preflight.runtime)
         );
         print_probe_table(
             "RL preflight games table",
@@ -107,7 +103,7 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
         println!(
             "{}",
             format_preflight_selection_line(format!(
-                "benchmark winner tuning_mode={:?} benchmark_mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?})",
+                "benchmark winner tuning_mode={:?} benchmark_mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?}) {}",
                 config.preflight.tuning_mode,
                 benchmark.metadata.mode,
                 benchmark.score.wall_clock_samples_per_second,
@@ -118,6 +114,10 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
                 benchmark.runtime.loader.buffer_samples,
                 benchmark.runtime.loader.buffer_games,
                 benchmark.runtime.loader.num_threads,
+                precision_runtime_summary(
+                    preflight.runtime.requested_precision,
+                    preflight.runtime.effective_precision
+                ),
             ))
         );
     }
@@ -202,7 +202,7 @@ pub fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &s
     print_banner_field(
         "Runtime defaults",
         format!(
-            "train_mb={} val_mb={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={}",
+            "train_mb={} val_mb={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={} requested_precision={} effective_precision={}",
             config.microbatch_size.unwrap_or(config.batch_size),
             config
                 .validation_microbatch_size
@@ -211,6 +211,8 @@ pub fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &s
             config.buffer_games,
             config.buffer_samples,
             config.archive_queue_bound,
+            hydra_train_runtime::preflight::requested_precision_signature(config.precision_mode),
+            config.effective_precision(),
         )
         .yellow(),
     );
@@ -218,15 +220,14 @@ pub fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &s
 }
 
 /// Formats the RL preflight selected runtime line.
-pub fn format_rl_preflight_selection_message(
-    selected_games_per_batch: usize,
-    selected_microbatch_size: usize,
-) -> String {
+pub fn format_rl_preflight_selection_message(runtime: EffectiveRuntimeConfig) -> String {
     format_preflight_summary_line(
         "Preflight:",
         format!(
-            "selected rl.games_per_batch={} rl.microbatch_size={}",
-            selected_games_per_batch, selected_microbatch_size,
+            "selected rl.games_per_batch={} rl.microbatch_size={} {}",
+            runtime.loader.buffer_games,
+            runtime.selected.train_microbatch_size,
+            precision_runtime_summary(runtime.requested_precision, runtime.effective_precision),
         ),
     )
 }
@@ -392,10 +393,12 @@ fn print_bc_training_banner(
     print_banner_field(
         "Optimizer batch",
         format!(
-            "{} ({} x {} accum)",
+            "{} ({} x {} accum) requested_precision={} effective_precision={}",
             config.batch_size,
             config.microbatch_size.unwrap_or(config.batch_size),
-            stats.accum_steps
+            stats.accum_steps,
+            hydra_train_runtime::preflight::requested_precision_signature(config.precision_mode),
+            config.effective_precision(),
         )
         .yellow(),
     );
@@ -574,11 +577,6 @@ pub fn handle_training_mode(config_path: &Path, config: TrainConfig) -> Result<(
         format_warning_line(explicit_preflight_recommendation())
     );
     if let Some(rl_cfg) = config.rl.clone() {
-        if matches!(config.precision_mode, PrecisionMode::Bf16Autocast) {
-            return Err(
-                "precision_mode=bf16_autocast is not supported for RL training yet".to_string(),
-            );
-        }
         let (bootstrap, runtime) = initialize_rl_training_bootstrap(config_path, config, rl_cfg)?;
         let RlTrainingBootstrap {
             config: _,

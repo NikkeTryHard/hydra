@@ -102,9 +102,29 @@ fn write_tiny_replay_data_dir(label: &str) -> PathBuf {
 
 #[test]
 fn formats_rl_and_bc_preflight_selection_messages() {
-    let rl_message = format_rl_preflight_selection_message(32, 8);
+    let rl_message = format_rl_preflight_selection_message(EffectiveRuntimeConfig {
+        selected: SelectedRuntimeConfig {
+            train_microbatch_size: 8,
+            validation_microbatch_size: 8,
+            accum_steps: 32,
+            unsafe_selected_batch_size: None,
+            unsafe_selected_learning_rate: None,
+            unsafe_selected_min_learning_rate: None,
+            unsafe_selected_warmup_steps: None,
+        },
+        loader: LoaderRuntimeConfig {
+            num_threads: None,
+            buffer_games: 32,
+            buffer_samples: 512,
+            archive_queue_bound: 8,
+        },
+        requested_precision: hydra_train_runtime::config::PrecisionMode::Bf16Autocast,
+        effective_precision:
+            hydra_train_runtime::config::EffectivePrecision::Fp32NoopForBf16Request,
+    });
     assert!(rl_message.contains("Preflight:"));
     assert!(rl_message.contains("selected rl.games_per_batch=32 rl.microbatch_size=8"));
+    assert!(rl_message.contains("requested_precision=bf16_autocast effective_precision=fp32_noop"));
 
     let bc_message = format_bc_preflight_selection_message(
         EffectiveRuntimeConfig {
@@ -123,6 +143,8 @@ fn formats_rl_and_bc_preflight_selection_messages() {
                 buffer_samples: 512,
                 archive_queue_bound: 8,
             },
+            requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
+            effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
         },
         ExplicitSettings {
             train_microbatch_explicit: false,
@@ -135,6 +157,7 @@ fn formats_rl_and_bc_preflight_selection_messages() {
     assert!(bc_message.contains("accum_steps=4"));
     assert!(bc_message.contains("threads=6"));
     assert!(bc_message.contains("explicit(train=false, val=true)"));
+    assert!(bc_message.contains("requested_precision=fp32 effective_precision=fp32"));
 }
 
 #[test]
@@ -156,6 +179,9 @@ fn formats_unsafe_preflight_selection_message_truthfully() {
                 buffer_samples: 512,
                 archive_queue_bound: 8,
             },
+            requested_precision: hydra_train_runtime::config::PrecisionMode::Bf16Autocast,
+            effective_precision:
+                hydra_train_runtime::config::EffectivePrecision::Fp32NoopForBf16Request,
         },
         ExplicitSettings {
             train_microbatch_explicit: false,
@@ -167,6 +193,8 @@ fn formats_unsafe_preflight_selection_message_truthfully() {
     assert!(message.contains("mode=Unsafe"));
     assert!(message.contains("saved train_mb=128 val_mb=64"));
     assert!(message.contains("unsafe_can_change_logical_batch=true"));
+    assert!(message.contains("requested_precision=bf16_autocast"));
+    assert!(message.contains("effective_precision=fp32_noop"));
     assert!(message.contains("selected_batch=512"));
     assert!(message.contains("selected_lr=5.00e-4"));
     assert!(message.contains("selected_min_lr=2.00e-6"));

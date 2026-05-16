@@ -699,6 +699,8 @@ fn stage_two_finalists_accept_loader_ranked_first_by_runtime_autotune() {
     let selected = EffectiveRuntimeConfig {
         selected: selected_runtime_config(64, 32, 4),
         loader: selected_loader,
+        requested_precision: config.precision_mode,
+        effective_precision: config.effective_precision(),
     };
     let train_candidates = vec![ProbeCandidateSummary {
         candidate_microbatch: 64,
@@ -758,6 +760,8 @@ fn stage_two_finalists_prefer_larger_train_microbatch_when_scores_tie() {
     let selected = EffectiveRuntimeConfig {
         selected: selected_runtime_config(32, 64, 4),
         loader,
+        requested_precision: config.precision_mode,
+        effective_precision: config.effective_precision(),
     };
     let train_candidates = vec![probe_summary(32, 400.0), probe_summary(128, 400.0)];
     let validation_candidates = vec![probe_summary(64, 300.0)];
@@ -2914,6 +2918,8 @@ fn run_preflight_returns_cached_runtime_on_identical_fingerprint() {
             buffer_samples: 1024,
             archive_queue_bound: 16,
         },
+        requested_precision: config.precision_mode,
+        effective_precision: config.effective_precision(),
     };
     let paths = PreflightPaths::new(&artifacts);
     write_preflight_cache(
@@ -3079,6 +3085,8 @@ fn run_preflight_cache_hit_preserves_benchmark_result() {
                     buffer_samples: 128,
                     archive_queue_bound: 4,
                 },
+                requested_precision: config.precision_mode,
+                effective_precision: config.effective_precision(),
             },
             benchmark: Some(benchmark.clone()),
         },
@@ -3169,6 +3177,8 @@ fn run_preflight_misses_cache_on_different_fingerprint() {
             preflight_config_signature: "stale".to_string(),
             explicit_train_microbatch: None,
             explicit_validation_microbatch: None,
+            requested_precision: "fp32".to_string(),
+            effective_precision: "fp32".to_string(),
         },
     };
     let paths = PreflightPaths::new(&artifacts);
@@ -3184,6 +3194,8 @@ fn run_preflight_misses_cache_on_different_fingerprint() {
                     buffer_samples: 999,
                     archive_queue_bound: 1,
                 },
+                requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
+                effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
             },
             benchmark: None,
         },
@@ -3244,6 +3256,8 @@ fn run_rl_preflight_returns_cached_runtime_on_identical_fingerprint() {
             buffer_samples: 1024,
             archive_queue_bound: 16,
         },
+        requested_precision: config.precision_mode,
+        effective_precision: config.effective_precision(),
     };
     let paths = RlPreflightPaths::new(&artifacts);
     write_preflight_cache(
@@ -3314,6 +3328,8 @@ fn apply_cached_runtime_applies_loader_tuple_for_fresh_start() {
                     buffer_samples: 64,
                     archive_queue_bound: 3,
                 },
+                requested_precision: config.precision_mode,
+                effective_precision: config.effective_precision(),
             },
             benchmark: None,
         },
@@ -3373,6 +3389,8 @@ fn apply_cached_runtime_keeps_loader_tuple_on_partial_resume() {
                     buffer_samples: 64,
                     archive_queue_bound: 3,
                 },
+                requested_precision: config.precision_mode,
+                effective_precision: config.effective_precision(),
             },
             benchmark: None,
         },

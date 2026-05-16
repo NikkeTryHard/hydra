@@ -517,6 +517,8 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
                 buffer_samples: 4096,
                 archive_queue_bound: 16,
             },
+            requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
+            effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
         },
         ExplicitSettings {
             train_microbatch_explicit: true,
@@ -526,7 +528,7 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
     );
     assert_eq!(
         summary,
-        "mode=Safe saved train_mb=64 val_mb=32 accum_steps=4 threads=6 buffer_games=128 buffer_samples=4096 archive_queue_bound=16 explicit(train=true, val=false)"
+        "mode=Safe saved train_mb=64 val_mb=32 accum_steps=4 threads=6 buffer_games=128 buffer_samples=4096 archive_queue_bound=16 requested_precision=fp32 effective_precision=fp32 explicit(train=true, val=false)"
     );
 
     let unsafe_runtime = EffectiveRuntimeConfig {
@@ -545,6 +547,9 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
             buffer_samples: 4096,
             archive_queue_bound: 16,
         },
+        requested_precision: hydra_train_runtime::config::PrecisionMode::Bf16Autocast,
+        effective_precision:
+            hydra_train_runtime::config::EffectivePrecision::Fp32NoopForBf16Request,
     };
     let unsafe_summary = explicit_preflight_summary(
         unsafe_runtime,
@@ -556,6 +561,8 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
     );
     assert!(unsafe_summary.contains("mode=Unsafe"));
     assert!(unsafe_summary.contains("unsafe_can_change_logical_batch=true"));
+    assert!(unsafe_summary.contains("requested_precision=bf16_autocast"));
+    assert!(unsafe_summary.contains("effective_precision=fp32_noop"));
     assert!(unsafe_summary.contains("selected_batch=512"));
     assert!(unsafe_summary.contains("selected_lr=5.00e-4"));
     assert!(unsafe_summary.contains("selected_min_lr=2.00e-6"));

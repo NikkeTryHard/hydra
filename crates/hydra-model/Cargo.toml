@@ -17,10 +17,17 @@ crate-type = ["rlib"]
 hydra-core = { path = "../hydra-core" }
 hydra-train-types = { path = "../hydra-train-types" }
 burn = { version = "0.21", default-features = false, features = ["std"] }
+tch = { version = "0.22", optional = true }
+torch-sys = { version = "0.22", optional = true }
 
 [dev-dependencies]
 burn = { version = "0.21", default-features = false, features = ["std", "autodiff", "ndarray"] }
 
+
+[build-dependencies]
+cc = "1"
+
 [features]
 default = []
-libtorch-tests = ["burn/tch"]
+libtorch = ["burn/tch", "dep:tch", "dep:torch-sys"]
+libtorch-tests = ["libtorch"]

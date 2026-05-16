@@ -54,6 +54,36 @@ fn validate_config_requires_positive_sidecar_backed_advanced_losses() {
 }
 
 #[test]
+fn validate_config_rejects_bf16_for_rl_and_delta_q() {
+    let mut rl_config = dummy_config();
+    rl_config.precision_mode = PrecisionMode::Bf16Autocast;
+    rl_config.rl = Some(RlTrainConfig::default());
+    assert_eq!(
+        validate_config(&rl_config),
+        Err("precision_mode=bf16_autocast is not supported for RL training yet".to_string())
+    );
+
+    let mut delta_q_config = dummy_config();
+    delta_q_config.precision_mode = PrecisionMode::Bf16Autocast;
+    delta_q_config.delta_q_sidecar_path = Some(PathBuf::from("/data/delta-q.sidecar"));
+    delta_q_config.advanced_loss = Some(AdvancedLossConfig {
+        delta_q: Some(0.1),
+        ..AdvancedLossConfig::default()
+    });
+    assert_eq!(
+        validate_config(&delta_q_config),
+        Err("precision_mode=bf16_autocast is not supported for DeltaQ training yet".to_string())
+    );
+}
+
+#[test]
+fn validate_config_allows_bc_only_bf16() {
+    let mut config = dummy_config();
+    config.precision_mode = PrecisionMode::Bf16Autocast;
+    assert!(validate_config(&config).is_ok());
+}
+
+#[test]
 fn validate_config_enforces_unsafe_candidate_batch_size_contract() {
     let mut config = dummy_config();
     assert!(config.preflight.unsafe_candidate_batch_sizes.is_empty());

@@ -15,18 +15,63 @@ use colored::Colorize;
 use hydra_train_types::phase::PipelineState;
 
 use super::artifacts::atomic_write_text;
-use hydra_train_runtime::config::{PrecisionMode, RlPhaseConfig, RlTrainConfig};
+use hydra_train_runtime::config::{
+    EffectivePrecision, PrecisionMode, RlPhaseConfig, RlTrainConfig, TrainConfig,
+    train_microbatch_size, validation_microbatch_size,
+};
 
-use hydra_train_runtime::config::{TrainConfig, train_microbatch_size, validation_microbatch_size};
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+use hydra_train_runtime::preflight::requested_precision_signature;
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
 pub struct RuntimeResumeContract {
     pub batch_size: usize,
     pub train_microbatch_size: usize,
     pub validation_microbatch_size: usize,
     pub accum_steps: usize,
+    /// Legacy requested-precision field retained for current resume-state compatibility.
     pub precision_mode: PrecisionMode,
+    pub requested_precision: PrecisionMode,
+    pub effective_precision: EffectivePrecision,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeResumeContractYaml {
+    batch_size: usize,
+    train_microbatch_size: usize,
+    validation_microbatch_size: usize,
+    accum_steps: usize,
+    precision_mode: PrecisionMode,
+    requested_precision: Option<PrecisionMode>,
+    effective_precision: Option<EffectivePrecision>,
+}
+
+impl<'de> serde::Deserialize<'de> for RuntimeResumeContract {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RuntimeResumeContractYaml::deserialize(deserializer)?;
+        let requested_precision = raw.requested_precision.unwrap_or(raw.precision_mode);
+        let effective_precision = raw
+            .effective_precision
+            .unwrap_or_else(|| effective_precision_for_request(requested_precision));
+        Ok(Self {
+            batch_size: raw.batch_size,
+            train_microbatch_size: raw.train_microbatch_size,
+            validation_microbatch_size: raw.validation_microbatch_size,
+            accum_steps: raw.accum_steps,
+            precision_mode: raw.precision_mode,
+            requested_precision,
+            effective_precision,
+        })
+    }
+}
+
+const fn effective_precision_for_request(requested_precision: PrecisionMode) -> EffectivePrecision {
+    match requested_precision {
+        PrecisionMode::Fp32 => EffectivePrecision::Fp32,
+        PrecisionMode::Bf16Autocast => EffectivePrecision::Bf16Amp,
+    }
 }
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -62,12 +107,47 @@ pub struct ResumeContext {
     pub start_epoch: usize,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
 pub struct RlRuntimeResumeContract {
     pub games_per_batch: usize,
     pub microbatch_size: usize,
     pub phase: RlPhaseConfig,
+    /// Legacy requested-precision field retained for current resume-state compatibility.
     pub precision_mode: PrecisionMode,
+    pub requested_precision: PrecisionMode,
+    pub effective_precision: EffectivePrecision,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RlRuntimeResumeContractYaml {
+    games_per_batch: usize,
+    microbatch_size: usize,
+    phase: RlPhaseConfig,
+    precision_mode: PrecisionMode,
+    requested_precision: Option<PrecisionMode>,
+    effective_precision: Option<EffectivePrecision>,
+}
+
+impl<'de> serde::Deserialize<'de> for RlRuntimeResumeContract {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RlRuntimeResumeContractYaml::deserialize(deserializer)?;
+        let requested_precision = raw.requested_precision.unwrap_or(raw.precision_mode);
+        let effective_precision = raw
+            .effective_precision
+            .unwrap_or_else(|| effective_precision_for_request(requested_precision));
+        Ok(Self {
+            games_per_batch: raw.games_per_batch,
+            microbatch_size: raw.microbatch_size,
+            phase: raw.phase,
+            precision_mode: raw.precision_mode,
+            requested_precision,
+            effective_precision,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -279,6 +359,8 @@ pub fn runtime_resume_contract(config: &TrainConfig) -> RuntimeResumeContract {
         validation_microbatch_size: validation_microbatch_size(config),
         accum_steps: config.batch_size.div_ceil(train_microbatch_size).max(1),
         precision_mode: config.precision_mode,
+        requested_precision: config.precision_mode,
+        effective_precision: config.effective_precision(),
     }
 }
 
@@ -288,6 +370,8 @@ pub fn rl_runtime_resume_contract(rl: &RlTrainConfig) -> RlRuntimeResumeContract
         microbatch_size: rl.microbatch_size.unwrap_or(DEFAULT_RL_MICROBATCH_SIZE),
         phase: rl.phase,
         precision_mode: PrecisionMode::Fp32,
+        requested_precision: PrecisionMode::Fp32,
+        effective_precision: EffectivePrecision::Fp32,
     }
 }
 
@@ -322,13 +406,17 @@ pub fn validate_resume_runtime_compatibility(
 
     if state.skip_optimizer_steps_in_epoch > 0 && state.runtime != current {
         return Err(format!(
-            "partial-epoch resume requires identical runtime contract; checkpoint train_mb={} val_mb={} accum_steps={} current train_mb={} val_mb={} accum_steps={}",
+            "partial-epoch resume requires identical runtime contract; checkpoint train_mb={} val_mb={} accum_steps={} requested_precision={} effective_precision={} current train_mb={} val_mb={} accum_steps={} requested_precision={} effective_precision={}",
             state.runtime.train_microbatch_size,
             state.runtime.validation_microbatch_size,
             state.runtime.accum_steps,
+            requested_precision_signature(state.runtime.requested_precision),
+            state.runtime.effective_precision,
             current.train_microbatch_size,
             current.validation_microbatch_size,
             current.accum_steps,
+            requested_precision_signature(current.requested_precision),
+            current.effective_precision,
         ));
     }
 
@@ -346,6 +434,8 @@ pub fn test_runtime_resume_contract(
         validation_microbatch_size,
         accum_steps: batch_size.div_ceil(train_microbatch_size).max(1),
         precision_mode: PrecisionMode::Fp32,
+        requested_precision: PrecisionMode::Fp32,
+        effective_precision: EffectivePrecision::Fp32,
     }
 }
 
@@ -414,7 +504,7 @@ pub fn resume_banner_message(
 ) -> String {
     if state.skip_optimizer_steps_in_epoch > 0 {
         format!(
-            "global_step={} semantics={:?} skipping {} completed optimizer steps worth of samples in epoch {} before new updates runtime=train_mb:{} val_mb:{} accum_steps:{}",
+            "global_step={} semantics={:?} skipping {} completed optimizer steps worth of samples in epoch {} before new updates runtime=train_mb:{} val_mb:{} accum_steps:{} requested_precision={} effective_precision={}",
             state.global_step,
             state.resume_semantics,
             state.skip_optimizer_steps_in_epoch,
@@ -422,24 +512,30 @@ pub fn resume_banner_message(
             state.runtime.train_microbatch_size,
             state.runtime.validation_microbatch_size,
             state.runtime.accum_steps,
+            requested_precision_signature(state.runtime.requested_precision),
+            state.runtime.effective_precision,
         )
     } else {
         let base = format!(
-            "global_step={} semantics={:?} resuming at epoch {} with new updates immediately runtime=train_mb:{} val_mb:{} accum_steps:{}",
+            "global_step={} semantics={:?} resuming at epoch {} with new updates immediately runtime=train_mb:{} val_mb:{} accum_steps:{} requested_precision={} effective_precision={}",
             state.global_step,
             state.resume_semantics,
             state.next_epoch + 1,
             state.runtime.train_microbatch_size,
             state.runtime.validation_microbatch_size,
             state.runtime.accum_steps,
+            requested_precision_signature(state.runtime.requested_precision),
+            state.runtime.effective_precision,
         );
         match effective_runtime.filter(|runtime| runtime != &state.runtime) {
             Some(runtime) => format!(
-                "{} effective_runtime=train_mb:{} val_mb:{} accum_steps:{}",
+                "{} effective_runtime=train_mb:{} val_mb:{} accum_steps:{} requested_precision={} effective_precision={}",
                 base,
                 runtime.train_microbatch_size,
                 runtime.validation_microbatch_size,
                 runtime.accum_steps,
+                requested_precision_signature(runtime.requested_precision),
+                runtime.effective_precision,
             ),
             None => base,
         }
@@ -448,7 +544,7 @@ pub fn resume_banner_message(
 
 pub fn rl_resume_banner_message(state: &RlResumeState) -> String {
     format!(
-        "global_step={} semantics={:?} phase={:?} games={} samples={} runtime=games_per_batch:{} microbatch_size:{}",
+        "global_step={} semantics={:?} phase={:?} games={} samples={} runtime=games_per_batch:{} microbatch_size:{} requested_precision={} effective_precision={}",
         state.global_step,
         state.resume_semantics,
         state.pipeline_state.phase,
@@ -456,6 +552,8 @@ pub fn rl_resume_banner_message(state: &RlResumeState) -> String {
         state.pipeline_state.total_samples,
         state.runtime.games_per_batch,
         state.runtime.microbatch_size,
+        requested_precision_signature(state.runtime.requested_precision),
+        state.runtime.effective_precision,
     )
 }
 fn timestamped(message: impl std::fmt::Display) -> String {

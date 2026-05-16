@@ -339,12 +339,17 @@ fn total_memory_bytes() -> Option<u64> {
     Some(kb.saturating_mul(1024))
 }
 
-/// Returns the stable precision-mode fragment used in preflight cache keys.
-pub fn precision_mode_signature(mode: crate::config::PrecisionMode) -> String {
+/// Returns the stable requested-precision fragment used in preflight cache keys.
+pub fn requested_precision_signature(mode: crate::config::PrecisionMode) -> &'static str {
     match mode {
-        crate::config::PrecisionMode::Fp32 => "fp32".to_string(),
-        crate::config::PrecisionMode::Bf16Autocast => "bf16_autocast".to_string(),
+        crate::config::PrecisionMode::Fp32 => "fp32",
+        crate::config::PrecisionMode::Bf16Autocast => "bf16_autocast",
     }
+}
+
+/// Returns the stable effective-precision fragment used in preflight cache keys.
+pub fn effective_precision_signature(mode: crate::config::EffectivePrecision) -> &'static str {
+    mode.as_str()
 }
 
 /// Returns the advanced-loss fragment used in preflight cache keys.
@@ -394,14 +399,17 @@ pub fn workload_fingerprint(
     WorkloadFingerprint {
         batch_size: config.batch_size,
         augment: config.augment,
-        precision_mode: precision_mode_signature(config.precision_mode),
+        precision_mode: requested_precision_signature(config.precision_mode).to_string(),
+        requested_precision: requested_precision_signature(config.precision_mode).to_string(),
+        effective_precision: effective_precision_signature(config.effective_precision())
+            .to_string(),
         train_fraction_bits: config.train_fraction.to_bits(),
         max_skip_logs_per_source: config.max_skip_logs_per_source,
         max_validation_batches: config.max_validation_batches,
         max_validation_samples: config.max_validation_samples,
         model_signature: model.signature(),
         code_signature: format!(
-            "hydra-train:{}:{}:preflight-v4",
+            "hydra-train:{}:{}:preflight-v5",
             env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_NAME")
         ),
@@ -447,7 +455,12 @@ pub struct HardwareFingerprint {
 pub struct WorkloadFingerprint {
     pub batch_size: usize,
     pub augment: bool,
+    /// Legacy requested-precision field retained for old cache/report readers.
     pub precision_mode: String,
+    #[serde(default)]
+    pub requested_precision: String,
+    #[serde(default)]
+    pub effective_precision: String,
     pub train_fraction_bits: u32,
     pub max_skip_logs_per_source: usize,
     pub max_validation_batches: Option<usize>,
@@ -529,6 +542,25 @@ pub struct LoaderRuntimeConfig {
 pub struct EffectiveRuntimeConfig {
     pub selected: SelectedRuntimeConfig,
     pub loader: LoaderRuntimeConfig,
+    #[serde(default)]
+    pub requested_precision: crate::config::PrecisionMode,
+    #[serde(default)]
+    pub effective_precision: crate::config::EffectivePrecision,
+}
+
+impl EffectiveRuntimeConfig {
+    pub fn from_config(
+        selected: SelectedRuntimeConfig,
+        loader: LoaderRuntimeConfig,
+        config: &crate::config::TrainConfig,
+    ) -> Self {
+        Self {
+            selected,
+            loader,
+            requested_precision: config.precision_mode,
+            effective_precision: config.effective_precision(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

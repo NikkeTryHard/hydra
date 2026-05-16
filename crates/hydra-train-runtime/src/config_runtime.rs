@@ -190,6 +190,26 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
     if config.bc.warmup_steps == 0 {
         return Err("bc.warmup_steps must be greater than 0".to_string());
     }
+    if matches!(
+        config.precision_mode,
+        crate::config::PrecisionMode::Bf16Autocast
+    ) {
+        if config.rl.is_some() {
+            return Err(
+                "precision_mode=bf16_autocast is not supported for RL training yet".to_string(),
+            );
+        }
+        if config
+            .advanced_loss
+            .as_ref()
+            .and_then(|loss| loss.delta_q)
+            .is_some_and(|weight| weight > 0.0)
+        {
+            return Err(
+                "precision_mode=bf16_autocast is not supported for DeltaQ training yet".to_string(),
+            );
+        }
+    }
     if let Some(rl) = config.rl.as_ref() {
         validate_rl_config(rl)?;
     }

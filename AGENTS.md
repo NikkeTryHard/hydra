@@ -123,6 +123,7 @@ Fast iteration tips:
 - Benchmarks are opt-in only: `pixi run bench-core`, `pixi run bench-engine`, `pixi run bench-train`.
 - Narrow loop: `pixi run cargo check -p <crate> --no-default-features --quiet` or `pixi run cargo nextest run -p <crate> --lib --no-default-features --cargo-profile dev --cargo-quiet`.
 - For one test: `pixi run cargo nextest run <test-name> --no-default-features --cargo-profile dev --cargo-quiet`.
+- For ignored/manual proof tests needing stdout, still prefer Nextest: `pixi run cargo nextest run -p <crate> <test-name> --features <feature> --no-default-features --no-capture -- --ignored`. Use `--no-capture` before `--`; use `-- --ignored` after `--`.
 - Timing work: `pixi run timings-check` for default graph; `pixi run timings-nextest-list` for test discovery; `pixi run timings-full` for full heavy graph. Do not compare cold vs warm caches.
 - Use `CARGO_TARGET_DIR=$HOME/tmp/hydra-compile-bench/<name> SCCACHE_DISABLE=1 pixi run ...` for clean compile measurements; normal dev should leave sccache on.
 
@@ -136,6 +137,8 @@ pixi run cargo nextest run -p hydra-core --lib --no-default-features --cargo-pro
 pixi run cargo nextest run -p hydra-core --tests --no-default-features --cargo-profile dev
 pixi run cargo nextest run preflight_runtime --no-default-features --cargo-profile dev
 pixi run cargo nextest run -p hydra-train-exec --all-features --cargo-profile dev
+# Ignored/manual proof test with stdout:
+pixi run cargo nextest run -p hydra-train-exec direct_tch_cuda_forced_bf16_autocast_backward_proof_probe --features bf16-autocast-proof --no-default-features --no-capture -- --ignored
 ```
 
 Other gates:
