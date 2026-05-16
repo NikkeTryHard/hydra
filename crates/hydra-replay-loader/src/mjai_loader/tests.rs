@@ -2,6 +2,9 @@ use super::*;
 use crate::replay_targets::{StageABeliefAuditSummary, StageABeliefTarget};
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use hydra_data_core::{
+    COMPACT_BASELINE_CHANNELS, COMPACT_MISSING_SHANTEN, COMPACT_MISSING_TILE, CompactMeldType,
+};
 use hydra_replay_sidecar::{
     DeltaQSidecarIndex, ExitSidecarIndex, ReplayDecisionKey, ReplayDeltaQRecordV1,
     ReplayExitRecordV1, legal_mask_digest_from_f32,
@@ -119,6 +122,103 @@ fn load_game_from_reader_extracts_samples() {
             .iter()
             .all(|sample| sample.legal_mask[sample.action as usize] > 0.0)
     );
+    assert!(
+        game.samples
+            .iter()
+            .all(|sample| sample.compact_facts.is_some())
+    );
+}
+
+#[test]
+fn real_replay_compact_facts_decode_matches_dense_baseline() {
+    let (log, _) = play_game_with_mjai_log(11);
+    let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
+    let sample = game
+        .samples
+        .iter()
+        .find(|sample| sample.compact_facts.is_some())
+        .expect("real replay should produce compact facts");
+    let facts = sample
+        .compact_facts
+        .as_ref()
+        .expect("compact facts should exist");
+    let mut encoder = ObservationEncoder::new();
+    let decoded = hydra_core::bridge::encode_extracted_observation_facts_with_profile(
+        &mut encoder,
+        &hydra_core::bridge::ExtractedObservationFacts {
+            hand: facts.hand_counts,
+            drawn_tile: (facts.drawn_tile != COMPACT_MISSING_TILE).then_some(facts.drawn_tile),
+            open_meld_counts: facts.open_meld_counts,
+            discards: std::array::from_fn(|player| {
+                let src = &facts.discards[player];
+                let mut dst = hydra_core::encoder::PlayerDiscards::new();
+                for entry in src.discards.iter().take(src.len as usize) {
+                    dst.push(hydra_core::encoder::DiscardEntry {
+                        tile: entry.tile,
+                        is_tedashi: entry.is_tedashi,
+                        turn: entry.turn,
+                    });
+                }
+                dst
+            }),
+            melds: std::array::from_fn(|player| {
+                let src = &facts.melds[player];
+                let mut dst = hydra_core::encoder::PlayerMelds::new();
+                for meld in src.melds.iter().take(src.len as usize) {
+                    dst.push(hydra_core::encoder::MeldInfo {
+                        tiles: meld.tiles,
+                        tile_count: meld.tile_count,
+                        meld_type: match meld.meld_type {
+                            CompactMeldType::Chi => hydra_core::encoder::MeldType::Chi,
+                            CompactMeldType::Pon => hydra_core::encoder::MeldType::Pon,
+                            CompactMeldType::Kan => hydra_core::encoder::MeldType::Kan,
+                        },
+                    });
+                }
+                dst
+            }),
+            dora: hydra_core::encoder::DoraInfo {
+                indicators: facts.dora_indicators,
+                indicator_count: facts.dora_indicator_count,
+                aka_flags: facts.aka_flags,
+            },
+            meta: hydra_core::encoder::GameMetadata {
+                riichi: facts.riichi,
+                scores: facts.scores,
+                shanten: facts.shanten_base,
+                kyoku_index: facts.kyoku_index,
+                honba: facts.honba,
+                kyotaku: facts.kyotaku,
+            },
+            shanten_batch: hydra_core::shanten_batch::BatchShantenResult {
+                base: facts.shanten_base,
+                discard: std::array::from_fn(|tile| {
+                    (facts.shanten_discard[tile] != COMPACT_MISSING_SHANTEN)
+                        .then_some(facts.shanten_discard[tile])
+                }),
+            },
+        },
+        &SafetyInfo {
+            genbutsu_all: facts.safety.genbutsu_all,
+            genbutsu_tedashi: facts.safety.genbutsu_tedashi,
+            genbutsu_riichi_era: facts.safety.genbutsu_riichi_era,
+            suji: facts.safety.suji,
+            half_suji: facts.safety.half_suji,
+            matagi: facts.safety.matagi,
+            kabe: facts.safety.kabe,
+            one_chance: facts.safety.one_chance,
+            visible_counts: facts.safety.visible_counts,
+            opponent_riichi: facts.safety.opponent_riichi,
+            cached_tenpai_prob: facts.safety.cached_tenpai_prob,
+        },
+        BridgeEncodeProfile::bc_minimal(),
+    );
+
+    assert_eq!(
+        &decoded[..COMPACT_BASELINE_CHANNELS * 34],
+        &sample.obs[..COMPACT_BASELINE_CHANNELS * 34]
+    );
+    assert_eq!(facts.advanced_tail, None);
 }
 
 #[test]
@@ -145,6 +245,7 @@ fn load_game_from_reader_populates_oracle_targets_from_final_scores() {
         SidecarProvenance::default(),
         SidecarProvenance::default(),
         ReplayTargetProfile::with_optional_heads(true, false, false, false, false, false),
+        ReplayObservationProfile::BcMinimal,
         Cursor::new(log.join("\n")),
         None,
         None,
@@ -196,6 +297,7 @@ fn load_game_from_reader_with_sidecar_keeps_delta_q_absent_when_sidecar_not_conf
         SidecarProvenance::new(Some(123), Some(1)),
         SidecarProvenance::default(),
         ReplayTargetProfile::with_optional_heads(false, false, false, false, false, true),
+        ReplayObservationProfile::BcMinimal,
         Cursor::new(log.join("\n")),
         None,
         None,
@@ -380,6 +482,7 @@ fn loader_replay_key_parity_matches_exit_and_delta_q_sidecars() {
         SidecarProvenance::new(Some(123), Some(1)),
         SidecarProvenance::new(Some(123), Some(1)),
         ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayObservationProfile::BcMinimal,
         events,
         Some(&ExitSidecarIndex::from_records(exit_records)),
         Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -469,6 +572,7 @@ fn mismatched_obs_hash_prevents_sidecar_hydration() {
         SidecarProvenance::new(Some(123), Some(1)),
         SidecarProvenance::new(Some(123), Some(1)),
         ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayObservationProfile::BcMinimal,
         events,
         Some(&ExitSidecarIndex::from_records(exit_records)),
         Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -505,6 +609,7 @@ fn mismatched_exit_provenance_does_not_block_delta_q_hydration() {
         SidecarProvenance::new(Some(999), Some(99)),
         SidecarProvenance::new(Some(456), Some(2)),
         ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayObservationProfile::BcMinimal,
         events,
         Some(&ExitSidecarIndex::from_records(exit_records)),
         Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -541,6 +646,7 @@ fn mismatched_delta_q_provenance_does_not_block_exit_hydration() {
         SidecarProvenance::new(Some(123), Some(1)),
         SidecarProvenance::new(Some(999), Some(99)),
         ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayObservationProfile::BcMinimal,
         events,
         Some(&ExitSidecarIndex::from_records(exit_records)),
         Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
@@ -608,6 +714,7 @@ fn load_game_from_path_with_policy_uses_file_name_identity_for_sidecars() {
     let delta_q_index = DeltaQSidecarIndex::from_records(delta_q_records);
     let policy = ReplayLoadPolicy::new(
         ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayObservationProfile::BcMinimal,
         SidecarProvenance::new(Some(123), Some(1)),
         SidecarProvenance::new(Some(456), Some(2)),
         Some(&exit_index),
@@ -645,6 +752,7 @@ fn load_game_from_stream_with_policy_uses_explicit_source_identity() {
     let delta_q_index = DeltaQSidecarIndex::from_records(delta_q_records);
     let policy = ReplayLoadPolicy::new(
         ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayObservationProfile::BcMinimal,
         SidecarProvenance::new(Some(123), Some(1)),
         SidecarProvenance::new(Some(456), Some(2)),
         Some(&exit_index),
@@ -680,6 +788,7 @@ fn load_game_from_stream_with_policy_uses_explicit_source_identity() {
 fn load_game_from_stream_with_empty_policy_falls_back_to_default_loader() {
     let policy = ReplayLoadPolicy::new(
         ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayObservationProfile::BcMinimal,
         SidecarProvenance::default(),
         SidecarProvenance::default(),
         None,

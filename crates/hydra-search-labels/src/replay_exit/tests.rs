@@ -269,6 +269,7 @@ fn loader_with_sidecar_populates_exit_fields() {
         hydra_replay_loader::mjai_loader::ReplayTargetProfile::with_optional_heads(
             false, false, false, false, true, false,
         ),
+        hydra_replay_loader::mjai_loader::ReplayObservationProfile::BcMinimal,
         events,
         Some(&index),
         None,

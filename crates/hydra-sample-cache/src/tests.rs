@@ -55,6 +55,7 @@ fn sample_with_optionals(action: u8) -> MjaiSample {
 
     MjaiSample {
         obs,
+        compact_facts: None,
         action,
         legal_mask,
         placement: 2,

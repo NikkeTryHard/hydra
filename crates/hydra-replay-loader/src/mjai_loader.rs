@@ -9,11 +9,13 @@ use flate2::read::GzDecoder;
 use hydra_core::action::{AKA_5M, DISCARD_END};
 use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, riichienv_to_hydra};
 use hydra_core::bridge::{
-    BridgeEncodeProfile, encode_observation, encode_observation_with_profile,
+    BridgeEncodeProfile, encode_extracted_observation_facts_with_profile, extract_observation_facts,
 };
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
-use hydra_data_core::{MjaiSample, score_to_placements, scores_to_grp_index};
+use hydra_data_core::{
+    CompactObservationFacts, MjaiSample, score_to_placements, scores_to_grp_index,
+};
 use hydra_replay_sidecar::{
     DeltaQSidecarIndex, ExitSidecarIndex, ReplayDecisionKey, source_hash_from_identity,
 };
@@ -34,9 +36,31 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 
 const MISSING_TILE_TARGET: u8 = 255;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct ReplayDecisionOptions {
-    use_bc_minimal_encode: bool,
+    observation_profile: ReplayObservationProfile,
+}
+
+impl Default for ReplayDecisionOptions {
+    fn default() -> Self {
+        Self {
+            observation_profile: ReplayObservationProfile::BcMinimal,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayObservationProfile {
+    Full,
+    BcMinimal,
+}
+
+impl ReplayObservationProfile {
+    const fn bridge_profile(self) -> BridgeEncodeProfile {
+        match self {
+            Self::Full => BridgeEncodeProfile::full(),
+            Self::BcMinimal => BridgeEncodeProfile::bc_minimal(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -381,6 +405,7 @@ pub struct PreparedReplayDecision {
     pub legal_mask: [bool; HYDRA_ACTION_SPACE],
     pub legal_mask_f32: [f32; HYDRA_ACTION_SPACE],
     pub obs_encoded: [f32; OBS_SIZE],
+    pub compact_facts: CompactObservationFacts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,6 +451,7 @@ impl ReplayTargetProfile {
 
 pub struct ReplayLoadPolicy<'a> {
     pub profile: ReplayTargetProfile,
+    pub observation_profile: ReplayObservationProfile,
     pub exit_provenance: SidecarProvenance,
     pub delta_q_provenance: SidecarProvenance,
     pub exit_sidecar: Option<&'a ExitSidecarIndex>,
@@ -435,6 +461,7 @@ pub struct ReplayLoadPolicy<'a> {
 impl<'a> ReplayLoadPolicy<'a> {
     pub const fn new(
         profile: ReplayTargetProfile,
+        observation_profile: ReplayObservationProfile,
         exit_provenance: SidecarProvenance,
         delta_q_provenance: SidecarProvenance,
         exit_sidecar: Option<&'a ExitSidecarIndex>,
@@ -442,6 +469,7 @@ impl<'a> ReplayLoadPolicy<'a> {
     ) -> Self {
         Self {
             profile,
+            observation_profile,
             exit_provenance,
             delta_q_provenance,
             exit_sidecar,
@@ -632,27 +660,29 @@ fn finalize_prepared_replay_decision(
     }
 
     let t_encode = Instant::now();
-    let obs_encoded = if options.use_bc_minimal_encode {
-        // BC-minimal disables Group D Hand-EV inputs only; legality and replay filtering
-        // are unchanged. Replay acceptance is decided by analyze_replay_legal_actions()
-        // above, which operates on legal move masks, not the observation tensor.
-        // The fixed-superset encoder zero-fills Hand-EV channels and sets the presence
-        // mask to 0 when hand_ev is None, so the model sees a clean absent signal.
-        encode_observation_with_profile(
-            encoder,
-            &obs,
-            &safety[actor],
-            state.drawn_tile.map(tile136_to_type),
-            BridgeEncodeProfile::bc_minimal(),
-        )
-    } else {
-        encode_observation(
-            encoder,
-            &obs,
-            &safety[actor],
-            state.drawn_tile.map(tile136_to_type),
-        )
-    };
+    let drawn_tile = state.drawn_tile.map(tile136_to_type);
+    let extracted_facts = extract_observation_facts(&obs, drawn_tile);
+    let encode_profile = options.observation_profile.bridge_profile();
+    let obs_encoded = encode_extracted_observation_facts_with_profile(
+        encoder,
+        &extracted_facts,
+        &safety[actor],
+        encode_profile,
+    );
+    let compact_facts = CompactObservationFacts::from_encoder_inputs(
+        extracted_facts.hand,
+        extracted_facts.open_meld_counts,
+        extracted_facts.drawn_tile,
+        extracted_facts.shanten_batch.base,
+        extracted_facts.shanten_batch.discard,
+        &extracted_facts.discards,
+        &extracted_facts.melds,
+        &extracted_facts.dora,
+        &extracted_facts.meta,
+        &safety[actor],
+        &obs_encoded,
+        false,
+    );
     REPLAY_ENCODE_OBS_NS.fetch_add(t_encode.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     Ok(Some(PreparedReplayDecision {
@@ -662,6 +692,7 @@ fn finalize_prepared_replay_decision(
         legal_mask,
         legal_mask_f32,
         obs_encoded,
+        compact_facts,
     }))
 }
 
@@ -881,11 +912,16 @@ where
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "loader seam carries target and sidecar policy"
+)]
 fn load_game_from_events_internal(
     source_hash: Option<u64>,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
     profile: ReplayTargetProfile,
+    observation_profile: ReplayObservationProfile,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -910,7 +946,7 @@ fn load_game_from_events_internal(
         profile.delta_q && delta_q_sidecar.is_some() && delta_q_provenance.complete().is_some();
     let needs_replay_key = source_hash.is_some() && (needs_exit_lookup || needs_delta_q_lookup);
     let decision_options = ReplayDecisionOptions {
-        use_bc_minimal_encode: profile == ReplayTargetProfile::minimal_bc(),
+        observation_profile,
     };
 
     for (idx, event) in events.iter().enumerate() {
@@ -1010,6 +1046,7 @@ fn load_game_from_events_internal(
             let t_push = Instant::now();
             samples.push(MjaiSample {
                 obs: decision.obs_encoded,
+                compact_facts: Some(decision.compact_facts),
                 action: decision.action_id,
                 legal_mask,
                 placement: placements[actor],
@@ -1072,17 +1109,23 @@ fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGame> {
         SidecarProvenance::default(),
         SidecarProvenance::default(),
         ReplayTargetProfile::minimal_bc(),
+        ReplayObservationProfile::BcMinimal,
         events,
         None,
         None,
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "public test/helper seam carries target and sidecar policy"
+)]
 pub fn load_game_from_events_with_sidecar(
     source_identity: &str,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
     profile: ReplayTargetProfile,
+    observation_profile: ReplayObservationProfile,
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -1093,6 +1136,7 @@ pub fn load_game_from_events_with_sidecar(
         exit_provenance,
         delta_q_provenance,
         profile,
+        observation_profile,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -1163,11 +1207,16 @@ pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Resu
     Ok(None)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "reader seam carries target and sidecar policy"
+)]
 pub fn load_game_from_reader_with_sidecar<R: BufRead>(
     source_identity: &str,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
     profile: ReplayTargetProfile,
+    observation_profile: ReplayObservationProfile,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -1184,6 +1233,7 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
         exit_provenance,
         delta_q_provenance,
         profile,
+        observation_profile,
         events,
         exit_sidecar,
         delta_q_sidecar,
@@ -1277,11 +1327,16 @@ pub fn load_game_from_stream<R: Read>(reader: R) -> io::Result<MjaiGame> {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "stream seam carries target and sidecar policy"
+)]
 pub fn load_game_from_stream_with_sidecar<R: Read>(
     source_identity: &str,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
     profile: ReplayTargetProfile,
+    observation_profile: ReplayObservationProfile,
     reader: R,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
@@ -1297,6 +1352,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
                 exit_provenance,
                 delta_q_provenance,
                 profile,
+                observation_profile,
                 BufReader::new(timed),
                 exit_sidecar,
                 delta_q_sidecar,
@@ -1313,6 +1369,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
                 exit_provenance,
                 delta_q_provenance,
                 profile,
+                observation_profile,
                 BufReader::new(timed),
                 exit_sidecar,
                 delta_q_sidecar,
@@ -1325,6 +1382,7 @@ pub fn load_game_from_stream_with_sidecar<R: Read>(
             exit_provenance,
             delta_q_provenance,
             profile,
+            observation_profile,
             reader,
             exit_sidecar,
             delta_q_sidecar,
@@ -1343,6 +1401,7 @@ pub fn load_game_from_path_with_sidecar(
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
     profile: ReplayTargetProfile,
+    observation_profile: ReplayObservationProfile,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
 ) -> io::Result<MjaiGame> {
@@ -1357,6 +1416,7 @@ pub fn load_game_from_path_with_sidecar(
         exit_provenance,
         delta_q_provenance,
         profile,
+        observation_profile,
         file,
         exit_sidecar,
         delta_q_sidecar,
@@ -1374,6 +1434,7 @@ pub fn load_game_from_path_with_policy(
             policy.exit_provenance,
             policy.delta_q_provenance,
             policy.profile,
+            policy.observation_profile,
             policy.exit_sidecar,
             policy.delta_q_sidecar,
         ),
@@ -1392,6 +1453,7 @@ pub fn load_game_from_stream_with_policy<R: Read>(
             policy.exit_provenance,
             policy.delta_q_provenance,
             policy.profile,
+            policy.observation_profile,
             reader,
             policy.exit_sidecar,
             policy.delta_q_sidecar,

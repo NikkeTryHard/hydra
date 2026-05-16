@@ -273,6 +273,7 @@ fn read_sample(reader: &mut impl Read) -> io::Result<MjaiSample> {
 
     Ok(MjaiSample {
         obs,
+        compact_facts: None,
         action,
         legal_mask,
         placement,

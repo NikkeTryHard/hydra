@@ -124,6 +124,7 @@ fn loader_with_sidecar_populates_delta_q_fields() {
         hydra_replay_loader::mjai_loader::ReplayTargetProfile::with_optional_heads(
             false, false, false, false, false, true,
         ),
+        hydra_replay_loader::mjai_loader::ReplayObservationProfile::BcMinimal,
         events,
         None,
         Some(&index),

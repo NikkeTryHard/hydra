@@ -21,6 +21,18 @@ use crate::shanten_batch::{BatchShantenResult, batch_discard_shanten};
 use crate::sinkhorn::MixtureSib;
 use crate::tile::NUM_TILE_TYPES;
 
+#[derive(Clone, Debug)]
+pub struct ExtractedObservationFacts {
+    pub hand: [u8; NUM_TILE_TYPES],
+    pub drawn_tile: Option<u8>,
+    pub open_meld_counts: [u8; NUM_TILE_TYPES],
+    pub discards: [PlayerDiscards; 4],
+    pub melds: [PlayerMelds; 4],
+    pub dora: DoraInfo,
+    pub meta: GameMetadata,
+    pub shanten_batch: BatchShantenResult,
+}
+
 const NUM_OPPONENTS: usize = 3;
 const NUM_MIXTURE_COMPONENTS: usize = 4;
 const NUM_BELIEF_ZONES: usize = 4;
@@ -611,6 +623,62 @@ pub fn encode_observation(
 ) -> [f32; OBS_SIZE] {
     let search_context = SearchContext::default();
     encode_observation_with_search_context(encoder, obs, safety, drawn_tile, &search_context)
+}
+
+#[inline]
+pub fn extract_observation_facts(
+    obs: &Observation,
+    drawn_tile: Option<u8>,
+) -> ExtractedObservationFacts {
+    let hand = extract_hand(obs);
+    let discards = extract_discards(obs);
+    let melds = extract_melds(obs);
+    let open_meld_counts = extract_observer_meld_counts(obs);
+    let dora = extract_dora(obs);
+    let shanten_batch = batch_discard_shanten(&hand, hand.iter().sum::<u8>() / 3);
+    let meta = metadata_from_parts_with_shanten(
+        obs.player_id as usize,
+        &obs.riichi_declared,
+        &obs.scores,
+        obs.kyoku_index,
+        obs.honba,
+        obs.riichi_sticks.min(255) as u8,
+        shanten_batch.base,
+    );
+    ExtractedObservationFacts {
+        hand,
+        drawn_tile,
+        open_meld_counts,
+        discards,
+        melds,
+        dora,
+        meta,
+        shanten_batch,
+    }
+}
+
+#[inline]
+pub fn encode_extracted_observation_facts_with_profile(
+    encoder: &mut ObservationEncoder,
+    facts: &ExtractedObservationFacts,
+    safety: &SafetyInfo,
+    profile: BridgeEncodeProfile,
+) -> [f32; OBS_SIZE] {
+    let search_context = SearchContext::default();
+    encode_extracted_observation_with_profile(
+        encoder,
+        &facts.hand,
+        facts.drawn_tile,
+        &facts.open_meld_counts,
+        &facts.discards,
+        &facts.melds,
+        &facts.dora,
+        &facts.meta,
+        &facts.shanten_batch,
+        safety,
+        &search_context,
+        profile,
+    )
 }
 
 #[inline]
