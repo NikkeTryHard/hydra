@@ -583,9 +583,4 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
     assert!(math_summary.contains("selected_warmup_steps=2000"));
     assert!(math_summary.contains("apply=fresh_start_only"));
     assert!(math_summary.contains("resume=ignored_or_refused_if_checkpoint_contract_mismatch"));
-
-    assert_eq!(
-        explicit_preflight_recommendation(),
-        "using config runtime except epoch-boundary selected-runtime reuse; run train <config.yaml> --preflight to tune this machine before training"
-    );
 }

@@ -7,8 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use crate::config::{BcHyperparamConfig, TrainConfig, ValidationGateConfig};
-#[cfg(test)]
-use crate::preflight::PreflightConfig;
 
 #[cfg(test)]
 pub(crate) fn dummy_train_config() -> TrainConfig {
@@ -47,7 +45,6 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
         precision_mode: crate::config::PrecisionMode::Fp32,
     }
 }

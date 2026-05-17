@@ -28,8 +28,8 @@ use hydra_train_runtime::status::{
 fn parse_args_accepts_single_config_path() {
     let args = vec!["train".to_string(), "config.yaml".to_string()];
     let parsed = parse_args(args).expect("single config arg should parse");
-    assert_eq!(parsed.config_path, PathBuf::from("config.yaml"));
-    assert!(!parsed.preflight);
+    assert_eq!(parsed.config_path, Some(PathBuf::from("config.yaml")));
+    assert!(parsed.preflight.is_none());
     assert!(!parsed.delta_q_promotion);
     assert!(parsed.probe_only.is_none());
     assert!(parsed.probe_child.is_none());
@@ -113,7 +113,7 @@ fn parse_args_accepts_probe_only_flags() {
     assert_eq!(probe.candidate_microbatch, 192);
     assert_eq!(probe.warmup_steps, Some(4));
     assert_eq!(probe.measure_steps, Some(8));
-    assert!(!parsed.preflight);
+    assert!(parsed.preflight.is_none());
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn parse_args_accepts_probe_child_flags_after_libtest_separator() {
     ];
 
     let parsed = parse_args(args).expect("libtest-separated probe child args should parse");
-    assert_eq!(parsed.config_path, PathBuf::from("config.yaml"));
+    assert_eq!(parsed.config_path, Some(PathBuf::from("config.yaml")));
     assert!(parsed.probe_only.is_none());
     match parsed.probe_child.expect("probe child should be present") {
         hydra_train_runtime::config::ProbeChildRequest::Single(child) => {
@@ -281,17 +281,228 @@ fn parse_args_accepts_internal_probe_batch_child_flags() {
 }
 
 #[test]
-fn parse_args_accepts_preflight_flag() {
+fn parse_args_rejects_preflight_without_mode() {
     let args = vec![
         "train".to_string(),
         "config.yaml".to_string(),
         "--preflight".to_string(),
     ];
-    let parsed = parse_args(args).expect("preflight arg should parse");
-    assert!(parsed.preflight);
+    let err = parse_args(args).expect_err("preflight without mode should fail");
+    assert_eq!(err, "--preflight requires --preflight-mode <safe|unsafe>");
+}
+
+#[test]
+fn parse_args_accepts_preflight_safe_defaults() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--preflight".to_string(),
+        "--preflight-mode".to_string(),
+        "safe".to_string(),
+    ];
+    let parsed = parse_args(args).expect("safe preflight arg should parse");
+    let preflight = parsed.preflight.expect("preflight options should exist");
+    assert_eq!(parsed.config_path, Some(PathBuf::from("config.yaml")));
+    assert_eq!(
+        preflight.profile,
+        hydra_train_runtime::config::PreflightProfile::Default
+    );
+    assert_eq!(
+        preflight.preflight_config.tuning_mode,
+        hydra_train_runtime::preflight::PreflightTuningMode::Safe
+    );
+    assert!(preflight.preflight_config.real_benchmark_enabled);
     assert!(!parsed.delta_q_promotion);
     assert!(parsed.probe_only.is_none());
     assert!(parsed.probe_child.is_none());
+}
+
+#[test]
+fn parse_args_accepts_fast_repeated_run_profile() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--preflight".to_string(),
+        "--preflight-mode".to_string(),
+        "safe".to_string(),
+        "--pf-profile".to_string(),
+        "fast-repeated-run".to_string(),
+    ];
+    let parsed = parse_args(args).expect("fast repeated profile should parse");
+    let preflight = parsed.preflight.expect("preflight options");
+    assert_eq!(
+        preflight.profile,
+        hydra_train_runtime::config::PreflightProfile::FastRepeatedRun
+    );
+    assert!(preflight.preflight_config.fast_repeated_run_profile);
+    assert_eq!(preflight.preflight_config.required_successes, 1);
+    assert_eq!(preflight.preflight_config.warmup_steps, 1);
+    assert_eq!(preflight.preflight_config.measure_steps, 1);
+    assert_eq!(preflight.preflight_config.loader_runtime_rounds, 0);
+    assert_eq!(preflight.preflight_config.loader_tuple_extra_samples, 0);
+    assert!(!preflight.preflight_config.real_benchmark_enabled);
+}
+
+#[test]
+fn parse_args_allows_fast_repeated_profile_with_unsafe_mode() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--preflight".to_string(),
+        "--preflight-mode".to_string(),
+        "unsafe".to_string(),
+        "--pf-profile".to_string(),
+        "fast-repeated-run".to_string(),
+        "--pf-unsafe-batch-size".to_string(),
+        "1024,2048".to_string(),
+    ];
+    let parsed = parse_args(args).expect("unsafe fast profile should parse");
+    let preflight = parsed.preflight.expect("preflight options");
+    assert_eq!(
+        preflight.preflight_config.tuning_mode,
+        hydra_train_runtime::preflight::PreflightTuningMode::Unsafe
+    );
+    assert_eq!(
+        preflight.preflight_config.unsafe_candidate_batch_sizes,
+        vec![1024, 2048]
+    );
+    assert_eq!(preflight.preflight_config.required_successes, 1);
+}
+
+#[test]
+fn parse_args_applies_profile_then_flag_overrides() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--preflight".to_string(),
+        "--pf-profile".to_string(),
+        "fast-repeated-run".to_string(),
+        "--preflight-mode".to_string(),
+        "safe".to_string(),
+        "--pf-loader-rounds".to_string(),
+        "3".to_string(),
+        "--pf-real-benchmark".to_string(),
+        "1".to_string(),
+    ];
+    let parsed = parse_args(args).expect("profile with overrides should parse");
+    let preflight = parsed.preflight.expect("preflight options");
+    assert_eq!(preflight.preflight_config.loader_runtime_rounds, 3);
+    assert!(preflight.preflight_config.real_benchmark_enabled);
+    assert_eq!(preflight.preflight_config.required_successes, 1);
+}
+
+#[test]
+fn parse_args_accepts_repeated_comma_range_candidate_microbatch() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--preflight".to_string(),
+        "--preflight-mode".to_string(),
+        "safe".to_string(),
+        "--pf-candidate-microbatch".to_string(),
+        "64-256*2".to_string(),
+        "--pf-candidate-microbatch".to_string(),
+        "320,384,512".to_string(),
+    ];
+    let parsed = parse_args(args).expect("range list should parse");
+    let preflight = parsed.preflight.expect("preflight options");
+    assert_eq!(
+        preflight.preflight_config.candidate_microbatches,
+        vec![64, 128, 256, 320, 384, 512]
+    );
+}
+
+#[test]
+fn parse_args_rejects_bad_range_list() {
+    for value in ["1 - 2", "+1", "0", "2-1", "1-4+0", "1-4*1"] {
+        let args = vec![
+            "train".to_string(),
+            "config.yaml".to_string(),
+            "--preflight".to_string(),
+            "--preflight-mode".to_string(),
+            "safe".to_string(),
+            "--pf-candidate-microbatch".to_string(),
+            value.to_string(),
+        ];
+        parse_args(args).expect_err("bad range list should fail");
+    }
+}
+
+#[test]
+fn parse_args_rejects_preflight_flags_without_preflight() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--pf-warmup-steps".to_string(),
+        "1".to_string(),
+    ];
+    let err = parse_args(args).expect_err("pf flag without preflight should fail");
+    assert_eq!(err, "--pf-* flags require --preflight");
+}
+
+#[test]
+fn parse_args_rejects_unsafe_flags_in_safe_mode() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--preflight".to_string(),
+        "--preflight-mode".to_string(),
+        "safe".to_string(),
+        "--pf-unsafe-batch-size".to_string(),
+        "1024".to_string(),
+    ];
+    let err = parse_args(args).expect_err("unsafe flag in safe mode should fail");
+    assert!(err.contains("--preflight-mode unsafe"));
+}
+
+#[test]
+fn parse_args_accepts_unsafe_flags_in_unsafe_mode() {
+    let args = vec![
+        "train".to_string(),
+        "config.yaml".to_string(),
+        "--preflight".to_string(),
+        "--preflight-mode".to_string(),
+        "unsafe".to_string(),
+        "--pf-unsafe-batch-size".to_string(),
+        "1024,2048".to_string(),
+        "--pf-unsafe-lr-scale".to_string(),
+        "0.5,1.0".to_string(),
+        "--pf-unsafe-warmup-steps".to_string(),
+        "500-1500+500".to_string(),
+    ];
+    let parsed = parse_args(args).expect("unsafe flags should parse");
+    let preflight = parsed.preflight.expect("preflight options");
+    assert_eq!(
+        preflight.preflight_config.unsafe_candidate_batch_sizes,
+        vec![1024, 2048]
+    );
+    assert_eq!(
+        preflight.preflight_config.unsafe_candidate_lr_scales,
+        vec![0.5, 1.0]
+    );
+    assert_eq!(
+        preflight.preflight_config.unsafe_candidate_warmup_steps,
+        vec![500, 1000, 1500]
+    );
+}
+
+#[test]
+fn parse_args_accepts_list_devices_without_config() {
+    let args = vec!["train".to_string(), "--list-devices".to_string()];
+    let parsed = parse_args(args).expect("list devices should parse without config");
+    assert!(parsed.list_devices);
+    assert!(parsed.config_path.is_none());
+}
+
+#[test]
+fn parse_args_rejects_list_devices_with_other_args() {
+    let args = vec![
+        "train".to_string(),
+        "--list-devices".to_string(),
+        "config.yaml".to_string(),
+    ];
+    let err = parse_args(args).expect_err("list devices should not combine");
+    assert!(err.contains("--list-devices cannot be combined with config path or train mode flags"));
 }
 
 #[test]
@@ -302,7 +513,7 @@ fn parse_args_accepts_delta_q_promotion_flag() {
         "--delta-q-promotion".to_string(),
     ];
     let parsed = parse_args(args).expect("delta_q_promotion arg should parse");
-    assert!(!parsed.preflight);
+    assert!(parsed.preflight.is_none());
     assert!(parsed.delta_q_promotion);
     assert!(parsed.delta_q_baseline_checkpoint.is_none());
     assert!(parsed.probe_only.is_none());
@@ -360,6 +571,8 @@ fn parse_args_rejects_preflight_with_probe_flags() {
         "train".to_string(),
         "config.yaml".to_string(),
         "--preflight".to_string(),
+        "--preflight-mode".to_string(),
+        "safe".to_string(),
         "--probe-kind".to_string(),
         "train".to_string(),
         "--probe-candidate-microbatch".to_string(),
@@ -696,7 +909,6 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         max_train_steps: Some(1000),
         max_validation_batches: None,
         max_validation_samples: Some(8192),
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     };
     assert_eq!(schedule_total_steps(&cfg, 0), 1000);
@@ -743,7 +955,7 @@ fn resume_banner_message_mentions_replay_when_needed() {
     );
     assert_eq!(
         resume_banner_message(&state, None),
-        "global_step=2048 semantics=RestoreOptimizerSkipSeenSamples skipping 137 completed optimizer steps worth of samples in epoch 3 before new updates runtime=train_mb:256 val_mb:128 accum_steps:8"
+        "global_step=2048 semantics=RestoreOptimizerSkipSeenSamples skipping 137 completed optimizer steps worth of samples in epoch 3 before new updates runtime=train_mb:256 val_mb:128 accum_steps:8 requested_precision=fp32 effective_precision=fp32"
     );
 }
 
@@ -758,7 +970,7 @@ fn resume_banner_message_mentions_immediate_updates_when_no_replay() {
     );
     assert_eq!(
         resume_banner_message(&state, None),
-        "global_step=500 semantics=RestoreOptimizerSkipSeenSamples resuming at epoch 2 with new updates immediately runtime=train_mb:512 val_mb:256 accum_steps:4"
+        "global_step=500 semantics=RestoreOptimizerSkipSeenSamples resuming at epoch 2 with new updates immediately runtime=train_mb:512 val_mb:256 accum_steps:4 requested_precision=fp32 effective_precision=fp32"
     );
 }
 
@@ -815,46 +1027,29 @@ num_epochs: 1
 }
 
 #[test]
-fn read_config_defaults_preflight_tuning_mode_for_normal_training_config() {
+fn read_config_rejects_yaml_preflight_block() {
     let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
 preflight:
   warmup_steps: 1
 "#;
-    let yaml_path = write_temp_file("yaml_preflight_default", "yaml", yaml);
-    let config = read_config(&yaml_path).expect("normal config may omit explicit tuning_mode");
-    assert_eq!(config.preflight.tuning_mode, PreflightTuningMode::Safe);
+    let yaml_path = write_temp_file("yaml_preflight_rejected", "yaml", yaml);
+    let err = read_config(&yaml_path).expect_err("preflight yaml block should be rejected");
+    assert!(err.contains("preflight"));
     std::fs::remove_file(yaml_path).ok();
 }
 
 #[test]
-fn explicit_preflight_presence_check_requires_tuning_mode() {
-    let missing_yaml = r#"data_dir: /tmp/data
+fn read_config_accepts_yaml_without_preflight_block() {
+    let yaml = r#"data_dir: /tmp/data
 output_dir: /tmp/out
 num_epochs: 1
-preflight:
-  warmup_steps: 1
 "#;
-    let missing_path = write_temp_file("yaml_preflight_missing_tuning", "yaml", missing_yaml);
-    let err = hydra_train_runtime::config::require_explicit_preflight_tuning_mode(&missing_path)
-        .expect_err("explicit --preflight requires tuning_mode presence");
-    assert_eq!(
-        err,
-        "preflight.tuning_mode must be set to safe or unsafe when using --preflight"
-    );
-    std::fs::remove_file(missing_path).ok();
-
-    let explicit_yaml = r#"data_dir: /tmp/data
-output_dir: /tmp/out
-num_epochs: 1
-preflight:
-  tuning_mode: safe
-"#;
-    let explicit_path = write_temp_file("yaml_preflight_explicit_tuning", "yaml", explicit_yaml);
-    hydra_train_runtime::config::require_explicit_preflight_tuning_mode(&explicit_path)
-        .expect("explicit tuning_mode should satisfy --preflight presence check");
-    std::fs::remove_file(explicit_path).ok();
+    let yaml_path = write_temp_file("yaml_without_preflight", "yaml", yaml);
+    let config = read_config(&yaml_path).expect("yaml without preflight should parse");
+    assert_eq!(config.num_epochs, 1);
+    std::fs::remove_file(yaml_path).ok();
 }
 
 #[test]
@@ -1042,7 +1237,7 @@ preflight:
 "#;
     let yaml_path = write_temp_file("preflight_safety_backoff", "yaml", yaml);
     let err = read_config(&yaml_path).expect_err("removed safety_backoff_rungs should fail");
-    assert!(err.contains("safety_backoff_rungs"));
+    assert!(err.contains("preflight"));
     std::fs::remove_file(yaml_path).ok();
 }
 
@@ -1214,7 +1409,6 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         max_train_steps: None,
         max_validation_batches: Some(32),
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     };
 
@@ -1270,7 +1464,6 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: Some(0),
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     };
 
@@ -1325,7 +1518,6 @@ fn validate_config_accepts_basic_rl_block() {
         max_train_steps: Some(4),
         max_validation_batches: None,
         max_validation_samples: Some(64),
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     };
 
@@ -1478,7 +1670,6 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     };
     let err = validate_config(&cfg).expect_err("invalid bc ranges should fail");
@@ -1525,7 +1716,6 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     };
     let err = validate_config(&cfg).expect_err("exit loss without sidecar should fail");
@@ -1572,7 +1762,6 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     };
     let err = validate_config(&cfg).expect_err("delta_q loss without sidecar should fail");

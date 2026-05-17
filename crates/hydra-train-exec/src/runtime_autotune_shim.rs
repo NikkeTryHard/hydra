@@ -11,7 +11,7 @@ use hydra_selfplay::{
 use hydra_train_algo::distill::{DistillConfig, DistillState};
 use hydra_train_algo::drda::RebaseTracker;
 use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
-use hydra_train_runtime::preflight::LoaderRuntimeConfig;
+use hydra_train_runtime::preflight::{LoaderRuntimeConfig, PreflightConfig};
 use hydra_train_types::orchestrator::{OrchestratorPlanInputs, maintenance_plan_from_inputs};
 use hydra_train_types::phase::PipelineState;
 use std::collections::BTreeMap;
@@ -106,20 +106,27 @@ fn loader_runtime_from_tuple(config: &TrainConfig, tuple: RuntimeTuple) -> Loade
     }
 }
 
-fn loader_runtime_score_seed_matches(config: &TrainConfig, seed: LoaderRuntimeScoreSeed) -> bool {
+fn loader_runtime_score_seed_matches(
+    config: &TrainConfig,
+    preflight: &PreflightConfig,
+    seed: LoaderRuntimeScoreSeed,
+) -> bool {
     seed.train_microbatch_size == current_train_runtime_microbatch(config)
         && seed.tuple == current_runtime_tuple(config)
-        && seed.warmup_steps == runtime_autotune_warmup_steps(config)
-        && seed.measure_steps == runtime_autotune_measure_steps(config)
+        && seed.warmup_steps == runtime_autotune_warmup_steps(preflight)
+        && seed.measure_steps == runtime_autotune_measure_steps(preflight)
         && seed.stats.count > 0
 }
 
 fn seed_runtime_score_cache(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     cache: &mut BTreeMap<RuntimeTuple, RuntimeTupleStats>,
     seed: Option<LoaderRuntimeScoreSeed>,
 ) {
-    let Some(seed) = seed.filter(|seed| loader_runtime_score_seed_matches(config, *seed)) else {
+    let Some(seed) =
+        seed.filter(|seed| loader_runtime_score_seed_matches(config, preflight, *seed))
+    else {
         return;
     };
     cache.entry(seed.tuple).or_insert(seed.stats);
@@ -152,12 +159,12 @@ fn should_count_measured_samples(completed_steps: usize, warmup_steps: usize) ->
     completed_steps > warmup_steps
 }
 
-fn runtime_autotune_warmup_steps(config: &TrainConfig) -> usize {
-    config.preflight.warmup_steps.max(1)
+fn runtime_autotune_warmup_steps(preflight: &PreflightConfig) -> usize {
+    preflight.warmup_steps.max(1)
 }
 
-fn runtime_autotune_measure_steps(config: &TrainConfig) -> usize {
-    config.preflight.measure_steps.max(1)
+fn runtime_autotune_measure_steps(preflight: &PreflightConfig) -> usize {
+    preflight.measure_steps.max(1)
 }
 
 #[cfg(test)]
@@ -245,6 +252,7 @@ fn runtime_probe_model_config() -> HydraModelConfig {
 
 fn measure_train_runtime_throughput_for_backend<B>(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     loader_config: &StreamingLoaderConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
@@ -256,8 +264,8 @@ where
         config,
         model_config: &runtime_probe_model_config(),
         candidate_microbatch: current_train_runtime_microbatch(config),
-        warmup_steps: runtime_autotune_warmup_steps(config),
-        measure_steps: runtime_autotune_measure_steps(config),
+        warmup_steps: runtime_autotune_warmup_steps(preflight),
+        measure_steps: runtime_autotune_measure_steps(preflight),
         loader_config,
         manifest,
         train_device,
@@ -274,6 +282,7 @@ where
 
 pub(crate) fn measure_train_runtime_throughput(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     loader_config: &StreamingLoaderConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
@@ -282,6 +291,7 @@ pub(crate) fn measure_train_runtime_throughput(
         hydra_train_runtime::config::PrecisionMode::Fp32 => {
             measure_train_runtime_throughput_for_backend::<TrainBackend>(
                 config,
+                preflight,
                 loader_config,
                 manifest,
                 train_device,
@@ -290,6 +300,7 @@ pub(crate) fn measure_train_runtime_throughput(
         hydra_train_runtime::config::PrecisionMode::Bf16Autocast => {
             measure_train_runtime_throughput_for_backend::<TrainBackend>(
                 config,
+                preflight,
                 loader_config,
                 manifest,
                 train_device,
@@ -300,21 +311,33 @@ pub(crate) fn measure_train_runtime_throughput(
 
 pub(crate) fn measure_rl_runtime_throughput(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     rl: &RlTrainConfig,
     train_device: &LibTorchDevice,
 ) -> Result<f64, String> {
     match config.precision_mode {
         hydra_train_runtime::config::PrecisionMode::Fp32 => {
-            measure_rl_runtime_throughput_for_backend::<TrainBackend>(config, rl, train_device)
+            measure_rl_runtime_throughput_for_backend::<TrainBackend>(
+                config,
+                preflight,
+                rl,
+                train_device,
+            )
         }
         hydra_train_runtime::config::PrecisionMode::Bf16Autocast => {
-            measure_rl_runtime_throughput_for_backend::<TrainBackend>(config, rl, train_device)
+            measure_rl_runtime_throughput_for_backend::<TrainBackend>(
+                config,
+                preflight,
+                rl,
+                train_device,
+            )
         }
     }
 }
 
 fn measure_rl_runtime_throughput_for_backend<B>(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     rl: &RlTrainConfig,
     train_device: &LibTorchDevice,
 ) -> Result<f64, String>
@@ -340,8 +363,8 @@ where
     let distill_state = DistillState::default();
     let distill_cfg = DistillConfig::fast_distill();
     let mut self_play_coordinator = CooperativeSelfPlayCoordinator::new();
-    let warmup_steps = config.preflight.warmup_steps.max(1);
-    let measure_steps = config.preflight.measure_steps.max(1);
+    let warmup_steps = preflight.warmup_steps.max(1);
+    let measure_steps = preflight.measure_steps.max(1);
     let target_steps = warmup_steps + measure_steps;
     let mut completed_steps = 0usize;
     let mut measure_start = None;
@@ -553,6 +576,7 @@ pub(crate) fn format_runtime_refine_summary(
 
 pub(crate) fn score_runtime_tuple(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     cache: &mut BTreeMap<(usize, usize, usize), RuntimeTupleStats>,
@@ -564,7 +588,8 @@ pub(crate) fn score_runtime_tuple(
         return Ok(stats.mean());
     }
     let loader = runtime_probe_loader_config(config);
-    let score = measure_train_runtime_throughput(config, &loader, manifest, train_device)?;
+    let score =
+        measure_train_runtime_throughput(config, preflight, &loader, manifest, train_device)?;
     cache.insert(
         key,
         RuntimeTupleStats {
@@ -577,13 +602,15 @@ pub(crate) fn score_runtime_tuple(
 
 pub(crate) fn push_runtime_tuple_sample(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     cache: &mut BTreeMap<(usize, usize, usize), RuntimeTupleStats>,
 ) -> Result<f64, String> {
     let key = runtime_tuple_key(config);
     let loader = runtime_probe_loader_config(config);
-    let sample = measure_train_runtime_throughput(config, &loader, manifest, train_device)?;
+    let sample =
+        measure_train_runtime_throughput(config, preflight, &loader, manifest, train_device)?;
     let stats = cache.entry(key).or_default();
     *stats = stats.push(sample);
     Ok(stats.mean())
@@ -688,11 +715,12 @@ fn ranked_loader_runtime_from_score_cache(
 #[cfg(test)]
 pub fn autotune_loader_runtime(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
 ) -> Result<LoaderRuntimeConfig, String> {
     Ok(
-        autotune_ranked_loader_runtime(config, manifest, train_device, 1)?
+        autotune_ranked_loader_runtime(config, preflight, manifest, train_device, 1)?
             .into_iter()
             .next()
             .map(|ranked| ranked.loader)
@@ -703,22 +731,24 @@ pub fn autotune_loader_runtime(
 #[cfg(test)]
 pub(crate) fn autotune_ranked_loader_runtime(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     limit: usize,
 ) -> Result<Vec<RankedLoaderRuntime>, String> {
-    autotune_ranked_loader_runtime_with_seed(config, manifest, train_device, limit, None)
+    autotune_ranked_loader_runtime_with_seed(config, preflight, manifest, train_device, limit, None)
 }
 
 pub fn autotune_ranked_loader_runtime_with_seed(
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     manifest: &DataManifest,
     train_device: &LibTorchDevice,
     limit: usize,
     score_seed: Option<LoaderRuntimeScoreSeed>,
 ) -> Result<Vec<RankedLoaderRuntime>, String> {
-    if config.preflight.loader_runtime_rounds == 0
-        && config.preflight.loader_tuple_extra_samples == 0
+    if preflight.loader_runtime_rounds == 0
+        && preflight.loader_tuple_extra_samples == 0
         && limit <= 1
     {
         let loader = loader_runtime_config(config);
@@ -735,7 +765,7 @@ pub fn autotune_ranked_loader_runtime_with_seed(
     validate_runtime_threads(&tuned)?;
 
     let mut score_cache: BTreeMap<(usize, usize, usize), RuntimeTupleStats> = BTreeMap::new();
-    seed_runtime_score_cache(&tuned, &mut score_cache, score_seed);
+    seed_runtime_score_cache(&tuned, preflight, &mut score_cache, score_seed);
 
     let queue_candidates = autotune_archive_queue_candidates(&tuned);
     let sample_candidates = autotune_buffer_samples_candidates(&tuned);
@@ -785,8 +815,13 @@ pub fn autotune_ranked_loader_runtime_with_seed(
                 ));
                 candidate.clone_from(&tuned);
                 apply_runtime_tuple(&mut candidate, (*queue, *samples, *games));
-                let score =
-                    score_runtime_tuple(&candidate, manifest, train_device, &mut score_cache)?;
+                let score = score_runtime_tuple(
+                    &candidate,
+                    preflight,
+                    manifest,
+                    train_device,
+                    &mut score_cache,
+                )?;
                 coarse_progress.inc(1);
                 coarse_scores.push(((*queue, *samples, *games), score));
                 if score > best_score {
@@ -810,26 +845,25 @@ pub fn autotune_ranked_loader_runtime_with_seed(
     let close_tuples = close_runtime_tuples(
         &coarse_scores,
         best_score,
-        config.preflight.loader_tuple_margin_ratio,
+        preflight.loader_tuple_margin_ratio,
         2,
     );
     if should_refine_close_tuples(&close_tuples) {
         let refine_started = Instant::now();
         println!(
             "{}",
-            format_runtime_refine_summary(
-                &close_tuples,
-                config.preflight.loader_tuple_extra_samples
-            )
+            format_runtime_refine_summary(&close_tuples, preflight.loader_tuple_extra_samples)
         );
         refine_close_runtime_tuples(
             &tuned,
             &close_tuples,
-            config.preflight.loader_tuple_extra_samples,
+            preflight.loader_tuple_extra_samples,
             &mut score_cache,
             &mut best_score,
             &mut best_tuple,
-            |candidate, cache| push_runtime_tuple_sample(candidate, manifest, train_device, cache),
+            |candidate, cache| {
+                push_runtime_tuple_sample(candidate, preflight, manifest, train_device, cache)
+            },
         )?;
         println!(
             "{}",
@@ -843,9 +877,15 @@ pub fn autotune_ranked_loader_runtime_with_seed(
 
     apply_runtime_tuple(&mut tuned, best_tuple);
 
-    for _round in 0..config.preflight.loader_runtime_rounds.max(1) {
+    for _round in 0..preflight.loader_runtime_rounds.max(1) {
         let mut score = |candidate: &TrainConfig| {
-            score_runtime_tuple(candidate, manifest, train_device, &mut score_cache)
+            score_runtime_tuple(
+                candidate,
+                preflight,
+                manifest,
+                train_device,
+                &mut score_cache,
+            )
         };
 
         let queue_candidates = autotune_archive_queue_candidates(&tuned);

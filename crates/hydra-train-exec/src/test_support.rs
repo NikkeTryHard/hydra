@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use hydra_train_runtime::config::{
     BcHyperparamConfig, PrecisionMode, TrainConfig, ValidationGateConfig,
 };
-use hydra_train_runtime::preflight::PreflightConfig;
 
 pub(crate) fn dummy_train_config() -> TrainConfig {
     TrainConfig {
@@ -43,7 +42,6 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
         precision_mode: PrecisionMode::Fp32,
     }
 }

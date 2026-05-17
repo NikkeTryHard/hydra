@@ -13,7 +13,6 @@ use burn::tensor::backend::AutodiffBackend;
 use hydra_train_exec::model::{HydraModelConfig, HydraModelInit};
 use hydra_train_exec::validation_runner::{ValidationContext, ValidationRuntime};
 use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
-use hydra_train_runtime::preflight::PreflightConfig;
 use hydra_train_types::losses::HydraLossConfig;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
@@ -80,7 +79,6 @@ fn dummy_config() -> TrainConfig {
         max_train_steps: Some(20),
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
     }
 }
@@ -143,6 +141,8 @@ fn dummy_runtime_resume_contract() -> RuntimeResumeContract {
         validation_microbatch_size: 4,
         accum_steps: 4,
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
+        requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
+        effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
     }
 }
 

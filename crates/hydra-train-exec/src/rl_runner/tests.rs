@@ -6,7 +6,6 @@ use burn::tensor::Int;
 use hydra_train_runtime::config::{
     PrecisionMode, RlPhaseConfig, SourceFilterConfig, TrainConfig, ValidationGateConfig,
 };
-use hydra_train_runtime::preflight::PreflightConfig;
 use hydra_train_types::losses::HydraTargets;
 use hydra_train_types::rl::RlBatch;
 use serde_json::Value;
@@ -126,7 +125,6 @@ fn dummy_rl_config(output_dir: PathBuf) -> TrainConfig {
         max_train_steps: Some(2),
         max_validation_batches: None,
         max_validation_samples: Some(64),
-        preflight: PreflightConfig::default(),
         precision_mode: PrecisionMode::Fp32,
     }
 }

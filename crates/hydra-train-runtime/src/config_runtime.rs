@@ -1,6 +1,6 @@
 use std::thread::available_parallelism;
 
-use crate::preflight::{LoaderRuntimeConfig, PreflightTuningMode};
+use crate::preflight::{LoaderRuntimeConfig, PreflightConfig, PreflightTuningMode};
 
 use super::config::{RlTrainConfig, TrainConfig};
 
@@ -117,59 +117,6 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
     {
         return Err("validation_microbatch_size must be greater than 0".to_string());
     }
-    match config.preflight.tuning_mode {
-        PreflightTuningMode::Safe => {
-            if !config.preflight.unsafe_candidate_batch_sizes.is_empty() {
-                return Err(
-                    "preflight.unsafe_candidate_batch_sizes requires preflight.tuning_mode = unsafe"
-                        .to_string(),
-                );
-            }
-            if !config.preflight.unsafe_candidate_lr_scales.is_empty() {
-                return Err(
-                    "preflight.unsafe_candidate_lr_scales requires preflight.tuning_mode = unsafe"
-                        .to_string(),
-                );
-            }
-            if !config.preflight.unsafe_candidate_warmup_steps.is_empty() {
-                return Err(
-                    "preflight.unsafe_candidate_warmup_steps requires preflight.tuning_mode = unsafe"
-                        .to_string(),
-                );
-            }
-        }
-        PreflightTuningMode::Unsafe => {
-            if config.preflight.unsafe_candidate_batch_sizes.is_empty() {
-                return Err(
-                    "preflight.unsafe_candidate_batch_sizes must be non-empty when preflight.tuning_mode = unsafe"
-                        .to_string(),
-                );
-            }
-            if config.preflight.unsafe_candidate_batch_sizes.contains(&0) {
-                return Err(
-                    "preflight.unsafe_candidate_batch_sizes entries must be greater than 0"
-                        .to_string(),
-                );
-            }
-            if config
-                .preflight
-                .unsafe_candidate_lr_scales
-                .iter()
-                .any(|candidate| !candidate.is_finite() || *candidate <= 0.0)
-            {
-                return Err(
-                    "preflight.unsafe_candidate_lr_scales entries must be finite and greater than 0"
-                        .to_string(),
-                );
-            }
-            if config.preflight.unsafe_candidate_warmup_steps.contains(&0) {
-                return Err(
-                    "preflight.unsafe_candidate_warmup_steps entries must be greater than 0"
-                        .to_string(),
-                );
-            }
-        }
-    }
     if config.bc.learning_rate <= 0.0 {
         return Err("bc.learning_rate must be greater than 0".to_string());
     }
@@ -241,6 +188,62 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
             "advanced_loss.delta_q requires delta_q_sidecar_path so replay delta_q labels are present"
                 .to_string(),
         );
+    }
+    Ok(())
+}
+
+pub fn validate_preflight_config(preflight: &PreflightConfig) -> Result<(), String> {
+    match preflight.tuning_mode {
+        PreflightTuningMode::Safe => {
+            if !preflight.unsafe_candidate_batch_sizes.is_empty() {
+                return Err(
+                    "preflight.unsafe_candidate_batch_sizes requires preflight.tuning_mode = unsafe"
+                        .to_string(),
+                );
+            }
+            if !preflight.unsafe_candidate_lr_scales.is_empty() {
+                return Err(
+                    "preflight.unsafe_candidate_lr_scales requires preflight.tuning_mode = unsafe"
+                        .to_string(),
+                );
+            }
+            if !preflight.unsafe_candidate_warmup_steps.is_empty() {
+                return Err(
+                    "preflight.unsafe_candidate_warmup_steps requires preflight.tuning_mode = unsafe"
+                        .to_string(),
+                );
+            }
+        }
+        PreflightTuningMode::Unsafe => {
+            if preflight.unsafe_candidate_batch_sizes.is_empty() {
+                return Err(
+                    "preflight.unsafe_candidate_batch_sizes must be non-empty when preflight.tuning_mode = unsafe"
+                        .to_string(),
+                );
+            }
+            if preflight.unsafe_candidate_batch_sizes.contains(&0) {
+                return Err(
+                    "preflight.unsafe_candidate_batch_sizes entries must be greater than 0"
+                        .to_string(),
+                );
+            }
+            if preflight
+                .unsafe_candidate_lr_scales
+                .iter()
+                .any(|candidate| !candidate.is_finite() || *candidate <= 0.0)
+            {
+                return Err(
+                    "preflight.unsafe_candidate_lr_scales entries must be finite and greater than 0"
+                        .to_string(),
+                );
+            }
+            if preflight.unsafe_candidate_warmup_steps.contains(&0) {
+                return Err(
+                    "preflight.unsafe_candidate_warmup_steps entries must be greater than 0"
+                        .to_string(),
+                );
+            }
+        }
     }
     Ok(())
 }

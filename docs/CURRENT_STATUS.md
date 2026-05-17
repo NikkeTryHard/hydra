@@ -30,7 +30,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - `hydra-core` = real first-party runtime/encoder/simulator crate.
 - Live encoder/model contract = `192x34`; old `85x34` view = baseline-prefix only.
 - Fixed runtime action space = 46 actions with two-phase riichi and kan handling.
-- BC training supports **epoch-boundary-only** reuse of matching preflight-selected runtime for selected-runtime tuple (`train_microbatch_size`, `validation_microbatch_size`, derived `accum_steps`); fresh runs stay config-derived, partial-epoch resumes still require identical runtime, loader-runtime stays config-derived.
+- BC training normal runtime is YAML-derived. Preflight may select runtime for operators to copy into YAML (`microbatch_size`, `validation_microbatch_size`, derived `accum_steps`); normal training no longer consumes preflight cache.
 - Stronger public-teacher belief-semantics tranche shipped in current training baseline.
 - Current Hand-EV realism upgrade shipped in live baseline surface.
 - Replay-derived `safety_residual` shipped as narrow supervised lane.
@@ -66,9 +66,9 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 | Runtime encoder / action semantics | shipped baseline | See `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` |
 | Hand-EV baseline surface | shipped baseline | Stronger local evaluator live; representative-world CT-SMC Hand-EV still staged |
 | Belief semantics baseline | shipped baseline | Stronger public-teacher belief tranche in live baseline |
-| BC runtime authority | shipped baseline | Fresh runs config-derived; epoch-boundary resumes may reuse matching preflight-selected runtime for selected-runtime only; partial-epoch resumes still require identical runtime; loader-runtime remains config-derived |
+| BC runtime authority | shipped baseline | Normal training is YAML-derived; operators may copy selected preflight runtime into YAML; normal BC/RL bootstrap no longer consumes preflight cache. |
 | BF16/AMP precision | shipped BC CUDA default; hard-gated RL/DeltaQ | Omitted `precision_mode` on BC CUDA LibTorch resolves to requested `bf16_autocast` / effective `bf16_amp`; explicit `fp32` overrides. CPU omission stays FP32. Loss/backward/optimizer/checkpoints/validation remain FP32. No CUDA graph BF16 claim. |
-| Preflight cache system | shipped baseline | Fingerprint v4 key covers hardware, workload, preflight config, explicit microbatch overrides. Identical-run fast path skips probing on cache hit. BC and RL bootstrap read cache under documented authority rules. |
+| Preflight cache system | shipped baseline | Fingerprint v6 key covers hardware, workload, CLI preflight config signature, explicit microbatch overrides. Identical-run fast path skips repeated preflight probes on cache hit. Normal BC/RL bootstrap no longer consumes preflight cache. |
 | NVTX profiling | shipped baseline | Orchestration-level fully instrumented (epoch, step, validation, checkpoint, logging, self-play, stage-2 benchmark). BC microbatch sub-stages (collation, forward, loss, backward, optimizer_step) instrumented. Library internals not yet instrumented. Gated by `HYDRA_NVTX` env var via dlopen. |
 | CUDA BC shard throughput | shipped baseline (transport/metrics); probe-only (CUDA graph replay) | `cuda-graph` feature enables pinned staging/preallocated tensors for shard train/probe/validation. CPU f32 policy-target path avoids lazy `IntTensor::one_hot`; metric accumulation avoids discarded progress finalization and redundant agreement kernels. Child graph probe proves compute-only capture/replay parity, but production replay is blocked by Burn optimizer gradient extraction. |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |

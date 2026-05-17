@@ -44,9 +44,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 #[cfg(not(test))]
 use super::system_metrics::read_gpu_telemetry;
-use hydra_train_runtime::config::TrainConfig;
 #[cfg(not(test))]
 use hydra_train_runtime::config::read_config;
+use hydra_train_runtime::preflight::PreflightConfig;
 #[cfg(not(test))]
 use hydra_train_runtime::preflight::ProbeKind;
 use hydra_train_runtime::preflight::{ProbeResult, ProbeStatus};
@@ -679,21 +679,16 @@ pub fn mem_total_bytes() -> Option<u64> {
     Some(kb.saturating_mul(1024))
 }
 
-pub fn rl_probe_required_free_bytes(config: &TrainConfig) -> Option<u64> {
-    if config.preflight.rl_probe_min_free_memory_bytes == 0
-        && config.preflight.rl_probe_memory_headroom_ratio <= 0.0
+pub fn rl_probe_required_free_bytes(preflight: &PreflightConfig) -> Option<u64> {
+    if preflight.rl_probe_min_free_memory_bytes == 0
+        && preflight.rl_probe_memory_headroom_ratio <= 0.0
     {
         return None;
     }
     let total = mem_total_bytes()?;
     let ratio_floor =
-        ((total as f64) * config.preflight.rl_probe_memory_headroom_ratio.max(0.0)).ceil() as u64;
-    Some(
-        config
-            .preflight
-            .rl_probe_min_free_memory_bytes
-            .max(ratio_floor),
-    )
+        ((total as f64) * preflight.rl_probe_memory_headroom_ratio.max(0.0)).ceil() as u64;
+    Some(preflight.rl_probe_min_free_memory_bytes.max(ratio_floor))
 }
 
 pub fn execute_probe_request(

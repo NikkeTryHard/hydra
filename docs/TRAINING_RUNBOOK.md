@@ -25,7 +25,7 @@ Modes:
 | Mode | Invoke | Use |
 |---|---|---|
 | normal train | `train config.yaml` | BC/RL per YAML |
-| preflight | `train config.yaml --preflight` | measure/select runtime tuple, cache result |
+| preflight | `train config.yaml --preflight --preflight-mode safe` | measure/select runtime tuple, cache repeated preflight result |
 | probe-only | `train config.yaml --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> ...` | bounded candidate check, no full train |
 | DeltaQ promotion | `train config.yaml --delta-q-promotion --delta-q-baseline-checkpoint <path>` | candidate-vs-baseline gated eval |
 
@@ -58,7 +58,6 @@ Choose:
 | `bc` | BC optimizer knobs |
 | `rl` | RL/self-play enable + phase knobs |
 | `advanced_loss` | optional ExIt/safety/DeltaQ supervised weights |
-| `preflight` | runtime autotune knobs |
 | `exit_sidecar_path` | optional ExIt sidecar index |
 | `delta_q_sidecar_path` | optional DeltaQ sidecar index |
 | `bc_shards_manifest_path` | prebuilt BC shard manifest input |
@@ -130,46 +129,64 @@ Status: BC path is stable baseline. `bf16_autocast` runs BC CUDA AMP forward as 
 
 Preflight answers: what runtime tuple can this machine/workload sustain under selected tuning safety?
 
-Tuning modes:
+YAML `preflight:` is forbidden. `TrainConfig` rejects it. Preflight tuning is CLI-owned.
 
-```yaml
-preflight:
-  tuning_mode: safe
+Default safe preflight:
+
+```bash
+train config.yaml --preflight --preflight-mode safe
 ```
 
-Explicit `--preflight` requires `preflight.tuning_mode: safe` or `unsafe`; it does not use hidden mode. Normal config deserialization defaults to safe only outside explicit preflight. `safe` tunes only math-preserving runtime knobs: train microbatch, validation microbatch, derived accumulation for unchanged `batch_size`, loader tuple (`num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`), and probe/benchmark search effort. matching cache can apply safe selected-runtime and loader-runtime on fresh start or epoch-boundary resume. It must not change logical optimizer batch, LR/schedule, precision, loss, model, data split, augmentation, sample set, labels, or targets.
+`--preflight-mode` is mandatory with `--preflight`.
 
-`unsafe` is explicit (`preflight.tuning_mode: unsafe`) and may tune math-affecting performance knobs. Current runtime fields cover logical BC `batch_size` from `preflight.unsafe_candidate_batch_sizes`, optional `bc.learning_rate`/`bc.min_learning_rate` candidates from `preflight.unsafe_candidate_lr_scales`, and optional `bc.warmup_steps` candidates from `preflight.unsafe_candidate_warmup_steps`. LR candidates are multiplicative scales of current LR/min LR; `lr_auto_scaled=false` in reports means selected values are explicit candidates, not silent automatic scaling. Unsafe cache application is fresh-start only for math knobs. Resume keeps checkpoint runtime/optimizer schedule authoritative: cached unsafe math is ignored, and incompatible checkpoint runtime is refused by resume contract.
+Safe mode tunes only math-preserving runtime knobs: train microbatch, validation microbatch, derived accumulation for unchanged `batch_size`, loader tuple (`num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`), and probe/benchmark search effort. It must not change logical optimizer batch, LR/schedule, precision, loss, model, data split, augmentation, sample set, labels, or targets.
+
+Unsafe mode is explicit and may tune math-affecting performance knobs:
+
+```bash
+train config.yaml --preflight --preflight-mode unsafe \
+  --pf-unsafe-batch-size 1024,2048,4096 \
+  --pf-unsafe-lr-scale 0.5,1.0,1.5 \
+  --pf-unsafe-warmup-steps 500-2000+500
+```
+
+Unsafe flags hard-error unless `--preflight-mode unsafe`. Reports include selected values and `lr_auto_scaled=false`; values are explicit candidates, not silent automatic scaling.
+
+Operator contract:
+- normal `train config.yaml` does not read preflight tuning config.
+- normal training does not apply preflight cache.
+- YAML runtime fields are authority: `microbatch_size`, `validation_microbatch_size`, `num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`.
+- unsafe math authority is YAML too: `batch_size`, `bc.learning_rate`, `bc.min_learning_rate`, `bc.warmup_steps`.
+- after preflight, copy selected runtime values into YAML before training if desired.
 
 Selected-runtime tuple:
-- `train_microbatch_size`
-- `validation_microbatch_size`
+- `train_microbatch_size` -> copy to `microbatch_size`
+- `validation_microbatch_size` -> copy to `validation_microbatch_size`
 - derived `accum_steps`
-- unsafe-only `unsafe_selected_batch_size`
-- unsafe-only selected LR/min LR/warmup fields when those candidates were chosen
+- unsafe-only `unsafe_selected_batch_size` -> copy to `batch_size` only if intentionally accepting unsafe math
+- unsafe-only selected LR/min LR/warmup fields -> copy to `bc.learning_rate`, `bc.min_learning_rate`, `bc.warmup_steps` only if intentionally accepting unsafe math
 
-Loader-runtime tuple: data/replay loader knobs `num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`. Safe-applied when cache identity matches and run is fresh-start or epoch-boundary resume.
-Authority rules:
-- Fresh BC: selected-runtime and loader-runtime config-derived unless matching preflight cache applies them; unsafe cache may also apply selected logical batch/LR/min LR/warmup.
-- Epoch-boundary resume: may reuse matching safe selected-runtime and loader-runtime when authority + cache identity match; unsafe math changes are skipped.
-- Partial-epoch resume: preflight cache is ignored; runtime must match prior compatible resume contract. Stricter by design.
-- Matching BC preflight cache does not override checkpoint runtime contract.
+Loader-runtime tuple: data/replay loader knobs `num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`; copy into YAML when accepting result.
 
-Cache key covers hardware, workload, preflight config signature, explicit microbatch overrides. Manifest-cache scan reuse also requires replay-selection contract match: `train_fraction`, `source_filters`. Cache key deliberately excludes knobs not defining selected-runtime contract: `data_dir`, `seed`, `num_threads`, `buffer_games`, `buffer_samples`. Meaning: same runtime-selection problem, not byte-identical YAML.
+Cache key covers hardware, workload, CLI preflight config signature, explicit microbatch overrides. Manifest-cache scan reuse also requires replay-selection contract match: `train_fraction`, `source_filters`. Cache key deliberately excludes knobs not defining selected-runtime contract: `data_dir`, `seed`, `num_threads`, `buffer_games`, `buffer_samples`. Meaning: same runtime-selection problem, not byte-identical YAML.
 
 Identical-run fast path:
-- `run_preflight` / `run_rl_preflight` can hit v4 cache and skip probes.
+- `run_preflight` / `run_rl_preflight` can hit v6 cache and skip probes.
 - Probe result vectors empty on that path because no probe ran.
+- Cache is preflight-identical-run only; normal BC/RL bootstrap does not consume it.
 
-Preflight knobs worth knowing:
-- safety label: `tuning_mode` (`safe` default, `unsafe` explicit math-affecting mode)
-- candidate ladder: `candidate_microbatches`, `min_microbatch_size`, `allow_override_explicit_microbatch`
-- probe stability: `warmup_steps`, `measure_steps`, `required_successes`, `measure_noise_tolerance_ratio`
-- loader search: `loader_runtime_rounds`, `loader_tuple_margin_ratio`, `loader_tuple_extra_samples`
-- stage-2: `real_benchmark_enabled`, candidate caps, `real_benchmark_max_finalists`
-- refinement: `local_refinement_enabled`, `local_refinement_max_candidates`, `local_refinement_min_gap`, `search_coordinate_rounds`, `search_top_k`
+Preflight CLI knobs worth knowing:
+- safety label: `--preflight-mode <safe|unsafe>`
+- profile: `--pf-profile <default|fast-repeated-run>`
+- candidate ladder: `--pf-candidate-microbatch`, `--pf-min-microbatch`, `--pf-allow-explicit-microbatch-override`
+- probe stability: `--pf-warmup-steps`, `--pf-measure-steps`, `--pf-required-successes`, `--pf-noise-tolerance`
+- loader search: `--pf-loader-rounds`, `--pf-loader-tuple-margin`, `--pf-loader-extra-samples`
+- stage-2: `--pf-real-benchmark`, `--pf-real-benchmark-*`
+- refinement: `--pf-local-refinement`, `--pf-local-refinement-*`, `--pf-search-coordinate-rounds`, `--pf-search-top-k`
+- unsafe candidates: `--pf-unsafe-batch-size`, `--pf-unsafe-lr-scale`, `--pf-unsafe-warmup-steps`
 
-- unsafe candidates: `unsafe_candidate_batch_sizes`, `unsafe_candidate_lr_scales`, `unsafe_candidate_warmup_steps` (explicit unsafe-only logical batch/LR schedule ladders)
+Internal artifact/cache field names keep serialized names (`tuning_mode`, `candidate_microbatches`, `unsafe_candidate_batch_sizes`, etc.). Do not rename when reading reports.
+
 Stage-2 benchmark may reuse bounded validation cache only when validation sample limit finite and finalists share loader-runtime + resolved validation limit. Materialization cost still counted. Shard-backed validation does not use this in-memory cache path.
 
 Shard-backed preflight changes behavior:
@@ -178,22 +195,21 @@ Shard-backed preflight changes behavior:
 - stage-2 finalist benchmark skipped even if enabled.
 - Not comparable to loose-replay preflight for replay-scan throughput.
 
-Fast repeated shard profile only when hardware, requested/effective precision, shard manifest, prior runtime known-good:
+Fast repeated shard profile only when hardware, requested/effective precision, shard manifest, prior runtime known-good. YAML keeps workload/runtime inputs only:
 
 ```yaml
 bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json
 microbatch_size: 256
 validation_microbatch_size: 128
-preflight:
-  fast_repeated_run_profile: true
-  fast_repeated_run_candidate_window: 1
-  required_successes: 1
-  warmup_steps: 1
-  measure_steps: 1
-  loader_runtime_rounds: 0
-  loader_tuple_extra_samples: 0
-  real_benchmark_enabled: false
 ```
+
+CLI owns fast preflight tuning:
+
+```bash
+train config.yaml --preflight --preflight-mode safe --pf-profile fast-repeated-run
+```
+
+`fast-repeated-run` profile sets one-candidate fast probe (`fast_repeated_run_profile=true`, window `1`, successes/warmup/measure `1`, loader rounds/extra samples `0`, real benchmark off). All other preflight fields stay default unless explicit `--pf-*` flags override.
 
 New hardware, new shard artifact, changed requested/effective precision, or odd throughput: use full default preflight.
 
@@ -202,8 +218,7 @@ Common preflight traps:
 - cache hit can skip probes; absence of probe rows not failure.
 - precision change invalidates assumptions.
 - advisory `selected_*_runtime_slower_than_best_probe_candidate` means optimization gap, not wrong result.
-- unsafe mode can change logical `batch_size` and selected LR/min LR/warmup when candidate fields are configured; reports include selected values and `lr_auto_scaled=false`. Apply cached unsafe math only on fresh starts.
-
+- unsafe mode can change logical `batch_size` and selected LR/min LR/warmup when candidate fields are configured; apply only by copying reported values into YAML intentionally.
 ## BC shards
 
 BC shards = production steady-state input for replay-driven BC. Build once, consume many.
@@ -660,8 +675,8 @@ New BC steady-state run:
 3. Build BC shards with matching sidecar provenance.
 4. Inspect manifest split/sample totals and sidecar provenance.
 5. Point config at `bc_shards_manifest_path`.
-6. Run `train config.yaml --preflight` on new/changed hardware/workload.
-7. Train with same manifest/config.
+6. Run `train config.yaml --preflight --preflight-mode safe` on new/changed hardware/workload.
+7. Copy selected runtime into YAML before training if desired; then train with same manifest/config.
 8. Treat validation gates as best-checkpoint gate, not latest-checkpoint blocker.
 
 Debug/audit run:

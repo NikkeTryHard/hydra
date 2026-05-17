@@ -75,7 +75,6 @@ fn dummy_config() -> hydra_train_runtime::config::TrainConfig {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: Some(1),
-        preflight: hydra_train_runtime::preflight::PreflightConfig::default(),
     }
 }
 

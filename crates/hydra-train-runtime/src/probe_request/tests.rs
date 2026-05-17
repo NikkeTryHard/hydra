@@ -31,10 +31,8 @@ fn probe_request_from_cli_uses_probe_overrides() {
 }
 
 #[test]
-fn probe_request_from_cli_falls_back_to_preflight_defaults() {
-    let mut config = dummy_config();
-    config.preflight.warmup_steps = 11;
-    config.preflight.measure_steps = 13;
+fn probe_request_from_cli_falls_back_to_default_preflight_config() {
+    let config = dummy_config();
     let request = probe_request_from_cli(
         &config,
         Some(ProbeCliRequest {
@@ -46,8 +44,14 @@ fn probe_request_from_cli_falls_back_to_preflight_defaults() {
     )
     .expect("probe request should parse")
     .expect("probe request should be present");
-    assert_eq!(request.warmup_steps, 11);
-    assert_eq!(request.measure_steps, 13);
+    assert_eq!(
+        request.warmup_steps,
+        crate::preflight::default_warmup_steps()
+    );
+    assert_eq!(
+        request.measure_steps,
+        crate::preflight::default_measure_steps()
+    );
 }
 
 #[test]

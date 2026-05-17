@@ -528,6 +528,8 @@ fn shard_train_step(manifest_path: &std::path::Path, use_amp: bool) -> (f64, boo
         &mut head_controller,
         &mut model_slot,
         &mut optimizer,
+        #[cfg(feature = "cuda-graph")]
+        None,
     )
     .expect("phase4 shard train step should pass");
     let model = model_slot

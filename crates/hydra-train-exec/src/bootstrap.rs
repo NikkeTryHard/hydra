@@ -9,7 +9,6 @@ use burn::optim::adaptor::OptimizerAdaptor;
 use burn::prelude::Module;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder};
 use burn::tensor::backend::{AutodiffBackend, Backend};
-use colored::Colorize;
 use tboard::EventWriter;
 
 use crate::bc_runtime::BcExitConfig;
@@ -44,11 +43,10 @@ use hydra_train_types::phase::PipelineState;
 
 use crate::advisory::MicrobatchExplicitness;
 use crate::artifacts::{
-    BcArtifactPaths, JsonlAppender, ManifestCacheRequest, RlArtifactPaths, RlPreflightPaths,
+    BcArtifactPaths, JsonlAppender, ManifestCacheRequest, RlArtifactPaths,
     load_or_scan_manifest_cache, open_rl_step_log_appender, open_step_log_appender,
     open_training_log_appender,
 };
-use crate::presentation::timestamped;
 use crate::resume::{
     ResumeContext, RlResumeContext, RlRuntimeResumeContract, RuntimeResumeContract,
     rl_runtime_resume_contract, runtime_resume_contract, validate_resume_runtime_compatibility,
@@ -75,20 +73,6 @@ fn validate_bc_shard_manifest_for_config(
             exit_loss_weight: advanced_loss.and_then(|loss| loss.exit),
             delta_q_loss_weight: advanced_loss.and_then(|loss| loss.delta_q),
         },
-    )
-}
-
-fn apply_cached_bc_runtime_if_matching(
-    config: &mut TrainConfig,
-    resume: &ResumeContext,
-    artifacts: &BcArtifactPaths,
-    model_config: &HydraModelConfig,
-) -> Result<(), String> {
-    crate::preflight_runtime::apply_cached_bc_runtime_if_matching(
-        config,
-        resume,
-        artifacts,
-        model_config,
     )
 }
 
@@ -226,7 +210,7 @@ pub struct RlTrainingRuntime {
 /// Initializes BC training bootstrap/runtime with an explicit model config.
 pub fn initialize_training_bootstrap_for_backend_with_model_config<B>(
     _config_path: &Path,
-    mut config: TrainConfig,
+    config: TrainConfig,
     model_config: HydraModelConfig,
 ) -> Result<(TrainingBootstrap<B>, TrainingRuntime<B>, TrainingReaders), String>
 where
@@ -240,7 +224,6 @@ where
     let session_start_global_step = resume.session_start_global_step;
     let artifacts = BcArtifactPaths::new(&config.output_dir, session_start_global_step);
     artifacts.create_root_dir()?;
-    apply_cached_bc_runtime_if_matching(&mut config, &resume, &artifacts, &model_config)?;
     configure_threads(config.num_threads)?;
 
     let exit_sidecar = if let Some(path) = config.exit_sidecar_path.as_ref() {
@@ -537,7 +520,7 @@ pub fn initialize_training_bootstrap(
 pub fn initialize_rl_training_bootstrap(
     _config_path: &Path,
     config: TrainConfig,
-    mut rl_config: RlTrainConfig,
+    rl_config: RlTrainConfig,
 ) -> Result<(RlTrainingBootstrap, RlTrainingRuntime), String> {
     validate_config(&config)?;
     configure_threads(config.num_threads)?;
@@ -549,47 +532,6 @@ pub fn initialize_rl_training_bootstrap(
 
     let device_name = device_label(&config.device);
     let model_config = HydraModelConfig::learner();
-
-    if let Some(cached) =
-        crate::preflight_runtime::matching_rl_preflight_cache(&config, &model_config, &artifacts)?
-    {
-        let tuned_games = cached.runtime.loader.buffer_games;
-        let tuned_microbatch = cached.runtime.selected.train_microbatch_size;
-        if tuned_games != rl_config.games_per_batch {
-            println!(
-                "{}",
-                timestamped(format!(
-                    "{} games_per_batch={} -> {} (from preflight cache)",
-                    "RL preflight override:".bold().cyan(),
-                    rl_config.games_per_batch,
-                    tuned_games,
-                ))
-            );
-            rl_config.games_per_batch = tuned_games;
-        }
-        if rl_config.microbatch_size != Some(tuned_microbatch) {
-            println!(
-                "{}",
-                timestamped(format!(
-                    "{} rl.microbatch_size={:?} -> {} (from preflight cache)",
-                    "RL preflight override:".bold().cyan(),
-                    rl_config.microbatch_size,
-                    tuned_microbatch,
-                ))
-            );
-            rl_config.microbatch_size = Some(tuned_microbatch);
-        }
-    } else if RlPreflightPaths::new(&artifacts).cache_path.exists() {
-        println!(
-            "{}",
-            timestamped(format!(
-                "{} cache fingerprint mismatch, using config games_per_batch={} rl.microbatch_size={:?}",
-                "RL preflight skip:".bold().yellow(),
-                rl_config.games_per_batch,
-                rl_config.microbatch_size,
-            ))
-        );
-    }
 
     let current_runtime = rl_runtime_resume_contract(&rl_config);
     if let Some(state) = resume.state.as_ref() {

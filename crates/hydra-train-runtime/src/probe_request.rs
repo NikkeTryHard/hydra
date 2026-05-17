@@ -1,11 +1,10 @@
 use std::path::PathBuf;
 
-use crate::preflight::ProbeKind;
-
 use crate::config::{
     ProbeBatchChildRequest, ProbeChildRequest, ProbeCliRequest, ProbeSingleChildRequest,
     TrainConfig,
 };
+use crate::preflight::{PreflightConfig, ProbeKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeRequest {
@@ -24,16 +23,17 @@ pub struct ProbeBatchRequest {
 pub type ProbeManifestCachePaths = (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>);
 
 pub fn probe_request_from_cli(
-    config: &TrainConfig,
+    _config: &TrainConfig,
     probe: Option<ProbeCliRequest>,
 ) -> Result<Option<ProbeRequest>, String> {
     let Some(probe) = probe else {
         return Ok(None);
     };
-    let warmup_steps = probe.warmup_steps.unwrap_or(config.preflight.warmup_steps);
+    let default_preflight = PreflightConfig::default();
+    let warmup_steps = probe.warmup_steps.unwrap_or(default_preflight.warmup_steps);
     let measure_steps = probe
         .measure_steps
-        .unwrap_or(config.preflight.measure_steps);
+        .unwrap_or(default_preflight.measure_steps);
     if probe.candidate_microbatch == 0 {
         return Err("--probe-candidate-microbatch must be greater than 0".to_string());
     }

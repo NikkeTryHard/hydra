@@ -755,11 +755,5 @@ pub fn cuda_graph_replay_label() -> &'static str {
     "production_off_probe_only"
 }
 
-/// Formats the explicit-preflight recommendation.
-pub fn explicit_preflight_recommendation() -> String {
-    "using config runtime except epoch-boundary selected-runtime reuse; run train <config.yaml> --preflight to tune this machine before training"
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests;

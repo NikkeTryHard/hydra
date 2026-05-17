@@ -40,7 +40,6 @@ fn dummy_train_config() -> TrainConfig {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: Some(1),
-        preflight: Default::default(),
     }
 }
 

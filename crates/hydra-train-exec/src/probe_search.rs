@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
-use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus};
+use hydra_train_runtime::preflight::{PreflightConfig, ProbeKind, ProbeResult, ProbeStatus};
 
 use hydra_train_runtime::config::TrainConfig;
 use hydra_train_runtime::preflight::{format_probe_attempt_message, format_probe_result_summary};
@@ -54,9 +54,8 @@ fn probe_child_policy(results: &[ProbeResult], candidate: usize) -> ProbeChildPo
     }
 }
 
-fn reuse_window_size(config: &TrainConfig) -> usize {
-    config
-        .preflight
+fn reuse_window_size(preflight: &PreflightConfig) -> usize {
+    preflight
         .fast_repeated_run_candidate_window
         .clamp(MIN_REUSE_WINDOW, MAX_REUSE_WINDOW)
 }
@@ -65,14 +64,14 @@ fn confirm_winner_in_fresh_child<F>(
     config_path: &Path,
     result_path_for: &mut F,
     kind: ProbeKind,
-    config: &TrainConfig,
+    preflight: &PreflightConfig,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
 ) -> Result<(), String>
 where
     F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
 {
-    if reuse_window_size(config) <= 1 || cfg!(test) {
+    if reuse_window_size(preflight) <= 1 || cfg!(test) {
         return Ok(());
     }
     let Some(summary) = best_probe_summary(results) else {
@@ -82,8 +81,8 @@ where
     let request = ProbeRequest {
         kind,
         candidate_microbatch: candidate,
-        warmup_steps: config.preflight.warmup_steps,
-        measure_steps: config.preflight.measure_steps,
+        warmup_steps: preflight.warmup_steps,
+        measure_steps: preflight.measure_steps,
     };
     let result_path = result_path_for(kind, candidate, REUSE_CONFIRMATION_ATTEMPT);
     println!(
@@ -178,9 +177,9 @@ pub struct ProbeSearchPlan {
     pub max_planned_attempts: usize,
 }
 
-pub fn probe_search_plan(candidate_count: usize, config: &TrainConfig) -> ProbeSearchPlan {
-    let required_successes = config.preflight.required_successes.max(1);
-    let max_growth_candidates = config.preflight.validation_growth_max_steps.max(1);
+pub fn probe_search_plan(candidate_count: usize, preflight: &PreflightConfig) -> ProbeSearchPlan {
+    let required_successes = preflight.required_successes.max(1);
+    let max_growth_candidates = preflight.validation_growth_max_steps.max(1);
     let initial_candidates = candidate_count;
     ProbeSearchPlan {
         initial_candidates,
@@ -202,23 +201,20 @@ pub struct ProbeGrowthDecision<'a> {
     pub tolerance: f64,
 }
 
-pub fn adaptive_probe_steps(config: &TrainConfig, seconds_per_step: f64) -> (usize, usize) {
+pub fn adaptive_probe_steps(preflight: &PreflightConfig, seconds_per_step: f64) -> (usize, usize) {
     let bounded_seconds = seconds_per_step.max(0.001);
-    let warmup_steps = ((config.preflight.target_warmup_seconds / bounded_seconds).ceil() as usize)
+    let warmup_steps = ((preflight.target_warmup_seconds / bounded_seconds).ceil() as usize).clamp(
+        preflight.warmup_steps.max(1),
+        preflight
+            .max_adaptive_warmup_steps
+            .max(preflight.warmup_steps.max(1)),
+    );
+    let measure_steps = ((preflight.target_measure_seconds / bounded_seconds).ceil() as usize)
         .clamp(
-            config.preflight.warmup_steps.max(1),
-            config
-                .preflight
-                .max_adaptive_warmup_steps
-                .max(config.preflight.warmup_steps.max(1)),
-        );
-    let measure_steps =
-        ((config.preflight.target_measure_seconds / bounded_seconds).ceil() as usize).clamp(
-            config.preflight.measure_steps.max(1),
-            config
-                .preflight
+            preflight.measure_steps.max(1),
+            preflight
                 .max_adaptive_measure_steps
-                .max(config.preflight.measure_steps.max(1)),
+                .max(preflight.measure_steps.max(1)),
         );
     (warmup_steps, measure_steps)
 }
@@ -231,6 +227,7 @@ pub fn maybe_expand_probe_candidates(
     candidates: &mut Vec<usize>,
     decision: ProbeGrowthDecision<'_>,
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     growth_state: &mut ProbeGrowthState,
 ) -> Option<ProbeSearchStopReason> {
     let ProbeGrowthDecision {
@@ -246,7 +243,7 @@ pub fn maybe_expand_probe_candidates(
         let ceiling = dynamic_probe_ceiling(config, kind, candidate);
         let next_candidate = candidate.saturating_mul(2);
         if next_candidate > candidate && next_candidate <= ceiling {
-            if growth_state.steps >= config.preflight.validation_growth_max_steps.max(1) {
+            if growth_state.steps >= preflight.validation_growth_max_steps.max(1) {
                 return Some(ProbeSearchStopReason::ValidationGrowthBudget);
             }
             let reference_score = growth_state.prior_best_score.unwrap_or_else(|| {
@@ -262,7 +259,7 @@ pub fn maybe_expand_probe_candidates(
             } else {
                 growth_state.patience += 1;
                 growth_state.prior_best_score = Some(reference_score.max(candidate_score));
-                if growth_state.patience >= config.preflight.validation_growth_patience.max(1) {
+                if growth_state.patience >= preflight.validation_growth_patience.max(1) {
                     return Some(ProbeSearchStopReason::ValidationGrowthPatience);
                 }
             }
@@ -476,7 +473,8 @@ pub fn rerun_probe_finalists<F>(
     config_path: &Path,
     mut result_path_for: F,
     kind: ProbeKind,
-    config: &TrainConfig,
+    _config: &TrainConfig,
+    preflight: &PreflightConfig,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
 ) -> Result<(), String>
@@ -485,14 +483,14 @@ where
 {
     let finalists = super::probe_ladder::close_probe_finalists(
         results,
-        config.preflight.finalist_margin_ratio,
-        config.preflight.finalist_max_candidates,
+        preflight.finalist_margin_ratio,
+        preflight.finalist_max_candidates,
     );
     if finalists.len() < 2 {
         return Ok(());
     }
-    let extra_attempts = config.preflight.finalist_extra_successes.max(1);
-    let extra_measure_steps = config.preflight.finalist_extra_measure_steps.max(1);
+    let extra_attempts = preflight.finalist_extra_successes.max(1);
+    let extra_measure_steps = preflight.finalist_extra_measure_steps.max(1);
     println!(
         "{}",
         super::presentation::format_preflight_summary_line(
@@ -511,8 +509,8 @@ where
     );
     for summary in finalists {
         let seconds_per_step = summary.average_elapsed_seconds.unwrap_or(0.0)
-            / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64;
-        let (warmup_steps, measure_steps) = adaptive_probe_steps(config, seconds_per_step);
+            / (preflight.warmup_steps + preflight.measure_steps).max(1) as f64;
+        let (warmup_steps, measure_steps) = adaptive_probe_steps(preflight, seconds_per_step);
         rerun_candidate_attempts(
             config_path,
             &mut result_path_for,
@@ -535,13 +533,14 @@ pub fn refine_probe_winner_locally<F>(
     mut result_path_for: F,
     kind: ProbeKind,
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
 ) -> Result<(), String>
 where
     F: FnMut(ProbeKind, usize, usize) -> std::path::PathBuf,
 {
-    if !config.preflight.local_refinement_enabled {
+    if !preflight.local_refinement_enabled {
         return Ok(());
     }
     let summaries = summarize_probe_results(results);
@@ -554,8 +553,8 @@ where
     );
     let candidates = super::probe_ladder::local_refinement_candidates(
         &summaries,
-        config.preflight.local_refinement_min_gap,
-        config.preflight.local_refinement_max_candidates,
+        preflight.local_refinement_min_gap,
+        preflight.local_refinement_max_candidates,
         ceiling,
     );
     if candidates.is_empty() {
@@ -581,7 +580,7 @@ where
                 "kind={} candidates={:?} extra_measure_steps={}",
                 probe_kind_name(kind),
                 candidates,
-                config.preflight.local_refinement_extra_measure_steps.max(1),
+                preflight.local_refinement_extra_measure_steps.max(1),
             )
         )
     );
@@ -591,14 +590,12 @@ where
             .min_by_key(|(summary_candidate, _)| summary_candidate.abs_diff(candidate))
             .map(|(_, elapsed)| *elapsed)
             .map(|elapsed| {
-                elapsed
-                    / (config.preflight.warmup_steps + config.preflight.measure_steps).max(1) as f64
+                elapsed / (preflight.warmup_steps + preflight.measure_steps).max(1) as f64
             })
             .unwrap_or_else(|| {
-                config.preflight.target_measure_seconds
-                    / config.preflight.measure_steps.max(1) as f64
+                preflight.target_measure_seconds / preflight.measure_steps.max(1) as f64
             });
-        let (warmup_steps, measure_steps) = adaptive_probe_steps(config, seconds_per_step);
+        let (warmup_steps, measure_steps) = adaptive_probe_steps(preflight, seconds_per_step);
         rerun_candidate_attempts(
             config_path,
             &mut result_path_for,
@@ -608,7 +605,7 @@ where
                 attempts: 1,
                 warmup_steps,
                 measure_steps: measure_steps
-                    + config.preflight.local_refinement_extra_measure_steps.max(1),
+                    + preflight.local_refinement_extra_measure_steps.max(1),
             },
             results,
             progress,
@@ -622,6 +619,7 @@ pub fn refine_top_k_probe_candidates_locally<F>(
     probe_result_path: F,
     kind: ProbeKind,
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
 ) -> Result<(), String>
@@ -640,10 +638,10 @@ where
     );
     let candidates = top_k_refinement_candidates(
         &summaries,
-        config.preflight.finalist_margin_ratio,
-        config.preflight.search_top_k,
-        config.preflight.local_refinement_min_gap,
-        config.preflight.local_refinement_max_candidates,
+        preflight.finalist_margin_ratio,
+        preflight.search_top_k,
+        preflight.local_refinement_min_gap,
+        preflight.local_refinement_max_candidates,
         ceiling,
     );
     if candidates.is_empty() {
@@ -654,7 +652,7 @@ where
         .filter(|summary| summary.status == ProbeStatus::Success)
         .map(|summary| summary.candidate_microbatch)
         .collect::<BTreeSet<_>>();
-    for _round in 0..config.preflight.search_coordinate_rounds.max(1) {
+    for _round in 0..preflight.search_coordinate_rounds.max(1) {
         for candidate in &candidates {
             if successful_candidates.contains(candidate) {
                 continue;
@@ -662,9 +660,9 @@ where
             let request = ProbeRequest {
                 kind,
                 candidate_microbatch: *candidate,
-                warmup_steps: config.preflight.warmup_steps,
-                measure_steps: config.preflight.measure_steps.max(1)
-                    + config.preflight.local_refinement_extra_measure_steps.max(1),
+                warmup_steps: preflight.warmup_steps,
+                measure_steps: preflight.measure_steps.max(1)
+                    + preflight.local_refinement_extra_measure_steps.max(1),
             };
             progress.set_message(super::presentation::format_probe_progress_line(&format!(
                 "probe_progress kind={} candidate_mb={} phase=starting warmup_steps={} measure_steps={}",
@@ -688,11 +686,16 @@ where
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "probe finalization carries child path factory plus runtime search context"
+)]
 pub fn finalize_probe_search<F>(
     config_path: &Path,
     result_path_for: F,
     kind: ProbeKind,
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     results: &mut Vec<ProbeResult>,
     progress: &indicatif::ProgressBar,
     missing_error: String,
@@ -711,6 +714,7 @@ where
         result_path_for,
         kind,
         config,
+        preflight,
         results,
         progress,
     )?;
@@ -719,6 +723,7 @@ where
         result_path_for,
         kind,
         config,
+        preflight,
         results,
         progress,
     )?;
@@ -727,6 +732,7 @@ where
         result_path_for,
         kind,
         config,
+        preflight,
         results,
         progress,
     )?;
@@ -739,6 +745,7 @@ where
 pub fn probe_candidate_ladder(
     config_path: &Path,
     config: &TrainConfig,
+    preflight: &PreflightConfig,
     artifacts: &super::artifacts::BcArtifactPaths,
     kind: ProbeKind,
     candidates: &[usize],
@@ -750,7 +757,7 @@ pub fn probe_candidate_ladder(
         ProbeKind::RlMicrobatch => config.rl.as_ref().and_then(|rl| rl.microbatch_size),
     };
     let use_explicit_only =
-        explicit_candidate.is_some() && !config.preflight.allow_override_explicit_microbatch;
+        explicit_candidate.is_some() && !preflight.allow_override_explicit_microbatch;
     let candidate_list: Vec<usize> = if use_explicit_only {
         vec![explicit_candidate.unwrap_or(1)]
     } else {
@@ -765,26 +772,26 @@ pub fn probe_candidate_ladder(
                 "kind={} candidates={:?} required_successes={}",
                 probe_kind_name(kind),
                 candidate_list,
-                config.preflight.required_successes.max(1)
+                preflight.required_successes.max(1)
             )
         )
     );
     let progress = make_bar(
-        (candidate_list.len() * config.preflight.required_successes.max(1)) as u64,
+        (candidate_list.len() * preflight.required_successes.max(1)) as u64,
         "{spinner:.cyan} {msg} {wide_bar} {pos}/{len}",
     )?;
 
     let mut result_path_for =
         |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt);
-    let attempts = config.preflight.required_successes.max(1);
+    let attempts = preflight.required_successes.max(1);
     let mut index = 0usize;
     while index < candidate_list.len() {
         let candidate = candidate_list[index];
         let request = ProbeRequest {
             kind,
             candidate_microbatch: candidate,
-            warmup_steps: config.preflight.warmup_steps,
-            measure_steps: config.preflight.measure_steps,
+            warmup_steps: preflight.warmup_steps,
+            measure_steps: preflight.measure_steps,
         };
         match probe_child_policy(&results, candidate) {
             ProbeChildPolicy::FreshBoundary => {
@@ -792,8 +799,8 @@ pub fn probe_candidate_ladder(
                     kind,
                     candidate,
                     attempts,
-                    warmup_steps: config.preflight.warmup_steps,
-                    measure_steps: config.preflight.measure_steps,
+                    warmup_steps: preflight.warmup_steps,
+                    measure_steps: preflight.measure_steps,
                 };
                 let stable = run_candidate_attempts(
                     config_path,
@@ -808,7 +815,7 @@ pub fn probe_candidate_ladder(
                 index += 1;
             }
             ProbeChildPolicy::ReuseWindow => {
-                let window_size = reuse_window_size(config);
+                let window_size = reuse_window_size(preflight);
                 let mut window = Vec::new();
                 while index < candidate_list.len() && window.len() < window_size {
                     let window_candidate = candidate_list[index];
@@ -820,8 +827,8 @@ pub fn probe_candidate_ladder(
                     let request = ProbeRequest {
                         kind,
                         candidate_microbatch: window_candidate,
-                        warmup_steps: config.preflight.warmup_steps,
-                        measure_steps: config.preflight.measure_steps,
+                        warmup_steps: preflight.warmup_steps,
+                        measure_steps: preflight.measure_steps,
                     };
                     let results_path =
                         probe_batch_results_path(&result_path_for(kind, window_candidate, 0));
@@ -857,6 +864,7 @@ pub fn probe_candidate_ladder(
         |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         kind,
         config,
+        preflight,
         &mut results,
         &progress,
     )?;
@@ -865,6 +873,7 @@ pub fn probe_candidate_ladder(
         |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         kind,
         config,
+        preflight,
         &mut results,
         &progress,
     )?;
@@ -872,7 +881,7 @@ pub fn probe_candidate_ladder(
         config_path,
         &mut |kind, candidate, attempt| probe_result_path(artifacts, kind, candidate, attempt),
         kind,
-        config,
+        preflight,
         &mut results,
         &progress,
     )?;

@@ -11,7 +11,7 @@ use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
 
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
-use hydra_train_exec::modes::run_train_modes;
+use hydra_train_exec::modes::{handle_list_devices_mode, run_train_modes};
 use hydra_train_exec::preflight_runtime::run_probe_child_mode;
 use hydra_train_runtime::config::{parse_args, read_config};
 
@@ -26,8 +26,6 @@ use hydra_train_runtime::config::{
     AdvancedLossConfig, BcHyperparamConfig, TrainConfig, default_seed, validation_microbatch_size,
     validation_sample_limit,
 };
-#[cfg(test)]
-use hydra_train_runtime::preflight::{PreflightConfig, PreflightTuningMode};
 
 #[cfg(test)]
 type TrainBackend = Autodiff<LibTorch<f32>>;
@@ -35,16 +33,23 @@ type TrainBackend = Autodiff<LibTorch<f32>>;
 fn run() -> Result<(), String> {
     color_control::set_override(true);
     let cli = parse_args(env::args())?;
-    let config = read_config(&cli.config_path)?;
     hydra_train_exec::gpu_config::configure_libtorch_cpu_threads(
         hydra_train_runtime::config::default_num_threads_for_system(),
     );
+    if cli.list_devices {
+        return handle_list_devices_mode();
+    }
+    let config_path = cli
+        .config_path
+        .as_deref()
+        .ok_or_else(|| "config path is required unless --list-devices is used".to_string())?;
+    let config = read_config(config_path)?;
     hydra_train_exec::gpu_config::apply_gpu_performance_flags(&config.device);
     if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE_CHILD").is_some() {
-        return handle_graph_probe_child(&cli.config_path);
+        return handle_graph_probe_child(config_path);
     }
     if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE").is_some() {
-        return handle_graph_probe_parent(&cli.config_path);
+        return handle_graph_probe_parent(config_path);
     }
     if run_probe_child_mode(&config, cli.probe_child.clone())? {
         return Ok(());

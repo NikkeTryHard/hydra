@@ -14,7 +14,6 @@ fn dummy_config() -> TrainConfig {
     config.num_threads = Some(6);
     config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.sidecar"));
     config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.sidecar"));
-    config.preflight = PreflightConfig::default();
     config
 }
 
@@ -177,6 +176,7 @@ fn close_runtime_tuples_returns_empty_when_best_score_is_nan() {
 
 #[test]
 fn autotune_loader_runtime_rejects_zero_threads_before_measurement() {
+    let preflight = PreflightConfig::default();
     let mut config = dummy_config();
     config.num_threads = Some(0);
     let manifest = DataManifest {
@@ -187,7 +187,7 @@ fn autotune_loader_runtime_rejects_zero_threads_before_measurement() {
         counts_exact: true,
     };
 
-    let result = autotune_loader_runtime(&config, &manifest, &LibTorchDevice::Cpu);
+    let result = autotune_loader_runtime(&config, &preflight, &manifest, &LibTorchDevice::Cpu);
 
     assert_eq!(
         result,
@@ -491,6 +491,7 @@ fn tune_runtime_knob_propagates_scoring_errors() {
 
 #[test]
 fn runtime_tuple_scoring_cache_reuses_existing_samples() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -509,8 +510,14 @@ fn runtime_tuple_scoring_cache_reuses_existing_samples() {
         },
     );
 
-    let score = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect("cached scores should be returned without measurement");
+    let score = score_runtime_tuple(
+        &config,
+        &preflight,
+        &manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect("cached scores should be returned without measurement");
 
     assert!((score - 12.0).abs() < 1e-12);
     assert_eq!(
@@ -524,13 +531,14 @@ fn runtime_tuple_scoring_cache_reuses_existing_samples() {
 
 #[test]
 fn seed_runtime_score_cache_initializes_current_tuple_stats_for_exact_seed() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let key = runtime_tuple_key(&config);
     let seed = runtime_seed(
         64,
         key,
-        config.preflight.warmup_steps,
-        config.preflight.measure_steps,
+        preflight.warmup_steps,
+        preflight.measure_steps,
         RuntimeTupleStats {
             count: 2,
             sum: 24.0,
@@ -538,7 +546,7 @@ fn seed_runtime_score_cache_initializes_current_tuple_stats_for_exact_seed() {
     );
     let mut cache = BTreeMap::new();
 
-    seed_runtime_score_cache(&config, &mut cache, Some(seed));
+    seed_runtime_score_cache(&config, &preflight, &mut cache, Some(seed));
 
     assert_eq!(
         cache.get(&key),
@@ -551,55 +559,57 @@ fn seed_runtime_score_cache_initializes_current_tuple_stats_for_exact_seed() {
 
 #[test]
 fn seed_runtime_score_cache_ignores_mismatched_seed_cases() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let key = runtime_tuple_key(&config);
     let mismatch_cases = [
         runtime_seed(
             32,
             key,
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps,
+            preflight.warmup_steps,
+            preflight.measure_steps,
             RuntimeTupleStats { count: 1, sum: 5.0 },
         ),
         runtime_seed(
             64,
             (16, 256, 32),
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps,
+            preflight.warmup_steps,
+            preflight.measure_steps,
             RuntimeTupleStats { count: 1, sum: 6.0 },
         ),
         runtime_seed(
             64,
             key,
-            config.preflight.warmup_steps + 1,
-            config.preflight.measure_steps,
+            preflight.warmup_steps + 1,
+            preflight.measure_steps,
             RuntimeTupleStats { count: 1, sum: 7.0 },
         ),
         runtime_seed(
             64,
             key,
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps + 1,
+            preflight.warmup_steps,
+            preflight.measure_steps + 1,
             RuntimeTupleStats { count: 1, sum: 8.0 },
         ),
         runtime_seed(
             64,
             key,
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps,
+            preflight.warmup_steps,
+            preflight.measure_steps,
             RuntimeTupleStats::default(),
         ),
     ];
 
     for seed in mismatch_cases {
         let mut cache = BTreeMap::new();
-        seed_runtime_score_cache(&config, &mut cache, Some(seed));
+        seed_runtime_score_cache(&config, &preflight, &mut cache, Some(seed));
         assert!(cache.is_empty());
     }
 }
 
 #[test]
 fn seed_runtime_score_cache_keeps_existing_entry_for_current_tuple() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let key = runtime_tuple_key(&config);
     let mut cache = BTreeMap::from([(
@@ -612,12 +622,13 @@ fn seed_runtime_score_cache_keeps_existing_entry_for_current_tuple() {
 
     seed_runtime_score_cache(
         &config,
+        &preflight,
         &mut cache,
         Some(runtime_seed(
             64,
             key,
-            config.preflight.warmup_steps,
-            config.preflight.measure_steps,
+            preflight.warmup_steps,
+            preflight.measure_steps,
             RuntimeTupleStats { count: 1, sum: 9.0 },
         )),
     );
@@ -704,6 +715,7 @@ fn ranked_loader_runtime_from_score_cache_prefers_stronger_final_mean_after_refi
 
 #[test]
 fn seeded_current_tuple_preserves_ranked_shortlist_semantics() {
+    let preflight = PreflightConfig::default();
     let base = dummy_config();
     let tuned = base.clone();
     let current_tuple = current_runtime_tuple(&tuned);
@@ -727,12 +739,13 @@ fn seeded_current_tuple_preserves_ranked_shortlist_semantics() {
     ]);
     seed_runtime_score_cache(
         &tuned,
+        &preflight,
         &mut seeded_cache,
         Some(runtime_seed(
             64,
             current_tuple,
-            tuned.preflight.warmup_steps,
-            tuned.preflight.measure_steps,
+            preflight.warmup_steps,
+            preflight.measure_steps,
             RuntimeTupleStats {
                 count: 2,
                 sum: 200.0,
@@ -861,6 +874,7 @@ fn ranked_loader_runtime_from_score_cache_uses_deterministic_tuple_order_for_equ
 
 #[test]
 fn push_runtime_tuple_sample_preserves_existing_cache_when_measurement_fails() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -873,8 +887,14 @@ fn push_runtime_tuple_sample_preserves_existing_cache_when_measurement_fails() {
     let mut cache = BTreeMap::new();
     cache.insert(key, RuntimeTupleStats { count: 1, sum: 6.0 });
 
-    let averaged = push_runtime_tuple_sample(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect_err("empty manifests still fail before adding a new sample");
+    let averaged = push_runtime_tuple_sample(
+        &config,
+        &preflight,
+        &manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect_err("empty manifests still fail before adding a new sample");
 
     assert_eq!(averaged, "not enough train data to finish runtime probe");
     assert_eq!(
@@ -892,6 +912,7 @@ fn finalize_runtime_probe_throughput_handles_present_measure_start_with_zero_sam
 
 #[test]
 fn score_runtime_tuple_treats_empty_cached_samples_as_cache_miss() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -904,8 +925,14 @@ fn score_runtime_tuple_treats_empty_cached_samples_as_cache_miss() {
     let mut cache = BTreeMap::new();
     cache.insert(key, RuntimeTupleStats::default());
 
-    let err = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect_err("empty cached samples should still trigger measurement");
+    let err = score_runtime_tuple(
+        &config,
+        &preflight,
+        &manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect_err("empty cached samples should still trigger measurement");
 
     assert_eq!(err, "not enough train data to finish runtime probe");
     assert_eq!(cache.get(&key), Some(&RuntimeTupleStats::default()));
@@ -1152,6 +1179,7 @@ fn format_runtime_refine_summary_preserves_nonzero_budget_without_clamping() {
 
 #[test]
 fn measure_train_runtime_throughput_fails_fast_without_train_data() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -1162,8 +1190,14 @@ fn measure_train_runtime_throughput_fails_fast_without_train_data() {
     };
     let loader = runtime_probe_loader_config(&config);
 
-    let err = measure_train_runtime_throughput(&config, &loader, &manifest, &LibTorchDevice::Cpu)
-        .expect_err("empty manifests should fail before measuring throughput");
+    let err = measure_train_runtime_throughput(
+        &config,
+        &preflight,
+        &loader,
+        &manifest,
+        &LibTorchDevice::Cpu,
+    )
+    .expect_err("empty manifests should fail before measuring throughput");
 
     assert_eq!(err, "not enough train data to finish runtime probe");
 }
@@ -1196,26 +1230,40 @@ fn assert_runtime_probe_success_paths_measure_and_cache_real_train_data_case(
     config.buffer_games = 1;
     config.buffer_samples = 1;
     config.archive_queue_bound = 1;
-    config.preflight.warmup_steps = 1;
-    config.preflight.measure_steps = 1;
+    let mut preflight = PreflightConfig::default();
+    preflight.warmup_steps = 1;
+    preflight.measure_steps = 1;
     config.precision_mode = precision_mode;
 
     let key = runtime_tuple_key(&config);
     let mut cache = BTreeMap::new();
-    let measured_score = score_runtime_tuple(&config, manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect("uncached runtime tuple should run the real training probe and insert a score");
+    let measured_score = score_runtime_tuple(
+        &config,
+        &preflight,
+        manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect("uncached runtime tuple should run the real training probe and insert a score");
     assert!(measured_score.is_finite());
     assert!(measured_score >= 0.0);
     assert_eq!(cache.get(&key).map(|stats| stats.count), Some(1));
 
-    let cached_score = score_runtime_tuple(&config, manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect("cached runtime tuple should reuse the inserted sample");
+    let cached_score = score_runtime_tuple(
+        &config,
+        &preflight,
+        manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect("cached runtime tuple should reuse the inserted sample");
     assert_eq!(cached_score, measured_score);
     assert_eq!(cache.get(&key).map(|stats| stats.count), Some(1));
 }
 
 #[test]
 fn push_runtime_tuple_sample_bubbles_measurement_errors() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -1226,8 +1274,14 @@ fn push_runtime_tuple_sample_bubbles_measurement_errors() {
     };
     let mut cache = BTreeMap::new();
 
-    let err = push_runtime_tuple_sample(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect_err("empty manifests should fail before storing tuple samples");
+    let err = push_runtime_tuple_sample(
+        &config,
+        &preflight,
+        &manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect_err("empty manifests should fail before storing tuple samples");
 
     assert_eq!(err, "not enough train data to finish runtime probe");
     assert!(!cache.contains_key(&runtime_tuple_key(&config)));
@@ -1235,6 +1289,7 @@ fn push_runtime_tuple_sample_bubbles_measurement_errors() {
 
 #[test]
 fn score_runtime_tuple_bubbles_measurement_errors_when_cache_is_empty() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -1245,8 +1300,14 @@ fn score_runtime_tuple_bubbles_measurement_errors_when_cache_is_empty() {
     };
     let mut cache = BTreeMap::new();
 
-    let err = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect_err("empty manifests should fail when tuple scores are uncached");
+    let err = score_runtime_tuple(
+        &config,
+        &preflight,
+        &manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect_err("empty manifests should fail when tuple scores are uncached");
 
     assert_eq!(err, "not enough train data to finish runtime probe");
     assert!(cache.is_empty());
@@ -1254,6 +1315,7 @@ fn score_runtime_tuple_bubbles_measurement_errors_when_cache_is_empty() {
 
 #[test]
 fn autotune_loader_runtime_bubbles_empty_manifest_probe_failures() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -1263,7 +1325,7 @@ fn autotune_loader_runtime_bubbles_empty_manifest_probe_failures() {
         counts_exact: true,
     };
 
-    let err = autotune_loader_runtime(&config, &manifest, &LibTorchDevice::Cpu)
+    let err = autotune_loader_runtime(&config, &preflight, &manifest, &LibTorchDevice::Cpu)
         .expect_err("empty manifests should fail during runtime autotune scoring");
 
     assert_eq!(err, "not enough train data to finish runtime probe");
@@ -1271,9 +1333,10 @@ fn autotune_loader_runtime_bubbles_empty_manifest_probe_failures() {
 
 #[test]
 fn autotune_loader_runtime_returns_current_loader_when_rounds_and_extra_samples_are_disabled() {
+    let mut preflight = PreflightConfig::default();
     let mut config = dummy_config();
-    config.preflight.loader_runtime_rounds = 0;
-    config.preflight.loader_tuple_extra_samples = 0;
+    preflight.loader_runtime_rounds = 0;
+    preflight.loader_tuple_extra_samples = 0;
     config.num_threads = Some(1);
     let manifest = DataManifest {
         sources: vec![],
@@ -1283,7 +1346,7 @@ fn autotune_loader_runtime_returns_current_loader_when_rounds_and_extra_samples_
         counts_exact: true,
     };
 
-    let loader = autotune_loader_runtime(&config, &manifest, &LibTorchDevice::Cpu)
+    let loader = autotune_loader_runtime(&config, &preflight, &manifest, &LibTorchDevice::Cpu)
         .expect("disabled loader autotune should return the current loader without probing");
 
     assert_eq!(loader, loader_runtime_config(&config));
@@ -1291,6 +1354,7 @@ fn autotune_loader_runtime_returns_current_loader_when_rounds_and_extra_samples_
 
 #[test]
 fn score_runtime_tuple_returns_cached_single_sample_without_touching_measurement() {
+    let preflight = PreflightConfig::default();
     let config = dummy_config();
     let manifest = DataManifest {
         sources: vec![],
@@ -1303,8 +1367,14 @@ fn score_runtime_tuple_returns_cached_single_sample_without_touching_measurement
     let mut cache = BTreeMap::new();
     cache.insert(key, RuntimeTupleStats { count: 1, sum: 7.5 });
 
-    let score = score_runtime_tuple(&config, &manifest, &LibTorchDevice::Cpu, &mut cache)
-        .expect("single cached score should bypass runtime measurement");
+    let score = score_runtime_tuple(
+        &config,
+        &preflight,
+        &manifest,
+        &LibTorchDevice::Cpu,
+        &mut cache,
+    )
+    .expect("single cached score should bypass runtime measurement");
 
     assert!((score - 7.5).abs() < 1e-12);
     assert_eq!(

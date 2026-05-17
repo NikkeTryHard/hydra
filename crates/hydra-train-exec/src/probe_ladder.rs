@@ -5,7 +5,9 @@
 
 use std::collections::BTreeSet;
 
-use hydra_train_runtime::preflight::{ProbeKind, ProbeResult, ProbeStatus, candidate_ladder};
+use hydra_train_runtime::preflight::{
+    PreflightConfig, ProbeKind, ProbeResult, ProbeStatus, candidate_ladder,
+};
 
 use super::probe_summary::{ProbeCandidateSummary, probe_summary_iter};
 use hydra_train_runtime::config::TrainConfig;
@@ -342,9 +344,13 @@ fn dynamic_probe_growth_candidates(
     candidates
 }
 
-pub fn probe_only_candidate_ladder(config: &TrainConfig, request: ProbeRequest) -> Vec<usize> {
+pub fn probe_only_candidate_ladder(
+    config: &TrainConfig,
+    preflight: &PreflightConfig,
+    request: ProbeRequest,
+) -> Vec<usize> {
     let ceiling = probe_candidate_ceiling(request);
-    let mut candidates: Vec<usize> = candidate_ladder(&config.preflight, config.batch_size)
+    let mut candidates: Vec<usize> = candidate_ladder(preflight, config.batch_size)
         .into_iter()
         .filter(|candidate| *candidate <= ceiling)
         .collect();
@@ -354,9 +360,14 @@ pub fn probe_only_candidate_ladder(config: &TrainConfig, request: ProbeRequest) 
     candidates
 }
 
-pub fn dynamic_probe_ladder(config: &TrainConfig, kind: ProbeKind, seed: usize) -> Vec<usize> {
+pub fn dynamic_probe_ladder(
+    config: &TrainConfig,
+    preflight: &PreflightConfig,
+    kind: ProbeKind,
+    seed: usize,
+) -> Vec<usize> {
     let candidate_limit = dynamic_probe_ceiling(config, kind, seed.max(1));
-    let mut lower = candidate_ladder(&config.preflight, candidate_limit)
+    let mut lower = candidate_ladder(preflight, candidate_limit)
         .into_iter()
         .filter(|candidate| *candidate < seed)
         .collect::<Vec<_>>();

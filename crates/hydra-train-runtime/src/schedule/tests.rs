@@ -38,7 +38,6 @@ fn dummy_config() -> TrainConfig {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: crate::preflight::PreflightConfig::default(),
         precision_mode: crate::config::PrecisionMode::Fp32,
     }
 }

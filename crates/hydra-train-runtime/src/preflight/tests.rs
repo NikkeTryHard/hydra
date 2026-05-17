@@ -192,10 +192,14 @@ fn effective_precision_fp32_noop_serde_matches_display_spelling() {
 
 #[test]
 fn preflight_tuning_mode_changes_cache_signature() {
-    let mut safe = dummy_config();
-    safe.preflight.tuning_mode = PreflightTuningMode::Safe;
-    let mut unsafe_config = safe.clone();
-    unsafe_config.preflight.tuning_mode = PreflightTuningMode::Unsafe;
+    let safe = PreflightConfig {
+        tuning_mode: PreflightTuningMode::Safe,
+        ..Default::default()
+    };
+    let unsafe_config = PreflightConfig {
+        tuning_mode: PreflightTuningMode::Unsafe,
+        ..safe.clone()
+    };
 
     assert_ne!(
         preflight_config_signature(&safe),
@@ -508,7 +512,6 @@ fn dummy_config() -> TrainConfig {
         max_train_steps: Some(9),
         max_validation_batches: Some(3),
         max_validation_samples: Some(99),
-        preflight: PreflightConfig::default(),
     }
 }
 
@@ -544,7 +547,8 @@ fn workload_fingerprint_uses_bf16_for_cuda_bc_precision() {
     });
     let model_config = learner_model_fingerprint_input();
 
-    let fingerprint = workload_fingerprint(&config, &model_config);
+    let preflight = PreflightConfig::default();
+    let fingerprint = workload_fingerprint(&config, &preflight, &model_config);
     assert_eq!(fingerprint.batch_size, 256);
     assert!(fingerprint.augment);
     assert_eq!(fingerprint.precision_mode, "bf16_autocast");
@@ -585,7 +589,8 @@ fn hardware_and_cache_key_include_runtime_identity() {
     assert_eq!(hardware.backend, "burn-libtorch");
     assert_eq!(hardware.cpu_logical_cores, 32);
 
-    let cache_key = preflight_cache_key(&config, &model_config, "cuda:0", 32);
+    let preflight = PreflightConfig::default();
+    let cache_key = preflight_cache_key(&config, &preflight, &model_config, "cuda:0", 32);
     assert_eq!(cache_key.hardware.device_label, "cuda:0");
     assert_eq!(cache_key.hardware.cpu_logical_cores, 32);
     assert_eq!(cache_key.workload.batch_size, config.batch_size);
@@ -603,8 +608,9 @@ fn precision_modes_change_preflight_cache_key() {
     bf16.device = "cuda:0".to_string();
     let model_config = learner_model_fingerprint_input();
 
-    let fp32_key = preflight_cache_key(&fp32, &model_config, "cuda:0", 32);
-    let bf16_key = preflight_cache_key(&bf16, &model_config, "cuda:0", 32);
+    let preflight = PreflightConfig::default();
+    let fp32_key = preflight_cache_key(&fp32, &preflight, &model_config, "cuda:0", 32);
+    let bf16_key = preflight_cache_key(&bf16, &preflight, &model_config, "cuda:0", 32);
 
     assert_eq!(fp32_key.workload.precision_mode, "fp32");
     assert_eq!(fp32_key.workload.requested_precision, "fp32");
@@ -617,13 +623,16 @@ fn precision_modes_change_preflight_cache_key() {
 
 #[test]
 fn preflight_config_knob_change_invalidates_cache_key() {
-    let baseline = dummy_config();
-    let mut changed = dummy_config();
-    changed.preflight.warmup_steps = baseline.preflight.warmup_steps + 1;
+    let config = dummy_config();
+    let baseline = PreflightConfig::default();
+    let changed = PreflightConfig {
+        warmup_steps: baseline.warmup_steps + 1,
+        ..Default::default()
+    };
     let model_config = learner_model_fingerprint_input();
 
-    let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
-    let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
+    let baseline_key = preflight_cache_key(&config, &baseline, &model_config, "cuda:0", 32);
+    let changed_key = preflight_cache_key(&config, &changed, &model_config, "cuda:0", 32);
 
     assert_ne!(
         baseline_key.workload.preflight_config_signature,
@@ -634,13 +643,16 @@ fn preflight_config_knob_change_invalidates_cache_key() {
 
 #[test]
 fn preflight_config_candidate_microbatches_change_invalidates_cache_key() {
-    let baseline = dummy_config();
-    let mut changed = dummy_config();
-    changed.preflight.candidate_microbatches = vec![128, 64, 32];
+    let config = dummy_config();
+    let baseline = PreflightConfig::default();
+    let changed = PreflightConfig {
+        candidate_microbatches: vec![128, 64, 32],
+        ..Default::default()
+    };
     let model_config = learner_model_fingerprint_input();
 
-    let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
-    let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
+    let baseline_key = preflight_cache_key(&config, &baseline, &model_config, "cuda:0", 32);
+    let changed_key = preflight_cache_key(&config, &changed, &model_config, "cuda:0", 32);
 
     assert_ne!(baseline_key, changed_key);
 }
@@ -653,8 +665,9 @@ fn explicit_train_microbatch_change_invalidates_cache_key() {
     with_override.microbatch_size = Some(128);
     let model_config = learner_model_fingerprint_input();
 
-    let no_key = preflight_cache_key(&no_override, &model_config, "cuda:0", 32);
-    let with_key = preflight_cache_key(&with_override, &model_config, "cuda:0", 32);
+    let preflight = PreflightConfig::default();
+    let no_key = preflight_cache_key(&no_override, &preflight, &model_config, "cuda:0", 32);
+    let with_key = preflight_cache_key(&with_override, &preflight, &model_config, "cuda:0", 32);
 
     assert_eq!(no_key.workload.explicit_train_microbatch, None);
     assert_eq!(with_key.workload.explicit_train_microbatch, Some(128));
@@ -669,8 +682,9 @@ fn explicit_validation_microbatch_change_invalidates_cache_key() {
     with_override.validation_microbatch_size = Some(256);
     let model_config = learner_model_fingerprint_input();
 
-    let no_key = preflight_cache_key(&no_override, &model_config, "cuda:0", 32);
-    let with_key = preflight_cache_key(&with_override, &model_config, "cuda:0", 32);
+    let preflight = PreflightConfig::default();
+    let no_key = preflight_cache_key(&no_override, &preflight, &model_config, "cuda:0", 32);
+    let with_key = preflight_cache_key(&with_override, &preflight, &model_config, "cuda:0", 32);
 
     assert_eq!(no_key.workload.explicit_validation_microbatch, None);
     assert_eq!(with_key.workload.explicit_validation_microbatch, Some(256));
@@ -692,20 +706,22 @@ fn non_selection_fields_do_not_change_cache_key() {
     changed.checkpoint_every_n_steps = baseline.checkpoint_every_n_steps + 100;
     let model_config = learner_model_fingerprint_input();
 
-    let baseline_key = preflight_cache_key(&baseline, &model_config, "cuda:0", 32);
-    let changed_key = preflight_cache_key(&changed, &model_config, "cuda:0", 32);
+    let preflight = PreflightConfig::default();
+    let baseline_key = preflight_cache_key(&baseline, &preflight, &model_config, "cuda:0", 32);
+    let changed_key = preflight_cache_key(&changed, &preflight, &model_config, "cuda:0", 32);
 
     assert_eq!(baseline_key, changed_key);
 }
 
 #[test]
-fn code_signature_uses_v4_version() {
+fn code_signature_uses_v6_version() {
     let config = dummy_config();
     let model_config = learner_model_fingerprint_input();
-    let fingerprint = workload_fingerprint(&config, &model_config);
+    let preflight = PreflightConfig::default();
+    let fingerprint = workload_fingerprint(&config, &preflight, &model_config);
     assert!(
-        fingerprint.code_signature.contains("preflight-v4"),
-        "code_signature should contain preflight-v4, got: {}",
+        fingerprint.code_signature.contains("preflight-v6"),
+        "code_signature should contain preflight-v6, got: {}",
         fingerprint.code_signature
     );
 }

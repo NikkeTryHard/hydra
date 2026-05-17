@@ -11,8 +11,9 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
 use hydra_train_runtime::config::{
-    TrainCli, TrainConfig, display_num_threads, require_explicit_preflight_tuning_mode,
+    PreflightCliOptions, TrainCli, TrainConfig, display_num_threads,
 };
+use hydra_train_runtime::config_runtime::validate_preflight_config;
 
 use crate::config_runtime::{configure_threads, device_label, train_device, validate_config};
 use hydra_train_runtime::preflight::{
@@ -32,11 +33,11 @@ use crate::delta_q_promotion::handle_delta_q_promotion_mode as run_delta_q_promo
 use crate::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
 use crate::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
 use crate::presentation::{
-    BcHyperparamSummaryInput, bc_hyperparam_summary, explicit_preflight_recommendation,
-    explicit_preflight_summary, format_advisory_line, format_preflight_selection_line,
-    format_preflight_summary_line, format_probe_results_table, format_status_line,
-    format_timed_phase_message, format_warning_line, precision_runtime_summary, print_banner_field,
-    print_header_block, timestamped, unsafe_preflight_math_summary,
+    BcHyperparamSummaryInput, bc_hyperparam_summary, explicit_preflight_summary,
+    format_advisory_line, format_preflight_selection_line, format_preflight_summary_line,
+    format_probe_results_table, format_status_line, format_timed_phase_message,
+    precision_runtime_summary, print_banner_field, print_header_block, timestamped,
+    unsafe_preflight_math_summary,
 };
 use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use crate::resume::BestValidation;
@@ -44,16 +45,21 @@ use crate::rl_runner::run_rl_training_loop;
 use crate::validation_runner::materialize_validation_samples;
 
 /// Runs explicit preflight mode for BC or RL training.
-pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result<(), String> {
+pub fn handle_preflight_mode(
+    config_path: &Path,
+    config: &TrainConfig,
+    preflight: PreflightCliOptions,
+) -> Result<(), String> {
     let preflight_wall_start = Instant::now();
-    require_explicit_preflight_tuning_mode(config_path)?;
+    let preflight_config = &preflight.preflight_config;
     validate_config(config)?;
+    validate_preflight_config(preflight_config)?;
     configure_threads(config.num_threads)?;
     if config.rl.is_some() {
         let train_device = train_device(&config.device)?;
         let device_name = device_label(&config.device);
         print_preflight_banner("Hydra RL preflight", config, &device_name);
-        let preflight = run_rl_preflight(config_path, config, &train_device)?;
+        let preflight = run_rl_preflight(config_path, config, preflight_config, &train_device)?;
         println!(
             "{}",
             format_rl_preflight_selection_message(preflight.runtime)
@@ -87,6 +93,7 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
     let preflight = run_preflight(
         config_path,
         config,
+        preflight_config,
         &HydraModelConfig::learner(),
         &device_name,
         &artifacts,
@@ -96,7 +103,7 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
         format_bc_preflight_selection_message(
             preflight.runtime,
             preflight.explicit,
-            config.preflight.tuning_mode,
+            preflight_config.tuning_mode,
         )
     );
     if let Some(benchmark) = preflight.benchmark.as_ref() {
@@ -104,7 +111,7 @@ pub fn handle_preflight_mode(config_path: &Path, config: &TrainConfig) -> Result
             "{}",
             format_preflight_selection_line(format!(
                 "benchmark winner tuning_mode={:?} benchmark_mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?}) {}",
-                config.preflight.tuning_mode,
+                preflight_config.tuning_mode,
                 benchmark.metadata.mode,
                 benchmark.score.wall_clock_samples_per_second,
                 benchmark.score.train_only_samples_per_second,
@@ -162,7 +169,9 @@ pub fn handle_probe_mode(
     artifacts.create_root_dir()?;
     print_preflight_banner("Hydra probe-only", config, &device_label(&config.device));
     println!("{}", format_probe_only_status_message(request));
-    let (selected, results) = run_probe_ladder_only(config_path, config, &artifacts, request)?;
+    let default_preflight = hydra_train_runtime::preflight::PreflightConfig::default();
+    let (selected, results) =
+        run_probe_ladder_only(config_path, config, &artifacts, &default_preflight, request)?;
     let selected_summary = best_probe_summary(&results).ok_or_else(|| {
         format!(
             "no stable {} probe result found",
@@ -572,10 +581,6 @@ where
 
 /// Runs default BC/RL training mode.
 pub fn handle_training_mode(config_path: &Path, config: TrainConfig) -> Result<(), String> {
-    println!(
-        "{}",
-        format_warning_line(explicit_preflight_recommendation())
-    );
     if let Some(rl_cfg) = config.rl.clone() {
         let (bootstrap, runtime) = initialize_rl_training_bootstrap(config_path, config, rl_cfg)?;
         let RlTrainingBootstrap {
@@ -631,6 +636,17 @@ pub fn format_best_validation_summary(best_validation: Option<&BestValidation>) 
     }
 }
 
+/// Formats train device labels for `--list-devices` stdout.
+pub fn format_list_devices_stdout() -> &'static str {
+    "Hydra train device labels:\n  cpu        supported; always available\n  cuda       supported syntax; equivalent to cuda:0; requires CUDA-capable LibTorch at runtime\n  cuda:<N>   supported syntax; N is zero-based CUDA device index; availability checked when training opens device\n\nHYDRA_TRAIN_DEVICE overrides YAML device with one of: cpu, cuda, cuda:<N>\n"
+}
+
+/// Prints train device labels for `--list-devices`.
+pub fn handle_list_devices_mode() -> Result<(), String> {
+    print!("{}", format_list_devices_stdout());
+    Ok(())
+}
+
 /// Dispatches the parsed train CLI into the selected execution mode.
 ///
 /// The order preserves the previous train binary behavior:
@@ -638,20 +654,23 @@ pub fn format_best_validation_summary(best_validation: Option<&BestValidation>) 
 /// request defaults are resolved against the already-loaded config here so the
 /// binary no longer owns mode selection semantics.
 pub fn run_train_modes(cli: TrainCli, config: TrainConfig) -> Result<(), String> {
-    if cli.preflight {
-        return handle_preflight_mode(&cli.config_path, &config);
+    if cli.list_devices {
+        return handle_list_devices_mode();
+    }
+    let config_path = cli
+        .config_path
+        .as_deref()
+        .ok_or_else(|| "config path is required unless --list-devices is used".to_string())?;
+    if let Some(preflight) = cli.preflight {
+        return handle_preflight_mode(config_path, &config, preflight);
     }
     if cli.delta_q_promotion {
-        return handle_delta_q_promotion_mode(
-            &cli.config_path,
-            config,
-            cli.delta_q_baseline_checkpoint,
-        );
+        return handle_delta_q_promotion_mode(config_path, config, cli.delta_q_baseline_checkpoint);
     }
     if let Some(request) = probe_request_from_cli(&config, cli.probe_only)? {
-        return handle_probe_mode(&cli.config_path, &config, request);
+        return handle_probe_mode(config_path, &config, request);
     }
-    handle_training_mode(&cli.config_path, config)
+    handle_training_mode(config_path, config)
 }
 
 #[cfg(test)]

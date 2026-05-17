@@ -114,7 +114,6 @@ fn dummy_train_config(output_dir: PathBuf, data_dir: PathBuf) -> TrainConfig {
         max_train_steps: None,
         max_validation_batches: None,
         max_validation_samples: None,
-        preflight: PreflightConfig::default(),
     }
 }
 
@@ -376,6 +375,7 @@ fn write_matching_bc_preflight_cache(
         &PreflightCacheEntry {
             cache_key: preflight_cache_key(
                 config,
+                &PreflightConfig::default(),
                 &hydra_train_runtime::preflight::ModelFingerprintInput {
                     num_blocks: model_config.num_blocks,
                     input_channels: model_config.input_channels,
@@ -395,7 +395,7 @@ fn write_matching_bc_preflight_cache(
 }
 
 #[test]
-fn initialize_training_bootstrap_applies_cached_loader_tuple_on_fresh_start() {
+fn initialize_training_bootstrap_ignores_cached_loader_tuple_on_fresh_start() {
     let root_dir = unique_temp_dir("bc_loader_cache_fresh");
     let output_dir = root_dir.join("output");
     let data_dir = root_dir.join("data");
@@ -443,24 +443,24 @@ fn initialize_training_bootstrap_applies_cached_loader_tuple_on_fresh_start() {
     let (bootstrap, _, _) = initialize_training_bootstrap_for_backend_with_model_config::<
         TrainBackend,
     >(&output_dir, config, model_config)
-    .expect("fresh bootstrap should apply cached safe runtime");
+    .expect("fresh bootstrap should ignore cached preflight runtime");
 
     assert_eq!(bootstrap.config.batch_size, 128);
-    assert_eq!(bootstrap.config.microbatch_size, Some(32));
-    assert_eq!(bootstrap.config.validation_microbatch_size, Some(16));
-    assert_eq!(bootstrap.config.num_threads, Some(2));
-    assert_eq!(bootstrap.config.buffer_games, 7);
-    assert_eq!(bootstrap.config.buffer_samples, 64);
-    assert_eq!(bootstrap.config.archive_queue_bound, 3);
-    assert_eq!(bootstrap.loader_config.num_threads, Some(2));
-    assert_eq!(bootstrap.loader_config.buffer_games, 7);
-    assert_eq!(bootstrap.loader_config.buffer_samples, 64);
-    assert_eq!(bootstrap.loader_config.archive_queue_bound, 3);
+    assert_eq!(bootstrap.config.microbatch_size, Some(64));
+    assert_eq!(bootstrap.config.validation_microbatch_size, Some(32));
+    assert_eq!(bootstrap.config.num_threads, Some(1));
+    assert_eq!(bootstrap.config.buffer_games, 16);
+    assert_eq!(bootstrap.config.buffer_samples, 128);
+    assert_eq!(bootstrap.config.archive_queue_bound, 8);
+    assert_eq!(bootstrap.loader_config.num_threads, Some(1));
+    assert_eq!(bootstrap.loader_config.buffer_games, 16);
+    assert_eq!(bootstrap.loader_config.buffer_samples, 128);
+    assert_eq!(bootstrap.loader_config.archive_queue_bound, 8);
     cleanup_dir(&root_dir);
 }
 
 #[test]
-fn initialize_training_bootstrap_applies_cached_loader_tuple_on_epoch_boundary_resume() {
+fn initialize_training_bootstrap_ignores_cached_loader_tuple_on_epoch_boundary_resume() {
     let root_dir = unique_temp_dir("bc_loader_cache_epoch_resume");
     let output_dir = root_dir.join("output");
     let data_dir = root_dir.join("data");
@@ -517,19 +517,19 @@ fn initialize_training_bootstrap_applies_cached_loader_tuple_on_epoch_boundary_r
     let (bootstrap, _, _) = initialize_training_bootstrap_for_backend_with_model_config::<
         TrainBackend,
     >(&output_dir, config, model_config)
-    .expect("epoch-boundary resume should apply cached safe loader runtime");
+    .expect("epoch-boundary resume should ignore cached preflight runtime");
 
     assert_eq!(bootstrap.config.batch_size, 128);
     assert_eq!(bootstrap.config.microbatch_size, Some(64));
     assert_eq!(bootstrap.config.validation_microbatch_size, Some(32));
-    assert_eq!(bootstrap.config.num_threads, Some(2));
-    assert_eq!(bootstrap.config.buffer_games, 9);
-    assert_eq!(bootstrap.config.buffer_samples, 96);
-    assert_eq!(bootstrap.config.archive_queue_bound, 4);
-    assert_eq!(bootstrap.loader_config.num_threads, Some(2));
-    assert_eq!(bootstrap.loader_config.buffer_games, 9);
-    assert_eq!(bootstrap.loader_config.buffer_samples, 96);
-    assert_eq!(bootstrap.loader_config.archive_queue_bound, 4);
+    assert_eq!(bootstrap.config.num_threads, Some(1));
+    assert_eq!(bootstrap.config.buffer_games, 16);
+    assert_eq!(bootstrap.config.buffer_samples, 128);
+    assert_eq!(bootstrap.config.archive_queue_bound, 8);
+    assert_eq!(bootstrap.loader_config.num_threads, Some(1));
+    assert_eq!(bootstrap.loader_config.buffer_games, 16);
+    assert_eq!(bootstrap.loader_config.buffer_samples, 128);
+    assert_eq!(bootstrap.loader_config.archive_queue_bound, 8);
     cleanup_dir(&root_dir);
 }
 

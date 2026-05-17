@@ -362,8 +362,8 @@ pub fn advanced_loss_signature(config: Option<&crate::config::AdvancedLossConfig
 }
 
 /// Returns the preflight-config fragment used in preflight cache keys.
-pub fn preflight_config_signature(config: &crate::config::TrainConfig) -> String {
-    serde_json::to_string(&config.preflight)
+pub fn preflight_config_signature(preflight: &PreflightConfig) -> String {
+    serde_json::to_string(preflight)
         .unwrap_or_else(|_| "preflight_config:unserializable".to_string())
 }
 
@@ -394,6 +394,7 @@ impl ModelFingerprintInput {
 /// Builds the workload fingerprint portion of the preflight cache key.
 pub fn workload_fingerprint(
     config: &crate::config::TrainConfig,
+    preflight: &PreflightConfig,
     model: &ModelFingerprintInput,
 ) -> WorkloadFingerprint {
     WorkloadFingerprint {
@@ -414,7 +415,7 @@ pub fn workload_fingerprint(
             env!("CARGO_PKG_NAME")
         ),
         advanced_loss_signature: advanced_loss_signature(config.advanced_loss.as_ref()),
-        preflight_config_signature: preflight_config_signature(config),
+        preflight_config_signature: preflight_config_signature(preflight),
         explicit_train_microbatch: config.microbatch_size,
         explicit_validation_microbatch: config.validation_microbatch_size,
     }
@@ -433,13 +434,14 @@ pub fn hardware_fingerprint(device_label: &str, cpu_logical_cores: usize) -> Har
 /// Builds the complete preflight cache key.
 pub fn preflight_cache_key(
     config: &crate::config::TrainConfig,
+    preflight: &PreflightConfig,
     model: &ModelFingerprintInput,
     device_label: &str,
     cpu_logical_cores: usize,
 ) -> PreflightCacheKey {
     PreflightCacheKey {
         hardware: hardware_fingerprint(device_label, cpu_logical_cores),
-        workload: workload_fingerprint(config, model),
+        workload: workload_fingerprint(config, preflight, model),
     }
 }
 

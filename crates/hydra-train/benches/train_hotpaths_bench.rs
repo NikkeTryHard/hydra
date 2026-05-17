@@ -10,7 +10,7 @@ use hydra_core::arena::{Trajectory, TrajectoryStep};
 use hydra_core::encoder::OBS_SIZE;
 use hydra_model::model::{HydraModelConfig, HydraModelInit};
 use hydra_replay_loader::mjai_loader::{
-    ReplayTargetProfile, SidecarProvenance, load_game_from_reader,
+    ReplayObservationProfile, ReplayTargetProfile, SidecarProvenance, load_game_from_reader,
     load_game_from_reader_with_sidecar,
 };
 use hydra_search_labels::live_exit::LiveExitConfig;
@@ -98,6 +98,7 @@ fn bench_loader(c: &mut Criterion) {
                 SidecarProvenance::default(),
                 SidecarProvenance::default(),
                 ReplayTargetProfile::with_optional_heads(true, false, false, false, false, false),
+                ReplayObservationProfile::Full,
                 cursor,
                 None,
                 None,
@@ -117,6 +118,7 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
     let samples = vec![
         MjaiSample {
             obs: [0.0; OBS_SIZE],
+            compact_facts: None,
             action: 0,
             legal_mask: [1.0; HYDRA_ACTION_SPACE],
             placement: 0,
@@ -140,6 +142,7 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
         },
         MjaiSample {
             obs: [0.0; OBS_SIZE],
+            compact_facts: None,
             action: 1,
             legal_mask: [1.0; HYDRA_ACTION_SPACE],
             placement: 1,
