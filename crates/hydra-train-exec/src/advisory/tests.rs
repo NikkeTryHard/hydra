@@ -449,7 +449,7 @@ fn interval_advisories_report_cuda_launch_fragmentation_from_trace_metrics() {
 
     assert_eq!(advisory.severity, AdvisorySeverity::Warning);
     assert!(advisory.message.contains("419721 kernel launches"));
-    assert!(advisory.message.contains("CUDA graph capture"));
+    assert!(advisory.message.contains("CUDA graph replay"));
 }
 
 #[test]
