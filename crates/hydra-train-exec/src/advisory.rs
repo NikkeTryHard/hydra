@@ -138,7 +138,16 @@ pub fn startup_runtime_advisories(
         ));
         advisories.push(RuntimeAdvisory::info(
             "optimized_path_raw_replay",
-            "runtime path: input=raw_replay pinned_h2d=off prealloc_gpu_tensors=off cuda_graph_replay=experimental_probe_only copy_compute_overlap=off",
+            format!(
+                "runtime path: input=raw_replay pinned_h2d={} prealloc_gpu_tensors={} cuda_graph_replay=experimental_probe_only copy_compute_overlap={}",
+                if cuda_graph_feature_active() { "on" } else { "off" },
+                if cuda_graph_feature_active() { "on" } else { "off" },
+                if cuda_graph_feature_active() {
+                    "unproven-single-buffer"
+                } else {
+                    "off"
+                },
+            ),
         ));
     }
 

@@ -114,6 +114,23 @@ fn startup_advisories_report_cuda_loose_replay() {
     );
 }
 
+#[cfg(feature = "cuda-graph")]
+#[test]
+fn startup_advisories_report_cuda_raw_pinned_h2d_staging_when_feature_active() {
+    let mut config = config();
+    config.device = "cuda:0".to_string();
+    config.bc_shards_manifest_path = None;
+
+    let advisories =
+        startup_runtime_advisories(&config, MicrobatchExplicitness::from_config(&config));
+
+    assert!(
+        advisory(&advisories, "optimized_path_raw_replay")
+            .message
+            .contains("input=raw_replay pinned_h2d=on prealloc_gpu_tensors=on")
+    );
+}
+
 #[cfg(not(feature = "cuda-graph"))]
 #[test]
 fn startup_advisories_report_cuda_shards_without_pinned_async_h2d() {

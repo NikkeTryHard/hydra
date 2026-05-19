@@ -201,7 +201,11 @@ fn model_kind(config: &HydraModelConfig) -> &'static str {
 
 fn optimized_path_summary(config: &TrainConfig) -> String {
     let shard_input = config.bc_shards_manifest_path.is_some();
-    let pinned_staging = cfg!(feature = "cuda-graph") && shard_input;
+    let cuda_device = {
+        let device = config.device.trim().to_ascii_lowercase();
+        device == "cuda" || device.starts_with("cuda:")
+    };
+    let pinned_staging = cfg!(feature = "cuda-graph") && cuda_device;
     let preallocated_tensors = pinned_staging;
     let copy_compute_overlap = if pinned_staging {
         "unproven-single-buffer"

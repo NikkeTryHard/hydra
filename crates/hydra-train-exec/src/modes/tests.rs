@@ -202,6 +202,19 @@ fn optimized_path_summary_reports_raw_replay_defaults() {
     );
 }
 
+#[cfg(feature = "cuda-graph")]
+#[test]
+fn optimized_path_summary_reports_cuda_raw_replay_staging() {
+    let mut config = config();
+    config.device = "cuda:0".to_string();
+    config.bc_shards_manifest_path = None;
+
+    assert_eq!(
+        optimized_path_summary(&config),
+        "input=raw_replay pinned_h2d=on prealloc_gpu_tensors=on cuda_graph_replay=experimental_probe_only copy_compute_overlap=unproven-single-buffer"
+    );
+}
+
 #[test]
 fn optimized_path_summary_reports_shard_path() {
     let mut config = config();

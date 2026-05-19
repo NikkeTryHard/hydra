@@ -378,3 +378,64 @@ fn group_norm_mish_libtorch_forward_backward_matches_oracle_no_affine() {
         "x grad no affine",
     );
 }
+
+#[cfg(feature = "libtorch-tests")]
+#[test]
+fn group_norm_mish_libtorch_bf16_autocast_affine_preserves_fp32_parameter_grads() {
+    type TchB = burn::backend::LibTorch<f32>;
+
+    let device = libtorch_device();
+    if !matches!(device, burn::backend::libtorch::LibTorchDevice::Cuda(_)) {
+        return;
+    }
+
+    let gn = GroupNormConfig::new(2, 4).init::<burn::backend::Autodiff<TchB>>(&device);
+    let x_data = [
+        0.10, -0.20, 0.30, 0.40, -0.50, 0.60, -0.70, 0.80, 0.15, -0.25, 0.35, -0.45, 0.55, -0.65,
+        0.75, -0.85, -0.11, 0.21, -0.31, 0.41, -0.51, 0.61, -0.71, 0.81,
+    ];
+    let w_data = [
+        1.0, 0.7, -0.3, 0.2, -0.5, 0.9, 1.1, -0.8, 0.6, -0.4, 0.3, -0.2, 0.5, -0.7, 0.8, -0.9,
+        -1.0, 0.4, -0.6, 0.2, 0.7, -0.1, 0.5, -0.3,
+    ];
+    let x = Tensor::<burn::backend::Autodiff<TchB>, 3>::from_data(
+        TensorData::new(x_data.to_vec(), [3, 4, 2]),
+        &device,
+    )
+    .require_grad();
+    let weights = Tensor::<burn::backend::Autodiff<TchB>, 3>::from_data(
+        TensorData::new(w_data.to_vec(), [3, 4, 2]),
+        &device,
+    );
+
+    let output = crate::amp::maybe_autocast(true, || {
+        crate::native_group_norm_mish::group_norm_mish(&gn, x.clone())
+    });
+    let grads = (output * weights).sum().backward();
+
+    let gamma_grad = gn
+        .gamma
+        .as_ref()
+        .unwrap()
+        .val()
+        .grad(&grads)
+        .expect("gamma grad");
+    let beta_grad = gn
+        .beta
+        .as_ref()
+        .unwrap()
+        .val()
+        .grad(&grads)
+        .expect("beta grad");
+
+    let x_grad_max = x
+        .grad(&grads)
+        .expect("x grad")
+        .abs()
+        .max()
+        .into_scalar()
+        .elem::<f32>();
+    assert!(x_grad_max.is_finite(), "x grad max abs {x_grad_max}");
+    assert_eq!(gamma_grad.dtype(), burn::tensor::DType::F32);
+    assert_eq!(beta_grad.dtype(), burn::tensor::DType::F32);
+}

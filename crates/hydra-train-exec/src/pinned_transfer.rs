@@ -41,6 +41,64 @@ use crate::epoch_runner::BcShardDeviceBatch;
 use super::cuda_graph::{CudaEvent, CudaStream, PinnedBuffer};
 
 const OPPONENT_COUNT: usize = 3;
+
+/// Reusable pinned host and device staging for async H2D transfer.
+///
+/// Capacity is measured in effective host rows after runtime augmentation, not
+/// raw replay samples. For raw replay training, use
+/// `raw_effective_host_rows(logical_batch_len, augment)` when constructing this
+/// value.
+pub struct PinnedTransferStaging {
+    /// Page-locked host buffers sized for the maximum effective host rows.
+    pub pinned: PinnedStagingArea,
+    /// Dedicated CUDA copy-stream and synchronization event.
+    pub h2d: AsyncH2DContext,
+    /// Reusable device tensors sized for the maximum effective host rows.
+    pub device_tensors: PreallocatedDeviceTensors,
+}
+
+impl PinnedTransferStaging {
+    /// Creates CUDA staging for `device`, or `None` for non-CUDA devices.
+    pub fn from_device(effective_host_rows: usize, device: &LibTorchDevice) -> Option<Self> {
+        match device {
+            LibTorchDevice::Cuda(idx) => Some(Self::new(effective_host_rows, *idx as i64, device)),
+            _ => None,
+        }
+    }
+
+    /// Creates CUDA staging for a known CUDA device index.
+    pub fn new(effective_host_rows: usize, device_index: i64, device: &LibTorchDevice) -> Self {
+        assert!(
+            effective_host_rows > 0,
+            "pinned transfer staging requires positive capacity"
+        );
+        Self {
+            pinned: PinnedStagingArea::new(effective_host_rows),
+            h2d: AsyncH2DContext::new(device_index),
+            device_tensors: PreallocatedDeviceTensors::new(effective_host_rows, device),
+        }
+    }
+
+    /// Borrows the individual staging pieces expected by materialization code.
+    pub fn as_parts(
+        &mut self,
+    ) -> (
+        &mut PinnedStagingArea,
+        &AsyncH2DContext,
+        &mut PreallocatedDeviceTensors,
+    ) {
+        (&mut self.pinned, &self.h2d, &mut self.device_tensors)
+    }
+}
+
+/// Returns effective host rows after runtime augmentation.
+pub const fn raw_effective_host_rows(logical_batch_len: usize, augment: bool) -> usize {
+    if augment {
+        logical_batch_len * hydra_core::tile::ALL_PERMUTATIONS.len()
+    } else {
+        logical_batch_len
+    }
+}
 const PLAYER_COUNT: usize = 4;
 const TILE_COUNT: usize = 34;
 const SPATIAL_TARGET_SIZE: usize = OPPONENT_COUNT * TILE_COUNT;

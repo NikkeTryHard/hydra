@@ -1676,6 +1676,174 @@ pub fn materialize_host_batch_owned<B: Backend>(
     )
 }
 
+/// Materializes a backend-agnostic BC shard host batch without consuming its buffers.
+#[must_use]
+pub fn materialize_host_batch_borrowed<B: Backend>(
+    host: &BcShardHostBatch,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+) -> BcShardDeviceBatch<B> {
+    let target_presence = target_presence_from_host_batch(host, host.batch_size);
+    materialize_host_parts_borrowed::<B>(
+        host.batch_size,
+        &host.obs_flat,
+        &host.actions,
+        &host.legal_mask_flat,
+        &host.value_target,
+        &host.grp_target_flat,
+        &host.oracle_target_flat,
+        &host.oracle_target_mask,
+        &host.tenpai_flat,
+        &host.danger_flat,
+        &host.danger_mask_flat,
+        &host.opp_next_flat,
+        &host.score_pdf_flat,
+        &host.score_cdf_flat,
+        host.safety_target_flat.as_deref(),
+        host.safety_mask_flat.as_deref(),
+        host.exit_target_flat.as_deref(),
+        host.exit_mask_flat.as_deref(),
+        host.delta_q_target_flat.as_deref(),
+        host.delta_q_mask_flat.as_deref(),
+        target_presence,
+        device,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "materializes borrowed flat shard buffers while preserving host-batch recycling"
+)]
+fn materialize_host_parts_borrowed<B: Backend>(
+    batch_size: usize,
+    obs_flat: &[f32],
+    actions: &[i64],
+    legal_mask_flat: &[f32],
+    value_target: &[f32],
+    grp_target_flat: &[f32],
+    oracle_target_flat: &[f32],
+    oracle_target_mask: &[f32],
+    tenpai_flat: &[f32],
+    danger_flat: &[f32],
+    danger_mask_flat: &[f32],
+    opp_next_flat: &[f32],
+    score_pdf_flat: &[f32],
+    score_cdf_flat: &[f32],
+    safety_target_flat: Option<&[f32]>,
+    safety_mask_flat: Option<&[f32]>,
+    exit_target_flat: Option<&[f32]>,
+    exit_mask_flat: Option<&[f32]>,
+    delta_q_target_flat: Option<&[f32]>,
+    delta_q_mask_flat: Option<&[f32]>,
+    target_presence: TargetPresence,
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+) -> BcShardDeviceBatch<B> {
+    let b = batch_size;
+
+    let obs = Tensor::<B, 3>::from_data(
+        TensorData::new(obs_flat.to_vec(), [b, NUM_CHANNELS, 34]),
+        device,
+    );
+    let policy_target = policy_target_from_action_slice::<B>(actions, b, device);
+    let actions_tensor =
+        Tensor::<B, 1, Int>::from_data(TensorData::new(actions.to_vec(), [b]), device);
+    let legal_mask = Tensor::<B, 2>::from_data(
+        TensorData::new(legal_mask_flat.to_vec(), [b, HYDRA_ACTION_SPACE]),
+        device,
+    );
+    let value_target =
+        Tensor::<B, 1>::from_data(TensorData::new(value_target.to_vec(), [b]), device);
+    let grp_target =
+        Tensor::<B, 2>::from_data(TensorData::new(grp_target_flat.to_vec(), [b, 24]), device);
+    let oracle_target =
+        Tensor::<B, 2>::from_data(TensorData::new(oracle_target_flat.to_vec(), [b, 4]), device);
+    let oracle_target_mask =
+        Tensor::<B, 1>::from_data(TensorData::new(oracle_target_mask.to_vec(), [b]), device);
+    let tenpai_target =
+        Tensor::<B, 2>::from_data(TensorData::new(tenpai_flat.to_vec(), [b, 3]), device);
+    let danger_target =
+        Tensor::<B, 3>::from_data(TensorData::new(danger_flat.to_vec(), [b, 3, 34]), device);
+    let danger_mask = Tensor::<B, 3>::from_data(
+        TensorData::new(danger_mask_flat.to_vec(), [b, 3, 34]),
+        device,
+    );
+    let opp_next_target =
+        Tensor::<B, 3>::from_data(TensorData::new(opp_next_flat.to_vec(), [b, 3, 34]), device);
+    let score_pdf_target =
+        Tensor::<B, 2>::from_data(TensorData::new(score_pdf_flat.to_vec(), [b, 64]), device);
+    let score_cdf_target =
+        Tensor::<B, 2>::from_data(TensorData::new(score_cdf_flat.to_vec(), [b, 64]), device);
+
+    let exit_target_tensor = exit_target_flat.map(|buf| {
+        Tensor::<B, 2>::from_data(
+            TensorData::new(buf.to_vec(), [b, HYDRA_ACTION_SPACE]),
+            device,
+        )
+    });
+    let exit_mask_tensor = exit_mask_flat.map(|buf| {
+        Tensor::<B, 2>::from_data(
+            TensorData::new(buf.to_vec(), [b, HYDRA_ACTION_SPACE]),
+            device,
+        )
+    });
+
+    let batch = MjaiBcBatch {
+        actions: actions_tensor,
+        exit_target: exit_target_tensor,
+        exit_mask: exit_mask_tensor,
+    };
+
+    let targets = HydraTargets {
+        policy_target,
+        legal_mask,
+        value_target,
+        grp_target,
+        tenpai_target,
+        danger_target,
+        danger_mask,
+        opp_next_target,
+        score_pdf_target,
+        score_cdf_target,
+        oracle_target: Some(oracle_target),
+        belief_fields_target: None,
+        belief_fields_mask: None,
+        mixture_weight_target: None,
+        mixture_weight_mask: None,
+        opponent_hand_type_target: None,
+        delta_q_target: delta_q_target_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(
+                TensorData::new(buf.to_vec(), [b, HYDRA_ACTION_SPACE]),
+                device,
+            )
+        }),
+        delta_q_mask: delta_q_mask_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(
+                TensorData::new(buf.to_vec(), [b, HYDRA_ACTION_SPACE]),
+                device,
+            )
+        }),
+        safety_residual_target: safety_target_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(
+                TensorData::new(buf.to_vec(), [b, HYDRA_ACTION_SPACE]),
+                device,
+            )
+        }),
+        safety_residual_mask: safety_mask_flat.map(|buf| {
+            Tensor::<B, 2>::from_data(
+                TensorData::new(buf.to_vec(), [b, HYDRA_ACTION_SPACE]),
+                device,
+            )
+        }),
+        oracle_guidance_mask: Some(oracle_target_mask),
+        target_presence: Some(target_presence),
+    };
+
+    BcShardDeviceBatch {
+        obs,
+        batch,
+        targets,
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "materializes a flat shard record without regrouping hot-path owned buffers"
@@ -1850,6 +2018,31 @@ fn count_nonzero_action_rows_and_entries(
         }
     }
     (rows, entries)
+}
+
+/// Host-batch row accounting used by [`train_logical_batch_from_host_batch`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostBatchRows {
+    /// Rows came from raw replay collation. Augmented collation expands each logical sample to all
+    /// suit permutations.
+    RawReplay {
+        /// Whether raw replay collation expanded each logical sample through all suit permutations.
+        augment: bool,
+    },
+    /// Rows came from BC shards. Each row is already a physical shard sample, even when it is a
+    /// permuted view produced by shard augmentation.
+    BcShardPhysical,
+}
+
+impl HostBatchRows {
+    /// Returns the number of physical host rows that represent one optimizer-weighted logical sample.
+    #[must_use]
+    pub fn rows_per_logical(self) -> usize {
+        match self {
+            Self::RawReplay { augment: true } => hydra_core::tile::ALL_PERMUTATIONS.len(),
+            Self::RawReplay { augment: false } | Self::BcShardPhysical => 1,
+        }
+    }
 }
 
 /// Runs forward/backward/optimizer for one raw replay logical batch.
@@ -2042,9 +2235,13 @@ where
             .map_err(|err| format!("training host-scratch collation failed: {err}"))?
             .unwrap_or(0);
     let host_batch = scratch.take_batch();
+    let host_batch_rows = HostBatchRows::RawReplay {
+        augment: config.augment,
+    };
     let (drained, mut timing, _) = train_logical_batch_from_host_batch(
         host_batch,
         config,
+        host_batch_rows,
         head_controller,
         model_slot,
         optimizer,
@@ -2064,7 +2261,14 @@ pub fn train_logical_batch_via_recycled_host_batch<B, O>(
     model_slot: &mut Option<HydraModel<B>>,
     optimizer: &mut O,
     recycled: BcShardHostBatch,
-) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+) -> Result<
+    (
+        Vec<BatchStats>,
+        TrainSubStageTiming,
+        Option<BcShardHostBatch>,
+    ),
+    String,
+>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
     ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
@@ -2072,7 +2276,7 @@ where
     O: Optimizer<HydraModel<B>, B>,
 {
     if logical_batch.is_empty() {
-        return Ok((Vec::new(), TrainSubStageTiming::default()));
+        return Ok((Vec::new(), TrainSubStageTiming::default(), Some(recycled)));
     }
 
     let batch_size = if config.augment {
@@ -2086,9 +2290,13 @@ where
             .map_err(|err| format!("training host-scratch collation failed: {err}"))?
             .unwrap_or_else(BcShardHostBatch::empty);
     debug_assert_eq!(host_batch.batch_size, batch_size);
-    let (drained, mut timing, _) = train_logical_batch_from_host_batch(
+    let host_batch_rows = HostBatchRows::RawReplay {
+        augment: config.augment,
+    };
+    let (drained, mut timing, recycled) = train_logical_batch_from_host_batch(
         host_batch,
         config,
+        host_batch_rows,
         head_controller,
         model_slot,
         optimizer,
@@ -2096,7 +2304,7 @@ where
         None,
     )?;
     timing.collation_seconds += collation_started.elapsed().as_secs_f64();
-    Ok((drained, timing))
+    Ok((drained, timing, recycled))
 }
 
 /// Runs forward/backward/optimizer for one device-resident BC shard batch.
@@ -2200,11 +2408,7 @@ pub fn probe_logical_batch_from_host_batch<B>(
     config: TrainLogicalBatchConfig<'_, B>,
     head_controller: &mut HeadActivationController,
     model: &HydraModel<B>,
-    staging: Option<&mut (
-        crate::pinned_transfer::PinnedStagingArea,
-        crate::pinned_transfer::AsyncH2DContext,
-        crate::pinned_transfer::PreallocatedDeviceTensors,
-    )>,
+    staging: Option<&mut crate::pinned_transfer::PinnedTransferStaging>,
 ) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
 where
     B: AutodiffBackend<Device = LibTorchDevice>,
@@ -2225,7 +2429,8 @@ where
     let t = Instant::now();
     let shard_batch = {
         let _h2d_scope = nvtx::scope(PROFILING_STAGE_H2D_TRANSFER);
-        if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
+        if let Some(staging) = staging {
+            let (pinned_staging, h2d_ctx, gpu_tensors) = staging.as_parts();
             let (shard_batch, h2d_timing) = crate::pinned_transfer::materialize_staged_reuse::<B>(
                 &host_batch,
                 pinned_staging,
@@ -2547,14 +2752,13 @@ fn effective_train_lr(
 pub fn train_logical_batch_from_host_batch<B, O>(
     host_batch: BcShardHostBatch,
     config: TrainLogicalBatchConfig<'_, B>,
+    host_batch_rows: HostBatchRows,
     head_controller: &mut HeadActivationController,
     model_slot: &mut Option<HydraModel<B>>,
     optimizer: &mut O,
-    #[cfg(feature = "cuda-graph")] staging: Option<&mut (
-        crate::pinned_transfer::PinnedStagingArea,
-        crate::pinned_transfer::AsyncH2DContext,
-        crate::pinned_transfer::PreallocatedDeviceTensors,
-    )>,
+    #[cfg(feature = "cuda-graph")] staging: Option<
+        &mut crate::pinned_transfer::PinnedTransferStaging,
+    >,
 ) -> Result<
     (
         Vec<BatchStats>,
@@ -2586,7 +2790,8 @@ where
         let _h2d_scope = nvtx::scope(PROFILING_STAGE_H2D_TRANSFER);
         #[cfg(feature = "cuda-graph")]
         {
-            if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging {
+            if let Some(staging) = staging {
+                let (pinned_staging, h2d_ctx, gpu_tensors) = staging.as_parts();
                 let (shard_batch, h2d_timing) = crate::pinned_transfer::materialize_staged_reuse::<B>(
                     &host_batch,
                     pinned_staging,
@@ -2600,17 +2805,17 @@ where
                 (shard_batch, Some(host_batch))
             } else {
                 let t_materialize = Instant::now();
-                let shard_batch = materialize_host_batch_owned::<B>(host_batch, train_device);
+                let shard_batch = materialize_host_batch_borrowed::<B>(&host_batch, train_device);
                 sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
-                (shard_batch, None)
+                (shard_batch, Some(host_batch))
             }
         }
         #[cfg(not(feature = "cuda-graph"))]
         {
             let t_materialize = Instant::now();
-            let shard_batch = materialize_host_batch_owned::<B>(host_batch, train_device);
+            let shard_batch = materialize_host_batch_borrowed::<B>(&host_batch, train_device);
             sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
-            (shard_batch, None)
+            (shard_batch, Some(host_batch))
         }
     };
     sub_timing.h2d_transfer_seconds += t.elapsed().as_secs_f64();
@@ -2624,12 +2829,14 @@ where
         return Ok((Vec::new(), sub_timing, recycled_host_batch));
     }
 
-    let logical_batch_len = batch_size.max(1) as f32;
+    let rows_per_logical = host_batch_rows.rows_per_logical();
+    debug_assert_eq!(batch_size % rows_per_logical, 0);
+    let logical_batch_len = (batch_size / rows_per_logical).max(1) as f32;
     let mut accumulator: GradientsAccumulator<HydraModel<B>> = GradientsAccumulator::new();
     let mut total_samples = 0usize;
     let mut microbatch_count = 0usize;
     let mut metric_sums: Option<BatchMetricSums<B>> = None;
-    let effective_microbatch = microbatch_size.max(1);
+    let effective_microbatch = microbatch_size.max(1) * rows_per_logical;
 
     if effective_microbatch >= batch_size {
         let (active_loss_fn, warmup_heads) =
@@ -2659,14 +2866,14 @@ where
         };
         sub_timing.loss_seconds += t.elapsed().as_secs_f64();
         metric_sums = Some(batch_metric_sums_from_outputs(
-            batch_size,
+            batch_size / rows_per_logical,
             output.policy_logits.clone(),
             targets.legal_mask.clone(),
             batch.actions.clone(),
             total.clone(),
             &breakdown,
         ));
-        total_samples = batch_size;
+        total_samples = batch_size / rows_per_logical;
         microbatch_count = 1;
         let t = Instant::now();
         {
@@ -2727,10 +2934,12 @@ where
                 (breakdown, total)
             };
             sub_timing.loss_seconds += t.elapsed().as_secs_f64();
-            let chunk_weight = chunk_len as f32 / logical_batch_len;
+            debug_assert_eq!(chunk_len % rows_per_logical, 0);
+            let chunk_logical_len = chunk_len / rows_per_logical;
+            let chunk_weight = chunk_logical_len as f32 / logical_batch_len;
             let weighted_total = total.clone() * chunk_weight;
             let chunk_metric_sums = batch_metric_sums_from_outputs(
-                chunk_len,
+                chunk_logical_len,
                 output.policy_logits.clone(),
                 targets_chunk.legal_mask.clone(),
                 batch_chunk.actions.clone(),
@@ -2741,7 +2950,7 @@ where
                 Some(existing) => existing.accumulate(chunk_metric_sums),
                 None => chunk_metric_sums,
             });
-            total_samples += chunk_len;
+            total_samples += chunk_logical_len;
             microbatch_count += 1;
             let t = Instant::now();
             {
@@ -2893,6 +3102,12 @@ where
     let mut epoch_validation_profiling: Option<ProfilingEnvelope> = None;
     let mut step_window_sub_timing = TrainSubStageTiming::default();
     let mut epoch_sub_timing = TrainSubStageTiming::default();
+    let mut recycled_host_batch = Some(BcShardHostBatch::empty());
+    #[cfg(feature = "cuda-graph")]
+    let mut staging_context = crate::pinned_transfer::PinnedTransferStaging::from_device(
+        crate::pinned_transfer::raw_effective_host_rows(config.batch_size, config.augment),
+        train_device,
+    );
 
     for buffer_result in stream_train_epoch(manifest, loader_config, epoch, Some(&load_pb)) {
         let buffer = buffer_result.map_err(|err| format!("training stream failed: {err}"))?;
@@ -2934,10 +3149,19 @@ where
             let logical_batch: Vec<MjaiSample> =
                 pending_samples.drain(..config.batch_size).collect();
             let train_started = Instant::now();
+            let collation_started = Instant::now();
+            let recycled = recycled_host_batch
+                .take()
+                .unwrap_or_else(BcShardHostBatch::empty);
+            let host_batch =
+                collate_samples_into_recycled_host_batch(&logical_batch, config.augment, recycled)
+                    .map_err(|err| format!("training host-batch collation failed: {err}"))?
+                    .unwrap_or_else(BcShardHostBatch::empty);
+            let collation_seconds = collation_started.elapsed().as_secs_f64();
             let (drained, batch_sub_timing) = {
                 let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-                train_logical_batch(
-                    &logical_batch,
+                let (drained, mut timing, recycled) = train_logical_batch_from_host_batch(
+                    host_batch,
                     TrainLogicalBatchConfig {
                         microbatch_size,
                         use_amp,
@@ -2947,10 +3171,18 @@ where
                         bc_exit_cfg,
                         lr,
                     },
+                    HostBatchRows::RawReplay {
+                        augment: config.augment,
+                    },
                     head_controller,
                     model_slot,
                     optimizer,
-                )?
+                    #[cfg(feature = "cuda-graph")]
+                    staging_context.as_mut(),
+                )?;
+                timing.collation_seconds += collation_seconds;
+                recycled_host_batch = recycled.or_else(|| Some(BcShardHostBatch::empty()));
+                (drained, timing)
             };
             let train_seconds = train_started.elapsed().as_secs_f64();
 
@@ -3111,10 +3343,19 @@ where
         let lr = effective_train_lr(train_cfg, *global_step, total_steps);
         let logical_batch: Vec<MjaiSample> = pending_samples.drain(..).collect();
         let train_started = Instant::now();
+        let collation_started = Instant::now();
+        let recycled = recycled_host_batch
+            .take()
+            .unwrap_or_else(BcShardHostBatch::empty);
+        let host_batch =
+            collate_samples_into_recycled_host_batch(&logical_batch, config.augment, recycled)
+                .map_err(|err| format!("training host-batch collation failed: {err}"))?
+                .unwrap_or_else(BcShardHostBatch::empty);
+        let collation_seconds = collation_started.elapsed().as_secs_f64();
         let (drained, batch_sub_timing) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-            train_logical_batch(
-                &logical_batch,
+            let (drained, mut timing, _recycled) = train_logical_batch_from_host_batch(
+                host_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
                     use_amp,
@@ -3124,10 +3365,17 @@ where
                     bc_exit_cfg,
                     lr,
                 },
+                HostBatchRows::RawReplay {
+                    augment: config.augment,
+                },
                 head_controller,
                 model_slot,
                 optimizer,
-            )?
+                #[cfg(feature = "cuda-graph")]
+                staging_context.as_mut(),
+            )?;
+            timing.collation_seconds += collation_seconds;
+            (drained, timing)
         };
         let train_seconds = train_started.elapsed().as_secs_f64();
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
@@ -3371,20 +3619,8 @@ where
 
     // -- async H2D staging for pinned memory + dedicated copy stream --
     #[cfg(feature = "cuda-graph")]
-    let mut staging_context = match train_device {
-        LibTorchDevice::Cuda(idx) => {
-            let device_index = *idx as i64;
-            Some((
-                crate::pinned_transfer::PinnedStagingArea::new(config.batch_size),
-                crate::pinned_transfer::AsyncH2DContext::new(device_index),
-                crate::pinned_transfer::PreallocatedDeviceTensors::new(
-                    config.batch_size,
-                    train_device,
-                ),
-            ))
-        }
-        _ => None,
-    };
+    let mut staging_context =
+        crate::pinned_transfer::PinnedTransferStaging::from_device(config.batch_size, train_device);
 
     // -- producer/consumer pipeline for CPU host-batch prefetch --
     let prefetcher = BcShardPrefetcher::spawn(
@@ -3416,6 +3652,7 @@ where
                     bc_exit_cfg,
                     lr,
                 },
+                HostBatchRows::BcShardPhysical,
                 head_controller,
                 model_slot,
                 optimizer,

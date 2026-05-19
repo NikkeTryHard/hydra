@@ -75,6 +75,14 @@ fn dummy_train_sample(action: u8) -> MjaiSample {
     }
 }
 
+fn uniform_dummy_train_sample(action: u8) -> MjaiSample {
+    let mut sample = dummy_train_sample(action);
+    for value in &mut sample.obs {
+        *value = action as f32 * 0.001;
+    }
+    sample
+}
+
 fn dummy_train_sample_with_exit(action: u8, exit_target: f32, exit_mask: f32) -> MjaiSample {
     let mut sample = dummy_train_sample(action);
     let mut exit_target_vec = [0.0f32; hydra_core::action::HYDRA_ACTION_SPACE];
@@ -86,8 +94,168 @@ fn dummy_train_sample_with_exit(action: u8, exit_target: f32, exit_mask: f32) ->
     sample
 }
 
+fn dummy_train_sample_with_optional_targets(action: u8) -> MjaiSample {
+    let mut sample = dummy_train_sample_with_exit(action, 0.25, 1.0);
+    let mut safety = [0.0f32; hydra_core::action::HYDRA_ACTION_SPACE];
+    safety[action as usize] = -0.5;
+    let mut safety_mask = [0.0f32; hydra_core::action::HYDRA_ACTION_SPACE];
+    safety_mask[action as usize] = 1.0;
+    let mut delta_q = [0.0f32; hydra_core::action::HYDRA_ACTION_SPACE];
+    delta_q[action as usize] = 0.75;
+    let mut delta_q_mask = [0.0f32; hydra_core::action::HYDRA_ACTION_SPACE];
+    delta_q_mask[action as usize] = 1.0;
+    sample.safety_residual = Some(safety);
+    sample.safety_residual_mask = Some(safety_mask);
+    sample.delta_q_target = Some(delta_q);
+    sample.delta_q_mask = Some(delta_q_mask);
+    sample
+}
+
+fn run_raw_train_step_with_loss(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    microbatch_size: usize,
+    augment: bool,
+    device: &LibTorchDevice,
+    train_loss_fn: HydraLoss<TestTrainBackend>,
+) -> (
+    HydraModel<TestTrainBackend>,
+    TestAdamOptimizerRecord,
+    Vec<BatchStats>,
+) {
+    let mut model_slot = Some(model);
+    let mut optimizer = AdamConfig::new().init::<TestTrainBackend, HydraModel<TestTrainBackend>>();
+    let mut head_controller =
+        HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+    let (stats, _) = crate::epoch_runner::train_logical_batch(
+        logical_batch,
+        crate::epoch_runner::TrainLogicalBatchConfig {
+            microbatch_size,
+            use_amp: false,
+            augment,
+            train_device: device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            lr: 1e-4,
+        },
+        &mut head_controller,
+        &mut model_slot,
+        &mut optimizer,
+    )
+    .expect("raw train step should succeed");
+    (
+        model_slot.expect("raw train step should leave model populated"),
+        optimizer.to_record(),
+        stats,
+    )
+}
+
+fn run_host_batch_train_step_with_loss(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    microbatch_size: usize,
+    augment: bool,
+    device: &LibTorchDevice,
+    recycled: hydra_bc_shards::BcShardHostBatch,
+    train_loss_fn: HydraLoss<TestTrainBackend>,
+) -> (
+    HydraModel<TestTrainBackend>,
+    TestAdamOptimizerRecord,
+    Vec<BatchStats>,
+    Option<hydra_bc_shards::BcShardHostBatch>,
+) {
+    let mut model_slot = Some(model);
+    let mut optimizer = AdamConfig::new().init::<TestTrainBackend, HydraModel<TestTrainBackend>>();
+    let mut head_controller =
+        HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+    let (stats, _, recycled) = crate::epoch_runner::train_logical_batch_via_recycled_host_batch(
+        logical_batch,
+        crate::epoch_runner::TrainLogicalBatchConfig {
+            microbatch_size,
+            use_amp: false,
+            augment,
+            train_device: device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            lr: 1e-4,
+        },
+        &mut head_controller,
+        &mut model_slot,
+        &mut optimizer,
+        recycled,
+    )
+    .expect("host-batch train step should succeed");
+    (
+        model_slot.expect("host-batch train step should leave model populated"),
+        optimizer.to_record(),
+        stats,
+        recycled,
+    )
+}
+
+#[allow(
+    dead_code,
+    reason = "focused test filters may skip default-loss raw parity cases"
+)]
+fn run_raw_train_step(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    microbatch_size: usize,
+    augment: bool,
+    device: &LibTorchDevice,
+) -> (
+    HydraModel<TestTrainBackend>,
+    TestAdamOptimizerRecord,
+    Vec<BatchStats>,
+) {
+    run_raw_train_step_with_loss(
+        model,
+        logical_batch,
+        microbatch_size,
+        augment,
+        device,
+        dummy_train_loss(),
+    )
+}
+
+fn run_host_batch_train_step(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    microbatch_size: usize,
+    augment: bool,
+    device: &LibTorchDevice,
+    recycled: hydra_bc_shards::BcShardHostBatch,
+) -> (
+    HydraModel<TestTrainBackend>,
+    TestAdamOptimizerRecord,
+    Vec<BatchStats>,
+    Option<hydra_bc_shards::BcShardHostBatch>,
+) {
+    run_host_batch_train_step_with_loss(
+        model,
+        logical_batch,
+        microbatch_size,
+        augment,
+        device,
+        recycled,
+        dummy_train_loss(),
+    )
+}
+
 fn dummy_train_loss() -> HydraLoss<TestTrainBackend> {
     HydraLoss::<TestTrainBackend>::new(HydraLossConfig::new())
+}
+
+fn policy_only_train_loss() -> HydraLoss<TestTrainBackend> {
+    HydraLoss::<TestTrainBackend>::new(
+        HydraLossConfig::new()
+            .with_w_v(0.0)
+            .with_w_grp(0.0)
+            .with_w_tenpai(0.0)
+            .with_w_danger(0.0)
+            .with_w_opp(0.0)
+            .with_w_score(0.0),
+    )
 }
 
 fn assert_close(actual: f64, expected: f64) {
@@ -98,6 +266,66 @@ fn assert_close(actual: f64, expected: f64) {
         "expected {expected}, got {actual} (abs diff {diff}, rel diff {})",
         diff / scale,
     );
+}
+
+fn assert_single_step_optimizer_record(record: &TestAdamOptimizerRecord) {
+    assert!(
+        !record.is_empty(),
+        "optimizer record should contain Adam state"
+    );
+    for key in sorted_optimizer_record_keys(record) {
+        let adam_record = record
+            .get(&key)
+            .unwrap_or_else(|| panic!("optimizer record missing checked key {key:?}"));
+        assert_adam_record_step_count(adam_record.clone(), 1, &format!("param_id={key:?}"));
+    }
+}
+
+fn assert_adam_record_step_count(
+    record: AdaptorRecord<Adam, TestTrainBackend>,
+    expected_time: usize,
+    context: &str,
+) {
+    match record {
+        AdaptorRecord::V1(record) => match record {
+            AdaptorRecordV1::Rank0(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank1(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank2(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank3(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank4(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank5(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank6(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank7(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+            AdaptorRecordV1::Rank8(state) => assert_eq!(
+                state.momentum.time, expected_time,
+                "{context}: Adam time changed"
+            ),
+        },
+    }
 }
 
 fn assert_batch_stats_close(actual: BatchStats, expected: BatchStats) {
@@ -113,6 +341,11 @@ fn assert_batch_stats_close(actual: BatchStats, expected: BatchStats) {
     assert_close(actual.loss_opp_next, expected.loss_opp_next);
     assert_close(actual.loss_score_pdf, expected.loss_score_pdf);
     assert_close(actual.loss_score_cdf, expected.loss_score_cdf);
+}
+
+fn assert_batch_stats_training_values_close(actual: BatchStats, expected: BatchStats) {
+    assert_close(actual.total_loss, expected.total_loss);
+    assert_close(actual.loss_policy, expected.loss_policy);
 }
 
 fn assert_loss_breakdown_close(
@@ -371,6 +604,33 @@ fn sample_policy_logits(
         .to_vec()
 }
 
+fn sample_policy_train_logits(
+    model: &HydraModel<TestTrainBackend>,
+    sample: &MjaiSample,
+    train_device: &LibTorchDevice,
+    train_loss_fn: &HydraLoss<TestTrainBackend>,
+) -> Vec<f32> {
+    let (obs, _, targets) = collate_samples_owned::<TestTrainBackend>(
+        std::slice::from_ref(sample),
+        false,
+        train_device,
+    )
+    .expect("single-sample train probe collation should succeed")
+    .expect("single-sample train probe collation should produce tensors");
+    let mut head_controller =
+        HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+    let (active_loss_fn, warmup_heads) =
+        gated_bc_context(Some(&mut head_controller), train_loss_fn, &targets);
+    model
+        .forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
+        .policy_logits
+        .to_data()
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .expect("train policy logits should be readable as f32")
+        .to_vec()
+}
+
 #[derive(Default)]
 struct FloatParamDtypeVisitor {
     saw_param: bool,
@@ -590,6 +850,7 @@ fn shard_train_step(manifest_path: &std::path::Path, use_amp: bool) -> (f64, boo
             bc_exit_cfg: &BcExitConfig::default(),
             lr: 1e-4,
         },
+        crate::epoch_runner::HostBatchRows::BcShardPhysical,
         &mut head_controller,
         &mut model_slot,
         &mut optimizer,
@@ -709,6 +970,37 @@ fn assert_tensor_exact_eq<const D: usize>(
     assert_tensor_data_exact_eq(actual.to_data(), expected.to_data(), context);
 }
 
+#[cfg(feature = "cuda-graph")]
+fn assert_int_tensor_data_exact_eq(actual: TensorData, expected: TensorData, context: &str) {
+    assert_eq!(
+        actual.dtype, expected.dtype,
+        "{context}: tensor dtype changed"
+    );
+    assert_eq!(
+        actual.shape, expected.shape,
+        "{context}: tensor shape changed"
+    );
+    assert_eq!(
+        actual
+            .as_slice::<i64>()
+            .expect("actual tensor should be i64"),
+        expected
+            .as_slice::<i64>()
+            .expect("expected tensor should be i64"),
+        "{context}: tensor data changed"
+    );
+}
+
+#[cfg(feature = "cuda-graph")]
+fn assert_int_tensor_exact_eq(
+    actual: Tensor<LibTorch<f32>, 1, burn::tensor::Int>,
+    expected: Tensor<LibTorch<f32>, 1, burn::tensor::Int>,
+    context: &str,
+) {
+    assert_eq!(actual.dims(), expected.dims(), "{context}: dims changed");
+    assert_int_tensor_data_exact_eq(actual.to_data(), expected.to_data(), context);
+}
+
 fn assert_optional_tensor_exact_eq<const D: usize>(
     actual: Option<Tensor<LibTorch<f32>, D>>,
     expected: Option<Tensor<LibTorch<f32>, D>>,
@@ -719,6 +1011,148 @@ fn assert_optional_tensor_exact_eq<const D: usize>(
         (None, None) => {}
         _ => panic!("{context}: optional Adam max_moment_2 presence changed"),
     }
+}
+
+#[cfg(feature = "cuda-graph")]
+fn assert_optional_tensor2_exact_eq(
+    actual: Option<Tensor<LibTorch<f32>, 2>>,
+    expected: Option<Tensor<LibTorch<f32>, 2>>,
+    context: &str,
+) {
+    match (actual, expected) {
+        (Some(actual), Some(expected)) => assert_tensor_exact_eq(actual, expected, context),
+        (None, None) => {}
+        _ => panic!("{context}: optional tensor presence changed"),
+    }
+}
+
+#[cfg(feature = "cuda-graph")]
+fn assert_target_presence_exact_eq(
+    actual: Option<hydra_train_types::head_gates::TargetPresence>,
+    expected: Option<hydra_train_types::head_gates::TargetPresence>,
+    context: &str,
+) {
+    let actual = actual.unwrap_or_else(|| panic!("{context}: actual target presence missing"));
+    let expected =
+        expected.unwrap_or_else(|| panic!("{context}: expected target presence missing"));
+    assert_eq!(
+        actual.batch_size, expected.batch_size,
+        "{context}: batch size"
+    );
+    assert_eq!(actual.counts, expected.counts, "{context}: counts");
+    assert_eq!(
+        actual.delta_q_actions_present, expected.delta_q_actions_present,
+        "{context}: delta-q action count"
+    );
+}
+
+#[cfg(feature = "cuda-graph")]
+fn assert_device_batch_exact_eq(
+    actual: crate::epoch_runner::BcShardDeviceBatch<LibTorch<f32>>,
+    expected: crate::epoch_runner::BcShardDeviceBatch<LibTorch<f32>>,
+    context: &str,
+) {
+    assert_tensor_exact_eq(actual.obs, expected.obs, &format!("{context}: obs"));
+    assert_int_tensor_exact_eq(
+        actual.batch.actions,
+        expected.batch.actions,
+        &format!("{context}: actions"),
+    );
+    assert_optional_tensor2_exact_eq(
+        actual.batch.exit_target,
+        expected.batch.exit_target,
+        &format!("{context}: batch exit target"),
+    );
+    assert_optional_tensor2_exact_eq(
+        actual.batch.exit_mask,
+        expected.batch.exit_mask,
+        &format!("{context}: batch exit mask"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.policy_target,
+        expected.targets.policy_target,
+        &format!("{context}: policy target"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.legal_mask,
+        expected.targets.legal_mask,
+        &format!("{context}: legal mask"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.value_target,
+        expected.targets.value_target,
+        &format!("{context}: value target"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.grp_target,
+        expected.targets.grp_target,
+        &format!("{context}: grp target"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.tenpai_target,
+        expected.targets.tenpai_target,
+        &format!("{context}: tenpai target"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.danger_target,
+        expected.targets.danger_target,
+        &format!("{context}: danger target"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.danger_mask,
+        expected.targets.danger_mask,
+        &format!("{context}: danger mask"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.opp_next_target,
+        expected.targets.opp_next_target,
+        &format!("{context}: opp-next target"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.score_pdf_target,
+        expected.targets.score_pdf_target,
+        &format!("{context}: score pdf target"),
+    );
+    assert_tensor_exact_eq(
+        actual.targets.score_cdf_target,
+        expected.targets.score_cdf_target,
+        &format!("{context}: score cdf target"),
+    );
+    assert_optional_tensor2_exact_eq(
+        actual.targets.oracle_target,
+        expected.targets.oracle_target,
+        &format!("{context}: oracle target"),
+    );
+    assert_optional_tensor2_exact_eq(
+        actual.targets.delta_q_target,
+        expected.targets.delta_q_target,
+        &format!("{context}: delta-q target"),
+    );
+    assert_optional_tensor2_exact_eq(
+        actual.targets.delta_q_mask,
+        expected.targets.delta_q_mask,
+        &format!("{context}: delta-q mask"),
+    );
+    assert_optional_tensor2_exact_eq(
+        actual.targets.safety_residual_target,
+        expected.targets.safety_residual_target,
+        &format!("{context}: safety target"),
+    );
+    assert_optional_tensor2_exact_eq(
+        actual.targets.safety_residual_mask,
+        expected.targets.safety_residual_mask,
+        &format!("{context}: safety mask"),
+    );
+    assert_optional_tensor_exact_eq(
+        actual.targets.oracle_guidance_mask,
+        expected.targets.oracle_guidance_mask,
+        &format!("{context}: oracle guidance mask"),
+    );
+    assert_target_presence_exact_eq(
+        actual.targets.target_presence,
+        expected.targets.target_presence,
+        &format!("{context}: target presence"),
+    );
 }
 
 fn assert_adam_state_exact_eq<const D: usize>(
@@ -1633,11 +2067,11 @@ fn optimizer_parity_harness_checkpoint_roundtrip_preserves_record_shape() {
         .clone()
         .into_item::<FullPrecisionSettings>();
     let reloaded_record = <_ as Record<TestTrainBackend>>::from_item(full_precision_item, &device);
-    assert_optimizer_record_shape_matches(&reloaded_record, &optimizer_record);
+    assert_optimizer_record_exact_eq(&reloaded_record, &optimizer_record);
     let reloaded_optimizer = AdamConfig::new()
         .init::<TestTrainBackend, HydraModel<TestTrainBackend>>()
         .load_record(reloaded_record.clone());
-    assert_optimizer_record_shape_matches(&reloaded_optimizer.to_record(), &optimizer_record);
+    assert_optimizer_record_exact_eq(&reloaded_optimizer.to_record(), &optimizer_record);
     assert!(
         adam_optimizer_record_is_fp32(&reloaded_record),
         "roundtripped optimizer state should stay fp32"
@@ -1803,6 +2237,428 @@ fn host_scratch_train_batch_runs_and_reports_stats() {
     assert_eq!(stats[0].sample_count, logical_batch.len());
     assert!(timing.collation_seconds > 0.0);
     assert!(timing.h2d_tensor_materialize_seconds > 0.0);
+}
+
+#[test]
+fn host_batch_train_step_matches_raw_for_tail_remainder_parity() {
+    let device = LibTorchDevice::Cpu;
+    <TestTrainBackend as Backend>::seed(&device, 7);
+    let raw_initial = tiny_dummy_model(&device);
+    let logical_batch = vec![
+        uniform_dummy_train_sample(45),
+        uniform_dummy_train_sample(45),
+        uniform_dummy_train_sample(45),
+    ];
+    let probe_loss_fn = policy_only_train_loss();
+    let _ = sample_policy_train_logits(&raw_initial, &logical_batch[0], &device, &probe_loss_fn);
+    let host_initial = raw_initial.clone().fork(&device);
+    let (raw_model, raw_record, raw_stats) = run_raw_train_step_with_loss(
+        raw_initial,
+        &logical_batch,
+        logical_batch.len(),
+        false,
+        &device,
+        policy_only_train_loss(),
+    );
+    let (host_model, host_record, host_stats, recycled) = run_host_batch_train_step_with_loss(
+        host_initial,
+        &logical_batch,
+        logical_batch.len(),
+        false,
+        &device,
+        hydra_bc_shards::BcShardHostBatch::empty(),
+        policy_only_train_loss(),
+    );
+
+    assert_eq!(raw_stats.len(), 1);
+    assert_eq!(host_stats.len(), 1);
+    assert_batch_stats_training_values_close(host_stats[0], raw_stats[0]);
+    assert_eq!(
+        host_stats[0].policy_agreement,
+        raw_stats[0].policy_agreement
+    );
+    assert_eq!(host_stats[0].sample_count, logical_batch.len());
+    assert_eq!(raw_stats[0].sample_count, logical_batch.len());
+    assert_eq!(host_stats[0].batch_count, 1);
+    assert_eq!(raw_stats[0].batch_count, 1);
+
+    let raw_logits =
+        sample_policy_train_logits(&raw_model, &logical_batch[0], &device, &probe_loss_fn);
+    let host_logits =
+        sample_policy_train_logits(&host_model, &logical_batch[0], &device, &probe_loss_fn);
+    assert_eq!(host_logits.len(), raw_logits.len());
+    for (actual, expected) in host_logits.into_iter().zip(raw_logits) {
+        assert_close(actual as f64, expected as f64);
+    }
+    assert_optimizer_record_exact_eq(&host_record, &raw_record);
+    assert_single_step_optimizer_record(&host_record);
+    assert!(
+        adam_optimizer_record_is_fp32(&host_record),
+        "host optimizer state should stay fp32"
+    );
+    let full_precision_item = host_record.clone().into_item::<FullPrecisionSettings>();
+    let reloaded_record = <_ as Record<TestTrainBackend>>::from_item(full_precision_item, &device);
+    assert_optimizer_record_exact_eq(&reloaded_record, &host_record);
+
+    assert_eq!(
+        recycled
+            .expect("owned host materialization should recycle host batch")
+            .batch_size,
+        logical_batch.len()
+    );
+}
+
+#[test]
+fn host_batch_train_step_matches_raw_with_augmentation_parity() {
+    let device = LibTorchDevice::Cpu;
+    <TestTrainBackend as Backend>::seed(&device, 7);
+    let raw_initial = tiny_dummy_model(&device);
+    let logical_batch = vec![
+        uniform_dummy_train_sample(45),
+        uniform_dummy_train_sample(45),
+    ];
+    let probe_loss_fn = policy_only_train_loss();
+    let _ = sample_policy_train_logits(&raw_initial, &logical_batch[0], &device, &probe_loss_fn);
+    let host_initial = raw_initial.clone().fork(&device);
+    let raw_logical_batch = crate::data::sample::augment_samples_6x(&logical_batch);
+    let (raw_model, raw_record, raw_stats) = run_raw_train_step_with_loss(
+        raw_initial,
+        &raw_logical_batch,
+        raw_logical_batch.len(),
+        false,
+        &device,
+        policy_only_train_loss(),
+    );
+    let (host_model, host_record, host_stats, recycled) = run_host_batch_train_step_with_loss(
+        host_initial,
+        &logical_batch,
+        logical_batch.len(),
+        true,
+        &device,
+        hydra_bc_shards::BcShardHostBatch::empty(),
+        policy_only_train_loss(),
+    );
+
+    let expected_rows = logical_batch.len() * hydra_core::tile::ALL_PERMUTATIONS.len();
+    assert_eq!(raw_stats.len(), 1);
+    assert_eq!(host_stats.len(), 1);
+    assert_batch_stats_training_values_close(host_stats[0], raw_stats[0]);
+    assert_eq!(
+        host_stats[0].policy_agreement / hydra_core::tile::ALL_PERMUTATIONS.len() as f64,
+        raw_stats[0].policy_agreement
+    );
+    assert_eq!(host_stats[0].sample_count, logical_batch.len());
+    assert_eq!(raw_stats[0].sample_count, expected_rows);
+    assert_eq!(host_stats[0].batch_count, 1);
+    assert_eq!(raw_stats[0].batch_count, 1);
+
+    let raw_logits =
+        sample_policy_train_logits(&raw_model, &raw_logical_batch[0], &device, &probe_loss_fn);
+    let host_logits =
+        sample_policy_train_logits(&host_model, &raw_logical_batch[0], &device, &probe_loss_fn);
+    assert_eq!(host_logits.len(), raw_logits.len());
+    for (actual, expected) in host_logits.into_iter().zip(raw_logits) {
+        assert_close(actual as f64, expected as f64);
+    }
+    assert_optimizer_record_exact_eq(&host_record, &raw_record);
+    assert_single_step_optimizer_record(&host_record);
+    assert!(
+        adam_optimizer_record_is_fp32(&host_record),
+        "host optimizer state should stay fp32"
+    );
+    let full_precision_item = host_record.clone().into_item::<FullPrecisionSettings>();
+    let reloaded_record = <_ as Record<TestTrainBackend>>::from_item(full_precision_item, &device);
+    assert_optimizer_record_exact_eq(&reloaded_record, &host_record);
+
+    assert_eq!(
+        recycled
+            .expect("owned host materialization should recycle host batch")
+            .batch_size,
+        expected_rows
+    );
+}
+
+#[test]
+fn host_batch_recycling_drops_stale_optional_targets() {
+    let device = LibTorchDevice::Cpu;
+    let with_optional = vec![dummy_train_sample_with_optional_targets(3)];
+    let without_optional = vec![dummy_train_sample(7)];
+
+    let (_, _, first_stats, recycled) = run_host_batch_train_step(
+        tiny_dummy_model(&device),
+        &with_optional,
+        8,
+        false,
+        &device,
+        hydra_bc_shards::BcShardHostBatch::empty(),
+    );
+    assert_eq!(first_stats.len(), 1);
+    let recycled = recycled.expect("first host step should recycle host batch");
+    assert!(recycled.exit_target_flat.is_some());
+    assert!(recycled.safety_target_flat.is_some());
+    assert!(recycled.delta_q_target_flat.is_some());
+
+    let (_, _, second_stats, recycled) = run_host_batch_train_step(
+        tiny_dummy_model(&device),
+        &without_optional,
+        8,
+        false,
+        &device,
+        recycled,
+    );
+    assert_eq!(second_stats.len(), 1);
+    let recycled = recycled.expect("second host step should recycle host batch");
+    assert!(recycled.exit_target_flat.is_none());
+    assert!(recycled.exit_mask_flat.is_none());
+    assert!(recycled.safety_target_flat.is_none());
+    assert!(recycled.safety_mask_flat.is_none());
+    assert!(recycled.delta_q_target_flat.is_none());
+    assert!(recycled.delta_q_mask_flat.is_none());
+}
+
+#[test]
+fn host_batch_train_empty_logical_batch_skips_optimizer_step() {
+    let device = LibTorchDevice::Cpu;
+    let train_loss_fn = dummy_train_loss();
+    let mut model_slot = Some(tiny_dummy_model(&device));
+    let mut optimizer = AdamConfig::new().init::<TestTrainBackend, HydraModel<TestTrainBackend>>();
+    let mut head_controller =
+        HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+    let (stats, _, recycled) = crate::epoch_runner::train_logical_batch_from_host_batch(
+        hydra_bc_shards::BcShardHostBatch::empty(),
+        crate::epoch_runner::TrainLogicalBatchConfig {
+            microbatch_size: 1,
+            use_amp: false,
+            augment: false,
+            train_device: &device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            lr: 1e-4,
+        },
+        crate::epoch_runner::HostBatchRows::RawReplay { augment: false },
+        &mut head_controller,
+        &mut model_slot,
+        &mut optimizer,
+        #[cfg(feature = "cuda-graph")]
+        None,
+    )
+    .expect("empty host-batch train step should succeed");
+
+    assert!(stats.is_empty());
+    assert!(optimizer.to_record().is_empty());
+    assert_eq!(
+        recycled
+            .expect("empty host batch should be returned")
+            .batch_size,
+        0
+    );
+}
+
+#[test]
+#[cfg(feature = "cuda-graph")]
+fn raw_effective_host_rows_accounts_for_augmentation() {
+    assert_eq!(crate::pinned_transfer::raw_effective_host_rows(3, false), 3);
+    assert_eq!(
+        crate::pinned_transfer::raw_effective_host_rows(3, true),
+        3 * hydra_core::tile::ALL_PERMUTATIONS.len()
+    );
+}
+
+#[test]
+fn host_batch_row_semantics_are_explicit() {
+    assert_eq!(
+        crate::epoch_runner::HostBatchRows::RawReplay { augment: true }.rows_per_logical(),
+        hydra_core::tile::ALL_PERMUTATIONS.len()
+    );
+    assert_eq!(
+        crate::epoch_runner::HostBatchRows::RawReplay { augment: false }.rows_per_logical(),
+        1
+    );
+    assert_eq!(
+        crate::epoch_runner::HostBatchRows::BcShardPhysical.rows_per_logical(),
+        1
+    );
+}
+
+#[test]
+fn shard_physical_rows_ignore_augment_for_counts_and_weighting() {
+    let device = LibTorchDevice::Cpu;
+    <TestTrainBackend as Backend>::seed(&device, 19);
+    let baseline_model = tiny_dummy_model(&device);
+    let shard_model = baseline_model.clone();
+    let mut loss_config = HydraLossConfig::new();
+    loss_config.w_v = 0.0;
+    loss_config.w_grp = 0.0;
+    loss_config.w_tenpai = 0.0;
+    loss_config.w_danger = 0.0;
+    loss_config.w_opp = 0.0;
+    loss_config.w_score = 0.0;
+    let train_loss_fn = HydraLoss::<TestTrainBackend>::new(loss_config);
+    let build_host_batch = || hydra_bc_shards::BcShardHostBatch {
+        batch_size: 3,
+        obs_flat: vec![0.0; 3 * hydra_core::encoder::OBS_SIZE],
+        actions: vec![0, 5, 11],
+        legal_mask_flat: vec![1.0; 3 * hydra_core::action::HYDRA_ACTION_SPACE],
+        value_target: vec![0.0; 3],
+        grp_target_flat: vec![0.0; 3 * hydra_bc_shards::host::GRP_CLASS_COUNT],
+        oracle_target_flat: vec![0.0; 3 * hydra_bc_shards::PLAYER_COUNT],
+        oracle_target_mask: vec![0.0; 3],
+        tenpai_flat: vec![0.0; 3 * hydra_bc_shards::OPPONENT_COUNT],
+        danger_flat: vec![0.0; 3 * hydra_bc_shards::SPATIAL_TARGET_SIZE],
+        danger_mask_flat: vec![0.0; 3 * hydra_bc_shards::SPATIAL_TARGET_SIZE],
+        opp_next_flat: vec![0.0; 3 * hydra_bc_shards::SPATIAL_TARGET_SIZE],
+        score_pdf_flat: vec![0.0; 3 * hydra_data_core::sample::SCORE_BINS],
+        score_cdf_flat: vec![0.0; 3 * hydra_data_core::sample::SCORE_BINS],
+        safety_target_flat: None,
+        safety_mask_flat: None,
+        exit_target_flat: None,
+        exit_mask_flat: None,
+        delta_q_target_flat: None,
+        delta_q_mask_flat: None,
+    };
+
+    let mut baseline_slot = Some(baseline_model);
+    let mut baseline_optimizer =
+        AdamConfig::new().init::<TestTrainBackend, HydraModel<TestTrainBackend>>();
+    let mut baseline_head_controller =
+        HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+    let (baseline_stats, _, _) = crate::epoch_runner::train_logical_batch_from_host_batch(
+        build_host_batch(),
+        crate::epoch_runner::TrainLogicalBatchConfig {
+            microbatch_size: 2,
+            use_amp: false,
+            augment: false,
+            train_device: &device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            lr: 1e-4,
+        },
+        crate::epoch_runner::HostBatchRows::BcShardPhysical,
+        &mut baseline_head_controller,
+        &mut baseline_slot,
+        &mut baseline_optimizer,
+        #[cfg(feature = "cuda-graph")]
+        None,
+    )
+    .expect("baseline shard host-batch train step should succeed");
+
+    let mut shard_slot = Some(shard_model);
+    let mut shard_optimizer =
+        AdamConfig::new().init::<TestTrainBackend, HydraModel<TestTrainBackend>>();
+    let mut shard_head_controller =
+        HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+    let (shard_stats, _, _) = crate::epoch_runner::train_logical_batch_from_host_batch(
+        build_host_batch(),
+        crate::epoch_runner::TrainLogicalBatchConfig {
+            microbatch_size: 2,
+            use_amp: false,
+            augment: true,
+            train_device: &device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            lr: 1e-4,
+        },
+        crate::epoch_runner::HostBatchRows::BcShardPhysical,
+        &mut shard_head_controller,
+        &mut shard_slot,
+        &mut shard_optimizer,
+        #[cfg(feature = "cuda-graph")]
+        None,
+    )
+    .expect("shard host-batch train step should succeed");
+
+    assert_eq!(shard_stats.len(), 1);
+    assert_eq!(baseline_stats.len(), 1);
+    assert_eq!(shard_stats[0].sample_count, 3);
+    assert_eq!(shard_stats[0].batch_count, 2);
+    assert_eq!(shard_stats[0].sample_count, baseline_stats[0].sample_count);
+    assert_eq!(shard_stats[0].batch_count, baseline_stats[0].batch_count);
+    assert_eq!(
+        sorted_optimizer_record_keys(&shard_optimizer.to_record()),
+        sorted_optimizer_record_keys(&baseline_optimizer.to_record())
+    );
+}
+
+#[test]
+#[cfg(feature = "cuda-graph")]
+fn pinned_transfer_staging_falls_back_for_cpu_device() {
+    assert!(
+        crate::pinned_transfer::PinnedTransferStaging::from_device(1, &LibTorchDevice::Cpu)
+            .is_none()
+    );
+}
+
+#[test]
+#[cfg(feature = "cuda-graph")]
+fn pinned_staged_materialization_matches_owned_and_recycles_optional_targets() {
+    if !Cuda::is_available() {
+        eprintln!("skipping pinned staged materialization parity: CUDA unavailable");
+        return;
+    }
+
+    let device = LibTorchDevice::Cuda(0);
+    let mut staging = crate::pinned_transfer::PinnedStagingArea::new(4);
+    let h2d = crate::pinned_transfer::AsyncH2DContext::new(0);
+    let mut gpu_tensors = crate::pinned_transfer::PreallocatedDeviceTensors::new(4, &device);
+
+    let with_optional = vec![
+        dummy_train_sample_with_optional_targets(3),
+        dummy_train_sample_with_optional_targets(7),
+        dummy_train_sample_with_optional_targets(11),
+    ];
+    let host_with_optional = crate::data::sample::collate_samples_into_recycled_host_batch(
+        &with_optional,
+        false,
+        hydra_bc_shards::BcShardHostBatch::empty(),
+    )
+    .expect("optional host batch collation should succeed")
+    .expect("optional host batch collation should produce a host batch");
+    assert_eq!(host_with_optional.batch_size, 3);
+    assert!(host_with_optional.exit_target_flat.is_some());
+    assert!(host_with_optional.safety_target_flat.is_some());
+    assert!(host_with_optional.delta_q_target_flat.is_some());
+
+    {
+        let owned = crate::epoch_runner::materialize_host_batch_borrowed::<LibTorch<f32>>(
+            &host_with_optional,
+            &device,
+        );
+        let staged = crate::pinned_transfer::materialize_staged_reuse_inner::<LibTorch<f32>>(
+            &host_with_optional,
+            &mut staging,
+            &h2d,
+            &device,
+            &mut gpu_tensors,
+        );
+        assert_device_batch_exact_eq(staged, owned, "with optional targets");
+    }
+
+    let without_optional = vec![dummy_train_sample(5)];
+    let host_without_optional = crate::data::sample::collate_samples_into_recycled_host_batch(
+        &without_optional,
+        false,
+        host_with_optional,
+    )
+    .expect("non-optional recycled host batch collation should succeed")
+    .expect("non-optional recycled host batch collation should produce a host batch");
+    assert_eq!(host_without_optional.batch_size, 1);
+    assert!(host_without_optional.exit_target_flat.is_none());
+    assert!(host_without_optional.safety_target_flat.is_none());
+    assert!(host_without_optional.delta_q_target_flat.is_none());
+
+    let owned = crate::epoch_runner::materialize_host_batch_borrowed::<LibTorch<f32>>(
+        &host_without_optional,
+        &device,
+    );
+    let staged = crate::pinned_transfer::materialize_staged_reuse_inner::<LibTorch<f32>>(
+        &host_without_optional,
+        &mut staging,
+        &h2d,
+        &device,
+        &mut gpu_tensors,
+    );
+    assert_device_batch_exact_eq(staged, owned, "without optional targets tail");
 }
 
 #[test]

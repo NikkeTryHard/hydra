@@ -2,7 +2,7 @@ use super::*;
 use burn::backend::NdArray;
 use hydra_core::tile::permute_tile_type;
 
-use hydra_bc_shards::BcShardHostScratch;
+use hydra_bc_shards::{BcShardHostBatch, BcShardHostScratch};
 type B = NdArray<f32>;
 fn expect_collation_err<T>(result: Result<Option<T>, String>, message: &str) -> String {
     match result {
@@ -1230,4 +1230,153 @@ fn collate_samples_into_host_scratch_rejects_optional_target_mask_mismatch() {
     let err = collate_samples_into_host_scratch(&[sample], false, &mut scratch)
         .expect_err("incomplete exit pair should fail");
     assert!(err.contains("exit target/mask mismatch for host scratch collation"));
+}
+
+#[test]
+fn collate_samples_into_recycled_host_batch_drops_optional_buffers_when_absent() {
+    let mut sample = dummy_sample(2, 100);
+    let mut safety = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut safety_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut exit = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut delta_q = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut delta_q_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    safety[2] = 0.25;
+    safety_mask[2] = 1.0;
+    exit[2] = 0.5;
+    exit_mask[2] = 1.0;
+    delta_q[2] = -0.75;
+    delta_q_mask[2] = 1.0;
+    sample.safety_residual = Some(safety);
+    sample.safety_residual_mask = Some(safety_mask);
+    sample.exit_target = Some(exit);
+    sample.exit_mask = Some(exit_mask);
+    sample.delta_q_target = Some(delta_q);
+    sample.delta_q_mask = Some(delta_q_mask);
+
+    let recycled =
+        collate_samples_into_recycled_host_batch(&[sample], false, BcShardHostBatch::empty())
+            .expect("first recycled collation should succeed")
+            .expect("first recycled collation should produce a batch");
+    assert!(recycled.safety_target_flat.is_some());
+    assert!(recycled.safety_mask_flat.is_some());
+    assert!(recycled.exit_target_flat.is_some());
+    assert!(recycled.exit_mask_flat.is_some());
+    assert!(recycled.delta_q_target_flat.is_some());
+    assert!(recycled.delta_q_mask_flat.is_some());
+
+    let plain = dummy_sample(3, -100);
+    let recycled = collate_samples_into_recycled_host_batch(&[plain], false, recycled)
+        .expect("second recycled collation should succeed")
+        .expect("second recycled collation should produce a batch");
+
+    assert_eq!(recycled.batch_size, 1);
+    assert!(recycled.safety_target_flat.is_none());
+    assert!(recycled.safety_mask_flat.is_none());
+    assert!(recycled.exit_target_flat.is_none());
+    assert!(recycled.exit_mask_flat.is_none());
+    assert!(recycled.delta_q_target_flat.is_none());
+    assert!(recycled.delta_q_mask_flat.is_none());
+}
+
+#[test]
+fn collate_samples_into_recycled_host_batch_zeroes_optional_rows_and_tail_capacity() {
+    let mut with_exit = dummy_sample(2, 100);
+    let mut exit = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    exit[2] = 0.5;
+    exit_mask[2] = 1.0;
+    with_exit.exit_target = Some(exit);
+    with_exit.exit_mask = Some(exit_mask);
+    let mut without_exit = dummy_sample(3, -100);
+    without_exit.exit_target = None;
+    without_exit.exit_mask = None;
+
+    let recycled = collate_samples_into_recycled_host_batch(
+        &[with_exit.clone(), without_exit.clone()],
+        false,
+        BcShardHostBatch::empty(),
+    )
+    .expect("full recycled collation should succeed")
+    .expect("full recycled collation should produce a batch");
+    assert_eq!(recycled.batch_size, 2);
+    let capacity = recycled
+        .exit_target_flat
+        .as_ref()
+        .expect("exit target buffer")
+        .capacity();
+
+    let recycled =
+        collate_samples_into_recycled_host_batch(&[without_exit, with_exit], false, recycled)
+            .expect("tail recycled collation should succeed")
+            .expect("tail recycled collation should produce a batch");
+
+    assert_eq!(recycled.batch_size, 2);
+    let exit = recycled
+        .exit_target_flat
+        .as_ref()
+        .expect("exit target buffer");
+    let exit_mask = recycled.exit_mask_flat.as_ref().expect("exit mask buffer");
+    assert!(exit.capacity() >= capacity);
+    assert!(exit[..HYDRA_ACTION_SPACE].iter().all(|&value| value == 0.0));
+    assert!(
+        exit_mask[..HYDRA_ACTION_SPACE]
+            .iter()
+            .all(|&value| value == 0.0)
+    );
+    assert_eq!(exit[HYDRA_ACTION_SPACE + 2], 0.5);
+    assert_eq!(exit_mask[HYDRA_ACTION_SPACE + 2], 1.0);
+
+    let recycled = collate_samples_into_recycled_host_batch(&[dummy_sample(4, 0)], false, recycled)
+        .expect("smaller tail recycled collation should succeed")
+        .expect("smaller tail recycled collation should produce a batch");
+    assert_eq!(recycled.batch_size, 1);
+    assert!(recycled.exit_target_flat.is_none());
+    assert!(recycled.exit_mask_flat.is_none());
+}
+
+#[test]
+fn collate_samples_into_recycled_host_batch_matches_augmented_row_order() {
+    let mut sample = dummy_sample(0, 0);
+    sample.obs = [0.0; OBS_SIZE];
+    sample.obs[40 * 34] = 1.0;
+    sample.opp_next = [0, 9, 27];
+    sample.danger[0] = 0.25;
+    sample.danger[34 + 9] = 0.5;
+    sample.danger_mask[18] = 1.0;
+
+    let augmented = augment_samples_6x(&[sample.clone()]);
+    let recycled =
+        collate_samples_into_recycled_host_batch(&[sample], true, BcShardHostBatch::empty())
+            .expect("augmented recycled collation should succeed")
+            .expect("augmented recycled collation should produce a batch");
+
+    assert_eq!(recycled.batch_size, ALL_PERMUTATIONS.len());
+    for (index, expected) in augmented.iter().enumerate() {
+        assert_eq!(recycled.actions[index], expected.action as i64);
+        assert_eq!(
+            &recycled.obs_flat[index * OBS_SIZE..(index + 1) * OBS_SIZE],
+            expected.obs.as_slice()
+        );
+        assert_eq!(
+            &recycled.legal_mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE],
+            expected.legal_mask.as_slice()
+        );
+        assert_eq!(
+            &recycled.danger_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE],
+            expected.danger.as_slice()
+        );
+        assert_eq!(
+            &recycled.danger_mask_flat
+                [index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE],
+            expected.danger_mask.as_slice()
+        );
+    }
+}
+
+#[test]
+fn collate_samples_into_recycled_host_batch_returns_none_for_empty_input() {
+    let recycled = collate_samples_into_recycled_host_batch(&[], false, BcShardHostBatch::empty())
+        .expect("empty recycled collation should succeed");
+    assert!(recycled.is_none());
 }

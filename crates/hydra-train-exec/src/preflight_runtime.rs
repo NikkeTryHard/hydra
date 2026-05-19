@@ -38,7 +38,7 @@ use crate::epoch_runner::{
     TrainLogicalBatchConfig, materialize_host_batch_owned, train_device_batch,
 };
 #[cfg(feature = "cuda-graph")]
-use crate::pinned_transfer::{AsyncH2DContext, PinnedStagingArea, PreallocatedDeviceTensors};
+use crate::pinned_transfer::PinnedTransferStaging;
 #[cfg(test)]
 use crate::presentation::format_probe_status_line;
 use crate::presentation::make_spinner;
@@ -487,17 +487,7 @@ where
         emit_probe_init_phase("train", request.candidate_microbatch, "init_cuda_staging")?;
     }
     #[cfg(feature = "cuda-graph")]
-    let mut staging_context = match train_device {
-        LibTorchDevice::Cuda(idx) => {
-            let device_index = *idx as i64;
-            Some((
-                PinnedStagingArea::new(config.batch_size),
-                AsyncH2DContext::new(device_index),
-                PreallocatedDeviceTensors::new(config.batch_size, train_device),
-            ))
-        }
-        _ => None,
-    };
+    let mut staging_context = PinnedTransferStaging::from_device(config.batch_size, train_device);
 
     emit_probe_init_ready(
         ProbeKind::Train,
@@ -523,7 +513,8 @@ where
         let shard_batch = {
             #[cfg(feature = "cuda-graph")]
             {
-                if let Some((pinned_staging, h2d_ctx, gpu_tensors)) = staging_context.as_mut() {
+                if let Some(staging) = staging_context.as_mut() {
+                    let (pinned_staging, h2d_ctx, gpu_tensors) = staging.as_parts();
                     crate::pinned_transfer::materialize_staged_reuse::<B>(
                         &host_batch,
                         pinned_staging,
